@@ -1,137 +1,119 @@
 """τ-agent-core extensions loader — discovers and loads extension modules.
 
 Reference: PHASE-3-SUBPHASE-0.md ExtensionLoader contract.
+Reference: PHASE-3-SUBPHASE-2.md ExtensionLoader implementation.
 
 Contract:
     class ExtensionLoader:
-        def discover(self) -> list[str]: ...
-        def load(self, name: str) -> Extension: ...
+        EXTENSION_DIRS: list[Path]
+        @classmethod
+        def discover(cls, cwd: str | None = None) -> list[Path]: ...
+        @classmethod
+        def load(cls, path: Path) -> Callable | None: ...
 """
 
 from __future__ import annotations
 
-import importlib
-import os
-import pkgutil
+import importlib.util
+import logging
+import sys
 from pathlib import Path
-from typing import Any
+from typing import Callable
 
 
 class ExtensionLoader:
-    """Discovers and loads extension modules.
+    """Discovers and loads Python extension modules.
 
     Provides mechanisms for:
-    - Discovering installed extension packages
-    - Loading extension modules by name
-    - Validating extension interfaces
+    - Discovering installed extension modules from global and project directories
+    - Loading extension modules via importlib
+    - Calling the extension's register() function
 
     Reference: PHASE-3-SUBPHASE-0.md ExtensionLoader contract.
+    Reference: PHASE-3-SUBPHASE-2.md implementation outline.
     """
 
-    def __init__(self, search_paths: list[str] | None = None) -> None:
-        """Initialize the loader.
+    EXTENSION_DIRS: list[Path] = []  # Default dirs, may be overridden in tests
 
-        Args:
-            search_paths: Additional paths to search for extensions.
+    @classmethod
+    def _get_extension_dirs(cls) -> list[Path]:
+        """Compute extension directories.
+
+        Uses EXTENSION_DIRS if explicitly set (e.g., by tests),
+        otherwise computes default from Path.home().
         """
-        self._search_paths = search_paths or []
-        self._loaded: dict[str, Any] = {}
+        # If tests have overridden EXTENSION_DIRS, use it
+        if cls.EXTENSION_DIRS:
+            return cls.EXTENSION_DIRS
+        # Otherwise compute from current Path.home()
+        return [Path.home() / ".tau" / "extensions"]
 
-    def discover(self, search_path: str | None = None) -> list[str]:
-        """Discover available extension modules.
+    @classmethod
+    def discover(cls, cwd: str | None = None) -> list[Path]:
+        """Find all extension files.
 
-        Searches for Python packages that could be extensions by looking
-        for modules that follow the naming convention and contain the
-        expected extension attributes.
+        Discovery order:
+        1. Global extensions (~/.tau/extensions/)
+        2. Project extensions (<cwd>/.tau/extensions/)
 
-        Args:
-            search_path: Optional path to search. Falls back to
-                         configured search paths.
+        Returns paths to .py files and directory-based extensions.
 
         Returns:
-            List of extension module names found.
+            list[Path] — paths to extension entry points
         """
-        extensions = []
-        paths_to_search = [search_path] if search_path else self._search_paths
+        extensions: list[Path] = []
+        for ext_dir in cls._get_extension_dirs():
+            if not ext_dir.exists():
+                continue
+            for path in sorted(ext_dir.rglob("*.py")):
+                if path.name != "__init__.py":
+                    extensions.append(path)
+            # Directory-based extensions
+            for subdir in ext_dir.iterdir():
+                if subdir.is_dir() and (subdir / "__init__.py").exists():
+                    extensions.append(subdir)
 
-        # Always include the package's own extensions directory
-        extensions.extend(self._discover_in_dir())
-
-        for path in paths_to_search:
-            extensions.extend(self._discover_in_dir(path))
-
-        return list(set(extensions))
-
-    def load(self, name: str) -> dict[str, Any]:
-        """Load an extension by name.
-
-        Loads the extension module and returns its API dictionary.
-        The extension module must be importable.
-
-        Args:
-            name: The extension module name (e.g., 'my_extension').
-
-        Returns:
-            A dict with 'name' and 'module' keys for the loaded extension.
-
-        Raises:
-            ImportError: If the extension module cannot be imported.
-        """
-        if name in self._loaded:
-            return self._loaded[name]
-
-        try:
-            module = importlib.import_module(name)
-            extension = {
-                "name": name,
-                "module": module,
-                "enabled": True,
-            }
-            self._loaded[name] = extension
-            return extension
-        except ImportError as e:
-            raise ImportError(f"Cannot load extension '{name}': {e}") from e
-
-    def _discover_in_dir(self, directory: str | None = None) -> list[str]:
-        """Discover extension modules in a directory.
-
-        Args:
-            directory: Directory to search. If None, uses module's
-                       extensions directory.
-
-        Returns:
-            List of extension module names.
-        """
-        extensions = []
-
-        if directory:
-            # Search the given directory
-            try:
-                for importer, modname, ispkg in pkgutil.iter_modules([directory]):
-                    if ispkg or modname.startswith("_"):
-                        continue
-                    # Check if it looks like an extension
-                    try:
-                        mod = importlib.import_module(f"{directory}.{modname}") if directory else modname
-                        if hasattr(mod, "__tau_extension__"):
-                            extensions.append(modname)
-                    except (ImportError, AttributeError):
-                        continue
-            except (FileNotFoundError, ModuleNotFoundError):
-                pass
-        else:
-            # Search the current package's extensions directory
-            try:
-                import tau_agent_core
-                base = Path(tau_agent_core.__file__).parent
-                ext_dir = base / "extensions"
-                if ext_dir.exists():
-                    for item in sorted(ext_dir.iterdir()):
-                        if item.is_dir() and not item.name.startswith("_"):
-                            extensions.append(item.name)
-                        elif item.suffix == ".py" and not item.name.startswith("_"):
-                            extensions.append(item.stem)
-            except (ImportError, AttributeError):
-                pass
+        # Project extensions (loaded after global)
+        if cwd:
+            project_ext = Path(cwd) / ".tau" / "extensions"
+            if project_ext.exists():
+                for path in sorted(project_ext.rglob("*.py")):
+                    if path.name != "__init__.py":
+                        extensions.append(path)
+                for subdir in project_ext.iterdir():
+                    if subdir.is_dir() and (subdir / "__init__.py").exists():
+                        extensions.append(subdir)
 
         return extensions
+
+    @classmethod
+    def load(cls, path: Path) -> Callable | None:
+        """Load an extension module and call its register() function.
+
+        Args:
+            path: Path to the extension file or directory
+
+        Returns:
+            The result of register(api) or None if loading failed.
+        """
+        try:
+            if path.is_dir():
+                module_path = path / "__init__.py"
+            else:
+                module_path = path
+
+            module_name = f"tau_ext_{path.stem}_{id(path)}"
+            spec = importlib.util.spec_from_file_location(module_name, module_path)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+
+            # Call register function
+            register_fn = getattr(module, "register", None)
+            if register_fn:
+                return register_fn
+            return None
+
+        except Exception as e:
+            logging.error(f"Failed to load extension {path}: {e}")
+            return None

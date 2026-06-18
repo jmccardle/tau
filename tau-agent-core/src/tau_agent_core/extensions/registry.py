@@ -1,11 +1,25 @@
-"""τ-agent-core extensions registry — manages tool registration for extensions.
+"""τ-agent-core extensions registry — manages tool/command/flag registration.
 
 Reference: PHASE-3-SUBPHASE-0.md ExtensionRegistry contract.
+Reference: PHASE-3-SUBPHASE-2.md ExtensionRegistry implementation.
 
 Contract:
+    class ToolInfo:
+        name: str
+        description: str
+        parameters: dict
+        source: str
+
     class ExtensionRegistry:
         def register_tool(self, definition: dict) -> None: ...
         def get_all_tools(self) -> list[ToolInfo]: ...
+        def set_active_tools(self, names: list[str]) -> None: ...
+        def get_active_tools(self) -> dict[str, dict]: ...
+        def register_command(self, name: str, command: dict) -> None: ...
+        def register_flag(self, name: str, options: dict) -> None: ...
+        def get_flag(self, name: str) -> Any: ...
+        def append_entry(self, custom_type: str, data: dict) -> None: ...
+        def get_entries(self) -> list[dict]: ...
 """
 
 from __future__ import annotations
@@ -13,133 +27,92 @@ from __future__ import annotations
 from typing import Any
 
 
-class ExtensionRegistry:
-    """Registry for extension tools and capabilities.
+class ToolInfo:
+    """Read-only tool information."""
 
-    Manages the collection of tools provided by loaded extensions.
-    Extensions register their tools with the registry, and the
-    agent loop queries the registry for available tools.
-
-    Reference: PHASE-3-SUBPHASE-0.md ExtensionRegistry contract.
-    """
-
-    def __init__(self) -> None:
-        """Initialize the registry with empty tool collections."""
-        self._tools: dict[str, dict[str, Any]] = {}
-        self._active_tools: list[str] = []
-        self._extension_tools: dict[str, list[str]] = {}
-
-    def register_tool(self, definition: dict[str, Any]) -> None:
-        """Register a tool definition.
-
-        Args:
-            definition: Tool definition dict. Must contain at least
-                       a 'name' key.
-
-        Raises:
-            ValueError: If definition is missing required fields.
-        """
-        if "name" not in definition:
-            raise ValueError("Tool definition must contain a 'name' field")
-
-        name = definition["name"]
-        self._tools[name] = definition
-
-    def get_all_tools(self) -> list[dict[str, Any]]:
-        """Get all registered tool definitions.
-
-        Returns:
-            List of all tool definitions.
-        """
-        return list(self._tools.values())
-
-    def get_tool(self, name: str) -> dict[str, Any] | None:
-        """Get a specific tool by name.
+    def __init__(self, name: str, description: str, parameters: dict, source: str):
+        """Initialize tool info.
 
         Args:
             name: Tool name.
-
-        Returns:
-            Tool definition if found, None otherwise.
+            description: Tool description.
+            parameters: Tool parameters (JSON schema).
+            source: Where the tool is from ("built-in" or extension name).
         """
-        return self._tools.get(name)
+        self.name = name
+        self.description = description
+        self.parameters = parameters
+        self.source = source  # "built-in" or extension name
 
-    def unregister_tool(self, name: str) -> bool:
-        """Unregister a tool by name.
+    def __repr__(self) -> str:
+        return f"ToolInfo(name={self.name!r}, source={self.source!r})"
 
-        Args:
-            name: Tool name to remove.
 
-        Returns:
-            True if tool was found and removed, False otherwise.
-        """
+class ExtensionRegistry:
+    """Manages tool, command, and flag registration.
+
+    Reference: PHASE-3-SUBPHASE-0.md ExtensionRegistry contract.
+    Reference: PHASE-3-SUBPHASE-2.md implementation outline.
+    """
+
+    def __init__(self) -> None:
+        """Initialize the registry with empty collections."""
+        self._tools: dict[str, dict] = {}  # name -> definition
+        self._commands: dict[str, dict] = {}  # name -> command def
+        self._flags: dict[str, dict] = {}  # name -> flag def
+        self._active_tools: set[str] | None = None  # None = all active
+        self._entry_store: list[dict] = []  # extension-persisted entries
+
+    def register_tool(self, definition: dict) -> None:
+        """Register a tool definition."""
+        name = definition["name"]
         if name in self._tools:
-            del self._tools[name]
-            if name in self._active_tools:
-                self._active_tools.remove(name)
-            return True
-        return False
+            import logging
+            logging.warning(f"Tool '{name}' already registered, overwriting")
+        self._tools[name] = definition
+
+    def get_all_tools(self) -> list[ToolInfo]:
+        """Get all registered tools (built-in + extension)."""
+        result = []
+        for name, defn in self._tools.items():
+            result.append(ToolInfo(
+                name=name,
+                description=defn.get("description", ""),
+                parameters=defn.get("parameters", {}),
+                source=defn.get("_source", "built-in"),
+            ))
+        return result
 
     def set_active_tools(self, names: list[str]) -> None:
-        """Set the list of active tool names.
+        """Enable/disable tools by name."""
+        self._active_tools = set(names)
 
-        Only tools in this list will be available during execution.
+    def get_active_tools(self) -> dict[str, dict]:
+        """Get currently active tools."""
+        if self._active_tools is None:
+            return self._tools
+        return {n: d for n, d in self._tools.items() if n in self._active_tools}
 
-        Args:
-            names: List of active tool names.
-        """
-        self._active_tools = names
+    def register_command(self, name: str, command: dict) -> None:
+        """Register a slash command."""
+        self._commands[name] = command
 
-    def get_active_tools(self) -> list[dict[str, Any]]:
-        """Get only the active tool definitions.
+    def register_flag(self, name: str, options: dict) -> None:
+        """Register a CLI flag."""
+        self._flags[name] = options
 
-        Returns:
-            List of active tool definitions.
-        """
-        return [self._tools[name] for name in self._active_tools if name in self._tools]
+    def get_flag(self, name: str) -> Any:
+        """Get the value of a CLI flag."""
+        return self._flags.get(name, {}).get("value")
 
-    def register_tool_from_extension(self, extension_name: str, definition: dict[str, Any]) -> None:
-        """Register a tool belonging to a specific extension.
+    def append_entry(self, custom_type: str, data: dict) -> None:
+        """Persist extension state (does not appear in LLM context)."""
+        entry = {
+            "custom_type": custom_type,
+            "data": data,
+        }
+        self._entry_store.append(entry)
 
-        Args:
-            extension_name: Name of the extension.
-            definition: Tool definition dict.
-        """
-        self.register_tool(definition)
-        if extension_name not in self._extension_tools:
-            self._extension_tools[extension_name] = []
-        self._extension_tools[extension_name].append(definition["name"])
-
-    def get_extension_tools(self, extension_name: str) -> list[dict[str, Any]]:
-        """Get all tools registered by a specific extension.
-
-        Args:
-            extension_name: Name of the extension.
-
-        Returns:
-            List of tool definitions for the extension.
-        """
-        tool_names = self._extension_tools.get(extension_name, [])
-        return [self._tools[name] for name in tool_names if name in self._tools]
-
-    def get_tool_count(self) -> int:
-        """Get the total number of registered tools.
-
-        Returns:
-            Number of registered tools.
-        """
-        return len(self._tools)
-
-    def get_extension_count(self) -> int:
-        """Get the number of extensions that have registered tools.
-
-        Returns:
-            Number of extensions with registered tools.
-        """
-        return len(self._extension_tools)
-
-    def clear(self) -> None:
-        """Clear all registered tools and extensions."""
-        self._tools.clear()
-        self._active_tools.clear()
-        self._extension_tools.clear()
+    def get_entries(self) -> list[dict]:
+        """Get all persisted extension entries."""
+        return list(self._entry_store)

@@ -582,7 +582,7 @@ class TestExtensionRegistryContract:
         registry.register_tool(tool_def)
         tools = registry.get_all_tools()
         assert len(tools) >= 1
-        assert any(t["name"] == "test_tool" for t in tools)
+        assert any(t.name == "test_tool" for t in tools)
 
     def test_extension_registry_get_all_tools_returns_list(self):
         """ExtensionRegistry.get_all_tools() returns a list."""

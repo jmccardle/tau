@@ -9,6 +9,16 @@ Reference: SUBPHASE-0.0.md lines 260-340
 """
 
 import pytest
+from pathlib import Path
+
+
+# Reset ExtensionLoader state before each test to avoid cross-test contamination
+@pytest.fixture(autouse=True)
+def _reset_extension_loader():
+    """Reset ExtensionLoader state before each test."""
+    from tau_agent_core.extensions.loader import ExtensionLoader
+    ExtensionLoader.EXTENSION_DIRS = []
+    yield
 
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.session import SessionEntry
