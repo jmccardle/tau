@@ -1,0 +1,23 @@
+{
+    "models": {
+        "gpt-4o": {
+            "backend": "openai",
+            "model": "gpt-4o",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-your-openai-key-here"
+        },
+        "claude-3.5-sonnet": {
+            "backend": "anthropic",
+            "model": "claude-3-5-sonnet-20241022",
+            "api_key": "sk-ant-your-key-here"
+        },
+        "local-llm": {
+            "backend": "openai",
+            "model": "qwen3-32b-kv4b",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "not-needed"
+        }
+    },
+    "default_model": "local-llm",
+    "system_prompt": "You are a helpful assistant. Be concise and clear."
+}

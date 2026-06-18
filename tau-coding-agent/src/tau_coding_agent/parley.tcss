@@ -1,0 +1,182 @@
+/* Parley stylesheet - clean, minimal, fast */
+/* Color palette: Warm grays with soft accent colors for comfortable long sessions */
+
+Screen {
+    background: #1e1e2e;  /* Deep blue-gray, easy on eyes */
+}
+
+/* === Sidebar === */
+#sidebar {
+    width: 30;
+    background: #181825;  /* Slightly darker than main */
+    border-right: solid #45475a;  /* Subtle gray border */
+}
+
+.sidebar-title {
+    text-align: center;
+    text-style: bold;
+    color: #cdd6f4;  /* Soft lavender for titles */
+    padding: 1;
+    background: #11111b;
+}
+
+#new-chat-button {
+    margin: 1;
+    width: 100%;
+    background: #313244;
+    color: #cdd6f4;
+    border: solid #45475a;
+}
+
+#new-chat-button:hover {
+    background: #45475a;
+}
+
+.chat-group-header {
+    margin-top: 1;
+    padding: 0 1;
+    color: #6c7086;  /* Muted for group headers */
+    text-style: italic;
+}
+
+.chat-list-item {
+    padding: 0 2;
+    margin: 0;
+    color: #bac2de;
+}
+
+.chat-list-item:hover {
+    background: #313244;
+    color: #cdd6f4;
+}
+
+.chat-list-empty {
+    padding: 1;
+    color: #6c7086;
+    text-style: italic;
+}
+
+#chat-list {
+    height: 1fr;
+    padding: 1;
+}
+
+#chat-list-content {
+    padding: 0 1;
+}
+
+/* === Chat Display === */
+#chat-display {
+    height: 1fr;
+    padding: 1 2;
+    background: #1e1e2e;
+}
+
+/* === Message Styling === */
+ChatMessage {
+    margin: 1 0;
+}
+
+.message-content {
+    padding: 1;
+    color: #cdd6f4;
+}
+
+/* User messages - calm teal/cyan */
+.message-user .message-content {
+    border: solid #89dceb;  /* Soft cyan */
+    background: #1a3a3f;    /* Dark teal background */
+}
+
+.message-user .message-header {
+    color: #89dceb;
+    text-style: bold;
+}
+
+/* Assistant messages - warm amber */
+.message-assistant .message-content {
+    border: solid #f9e2af;  /* Soft yellow */
+    background: #3a3020;    /* Dark amber background */
+}
+
+.message-assistant .message-header {
+    color: #f9e2af;
+    text-style: bold;
+}
+
+/* System messages - subtle purple */
+.message-system .message-content {
+    border: solid #cba6f7;  /* Soft purple */
+    background: #2a2139;    /* Dark purple background */
+}
+
+.message-system .message-header {
+    color: #cba6f7;
+    text-style: bold;
+}
+
+/* === Input Styling === */
+#chat-input {
+    margin: 0 1 1 1;
+    border: solid #45475a;
+    height: auto;
+    max-height: 10;
+    background: #181825;
+    color: #cdd6f4;
+}
+
+#chat-input:focus {
+    border: solid #89dceb;  /* Matches user message color */
+    background: #1e1e2e;
+}
+
+/* === System Prompt Editor Modal === */
+#prompt-editor-dialog {
+    width: 80;
+    height: 25;
+    background: #181825;
+    border: thick #45475a;
+    padding: 1;
+}
+
+#prompt-editor-title {
+    text-align: center;
+    text-style: bold;
+    color: #cba6f7;
+    margin-bottom: 1;
+}
+
+#prompt-editor-textarea {
+    height: 1fr;
+    margin-bottom: 1;
+    background: #1e1e2e;
+    border: solid #45475a;
+    color: #cdd6f4;
+}
+
+#prompt-editor-textarea:focus {
+    border: solid #cba6f7;
+}
+
+#prompt-editor-buttons {
+    height: auto;
+    align: center middle;
+}
+
+#prompt-editor-buttons Button {
+    margin: 0 1;
+    background: #313244;
+    border: solid #45475a;
+    color: #cdd6f4;
+}
+
+#prompt-editor-buttons Button:hover {
+    background: #45475a;
+}
+
+/* === Code blocks in markdown === */
+Markdown CodeBlock {
+    background: #11111b;
+    border: solid #313244;
+    color: #a6e3a1;  /* Soft green for code */
+}

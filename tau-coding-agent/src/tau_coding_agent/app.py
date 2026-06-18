@@ -1,711 +1,706 @@
-"""ParleyApp: Full Textual TUI application for τ-coding-agent.
+"""
+Parley - A minimalist, performant chat interface for LLMs.
 
-Fork of parley.py with τ-agent-core backends.
-
-Reference: PHASE-4-SUBPHASE-1.md — TUI App Shell
-Reference: PHASE-4-SUBPHASE-2.md — Agent-Aware Widgets
-Reference: SUBPHASE-0.0.md — AgentSession interface (section 7)
+Clean, simple, fast. Built with Textual.
 """
 
-from __future__ import annotations
-
-from dataclasses import dataclass, field
-from typing import Any, Callable
+from textual.app import App, ComposeResult, SystemCommand
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.widgets import Static, Input, Header, Footer, Label, Markdown, Button, TextArea
+from textual.binding import Binding
+from textual.reactive import reactive
+from textual import events
+from textual.message import Message
+from textual.screen import ModalScreen
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from datetime import datetime, timedelta
 import json
+import time
+import asyncio
+import traceback
+from typing import Optional
 
-# Import widget data contracts
-from tau_coding_agent.widgets.chat_display_data import ChatMessageData
-from tau_coding_agent.widgets.tool_call_widget import ToolCallData
-from tau_coding_agent.widgets.tool_result_widget import ToolResultData
-from tau_coding_agent.widgets.footer import FooterData
+from tau_coding_agent.backends import create_backend, Backend
 
-# ---------------------------------------------------------------------------
-# AppLayout — backward-compatible dataclass from Subphase 0
-# ---------------------------------------------------------------------------
+# Get the tau data directory for config and chat storage
+TAU_DIR = Path.home() / ".tau"
+
+
+class SystemPromptEditor(ModalScreen):
+    """Modal screen for editing the system prompt."""
+
+    def __init__(self, current_prompt: str):
+        super().__init__()
+        self.current_prompt = current_prompt
+        self.new_prompt = current_prompt
+
+    def compose(self) -> ComposeResult:
+        """Compose the modal."""
+        with Container(id="prompt-editor-dialog"):
+            yield Static("Edit System Prompt", id="prompt-editor-title")
+            yield TextArea(self.current_prompt, id="prompt-editor-textarea")
+            with Horizontal(id="prompt-editor-buttons"):
+                yield Button("Save", variant="primary", id="prompt-save")
+                yield Button("Cancel", variant="default", id="prompt-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed):
+        """Handle button presses."""
+        if event.button.id == "prompt-save":
+            textarea = self.query_one("#prompt-editor-textarea", TextArea)
+            self.new_prompt = textarea.text
+            self.dismiss(self.new_prompt)
+        elif event.button.id == "prompt-cancel":
+            self.dismiss(None)
 
 
 @dataclass
-class AppLayout:
-    """Layout configuration for the TUI app.
+class Chat:
+    """Represents a chat conversation."""
+    model: str
+    backend: str
+    messages: list[dict]
+    created_at: float
+    title: Optional[str] = None
 
-    Kept for backward compatibility with Phase 4 Subphase 0.
-    The full TUI uses Textual's built-in layout system instead.
+    def save(self) -> Path:
+        """Save chat to JSON file."""
+        chats_dir = TAU_DIR / "chats"
+        chats_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{int(self.created_at)}.json"
+        path = chats_dir / filename
+        path.write_text(json.dumps(asdict(self), indent=2))
+        return path
 
-    Attributes:
-        width: Terminal width (0 = auto-detect)
-        height: Terminal height (0 = auto-detect)
-        theme: Theme name for styling
-    """
+    @classmethod
+    def load(cls, path: Path) -> 'Chat':
+        """Load chat from JSON file."""
+        data = json.loads(path.read_text())
+        return cls(**data)
 
-    width: int = 0
-    height: int = 0
-    theme: str = "default"
+    @classmethod
+    def list_recent(cls, limit: int = 50) -> list[Path]:
+        """List recent chat files, newest first."""
+        chats_dir = TAU_DIR / "chats"
+        if not chats_dir.exists():
+            return []
+
+        files = sorted(
+            chats_dir.glob("*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True
+        )
+        return files[:limit]
+
+    def get_display_title(self) -> str:
+        """Get display title for this chat."""
+        if self.title:
+            return self.title
+
+        # Use first user message as title (strip newlines for display)
+        for msg in self.messages:
+            if msg["role"] == "user":
+                # Replace newlines with spaces for title display
+                content = msg["content"].replace('\n', ' ')[:50]
+                if len(msg["content"]) > 50:
+                    content += "..."
+                return content
+
+        return f"Chat ({self.model})"
 
 
-# ---------------------------------------------------------------------------
-# Textual-based ParleyApp (only when Textual is available)
-# ---------------------------------------------------------------------------
+class ChatMessage(Static):
+    """A single chat message with styled borders and alignment."""
 
-try:
-    from textual.app import App, ComposeResult
-    from textual.containers import Container, Vertical, Horizontal
-    from textual.widgets import Header, Footer, RichLog, Input
+    def __init__(self, role: str, content: str, timestamp: str = "", tokens: str = ""):
+        super().__init__(classes=f"chat-message message-{role}")
+        self.role = role
+        self.content = content
+        self.timestamp = timestamp or datetime.now().strftime("%H:%M")
+        self.tokens = tokens
 
-    _HAS_TEXTUAL = True
-except ImportError:
-    _HAS_TEXTUAL = False
+    def compose(self) -> ComposeResult:
+        """Compose the message widget."""
+        # Preserve newlines in markdown by converting single newlines to double
+        # This makes Markdown treat them as paragraph breaks
+        content = self.content.replace('\n', '\n\n')
+
+        # Create markdown widget with border
+        md = Markdown(content, classes=f"message-content")
+        self._md_widget = md
+
+        # Set border titles based on role
+        role_label = self.role.capitalize()
+        md.border_title = f"{role_label} {self.timestamp}"
+
+        if self.tokens:
+            md.border_subtitle = self.tokens
+
+        yield md
+
+    def update_content(self, content: str):
+        """Update message content (for streaming)."""
+        self.content = content
+        # Preserve newlines
+        display_content = content.replace('\n', '\n\n')
+        if hasattr(self, "_md_widget"):
+            self._md_widget.update(display_content)
 
 
-if _HAS_TEXTUAL:
+class ChatListItem(Static):
+    """A clickable chat list item."""
 
-    # Import widget classes from their respective modules
-    from tau_coding_agent.widgets.chat_display import (
-        ChatDisplay as _ChatDisplay,
-        UserMessageWidget as _UserMessageWidget,
-        AssistantMessageWidget as _AssistantMessageWidget,
-        ThinkingBlockWidget as _ThinkingBlockWidget,
-    )
-    from tau_coding_agent.widgets.tool_call_widget import ToolCallWidget as _ToolCallWidget
-    from tau_coding_agent.widgets.tool_result_widget import ToolResultWidget as _ToolResultWidget
+    def __init__(self, chat_path: Path, chat: Chat):
+        super().__init__(f"• {chat.get_display_title()}", classes="chat-list-item")
+        self.chat_path = chat_path
+        self.chat = chat
 
-    class ChatDisplay(_ChatDisplay):
-        """Container for chat messages. 30Hz throttle on updates.
+    def on_click(self):
+        """Handle click to load this chat."""
+        self.post_message(ChatSelected(self.chat_path))
 
-        Wraps the base ChatDisplay from widgets/chat_display.py to provide
-        backward-compatible methods while delegating to the proper widget-based
-        implementation.
 
-        Attributes:
-            _streaming_content: Current streaming content (backward compat).
-            _msg_dict: List of message dicts (backward compat).
-        """
+class ChatSelected(Message):
+    """Message sent when a chat is selected from the sidebar."""
 
-        def __init__(self, *args, **kwargs) -> None:
-            # Let parent ChatDisplay initialize properly (widget _messages)
-            super().__init__(*args, **kwargs)
-            # Backward-compatible attributes — use _msg_dict to avoid shadowing
-            # the parent's _messages (which stores widget instances)
-            self._streaming_content: str = ""
-            self._msg_dict: list[dict[str, Any]] = []
+    def __init__(self, chat_path: Path):
+        super().__init__()
+        self.chat_path = chat_path
 
-        def update_streaming_message(self, content: str | None = None, event: Any = None, delta: str | None = None) -> None:
-            """Update the streaming message content.
 
-            Args:
-                content: Plain text content (backward compat mode).
-                event: AgentEvent to extract content from (new mode).
-                delta: Plain text delta string (direct mode).
-            """
-            if delta is not None:
-                # Direct delta mode — delegate to parent for widget creation
-                super().update_streaming_message(delta=delta)
-            elif isinstance(content, str) and event is None:
-                # Backward-compatible: plain string — only update content
-                self._streaming_content = content
-            elif event is not None:
-                # Event mode
-                super().update_streaming_message(event=event)
+class ChatSidebar(Container):
+    """Sidebar showing recent chats grouped by date."""
 
-        def add_message(self, message: dict[str, Any]) -> None:
-            """Add a message dict to the chat display (backward compat)."""
-            self._msg_dict.append(message)
+    def __init__(self):
+        super().__init__(id="sidebar")
+        self.chats: list[Path] = []
 
-        def get_messages(self) -> list[dict[str, Any]]:
-            """Return all backward-compatible message dicts."""
-            return self._msg_dict
+    def compose(self) -> ComposeResult:
+        """Compose sidebar contents."""
+        yield Static("Parley", classes="sidebar-title")
+        yield Button("+ New Chat", id="new-chat-button", variant="primary")
 
-        def clear_messages(self) -> None:
-            """Clear all messages and reset state (backward compat)."""
-            self._msg_dict.clear()
-            self._streaming_content = ""
-            # Also clear parent's widget state
-            super().clear_messages()
-
-        def compose(self) -> ComposeResult:
-            yield RichLog(id="chat-log")
-
-    class InputBar(Container):
-        """User input area. Handles Enter, Ctrl+Enter, @, !."""
-
-        CSS_ID = "input-bar"
-
-        def compose(self) -> ComposeResult:
-            yield Input(placeholder="Type a message…", id="user-input")
-
-    class ParleyApp(App):
-        """Main τ coding agent app (fork of Parley).
-
-        This is the full Textual implementation of the TUI app.
-        It replaces the Parley.py backend with τ-agent-core's AgentSession.
-
-        Attributes:
-            session: The AgentSession instance this app controls
-            print_mode: Whether to run in print mode (stream and exit)
-            _is_streaming: Whether the agent is currently streaming
-            _throttle_timer: Timer for 30Hz throttling
-        """
-
-        CSS_PATH = "themes/catppuccin.tcss"
-        BINDINGS = [
-            ("q", "quit", "Quit"),
-        ]
-
-        def __init__(
-            self,
-            session: Any = None,  # AgentSession
-            print_mode: bool = False,
-            layout: Any = None,
-        ):
-            super().__init__()
-            self._session = session
-            self._print_mode = print_mode
-            self._layout = layout or AppLayout()
-            self._is_streaming = False
-            self._throttle_timer = None
-            self._is_ready = False
-
-        # -- Backward-compatible properties/methods (from Subphase 0) --------
-
-        @property
-        def ready(self) -> bool:
-            """Whether the app has been initialized."""
-            return self._is_ready
-
-        @property
-        def session(self) -> Any | None:
-            """Backward-compatible session property."""
-            return self._session
-
-        @session.setter
-        def session(self, value: Any) -> None:
-            self._session = value
-
-        @property
-        def layout(self) -> Any | None:
-            """Backward-compatible layout property."""
-            return self._layout
-
-        @layout.setter
-        def layout(self, value: Any) -> None:
-            self._layout = value
-
-        async def start(self) -> None:
-            """Start the TUI application."""
-            self._is_ready = True
-
-        async def stop(self) -> None:
-            """Stop the TUI application."""
-            self._is_ready = False
-            if self._session is not None:
-                self._session = None
-            if self.layout is not None:
-                self.layout = None
-
-        # -- Layout (Textual compose pattern) -------------------------------
-
-        def compose(self) -> ComposeResult:
-            """Define the Textual widget tree."""
-            yield Header()
-
-            with Horizontal():
-                yield Footer()
-                with Vertical():
-                    with Container(id="chat-container"):
-                        yield ChatDisplay(id="chat-display")
-                    yield InputBar(id="input-bar")
-
-        def _setup_layout(self) -> None:
-            """Configure the basic layout programmatically.
-
-            Kept for backward compatibility. The actual Textual widget
-            tree is defined in compose().
-            """
+        with VerticalScroll(id="chat-list"):
+            # Will be populated dynamically
             pass
 
-        # -- Lifecycle ------------------------------------------------------
+    def refresh_chats(self):
+        """Refresh the list of chats."""
+        self.chats = Chat.list_recent()
+        self._render_chat_list()
 
-        def on_mount(self) -> None:
-            """Subscribe to agent session events."""
-            self._subscribe_to_events()
+    def _render_chat_list(self):
+        """Render the chat list grouped by date."""
+        chat_list = self.query_one("#chat-list", VerticalScroll)
 
-        def _subscribe_to_events(self) -> None:
-            """Subscribe to agent session events."""
-            if self._session:
-                self._session.subscribe(self._handle_event)
+        # Clear existing items
+        chat_list.query("ChatListItem, Static").remove()
 
-        # -- Event handlers -------------------------------------------------
+        if not self.chats:
+            chat_list.mount(Static("No chats yet", classes="chat-list-empty"))
+            return
 
-        def _handle_event(self, event: Any) -> None:
-            """Dispatch agent events to widgets.
+        # Group by date
+        now = datetime.now()
+        today = []
+        yesterday = []
+        older = []
 
-            Handles all AgentEvent types defined in SUBPHASE-0.0.md:
-            - agent_start, agent_end
-            - turn_start, turn_end
-            - message_start, message_update, message_end
-            - tool_execution_start, tool_execution_update, tool_execution_end
-
-            Args:
-                event: An AgentEvent instance or dict with 'type' key.
-            """
-            event_type = self._get_event_type(event)
-            if not event_type:
-                return
-
-            match event_type:
-                case "agent_start":
-                    self._on_agent_start(event)
-                case "agent_end":
-                    self._on_agent_end(event)
-                case "turn_start":
-                    self._on_turn_start(event)
-                case "turn_end":
-                    self._on_turn_end(event)
-                case "message_start":
-                    self._on_message_start(event)
-                case "message_update":
-                    self._on_message_update(event)
-                case "message_end":
-                    self._on_message_end(event)
-                case "tool_execution_start":
-                    self._on_tool_execution_start(event)
-                case "tool_execution_update":
-                    self._on_tool_execution_update(event)
-                case "tool_execution_end":
-                    self._on_tool_execution_end(event)
-
-        # -- Event type extraction ------------------------------------------
-
-        @staticmethod
-        def _get_event_type(event: Any) -> str:
-            """Extract the event type from an event object or dict."""
-            if hasattr(event, "type"):
-                return event.type
-            elif isinstance(event, dict):
-                return event.get("type", "")
-            return ""
-
-        # -- Event handlers by type -----------------------------------------
-
-        def _on_agent_start(self, event: Any) -> None:
-            """Handle agent_start event."""
-            self._is_streaming = True
-            self._re_disable_input()
-
-        def _on_agent_end(self, event: Any) -> None:
-            """Handle agent_end event.
-
-            Updates the footer with final session info.
-            """
-            self._is_streaming = False
-            self._re_enable_input()
-
-            # Update footer with session info
+        for path in self.chats:
             try:
-                chat = self.query_one(ChatDisplay)
-                footer = self.query_one(FooterWidget)
+                chat = Chat.load(path)
+                created = datetime.fromtimestamp(chat.created_at)
 
-                messages = []
-                if hasattr(event, "messages") and event.messages:
-                    messages = event.messages
-                elif isinstance(event, dict) and event.get("messages"):
-                    messages = event["messages"]
-
-                token_count = 0
-                for msg in messages:
-                    if isinstance(msg, dict):
-                        token_count += 1  # Simplified: count messages
-                    else:
-                        token_count += 1
-
-                footer.update(FooterData(
-                    model=self._get_model_name(),
-                    tokens=token_count,
-                    session_name=self._get_session_name(),
-                ))
-            except Exception:
-                pass  # Silently fail if footer not ready
-
-        def _on_turn_start(self, event: Any) -> None:
-            """Handle turn_start event."""
-            pass
-
-        def _on_turn_end(self, event: Any) -> None:
-            """Handle turn_end event."""
-            pass
-
-        def _on_message_start(self, event: Any) -> None:
-            """Handle message_start event.
-
-            Appends a message widget to the ChatDisplay based on the message role.
-            """
-            try:
-                chat = self.query_one(ChatDisplay)
-                msg_data = self._event_to_message_data(event)
-                if msg_data:
-                    chat.append_message(msg_data)
-            except Exception:
-                pass  # ChatDisplay not ready yet
-
-        def _on_message_update(self, event: Any) -> None:
-            """Handle message_update event.
-
-            Updates the streaming assistant message with new text.
-            """
-            self._update_streaming_message(event)
-
-        def _update_streaming_message(self, event: Any) -> None:
-            """Update the streaming assistant message with throttling.
-
-            Called directly by tests and from _on_message_update.
-            Cancels previous throttle timer and schedules a new one.
-
-            Args:
-                event: AgentEvent with message content.
-            """
-            # Cancel previous throttle timer
-            if self._throttle_timer:
-                self._throttle_timer.stop()
-
-            self.call_later(self._do_update_streaming_message)
-
-            try:
-                self._throttle_timer = self.set_timer(1 / 30, lambda: None)
-            except RuntimeError:
-                # No running event loop (unit test outside App context)
-                pass
-
-        def _do_update_streaming_message(self) -> None:
-            """Perform the actual streaming message update.
-
-            Called via call_later to throttle updates to ~30Hz.
-            Updates the ChatDisplay with the current streaming content.
-            Reads content from self._streaming_content (set by
-            update_streaming_message) and passes it to the ChatDisplay.
-            """
-            try:
-                chat = self.query_one(ChatDisplay)
-                # Read from app-level _streaming_content first, then fall back
-                # to chat's _streaming_content for backward compatibility
-                content = getattr(self, "_streaming_content", None)
-                if not content:
-                    content = getattr(chat, "_streaming_content", None)
-                if content:
-                    chat.update_streaming_message(content)
-            except Exception:
-                pass  # Silently fail if widget isn't ready
-
-        def _on_message_end(self, event: Any) -> None:
-            """Handle message_end event.
-
-            Finalizes the current streaming message.
-            """
-            try:
-                chat = self.query_one(ChatDisplay)
-                chat.finalize_streaming_message()
-            except Exception:
-                pass
-
-        def _on_tool_execution_start(self, event: Any) -> None:
-            """Handle tool_execution_start event.
-
-            Creates a ToolCallWidget with 'running' status.
-            """
-            try:
-                chat = self.query_one(ChatDisplay)
-                tool_name = self._get_event_field(event, "tool_name", "")
-                tool_call_id = self._get_event_field(event, "tool_call_id", "")
-                args = self._get_event_field(event, "args", {})
-
-                if tool_name and tool_call_id:
-                    data = ToolCallData(
-                        tool_name=tool_name,
-                        tool_call_id=tool_call_id,
-                        arguments=args if isinstance(args, dict) else {},
-                        status="running",
-                    )
-                    chat.append_tool_call(data)
-            except Exception:
-                pass
-
-        def _on_tool_execution_update(self, event: Any) -> None:
-            """Handle tool_execution_update event.
-
-            Updates the status of an existing ToolCallWidget.
-            """
-            try:
-                chat = self.query_one(ChatDisplay)
-                tool_call_id = self._get_event_field(event, "tool_call_id", "")
-
-                if tool_call_id in chat._tool_call_widgets:
-                    widget = chat._tool_call_widgets[tool_call_id]
-                    widget.update_status("running")
-            except Exception:
-                pass
-
-        def _on_tool_execution_end(self, event: Any) -> None:
-            """Handle tool_execution_end event.
-
-            Updates the ToolCallWidget and creates a ToolResultWidget.
-            """
-            try:
-                chat = self.query_one(ChatDisplay)
-                tool_name = self._get_event_field(event, "tool_name", "")
-                tool_call_id = self._get_event_field(event, "tool_call_id", "")
-                result = self._get_event_field(event, "result", None)
-                is_error = self._get_event_field(event, "is_error", False)
-
-                if tool_name and tool_call_id:
-                    result_data = ToolResultData(
-                        tool_name=tool_name,
-                        tool_call_id=tool_call_id,
-                        result=result,
-                        is_error=is_error,
-                    )
-                    chat.update_tool_result(result_data)
-
-                    # Also update the tool call widget status to done
-                    if tool_call_id in chat._tool_call_widgets:
-                        widget = chat._tool_call_widgets[tool_call_id]
-                        widget.update_status("done")
-            except Exception:
-                pass
-
-        # -- Helper methods -------------------------------------------------
-
-        def _get_event_field(self, event: Any, field_name: str, default: Any = None) -> Any:
-            """Get a field from an event object or dict."""
-            if hasattr(event, field_name):
-                return getattr(event, field_name)
-            elif isinstance(event, dict):
-                return event.get(field_name, default)
-            return default
-
-        def _event_to_message_data(self, event: Any) -> ChatMessageData | None:
-            """Convert an AgentEvent to ChatMessageData."""
-            msg = self._get_event_field(event, "message")
-            if msg is None:
-                return None
-
-            content = []
-            if isinstance(msg, dict):
-                content = msg.get("content", [])
-            elif hasattr(msg, "content"):
-                content = msg.content
-
-            # Convert content blocks to dicts
-            content_dicts = []
-            for block in content:
-                if isinstance(block, dict):
-                    content_dicts.append(block)
+                if created.date() == now.date():
+                    today.append((path, chat))
+                elif created.date() == (now - timedelta(days=1)).date():
+                    yesterday.append((path, chat))
                 else:
-                    content_dicts.append({
-                        "type": getattr(block, "type", "text"),
-                        "text": getattr(block, "text", str(block)),
-                    })
+                    older.append((path, chat))
+            except Exception as e:
+                self.app.log(f"Failed to load chat {path}: {e}")
 
-            role = self._get_event_field(msg, "role", "assistant")
-            if isinstance(msg, dict):
-                role = msg.get("role", "assistant")
-            elif hasattr(msg, "role"):
-                role = msg.role
+        # Mount grouped items
+        if today:
+            chat_list.mount(Static("[bold]Today[/bold]", classes="chat-group-header"))
+            for path, chat in today:
+                chat_list.mount(ChatListItem(path, chat))
 
-            return ChatMessageData(
-                role=role,
-                content=content_dicts,
-                streaming=(event.type in ("message_update",)),
+        if yesterday:
+            chat_list.mount(Static("[bold]Yesterday[/bold]", classes="chat-group-header"))
+            for path, chat in yesterday:
+                chat_list.mount(ChatListItem(path, chat))
+
+        if older:
+            chat_list.mount(Static("[bold]Older[/bold]", classes="chat-group-header"))
+            for path, chat in older[:10]:  # Limit older chats
+                chat_list.mount(ChatListItem(path, chat))
+
+    def on_mount(self):
+        """Refresh chats when mounted."""
+        self.refresh_chats()
+
+    def on_button_pressed(self, event: Button.Pressed):
+        """Handle button presses."""
+        if event.button.id == "new-chat-button":
+            self.app.action_new_chat()
+
+
+class ChatDisplay(VerticalScroll):
+    """Main chat display area with incremental message rendering."""
+
+    def __init__(self):
+        super().__init__(id="chat-display")
+        self._last_render_time = 0
+        self._stream_buffer = ""
+        self._streaming_message: Optional[ChatMessage] = None
+
+    def clear_messages(self):
+        """Clear all messages from display."""
+        self.query("ChatMessage").remove()
+
+    def add_message(self, role: str, content: str, timestamp: str = "", tokens: str = ""):
+        """Add a message to the display."""
+        msg = ChatMessage(role, content, timestamp, tokens)
+        self.mount(msg)
+        self.scroll_end(animate=False)
+
+    def start_streaming_message(self, role: str):
+        """Start a new streaming message."""
+        self._stream_buffer = ""
+        self._streaming_message = ChatMessage(role, "", datetime.now().strftime("%H:%M"))
+        self.mount(self._streaming_message)
+        self.scroll_end(animate=False)
+
+    def update_streaming_message(self, chunk: str):
+        """Update streaming message with new chunk (30Hz throttled)."""
+        self._stream_buffer += chunk
+
+        # Throttle to 30Hz
+        now = time.time()
+        if now - self._last_render_time > 0.033:  # ~30 FPS
+            if self._streaming_message:
+                self._streaming_message.update_content(self._stream_buffer)
+                self.scroll_end(animate=False)
+            self._last_render_time = now
+
+    def finalize_streaming_message(self, tokens: str = ""):
+        """Finalize the streaming message."""
+        if self._streaming_message:
+            # Final update with token count
+            self._streaming_message.update_content(self._stream_buffer)
+            self._streaming_message.tokens = tokens
+
+            # Update border subtitle
+            if hasattr(self._streaming_message, "_md_widget"):
+                self._streaming_message._md_widget.border_subtitle = tokens
+
+            self._streaming_message = None
+            self._stream_buffer = ""
+
+
+class ChatInput(TextArea):
+    """Custom input with multiline support and history navigation."""
+
+    BINDINGS = [
+        Binding("ctrl+j", "submit", "Send", show=False),  # Ctrl+Enter
+    ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.command_history: list[str] = []
+        self.command_history_index = -1
+        self.current_draft = ""
+
+    def action_submit(self):
+        """Submit the current message."""
+        text = self.text.strip()
+        if text:
+            self.post_message(Input.Submitted(self, text))
+
+    def on_key(self, event: events.Key) -> None:
+        """Handle key events for history navigation."""
+
+        # Up/Down for history (only when on first/last line)
+        if event.key == "up":
+            cursor_row, _ = self.cursor_location
+            if cursor_row == 0 and self.command_history and self.command_history_index < len(self.command_history) - 1:
+                if self.command_history_index == -1:
+                    self.current_draft = self.text
+                self.command_history_index += 1
+                self.text = self.command_history[-(self.command_history_index + 1)]
+                event.prevent_default()
+        elif event.key == "down":
+            cursor_row, _ = self.cursor_location
+            if cursor_row == self.document.line_count - 1 and self.command_history_index > -1:
+                self.command_history_index -= 1
+                if self.command_history_index == -1:
+                    self.text = self.current_draft
+                else:
+                    self.text = self.command_history[-(self.command_history_index + 1)]
+                event.prevent_default()
+
+    def add_to_history(self, text: str):
+        """Add text to command history."""
+        if text.strip():
+            self.command_history.append(text)
+            self.command_history_index = -1
+            self.current_draft = ""
+
+    def clear_input(self):
+        """Clear the input area."""
+        self.text = ""
+
+
+class Parley(App):
+    """Main Parley application."""
+
+    CSS_PATH = "parley.tcss"
+
+    BINDINGS = [
+        Binding("ctrl+b", "toggle_sidebar", "Sidebar"),
+        Binding("ctrl+n", "new_chat", "New Chat"),
+        Binding("ctrl+e", "edit_system_prompt", "Edit Prompt"),
+        Binding("ctrl+j", "focus_and_send", "^Enter=Send", show=True),
+        Binding("ctrl+p", "command_palette", "Commands", show=False),
+        Binding("ctrl+c", "quit", "Quit"),
+    ]
+
+    current_chat: reactive[Optional[Chat]] = reactive(None)
+    current_backend: Optional[Backend] = None
+    config: dict = {}
+
+    def __init__(self):
+        super().__init__()
+        self.load_config()
+
+    def load_config(self):
+        """Load configuration from config.json."""
+        config_path = TAU_DIR / "config.json"
+        if config_path.exists():
+            self.config = json.loads(config_path.read_text())
+            self.log(f"Loaded config with {len(self.config.get('models', {}))} models")
+        else:
+            # Create default config
+            self.log("No config found, creating default")
+            self.config = {
+                "models": {
+                    "gpt-4o": {
+                        "backend": "openai",
+                        "model": "gpt-4o",
+                        "base_url": "https://api.openai.com/v1",
+                        "api_key": "your-api-key-here"
+                    },
+                    "claude-3.5-sonnet": {
+                        "backend": "anthropic",
+                        "model": "claude-3-5-sonnet-20241022",
+                        "api_key": "your-api-key-here"
+                    },
+                    "gemini-2.0": {
+                        "backend": "gemini",
+                        "model": "gemini-2.0-flash-exp",
+                        "api_key": "your-api-key-here"
+                    },
+                    "local-llm": {
+                        "backend": "openai",
+                        "model": "qwen3-32b-kv4b",
+                        "base_url": "http://192.168.1.100:8000/v1",
+                        "api_key": "not-needed"
+                    }
+                },
+                "default_model": "local-llm",
+                "system_prompt": "You are a helpful assistant. Be concise and clear."
+            }
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(json.dumps(self.config, indent=2))
+            self.log(f"Created default config at {config_path}")
+
+    def compose(self) -> ComposeResult:
+        """Compose the application layout."""
+        yield Header()
+
+        with Horizontal():
+            yield ChatSidebar()
+
+            with Vertical(id="main-area"):
+                yield ChatDisplay()
+                yield ChatInput(id="chat-input")
+
+        yield Footer()
+
+    def on_mount(self):
+        """Set up the application on mount."""
+        self.title = "Parley"
+        self.sub_title = "Ready"
+
+        # Focus input
+        self.query_one("#chat-input", ChatInput).focus()
+
+    async def on_input_submitted(self, event: Input.Submitted):
+        """Handle message submission."""
+        # Handle both Input and TextArea submissions
+        if hasattr(event, 'input'):
+            input_widget = event.input
+        else:
+            input_widget = self.query_one(ChatInput)
+
+        message = event.value.strip()
+
+        if not message:
+            return
+
+        # Add to history
+        if hasattr(input_widget, 'add_to_history'):
+            input_widget.add_to_history(message)
+
+        # Clear input
+        if hasattr(input_widget, 'clear_input'):
+            input_widget.clear_input()
+        else:
+            input_widget.value = ""
+
+        # Create new chat if needed
+        if self.current_chat is None:
+            await self.action_new_chat()
+
+        # Add user message to chat
+        self.current_chat.messages.append({"role": "user", "content": message})
+
+        # Display user message
+        display = self.query_one(ChatDisplay)
+        display.add_message("user", message)
+
+        # Disable input during response
+        input_widget.disabled = True
+        self.sub_title = "Thinking..."
+
+        try:
+            # Get response
+            await self._get_assistant_response()
+        except Exception as e:
+            error_msg = f"Error: {str(e)}"
+            self.notify(error_msg, severity="error")
+            self.log.error(f"Error getting response: {e}")
+            self.log.error(traceback.format_exc())
+
+            # Display error in chat
+            display = self.query_one(ChatDisplay)
+            display.add_message("system", f"**Error occurred:**\n```\n{str(e)}\n{traceback.format_exc()}\n```")
+        finally:
+            # Re-enable input
+            input_widget.disabled = False
+            input_widget.focus()
+            self.sub_title = f"{self.current_chat.model}"
+
+    async def _get_assistant_response(self):
+        """Get and display assistant response with streaming."""
+        display = self.query_one(ChatDisplay)
+
+        # Start streaming message
+        display.start_streaming_message("assistant")
+
+        # Stream response
+        content, usage = await self.current_backend.stream_chat(
+            self.current_chat.messages,
+            display.update_streaming_message
+        )
+
+        # Finalize streaming message
+        tokens_str = f"{usage['completion_tokens']} tokens"
+        display.finalize_streaming_message(tokens_str)
+
+        # Add to chat history
+        self.current_chat.messages.append({"role": "assistant", "content": content})
+
+        # Save chat
+        self.current_chat.save()
+
+        # Refresh sidebar
+        self.query_one(ChatSidebar).refresh_chats()
+
+    async def action_new_chat(self, model: Optional[str] = None):
+        """Start a new chat."""
+        if model is None:
+            model = self.config.get("default_model", "local-llm")
+
+        self.log(f"Starting new chat with model: {model}")
+
+        # Get model config
+        model_config = self.config["models"].get(model)
+        if not model_config:
+            self.notify(f"Unknown model: {model}", severity="error")
+            self.log(f"Available models: {list(self.config['models'].keys())}")
+            return
+
+        # Create backend
+        try:
+            self.current_backend = create_backend(model_config)
+            self.log(f"Created backend: {model_config.get('backend')} for model {model}")
+        except Exception as e:
+            self.notify(f"Failed to create backend: {str(e)}", severity="error")
+            self.log.error(f"Backend creation failed: {e}", exc_info=True)
+            return
+
+        # Create new chat
+        system_prompt = self.config.get("system_prompt", "You are a helpful assistant.")
+        self.current_chat = Chat(
+            model=model,
+            backend=model_config["backend"],
+            messages=[{"role": "system", "content": system_prompt}],
+            created_at=time.time()
+        )
+
+        # Clear display
+        display = self.query_one(ChatDisplay)
+        display.clear_messages()
+
+        # Update UI
+        self.sub_title = f"{model}"
+        self.notify(f"Started new chat with {model}")
+
+        # Save initial chat
+        self.current_chat.save()
+
+        # Refresh sidebar
+        self.query_one(ChatSidebar).refresh_chats()
+
+    def action_toggle_sidebar(self):
+        """Toggle sidebar visibility."""
+        sidebar = self.query_one(ChatSidebar)
+        sidebar.styles.display = "none" if sidebar.styles.display == "block" else "block"
+
+    def action_focus_and_send(self):
+        """Focus input and send if focused (for global hotkey)."""
+        input_widget = self.query_one(ChatInput)
+        if input_widget.has_focus:
+            input_widget.action_submit()
+        else:
+            input_widget.focus()
+
+    def get_system_commands(self, screen):
+        """Provide commands for the command palette."""
+        yield from super().get_system_commands(screen)
+
+        # Model switching commands
+        models = self.config.get("models", {})
+        self.log(f"Generating commands for {len(models)} models: {list(models.keys())}")
+
+        for model_name in models.keys():
+            yield SystemCommand(
+                f"New Chat: {model_name}",
+                f"Start a new chat with {model_name}",
+                lambda m=model_name: self.run_action(f'new_chat("{m}")')
             )
 
-        def _get_model_name(self) -> str:
-            """Get the current model name from session config."""
-            if self._session:
-                # Try to get model from session attributes
-                for attr in ("model", "_model", "model_config"):
-                    if hasattr(self._session, attr):
-                        model = getattr(self._session, attr)
-                        if model:
-                            if hasattr(model, "id"):
-                                return model.id
-                            elif isinstance(model, dict):
-                                return model.get("id", "unknown")
-            return "unknown"
+        # General commands
+        yield SystemCommand(
+            "Clear Chat",
+            "Clear current conversation",
+            self.action_clear_chat
+        )
 
-        def _get_session_name(self) -> str | None:
-            """Get the current session name."""
-            if self._session:
-                for attr in ("session_name", "_session_name", "name"):
-                    if hasattr(self._session, attr):
-                        return getattr(self._session, attr)
-            return None
+        yield SystemCommand(
+            "Export Chat",
+            "Export chat to markdown",
+            self.action_export_chat
+        )
 
-        # -- Input handling -------------------------------------------------
+        yield SystemCommand(
+            "Edit System Prompt",
+            "Edit the system prompt for new chats",
+            self.action_edit_system_prompt
+        )
 
-        def _on_input_submitted(self, text: str) -> None:
-            """Handle user input submission."""
-            if self._print_mode:
-                self._handle_print_mode(text)
+    async def action_clear_chat(self):
+        """Clear the current chat."""
+        if self.current_chat:
+            # Keep only system message
+            system_msg = next((m for m in self.current_chat.messages if m["role"] == "system"), None)
+            if system_msg:
+                self.current_chat.messages = [system_msg]
             else:
-                self._handle_interactive(text)
+                self.current_chat.messages = []
 
-        async def _handle_interactive(self, text: str) -> None:
-            """Send text to agent session for interactive processing."""
-            self._is_streaming = True
-            self._re_disable_input()
-            try:
-                if self._session:
-                    await self._session.prompt(text)
-            finally:
-                self._re_enable_input()
+            # Clear display
+            display = self.query_one(ChatDisplay)
+            display.clear_messages()
 
-        def _handle_print_mode(self, text: str) -> None:
-            """In print mode: stream response and exit."""
-            if self._session:
-                self.loop.create_task(self._print_mode_run(text))
+            self.notify("Chat cleared")
 
-        async def _print_mode_run(self, text: str) -> None:
-            """Run the agent in print mode asynchronously."""
-            try:
-                if self._session:
-                    messages = await self._session.prompt(text)
-                    for msg in messages:
-                        content = msg.get("content", [])
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                print(block.get("text", ""), end="")
-                    print()
-            finally:
-                self.exit()
+    async def action_export_chat(self):
+        """Export current chat to markdown."""
+        if not self.current_chat:
+            self.notify("No chat to export", severity="warning")
+            return
 
-        # -- Input enable/disable -------------------------------------------
+        # Build markdown
+        lines = [f"# {self.current_chat.get_display_title()}\n"]
+        lines.append(f"Model: {self.current_chat.model}\n")
+        lines.append(f"Date: {datetime.fromtimestamp(self.current_chat.created_at).strftime('%Y-%m-%d %H:%M')}\n")
+        lines.append("---\n")
 
-        def _re_disable_input(self) -> None:
-            """Disable the input bar (during streaming)."""
-            try:
-                input_bar = self.query_one(InputBar)
-                input_bar.disabled = True
-            except Exception:
-                pass
+        for msg in self.current_chat.messages:
+            role = msg["role"].capitalize()
+            content = msg["content"]
+            lines.append(f"## {role}\n\n{content}\n")
 
-        def _re_enable_input(self) -> None:
-            """Re-enable the input bar (after streaming ends)."""
-            try:
-                input_bar = self.query_one(InputBar)
-                input_bar.disabled = False
-            except Exception:
-                pass
+        # Save to file
+        export_path = TAU_DIR / "exports"
+        export_path.mkdir(parents=True, exist_ok=True)
 
-    # -----------------------------------------------------------------------
-    # CLI entry point (typer-based)
-    # -----------------------------------------------------------------------
+        filename = f"chat_{int(self.current_chat.created_at)}.md"
+        file_path = export_path / filename
+        file_path.write_text("\n".join(lines))
 
-    def build_session(
-        model: str | None = None,
-        provider: str | None = None,
-        session_name: str | None = None,
-        cwd: str | None = None,
-        system_prompt: str | None = None,
-        tools: list[str] | None = None,
-        project_root: Any = None,
-        config_override: str | None = None,
-    ) -> Any:
-        """Build an AgentSession from CLI arguments and config files."""
-        from tau_agent_core import AgentSession, SessionManager
-        from tau_ai.types import Model
-        from tau_coding_agent.config import load_config
-        from pathlib import Path
+        self.notify(f"Exported to {file_path}")
 
-        user_config_path = Path(config_override) if config_override else None
-        config = load_config(
-            project_root=project_root,
-            user_config_override=user_config_path,
-        )
+    async def action_edit_system_prompt(self):
+        """Edit the system prompt."""
+        current_prompt = self.config.get("system_prompt", "You are a helpful assistant.")
 
-        model_name = model or config.get("model", "gpt-4")
-        provider_name = provider or config.get("provider", "openai")
-        base_url = config.get("base_url", "https://api.openai.com/v1")
-        context_window = config.get("context_window", 128000)
-        max_tokens = config.get("max_tokens", 4096)
-        effective_system_prompt = system_prompt or config.get("system_prompt", "")
+        def handle_result(new_prompt: str | None):
+            if new_prompt is not None:
+                self.config["system_prompt"] = new_prompt
+                # Save config
+                config_path = TAU_DIR / "config.json"
+                config_path.write_text(json.dumps(self.config, indent=2))
+                self.notify("System prompt updated")
 
-        model_config = Model(
-            id=model_name,
-            name=model_name,
-            api="openai-completions",
-            provider=provider_name,
-            base_url=base_url,
-            context_window=context_window,
-            max_tokens=max_tokens,
-        )
+        await self.push_screen(SystemPromptEditor(current_prompt), handle_result)
 
-        sm = SessionManager()
+    async def on_chat_selected(self, message: ChatSelected):
+        """Handle chat selection from sidebar."""
+        try:
+            # Load the selected chat
+            chat = Chat.load(message.chat_path)
 
-        session = AgentSession(
-            session_manager=sm,
-            model=model_config,
-            system_prompt=effective_system_prompt,
-        )
+            # Get model config and create backend
+            model_config = self.config["models"].get(chat.model)
+            if not model_config:
+                self.notify(f"Model {chat.model} not found in config", severity="error")
+                return
 
-        return session
+            self.current_backend = create_backend(model_config)
+            self.current_chat = chat
+
+            # Clear and reload display
+            display = self.query_one(ChatDisplay)
+            display.clear_messages()
+
+            # Display all messages
+            for msg in chat.messages:
+                if msg["role"] != "system":  # Skip system message
+                    display.add_message(msg["role"], msg["content"])
+
+            # Update UI
+            self.sub_title = f"{chat.model}"
+            self.notify(f"Loaded chat: {chat.get_display_title()}")
+
+        except Exception as e:
+            self.notify(f"Error loading chat: {str(e)}", severity="error")
+            self.log.error(f"Failed to load chat: {e}", exc_info=True)
 
 
-# ---------------------------------------------------------------------------
-# Fallback stub (when Textual is not installed)
-# ---------------------------------------------------------------------------
-
-if not _HAS_TEXTUAL:
-
-    class ParleyApp:
-        """Fallback stub when Textual is not installed."""
-
-        def __init__(
-            self,
-            session: Any = None,
-            print_mode: bool = False,
-            layout: Any = None,
-        ):
-            self.session = session
-            self.print_mode = print_mode
-            self.layout = layout
-            self.ready = False
-            self._is_streaming = False
-            self._throttle_timer = None
-            self._session = session
-
-        @property
-        def ready(self) -> bool:
-            return self._is_ready
-
-        async def start(self) -> None:
-            self._is_ready = True
-
-        async def stop(self) -> None:
-            self._is_ready = False
-            if self._session is not None:
-                self._session = None
-                self.session = None
-            if self.layout is not None:
-                self.layout = None
-
-        def _re_disable_input(self) -> None:
-            pass
-
-        def _re_enable_input(self) -> None:
-            pass
-
-    def build_session(**kwargs: Any) -> Any:
-        """Build an AgentSession from CLI arguments (stub)."""
-        from tau_agent_core import AgentSession, SessionManager
-        from tau_ai.types import Model
-        from tau_coding_agent.config import load_config
-
-        config = load_config()
-        model_name = kwargs.get("model") or config.get("model", "gpt-4")
-        provider_name = kwargs.get("provider") or config.get("provider", "openai")
-
-        return AgentSession(
-            session_manager=SessionManager(),
-            model=Model(
-                id=model_name,
-                name=model_name,
-                provider=provider_name,
-            ),
-        )
+if __name__ == "__main__":
+    app = Parley()
+    app.run()
