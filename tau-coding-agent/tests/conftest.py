@@ -9,6 +9,16 @@ Reference: SUBPHASE-0.0.md AgentSession + ExtensionAPI sections
 
 import pytest
 
+# Patch Loader alias for Textual 8.x compatibility.
+# Textual 8.2.7 has LoadingIndicator but not Loader.
+try:
+    from textual.widgets import LoadingIndicator
+    from textual import widgets as _tw
+    if not hasattr(_tw, 'Loader'):
+        _tw.Loader = LoadingIndicator
+except ImportError:
+    pass
+
 
 @pytest.fixture
 def mock_agent_session():

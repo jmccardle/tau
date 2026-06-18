@@ -387,3 +387,8 @@ async def test_event_dispatch(app):
 ## Success Signal
 
 All 7 test categories pass. The TUI correctly renders all message types. Streaming text is accumulated and displayed at 30Hz. Tool calls show status indicators. Tool results render differently based on tool type. Thinking blocks are collapsible. The footer shows session info. Agent events are dispatched to the correct widgets.
+
+
+## Evaluator Feedback
+
+- **2026-06-18 03:24** Evaluator: Subphase NOT complete. Missing 6 actual Textual widget classes (UserMessageWidget, AssistantMessageWidget, ToolCallWidget, ToolResultWidget, ThinkingBlockWidget, FooterWidget) — only data contract dataclasses exist. ChatDisplay is missing 4 critical methods: append_message(), append_tool_call(), update_tool_result(), finalize_streaming_message(). ParleyApp._handle_event() only dispatches 3 of 10+ event types (missing message_start, message_end, tool_execution_start, tool_execution_update, tool_execution_end). All 450 tests pass but they test data classes and mocks, not actual widget rendering. The subphase's Success Signal is not met: the TUI does not render message types, tool calls show no status indicators, tool results have no per-type rendering, and thinking blocks have no collapsible widget.

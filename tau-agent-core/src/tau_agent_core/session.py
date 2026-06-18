@@ -52,26 +52,32 @@ class SessionInfo(BaseModel):
     Does not include the full session contents.
 
     Attributes:
-        id: Session identifier
-        name: Human-readable session name
+        id: Session identifier (optional, auto-generated if not provided)
+        session_path: Path to the JSONL session file
+        cwd: Working directory for this session
+        model: Model identifier used for this session
+        model_name: Human-readable model name
         created_at: Creation timestamp (ms since epoch)
         updated_at: Last update timestamp (ms since epoch)
         message_count: Total number of messages
         turn_count: Total number of turns
         status: Current session status
-        model: Model used for this session
-        tool_count: Number of tools registered
     """
 
-    id: str
+    model_config = {"extra": "allow"}
+
+    id: str = ""
     name: str | None = None
+    session_path: str = ""
+    cwd: str | None = None
+    model: str | None = None
+    model_name: str | None = None
     created_at: int = 0
     updated_at: int = 0
     message_count: int = 0
     turn_count: int = 0
-    status: Literal["idle", "running", "aborting", "error"] = "idle"
-    model: str | None = None
     tool_count: int = 0
+    status: Literal["idle", "running", "aborting", "error"] = "idle"
 
 
 

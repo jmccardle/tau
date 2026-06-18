@@ -19,6 +19,7 @@ tests/test_cli_args.py
 tests/test_config.py
 tests/test_ph4_sub1_integration.py
 tests/test_ph4_sub1_parley_app.py
+tests/test_ph4_sub2_widgets.py
 tests/test_tui_agent_session.py
 tests/test_widgets_chat_display.py
 tests/test_widgets_footer.py

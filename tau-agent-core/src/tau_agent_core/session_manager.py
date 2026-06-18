@@ -54,20 +54,24 @@ class SessionInfo:
     Attributes:
         session_path: Path to the JSONL session file
         session_name: Human-readable session name
+        cwd: Working directory for this session
         model: Model identifier used for this session
         model_name: Human-readable model name
         created_at: Creation timestamp (ms since epoch)
         message_count: Total number of message entries
         status: Session status string
+        entries: Entries for this session (in-memory mode only)
     """
 
     session_path: str
     session_name: str | None = None
+    cwd: str | None = None
     model: str | None = None
     model_name: str | None = None
     created_at: int = 0
     message_count: int = 0
     status: str = "idle"
+    entries: list[dict] | None = None
 
 
 class SessionManager:
@@ -89,6 +93,8 @@ class SessionManager:
         # In-memory store (set by in_memory())
         self._memory_store: list[dict] | None = None
         self._memory_active_path: list[str] = []
+        # Track in-memory session paths so list() can find them
+        self._memory_session_paths: list[str] = []
 
     @classmethod
     def in_memory(cls, cwd: str | None = None) -> SessionManager:
@@ -122,6 +128,9 @@ class SessionManager:
         # Set active session path BEFORE appending
         self._active_session_path = session_path
         self._active_entry_id = entry["id"]
+        # Track in-memory session path
+        if self._memory_store is not None:
+            self._memory_session_paths.append(session_path)
         self.append_entry(entry)
         return session_path
 
@@ -222,10 +231,67 @@ class SessionManager:
 
     def _list_sessions_from_dir(self, sessions_dir: str) -> list[SessionInfo]:
         """List sessions from a specific directory."""
+        results: list[SessionInfo] = []
+
+        # If in in-memory mode, return in-memory sessions
+        if self._memory_store is not None:
+            # Find all ROOT session entries (parent_id is None or missing).
+            # These are created by new_session(). Child session entries
+            # (from fork/clone) have a parent_id and are NOT new sessions.
+            session_ranges: list[tuple[int, int, dict]] = []
+            for idx, entry in enumerate(self._memory_store):
+                if entry.get("type") == "session" and not entry.get("parent_id"):
+                    # Find the next ROOT session entry (exclusive) or end of store
+                    next_session_idx = len(self._memory_store)
+                    for later in range(idx + 1, len(self._memory_store)):
+                        later_entry = self._memory_store[later]
+                        if (
+                            later_entry.get("type") == "session"
+                            and not later_entry.get("parent_id")
+                        ):
+                            next_session_idx = later
+                            break
+                    session_ranges.append((idx, next_session_idx, entry))
+
+            # Build SessionInfo for each session
+            for sess_start, sess_end, sess_entry in session_ranges:
+                # Get the path: use corresponding path from _memory_session_paths
+                path_idx = min(sess_start, len(self._memory_session_paths) - 1)
+                if path_idx < 0:
+                    path_idx = 0
+                sess_path = (
+                    self._memory_session_paths[path_idx]
+                    if self._memory_session_paths
+                    else ""
+                )
+
+                # Entries for this session (between this session and next)
+                session_entries = self._memory_store[sess_start:sess_end]
+                message_count = sum(
+                    1
+                    for e in session_entries
+                    if e.get("type") == "message"
+                )
+
+                info = SessionInfo(
+                    session_path=sess_path,
+                    session_name=sess_entry.get("session_name"),
+                    cwd=sess_entry.get("cwd"),
+                    model=sess_entry.get("model"),
+                    model_name=sess_entry.get("model_name"),
+                    created_at=sess_entry.get("timestamp", 0),
+                    message_count=message_count,
+                    entries=session_entries,
+                )
+                results.append(info)
+
+            # Sort by creation timestamp, newest first
+            results.sort(key=lambda s: s.created_at, reverse=True)
+            return results
+
         if not os.path.exists(sessions_dir):
             return []
 
-        results = []
         for filename in os.listdir(sessions_dir):
             if not filename.endswith(".jsonl"):
                 continue
@@ -489,17 +555,23 @@ class SessionManager:
             model_name = None
             created_at = 0
             message_count = 0
+            cwd = None
+            session_name = None
 
             for entry in entries:
                 if entry.get("type") == "session":
                     model = entry.get("model")
                     model_name = entry.get("model_name")
                     created_at = entry.get("timestamp", 0)
+                    cwd = entry.get("cwd")
+                    session_name = entry.get("session_name")
                 elif entry.get("type") == "message":
                     message_count += 1
 
             return SessionInfo(
                 session_path=session_path,
+                session_name=session_name,
+                cwd=cwd,
                 model=model,
                 model_name=model_name,
                 created_at=created_at,
