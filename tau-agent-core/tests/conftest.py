@@ -245,6 +245,38 @@ def sample_agent_event():
 
 
 @pytest.fixture
+def sample_model():
+    """Fixture providing a sample Model for testing."""
+    from tau_ai.types import Model
+    return Model(
+        id="gpt-4o",
+        name="GPT-4o",
+        api="openai-completions",
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        context_window=128000,
+        max_tokens=4096,
+    )
+
+
+@pytest.fixture
+def sample_session_manager():
+    """Fixture providing an in-memory SessionManager for testing."""
+    from tau_agent_core.session_manager import SessionManager
+    return SessionManager.in_memory()
+
+
+@pytest.fixture
+def sample_agent_session(sample_session_manager, sample_model):
+    """Fixture providing an AgentSession for testing."""
+    from tau_agent_core.agent_session import AgentSession
+    return AgentSession(
+        session_manager=sample_session_manager,
+        model=sample_model,
+    )
+
+
+@pytest.fixture
 def sample_tool_definition():
     """Fixture providing a sample ToolDefinition.
 
