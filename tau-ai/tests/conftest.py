@@ -4,6 +4,7 @@ Provides shared fixtures for tau-ai package tests:
 - mock_openai_client: Mock AsyncOpenAI client
 - sample_messages: List of UserMessage/AssistantMessage/ToolResultMessage
 - sample_tool_call: A ToolCall with valid arguments
+- Provider auto-registration for stream_simple tests
 
 Reference: SUBPHASE-0.0.md lines 260-340
 """

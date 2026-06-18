@@ -625,43 +625,36 @@ class TestStreamingContract:
     - text_delta, toolcall_delta, done, error
     """
 
-    def test_stream_simple_is_async_generator(self):
+    def test_stream_simple_is_async_function(self):
         """stream_simple is an async function (returns coroutine)."""
         from tau_ai.client import stream_simple
-        # In subphase 0.3 it raises NotImplementedError, but should be async
-        assert inspect.iscoroutinefunction(stream_simple) or inspect.isasyncgenfunction(
-            stream_simple
-        ), "stream_simple should be async"
+        assert inspect.iscoroutinefunction(stream_simple), \
+            "stream_simple should be async"
 
-    def test_stream_simple_raises_not_implemented(self):
-        """stream_simple raises NotImplementedError in subphase 0.3."""
+    def test_stream_simple_returns_event_stream(self):
+        """stream_simple returns an AssistantMessageEventStream."""
         from tau_ai.client import stream_simple
-        import asyncio
-        with pytest.raises(NotImplementedError, match="stream_simple"):
-            asyncio.get_event_loop().run_until_complete(
-                stream_simple([], model="test")
-            )
+        sig = inspect.signature(stream_simple)
+        # In Phase 1.3, stream_simple returns a coroutine wrapping
+        # an AssistantMessageEventStream
+        assert inspect.iscoroutinefunction(stream_simple)
 
-    def test_stream_simple_accepts_messages(self):
-        """stream_simple accepts messages as first positional argument."""
+    def test_stream_simple_accepts_model_context(self):
+        """stream_simple accepts model and context parameters."""
         from tau_ai.client import stream_simple
         sig = inspect.signature(stream_simple)
         params = list(sig.parameters.keys())
-        assert "messages" in params
+        assert "model" in params
+        assert "context" in params
+        # context wraps messages, tools, system_prompt
+        assert "options" in params
 
-    def test_stream_simple_accepts_model_parameter(self):
-        """stream_simple accepts model parameter with default 'gpt-4'."""
+    def test_stream_simple_accepts_options(self):
+        """stream_simple accepts optional provider options."""
         from tau_ai.client import stream_simple
         sig = inspect.signature(stream_simple)
-        default = sig.parameters["model"].default
-        assert default == "gpt-4"
-
-    def test_stream_simple_accepts_provider_parameter(self):
-        """stream_simple accepts provider parameter with default 'openai'."""
-        from tau_ai.client import stream_simple
-        sig = inspect.signature(stream_simple)
-        default = sig.parameters["provider"].default
-        assert default == "openai"
+        assert "options" in sig.parameters
+        assert sig.parameters["options"].default is None
 
 
 # ───────────────────────────────────────────────

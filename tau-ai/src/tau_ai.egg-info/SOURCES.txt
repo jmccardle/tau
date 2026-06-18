@@ -19,5 +19,6 @@ tests/test_abort.py
 tests/test_contract.py
 tests/test_openai_provider.py
 tests/test_subphase1.py
+tests/test_subphase3.py
 tests/test_tools.py
 tests/test_types.py
