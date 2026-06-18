@@ -20,6 +20,61 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+class SessionState(BaseModel):
+    """Read-only session state.
+
+    Represents the current state of a session, including metadata
+    about the session's lifecycle and current condition.
+
+    Attributes:
+        session_id: The session's unique identifier
+        status: Current status ("idle", "running", "aborting", "error")
+        message_count: Number of messages in the session
+        turn_count: Number of turns completed
+        is_compacted: Whether the session has been compacted
+        created_at: Session creation timestamp (ms since epoch)
+        updated_at: Last update timestamp (ms since epoch)
+    """
+
+    session_id: str
+    status: Literal["idle", "running", "aborting", "error"] = "idle"
+    message_count: int = 0
+    turn_count: int = 0
+    is_compacted: bool = False
+    created_at: int = 0
+    updated_at: int = 0
+
+
+class SessionInfo(BaseModel):
+    """Session metadata and info.
+
+    Lightweight info about a session, used for listing and display.
+    Does not include the full session contents.
+
+    Attributes:
+        id: Session identifier
+        name: Human-readable session name
+        created_at: Creation timestamp (ms since epoch)
+        updated_at: Last update timestamp (ms since epoch)
+        message_count: Total number of messages
+        turn_count: Total number of turns
+        status: Current session status
+        model: Model used for this session
+        tool_count: Number of tools registered
+    """
+
+    id: str
+    name: str | None = None
+    created_at: int = 0
+    updated_at: int = 0
+    message_count: int = 0
+    turn_count: int = 0
+    status: Literal["idle", "running", "aborting", "error"] = "idle"
+    model: str | None = None
+    tool_count: int = 0
+
+
+
 class SessionEntry(BaseModel):
     """Root session entry.
 

@@ -15,11 +15,24 @@ from tau_agent_core.session import (
     ToolResultEntry,
     CustomMessageEntry,
     CompactionEntry,
+    SessionState,
+    SessionInfo,
 )
 from tau_agent_core.extension_types import (
     ExtensionAPI,
     ExtensionContext,
     ExtensionUI,
+)
+from tau_agent_core.agent_loop_types import (
+    PreparedToolCall,
+    FinalizedToolCall,
+    AgentLoopConfig,
+)
+from tau_agent_core.tools.base import (
+    ToolDefinition,
+    AgentTool,
+    AgentToolResult,
+    ToolBatchResult,
 )
 
 __all__ = [
@@ -31,9 +44,18 @@ __all__ = [
     "ToolResultEntry",
     "CustomMessageEntry",
     "CompactionEntry",
+    "SessionState",
+    "SessionInfo",
     "ExtensionAPI",
     "ExtensionContext",
     "ExtensionUI",
+    "PreparedToolCall",
+    "FinalizedToolCall",
+    "AgentLoopConfig",
+    "ToolDefinition",
+    "AgentTool",
+    "AgentToolResult",
+    "ToolBatchResult",
 ]
 
 

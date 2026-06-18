@@ -25,15 +25,15 @@ class ExtensionUI:
     The TUI implements the real UI methods.
     """
 
-    async def confirm(self, title: str, message: str) -> bool:
+    def confirm(self, title: str, message: str) -> bool:
         """Show a confirmation dialog. Returns user's choice."""
         return True
 
-    async def select(self, title: str, items: list[str]) -> str | None:
+    def select(self, title: str, items: list[str]) -> str | None:
         """Show a selection dialog. Returns selected item or None."""
         return items[0] if items else None
 
-    async def input(self, title: str, default: str = "") -> str:
+    def input(self, title: str, default: str = "") -> str:
         """Show an input dialog. Returns user input or default."""
         return default
 

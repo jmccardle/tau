@@ -1,6 +1,7 @@
 pyproject.toml
 src/tau_agent_core/__init__.py
 src/tau_agent_core/agent_loop.py
+src/tau_agent_core/agent_loop_types.py
 src/tau_agent_core/agent_session.py
 src/tau_agent_core/compaction.py
 src/tau_agent_core/events.py
@@ -18,6 +19,7 @@ src/tau_agent_core/extensions/events.py
 src/tau_agent_core/extensions/loader.py
 src/tau_agent_core/extensions/registry.py
 src/tau_agent_core/tools/__init__.py
+src/tau_agent_core/tools/base.py
 src/tau_agent_core/tools/bash.py
 src/tau_agent_core/tools/edit.py
 src/tau_agent_core/tools/find.py
@@ -25,5 +27,9 @@ src/tau_agent_core/tools/grep.py
 src/tau_agent_core/tools/ls.py
 src/tau_agent_core/tools/read.py
 src/tau_agent_core/tools/write.py
+tests/test_agent_loop_types.py
 tests/test_events.py
+tests/test_extension_types.py
 tests/test_session.py
+tests/test_session_types.py
+tests/test_tools_base.py
