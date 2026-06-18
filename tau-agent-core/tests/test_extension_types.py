@@ -2,18 +2,23 @@
 
 Tests verify:
 - ExtensionAPI exposes all documented methods
-- ExtensionAPI.on() registers event handlers
-- ExtensionAPI.register_tool() stores tool definitions
+- ExtensionAPI.on() registers event handlers on the event bus
+- ExtensionAPI.register_tool() stores tool definitions with _source="extension"
 - ExtensionAPI.get_all_tools() returns registered tools
-- ExtensionContext provides required properties
+- ExtensionAPI.append_entry() persists through registry
+- ExtensionContext provides required properties via constructor
 - ExtensionUI methods are no-ops (headless mode)
 - ExtensionUI.confirm() returns True by default
 - ExtensionUI.select() returns first item or None
 - ExtensionUI.input() returns default value
 
 Reference: SUBPHASE-0.0.md, "8. Extension API Surface" section
-Reference: PHASE-2-SUBPHASE-0.md, Testing section items 1, 3
+Reference: PHASE-3-SUBPHASE-0.md, Extension API Surface contract
 """
+
+import io
+import sys
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -22,73 +27,128 @@ from tau_agent_core.extension_types import (
     ExtensionContext,
     ExtensionUI,
 )
+from tau_agent_core.extensions.registry import ExtensionRegistry
+from tau_agent_core.events import EventBus
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ExtensionAPI — method existence and basic properties
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 class TestExtensionAPIInit:
-    """Tests for ExtensionAPI initialization."""
+    """Tests for ExtensionAPI initialization (backward compatible)."""
 
-    def test_create_extension_api(self):
-        """ExtensionAPI can be instantiated."""
+    def test_create_extension_api_no_args(self):
+        """ExtensionAPI can be instantiated with no arguments (backward compat)."""
         api = ExtensionAPI()
         assert api is not None
 
-    def test_extension_api_has_handlers_dict(self):
-        """ExtensionAPI has internal handlers storage."""
-        api = ExtensionAPI()
-        assert hasattr(api, "_handlers")
+    def test_create_extension_api_with_args(self):
+        """ExtensionAPI can be instantiated with explicit arguments."""
+        reg = ExtensionRegistry()
+        bus = EventBus()
+        ctx = ExtensionContext(cwd="/tmp")
+        api = ExtensionAPI(registry=reg, event_bus=bus, context=ctx, session=None)
+        assert api is not None
 
-    def test_extension_api_has_tools_list(self):
-        """ExtensionAPI has internal tools storage."""
+    def test_extension_api_has_internal_registry(self):
+        """ExtensionAPI stores its registry."""
         api = ExtensionAPI()
-        assert hasattr(api, "_tools")
+        assert hasattr(api, "_registry")
+
+    def test_extension_api_has_internal_event_bus(self):
+        """ExtensionAPI stores its event bus."""
+        api = ExtensionAPI()
+        assert hasattr(api, "_event_bus")
+
+    def test_extension_api_has_internal_context(self):
+        """ExtensionAPI stores its context."""
+        api = ExtensionAPI()
+        assert hasattr(api, "_context")
+
+    def test_extension_api_has_internal_flags(self):
+        """ExtensionAPI stores flags dict."""
+        api = ExtensionAPI()
+        assert hasattr(api, "_flags")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ExtensionAPI.on() — event subscription
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 class TestExtensionAPIEvents:
-    """Tests for ExtensionAPI.on() event registration."""
+    """Tests for ExtensionAPI.on() event registration via event bus."""
 
-    def test_register_handler(self):
-        """ExtensionAPI.on() registers a handler."""
+    @pytest.mark.asyncio
+    async def test_register_handler(self):
+        """ExtensionAPI.on() registers a handler on the event bus."""
         api = ExtensionAPI()
-        handler_called = []
+        received: list = []
 
-        def handler(*args, **kwargs):
-            handler_called.append((args, kwargs))
+        def handler(event):
+            received.append(event)
 
         api.on("test_event", handler)
-        assert "test_event" in api._handlers
-        assert handler in api._handlers["test_event"]
+        # The handler is stored on the event bus, not on the API
+        assert len(api._event_bus._listeners.get("test_event", [])) == 1
 
-    def test_register_multiple_handlers(self):
-        """ExtensionAPI.on() can register multiple handlers for same event."""
+    @pytest.mark.asyncio
+    async def test_register_handler_for_all(self):
+        """ExtensionAPI.on('all') subscribes to 'all' channel."""
         api = ExtensionAPI()
-        call_count = [0]
+        bus = api._event_bus
+        api.on("all", lambda e: None)
+        assert len(bus._listeners.get("all", [])) == 1
 
-        def handler1():
-            call_count[0] += 1
-
-        def handler2():
-            call_count[0] += 1
-
-        api.on("my_event", handler1)
-        api.on("my_event", handler2)
-        assert len(api._handlers["my_event"]) == 2
-
-    def test_register_handler_creates_event_key(self):
-        """ExtensionAPI.on() creates event key if it doesn't exist."""
+    @pytest.mark.asyncio
+    async def test_register_handler_for_specific_event(self):
+        """ExtensionAPI.on('agent_start') subscribes to that specific event."""
         api = ExtensionAPI()
-        api.on("new_event", lambda: None)
-        assert "new_event" in api._handlers
+        bus = api._event_bus
+        api.on("agent_start", lambda e: None)
+        assert len(bus._listeners.get("agent_start", [])) == 1
+
+    @pytest.mark.asyncio
+    async def test_on_returns_unsubscribe_function(self):
+        """ExtensionAPI.on() returns an unsubscribe function."""
+        api = ExtensionAPI()
+        unsub = api.on("agent_start", lambda e: None)
+        assert callable(unsub)
+        unsub()  # should not raise
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ExtensionAPI.tool methods
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 class TestExtensionAPITools:
-    """Tests for ExtensionAPI tool methods."""
+    """Tests for ExtensionAPI tool methods via registry."""
 
     def test_register_tool(self):
-        """ExtensionAPI.register_tool() stores tool definition."""
+        """ExtensionAPI.register_tool() stores tool with _source='extension'."""
         api = ExtensionAPI()
-        tool_def = {"name": "ls", "description": "List files"}
+        tool_def = {"name": "ls", "description": "List files", "parameters": {}}
         api.register_tool(tool_def)
-        assert tool_def in api._tools
+        tools = api._registry.get_all_tools()
+        assert len(tools) == 1
+        assert tools[0].name == "ls"
+
+    def test_register_tool_sets_source(self):
+        """ExtensionAPI.register_tool() sets _source='extension' on the tool."""
+        api = ExtensionAPI()
+        api.register_tool({"name": "my_tool", "description": "desc", "parameters": {}})
+        tools = api._registry.get_all_tools()
+        assert tools[0].source == "extension"
+
+    def test_register_tool_does_not_mutate_original(self):
+        """ExtensionAPI.register_tool() does not mutate the caller's dict."""
+        api = ExtensionAPI()
+        tool_def = {"name": "tool", "description": "desc", "parameters": {}}
+        api.register_tool(tool_def)
+        assert "_source" not in tool_def
 
     def test_get_all_tools_empty(self):
         """ExtensionAPI.get_all_tools() returns empty list initially."""
@@ -98,70 +158,102 @@ class TestExtensionAPITools:
     def test_get_all_tools_after_register(self):
         """ExtensionAPI.get_all_tools() returns registered tools."""
         api = ExtensionAPI()
-        tool1 = {"name": "ls", "description": "List files"}
-        tool2 = {"name": "grep", "description": "Search files"}
-        api.register_tool(tool1)
-        api.register_tool(tool2)
+        api.register_tool({"name": "ls", "description": "List", "parameters": {}})
+        api.register_tool({"name": "grep", "description": "Search", "parameters": {}})
         tools = api.get_all_tools()
         assert len(tools) == 2
-        assert tool1 in tools
-        assert tool2 in tools
+        names = [t.name for t in tools]
+        assert "ls" in names
+        assert "grep" in names
 
     def test_set_active_tools(self):
-        """ExtensionAPI.set_active_tools() stores active tool names."""
+        """ExtensionAPI.set_active_tools() forwards to registry."""
         api = ExtensionAPI()
+        api.register_tool({"name": "ls", "description": "List", "parameters": {}})
+        api.register_tool({"name": "grep", "description": "Search", "parameters": {}})
         api.set_active_tools(["ls", "grep"])
-        assert hasattr(api, "_active_tools")
+        active = api._registry.get_active_tools()
+        assert set(active.keys()) == {"ls", "grep"}
 
     def test_register_multiple_tools(self):
         """ExtensionAPI.register_tool() can register multiple tools."""
         api = ExtensionAPI()
         for i in range(5):
-            api.register_tool({"name": f"tool_{i}"})
+            api.register_tool({"name": f"tool_{i}", "description": f"tool {i}", "parameters": {}})
         assert len(api.get_all_tools()) == 5
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# ExtensionAPI command methods
+# ──────────────────────────────────────────────────────────────────────────────
+
+
 class TestExtensionAPICommands:
-    """Tests for ExtensionAPI command registration."""
+    """Tests for ExtensionAPI command registration via registry."""
 
     def test_register_command(self):
-        """ExtensionAPI.register_command() stores a command."""
+        """ExtensionAPI.register_command() stores a command in the registry."""
         api = ExtensionAPI()
         cmd = {"action": "help"}
         api.register_command("help", cmd)
-        assert "help" in api._commands
-        assert api._commands["help"] == cmd
+        assert "help" in api._registry._commands
+        assert api._registry._commands["help"] == cmd
 
     def test_register_multiple_commands(self):
         """ExtensionAPI.register_command() can register multiple commands."""
         api = ExtensionAPI()
         api.register_command("help", {"action": "help"})
         api.register_command("status", {"action": "status"})
-        assert "help" in api._commands
-        assert "status" in api._commands
+        assert "help" in api._registry._commands
+        assert "status" in api._registry._commands
+
+    def test_register_command_overwrites(self):
+        """ExtensionAPI.register_command() overwrites existing command."""
+        api = ExtensionAPI()
+        api.register_command("help", {"action": "old"})
+        api.register_command("help", {"action": "new"})
+        assert api._registry._commands["help"]["action"] == "new"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ExtensionAPI flag methods
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 class TestExtensionAPIFlags:
     """Tests for ExtensionAPI flag registration."""
 
     def test_register_flag(self):
-        """ExtensionAPI.register_flag() stores a flag."""
+        """ExtensionAPI.register_flag() stores a flag locally and in registry."""
         api = ExtensionAPI()
         options = {"type": "boolean", "default": False}
         api.register_flag("debug", options)
         assert "debug" in api._flags
         assert api._flags["debug"] == options
+        # Also registered in registry
+        assert "debug" in api._registry._flags
 
     def test_get_flag_existing(self):
-        """ExtensionAPI.get_flag() returns existing flag."""
+        """ExtensionAPI.get_flag() returns existing flag value."""
         api = ExtensionAPI()
-        api.register_flag("debug", {"type": "boolean"})
-        assert api.get_flag("debug") is not None
+        api.register_flag("debug", {"type": "boolean", "value": True})
+        assert api.get_flag("debug") is True
 
     def test_get_flag_missing(self):
         """ExtensionAPI.get_flag() returns None for missing flag."""
         api = ExtensionAPI()
         assert api.get_flag("nonexistent") is None
+
+    def test_get_flag_no_value_set(self):
+        """ExtensionAPI.get_flag() returns None when flag has no value."""
+        api = ExtensionAPI()
+        api.register_flag("debug", {"type": "boolean"})
+        assert api.get_flag("debug") is None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ExtensionAPI.append_entry
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 class TestExtensionAPIAppendEntry:
@@ -173,37 +265,76 @@ class TestExtensionAPIAppendEntry:
         assert hasattr(api, "append_entry")
 
     def test_append_entry_callable(self):
-        """ExtensionAPI.append_entry() is callable."""
+        """ExtensionAPI.append_entry() persists through registry."""
         api = ExtensionAPI()
-        # Should not raise
         api.append_entry("notification", {"text": "test"})
+        entries = api._registry.get_entries()
+        assert len(entries) == 1
+        assert entries[0]["custom_type"] == "notification"
+        assert entries[0]["data"]["text"] == "test"
+
+    def test_append_multiple_entries(self):
+        """ExtensionAPI.append_entry() can append multiple entries."""
+        api = ExtensionAPI()
+        api.append_entry("counter", {"value": 1})
+        api.append_entry("counter", {"value": 2})
+        entries = api._registry.get_entries()
+        assert len(entries) == 2
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ExtensionAPI session methods
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 class TestExtensionAPISession:
     """Tests for ExtensionAPI session methods."""
 
-    def test_set_session_name(self):
-        """ExtensionAPI.set_session_name() stores session name."""
+    def test_set_session_name_noop_without_session(self):
+        """ExtensionAPI.set_session_name() is a no-op without a session."""
         api = ExtensionAPI()
-        api.set_session_name("My Session")
-        assert hasattr(api, "_session_name")
+        api.set_session_name("My Session")  # should not raise
 
-    def test_send_user_message(self):
-        """ExtensionAPI.send_user_message() is callable."""
-        api = ExtensionAPI()
-        # Should not raise
-        api.send_user_message("Hello")
+    def test_set_session_name_with_session(self):
+        """ExtensionAPI.set_session_name() sets _session_name on session."""
+        mock_session = MagicMock()
+        mock_session._session_name = "old"
+        api = ExtensionAPI(session=mock_session)
+        api.set_session_name("new_name")
+        assert mock_session._session_name == "new_name"
 
-    def test_send_user_message_deliver_as(self):
-        """ExtensionAPI.send_user_message() accepts deliver_as parameter."""
+    def test_send_user_message_noop_without_session(self):
+        """ExtensionAPI.send_user_message() is a no-op without session."""
         api = ExtensionAPI()
+        api.send_user_message("Hello")  # should not raise
+
+    def test_send_user_message_with_session(self):
+        """ExtensionAPI.send_user_message() queues message on session."""
+        mock_session = MagicMock()
+        mock_session._queue_message = MagicMock()
+        api = ExtensionAPI(session=mock_session)
         api.send_user_message("Hello", deliver_as="steer")
+        mock_session._queue_message.assert_called_once_with("Hello", deliver_as="steer")
 
-    def test_send_message(self):
-        """ExtensionAPI.send_message() is callable."""
+    def test_send_message_noop_without_session(self):
+        """ExtensionAPI.send_message() is a no-op without session."""
         api = ExtensionAPI()
-        # Should not raise
-        api.send_message({"text": "Hello"}, {})
+        api.send_message({"text": "Hello"}, {})  # should not raise
+
+    def test_send_message_with_session(self):
+        """ExtensionAPI.send_message() appends custom message on session."""
+        mock_session = MagicMock()
+        mock_session._append_custom_message = MagicMock()
+        api = ExtensionAPI(session=mock_session)
+        api.send_message({"text": "Hello"}, {"source": "extension"})
+        mock_session._append_custom_message.assert_called_once_with(
+            {"text": "Hello"}, {"source": "extension"}
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ExtensionAPI.ui property
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 class TestExtensionAPIProperty:
@@ -216,58 +347,130 @@ class TestExtensionAPIProperty:
         assert isinstance(ui, ExtensionUI)
 
     @pytest.mark.asyncio
-    async def test_ui_is_noop(self):
-        """ExtensionAPI.ui returns no-op UI (headless mode)."""
+    async def test_ui_is_noop_in_headless(self):
+        """ExtensionAPI.ui returns no-op UI by default (headless mode)."""
         api = ExtensionAPI()
         ui = api.ui
         assert await ui.confirm("title", "msg") is True
         assert await ui.select("title", ["a"]) == "a"
         assert await ui.input("title", default="default") == "default"
 
+    def test_ui_returns_same_instance(self):
+        """ExtensionAPI.ui returns the context's ui (cached per context)."""
+        api = ExtensionAPI()
+        ui1 = api.ui
+        ui2 = api.ui
+        assert ui1 is ui2
+
+    def test_context_property_exists(self):
+        """ExtensionAPI has context property returning ExtensionContext."""
+        api = ExtensionAPI()
+        ctx = api.context
+        assert isinstance(ctx, ExtensionContext)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ExtensionContext — constructor and properties
+# ──────────────────────────────────────────────────────────────────────────────
+
 
 class TestExtensionContext:
-    """Tests for ExtensionContext."""
+    """Tests for ExtensionContext constructor and properties."""
 
-    def test_create_context(self):
-        """ExtensionContext can be instantiated."""
+    def test_create_context_defaults(self):
+        """ExtensionContext can be instantiated with no arguments."""
         ctx = ExtensionContext()
         assert ctx is not None
 
     def test_context_cwd(self):
-        """ExtensionContext.cwd returns current directory."""
+        """ExtensionContext.cwd returns the cwd argument."""
+        ctx = ExtensionContext(cwd="/tmp/test")
+        assert ctx.cwd == "/tmp/test"
+
+    def test_context_cwd_default(self):
+        """ExtensionContext.cwd defaults to '.'."""
         ctx = ExtensionContext()
         assert ctx.cwd == "."
 
     def test_context_session_manager(self):
-        """ExtensionContext.session_manager returns None by default."""
+        """ExtensionContext.session_manager returns the argument."""
+        ctx = ExtensionContext(session_manager="manager")
+        assert ctx.session_manager == "manager"
+
+    def test_context_session_manager_default(self):
+        """ExtensionContext.session_manager defaults to None."""
         ctx = ExtensionContext()
         assert ctx.session_manager is None
 
     def test_context_signal(self):
-        """ExtensionContext.signal returns None by default."""
+        """ExtensionContext.signal returns the argument."""
+        mock_signal = MagicMock()
+        ctx = ExtensionContext(signal=mock_signal)
+        assert ctx.signal is mock_signal
+
+    def test_context_signal_default(self):
+        """ExtensionContext.signal defaults to None."""
         ctx = ExtensionContext()
         assert ctx.signal is None
 
     def test_context_is_idle(self):
-        """ExtensionContext.is_idle returns True by default."""
+        """ExtensionContext.is_idle returns the argument."""
+        ctx = ExtensionContext(is_idle=False)
+        assert ctx.is_idle is False
+
+    def test_context_is_idle_default(self):
+        """ExtensionContext.is_idle defaults to True."""
         ctx = ExtensionContext()
         assert ctx.is_idle is True
 
-    def test_context_abort(self):
-        """ExtensionContext.abort() is callable."""
+    def test_context_has_ui(self):
+        """ExtensionContext has an internal ExtensionUI."""
         ctx = ExtensionContext()
-        ctx.abort()  # Should not raise
+        assert ctx._ui is not None
+        assert isinstance(ctx._ui, ExtensionUI)
 
-    def test_context_shutdown(self):
-        """ExtensionContext.shutdown() is callable."""
+    def test_context_abort_no_signal(self):
+        """ExtensionContext.abort() is a no-op when signal is None."""
         ctx = ExtensionContext()
-        ctx.shutdown()  # Should not raise
+        ctx.abort()  # should not raise
+
+    def test_context_abort_with_signal(self):
+        """ExtensionContext.abort() calls signal.abort() when signal is present."""
+        mock_signal = MagicMock()
+        ctx = ExtensionContext(signal=mock_signal)
+        ctx.abort()
+        mock_signal.abort.assert_called_once()
+
+    def test_context_shutdown_no_manager(self):
+        """ExtensionContext.shutdown() is a no-op when session_manager is None."""
+        ctx = ExtensionContext()
+        ctx.shutdown()  # should not raise
+
+    def test_context_shutdown_with_manager(self):
+        """ExtensionContext.shutdown() calls session_manager.shutdown()."""
+        mock_manager = MagicMock()
+        ctx = ExtensionContext(session_manager=mock_manager)
+        ctx.shutdown()
+        mock_manager.shutdown.assert_called_once()
 
     def test_context_get_context_usage(self):
         """ExtensionContext.get_context_usage() returns dict."""
         ctx = ExtensionContext()
         usage = ctx.get_context_usage()
         assert isinstance(usage, dict)
+
+    def test_context_set_ui_delegate(self):
+        """ExtensionContext.set_ui_delegate() sets the TUI delegate."""
+        mock_delegate = MagicMock()
+        ctx = ExtensionContext()
+        ctx.set_ui_delegate(mock_delegate)
+        assert ctx._ui._mode == "tui"
+        assert ctx._ui._tui_delegate is mock_delegate
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ExtensionUI — headless mode (no-op behavior)
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 class TestExtensionUI:
@@ -283,6 +486,13 @@ class TestExtensionUI:
         """ExtensionUI.confirm() returns True by default (headless)."""
         ui = ExtensionUI()
         result = await ui.confirm("Title", "Message")
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_confirm_with_params(self):
+        """ExtensionUI.confirm() accepts title and message."""
+        ui = ExtensionUI()
+        result = await ui.confirm("Confirm?", "Are you sure?")
         assert result is True
 
     @pytest.mark.asyncio
@@ -314,7 +524,7 @@ class TestExtensionUI:
         assert result == ""
 
     def test_notify_noop(self):
-        """ExtensionUI.notify() is a no-op (headless)."""
+        """ExtensionUI.notify() is a no-op in headless mode (prints to stderr)."""
         ui = ExtensionUI()
         # Should not raise
         ui.notify("Test message")
@@ -329,55 +539,247 @@ class TestExtensionUI:
         ui.notify("Test", level="warning")
         ui.notify("Test", level="error")
 
+    def test_notify_prints_to_stderr(self):
+        """ExtensionUI.notify() in headless mode prints to stderr."""
+        ui = ExtensionUI()
+        with patch("sys.stderr", new=io.StringIO()) as mock_stderr:
+            ui.notify("Hello from extension", "info")
+            output = mock_stderr.getvalue()
+            assert "[τ] info: Hello from extension" in output
+
+    def test_notify_default_level(self):
+        """ExtensionUI.notify() defaults to 'info' level."""
+        ui = ExtensionUI()
+        with patch("sys.stderr", new=io.StringIO()) as mock_stderr:
+            ui.notify("Test message")
+            output = mock_stderr.getvalue()
+            assert "info:" in output
+
     @pytest.mark.asyncio
-    async def test_confirm_returns_async(self):
-        """ExtensionUI.confirm() is async in headless mode."""
+    async def test_confirm_returns_async_bool(self):
+        """ExtensionUI.confirm() is async and returns bool."""
         ui = ExtensionUI()
         result = await ui.confirm("Title", "Message")
         assert isinstance(result, bool)
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_select_returns_async(self):
-        """ExtensionUI.select() is async in headless mode."""
+    async def test_select_returns_async_str_or_none(self):
+        """ExtensionUI.select() is async and returns str or None."""
         ui = ExtensionUI()
         result = await ui.select("Title", ["a", "b"])
         assert isinstance(result, str)
         assert result == "a"
 
     @pytest.mark.asyncio
-    async def test_input_returns_async(self):
-        """ExtensionUI.input() is async in headless mode."""
+    async def test_input_returns_async_str(self):
+        """ExtensionUI.input() is async and returns str."""
         ui = ExtensionUI()
         result = await ui.input("Title", default="def")
         assert isinstance(result, str)
         assert result == "def"
 
+    def test_init_with_tui_mode(self):
+        """ExtensionUI can be initialized with mode='tui'."""
+        ui = ExtensionUI(mode="tui")
+        assert ui._mode == "tui"
+
+    def test_init_with_headless_mode(self):
+        """ExtensionUI can be initialized with mode='headless'."""
+        ui = ExtensionUI(mode="headless")
+        assert ui._mode == "headless"
+
+    def test_init_mode_defaults_to_headless(self):
+        """ExtensionUI mode defaults to 'headless'."""
+        ui = ExtensionUI()
+        assert ui._mode == "headless"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ExtensionUI — TUI delegation
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestExtensionUITUI:
+    """Tests for ExtensionUI TUI delegation mode."""
+
+    @pytest.mark.asyncio
+    async def test_tui_confirm_delegates(self):
+        """ExtensionUI.confirm() delegates to TUI delegate in TUI mode."""
+        class MockDelegate:
+            async def confirm(self, title, message):
+                return False
+
+        ui = ExtensionUI(mode="headless")
+        ui._mode = "tui"
+        ui._tui_delegate = MockDelegate()
+        result = await ui.confirm("Title", "Message")
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_tui_select_delegates(self):
+        """ExtensionUI.select() delegates to TUI delegate in TUI mode."""
+        class MockDelegate:
+            async def select(self, title, items):
+                return items[1]  # return second item
+
+        ui = ExtensionUI(mode="headless")
+        ui._mode = "tui"
+        ui._tui_delegate = MockDelegate()
+        result = await ui.select("Title", ["a", "b", "c"])
+        assert result == "b"
+
+    @pytest.mark.asyncio
+    async def test_tui_input_delegates(self):
+        """ExtensionUI.input() delegates to TUI delegate in TUI mode."""
+        class MockDelegate:
+            async def input(self, title, default):
+                return "user_typed"
+
+        ui = ExtensionUI(mode="headless")
+        ui._mode = "tui"
+        ui._tui_delegate = MockDelegate()
+        result = await ui.input("Title", default="default")
+        assert result == "user_typed"
+
+    def test_tui_notify_delegates(self):
+        """ExtensionUI.notify() delegates to TUI delegate in TUI mode."""
+        class MockDelegate:
+            def notify(self, message, level):
+                self.last_notify = (message, level)
+
+        delegate = MockDelegate()
+        ui = ExtensionUI(mode="headless")
+        ui._mode = "tui"
+        ui._tui_delegate = delegate
+        ui.notify("Hello", "warning")
+        assert delegate.last_notify == ("Hello", "warning")
+
+    @pytest.mark.asyncio
+    async def test_tui_mode_without_delegate_uses_defaults(self):
+        """ExtensionUI in TUI mode without delegate uses headless defaults."""
+        ui = ExtensionUI(mode="tui")
+        # No delegate set — should fall through to headless behavior
+        assert ui._mode == "tui"
+        assert ui._tui_delegate is None
+        # confirm still returns True (no delegate to call)
+        result = await ui.confirm("T", "M")
+        assert result is True
+
+    def test_set_ui_delegate_enables_tui_mode(self):
+        """ExtensionUI.set_ui_delegate() sets mode to TUI and delegate."""
+        ui = ExtensionUI(mode="headless")
+        assert ui._mode == "headless"
+        mock_delegate = MagicMock()
+        ui._tui_delegate = mock_delegate
+        ui._mode = "tui"  # Simulate set_ui_delegate()
+        assert ui._mode == "tui"
+        assert ui._tui_delegate is mock_delegate
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ExtensionAPI — integration tests
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestExtensionAPIIntegration:
+    """Integration tests for ExtensionAPI combining multiple features."""
+
+    def test_api_with_registry_event_bus_context_session(self):
+        """All constructor args work together."""
+        reg = ExtensionRegistry()
+        bus = EventBus()
+        ctx = ExtensionContext(cwd="/test")
+        session = MagicMock()
+        api = ExtensionAPI(
+            registry=reg,
+            event_bus=bus,
+            context=ctx,
+            session=session,
+        )
+        assert api._registry is reg
+        assert api._event_bus is bus
+        assert api._context is ctx
+        assert api._session is session
+
+    def test_tool_registration_event_subscription_and_entry_persistence(self):
+        """Tool registration, event subscription, and entry persistence work together."""
+        api = ExtensionAPI()
+        received = []
+
+        # Register event handler
+        api.on("agent_start", lambda e: received.append(e))
+
+        # Register tool
+        api.register_tool({
+            "name": "test_tool",
+            "description": "test desc",
+            "parameters": {"type": "object"},
+            "execute": lambda: None,
+        })
+        tools = api.get_all_tools()
+        assert len(tools) == 1
+        assert tools[0].source == "extension"
+
+        # Append entry
+        api.append_entry("counter", {"value": 42})
+        assert len(api._registry.get_entries()) == 1
+
+    def test_ui_property_reflects_context_ui(self):
+        """ExtensionAPI.ui returns the context's ExtensionUI."""
+        ctx = ExtensionContext()
+        ctx.set_ui_delegate(MagicMock())
+        api = ExtensionAPI(context=ctx)
+        # The API's ui should reflect the context's TUI-enabled ui
+        assert api.ui._mode == "tui"
+
+    def test_extension_works_in_both_modes(self):
+        """The same ExtensionAPI setup works in both TUI and headless modes."""
+        # Headless
+        api_headless = ExtensionAPI()
+        ui_h = api_headless.ui
+        assert ui_h._mode == "headless"
+        assert api_headless.ui._tui_delegate is None
+
+        # TUI (simulated)
+        class MockTUI:
+            async def confirm(self, title, message):
+                return True
+            async def select(self, title, items):
+                return items[0] if items else None
+            async def input(self, title, default):
+                return default
+            def notify(self, message, level):
+                pass
+
+        ctx = ExtensionContext()
+        api_tui = ExtensionAPI(context=ctx)
+        ctx.set_ui_delegate(MockTUI())
+        assert ctx._ui._mode == "tui"
+        assert ctx._ui._tui_delegate is not None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Import tests
+# ──────────────────────────────────────────────────────────────────────────────
+
 
 class TestExtensionTypesImport:
-    """Tests for module-level imports.
+    """Tests for module-level imports."""
 
-    Reference: PHASE-2-SUBPHASE-0.md, Testing section item 1.
-    > from tau_agent_core.extension_types import ExtensionAPI
-    """
-
-    def test_import_extension_api(self):
-        """ExtensionAPI imports from extension_types module."""
-        from tau_agent_core.extension_types import ExtensionAPI
+    def test_import_from_module(self):
+        """All types import from extension_types module."""
+        from tau_agent_core.extension_types import (
+            ExtensionAPI,
+            ExtensionContext,
+            ExtensionUI,
+        )
         assert ExtensionAPI is not None
-
-    def test_import_extension_context(self):
-        """ExtensionContext imports from extension_types module."""
-        from tau_agent_core.extension_types import ExtensionContext
         assert ExtensionContext is not None
-
-    def test_import_extension_ui(self):
-        """ExtensionUI imports from extension_types module."""
-        from tau_agent_core.extension_types import ExtensionUI
         assert ExtensionUI is not None
 
     def test_import_from_package_root(self):
-        """All extension types import from tau_agent_core package root."""
+        """All types import from tau_agent_core package root."""
         from tau_agent_core import (
             ExtensionAPI,
             ExtensionContext,
@@ -386,3 +788,19 @@ class TestExtensionTypesImport:
         assert ExtensionAPI is not None
         assert ExtensionContext is not None
         assert ExtensionUI is not None
+
+    def test_types_are_correct_classes(self):
+        """Imported types are the correct classes."""
+        from tau_agent_core import (
+            ExtensionAPI as API,
+            ExtensionContext as Context,
+            ExtensionUI as UI,
+        )
+        from tau_agent_core.extension_types import (
+            ExtensionAPI,
+            ExtensionContext,
+            ExtensionUI,
+        )
+        assert API is ExtensionAPI
+        assert Context is ExtensionContext
+        assert UI is ExtensionUI

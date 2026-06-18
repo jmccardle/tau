@@ -244,7 +244,8 @@ class TestExtensionAPIContract:
         api.register_tool({"name": "test", "description": "test tool"})
         tools = api.get_all_tools()
         assert len(tools) == 1
-        assert tools[0]["name"] == "test"
+        # get_all_tools() returns ToolInfo objects
+        assert tools[0].name == "test"
 
     def test_api_get_all_tools_returns_list(self):
         """ExtensionAPI.get_all_tools() returns a list."""
@@ -296,8 +297,8 @@ class TestExtensionAPIContract:
     def test_api_get_flag_returns_stored_value(self):
         """ExtensionAPI.get_flag() returns the stored flag value."""
         api = ExtensionAPI()
-        api.register_flag("debug", {"type": "boolean", "default": True})
-        assert api.get_flag("debug") == {"type": "boolean", "default": True}
+        api.register_flag("debug", {"type": "boolean", "value": True})
+        assert api.get_flag("debug") is True
 
     def test_api_get_flag_returns_none_for_missing(self):
         """ExtensionAPI.get_flag() returns None for missing flags."""
