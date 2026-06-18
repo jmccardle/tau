@@ -35,3 +35,4 @@ tests/test_session.py
 tests/test_session_manager.py
 tests/test_session_types.py
 tests/test_tools_base.py
+tests/test_tools_built_in.py
