@@ -247,3 +247,20 @@ async def test_extension_error_handling(mock_openai):
 ## Success Signal
 
 All integration tests pass. Error handling works correctly. Performance meets the 30Hz throttle target. Documentation is complete. An agent can read the README and write a working τ extension. The RPC protocol is documented with example client code. The migration guide from parley is accurate.
+
+
+## Evaluator Feedback
+
+- **2026-06-18 05:03** Evaluator: Phase 6 Subphase 3 is NOT 100% complete. The code implementation and tests are excellent (149 tests all passing across integration, error handling, and performance categories). However, 4 of 12 Done Criteria items related to documentation are missing:
+
+1. **README.md for each package** — `tau-ai/README.md`, `tau-agent-core/README.md`, `tau-coding-agent/README.md` all do not exist.
+
+2. **5 example extensions documented** — No `examples/` directory, no example extension files (e.g., permission gate, git checkpoint, dynamic env tool, session logger, custom tool).
+
+3. **SDK usage examples provided** — No examples directory with SDK usage examples (create session, subscribe to events, in-memory mode, custom system prompt).
+
+4. **RPC protocol documentation complete** — `rpc.py` code exists but no `.md` documentation covering request/response format, available methods, and example client code.
+
+5. **Migration guide from parley written** — `docs/PI-TO-TAU-COMPATIBILITY.md` is a compatibility mapping document, not a migration guide. No guide covering 'what changes', 'what stays the same', and 'how to migrate existing code' exists.
+
+To complete this subphase: create the 3 package-level READMEs, create an examples directory with 5 example extensions and 4+ SDK usage examples, create RPC protocol documentation, and write a migration guide from parley.

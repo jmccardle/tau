@@ -1,0 +1,2 @@
+{"id": "d0898c01e36241f0a40be0ad971b5c1a", "type": "session", "timestamp": 1781773446911, "parent_id": null, "model": null, "cwd": "/home/john/Development/agent-harness-py"}
+{"session_id": "/home/john/Development/agent-harness-py/.tau/sessions/f87d7b47da884b59817ab0368089f3d4.jsonl", "type": "message", "message": {"role": "user", "content": []}, "id": "34ef397030804f41be61d14d138ce390", "timestamp": 1781773446911, "parent_id": "262aadb71708475c80f1336e0e44fbf5"}
