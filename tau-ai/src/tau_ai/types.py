@@ -58,7 +58,11 @@ class Usage(BaseModel):
     """Token usage information for an LLM response.
 
     Reference: SUBPHASE-0.0.md, "1. Messages" section.
+
+    Usage is immutable (frozen) — once created, its fields cannot be modified.
     """
+    model_config = {"frozen": True}
+
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
@@ -92,6 +96,43 @@ class AssistantMessage(BaseModel):
     stop_reason: Literal["stop", "length", "toolUse", "error", "aborted"]
     error_message: str | None = None
     timestamp: int = Field(ge=0)
+
+
+class Model(BaseModel):
+    """LLM model configuration.
+
+    Reference: SUBPHASE-0.0.md, "1. Messages" section.
+
+    Represents a model with its provider and connection details.
+    Serializes to OpenAI-compatible dict format.
+    """
+    id: str
+    name: str
+    api: Literal["openai-completions", "openai-responses"]
+    provider: str
+    base_url: str
+    context_window: int
+    max_tokens: int
+
+    def to_openai_format(self) -> dict[str, Any]:
+        """Serialize to OpenAI-compatible format.
+
+        Returns:
+            dict with keys compatible with OpenAI API:
+            - id: model identifier
+            - name: human-readable name
+            - provider: provider name
+            - base_url: API endpoint
+            - max_completion_tokens: max tokens for completion
+        """
+        return {
+            "id": self.id,
+            "name": self.name,
+            "provider": self.provider,
+            "base_url": self.base_url,
+            "max_completion_tokens": self.max_tokens,
+            "context_window": self.context_window,
+        }
 
 
 class ToolResultMessage(BaseModel):

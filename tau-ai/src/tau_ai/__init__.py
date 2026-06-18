@@ -16,6 +16,7 @@ from tau_ai.types import (
     ImageContent,
     ToolCall,
     Usage,
+    Model,
 )
 from tau_ai.tools import define_tool, validate_tool_arguments
 from tau_ai.abort import AbortSignal
@@ -33,6 +34,7 @@ __all__ = [
     "ImageContent",
     "ToolCall",
     "Usage",
+    "Model",
     # Tools
     "define_tool",
     "validate_tool_arguments",
