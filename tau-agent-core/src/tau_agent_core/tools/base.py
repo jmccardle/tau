@@ -81,6 +81,11 @@ class AgentTool(BaseModel):
         """Alias for definition.execute."""
         return self.definition.execute
 
+    @property
+    def parameters(self) -> dict[str, Any]:
+        """Alias for definition.parameters."""
+        return self.definition.parameters
+
     def __hash__(self) -> int:
         return hash(self.name)
 
@@ -99,6 +104,7 @@ class AgentToolResult(BaseModel):
         content: List of content blocks (mirrors Message content)
         is_error: Whether the execution failed
         error_message: Error description (if is_error=True)
+        terminate: Whether the agent loop should terminate after this tool
     """
 
     tool_name: str
@@ -106,6 +112,7 @@ class AgentToolResult(BaseModel):
     content: list[dict[str, Any]] = Field(default_factory=list)
     is_error: bool = False
     error_message: str | None = None
+    terminate: bool = False
 
     @classmethod
     def from_error(cls, tool_name: str, error_message: str, tool_call_id: str | None = None) -> "AgentToolResult":

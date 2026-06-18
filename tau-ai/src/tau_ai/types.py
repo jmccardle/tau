@@ -97,6 +97,14 @@ class AssistantMessage(BaseModel):
     error_message: str | None = None
     timestamp: int = Field(ge=0)
 
+    def get_tool_calls(self) -> list[ToolCall]:
+        """Extract all tool calls from this message's content.
+
+        Returns:
+            List of ToolCall objects found in content blocks.
+        """
+        return [c for c in self.content if isinstance(c, ToolCall)]
+
 
 class Model(BaseModel):
     """LLM model configuration.
