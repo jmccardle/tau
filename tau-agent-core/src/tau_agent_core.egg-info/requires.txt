@@ -1,0 +1,8 @@
+tau-ai
+pydantic>=2.0
+
+[dev]
+pytest
+pytest-asyncio
+ruff
+mypy

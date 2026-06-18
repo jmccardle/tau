@@ -1,0 +1,9 @@
+tau-agent-core
+textual>=0.47
+typer
+
+[dev]
+pytest
+pytest-asyncio
+ruff
+mypy

@@ -14,6 +14,7 @@ This subphase implements the two remaining major UI components:
 - `docs/tau-coding-agent.md` lines 160-220: TUI event flow
 - `docs/tau-coding-agent.md` lines 220-280: input bar and session tree designs
 - `docs/IMPLEMENTATION-PLAN.md` lines 300-360: TUI spec
+- `docs/textual-headless-testing.md`: headless Textual testing patterns and fixtures
 
 ## Implementation Outline
 

@@ -19,6 +19,7 @@ No agent-specific widgets yet — just the shell.
 - `docs/tau-coding-agent.md` lines 60-100: what changes from Parley
 - parley.py (source to fork from)
 - parley.tcss (theme to keep)
+- `docs/textual-headless-testing.md`: headless Textual testing patterns and fixtures
 
 ## Implementation Outline
 

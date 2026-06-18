@@ -1,0 +1,108 @@
+"""τ-ai types: Core data types for LLM interaction.
+
+Reference: SUBPHASE-0.0.md, "Core Data Type Contracts" section.
+
+Message types (UserMessage, AssistantMessage, ToolResultMessage) and
+ContentBlock types (TextContent, ThinkingContent, ImageContent, ToolCall)
+form the foundation of the τ messaging protocol.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+
+class TextContent(BaseModel):
+    """A text content block in a message.
+
+    Reference: SUBPHASE-0.0.md, "1. Messages" section.
+    """
+    type: Literal["text"] = "text"
+    text: str
+
+
+class ThinkingContent(BaseModel):
+    """A thinking/reasoning content block.
+
+    Reference: SUBPHASE-0.0.md, "1. Messages" section.
+    """
+    type: Literal["thinking"] = "thinking"
+    thinking: str
+    cached_tokens: int = 0
+
+
+class ImageContent(BaseModel):
+    """An image content block in a message.
+
+    Reference: SUBPHASE-0.0.md, "1. Messages" section.
+    """
+    type: Literal["image"] = "image"
+    data: str  # base64 encoded image data
+    mime_type: str
+
+
+class ToolCall(BaseModel):
+    """A tool call content block in a message.
+
+    Reference: SUBPHASE-0.0.md, "1. Messages" section.
+    """
+    type: Literal["toolCall"] = "toolCall"
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+class Usage(BaseModel):
+    """Token usage information for an LLM response.
+
+    Reference: SUBPHASE-0.0.md, "1. Messages" section.
+    """
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    total_tokens: int = 0
+    cost: dict[str, float] = Field(default_factory=dict)
+
+
+class UserMessage(BaseModel):
+    """A user message.
+
+    Reference: SUBPHASE-0.0.md, "1. Messages" section.
+    """
+    role: Literal["user"] = "user"
+    content: str | list[TextContent | ImageContent]
+    timestamp: int = Field(ge=0)
+
+
+class AssistantMessage(BaseModel):
+    """An assistant message from the LLM.
+
+    Reference: SUBPHASE-0.0.md, "1. Messages" section.
+    """
+    role: Literal["assistant"] = "assistant"
+    content: list[TextContent | ThinkingContent | ToolCall]
+    api: Literal["openai-completions", "openai-responses"]
+    provider: Literal["openai"]
+    model: str
+    response_id: str | None = None
+    usage: Usage = Field(default_factory=Usage)
+    stop_reason: Literal["stop", "length", "toolUse", "error", "aborted"]
+    error_message: str | None = None
+    timestamp: int = Field(ge=0)
+
+
+class ToolResultMessage(BaseModel):
+    """A tool result message.
+
+    Reference: SUBPHASE-0.0.md, "1. Messages" section.
+    """
+    role: Literal["toolResult"] = "toolResult"
+    tool_call_id: str
+    tool_name: str
+    content: list[TextContent | ImageContent]
+    details: dict[str, Any] | None = None
+    is_error: bool = False
+    timestamp: int = Field(ge=0)

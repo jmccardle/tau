@@ -397,3 +397,44 @@ Reason: Parley already uses Textual. The component system, layout engine, and ev
 **Decision**: Extensions define tools with **JSON Schema** (via pydantic's `model_json_schema()`). The agent loop validates with **pydantic**.
 
 Reason: JSON Schema is the universal format for LLM tool definitions. Pydantic models are the convenient definition format for Python developers. The bridge is `model_json_schema()` → `model_validate()`.
+
+## Execution
+
+### Agent Loop Orchestrator
+
+The entire plan is designed to be executed by an autonomous agent loop using `pi -p "<prompt>"` commands.
+
+**File**: `run_agent_loop.py` (see `AGENT-LOOP.md` for details)
+
+The orchestrator runs per-subphase:
+1. **Tester** → creates/updates tests
+2. **Implementer** → implements the code
+3. **QC** → reviews code quality + tests (JSON: success/feedback)
+4. **Evaluator** → checks completion criteria (JSON: success/feedback)
+
+On QC/Evaluator rejection, feedback is appended to the subphase doc and the loop restarts.
+On approval, changes are committed and the next subphase begins.
+
+**Usage**:
+```bash
+python run_agent_loop.py                    # run all 25 subphases
+python run_agent_loop.py 4.2               # only Phase 4 Subphase 2
+python run_agent_loop.py --from 5.0        # resume from Phase 5.0
+python run_agent_loop.py --dry-run         # preview without running
+python run_agent_loop.py --list            # list all subphases
+```
+
+### Subphase Dependency
+
+Each subphase depends only on:
+- The **cross-phase contracts** in `SUBPHASE-0.0.md` (immutable)
+- The **parent design docs** (tau-ai.md, tau-agent-core.md, tau-coding-agent.md)
+- **Previous subphases** in the same or earlier phases
+
+Subphases within the same phase can often be developed in parallel once their type contracts are locked (subphase 0).
+
+### Estimated Wall-Clock Time
+
+- 25 subphases × 4 iterations × 4 pi sessions × ~3min per session ≈ **16-24 hours**
+- With optimizations (fewer iterations, faster sessions): **8-12 hours**
+- Parallel within-phase execution (after subphase 0): **4-8 hours**

@@ -1,0 +1,15 @@
+[project]
+name = "tau-monorepo"
+version = "0.0.0"
+description = "τ (tau-agent-core) monorepo"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tau-ai/tests", "tau-agent-core/tests", "tau-coding-agent/tests", "tests"]
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

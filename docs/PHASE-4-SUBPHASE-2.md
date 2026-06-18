@@ -21,6 +21,7 @@ This subphase implements all the agent-specific rendering widgets that replace P
 - `docs/tau-coding-agent.md` lines 100-160: widget designs
 - `docs/tau-coding-agent.md` lines 160-220: TUI event flow
 - parley.py: how Parley renders messages (to replace)
+- `docs/textual-headless-testing.md`: headless Textual testing patterns and fixtures
 
 ## Implementation Outline
 

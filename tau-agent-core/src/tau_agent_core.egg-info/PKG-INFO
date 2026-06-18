@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: tau-agent-core
+Version: 0.0.0
+Summary: τ-agent-core: Agent runtime, loop, tools, sessions, extensions
+Requires-Python: >=3.11
+Requires-Dist: tau-ai
+Requires-Dist: pydantic>=2.0
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-asyncio; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+Requires-Dist: mypy; extra == "dev"

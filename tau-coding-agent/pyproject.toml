@@ -1,0 +1,28 @@
+[project]
+name = "tau-coding-agent"
+version = "0.0.0"
+description = "τ-coding-agent: Interactive TUI (Textual) + CLI"
+requires-python = ">=3.11"
+dependencies = [
+    "tau-agent-core",
+    "textual>=0.47",
+    "typer",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "mypy",
+]
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+tau = "tau_coding_agent.cli:main"

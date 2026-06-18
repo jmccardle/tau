@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: tau-coding-agent
+Version: 0.0.0
+Summary: τ-coding-agent: Interactive TUI (Textual) + CLI
+Requires-Python: >=3.11
+Requires-Dist: tau-agent-core
+Requires-Dist: textual>=0.47
+Requires-Dist: typer
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-asyncio; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+Requires-Dist: mypy; extra == "dev"

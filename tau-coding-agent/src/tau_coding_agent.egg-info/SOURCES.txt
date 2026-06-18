@@ -1,0 +1,11 @@
+pyproject.toml
+src/tau_coding_agent/__init__.py
+src/tau_coding_agent/app.py
+src/tau_coding_agent/cli.py
+src/tau_coding_agent.egg-info/PKG-INFO
+src/tau_coding_agent.egg-info/SOURCES.txt
+src/tau_coding_agent.egg-info/dependency_links.txt
+src/tau_coding_agent.egg-info/entry_points.txt
+src/tau_coding_agent.egg-info/requires.txt
+src/tau_coding_agent.egg-info/top_level.txt
+tests/test_agent_session.py

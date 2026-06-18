@@ -65,6 +65,7 @@ class FooterData:
 - `docs/tau-coding-agent.md` lines 100-200: widget designs
 - `docs/tau-coding-agent.md` lines 200-280: TUI event flow
 - `MONOREPO-STRUCTURE.md` lines 60-80: TUI file layout
+- `docs/textual-headless-testing.md`: headless Textual testing patterns and fixtures
 
 ## Testing
 
