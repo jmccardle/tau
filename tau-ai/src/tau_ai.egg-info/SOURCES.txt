@@ -17,6 +17,7 @@ src/tau_ai/providers/openai_responses.py
 src/tau_ai/providers/registry.py
 tests/test_abort.py
 tests/test_contract.py
+tests/test_openai_provider.py
 tests/test_subphase1.py
 tests/test_tools.py
 tests/test_types.py
