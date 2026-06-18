@@ -46,7 +46,12 @@ from tau_agent_core.compaction import CompactionConfig, CompactionResult
 from tau_agent_core.sdk import create_agent_session
 from tau_agent_core.session_manager import summarize_branch
 from tau_agent_core.rpc import RPCRequest, RPCResponse, RPCEvent, RPCHandler
-from tau_agent_core.export import ExportConfig
+from tau_agent_core.export import (
+    ExportConfig,
+    MarkdownExporter,
+    HTMLExporter,
+    export_session,
+)
 
 __all__ = [
     # Core types
@@ -89,4 +94,7 @@ __all__ = [
     "RPCHandler",
     # Export types (Phase 6)
     "ExportConfig",
+    "MarkdownExporter",
+    "HTMLExporter",
+    "export_session",
 ]
