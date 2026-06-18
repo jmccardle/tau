@@ -312,3 +312,76 @@ def sample_tool_definition():
         "prompt_guidelines": ["Use absolute paths"],
         "execution_mode": "parallel",
     }
+
+
+@pytest.fixture
+def sample_settings():
+    """Fixture providing a Settings instance with default values."""
+    from tau_agent_core.settings import Settings
+    return Settings()
+
+
+@pytest.fixture
+def sample_compaction_config(sample_model):
+    """Fixture providing a CompactionConfig for testing."""
+    from tau_agent_core.compaction import CompactionConfig
+    return CompactionConfig(
+        model=sample_model,
+        system_prompt="You are a session compaction assistant.",
+        max_context_tokens=128000,
+        margin=2000,
+    )
+
+
+@pytest.fixture
+def sample_compaction_result():
+    """Fixture providing a CompactionResult for testing."""
+    from tau_agent_core.compaction import CompactionResult
+    return CompactionResult(
+        summary="User discussed project architecture and decided on microservices.",
+        first_kept_id="msg_050",
+        compacted_entry_ids=["msg_001", "msg_002", "msg_003"],
+        tokens_saved=5000,
+        tokens_before=50000,
+        tokens_after=45000,
+    )
+
+
+@pytest.fixture
+def sample_branch_summary():
+    """Fixture providing a BranchSummary for testing."""
+    from tau_agent_core.session import BranchSummary
+    return BranchSummary(
+        branch_id="branch_001",
+        parent_id="session_001",
+        session_path="/home/user/.tau/sessions/session_001.jsonl",
+        message_count=25,
+        created_at=1700000000000,
+        updated_at=1700000005000,
+    )
+
+
+@pytest.fixture
+def sample_fork_result(sample_branch_summary):
+    """Fixture providing a ForkResult for testing."""
+    from tau_agent_core.session import ForkResult
+    return ForkResult(
+        original_session_id="session_001",
+        new_session_id="session_002",
+        new_session_path="/home/user/.tau/sessions/session_002.jsonl",
+        forked_at=1700000010000,
+        branches=[sample_branch_summary],
+    )
+
+
+@pytest.fixture
+def sample_clone_result():
+    """Fixture providing a CloneResult for testing."""
+    from tau_agent_core.session import CloneResult
+    return CloneResult(
+        original_session_id="session_001",
+        cloned_session_id="session_003",
+        cloned_session_path="/home/user/.tau/sessions/session_003.jsonl",
+        cloned_at=1700000020000,
+        entry_count=50,
+    )

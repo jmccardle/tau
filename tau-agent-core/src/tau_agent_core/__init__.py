@@ -19,7 +19,11 @@ from tau_agent_core.session import (
     CompactionEntry,
     SessionState,
     SessionInfo,
+    BranchSummary,
+    ForkResult,
+    CloneResult,
 )
+from tau_agent_core.settings import Settings
 from tau_agent_core.extension_types import (
     ExtensionAPI,
     ExtensionContext,
@@ -38,6 +42,7 @@ from tau_agent_core.tools.base import (
 )
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_manager import SessionManager
+from tau_agent_core.compaction import CompactionConfig, CompactionResult
 from tau_agent_core.sdk import create_agent_session
 
 __all__ = [
@@ -53,6 +58,10 @@ __all__ = [
     "CompactionEntry",
     "SessionState",
     "SessionInfo",
+    "BranchSummary",
+    "ForkResult",
+    "CloneResult",
+    "Settings",
     "ExtensionAPI",
     "ExtensionContext",
     "ExtensionUI",
@@ -63,6 +72,9 @@ __all__ = [
     "AgentTool",
     "AgentToolResult",
     "ToolBatchResult",
+    # Compaction
+    "CompactionConfig",
+    "CompactionResult",
     # SDK
     "create_agent_session",
 ]
