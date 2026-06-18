@@ -8,7 +8,8 @@ Reference: SUBPHASE-0.0.md
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import dataclass, field, fields as dataclass_fields
 from pathlib import Path
 
 
@@ -45,3 +46,66 @@ class Settings:
     temperature: float = 0.7
     max_tokens: int | None = None
     reasoning_level: str = "off"
+
+    @classmethod
+    def load(cls, cwd: str | None = None) -> "Settings":
+        """Load settings from ~/.tau/settings.json and project-local override.
+
+        Settings are loaded in order of precedence (later overrides earlier):
+        1. Default values (built-in)
+        2. Global settings from ~/.tau/settings.json
+        3. Project-local settings from {cwd}/.tau/settings.json
+
+        Args:
+            cwd: Working directory for project-local settings lookup.
+
+        Returns:
+            A fully resolved Settings instance.
+        """
+        settings = cls()  # Start with defaults
+
+        # Load global settings
+        global_path = Path.home() / ".tau" / "settings.json"
+        if global_path.exists():
+            settings = settings._merge_from_file(global_path)
+
+        # Load project-local settings
+        if cwd:
+            local_path = Path(cwd) / ".tau" / "settings.json"
+            if local_path.exists():
+                settings = settings._merge_from_file(local_path)
+
+        return settings
+
+    def _merge_from_file(self, path: Path) -> "Settings":
+        """Merge settings from a JSON file into a copy of self.
+
+        Args:
+            path: Path to a JSON settings file.
+
+        Returns:
+            A new Settings instance with merged values.
+        """
+        with open(path) as f:
+            data = json.load(f)
+
+        # Build a mapping of field name -> value from the JSON
+        field_names = {f.name for f in dataclass_fields(self)}
+        merged_data = {k: v for k, v in data.items() if k in field_names}
+
+        # Merge list fields by appending (extension_dirs)
+        if "extension_dirs" in merged_data and "extension_dirs" in self.__dict__:
+            existing = list(self.extension_dirs)
+            existing.extend(merged_data["extension_dirs"])
+            merged_data["extension_dirs"] = existing
+
+        # Merge dict fields by updating (api_keys)
+        if "api_keys" in merged_data and "api_keys" in self.__dict__:
+            existing = dict(self.api_keys)
+            existing.update(merged_data["api_keys"])
+            merged_data["api_keys"] = existing
+
+        # Apply merged values, preserving defaults for missing keys
+        result_data = self.__dict__.copy()
+        result_data.update(merged_data)
+        return self.__class__(**result_data)

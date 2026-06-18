@@ -1,0 +1,2 @@
+{"id": "678f7e1250c9456fb902968aac2b569b", "type": "session", "timestamp": 1781771201870, "parent_id": null, "model": null, "cwd": "/home/john/Development/agent-harness-py"}
+{"id": "e0", "type": "message", "timestamp": 1000, "message": {"role": "user", "content": [{"type": "text", "text": "hello"}]}, "parent_id": "678f7e1250c9456fb902968aac2b569b"}

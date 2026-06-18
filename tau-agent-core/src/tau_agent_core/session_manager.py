@@ -13,6 +13,7 @@ Reference: PHASE-2-SUBPHASE-2.md, SUBPHASE-0.0.md "6. Session Entry JSON Schema"
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -322,7 +323,7 @@ class SessionManager:
         if not self._active_session_path:
             raise RuntimeError("No active session")
 
-        entries = self._read_file(self._active_session_path)
+        entries = self._get_entries()
 
         if position == "before":
             # Copy entries up to but not including entry_id
@@ -387,7 +388,7 @@ class SessionManager:
         if not self._active_session_path:
             raise RuntimeError("No active session")
 
-        entries = self._read_file(self._active_session_path)
+        entries = self._get_entries()
         active_path = self._build_active_path(entries)
 
         # Create new session file
@@ -543,6 +544,83 @@ class SessionManager:
         # No compaction in path — return full path
         return path
 
+    def _extract_branch_messages(self, entries: list[dict], branch_entry_id: str) -> str:
+        """Extract all messages from a branch (subtree) rooted at branch_entry_id.
+
+        Walks the tree starting from branch_entry_id following parent_id links
+        to find all descendants, collecting message content and tool results.
+
+        Args:
+            entries: All entries in the session.
+            branch_entry_id: The entry ID where the branch starts.
+
+        Returns:
+            A string representation of all messages in the branch.
+        """
+        if not entries:
+            return ""
+
+        entry_by_id: dict[str, dict] = {e["id"]: e for e in entries}
+        children_by_parent: dict[str | None, list[str]] = {}
+        for e in entries:
+            parent = e.get("parent_id")
+            children_by_parent.setdefault(parent, []).append(e["id"])
+
+        # BFS from branch_entry_id to collect all descendants
+        branch_messages: list[str] = []
+        queue = [branch_entry_id]
+        visited: set[str] = set()
+
+        while queue:
+            current_id = queue.pop(0)
+            if current_id in visited:
+                continue
+            visited.add(current_id)
+
+            entry = entry_by_id.get(current_id)
+            if entry is None:
+                continue
+
+            # Collect message content
+            if entry.get("type") == "message":
+                msg = entry.get("message", {})
+                role = msg.get("role", "unknown")
+                content = msg.get("content", [])
+                if isinstance(content, str):
+                    branch_messages.append(f"[{role}]: {content}")
+                elif isinstance(content, list):
+                    text_parts = []
+                    for block in content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "text":
+                                text_parts.append(block.get("text", ""))
+                            elif block.get("type") == "toolCall":
+                                name = block.get("name", "unknown")
+                                args = block.get("arguments", {})
+                                text_parts.append(f"[tool_call: {name}({args})]")
+                            elif block.get("type") == "thinking":
+                                text_parts.append(f"[thinking: {block.get('thinking', '')}]")
+                            elif block.get("type") == "image":
+                                text_parts.append("[image]")
+                    branch_messages.append(f"[{role}]: {''.join(text_parts)}")
+            elif entry.get("type") == "toolResult":
+                tool_name = entry.get("tool_name", "unknown")
+                content = entry.get("content", [])
+                content_str = "".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in content
+                )
+                branch_messages.append(f"[toolResult: {tool_name}] {content_str}")
+            elif entry.get("type") == "compaction":
+                summary = entry.get("summary", "")
+                branch_messages.append(f"[compaction]: {summary}")
+
+            # Add children to queue
+            for child_id in children_by_parent.get(current_id, []):
+                queue.append(child_id)
+
+        return "\n".join(branch_messages)
+
     def _extract_session_info(self, session_path: str) -> SessionInfo | None:
         """Extract session info from a JSONL file."""
         try:
@@ -579,3 +657,85 @@ class SessionManager:
             )
         except (json.JSONDecodeError, OSError):
             return None
+
+
+async def summarize_branch(
+    session: Any,
+    branch_entry: dict,
+    model: Any,
+    system_prompt: str | None = None,
+) -> str:
+    """Summarize an abandoned branch of the session tree.
+
+    Used when navigating back to a previous entry — the branch
+    from that entry to the current tip is summarized and the
+    summary is appended as a compacted summary entry.
+
+    Args:
+        session: An AgentSession or dict-like object with:
+            - session_manager: SessionManager instance
+            - model: Model configuration for LLM calls
+        branch_entry: The entry dict where the branch starts.
+        model: Model configuration with at least a 'provider' attribute.
+        system_prompt: Optional custom system prompt.
+
+    Returns:
+        A concise summary string of the branch conversation.
+    """
+    from tau_agent_core import AgentSession
+
+    # Get the session manager
+    if isinstance(session, AgentSession):
+        sm = session._session_manager
+    elif hasattr(session, "session_manager"):
+        sm = session.session_manager
+    elif hasattr(session, "_session_manager"):
+        sm = session._session_manager
+    else:
+        sm = session  # Assume it is itself a SessionManager
+
+    # Extract messages from the branch
+    entries = sm._get_entries()
+    branch_entry_id = branch_entry.get("id") or ""
+    branch_messages = sm._extract_branch_messages(entries, branch_entry_id)
+
+    if not branch_messages:
+        return "(No messages in this branch)"
+
+    prompt = f"""Summarize this conversation branch:
+{branch_messages}
+
+Provide a concise summary that captures the essential context."""
+
+    if system_prompt:
+        prompt = f"{system_prompt}\n\n{prompt}"
+
+    # Call LLM via tau-ai's stream_simple
+    from tau_ai.client import stream_simple
+
+    context = {
+        "messages": [
+            {"role": "user", "content": prompt},
+        ],
+    }
+
+    try:
+        stream = await stream_simple(model, context)
+        # Collect all text deltas
+        summary_parts: list[str] = []
+        async for event in stream:
+            delta = getattr(event, "delta", None)
+            if delta is not None:
+                summary_parts.append(delta)
+            else:
+                text = getattr(event, "text", None)
+                if text is not None:
+                    summary_parts.append(text)
+        summary = "".join(summary_parts).strip()
+    except Exception as e:
+        # If LLM call fails, return the raw messages as a fallback summary
+        summary = f"Branch summary unavailable (error: {e})"  # noqa: B950
+        # Fallback: use first 500 chars of branch messages
+        summary = branch_messages[:500] if len(branch_messages) > 500 else branch_messages
+
+    return summary

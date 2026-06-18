@@ -44,6 +44,7 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_manager import SessionManager
 from tau_agent_core.compaction import CompactionConfig, CompactionResult
 from tau_agent_core.sdk import create_agent_session
+from tau_agent_core.session_manager import summarize_branch
 
 __all__ = [
     # Core types
@@ -77,4 +78,6 @@ __all__ = [
     "CompactionResult",
     # SDK
     "create_agent_session",
+    # Branch summarization
+    "summarize_branch",
 ]
