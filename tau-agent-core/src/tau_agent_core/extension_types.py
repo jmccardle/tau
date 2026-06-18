@@ -25,15 +25,15 @@ class ExtensionUI:
     The TUI implements the real UI methods.
     """
 
-    def confirm(self, title: str, message: str) -> bool:
+    async def confirm(self, title: str, message: str) -> bool:
         """Show a confirmation dialog. Returns user's choice."""
         return True
 
-    def select(self, title: str, items: list[str]) -> str | None:
+    async def select(self, title: str, items: list[str]) -> str | None:
         """Show a selection dialog. Returns selected item or None."""
         return items[0] if items else None
 
-    def input(self, title: str, default: str = "") -> str:
+    async def input(self, title: str, default: str = "") -> str:
         """Show an input dialog. Returns user input or default."""
         return default
 
@@ -56,6 +56,7 @@ class ExtensionAPI:
         self._tools: list[dict] = []
         self._commands: dict[str, dict] = {}
         self._flags: dict[str, Any] = {}
+        self._ui: ExtensionUI | None = None
 
     def on(self, event: str, handler: Callable) -> None:
         """Register an event handler."""
@@ -105,12 +106,16 @@ class ExtensionAPI:
 
     @property
     def ui(self) -> ExtensionUI:
-        """Return the ExtensionUI instance.
+        """Return the ExtensionUI instance (cached).
 
         In headless mode, this returns a no-op UI.
         In TUI mode, this returns the real UI instance.
+
+        The same instance is returned on each access (cached).
         """
-        return ExtensionUI()
+        if self._ui is None:
+            self._ui = ExtensionUI()
+        return self._ui
 
 
 class ExtensionContext:

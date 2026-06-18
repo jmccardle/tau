@@ -6,6 +6,7 @@ src/tau_agent_core/agent_session.py
 src/tau_agent_core/compaction.py
 src/tau_agent_core/events.py
 src/tau_agent_core/extension_types.py
+src/tau_agent_core/sdk.py
 src/tau_agent_core/session.py
 src/tau_agent_core/session_manager.py
 src/tau_agent_core/system_prompt.py
@@ -29,10 +30,12 @@ src/tau_agent_core/tools/read.py
 src/tau_agent_core/tools/write.py
 tests/test_agent_loop.py
 tests/test_agent_loop_types.py
+tests/test_agent_session.py
 tests/test_events.py
 tests/test_extension_types.py
 tests/test_session.py
 tests/test_session_manager.py
 tests/test_session_types.py
+tests/test_subphase0.py
 tests/test_tools_base.py
 tests/test_tools_built_in.py

@@ -215,13 +215,14 @@ class TestExtensionAPIProperty:
         ui = api.ui
         assert isinstance(ui, ExtensionUI)
 
-    def test_ui_is_noop(self):
+    @pytest.mark.asyncio
+    async def test_ui_is_noop(self):
         """ExtensionAPI.ui returns no-op UI (headless mode)."""
         api = ExtensionAPI()
         ui = api.ui
-        assert ui.confirm("title", "msg") is True
-        assert ui.select("title", ["a"]) == "a"
-        assert ui.input("title", default="default") == "default"
+        assert await ui.confirm("title", "msg") is True
+        assert await ui.select("title", ["a"]) == "a"
+        assert await ui.input("title", default="default") == "default"
 
 
 class TestExtensionContext:
@@ -277,34 +278,39 @@ class TestExtensionUI:
     > The TUI implements the real UI methods.
     """
 
-    def test_confirm_returns_true(self):
+    @pytest.mark.asyncio
+    async def test_confirm_returns_true(self):
         """ExtensionUI.confirm() returns True by default (headless)."""
         ui = ExtensionUI()
-        result = ui.confirm("Title", "Message")
+        result = await ui.confirm("Title", "Message")
         assert result is True
 
-    def test_select_returns_first_item(self):
+    @pytest.mark.asyncio
+    async def test_select_returns_first_item(self):
         """ExtensionUI.select() returns first item by default (headless)."""
         ui = ExtensionUI()
-        result = ui.select("Title", ["Option 1", "Option 2"])
+        result = await ui.select("Title", ["Option 1", "Option 2"])
         assert result == "Option 1"
 
-    def test_select_returns_none_for_empty_list(self):
+    @pytest.mark.asyncio
+    async def test_select_returns_none_for_empty_list(self):
         """ExtensionUI.select() returns None for empty list."""
         ui = ExtensionUI()
-        result = ui.select("Title", [])
+        result = await ui.select("Title", [])
         assert result is None
 
-    def test_input_returns_default(self):
+    @pytest.mark.asyncio
+    async def test_input_returns_default(self):
         """ExtensionUI.input() returns default value (headless)."""
         ui = ExtensionUI()
-        result = ui.input("Title", default="default_value")
+        result = await ui.input("Title", default="default_value")
         assert result == "default_value"
 
-    def test_input_returns_empty_string_without_default(self):
+    @pytest.mark.asyncio
+    async def test_input_returns_empty_string_without_default(self):
         """ExtensionUI.input() returns empty string when no default."""
         ui = ExtensionUI()
-        result = ui.input("Title")
+        result = await ui.input("Title")
         assert result == ""
 
     def test_notify_noop(self):
@@ -323,24 +329,27 @@ class TestExtensionUI:
         ui.notify("Test", level="warning")
         ui.notify("Test", level="error")
 
-    def test_confirm_returns_sync(self):
-        """ExtensionUI.confirm() returns a value (not coroutine) in headless mode."""
+    @pytest.mark.asyncio
+    async def test_confirm_returns_async(self):
+        """ExtensionUI.confirm() is async in headless mode."""
         ui = ExtensionUI()
-        result = ui.confirm("Title", "Message")
+        result = await ui.confirm("Title", "Message")
         assert isinstance(result, bool)
         assert result is True
 
-    def test_select_returns_sync(self):
-        """ExtensionUI.select() returns a value (not coroutine) in headless mode."""
+    @pytest.mark.asyncio
+    async def test_select_returns_async(self):
+        """ExtensionUI.select() is async in headless mode."""
         ui = ExtensionUI()
-        result = ui.select("Title", ["a", "b"])
+        result = await ui.select("Title", ["a", "b"])
         assert isinstance(result, str)
         assert result == "a"
 
-    def test_input_returns_sync(self):
-        """ExtensionUI.input() returns a value (not coroutine) in headless mode."""
+    @pytest.mark.asyncio
+    async def test_input_returns_async(self):
+        """ExtensionUI.input() is async in headless mode."""
         ui = ExtensionUI()
-        result = ui.input("Title", default="def")
+        result = await ui.input("Title", default="def")
         assert isinstance(result, str)
         assert result == "def"
 

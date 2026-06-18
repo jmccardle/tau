@@ -18,7 +18,8 @@ Constraint: Events are fire-and-forget. Handlers are called synchronously.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+import asyncio
+from typing import Any, Callable, Coroutine, Literal
 
 from pydantic import BaseModel, Field
 
@@ -78,16 +79,24 @@ class EventBus:
     - Extensions (for event-driven behavior)
 
     Reference: SUBPHASE-0.0.md, "5. Agent Events" section.
+    Reference: PHASE-3-SUBPHASE-0.md EventBus contract.
+
+    Contract:
+        class EventBus:
+            def on(self, channel: str, handler: Callable) -> Callable[[], None]: ...
+            def off(self, channel: str, handler: Callable) -> None: ...
+            async def emit(self, event: AgentEvent) -> None: ...
+            async def emit_channel(self, channel: str, *args, **kwargs) -> None: ...
 
     Constraint: Events are fire-and-forget. Handlers are called
     synchronously for performance.
 
     Attributes:
-        _listeners: Dict mapping event type to list of handler callables.
+        _listeners: Dict mapping event type/channel to list of handler callables.
     """
 
     def __init__(self) -> None:
-        self._listeners: dict[str, list[callable]] = {
+        self._listeners: dict[str, list[Callable]] = {
             "all": [],
             "agent_start": [],
             "agent_end": [],
@@ -101,11 +110,11 @@ class EventBus:
             "tool_execution_end": [],
         }
 
-    def on(self, event_type: str, handler: callable) -> callable:
-        """Subscribe to an event type.
+    def on(self, channel: str, handler: Callable) -> Callable[[], None]:
+        """Subscribe to a channel.
 
         Args:
-            event_type: Event type string (e.g., 'all', 'agent_start').
+            channel: Channel name (e.g., 'all', 'agent_start').
             handler: Callable that receives an AgentEvent.
 
         Returns:
@@ -116,26 +125,40 @@ class EventBus:
             >>> def my_handler(event):
             ...     print(event.type)
             >>> unsub = bus.on('all', my_handler)
-            >>> bus.emit(AgentEvent(type='agent_start', timestamp=0))
+            >>> await bus.emit(AgentEvent(type='agent_start', timestamp=0))
             >>> unsub()  # Remove subscription
         """
-        if event_type not in self._listeners:
-            self._listeners[event_type] = []
-        self._listeners[event_type].append(handler)
+        if channel not in self._listeners:
+            self._listeners[channel] = []
+        self._listeners[channel].append(handler)
 
         def unsubscribe() -> None:
             try:
-                self._listeners[event_type].remove(handler)
+                self._listeners[channel].remove(handler)
             except ValueError:
                 pass  # Already removed
 
         return unsubscribe
 
-    def emit(self, event: AgentEvent) -> None:
+    def off(self, channel: str, handler: Callable) -> None:
+        """Remove a specific handler from a channel.
+
+        Args:
+            channel: Channel name.
+            handler: The handler to remove.
+        """
+        if channel in self._listeners:
+            try:
+                self._listeners[channel].remove(handler)
+            except ValueError:
+                pass  # Handler not found on this channel
+
+    async def emit(self, event: AgentEvent) -> None:
         """Emit an event to all matching handlers.
 
         Handlers subscribed to the specific event type AND to 'all'
         will receive the event. Handlers are called synchronously.
+        This is an async method to be compatible with async consumers.
 
         Args:
             event: The AgentEvent to emit.
@@ -143,13 +166,34 @@ class EventBus:
         # Call handlers subscribed to the specific event type
         for handler in list(self._listeners.get(event.type, [])):
             try:
-                handler(event)
+                result = handler(event)
+                # If handler is a coroutine, run it
+                if asyncio.iscoroutine(result):
+                    await result
             except Exception:
                 pass  # Fail silently — fire-and-forget
 
         # Call handlers subscribed to 'all'
         for handler in list(self._listeners.get("all", [])):
             try:
-                handler(event)
+                result = handler(event)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                pass  # Fail silently — fire-and-forget
+
+    async def emit_channel(self, channel: str, *args, **kwargs) -> None:
+        """Emit to all handlers on a specific channel.
+
+        Args:
+            channel: Channel name.
+            *args: Positional arguments passed to handlers.
+            **kwargs: Keyword arguments passed to handlers.
+        """
+        for handler in list(self._listeners.get(channel, [])):
+            try:
+                result = handler(*args, **kwargs)
+                if asyncio.iscoroutine(result):
+                    await result
             except Exception:
                 pass  # Fail silently — fire-and-forget

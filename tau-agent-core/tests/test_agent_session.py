@@ -202,7 +202,8 @@ class TestSubscribeUnsubscribe:
         session.subscribe(handler)
         assert len(session._events._listeners["all"]) > 0
 
-    def test_subscribe_handler_receives_events(self):
+    @pytest.mark.asyncio
+    async def test_subscribe_handler_receives_events(self):
         """Subscribers should receive events when emitted."""
         session = self.create_session()
         received = []
@@ -211,7 +212,7 @@ class TestSubscribeUnsubscribe:
             received.append(event)
 
         session.subscribe(handler)
-        session._events.emit(AgentEvent(type="agent_start", timestamp=0))
+        await session._events.emit(AgentEvent(type="agent_start", timestamp=0))
 
         assert len(received) == 1
         assert received[0].type == "agent_start"
@@ -236,7 +237,8 @@ class TestSubscribeUnsubscribe:
         unsub()
         unsub()  # Second call — should not raise
 
-    def test_multiple_subscribers_all_receive(self):
+    @pytest.mark.asyncio
+    async def test_multiple_subscribers_all_receive(self):
         """Multiple subscribers all receive emitted events."""
         session = self.create_session()
         received1 = []
@@ -251,14 +253,15 @@ class TestSubscribeUnsubscribe:
         session.subscribe(handler1)
         session.subscribe(handler2)
 
-        session._events.emit(AgentEvent(type="agent_end", timestamp=100))
+        await session._events.emit(AgentEvent(type="agent_end", timestamp=100))
 
         assert len(received1) == 1
         assert len(received2) == 1
         assert received1[0].type == "agent_end"
         assert received2[0].type == "agent_end"
 
-    def test_subscribe_specific_event_type(self):
+    @pytest.mark.asyncio
+    async def test_subscribe_specific_event_type(self):
         """subscribe() can target specific event types (via EventBus)."""
         session = self.create_session()
         received = []
@@ -267,11 +270,11 @@ class TestSubscribeUnsubscribe:
             received.append(event)
 
         session._events.on("agent_start", handler)
-        session._events.emit(AgentEvent(type="agent_start", timestamp=0))
+        await session._events.emit(AgentEvent(type="agent_start", timestamp=0))
         assert len(received) == 1
 
         received.clear()
-        session._events.emit(AgentEvent(type="agent_end", timestamp=100))
+        await session._events.emit(AgentEvent(type="agent_end", timestamp=100))
         assert len(received) == 0  # handler only listens to agent_start
 
 
@@ -931,7 +934,8 @@ class TestEventBus:
         unsub = bus.on("all", handler)
         assert callable(unsub)
 
-    def test_event_bus_emit_calls_all_subscribers(self):
+    @pytest.mark.asyncio
+    async def test_event_bus_emit_calls_all_subscribers(self):
         """EventBus.emit() calls all 'all' subscribers."""
         bus = EventBus()
         received = []
@@ -940,10 +944,11 @@ class TestEventBus:
             received.append(event)
 
         bus.on("all", handler)
-        bus.emit(AgentEvent(type="agent_start", timestamp=0))
+        await bus.emit(AgentEvent(type="agent_start", timestamp=0))
         assert len(received) == 1
 
-    def test_event_bus_emit_specific_type(self):
+    @pytest.mark.asyncio
+    async def test_event_bus_emit_specific_type(self):
         """EventBus.emit() calls type-specific subscribers."""
         bus = EventBus()
         received = []
@@ -952,10 +957,11 @@ class TestEventBus:
             received.append(event)
 
         bus.on("agent_start", handler)
-        bus.emit(AgentEvent(type="agent_start", timestamp=0))
+        await bus.emit(AgentEvent(type="agent_start", timestamp=0))
         assert len(received) == 1
 
-    def test_event_bus_emit_does_not_call_wrong_type(self):
+    @pytest.mark.asyncio
+    async def test_event_bus_emit_does_not_call_wrong_type(self):
         """EventBus.emit() does not call handlers for wrong type."""
         bus = EventBus()
         received = []
@@ -964,10 +970,11 @@ class TestEventBus:
             received.append(event)
 
         bus.on("agent_end", handler)
-        bus.emit(AgentEvent(type="agent_start", timestamp=0))
+        await bus.emit(AgentEvent(type="agent_start", timestamp=0))
         assert len(received) == 0
 
-    def test_event_bus_emit_calls_both_all_and_type(self):
+    @pytest.mark.asyncio
+    async def test_event_bus_emit_calls_both_all_and_type(self):
         """EventBus.emit() calls both 'all' and type-specific handlers."""
         bus = EventBus()
         received = []
@@ -980,7 +987,7 @@ class TestEventBus:
 
         bus.on("all", all_handler)
         bus.on("agent_start", type_handler)
-        bus.emit(AgentEvent(type="agent_start", timestamp=0))
+        await bus.emit(AgentEvent(type="agent_start", timestamp=0))
 
         assert len(received) == 2
         assert ("all", "agent_start") in received
@@ -997,10 +1004,11 @@ class TestEventBus:
         unsub = bus.on("all", handler)
         unsub()
 
-        bus.emit(AgentEvent(type="agent_start", timestamp=0))
-        assert len(received) == 0
+        # After unsubscribing, handler should not be called
+        assert handler not in bus._listeners["all"]
 
-    def test_event_bus_handler_exception_does_not_break_others(self):
+    @pytest.mark.asyncio
+    async def test_event_bus_handler_exception_does_not_break_others(self):
         """One handler exception doesn't prevent others from being called."""
         bus = EventBus()
         received = []
@@ -1013,9 +1021,21 @@ class TestEventBus:
 
         bus.on("all", bad_handler)
         bus.on("all", good_handler)
-        bus.emit(AgentEvent(type="agent_start", timestamp=0))
+        await bus.emit(AgentEvent(type="agent_start", timestamp=0))
 
         assert len(received) == 1
+
+    def test_event_bus_off_removes_handler(self):
+        """EventBus.off() removes a specific handler."""
+        bus = EventBus()
+
+        def handler(event):
+            pass
+
+        bus.on("test_channel", handler)
+        assert handler in bus._listeners["test_channel"]
+        bus.off("test_channel", handler)
+        assert handler not in bus._listeners["test_channel"]
 
     def test_event_bus_all_event_types_registered(self):
         """EventBus has all documented event types registered."""

@@ -136,12 +136,12 @@ class AgentSession:
             }
 
             # Emit agent_start
-            self._events.emit(
+            await self._events.emit(
                 AgentEvent(type="agent_start", timestamp=self._timestamp())
             )
 
             # Emit turn_start
-            self._events.emit(
+            await self._events.emit(
                 AgentEvent(
                     type="turn_start",
                     timestamp=self._timestamp(),
@@ -160,7 +160,7 @@ class AgentSession:
             assistant_content = [{"type": "text", "text": f"Response to: {text}"}]
 
             # Emit message_start
-            self._events.emit(
+            await self._events.emit(
                 AgentEvent(
                     type="message_start",
                     timestamp=self._timestamp(),
@@ -169,7 +169,7 @@ class AgentSession:
             )
 
             # Emit message_update
-            self._events.emit(
+            await self._events.emit(
                 AgentEvent(
                     type="message_update",
                     timestamp=self._timestamp(),
@@ -178,7 +178,7 @@ class AgentSession:
             )
 
             # Emit message_end
-            self._events.emit(
+            await self._events.emit(
                 AgentEvent(
                     type="message_end",
                     timestamp=self._timestamp(),
@@ -195,7 +195,7 @@ class AgentSession:
             })
 
             # Emit turn_end
-            self._events.emit(
+            await self._events.emit(
                 AgentEvent(
                     type="turn_end",
                     timestamp=self._timestamp(),
@@ -205,7 +205,7 @@ class AgentSession:
             )
 
             # Emit agent_end
-            self._events.emit(
+            await self._events.emit(
                 AgentEvent(
                     type="agent_end",
                     timestamp=self._timestamp(),
@@ -229,12 +229,12 @@ class AgentSession:
 
         try:
             # Emit agent_start
-            self._events.emit(
+            await self._events.emit(
                 AgentEvent(type="agent_start", timestamp=self._timestamp())
             )
 
             # Emit turn_start
-            self._events.emit(
+            await self._events.emit(
                 AgentEvent(
                     type="turn_start",
                     timestamp=self._timestamp(),
@@ -246,7 +246,7 @@ class AgentSession:
             continuation_content = [{"type": "text", "text": "Continuation response"}]
 
             # Emit message_start
-            self._events.emit(
+            await self._events.emit(
                 AgentEvent(
                     type="message_start",
                     timestamp=self._timestamp(),
@@ -255,7 +255,7 @@ class AgentSession:
             )
 
             # Emit message_update
-            self._events.emit(
+            await self._events.emit(
                 AgentEvent(
                     type="message_update",
                     timestamp=self._timestamp(),
@@ -264,7 +264,7 @@ class AgentSession:
             )
 
             # Emit message_end
-            self._events.emit(
+            await self._events.emit(
                 AgentEvent(
                     type="message_end",
                     timestamp=self._timestamp(),
@@ -280,7 +280,7 @@ class AgentSession:
             })
 
             # Emit turn_end
-            self._events.emit(
+            await self._events.emit(
                 AgentEvent(
                     type="turn_end",
                     timestamp=self._timestamp(),
@@ -290,7 +290,7 @@ class AgentSession:
             )
 
             # Emit agent_end
-            self._events.emit(
+            await self._events.emit(
                 AgentEvent(
                     type="agent_end",
                     timestamp=self._timestamp(),
@@ -309,10 +309,10 @@ class AgentSession:
         Args:
             custom_instructions: Optional instructions for the compaction.
         """
-        self._events.emit(
+        await self._events.emit(
             AgentEvent(type="agent_start", timestamp=self._timestamp())
         )
-        self._events.emit(
+        await self._events.emit(
             AgentEvent(
                 type="turn_start",
                 timestamp=self._timestamp(),
@@ -321,7 +321,7 @@ class AgentSession:
         )
         # Note: Actual compaction logic is in tau_agent_core.compaction
         # For now, emit the events to signal compaction intent
-        self._events.emit(
+        await self._events.emit(
             AgentEvent(type="agent_end", timestamp=self._timestamp())
         )
 
