@@ -1,0 +1,107 @@
+/* Catppuccin Mocha Theme for τ-coding-agent TUI
+   Forked from parley.tcss */
+
+/* Color palette (Catppuccin Mocha) */
+/* Rosewater: #f5e0dc  |  Flamingo: #f2cdcd  |  Pink: #f5c2e7  |  Mauve: #cba6f7
+   Red: #f38ba8  |  Maroon: #eba0ac  |  Peach: #fab387  |  Yellow: #f9e2af
+   Green: #a6e3a1  |  Teal: #94e2d5  |  Sky: #89dceb  |  Sapphire: #74c7ec
+   Blue: #89b4fa  |  Lavender: #b4befe  |  Text: #cdd6f4  |  Subtext1: #bac2de
+   Subtext0: #a6adc8  |  Overlay2: #9399b2  |  Overlay1: #7f849c  |  Overlay0: #6c7086
+   Surface2: #585b70  |  Surface1: #45475a  |  Surface0: #313244  |  Base: #1e1e2e
+   Mantle: #181825  |  Crust: #11111b  */
+
+/* App background */
+Screen {
+    background: $crust;
+    color: $text;
+}
+
+/* Header styling */
+Header {
+    background: $mauve;
+    color: $crust;
+}
+
+/* Footer styling */
+Footer {
+    background: $surface0;
+    color: $subtext1;
+}
+
+/* Sidebar */
+#sidebar {
+    width: 20%;
+    height: 100%;
+    background: $mantle;
+    border-right: solid $surface2;
+}
+
+/* Chat area */
+#chat-container {
+    height: 100%;
+}
+
+/* Chat display area */
+ChatDisplay {
+    background: $base;
+}
+
+#chat-log {
+    background: $base;
+    color: $text;
+}
+
+/* Input bar */
+#input-bar {
+    height: 5;
+    background: $surface0;
+}
+
+InputBar {
+    background: $surface0;
+    color: $text;
+}
+
+Input {
+    background: $mantle;
+    color: $text;
+    width: 100%;
+}
+
+/* Tool call widget */
+ToolCallWidget {
+    background: $surface0;
+    margin: 1 1;
+    padding: 1 2;
+}
+
+/* Tool result widget */
+ToolResultWidget {
+    background: $surface1;
+    margin: 1 1;
+    padding: 1 2;
+}
+
+/* Streaming indicator */
+#streaming-indicator {
+    text-style: bold italic;
+    color: $peach;
+}
+
+/* Layout containers */
+#main-container {
+    width: 100%;
+    height: 100%;
+}
+
+#header-container {
+    height: 1;
+}
+
+#content-container {
+    height: 1fr;
+}
+
+#footer-container {
+    height: 1;
+}

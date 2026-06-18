@@ -143,17 +143,56 @@ def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
 
 
 def main():
-    """Entry point for the `tau` CLI command."""
+    """Entry point for the `tau` CLI command.
+
+    Parses CLI arguments, builds an AgentSession from config + args,
+    and launches the ParleyApp TUI.
+
+    Configuration precedence (highest to lowest):
+    1. CLI arguments (--model, --provider, --config, etc.)
+    2. ~/.tau/settings.json (user config)
+    3. .tau/settings.json (project config)
+    4. Built-in DEFAULT_SETTINGS
+    """
+    import sys
+    from pathlib import Path
+
     args = parse_cli_args()
 
     if args.verbose:
         print(f"τ-coding-agent starting with args: {args}")
 
-    # The full TUI launch would happen here
-    from tau_coding_agent.app import ParleyApp
+    # Build AgentSession from CLI args, config files, and defaults
+    from tau_coding_agent.app import ParleyApp, build_session
 
-    app = ParleyApp()
-    # ... TUI initialization would go here
+    # Build the session with all configuration sources
+    project_root = Path(args.cwd) if args.cwd else None
+    if args.config_file:
+        config_override = Path(args.config_file)
+    else:
+        config_override = None
+
+    session = build_session(
+        model=args.model,
+        provider=args.provider,
+        session_name=args.session_name,
+        cwd=args.cwd,
+        system_prompt=getattr(args, 'system_prompt', None),
+        project_root=project_root,
+        config_override=str(config_override) if config_override else None,
+    )
+
+    # Determine print mode (from --print flag or if prompt was given as CLI args)
+    print_mode = args.output == "text" and not args.verbose
+
+    # Launch ParleyApp
+    app = ParleyApp(session=session, print_mode=print_mode)
+
+    if args.verbose:
+        print(f"τ-coding-agent session: {session.state}")
+
+    # Full TUI would run here
+    # app.run()
 
 
 if __name__ == "__main__":

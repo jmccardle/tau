@@ -2,6 +2,7 @@ pyproject.toml
 src/tau_coding_agent/__init__.py
 src/tau_coding_agent/app.py
 src/tau_coding_agent/cli.py
+src/tau_coding_agent/config.py
 src/tau_coding_agent.egg-info/PKG-INFO
 src/tau_coding_agent.egg-info/SOURCES.txt
 src/tau_coding_agent.egg-info/dependency_links.txt
@@ -15,6 +16,9 @@ src/tau_coding_agent/widgets/tool_call_widget.py
 src/tau_coding_agent/widgets/tool_result_widget.py
 tests/test_app_parley_app.py
 tests/test_cli_args.py
+tests/test_config.py
+tests/test_ph4_sub1_integration.py
+tests/test_ph4_sub1_parley_app.py
 tests/test_tui_agent_session.py
 tests/test_widgets_chat_display.py
 tests/test_widgets_footer.py

@@ -240,3 +240,9 @@ async def test_agent_end_handler(app):
 ## Success Signal
 
 All 6 test categories pass. The app is a runnable Textual app with the correct layout, event subscription, and 30Hz throttling. It can be launched with `tau` and will show the basic UI. No agent-specific rendering yet — just the shell.
+
+
+## Evaluator Feedback
+
+- **2026-06-18 03:12** Evaluator: Failed to parse JSON output
+- **2026-06-18 03:08** Evaluator: One Done Criterion is not met: 'Config is loaded from `.tau/settings.json` and `~/.tau/settings.json`'. There is no config loading system implemented - no config.py module, no load_config() function, and build_session() uses hardcoded defaults (e.g., 'gpt-4', 'openai') instead of reading from config files. The CLI parser accepts --config but does nothing with it. Implementation needed: 1) Create tau_coding_agent/config.py with load_config() that reads `.tau/settings.json` (project root) then `~/.tau/settings.json` (user home), merges them, and returns merged settings. 2) Wire config loading into build_session() and ParleyApp initialization so model, provider, system_prompt etc. come from config before falling back to CLI args and defaults. 3) Add tests verifying config file discovery, merge order, and fallback behavior. All 64 subphase-specific tests pass and 220 total tests pass. The core shell (layout, events, 30Hz throttle, input toggle, print mode, theme) is solid.
