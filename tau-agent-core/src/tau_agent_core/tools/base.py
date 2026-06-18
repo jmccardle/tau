@@ -86,6 +86,11 @@ class AgentTool(BaseModel):
         """Alias for definition.parameters."""
         return self.definition.parameters
 
+    @property
+    def description(self) -> str:
+        """Alias for definition.description."""
+        return self.definition.description
+
     def __hash__(self) -> int:
         return hash(self.name)
 

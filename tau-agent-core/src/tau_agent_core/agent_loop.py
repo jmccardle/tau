@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from typing import Any, Awaitable, Callable
 
@@ -140,6 +141,45 @@ class AgentLoop:
         context = list(context) if context else []
         messages = list(context)
         for prompt in prompts:
+            # Check if context already ends with a user message
+            # matching this prompt — if so, skip the duplicate
+            if messages:
+                last = messages[-1]
+                # Handle both dict and Pydantic UserMessage objects
+                if hasattr(last, "role"):
+                    last_role = last.role
+                elif isinstance(last, dict):
+                    last_role = last.get("role", "")
+                else:
+                    last_role = ""
+
+                if last_role == "user":
+                    prev_content = messages[-1].content if hasattr(messages[-1], "content") else messages[-1].get("content", "")
+                    if isinstance(prev_content, str):
+                        prev_text = prev_content
+                    elif isinstance(prev_content, list):
+                        prev_text = " ".join(
+                            (b.get("text", "") if isinstance(b, dict) else getattr(b, "text", ""))
+                            for b in prev_content
+                            if (isinstance(b, dict) and b.get("type") == "text") or (hasattr(b, "text"))
+                        )
+                    else:
+                        prev_text = ""
+
+                prompt_content = prompt.content
+                if isinstance(prompt_content, str):
+                    prompt_text = prompt_content
+                elif isinstance(prompt_content, list):
+                    prompt_text = " ".join(
+                        (b.get("text", "") if isinstance(b, dict) else getattr(b, "text", ""))
+                        for b in prompt_content
+                        if (isinstance(b, dict) and b.get("type") == "text") or (hasattr(b, "text"))
+                    )
+                else:
+                    prompt_text = ""
+
+                if prev_text.strip() == prompt_text.strip():
+                    continue  # already in context, skip
             messages.append(prompt)
 
         await self._emit(
@@ -374,14 +414,23 @@ class AgentLoop:
         Returns:
             The final AssistantMessage.
         """
-        context_dict = {
-            "messages": context,
-            "system_prompt": self.config.system_prompt or "",
-        }
+        # Prepend system prompt as a system message if present.
+        # Only add it if the context doesn't already start with a system message
+        # (which it may have from the backend's conversation history).
+        messages = list(context)
+        system_prompt = self.config.system_prompt
+        if system_prompt:
+            # Check if context already starts with a system message
+            _first_role = messages[0].get("role", "") if isinstance(messages[0], dict) else (
+                getattr(messages[0], "role", "")
+            )
+            if _first_role != "system":
+                messages.insert(0, {"role": "system", "content": system_prompt})
 
-        openai_tools = None
-        if self._tools:
-            openai_tools = list(self._tools.values())
+        context_dict = {
+            "messages": messages,
+            "tools": list(self._tools.values()) if self._tools else None,
+        }
 
         model = self._model or self.config.model
 
@@ -391,18 +440,21 @@ class AgentLoop:
             {"temperature": self.config.temperature},
         )
 
-        await self._emit(
-            AgentEvent(
-                type="message_start",
-                timestamp=int(time.time() * 1000),
-                message={"role": "assistant", "content": []},
-            )
-        )
-
         partial_text = ""
+        partial_content_blocks: list[dict[str, Any]] = []
+        tool_call_ids: list[str] = []
+
         async for event in stream:
             if isinstance(event, TextDeltaEvent):
                 partial_text += event.delta
+                partial_content_blocks = [{"type": "text", "text": partial_text}]
+                await self._emit(
+                    AgentEvent(
+                        type="message_start",
+                        timestamp=int(time.time() * 1000),
+                        message={"role": "assistant", "content": partial_content_blocks},
+                    )
+                )
                 await self._emit(
                     AgentEvent(
                         type="message_update",
@@ -410,6 +462,43 @@ class AgentLoop:
                         message={
                             "role": "assistant",
                             "content": [{"type": "text", "text": partial_text}],
+                        },
+                    )
+                )
+            elif isinstance(event, ToolCallDeltaEvent):
+                # Accumulate tool call metadata from the delta dict.
+                # The delta has OpenAI-style fields: {id, function: {name, arguments}}
+                delta = event.delta
+                tc_id = delta.get("id", "")
+                tc_name = delta.get("function", {}).get("name", "")
+                tc_args_str = delta.get("function", {}).get("arguments", "")
+
+                if tc_id and tc_id not in tool_call_ids:
+                    tool_call_ids.append(tc_id)
+                    partial_content_blocks.append({
+                        "type": "toolCall",
+                        "id": tc_id,
+                        "name": tc_name,
+                        "arguments": {},
+                    })
+                elif tc_id and tc_id in tool_call_ids:
+                    # Update existing tool call's accumulated arguments
+                    for block in reversed(partial_content_blocks):
+                        if block.get("id") == tc_id and block.get("type") == "toolCall":
+                            try:
+                                args = json.loads(tc_args_str) if tc_args_str else {}
+                            except (json.JSONDecodeError, TypeError):
+                                args = {"raw": tc_args_str} if tc_args_str else {}
+                            block["arguments"] = args
+                            break
+
+                await self._emit(
+                    AgentEvent(
+                        type="message_update",
+                        timestamp=int(time.time() * 1000),
+                        message={
+                            "role": "assistant",
+                            "content": partial_content_blocks,
                         },
                     )
                 )
@@ -430,6 +519,24 @@ class AgentLoop:
                 )
                 return final_msg
             elif isinstance(event, ErrorEvent):
+                error_msg = {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": f"Error: {event.message}"}],
+                }
+                await self._emit(
+                    AgentEvent(
+                        type="message_start",
+                        timestamp=int(time.time() * 1000),
+                        message=error_msg,
+                    )
+                )
+                await self._emit(
+                    AgentEvent(
+                        type="message_end",
+                        timestamp=int(time.time() * 1000),
+                        message=error_msg,
+                    )
+                )
                 raise RuntimeError(event.message)
 
         # Stream completed without DoneEvent
@@ -746,7 +853,11 @@ class AgentLoop:
                     call.id,
                 )
 
-            result = await tool.execute(**call.arguments)
+            result = await tool.execute(
+                tool_call_id=call.id,
+                args=call.arguments,
+                signal=self._abort_signal,
+            )
 
             # If the tool returned an AgentToolResult, preserve its terminate flag
             if isinstance(result, AgentToolResult):
@@ -754,18 +865,35 @@ class AgentLoop:
                 result.tool_call_id = call.id
                 return result
 
-            # Otherwise wrap the raw result
-            content_list = (
-                result
-                if isinstance(result, list)
-                else [{"type": "text", "text": str(result)}]
-            )
-            return AgentToolResult(
-                tool_name=call.name,
-                tool_call_id=call.id,
-                content=content_list,
-                is_error=False,
-            )
+            # Otherwise wrap the raw result (dict from tool.model_dump(), etc.)
+            if isinstance(result, dict):
+                # Extract content from the result dict
+                content = result.get("content", "")
+                is_error = result.get("is_error", False)
+                content_list = (
+                    content
+                    if isinstance(content, list)
+                    else [{"type": "text", "text": str(content)}]
+                )
+                return AgentToolResult(
+                    tool_name=call.name,
+                    tool_call_id=call.id,
+                    content=content_list,
+                    is_error=is_error,
+                    terminate=result.get("terminate", False),
+                )
+            else:
+                content_list = (
+                    result
+                    if isinstance(result, list)
+                    else [{"type": "text", "text": str(result)}]
+                )
+                return AgentToolResult(
+                    tool_name=call.name,
+                    tool_call_id=call.id,
+                    content=content_list,
+                    is_error=False,
+                )
         except Exception as e:
             return AgentToolResult.from_error(call.name, str(e), call.id)
 

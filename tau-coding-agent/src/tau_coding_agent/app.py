@@ -389,23 +389,27 @@ class Parley(App):
                         "backend": "openai",
                         "model": "gpt-4o",
                         "base_url": "https://api.openai.com/v1",
-                        "api_key": "your-api-key-here"
+                        "api_key": "your-api-key-here",
+                        "tools": ["read", "write", "edit", "bash", "ls", "grep", "find"]
                     },
                     "claude-3.5-sonnet": {
                         "backend": "anthropic",
                         "model": "claude-3-5-sonnet-20241022",
-                        "api_key": "your-api-key-here"
+                        "api_key": "your-api-key-here",
+                        "tools": ["read", "write", "edit", "bash", "ls", "grep", "find"]
                     },
                     "gemini-2.0": {
                         "backend": "gemini",
                         "model": "gemini-2.0-flash-exp",
-                        "api_key": "your-api-key-here"
+                        "api_key": "your-api-key-here",
+                        "tools": ["read", "write", "edit", "bash", "ls", "grep", "find"]
                     },
                     "local-llm": {
                         "backend": "openai",
                         "model": "qwen3-32b-kv4b",
                         "base_url": "http://192.168.1.100:8000/v1",
-                        "api_key": "not-needed"
+                        "api_key": "not-needed",
+                        "tools": ["read", "write", "edit", "bash", "ls", "grep", "find"]
                     }
                 },
                 "default_model": "local-llm",
@@ -499,8 +503,8 @@ class Parley(App):
         # Start streaming message
         display.start_streaming_message("assistant")
 
-        # Stream response
-        content, usage = await self.current_backend.stream_chat(
+        # Stream response — now returns (content, usage, new_messages)
+        content, usage, new_messages = await self.current_backend.stream_chat(
             self.current_chat.messages,
             display.update_streaming_message
         )
@@ -509,8 +513,12 @@ class Parley(App):
         tokens_str = f"{usage['completion_tokens']} tokens"
         display.finalize_streaming_message(tokens_str)
 
-        # Add to chat history
-        self.current_chat.messages.append({"role": "assistant", "content": content})
+        # Update chat history with new messages from agent loop
+        # (assistant responses + tool results, skip user message which
+        # is already in self.current_chat.messages)
+        for msg in new_messages:
+            if msg.get("role") != "user":
+                self.current_chat.messages.append(msg)
 
         # Save chat
         self.current_chat.save()

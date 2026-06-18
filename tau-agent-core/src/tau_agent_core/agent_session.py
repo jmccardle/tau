@@ -17,13 +17,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 from tau_ai.abort import AbortSignal
-from tau_ai.types import Model
+from tau_ai.types import Model, UserMessage
 
 from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.extension_types import ExtensionAPI, ExtensionContext
 from tau_agent_core.session import SessionState
 from tau_agent_core.session_manager import SessionManager
 from tau_agent_core.tools.base import AgentTool
+from tau_agent_core.agent_loop import AgentLoop
+from tau_agent_core.agent_loop_types import AgentLoopConfig
 
 
 class AgentSession:
@@ -105,18 +107,26 @@ class AgentSession:
         return self._events.on("all", handler)
 
     async def prompt(
-        self, text: str, images: list[dict] | None = None
+        self, text: str, images: list[dict] | None = None,
+        context: list[dict] | None = None,
     ) -> list[dict[str, Any]]:
         """Send a prompt and run the agent loop.
 
+        Delegates to AgentLoop which:
         1. Creates a UserMessage with the text (and optional images)
-        2. Appends it to the session
-        3. Runs the agent loop
-        4. Streams results back
+        2. Builds the full context from session messages (or provided context)
+        3. Streams the LLM response via stream_simple() -> provider
+        4. Emits streaming events through the event bus
+        5. Executes any tool calls from the response
+        6. Saves the results back to the session
 
         Args:
             text: The prompt text to send.
             images: Optional list of image dicts for multimodal prompts.
+            context: Optional list of message dicts to use as conversation
+                     context instead of session messages. This allows
+                     passing a pre-built message history (e.g. from a
+                     loaded chat) to the agent loop.
 
         Returns:
             List of messages produced by the agent loop.
@@ -125,93 +135,78 @@ class AgentSession:
         self._abort_signal = AbortSignal()
 
         try:
-            # Create UserMessage
+            # Create UserMessage for tau-ai
             content: list[dict[str, Any]] = [{"type": "text", "text": text}]
             if images:
                 content.extend(images)
-
-            user_msg = {
-                "role": "user",
-                "content": content,
-            }
-
-            # Emit agent_start
-            await self._events.emit(
-                AgentEvent(type="agent_start", timestamp=self._timestamp())
+            user_msg = UserMessage(
+                role="user",
+                content=content,
+                timestamp=self._timestamp(),
             )
 
-            # Emit turn_start
-            await self._events.emit(
-                AgentEvent(
-                    type="turn_start",
-                    timestamp=self._timestamp(),
-                    turn_index=0,
-                )
+            # Get context: use provided context or fall back to session messages
+            if context is not None:
+                context_messages = list(context)  # copy to avoid mutation
+                # If context already ends with this user message (as a dict),
+                # skip appending the UserMessage object to avoid duplication
+                _last = context_messages[-1] if context_messages else None
+                context_ends_with_user = False
+                if _last and _last.get("role") == "user":
+                    _last_content = _last.get("content", "")
+                    if isinstance(_last_content, str):
+                        context_ends_with_user = (_last_content == text)
+                    elif isinstance(_last_content, list):
+                        _last_text = " ".join(
+                            b.get("text", "")
+                            for b in _last_content
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        )
+                        context_ends_with_user = (_last_text.strip() == text.strip())
+            else:
+                context_messages = self._session_manager.get_active_messages()
+                context_ends_with_user = False
+
+            # Append user message to context only if not already present
+            if not context_ends_with_user:
+                context_messages.append(user_msg)
+
+            # Build the agent loop config
+            config = AgentLoopConfig(
+                system_prompt=self._system_prompt,
+                temperature=getattr(self._model, "temperature", 0.7),
             )
 
-            # Append user message to session
-            self._session_manager.append_entry({
-                "id": f"user_{len(self._session_manager._get_entries())}",
-                "type": "message",
-                "message": user_msg,
-            })
-
-            # Generate assistant response (simplified)
-            assistant_content = [{"type": "text", "text": f"Response to: {text}"}]
-
-            # Emit message_start
-            await self._events.emit(
-                AgentEvent(
-                    type="message_start",
-                    timestamp=self._timestamp(),
-                    message={"role": "assistant", "content": []},
-                )
+            # Create and run the agent loop
+            loop = AgentLoop(
+                config=config,
+                emit=self._events.emit,
+                tools=self._tools,
+                model=self._model,
+                abort_signal=self._abort_signal,
             )
 
-            # Emit message_update
-            await self._events.emit(
-                AgentEvent(
-                    type="message_update",
-                    timestamp=self._timestamp(),
-                    message={"role": "assistant", "content": assistant_content},
-                )
+            # Run the loop — handles LLM call, tool execution, re-tries
+            final_messages = await loop.run(
+                prompts=[user_msg],
+                context=context_messages,
             )
 
-            # Emit message_end
-            await self._events.emit(
-                AgentEvent(
-                    type="message_end",
-                    timestamp=self._timestamp(),
-                    message={"role": "assistant", "content": assistant_content},
-                )
-            )
+            # Save all new messages (assistant responses, tool results)
+            for msg in final_messages:
+                if hasattr(msg, "model_dump"):
+                    msg_dict = msg.model_dump()
+                elif isinstance(msg, dict):
+                    msg_dict = msg
+                else:
+                    continue
 
-            # Append assistant message to session
-            assistant_msg = {"role": "assistant", "content": assistant_content}
-            self._session_manager.append_entry({
-                "id": f"assistant_{len(self._session_manager._get_entries())}",
-                "type": "message",
-                "message": assistant_msg,
-            })
-
-            # Emit turn_end
-            await self._events.emit(
-                AgentEvent(
-                    type="turn_end",
-                    timestamp=self._timestamp(),
-                    turn_index=0,
-                    tool_results=[],
-                )
-            )
-
-            # Emit agent_end
-            await self._events.emit(
-                AgentEvent(
-                    type="agent_end",
-                    timestamp=self._timestamp(),
-                    messages=[user_msg, assistant_msg],
-                )
-            )
+                msg_type = msg_dict.get("type", "message")
+                self._session_manager.append_entry({
+                    "id": f"msg_{len(self._session_manager._get_entries())}",
+                    "type": msg_type,
+                    "message": msg_dict,
+                })
 
             return self.messages
 
@@ -221,6 +216,9 @@ class AgentSession:
     async def continue_conversation(self) -> list[dict[str, Any]]:
         """Run another agent turn without adding new messages.
 
+        Delegates to AgentLoop.run_continue() which streams the LLM response
+        via stream_simple() and handles tool calls.
+
         Returns:
             List of messages produced by the agent loop.
         """
@@ -228,75 +226,44 @@ class AgentSession:
         self._abort_signal = AbortSignal()
 
         try:
-            # Emit agent_start
-            await self._events.emit(
-                AgentEvent(type="agent_start", timestamp=self._timestamp())
+            # Get existing messages from session for context
+            context_messages = self._session_manager.get_active_messages()
+
+            # Build the agent loop config
+            config = AgentLoopConfig(
+                system_prompt=self._system_prompt,
+                temperature=getattr(self._model, "temperature", 0.7),
             )
 
-            # Emit turn_start
-            await self._events.emit(
-                AgentEvent(
-                    type="turn_start",
-                    timestamp=self._timestamp(),
-                    turn_index=0,
-                )
+            # Create and run the agent loop (continuation mode)
+            loop = AgentLoop(
+                config=config,
+                emit=self._events.emit,
+                tools=self._tools,
+                model=self._model,
+                abort_signal=self._abort_signal,
             )
 
-            # Generate continuation response
-            continuation_content = [{"type": "text", "text": "Continuation response"}]
-
-            # Emit message_start
-            await self._events.emit(
-                AgentEvent(
-                    type="message_start",
-                    timestamp=self._timestamp(),
-                    message={"role": "assistant", "content": []},
-                )
+            # Run the loop — handles LLM call, tool execution, re-tries
+            final_messages = await loop.run_continue(
+                context=context_messages,
             )
 
-            # Emit message_update
-            await self._events.emit(
-                AgentEvent(
-                    type="message_update",
-                    timestamp=self._timestamp(),
-                    message={"role": "assistant", "content": continuation_content},
-                )
-            )
+            # Save all new messages (assistant responses, tool results)
+            for msg in final_messages:
+                if hasattr(msg, "model_dump"):
+                    msg_dict = msg.model_dump()
+                elif isinstance(msg, dict):
+                    msg_dict = msg
+                else:
+                    continue
 
-            # Emit message_end
-            await self._events.emit(
-                AgentEvent(
-                    type="message_end",
-                    timestamp=self._timestamp(),
-                    message={"role": "assistant", "content": continuation_content},
-                )
-            )
-
-            # Append continuation to session
-            self._session_manager.append_entry({
-                "id": f"cont_{len(self._session_manager._get_entries())}",
-                "type": "message",
-                "message": {"role": "assistant", "content": continuation_content},
-            })
-
-            # Emit turn_end
-            await self._events.emit(
-                AgentEvent(
-                    type="turn_end",
-                    timestamp=self._timestamp(),
-                    turn_index=0,
-                    tool_results=[],
-                )
-            )
-
-            # Emit agent_end
-            await self._events.emit(
-                AgentEvent(
-                    type="agent_end",
-                    timestamp=self._timestamp(),
-                    messages=self.messages,
-                )
-            )
+                msg_type = msg_dict.get("type", "message")
+                self._session_manager.append_entry({
+                    "id": f"cont_{len(self._session_manager._get_entries())}",
+                    "type": msg_type,
+                    "message": msg_dict,
+                })
 
             return self.messages
 

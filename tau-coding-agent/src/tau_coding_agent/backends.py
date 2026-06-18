@@ -5,12 +5,14 @@ Wraps tau-agent-core's AgentSession to provide Parley-compatible
 Backend interfaces (chat, stream_chat).
 """
 
+import os
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Callable
 from tau_ai.types import Model
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_manager import SessionManager
-from tau_agent_core.sdk import create_agent_session
+from tau_agent_core.sdk import create_agent_session, _resolve_tools
 
 
 class Backend(ABC):
@@ -70,10 +72,18 @@ class TauBackend(Backend):
             max_tokens=4096,
         )
 
+        # Discover tools from config. Defaults to all built-in tools.
+        tool_names = config.get("tools", ["read", "write", "edit", "bash", "ls", "grep", "find"])
+        if tool_names:
+            tools = _resolve_tools(tool_names)
+        else:
+            tools = []
+
         self.agent_session = AgentSession(
             session_manager=self.session_manager,
             model=model,
             system_prompt=self.system_prompt,
+            tools=tools,
         )
 
         # Create a new session in the session manager (required before use)
@@ -84,11 +94,28 @@ class TauBackend(Backend):
             # Store for later use by the LLM provider
             self._api_key = api_key
 
-    async def chat(self, messages: list[dict]) -> tuple[str, dict]:
+    async def _extract_last_user_message(self, messages: list[dict]) -> str:
+        """Extract the last user message text from a Parley messages list."""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    return content
+                elif isinstance(content, list):
+                    text_parts = [
+                        block.get("text", "")
+                        for block in content
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    ]
+                    return "\n".join(text_parts)
+        return ""
+
+    async def chat(self, messages: list[dict]) -> tuple[str, dict, list[dict]]:
         """Send a chat completion via tau-agent-core's AgentSession.
 
-        The messages are in OpenAI format (role/content dicts).
-        We extract the last user message and send it through the agent loop.
+        Passes all messages as context so the agent loop has full
+        conversation history (system prompt, prior assistant/tool results).
+        Returns (assistant_text, usage, new_messages).
         """
         # Extract the last user message text
         last_user_message = ""
@@ -108,12 +135,15 @@ class TauBackend(Backend):
                 break
 
         if not last_user_message:
-            return "", {"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0}
+            return "", {"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0}, []
 
-        # Send through the agent loop
-        result_messages = await self.agent_session.prompt(last_user_message)
+        # Send through the agent loop with full conversation context
+        # so the model sees prior tool calls and results
+        result_messages = await self.agent_session.prompt(
+            last_user_message, context=messages
+        )
 
-        # Extract the last assistant message content
+        # Extract the last assistant message text
         assistant_content = ""
         for msg in reversed(result_messages):
             if msg.get("role") == "assistant":
@@ -137,14 +167,16 @@ class TauBackend(Backend):
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
-        }
+        }, result_messages
 
     async def stream_chat(
         self, messages: list[dict], callback: Callable[[str], None]
-    ) -> tuple[str, dict]:
+    ) -> tuple[str, dict, list[dict]]:
         """Stream a chat completion via tau-agent-core's AgentSession.
 
-        Subscribes to message_update events to get streaming text chunks.
+        Passes ALL messages as context so the agent loop has full
+        conversation history (system prompt, prior assistant/tool results).
+        Returns (assistant_text, usage, new_messages).
         """
         # Extract the last user message text (same as chat())
         last_user_message = ""
@@ -163,30 +195,70 @@ class TauBackend(Backend):
                 break
 
         if not last_user_message:
-            return "", {"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0}
+            return "", {"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0}, []
 
-        # Capture streaming chunks
+        # Capture streaming chunks — track the last accumulated text
+        # per assistant message (reset on message_start for multi-turn loops)
+        streaming_text: str = ""
         streaming_chunks: list[str] = []
 
-        def capture_event(event):
-            """Capture message_update events for streaming."""
-            if hasattr(event, "type") and event.type == "message_update":
+        def capture_event(event) -> None:
+            """Capture message_update events and extract delta text.
+
+            This captures text deltas from the LLM response streaming.
+            The agent loop emits message_start redundantly (once per
+            TextDeltaEvent), so we don't reset on it. Instead we check
+            whether full_text is a prefix extension of streaming_text;
+            if not, it's a new message (multi-turn) so we treat the
+            entire content as the delta.
+            Tool execution events are emitted through the same event bus
+            but we only forward text content to the TUI callback.
+            """
+            nonlocal streaming_text
+            if not hasattr(event, "type"):
+                return
+            if event.type == "message_start":
+                # Agent loop emits message_start once per TextDeltaEvent,
+                # not just once per message. Ignore it; we track state
+                # via the message_update content prefix check.
+                pass
+            elif event.type == "message_update":
                 message = getattr(event, "message", None)
                 if message:
                     content = message.get("content", [])
                     if isinstance(content, list):
                         for block in content:
                             if isinstance(block, dict) and block.get("type") == "text":
-                                chunk = block.get("text", "")
-                                if chunk:
-                                    streaming_chunks.append(chunk)
-                                    callback(chunk)
+                                full_text = block.get("text", "")
+                                if not full_text:
+                                    continue
+                                # Check if full_text continues from where we left off.
+                                # If streaming_text is empty or full_text doesn't
+                                # start with it, this is a new message (multi-turn)
+                                # so treat the entire full_text as the delta.
+                                if not streaming_text or full_text.startswith(streaming_text):
+                                    delta = full_text[len(streaming_text):]
+                                else:
+                                    delta = full_text
+                                if not delta:
+                                    continue  # no actual change
+                                streaming_text = full_text
+                                streaming_chunks.append(delta)
+                                callback(delta)
+            elif event.type == "message_end":
+                # New turn in a multi-turn loop — reset for the next message.
+                streaming_text = ""
 
         # Subscribe to events before running the prompt
+        # This captures ALL events during the full agent loop (LLM calls + tool execution)
         unsubscribe = self.agent_session.subscribe(capture_event)
 
-        # Send through the agent loop (this will emit events that get captured)
-        await self.agent_session.prompt(last_user_message)
+        # Send through the agent loop with full conversation context
+        # The loop handles LLM calls, tool execution, and re-calls the LLM
+        # for tool results — all streaming flows through the event bus
+        new_messages = await self.agent_session.prompt(
+            last_user_message, context=messages
+        )
 
         # Unsubscribe
         unsubscribe()
@@ -202,7 +274,7 @@ class TauBackend(Backend):
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
-        }
+        }, new_messages
 
 
 def create_backend(config: dict[str, Any]) -> Backend:

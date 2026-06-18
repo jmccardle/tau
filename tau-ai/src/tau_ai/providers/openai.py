@@ -173,8 +173,9 @@ class OpenAICompletionsProvider(Provider):
             elif isinstance(msg, ToolResultMessage):
                 openai_messages.append(self._convert_tool_result(msg))
             elif isinstance(msg, dict):
-                # Already in OpenAI format, pass through
-                openai_messages.append(msg)
+                # Convert via _convert_message_dict to handle toolResult → tool,
+                # content list → string, etc.
+                openai_messages.append(self._convert_message_dict(msg))
             else:
                 # Try to convert via model_dump
                 if hasattr(msg, "model_dump"):
@@ -278,17 +279,38 @@ class OpenAICompletionsProvider(Provider):
         return result
 
     def _convert_message_dict(self, d: dict) -> dict:
-        """Convert a generic dict message to OpenAI format."""
+        """Convert a generic dict message to OpenAI format.
+
+        Handles toolResult → tool role conversion, extracts tool_call_id,
+        and converts list-type content to a string.
+        """
         role = d.get("role", "")
         content = d.get("content", "")
 
         if role in ("user", "assistant"):
             return {"role": role, "content": content}
         elif role in ("toolResult", "tool"):
+            # Extract tool_call_id
+            tool_call_id = d.get("tool_call_id", "")
+
+            # Convert list-type content to string (e.g. [{"type": "text", "text": "..."}])
+            if isinstance(content, list):
+                text_parts = []
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text":
+                            text_parts.append(block.get("text", ""))
+                        elif "content" in block:
+                            # Nested content block
+                            text_parts.append(str(block["content"]))
+                    elif isinstance(block, str):
+                        text_parts.append(block)
+                content = " ".join(text_parts)
+
             return {
                 "role": "tool",
-                "tool_call_id": d.get("tool_call_id", d.get("tool_call_id", "")),
-                "content": content,
+                "tool_call_id": tool_call_id,
+                "content": content if isinstance(content, str) else "",
             }
         else:
             return {"role": role, "content": content}
@@ -578,11 +600,10 @@ class OpenAICompletionsProvider(Provider):
                     return
 
                 response_id = response.headers.get("x-request-id", "unknown")
-                usage_data = response.json().get("usage", {})
+                usage_data: dict[str, Any] = {}
 
-                # Handle streaming response
-                content_lines = response.text.split("\n") if response.text else []
-                for line in content_lines:
+                # Handle streaming response — read SSE lines async
+                async for line in response.aiter_lines():
                     line = line.strip()
                     if not line or not line.startswith("data:"):
                         continue
@@ -602,13 +623,18 @@ class OpenAICompletionsProvider(Provider):
                     choice = choices[0]
                     delta = choice.get("delta", {})
                     finish_reason = choice.get("finish_reason")
-                    usage = choice.get("usage")
+                    # usage may be at chunk level or inside choice
+                    usage = chunk.get("usage") or choice.get("usage")
 
                     accum.response_id = chunk.get("id", response_id)
 
-                    # Track usage
+                    # Track response_id from any chunk
+                    if chunk.get("id"):
+                        accum.response_id = chunk["id"]
+
+                    # Accumulate usage from chunks (last chunk has the full usage)
                     if usage:
-                        accum.response_id = chunk.get("id", response_id)
+                        usage_data = usage
 
                     # Process text delta
                     text = delta.get("content", "") or ""
@@ -638,11 +664,24 @@ class OpenAICompletionsProvider(Provider):
                         if tc_id:
                             if tc_id not in accum.tool_calls:
                                 accum.tool_calls[tc_id] = _ToolCallAccumulator(id=tc_id)
-                            if tc_name:
-                                accum.tool_calls[tc_id].name += tc_name
+                        elif i in tool_call_index:
+                            tc_id = tool_call_index[i]
 
-                        if tc_args:
-                            accum.tool_calls[tc_id].arguments_parts.append(tc_args)
+                        if tc_id and tc_id in accum.tool_calls:
+                            # OpenAI sends the complete function name on each chunk;
+                            # replace rather than append.
+                            if tc_name:
+                                accum.tool_calls[tc_id].name = tc_name
+
+                        if tc_args and tc_id and tc_id in accum.tool_calls:
+                            # OpenAI streaming sends the complete accumulated argument
+                            # string on every chunk, not just the delta. Reconstruct
+                            # by tracking the last accumulated length and only appending
+                            # the new portion.
+                            tc_acc = accum.tool_calls[tc_id]
+                            last_args = "".join(tc_acc.arguments_parts)
+                            if len(tc_args) > len(last_args):
+                                tc_acc.arguments_parts.append(tc_args[len(last_args):])
 
                         accum.has_tool_calls = True
 

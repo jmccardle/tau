@@ -60,8 +60,10 @@ async def stream_simple(
         provider = registry.get(provider_name)
     except KeyError:
         # Auto-register default provider if not found
+        base_url = getattr(model, "base_url", None)
         provider = OpenAICompletionsProvider(
             api_key=options.get("api_key"),
+            base_url=base_url,
         )
         registry.register(provider_name, provider)
 
