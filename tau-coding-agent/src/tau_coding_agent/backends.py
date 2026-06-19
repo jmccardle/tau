@@ -227,6 +227,7 @@ class TauBackend(Backend):
         # Capture streaming chunks — track the last accumulated text
         # per assistant message (reset on message_start for multi-turn loops)
         streaming_text: str = ""
+        streaming_reasoning: str = ""
         streaming_chunks: list[str] = []
 
         # Track tool calls and results for display in the TUI
@@ -247,7 +248,7 @@ class TauBackend(Backend):
             which is what preserves true arrival order (assistant text after a
             tool call ends up *after* it, not pinned above it).
             """
-            nonlocal streaming_text
+            nonlocal streaming_text, streaming_reasoning
             if not hasattr(event, "type"):
                 return
 
@@ -257,6 +258,7 @@ class TauBackend(Backend):
                 # concatenated onto the previous turn's text), and tell the
                 # caller to open a new pending widget for this turn.
                 streaming_text = ""
+                streaming_reasoning = ""
                 _emit({
                     "kind": "turn_start",
                     "turn_index": getattr(event, "turn_index", None),
@@ -267,7 +269,10 @@ class TauBackend(Backend):
                     content = message.get("content", [])
                     if isinstance(content, list):
                         for block in content:
-                            if isinstance(block, dict) and block.get("type") == "text":
+                            if not isinstance(block, dict):
+                                continue
+                            block_type = block.get("type")
+                            if block_type == "text":
                                 full_text = block.get("text", "")
                                 if not full_text:
                                     continue
@@ -287,6 +292,23 @@ class TauBackend(Backend):
                                 streaming_chunks.append(delta)
                                 callback(delta)
                                 _emit({"kind": "text_delta", "delta": delta})
+                            elif block_type == "thinking":
+                                # Reasoning streams on its own channel using the
+                                # same suffix-diff as text. It is deliberately NOT
+                                # fed to ``callback`` (that contract is the visible
+                                # answer text only) — it surfaces as a structured
+                                # ``reasoning_delta`` for the reasoning-region widget.
+                                full_reasoning = block.get("thinking", "")
+                                if not full_reasoning:
+                                    continue
+                                if full_reasoning.startswith(streaming_reasoning):
+                                    delta = full_reasoning[len(streaming_reasoning):]
+                                else:
+                                    delta = full_reasoning
+                                if not delta:
+                                    continue
+                                streaming_reasoning = full_reasoning
+                                _emit({"kind": "reasoning_delta", "delta": delta})
             elif event.type == "message_end":
                 # Harvest tool-call blocks for chat persistence only (NOT for
                 # rendering — rendering is driven off tool_execution_* below).

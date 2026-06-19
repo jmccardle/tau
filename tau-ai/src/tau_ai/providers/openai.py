@@ -36,6 +36,7 @@ from tau_ai.streaming import (
     DoneEvent,
     ErrorEvent,
     TextDeltaEvent,
+    ThinkingDeltaEvent,
     ToolCallDeltaEvent,
 )
 from tau_ai.tools import ToolDefinition
@@ -124,6 +125,46 @@ def _resolve_tool_call_block(
         block.id = tc_id
         accum.by_id[tc_id] = block
     return block
+
+
+def _extract_reasoning(delta: dict) -> str:
+    """Return the first non-empty reasoning field from a streaming delta.
+
+    OpenAI-compatible servers disagree on the field name: llama.cpp / vLLM /
+    DeepSeek emit ``reasoning_content``, OpenRouter and some others emit
+    ``reasoning``, a few use ``reasoning_text``. Try them in priority order and
+    use the first non-empty one (mirrors pi ``openai-completions.ts``: the
+    ``reasoningFields`` loop). Empirically required — Qwen3 on llama.cpp emits
+    ``reasoning_content``, which the old single-field read dropped entirely.
+    """
+    for field_name in ("reasoning_content", "reasoning", "reasoning_text"):
+        value = delta.get(field_name)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _usage_from_openai(data: dict) -> Usage:
+    """Map an OpenAI-style usage dict onto τ's :class:`Usage`.
+
+    OpenAI/llama.cpp use ``prompt_tokens`` / ``completion_tokens`` /
+    ``total_tokens``; τ uses ``input_tokens`` / ``output_tokens`` /
+    ``total_tokens``. A bare ``Usage(**data)`` would silently drop the prompt/
+    completion counts (pydantic ignores the unknown keys) and report 0. When the
+    server omits ``total_tokens`` we compute it from input+output rather than
+    fabricate — the real number, including a real zero.
+    """
+    input_tokens = int(data.get("prompt_tokens") or 0)
+    output_tokens = int(data.get("completion_tokens") or 0)
+    total = int(data.get("total_tokens") or 0) or (input_tokens + output_tokens)
+    details = data.get("prompt_tokens_details") or {}
+    cache_read = int(details.get("cached_tokens") or 0)
+    return Usage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read,
+        total_tokens=total,
+    )
 
 
 class AssistantMessageEventStream:
@@ -427,8 +468,8 @@ class OpenAICompletionsProvider(Provider):
         if content:
             text_parts.append(content)
 
-        # Extract reasoning/thinking
-        reasoning = delta.get("reasoning", "")
+        # Extract reasoning/thinking (reasoning_content / reasoning / reasoning_text)
+        reasoning = _extract_reasoning(delta)
         if reasoning:
             thinking_parts.append(reasoning)
 
@@ -491,6 +532,16 @@ class OpenAICompletionsProvider(Provider):
         return TextDeltaEvent(
             type="text_delta",
             delta=text,
+            partial=partial,
+        )
+
+    def _make_thinking_event(
+        self, reasoning: str, accum: _Accumulator, partial: AssistantMessage
+    ) -> ThinkingDeltaEvent:
+        """Create a ThinkingDeltaEvent from a reasoning fragment."""
+        return ThinkingDeltaEvent(
+            type="thinking_delta",
+            delta=reasoning,
             partial=partial,
         )
 
@@ -654,6 +705,7 @@ class OpenAICompletionsProvider(Provider):
 
                 response_id = response.headers.get("x-request-id", "unknown")
                 usage_data: dict[str, Any] = {}
+                final_stop_reason: Literal["stop", "length", "toolUse", "error", "aborted"] | None = None
 
                 # Handle streaming response — read SSE lines async
                 async for line in response.aiter_lines():
@@ -669,6 +721,16 @@ class OpenAICompletionsProvider(Provider):
                     except json.JSONDecodeError:
                         continue
 
+                    # Usage and id can arrive in a trailing chunk whose `choices`
+                    # is empty (llama.cpp; OpenAI stream_options.include_usage).
+                    # Read them BEFORE the empty-choices guard or the token counts
+                    # are silently dropped.
+                    if chunk.get("id"):
+                        accum.response_id = chunk["id"]
+                    chunk_usage = chunk.get("usage")
+                    if chunk_usage:
+                        usage_data = chunk_usage
+
                     choices = chunk.get("choices", [])
                     if not choices:
                         continue
@@ -676,18 +738,9 @@ class OpenAICompletionsProvider(Provider):
                     choice = choices[0]
                     delta = choice.get("delta", {})
                     finish_reason = choice.get("finish_reason")
-                    # usage may be at chunk level or inside choice
-                    usage = chunk.get("usage") or choice.get("usage")
-
-                    accum.response_id = chunk.get("id", response_id)
-
-                    # Track response_id from any chunk
-                    if chunk.get("id"):
-                        accum.response_id = chunk["id"]
-
-                    # Accumulate usage from chunks (last chunk has the full usage)
-                    if usage:
-                        usage_data = usage
+                    choice_usage = choice.get("usage")
+                    if choice_usage:
+                        usage_data = choice_usage
 
                     # Process text delta
                     text = delta.get("content", "") or ""
@@ -697,11 +750,16 @@ class OpenAICompletionsProvider(Provider):
                         partial = self._build_partial_message(accum, model)
                         yield self._make_text_event(text, accum, partial)
 
-                    # Process reasoning/thinking delta
-                    reasoning = delta.get("reasoning", "") or ""
+                    # Process reasoning/thinking delta — first non-empty of
+                    # reasoning_content / reasoning / reasoning_text, yielded live.
+                    # (Previously accumulated but never yielded, so reasoning never
+                    # streamed to the UI.)
+                    reasoning = _extract_reasoning(delta)
                     if reasoning:
                         accum.thinking_parts.append(reasoning)
+                        accum.has_thinking = True
                         partial = self._build_partial_message(accum, model)
+                        yield self._make_thinking_event(reasoning, accum, partial)
 
                     # Process tool call deltas. OpenAI streams name and arguments
                     # as incremental FRAGMENTS, one piece per chunk — concatenate
@@ -723,40 +781,44 @@ class OpenAICompletionsProvider(Provider):
                         partial = self._build_partial_message(accum, model)
                         yield self._make_toolcall_event(tc_delta, accum, partial)
 
-                    # Handle finish_reason
+                    # Record finish, but DON'T return yet: usage may arrive in a
+                    # later chunk (servers emit finish_reason and usage in separate
+                    # chunks). Returning here would drop that usage.
                     if finish_reason:
-                        usage_obj = Usage(**usage_data) if usage_data else Usage()
-                        # Use the actual finish_reason to set stop_reason
-                        stop_reason = self._map_finish_reason(finish_reason)
-                        final_msg = self._build_final_message(
-                            accum, model, usage_obj, stop_reason
+                        final_stop_reason = self._map_finish_reason(finish_reason)
+
+                # Stream ended ([DONE] or closed). Emit the final message with
+                # whatever usage arrived, including a trailing usage-only chunk.
+                usage_obj = _usage_from_openai(usage_data) if usage_data else Usage()
+                final_msg = self._build_final_message(
+                    accum, model, usage_obj, final_stop_reason
+                )
+
+                # Emit one final tool-call delta per call, derived from the
+                # already-parsed ToolCall blocks on final_msg (no re-parse).
+                if accum.has_tool_calls:
+                    for pos, tc_block in enumerate(final_msg.get_tool_calls()):
+                        tc_delta = {
+                            "index": pos,
+                            "id": tc_block.id,
+                            "function": {
+                                "name": tc_block.name,
+                                "arguments": json.dumps(tc_block.arguments),
+                            },
+                        }
+                        yield ToolCallDeltaEvent(
+                            type="toolcall_delta",
+                            delta=tc_delta,
+                            partial=final_msg,
                         )
 
-                        # Emit one final tool-call delta per call, derived from the
-                        # already-parsed ToolCall blocks on final_msg (no re-parse).
-                        if accum.has_tool_calls:
-                            for pos, tc_block in enumerate(final_msg.get_tool_calls()):
-                                tc_delta = {
-                                    "index": pos,
-                                    "id": tc_block.id,
-                                    "function": {
-                                        "name": tc_block.name,
-                                        "arguments": json.dumps(tc_block.arguments),
-                                    },
-                                }
-                                yield ToolCallDeltaEvent(
-                                    type="toolcall_delta",
-                                    delta=tc_delta,
-                                    partial=final_msg,
-                                )
-
-                        # Yield done event
-                        yield DoneEvent(
-                            type="done",
-                            final=final_msg,
-                            usage=usage_obj,
-                        )
-                        return
+                # Yield done event
+                yield DoneEvent(
+                    type="done",
+                    final=final_msg,
+                    usage=usage_obj,
+                )
+                return
 
             except Exception as e:
                 error_event = ErrorEvent(

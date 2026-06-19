@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Literal
 
 from tau_ai.json_parse import parse_streaming_json
-from tau_ai.types import AssistantMessage, TextContent, ToolCall, Usage
+from tau_ai.types import AssistantMessage, TextContent, ThinkingContent, ToolCall, Usage
 
 # Forward reference for type hints
 try:
@@ -58,6 +58,28 @@ class TextDeltaEvent:
     delta: str
     partial: AssistantMessage
     type: Literal["text_delta"] = "text_delta"
+
+
+@dataclass
+class ThinkingDeltaEvent:
+    """A thinking/reasoning delta event from the LLM stream.
+
+    Mirrors :class:`TextDeltaEvent` but carries *reasoning* content — the
+    OpenAI-compatible ``reasoning_content`` / ``reasoning`` / ``reasoning_text``
+    delta fields (llama.cpp, vLLM, DeepSeek, OpenRouter). Kept as a distinct
+    event so consumers can render reasoning separately from the answer and
+    collapse it once the answer/tool content begins.
+
+    Reference: pi ``openai-completions.ts`` ``thinking_delta`` event.
+
+    Attributes:
+        type: Always "thinking_delta".
+        delta: The reasoning chunk from this event.
+        partial: The partially accumulated AssistantMessage.
+    """
+    delta: str
+    partial: AssistantMessage
+    type: Literal["thinking_delta"] = "thinking_delta"
 
 
 @dataclass
@@ -257,7 +279,7 @@ class AssistantMessageEventStream:
         """
         # Check if chunk is already a StreamEvent dataclass
         if hasattr(chunk, "type") and chunk.type in (
-            "text_delta", "toolcall_delta", "done", "error",
+            "text_delta", "thinking_delta", "toolcall_delta", "done", "error",
         ):
             await self._event_queue.put(chunk)
             # Update state from forwarded events
@@ -289,6 +311,24 @@ class AssistantMessageEventStream:
                 self._partial = partial
             # Accumulate text content
             self._partial.content.append(TextContent(text=delta["content"]))
+
+        # Reasoning: first non-empty of the OpenAI-compatible field names.
+        reasoning = ""
+        for _field in ("reasoning_content", "reasoning", "reasoning_text"):
+            _val = delta.get(_field)
+            if isinstance(_val, str) and _val:
+                reasoning = _val
+                break
+        if reasoning:
+            partial = self._partial or self._make_empty_partial()
+            await self._event_queue.put(ThinkingDeltaEvent(
+                type="thinking_delta",
+                delta=reasoning,
+                partial=partial,
+            ))
+            if self._partial is None:
+                self._partial = partial
+            self._partial.content.append(ThinkingContent(thinking=reasoning))
 
         if "tool_calls" in delta:
             for tc_delta in delta["tool_calls"]:

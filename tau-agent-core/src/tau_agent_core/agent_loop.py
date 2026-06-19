@@ -26,6 +26,7 @@ from tau_ai.streaming import (
     DoneEvent,
     ErrorEvent,
     TextDeltaEvent,
+    ThinkingDeltaEvent,
     ToolCallDeltaEvent,
 )
 from tau_ai.tools import validate_tool_arguments
@@ -441,6 +442,7 @@ class AgentLoop:
         )
 
         partial_text = ""
+        partial_reasoning = ""
         partial_content_blocks: list[dict[str, Any]] = []
 
         async for event in stream:
@@ -461,6 +463,25 @@ class AgentLoop:
                         message={
                             "role": "assistant",
                             "content": [{"type": "text", "text": partial_text}],
+                        },
+                    )
+                )
+            elif isinstance(event, ThinkingDeltaEvent):
+                # Reasoning streams on its own channel. Mirror the text path:
+                # accumulate and re-emit the full reasoning as a single thinking
+                # block so the backend can suffix-diff it exactly like text. Kept
+                # distinct from the answer text so the UI can render and collapse
+                # it separately.
+                partial_reasoning += event.delta
+                await self._emit(
+                    AgentEvent(
+                        type="message_update",
+                        timestamp=int(time.time() * 1000),
+                        message={
+                            "role": "assistant",
+                            "content": [
+                                {"type": "thinking", "thinking": partial_reasoning}
+                            ],
                         },
                     )
                 )
