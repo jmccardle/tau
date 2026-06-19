@@ -298,6 +298,26 @@ class ChatDisplay(VerticalScroll):
             self._streaming_message = None
             self._stream_buffer = ""
 
+    def add_tool_call(self, tool_name: str, arguments: dict) -> Static:
+        """Add a collapsible tool call block to the display."""
+        # Format arguments for display
+        args_text = json.dumps(arguments, indent=2, default=str)
+        content = f"**Tool call:** `{tool_name}`\n\n```json\n{args_text}\n```"
+        widget = Static(content, classes="tool-call")
+        self.mount(widget)
+        self.scroll_end(animate=False)
+        return widget
+
+    def add_tool_result(self, tool_name: str, result_text: str, is_error: bool = False) -> Static:
+        """Add a collapsible tool result block to the display."""
+        status = "Error" if is_error else "Success"
+        status_class = "error" if is_error else "success"
+        content = f"**Tool result [{status}]** `{tool_name}`\n\n```\n{result_text[:500]}\n```"
+        widget = Static(content, classes=f"tool-result {status_class}")
+        self.mount(widget)
+        self.scroll_end(animate=False)
+        return widget
+
 
 class ChatInput(TextArea):
     """Custom input with multiline support and history navigation."""
@@ -503,8 +523,8 @@ class Parley(App):
         # Start streaming message
         display.start_streaming_message("assistant")
 
-        # Stream response — now returns (content, usage, new_messages)
-        content, usage, new_messages = await self.current_backend.stream_chat(
+        # Stream response — now returns (content, usage, new_messages, tool_calls)
+        content, usage, new_messages, tool_calls_info = await self.current_backend.stream_chat(
             self.current_chat.messages,
             display.update_streaming_message
         )
@@ -512,6 +532,18 @@ class Parley(App):
         # Finalize streaming message
         tokens_str = f"{usage['completion_tokens']} tokens"
         display.finalize_streaming_message(tokens_str)
+
+        # Display tool calls from streaming events
+        for tc in tool_calls_info:
+            tool_name = tc["name"]
+            args = tc.get("arguments", {})
+            display.add_tool_call(tool_name, args)
+
+            # Display tool result if available
+            result = tc.get("result", "")
+            is_error = tc.get("error", False)
+            if result:
+                display.add_tool_result(tool_name, result, is_error)
 
         # Update chat history with new messages from agent loop
         # (assistant responses + tool results, skip user message which

@@ -180,3 +180,32 @@ Markdown CodeBlock {
     border: solid #313244;
     color: #a6e3a1;  /* Soft green for code */
 }
+
+/* === Tool Call and Result Blocks === */
+Static.tool-call {
+    margin: 1 0;
+    padding: 1;
+    border: solid #f9e2af;  /* Soft yellow - matches assistant theme */
+    background: #2d2818;    /* Dark amber background */
+    color: #f9e2af;
+}
+
+Static.tool-result {
+    margin: 1 0 1 1;
+    padding: 1;
+    border: solid #89dceb;  /* Soft cyan - distinct from tool call */
+    background: #1a3a3f;    /* Dark teal background */
+    color: #89dceb;
+}
+
+Static.tool-result.error {
+    border: solid #f38ba8;  /* Soft red for errors */
+    background: #3a2025;    /* Dark red background */
+    color: #f38ba8;
+}
+
+Static.tool-result.success {
+    border: solid #a6e3a1;  /* Soft green for success */
+    background: #1a3a2a;    /* Dark green background */
+    color: #a6e3a1;
+}
