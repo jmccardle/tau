@@ -28,7 +28,10 @@ class Backend(ABC):
 
     @abstractmethod
     async def stream_chat(
-        self, messages: list[dict], callback: Callable[[str], None]
+        self,
+        messages: list[dict],
+        callback: Callable[[str], None],
+        on_event: Callable[[dict], None] | None = None,
     ) -> tuple[str, dict]:
         pass
 
@@ -170,13 +173,37 @@ class TauBackend(Backend):
         }, result_messages
 
     async def stream_chat(
-        self, messages: list[dict], callback: Callable[[str], None]
+        self,
+        messages: list[dict],
+        callback: Callable[[str], None],
+        on_event: Callable[[dict], None] | None = None,
     ) -> tuple[str, dict, list[dict], list[dict]]:
         """Stream a chat completion via tau-agent-core's AgentSession.
 
         Passes ALL messages as context so the agent loop has full
         conversation history (system prompt, prior assistant/tool results).
         Returns (assistant_text, usage, new_messages, tool_calls).
+
+        Two consumer channels are driven from the agent-core event bus:
+
+        - ``callback(delta)`` receives raw assistant text fragments, for the
+          streaming-text widget (unchanged contract).
+        - ``on_event(event)`` (optional) receives *normalized, ordered*
+          lifecycle events so the caller can mount/resolve widgets in true
+          arrival order. Event shapes (all dicts with a ``"kind"`` key)::
+
+              {"kind": "turn_start", "turn_index": int}
+              {"kind": "text_delta", "delta": str}
+              {"kind": "tool_call", "id": str, "name": str, "arguments": dict}
+              {"kind": "tool_result", "id": str, "name": str,
+               "result": str, "is_error": bool}
+
+        Tool widgets are driven off ``tool_execution_start`` /
+        ``tool_execution_end`` (which carry name/args/result directly),
+        NOT off ``message_end`` toolCall blocks — the agent loop emits
+        ``message_end`` twice per tool-bearing turn, so consuming it for
+        rendering would duplicate. ``message_end`` is used only to harvest
+        ``tool_calls_info`` for chat persistence (deduplicated by id).
         """
         # Extract the last user message text (same as chat())
         last_user_message = ""
@@ -205,28 +232,35 @@ class TauBackend(Backend):
         # Track tool calls and results for display in the TUI
         tool_calls_info: list[dict] = []
 
+        def _emit(structured: dict) -> None:
+            """Forward a normalized lifecycle event to the optional sink."""
+            if on_event is not None:
+                on_event(structured)
+
         def capture_event(event) -> None:
-            """Capture message_update events and extract delta text.
+            """Normalize agent-core events into ordered widget-lifecycle events.
 
-            This captures text deltas from the LLM response streaming.
-            The agent loop emits message_start redundantly (once per
-            TextDeltaEvent), so we don't reset on it. Instead we check
-            whether full_text is a prefix extension of streaming_text;
-            if not, it's a new message (multi-turn) so we treat the
-            entire content as the delta.
-
-            Tool execution events are also captured here and stored
-            for post-stream rendering in the TUI.
+            Text deltas drive ``callback`` (and a ``text_delta`` structured
+            event); tool execution drives ``tool_call`` / ``tool_result``
+            structured events. ``turn_start`` resets the per-turn text
+            accumulator and signals the caller to open a fresh pending slot,
+            which is what preserves true arrival order (assistant text after a
+            tool call ends up *after* it, not pinned above it).
             """
             nonlocal streaming_text
             if not hasattr(event, "type"):
                 return
 
-            if event.type == "message_start":
-                # Agent loop emits message_start once per TextDeltaEvent,
-                # not just once per message. Ignore it; we track state
-                # via the message_update content prefix check.
-                pass
+            if event.type == "turn_start":
+                # Clean per-turn boundary. Reset the text accumulator so the
+                # next turn's assistant text is a fresh delta stream (not
+                # concatenated onto the previous turn's text), and tell the
+                # caller to open a new pending widget for this turn.
+                streaming_text = ""
+                _emit({
+                    "kind": "turn_start",
+                    "turn_index": getattr(event, "turn_index", None),
+                })
             elif event.type == "message_update":
                 message = getattr(event, "message", None)
                 if message:
@@ -237,24 +271,27 @@ class TauBackend(Backend):
                                 full_text = block.get("text", "")
                                 if not full_text:
                                     continue
-                                # Check if full_text continues from where we left off.
-                                # If streaming_text is empty or full_text doesn't
-                                # start with it, this is a new message (multi-turn)
-                                # so treat the entire full_text as the delta.
-                                if not streaming_text or full_text.startswith(streaming_text):
+                                # _stream_response re-sends the full accumulated
+                                # partial_text on every update within a turn, so
+                                # the real delta is the suffix beyond what we've
+                                # already seen this turn.
+                                if full_text.startswith(streaming_text):
                                     delta = full_text[len(streaming_text):]
                                 else:
+                                    # Defensive: provider replaced rather than
+                                    # extended the text mid-turn.
                                     delta = full_text
                                 if not delta:
                                     continue  # no actual change
                                 streaming_text = full_text
                                 streaming_chunks.append(delta)
                                 callback(delta)
+                                _emit({"kind": "text_delta", "delta": delta})
             elif event.type == "message_end":
-                # Extract tool calls from the message_end content.
-                # The message_end contains the full assistant response
-                # including tool call blocks. Only add if we haven't
-                # already captured this tool call.
+                # Harvest tool-call blocks for chat persistence only (NOT for
+                # rendering — rendering is driven off tool_execution_* below).
+                # The agent loop emits message_end twice per tool-bearing turn,
+                # so dedupe by id.
                 message = getattr(event, "message", None)
                 if message:
                     content = message.get("content", [])
@@ -262,21 +299,24 @@ class TauBackend(Backend):
                         for block in content:
                             if isinstance(block, dict) and block.get("type") == "toolCall":
                                 tc_id = block.get("id", "")
-                                raw_args = block.get("arguments", {})
-                                # Skip if already tracked (prevents duplicates
-                                # from multi-turn message_end events)
                                 if any(tc["id"] == tc_id for tc in tool_calls_info):
                                     continue
                                 tool_calls_info.append({
                                     "id": tc_id,
                                     "name": block.get("name", ""),
-                                    "arguments": raw_args,
+                                    "arguments": block.get("arguments", {}),
                                 })
-                # New turn in a multi-turn loop — reset for the next message.
-                streaming_text = ""
+            elif event.type == "tool_execution_start":
+                # Render the tool call as soon as it begins — this is the
+                # authoritative, ordered signal (carries name + args directly).
+                _emit({
+                    "kind": "tool_call",
+                    "id": getattr(event, "tool_call_id", "") or "",
+                    "name": getattr(event, "tool_name", "") or "",
+                    "arguments": getattr(event, "args", None) or {},
+                })
             elif event.type == "tool_execution_end":
-                # Update tool call status when execution completes
-                tool_call_id = getattr(event, "tool_call_id", "")
+                tool_call_id = getattr(event, "tool_call_id", "") or ""
                 is_error = getattr(event, "is_error", False)
                 result = getattr(event, "result", "")
                 if isinstance(result, list):
@@ -284,12 +324,20 @@ class TauBackend(Backend):
                         b.get("text", "") if isinstance(b, dict) else str(b)
                         for b in result
                     )
-                # Find matching tool call and update with result
+                result_str = str(result)
+                # Record result against the persisted tool call (if tracked).
                 for tc in tool_calls_info:
                     if tc["id"] == tool_call_id:
-                        tc["result"] = str(result)[:200]
+                        tc["result"] = result_str[:200]
                         tc["error"] = is_error
                         break
+                _emit({
+                    "kind": "tool_result",
+                    "id": tool_call_id,
+                    "name": getattr(event, "tool_name", "") or "",
+                    "result": result_str,
+                    "is_error": is_error,
+                })
 
         # Subscribe to events before running the prompt
         # This captures ALL events during the full agent loop (LLM calls + tool execution)

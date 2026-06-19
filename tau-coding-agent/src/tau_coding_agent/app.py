@@ -109,42 +109,78 @@ class Chat:
         return f"Chat ({self.model})"
 
 
-class ChatMessage(Static):
-    """A single chat message with styled borders and alignment."""
+# Role → (display label, CSS modifier class). ONE widget renders every kind of
+# message; the role only selects a label + color (via the `box-<role>` class in
+# parley.tcss). Adding a kind = adding an entry here + a CSS rule, nothing else.
+ROLE_LABELS: dict[str, str] = {
+    "pending": "…",
+    "user": "User",
+    "assistant": "Assistant",
+    "system": "System",
+    "toolCall": "Tool call",
+    "toolResult": "Tool result",
+}
 
-    def __init__(self, role: str, content: str, timestamp: str = "", tokens: str = ""):
-        super().__init__(classes=f"chat-message message-{role}")
+
+class MessageBox(Static):
+    """One reusable bordered message widget for EVERY chat entry.
+
+    User / assistant / tool-call / tool-result are all this widget — the
+    ``role`` only changes the border label and color (CSS class ``box-<role>``).
+    There is no bespoke "label overlapping the border" treatment and no
+    "prepend a first line of text" treatment: the role label lives in the
+    border title uniformly, and the body is *only* the message content.
+
+    A box starts life as ``role="pending"`` (an unknown/placeholder slot
+    created the instant a turn begins) and is later *resolved* in place into a
+    concrete role via :meth:`set_role`. Resolving never re-mounts the widget,
+    so its position in the scroll — i.e. its true arrival order — is preserved.
+    """
+
+    def __init__(self, role: str, content: str = "", subtitle: str = ""):
+        super().__init__(classes=f"chat-message box-{role}")
         self.role = role
-        self.content = content
-        self.timestamp = timestamp or datetime.now().strftime("%H:%M")
-        self.tokens = tokens
+        self._content = content
+        self._subtitle = subtitle
+
+    def _format(self, content: str) -> str:
+        # Preserve single newlines as paragraph breaks for Markdown.
+        return content.replace("\n", "\n\n")
 
     def compose(self) -> ComposeResult:
-        """Compose the message widget."""
-        # Preserve newlines in markdown by converting single newlines to double
-        # This makes Markdown treat them as paragraph breaks
-        content = self.content.replace('\n', '\n\n')
-
-        # Create markdown widget with border
-        md = Markdown(content, classes=f"message-content")
+        md = Markdown(self._format(self._content), classes="message-content")
         self._md_widget = md
-
-        # Set border titles based on role
-        role_label = self.role.capitalize()
-        md.border_title = f"{role_label} {self.timestamp}"
-
-        if self.tokens:
-            md.border_subtitle = self.tokens
-
+        md.border_title = ROLE_LABELS.get(self.role, self.role.capitalize())
+        if self._subtitle:
+            md.border_subtitle = self._subtitle
         yield md
 
-    def update_content(self, content: str):
-        """Update message content (for streaming)."""
-        self.content = content
-        # Preserve newlines
-        display_content = content.replace('\n', '\n\n')
+    def set_role(self, role: str) -> None:
+        """Resolve/retype this box in place (e.g. pending → assistant)."""
+        self.remove_class(f"box-{self.role}")
+        self.role = role
+        self.add_class(f"box-{role}")
         if hasattr(self, "_md_widget"):
-            self._md_widget.update(display_content)
+            self._md_widget.border_title = ROLE_LABELS.get(role, role.capitalize())
+
+    def update_content(self, content: str) -> None:
+        """Replace the body content in place (used for streaming text)."""
+        self._content = content
+        if hasattr(self, "_md_widget"):
+            self._md_widget.update(self._format(content))
+
+    @property
+    def content_text(self) -> str:
+        return self._content
+
+    def set_subtitle(self, subtitle: str) -> None:
+        self._subtitle = subtitle
+        if hasattr(self, "_md_widget"):
+            self._md_widget.border_subtitle = subtitle
+
+
+# Backwards-compatible alias: older code/tests referenced `ChatMessage`.
+ChatMessage = MessageBox
 
 
 class ChatListItem(Static):
@@ -247,76 +283,159 @@ class ChatSidebar(Container):
 
 
 class ChatDisplay(VerticalScroll):
-    """Main chat display area with incremental message rendering."""
+    """Main chat display area with incremental, arrival-ordered rendering.
+
+    Every entry is a :class:`MessageBox`. During a streaming turn the display
+    runs a small state machine driven by normalized backend events
+    (see ``TauBackend.stream_chat``'s ``on_event``):
+
+    - ``turn_start`` opens a *pending* box (unknown type) at the end.
+    - the first ``text_delta`` *resolves* that pending box into an assistant
+      box and streams text into it in place (so text is never duplicated).
+    - a ``tool_call`` resolves an *empty* pending box into a tool-call box,
+      otherwise mounts a NEW tool-call box below (text-then-call keeps both,
+      in order).
+    - a ``tool_result`` mounts a tool-result box.
+
+    Because pending boxes resolve in place and new boxes mount at the end, the
+    assistant's final text (a fresh turn after the tool calls) lands LAST.
+    """
 
     def __init__(self):
         super().__init__(id="chat-display")
-        self._last_render_time = 0
-        self._stream_buffer = ""
-        self._streaming_message: Optional[ChatMessage] = None
+        self._last_render_time = 0.0
+        # The current turn's text accumulates into exactly ONE box.
+        self._active_text: str = ""
+        # The pending/active box for the current turn (resolved in place).
+        self._pending_box: Optional[MessageBox] = None
+        # The box currently receiving streamed assistant text.
+        self._text_box: Optional[MessageBox] = None
 
     def clear_messages(self):
-        """Clear all messages from display."""
-        self.query("ChatMessage").remove()
+        """Clear all messages from display and reset streaming state."""
+        self.query(MessageBox).remove()
+        self._pending_box = None
+        self._text_box = None
+        self._active_text = ""
 
-    def add_message(self, role: str, content: str, timestamp: str = "", tokens: str = ""):
-        """Add a message to the display."""
-        msg = ChatMessage(role, content, timestamp, tokens)
-        self.mount(msg)
+    def add_message(self, role: str, content: str, subtitle: str = ""):
+        """Add a finished (non-streaming) message box to the display."""
+        box = MessageBox(role, content, subtitle)
+        self.mount(box)
+        self.scroll_end(animate=False)
+        return box
+
+    # ------------------------------------------------------------------
+    # Streaming state machine (driven by TauBackend.stream_chat on_event)
+    # ------------------------------------------------------------------
+
+    def handle_stream_event(self, event: dict) -> None:
+        """Render one normalized backend lifecycle event in arrival order."""
+        kind = event.get("kind")
+        if kind == "turn_start":
+            self._on_turn_start()
+        elif kind == "text_delta":
+            self._on_text_delta(event.get("delta", ""))
+        elif kind == "tool_call":
+            self._on_tool_call(event)
+        elif kind == "tool_result":
+            self._on_tool_result(event)
+
+    def _flush_text(self) -> None:
+        """Force the active text box to show all accumulated text.
+
+        The 30 Hz throttle in :meth:`_on_text_delta` can skip the final delta;
+        call this whenever the current text box stops being the active target
+        (a new turn, a tool call, or end of stream) so no tail text is lost.
+        """
+        if self._text_box is not None:
+            self._text_box.update_content(self._active_text)
+            self.scroll_end(animate=False)
+
+    def _on_turn_start(self) -> None:
+        # Flush any throttled tail from the previous turn's text box, then open
+        # a fresh unknown/pending slot for this turn and reset text state.
+        self._flush_text()
+        self._active_text = ""
+        self._text_box = None
+        self._pending_box = MessageBox("pending", "")
+        self.mount(self._pending_box)
         self.scroll_end(animate=False)
 
-    def start_streaming_message(self, role: str):
-        """Start a new streaming message."""
-        self._stream_buffer = ""
-        self._streaming_message = ChatMessage(role, "", datetime.now().strftime("%H:%M"))
-        self.mount(self._streaming_message)
-        self.scroll_end(animate=False)
-
-    def update_streaming_message(self, chunk: str):
-        """Update streaming message with new chunk (30Hz throttled)."""
-        self._stream_buffer += chunk
-
-        # Throttle to 30Hz
+    def _on_text_delta(self, delta: str) -> None:
+        if not delta:
+            return
+        # Resolve the pending slot into the assistant text box (in place), or
+        # open one if the turn produced text without a turn_start (defensive).
+        if self._text_box is None:
+            if self._pending_box is not None:
+                self._pending_box.set_role("assistant")
+                self._text_box = self._pending_box
+                self._pending_box = None
+            else:
+                self._text_box = self.add_message("assistant", "")
+        self._active_text += delta
+        # Throttle re-render to ~30 Hz.
         now = time.time()
-        if now - self._last_render_time > 0.033:  # ~30 FPS
-            if self._streaming_message:
-                self._streaming_message.update_content(self._stream_buffer)
-                self.scroll_end(animate=False)
+        if now - self._last_render_time > 0.033:
+            self._text_box.update_content(self._active_text)
+            self.scroll_end(animate=False)
             self._last_render_time = now
 
-    def finalize_streaming_message(self, tokens: str = ""):
-        """Finalize the streaming message."""
-        if self._streaming_message:
-            # Final update with token count
-            self._streaming_message.update_content(self._stream_buffer)
-            self._streaming_message.tokens = tokens
-
-            # Update border subtitle
-            if hasattr(self._streaming_message, "_md_widget"):
-                self._streaming_message._md_widget.border_subtitle = tokens
-
-            self._streaming_message = None
-            self._stream_buffer = ""
-
-    def add_tool_call(self, tool_name: str, arguments: dict) -> Static:
-        """Add a collapsible tool call block to the display."""
-        # Format arguments for display
+    def _on_tool_call(self, event: dict) -> None:
+        # Preamble text (if any) belongs to its own box and is now complete.
+        self._flush_text()
+        tool_name = event.get("name", "")
+        arguments = event.get("arguments", {})
         args_text = json.dumps(arguments, indent=2, default=str)
-        content = f"**Tool call:** `{tool_name}`\n\n```json\n{args_text}\n```"
-        widget = Static(content, classes="tool-call")
-        self.mount(widget)
+        content = f"`{tool_name}`\n\n```json\n{args_text}\n```"
+        # If the pending slot is still empty (model went straight to a tool
+        # call with no preamble text), resolve it in place; else mount a new
+        # box after whatever came before (preserves order).
+        if self._pending_box is not None and not self._active_text:
+            box = self._pending_box
+            box.set_role("toolCall")
+            box.update_content(content)
+            self._pending_box = None
+        else:
+            box = self.add_message("toolCall", content)
+        # Once a tool call lands, the current turn's assistant-text box (if any)
+        # is finished; subsequent text belongs to a later turn / new box.
+        self._text_box = None
+        self._active_text = ""
+        box._tool_call_id = event.get("id", "")  # type: ignore[attr-defined]
         self.scroll_end(animate=False)
-        return widget
 
-    def add_tool_result(self, tool_name: str, result_text: str, is_error: bool = False) -> Static:
-        """Add a collapsible tool result block to the display."""
+    def _on_tool_result(self, event: dict) -> None:
+        tool_name = event.get("name", "")
+        result_text = str(event.get("result", ""))
+        is_error = bool(event.get("is_error", False))
+        role = "toolResult"
         status = "Error" if is_error else "Success"
-        status_class = "error" if is_error else "success"
-        content = f"**Tool result [{status}]** `{tool_name}`\n\n```\n{result_text[:500]}\n```"
-        widget = Static(content, classes=f"tool-result {status_class}")
-        self.mount(widget)
+        content = f"`{tool_name}` — {status}\n\n```\n{result_text[:500]}\n```"
+        box = self.add_message(role, content)
+        if is_error:
+            box.add_class("box-error")
+
+    def finalize_turn(self, subtitle: str = "") -> None:
+        """Flush the active text box and clear per-turn streaming state.
+
+        Called once after the whole agent loop finishes. Any box that never
+        received text (a leftover pending slot) is removed so an empty
+        placeholder is never left behind.
+        """
+        if self._text_box is not None:
+            self._text_box.update_content(self._active_text)
+            if subtitle:
+                self._text_box.set_subtitle(subtitle)
+        # A pending slot that was opened but never resolved (e.g. the final
+        # turn was tool-only and produced no trailing text) is empty — drop it.
+        if self._pending_box is not None:
+            self._pending_box.remove()
+        self._pending_box = None
+        self._text_box = None
+        self._active_text = ""
         self.scroll_end(animate=False)
-        return widget
 
 
 class ChatInput(TextArea):
@@ -517,33 +636,32 @@ class Parley(App):
             self.sub_title = f"{self.current_chat.model}"
 
     async def _get_assistant_response(self):
-        """Get and display assistant response with streaming."""
+        """Get and display assistant response with streaming.
+
+        Widgets are mounted live, in true arrival order, off the backend's
+        normalized event stream (``on_event``): a pending placeholder opens at
+        each turn and resolves into an assistant-text or tool-call box, with
+        tool results mounted as they complete. The assistant's final text
+        therefore lands LAST, after the tool calls it follows.
+        """
         display = self.query_one(ChatDisplay)
 
-        # Start streaming message
-        display.start_streaming_message("assistant")
+        # Bridge backend lifecycle events onto the display state machine.
+        # The separate text `callback` is unused here (text is delivered via
+        # the `text_delta` structured event), but the contract still requires
+        # it, so pass a no-op.
+        def on_event(event: dict) -> None:
+            display.handle_stream_event(event)
 
-        # Stream response — now returns (content, usage, new_messages, tool_calls)
         content, usage, new_messages, tool_calls_info = await self.current_backend.stream_chat(
             self.current_chat.messages,
-            display.update_streaming_message
+            lambda _delta: None,
+            on_event=on_event,
         )
 
-        # Finalize streaming message
+        # Flush the active text box and clear per-turn streaming state.
         tokens_str = f"{usage['completion_tokens']} tokens"
-        display.finalize_streaming_message(tokens_str)
-
-        # Display tool calls from streaming events
-        for tc in tool_calls_info:
-            tool_name = tc["name"]
-            args = tc.get("arguments", {})
-            display.add_tool_call(tool_name, args)
-
-            # Display tool result if available
-            result = tc.get("result", "")
-            is_error = tc.get("error", False)
-            if result:
-                display.add_tool_result(tool_name, result, is_error)
+        display.finalize_turn(tokens_str)
 
         # Update chat history with new messages from agent loop
         # (assistant responses + tool results, skip user message which

@@ -73,46 +73,67 @@ Screen {
 }
 
 /* === Message Styling === */
-ChatMessage {
+/* ONE widget (MessageBox) renders every chat entry. The role only selects a
+   border color via a `box-<role>` modifier class; the body styling is shared. */
+.chat-message {
     margin: 1 0;
 }
 
 .message-content {
     padding: 1;
     color: #cdd6f4;
+    border: solid #45475a;  /* default; per-role rules below override */
+}
+
+/* Pending placeholder — muted, collapsed until it resolves into a real role */
+.box-pending {
+    height: auto;
+}
+
+.box-pending .message-content {
+    border: solid #6c7086;  /* Muted gray */
+    background: #232334;
+    color: #6c7086;
 }
 
 /* User messages - calm teal/cyan */
-.message-user .message-content {
+.box-user .message-content {
     border: solid #89dceb;  /* Soft cyan */
     background: #1a3a3f;    /* Dark teal background */
 }
 
-.message-user .message-header {
-    color: #89dceb;
-    text-style: bold;
-}
-
 /* Assistant messages - warm amber */
-.message-assistant .message-content {
+.box-assistant .message-content {
     border: solid #f9e2af;  /* Soft yellow */
     background: #3a3020;    /* Dark amber background */
 }
 
-.message-assistant .message-header {
-    color: #f9e2af;
-    text-style: bold;
-}
-
 /* System messages - subtle purple */
-.message-system .message-content {
+.box-system .message-content {
     border: solid #cba6f7;  /* Soft purple */
     background: #2a2139;    /* Dark purple background */
 }
 
-.message-system .message-header {
-    color: #cba6f7;
-    text-style: bold;
+/* Tool calls - amber, indented slightly to read as assistant-initiated */
+.box-toolCall .message-content {
+    border: solid #fab387;  /* Soft orange */
+    background: #2d2818;    /* Dark amber background */
+}
+
+/* Tool results - cyan, indented under their call */
+.box-toolResult {
+    margin: 1 0 1 2;
+}
+
+.box-toolResult .message-content {
+    border: solid #a6e3a1;  /* Soft green for success */
+    background: #1a3a2a;    /* Dark green background */
+}
+
+/* Error tool results - red */
+.box-error .message-content {
+    border: solid #f38ba8;  /* Soft red for errors */
+    background: #3a2025;    /* Dark red background */
 }
 
 /* === Input Styling === */
@@ -181,31 +202,6 @@ Markdown CodeBlock {
     color: #a6e3a1;  /* Soft green for code */
 }
 
-/* === Tool Call and Result Blocks === */
-Static.tool-call {
-    margin: 1 0;
-    padding: 1;
-    border: solid #f9e2af;  /* Soft yellow - matches assistant theme */
-    background: #2d2818;    /* Dark amber background */
-    color: #f9e2af;
-}
-
-Static.tool-result {
-    margin: 1 0 1 1;
-    padding: 1;
-    border: solid #89dceb;  /* Soft cyan - distinct from tool call */
-    background: #1a3a3f;    /* Dark teal background */
-    color: #89dceb;
-}
-
-Static.tool-result.error {
-    border: solid #f38ba8;  /* Soft red for errors */
-    background: #3a2025;    /* Dark red background */
-    color: #f38ba8;
-}
-
-Static.tool-result.success {
-    border: solid #a6e3a1;  /* Soft green for success */
-    background: #1a3a2a;    /* Dark green background */
-    color: #a6e3a1;
-}
+/* Tool-call / tool-result blocks are rendered by the shared MessageBox widget
+   (see the `.box-toolCall` / `.box-toolResult` rules above), not by a separate
+   Static widget. */
