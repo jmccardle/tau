@@ -17,7 +17,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from typing import Any, Awaitable, Callable
 
@@ -222,16 +221,17 @@ class AgentLoop:
                 break
 
             # Emit message_end for the assistant's text/tool call response
+            msg_content = [
+                c.model_dump() if hasattr(c, "model_dump") else c
+                for c in assistant.content
+            ]
             await self._emit(
                 AgentEvent(
                     type="message_end",
                     timestamp=int(time.time() * 1000),
                     message={
                         "role": "assistant",
-                        "content": [
-                            c.model_dump() if hasattr(c, "model_dump") else c
-                            for c in assistant.content
-                        ],
+                        "content": msg_content,
                     },
                 )
             )
@@ -442,7 +442,6 @@ class AgentLoop:
 
         partial_text = ""
         partial_content_blocks: list[dict[str, Any]] = []
-        tool_call_ids: list[str] = []
 
         async for event in stream:
             if isinstance(event, TextDeltaEvent):
@@ -466,31 +465,15 @@ class AgentLoop:
                     )
                 )
             elif isinstance(event, ToolCallDeltaEvent):
-                # Accumulate tool call metadata from the delta dict.
-                # The delta has OpenAI-style fields: {id, function: {name, arguments}}
-                delta = event.delta
-                tc_id = delta.get("id", "")
-                tc_name = delta.get("function", {}).get("name", "")
-                tc_args_str = delta.get("function", {}).get("arguments", "")
-
-                if tc_id and tc_id not in tool_call_ids:
-                    tool_call_ids.append(tc_id)
-                    partial_content_blocks.append({
-                        "type": "toolCall",
-                        "id": tc_id,
-                        "name": tc_name,
-                        "arguments": {},
-                    })
-                elif tc_id and tc_id in tool_call_ids:
-                    # Update existing tool call's accumulated arguments
-                    for block in reversed(partial_content_blocks):
-                        if block.get("id") == tc_id and block.get("type") == "toolCall":
-                            try:
-                                args = json.loads(tc_args_str) if tc_args_str else {}
-                            except (json.JSONDecodeError, TypeError):
-                                args = {"raw": tc_args_str} if tc_args_str else {}
-                            block["arguments"] = args
-                            break
+                # The provider owns tool-call accumulation; consume its
+                # already-accumulated partial message rather than re-parsing the
+                # raw per-chunk delta (which is only a fragment).
+                partial = event.partial
+                if partial is not None:
+                    partial_content_blocks = [
+                        c.model_dump() if hasattr(c, "model_dump") else c
+                        for c in partial.content
+                    ]
 
                 await self._emit(
                     AgentEvent(

@@ -31,6 +31,7 @@ from typing import Any, AsyncIterator, Literal
 import httpx
 
 from tau_ai.providers.base import Provider
+from tau_ai.json_parse import parse_json_with_repair, parse_streaming_json
 from tau_ai.streaming import (
     DoneEvent,
     ErrorEvent,
@@ -52,27 +53,77 @@ from tau_ai.types import (
 
 
 @dataclass
+class _ToolCallAccumulator:
+    """Accumulates a single tool call across delta events.
+
+    ``name`` and ``arguments_parts`` are accumulated by concatenation: OpenAI
+    streams them as incremental fragments, one piece per chunk.
+    """
+    id: str = ""
+    name: str = ""
+    index: int | None = None
+    arguments_parts: list[str] = field(default_factory=list)
+
+
+@dataclass
 class _Accumulator:
     """Internal accumulator for building AssistantMessage during streaming.
 
     Accumulates text deltas, tool call arguments, and metadata
     across streaming events until the response is complete.
+
+    Tool calls are kept in first-seen order (``tool_calls``) and indexed by both
+    OpenAI stream ``index`` and tool-call ``id`` so that follow-up argument
+    fragments — which carry only ``index`` — route to the right call.
     """
     text_parts: list[str] = field(default_factory=list)
     thinking_parts: list[str] = field(default_factory=list)
-    tool_calls: dict[str, _ToolCallAccumulator] = field(default_factory=dict)
+    tool_calls: list[_ToolCallAccumulator] = field(default_factory=list)
+    by_index: dict[int, _ToolCallAccumulator] = field(default_factory=dict)
+    by_id: dict[str, _ToolCallAccumulator] = field(default_factory=dict)
     has_tool_calls: bool = False
     has_text: bool = False
     has_thinking: bool = False
     response_id: str | None = None
 
 
-@dataclass
-class _ToolCallAccumulator:
-    """Accumulates a single tool call across delta events."""
-    id: str = ""
-    name: str = ""
-    arguments_parts: list[str] = field(default_factory=list)
+def _resolve_tool_call_block(
+    accum: _Accumulator, tc_delta: dict, fallback_index: int
+) -> _ToolCallAccumulator:
+    """Find or create the accumulator for a streaming tool-call delta.
+
+    OpenAI sends ``id``+``name`` only on a call's first delta; later deltas carry
+    only ``index`` plus an arguments fragment. Resolve by ``index`` first (the
+    stable key across fragments), then by ``id`` — mirroring pi's
+    ``ensureToolCallBlock``. ``fallback_index`` (the position within this chunk's
+    ``tool_calls`` array) is used only when the server omits ``index``.
+    """
+    raw_index = tc_delta.get("index")
+    index = raw_index if isinstance(raw_index, int) else fallback_index
+    tc_id = tc_delta.get("id") or ""
+
+    block: _ToolCallAccumulator | None = None
+    if index is not None and index in accum.by_index:
+        block = accum.by_index[index]
+    if block is None and tc_id and tc_id in accum.by_id:
+        block = accum.by_id[tc_id]
+
+    if block is None:
+        block = _ToolCallAccumulator(id=tc_id, index=index)
+        accum.tool_calls.append(block)
+        if index is not None:
+            accum.by_index[index] = block
+        if tc_id:
+            accum.by_id[tc_id] = block
+        return block
+
+    if index is not None and block.index is None:
+        block.index = index
+        accum.by_index[index] = block
+    if tc_id and not block.id:
+        block.id = tc_id
+        accum.by_id[tc_id] = block
+    return block
 
 
 class AssistantMessageEventStream:
@@ -389,10 +440,7 @@ class OpenAICompletionsProvider(Provider):
                 tc_name = tc_delta.get("function", {}).get("name", "")
                 tc_args = tc_delta.get("function", {}).get("arguments", "")
                 if tc_id and tc_name:
-                    try:
-                        args_dict = json.loads(tc_args) if tc_args else {}
-                    except (json.JSONDecodeError, TypeError):
-                        args_dict = {"raw": tc_args} if tc_args else {}
+                    args_dict = parse_streaming_json(tc_args)
                     tool_calls.append(ToolCall(
                         id=tc_id,
                         name=tc_name,
@@ -466,12 +514,10 @@ class OpenAICompletionsProvider(Provider):
         for thinking in accum.thinking_parts:
             content_blocks.append(ThinkingContent(type="thinking", thinking=thinking))
 
-        for tc in accum.tool_calls.values():
-            args_str = "".join(tc.arguments_parts)
-            try:
-                args_dict = json.loads(args_str) if args_str else {}
-            except (json.JSONDecodeError, TypeError):
-                args_dict = {"raw": args_str} if args_str else {}
+        for tc in accum.tool_calls:
+            # Display path: arguments may still be mid-stream, so parse
+            # leniently (best-effort, {} until enough has arrived).
+            args_dict = parse_streaming_json("".join(tc.arguments_parts))
             content_blocks.append(ToolCall(id=tc.id, name=tc.name, arguments=args_dict))
 
         return AssistantMessage(
@@ -501,12 +547,20 @@ class OpenAICompletionsProvider(Provider):
         for thinking in accum.thinking_parts:
             content_blocks.append(ThinkingContent(type="thinking", thinking=thinking))
 
-        for tc in accum.tool_calls.values():
+        for tc in accum.tool_calls:
             args_str = "".join(tc.arguments_parts)
-            try:
-                args_dict = json.loads(args_str) if args_str else {}
-            except (json.JSONDecodeError, TypeError):
-                args_dict = {"raw": args_str} if args_str else {}
+            # Authoritative path: the stream is complete, so the arguments must
+            # be valid JSON. A complete-but-unparseable payload is a real error
+            # — raise (surfaced as an ErrorEvent) rather than fabricate args.
+            if args_str.strip():
+                args_dict = parse_json_with_repair(args_str)
+                if not isinstance(args_dict, dict):
+                    raise ValueError(
+                        f"Tool call {tc.id!r} ({tc.name!r}) arguments did not decode "
+                        f"to a JSON object: {args_str!r}"
+                    )
+            else:
+                args_dict = {}
             content_blocks.append(ToolCall(id=tc.id, name=tc.name, arguments=args_dict))
 
         # Determine stop_reason: use explicit value, or fall back to heuristic
@@ -578,7 +632,6 @@ class OpenAICompletionsProvider(Provider):
 
         client = self._get_client()
         accum = _Accumulator()
-        tool_call_index: dict[int, str] = {}  # maps chunk index to tool call id
 
         async def event_generator() -> AsyncIterator[Any]:
             try:
@@ -650,39 +703,21 @@ class OpenAICompletionsProvider(Provider):
                         accum.thinking_parts.append(reasoning)
                         partial = self._build_partial_message(accum, model)
 
-                    # Process tool call deltas
+                    # Process tool call deltas. OpenAI streams name and arguments
+                    # as incremental FRAGMENTS, one piece per chunk — concatenate
+                    # them. Route each fragment to its call by stream `index`
+                    # (falling back to `id`), since follow-up argument fragments
+                    # carry only the index.
                     deltas = delta.get("tool_calls", [])
                     for i, tc_delta in enumerate(deltas):
-                        tc_index = tc_delta.get("index", i)
-                        tc_id = tc_delta.get("id", "")
-                        tc_name = tc_delta.get("function", {}).get("name", "")
-                        tc_args = tc_delta.get("function", {}).get("arguments", "")
-
-                        if tc_id and tc_id not in tool_call_index:
-                            tool_call_index[i] = tc_id
-
-                        if tc_id:
-                            if tc_id not in accum.tool_calls:
-                                accum.tool_calls[tc_id] = _ToolCallAccumulator(id=tc_id)
-                        elif i in tool_call_index:
-                            tc_id = tool_call_index[i]
-
-                        if tc_id and tc_id in accum.tool_calls:
-                            # OpenAI sends the complete function name on each chunk;
-                            # replace rather than append.
-                            if tc_name:
-                                accum.tool_calls[tc_id].name = tc_name
-
-                        if tc_args and tc_id and tc_id in accum.tool_calls:
-                            # OpenAI streaming sends the complete accumulated argument
-                            # string on every chunk, not just the delta. Reconstruct
-                            # by tracking the last accumulated length and only appending
-                            # the new portion.
-                            tc_acc = accum.tool_calls[tc_id]
-                            last_args = "".join(tc_acc.arguments_parts)
-                            if len(tc_args) > len(last_args):
-                                tc_acc.arguments_parts.append(tc_args[len(last_args):])
-
+                        block = _resolve_tool_call_block(accum, tc_delta, i)
+                        func = tc_delta.get("function") or {}
+                        tc_name = func.get("name") or ""
+                        if tc_name:
+                            block.name += tc_name
+                        tc_args = func.get("arguments") or ""
+                        if tc_args:
+                            block.arguments_parts.append(tc_args)
                         accum.has_tool_calls = True
 
                         partial = self._build_partial_message(accum, model)
@@ -697,27 +732,22 @@ class OpenAICompletionsProvider(Provider):
                             accum, model, usage_obj, stop_reason
                         )
 
-                        # Yield final tool call events if there were tool calls
+                        # Emit one final tool-call delta per call, derived from the
+                        # already-parsed ToolCall blocks on final_msg (no re-parse).
                         if accum.has_tool_calls:
-                            for tc in accum.tool_calls.values():
-                                args_str = "".join(tc.arguments_parts)
-                                try:
-                                    args_dict = json.loads(args_str) if args_str else {}
-                                except (json.JSONDecodeError, TypeError):
-                                    args_dict = {"raw": args_str} if args_str else {}
+                            for pos, tc_block in enumerate(final_msg.get_tool_calls()):
                                 tc_delta = {
-                                    "index": list(accum.tool_calls.keys()).index(tc.id),
-                                    "id": tc.id,
+                                    "index": pos,
+                                    "id": tc_block.id,
                                     "function": {
-                                        "name": tc.name,
-                                        "arguments": json.dumps(args_dict),
+                                        "name": tc_block.name,
+                                        "arguments": json.dumps(tc_block.arguments),
                                     },
                                 }
-                                partial = self._build_final_message(accum, model, usage_obj)
                                 yield ToolCallDeltaEvent(
                                     type="toolcall_delta",
                                     delta=tc_delta,
-                                    partial=partial,
+                                    partial=final_msg,
                                 )
 
                         # Yield done event

@@ -262,6 +262,7 @@ class TauBackend(Backend):
                         for block in content:
                             if isinstance(block, dict) and block.get("type") == "toolCall":
                                 tc_id = block.get("id", "")
+                                raw_args = block.get("arguments", {})
                                 # Skip if already tracked (prevents duplicates
                                 # from multi-turn message_end events)
                                 if any(tc["id"] == tc_id for tc in tool_calls_info):
@@ -269,7 +270,7 @@ class TauBackend(Backend):
                                 tool_calls_info.append({
                                     "id": tc_id,
                                     "name": block.get("name", ""),
-                                    "arguments": block.get("arguments", {}),
+                                    "arguments": raw_args,
                                 })
                 # New turn in a multi-turn loop — reset for the next message.
                 streaming_text = ""

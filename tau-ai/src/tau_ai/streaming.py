@@ -27,10 +27,10 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Literal
 
+from tau_ai.json_parse import parse_streaming_json
 from tau_ai.types import AssistantMessage, TextContent, ToolCall, Usage
 
 # Forward reference for type hints
@@ -171,6 +171,10 @@ class AssistantMessageEventStream:
         self._error: str | None = None
         self._event_queue: asyncio.Queue[Any] = asyncio.Queue()
         self._collector_task: asyncio.Task[None] | None = None
+        # Raw-dict accumulation path only: per-index tool-call block and the
+        # growing raw argument-fragment buffer (concatenated, then parsed).
+        self._tool_blocks_by_index: dict[int, ToolCall] = {}
+        self._tool_args_by_index: dict[int, str] = {}
 
     def __aiter__(self) -> "AssistantMessageEventStream":
         """Return self as the async iterator."""
@@ -315,36 +319,29 @@ class AssistantMessageEventStream:
         if self._partial is None:
             self._partial = self._make_empty_partial()
 
-        tc_id = delta.get("id", "")
-        tc_name = delta.get("function", {}).get("name", "")
-        tc_args = delta.get("function", {}).get("arguments", "")
+        tc_id = delta.get("id", "") or ""
+        func = delta.get("function") or {}
+        tc_name = func.get("name") or ""
+        tc_args = func.get("arguments") or ""
 
-        # Accumulate into partial
-        tc_blocks = [c for c in self._partial.content if hasattr(c, "id") and c.id == tc_id]
-        if tc_blocks:
-            tc_block = tc_blocks[0]
-            if tc_name:
-                tc_block.name += tc_name
-            if tc_args:
-                current_args = tc_block.arguments
-                if isinstance(current_args, dict):
-                    try:
-                        merged = {**current_args, **json.loads(tc_args)}
-                        tc_block.arguments = merged
-                    except (json.JSONDecodeError, TypeError):
-                        tc_block.arguments = {**current_args, "raw": tc_args}
-                else:
-                    tc_block.arguments = {"raw": tc_args}
-        else:
-            # New tool call
-            if tc_id:
-                try:
-                    args_dict = json.loads(tc_args) if tc_args else {}
-                except (json.JSONDecodeError, TypeError):
-                    args_dict = {"raw": tc_args} if tc_args else {}
-                self._partial.content.append(
-                    ToolCall(id=tc_id, name=tc_name, arguments=args_dict)
-                )
+        # Resolve (or create) the block for this call. Follow-up fragments carry
+        # only `index`, so the stream index is the stable key.
+        tc_block = self._tool_blocks_by_index.get(index)
+        if tc_block is None:
+            tc_block = ToolCall(id=tc_id, name="", arguments={})
+            self._tool_blocks_by_index[index] = tc_block
+            self._tool_args_by_index[index] = ""
+            self._partial.content.append(tc_block)
+        if tc_id and not tc_block.id:
+            tc_block.id = tc_id
+
+        # Name and arguments stream as fragments — concatenate. The argument
+        # buffer is parsed best-effort for live display (no fabricated values).
+        if tc_name:
+            tc_block.name += tc_name
+        if tc_args:
+            self._tool_args_by_index[index] += tc_args
+            tc_block.arguments = parse_streaming_json(self._tool_args_by_index[index])
 
         await self._event_queue.put(ToolCallDeltaEvent(
             type="toolcall_delta",
