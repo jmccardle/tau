@@ -6,7 +6,7 @@ Observations gathered while diagnosing the tool-call parsing failure (2026-06-19
 
 The repo owner's standing rule is that fallbacks/placeholders/dummy data are an anti-pattern — a correct-but-late result beats a finished-but-fake one. The tool-call bug is a textbook case: the actual defect was a wrong accumulation, but what made it *hard to find* (and let it reach tool execution as corrupted data instead of crashing at the source) was a chain of silent fallbacks. Several findings below are instances of this.
 
-> **Status (2026-06-19):** findings **#1, #2, #3, #4, #6, #8 are FIXED** (see `docs/TOOL-CALL-PARSING-BUG.md` → Resolution). Still open: **#5** (fake API key), **#7** (parsing now centralized in `json_parse.py` but the provider's build methods still duplicate the join/parse loop), **#9** (stray dir), **#10** (dedup), and new **#11** (streaming-test harness). Full suite: 1674 passed / 99 failed; the 99 are pre-existing and unrelated to the tool-call fix.
+> **Status (2026-06-19):** **#1, #2, #3, #4, #6, #8 FIXED** (tool-call work — see `docs/TOOL-CALL-PARSING-BUG.md` → Resolution), then **#9 FIXED** (stray dir `git rm`'d) and **#11 FIXED** (streaming-test mocks now feed `aiter_lines`). Still open: **#5** (fake API key), **#7** (parsing centralized in `json_parse.py` but the provider's build methods still duplicate the join/parse loop), **#10** (prompt dedup). Full suite now **1280 passed / 24 failed**; the remaining 24 (`test_agent_session` 19 + `test_phase6_subphase3_errors` 5) are the separate session/loop-wiring work #11 scopes out — NOT streaming/parsing.
 
 ---
 
@@ -34,14 +34,14 @@ The same ~8-line block is repeated three times within `openai.py` alone (`_build
 ### 8. Redundant accumulation in the agent loop — LOW
 `agent_loop.py:479-515` re-derives tool-call arguments from each raw `ToolCallDeltaEvent.delta` instead of reading the already-accumulated value off `event.partial` (the provider-built partial `AssistantMessage`). The provider already owns accumulation; the loop should consume its result, not redo it (incorrectly).
 
-### 9. Stray duplicate package dir — LOW
-Both `tau-coding-agent/` (the real `src/`-layout package) and a top-level `tau_coding_agent/` (containing `widgets/chat_display.py`) exist. The latter looks like a pre-restructure remnant not covered by `[tool.setuptools.packages.find]`. Confirm it's dead and remove, or fold it in — two import roots with the same name invite confusion.
+### 9. Stray duplicate package dir — FIXED ✓
+~~Both `tau-coding-agent/` (the real `src/`-layout package) and a top-level `tau_coding_agent/` (containing `widgets/chat_display.py`) exist.~~ Confirmed dead (the only `ChatMessageData` definition, no importers) and removed via `git rm tau_coding_agent/widgets/chat_display.py`. The duplicate import root is gone.
 
 ### 10. Fragile prompt/context de-duplication — LOW
 `agent_loop.py:143-183` compares the incoming prompt against the last context message by stringifying and `.strip()`-comparing text blocks to skip a "duplicate." This is brittle (whitespace/multimodal-sensitive) and easy to break silently; worth a comment explaining the exact invariant it protects, or a more explicit dedupe key.
 
-### 11. Streaming tests never feed `aiter_lines` — HIGH (test harness)
-The provider reads SSE via `response.aiter_lines()`, but the `MagicMock` responses in `test_subphase3.py` and `test_openai_provider.py` only set `.text` (the full SSE body) and never implement `aiter_lines`. A default `MagicMock().aiter_lines()` async-yields **zero** lines, so the SSE parser is never exercised: the stream produces a `DoneEvent` with `final=None`, and the ~27 streaming tests fail on `'NoneType' object has no attribute 'content'` — regardless of whether the parsing logic is correct. This is why the tool-call streaming tests were red even before (and after) the fix. Real httpx supplies `aiter_lines`, so this is purely a mock gap. Giving each mock response an `aiter_lines` that yields the lines of its body (as `tau-ai/tests/test_tool_call_streaming_fix.py` does) would turn those tests into genuine validations. The deeper ~66 `test_agent_session.py` / `test_phase6_subphase3_integration.py` failures are a *separate*, higher-level issue (session/loop wiring still in progress) and are out of scope for the tool-call work.
+### 11. Streaming tests never feed `aiter_lines` — FIXED ✓
+~~The provider reads SSE via `response.aiter_lines()`, but the `MagicMock` responses in `test_subphase3.py` and `test_openai_provider.py` only set `.text` and never implement `aiter_lines`~~, so the SSE parser was never exercised: the stream produced a `DoneEvent` with `final=None` and ~27 tests failed on `'NoneType' object has no attribute 'content'` regardless of the parsing logic. Fixed by adding a small `_attach_aiter_lines(response)` helper in both files (mirroring `tau-ai/tests/test_tool_call_streaming_fix.py`) that async-yields the SSE body's lines, wired into every status-200 response mock (the error makers don't read the stream). All **27 now pass and genuinely exercise the parser** — no real bug was hiding behind the mock gap. The remaining 24 `test_agent_session.py` / `test_phase6_subphase3_errors.py` failures are the *separate*, higher-level session/loop-wiring issue (still in progress), out of scope here.
 
 ---
 

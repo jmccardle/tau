@@ -53,6 +53,27 @@ def _sse_stream(chunks: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _attach_aiter_lines(response: MagicMock) -> MagicMock:
+    """Give a mock response an ``aiter_lines()`` that async-yields its SSE body's
+    lines, the way real httpx does.
+
+    The provider reads the stream via ``response.aiter_lines()``
+    (``openai.py:659``), NOT ``.text``. A bare ``MagicMock.aiter_lines()`` yields
+    zero lines, so the SSE parser never runs and ``DoneEvent.final`` is ``None``
+    — which is why these streaming tests failed on ``'NoneType' object has no
+    attribute 'content'`` regardless of the parsing logic (CODE-QUALITY-NOTES
+    #11). Call this on every status-200 response mock.
+    """
+    body = response.text
+
+    async def _aiter():
+        for line in body.split("\n"):
+            yield line
+
+    response.aiter_lines = _aiter
+    return response
+
+
 def _make_mock_text_response(text_chunks: list[str], finish_reason: str = "stop", usage: dict | None = None) -> MagicMock:
     """Create a mock HTTP response with streaming text deltas."""
     chunks = []
@@ -76,6 +97,7 @@ def _make_mock_text_response(text_chunks: list[str], finish_reason: str = "stop"
     response = MagicMock()
     response.status_code = 200
     response.text = _sse_stream(chunks)
+    _attach_aiter_lines(response)
     response.headers = {"x-request-id": "test-req-id"}
     response.json.return_value = {
         "usage": usage or {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
@@ -155,6 +177,7 @@ def _make_mock_tool_call_response(tool_calls: list[dict]) -> MagicMock:
     response = MagicMock()
     response.status_code = 200
     response.text = _sse_stream(chunks)
+    _attach_aiter_lines(response)
     response.headers = {"x-request-id": "test-tool-req-id"}
     response.json.return_value = {
         "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
@@ -186,6 +209,7 @@ def _make_length_response(usage: dict | None = None) -> MagicMock:
     response = MagicMock()
     response.status_code = 200
     response.text = _sse_stream(chunks)
+    _attach_aiter_lines(response)
     response.headers = {"x-request-id": "test"}
     response.json.return_value = {
         "usage": usage or {"prompt_tokens": 10, "completion_tokens": 4000, "total_tokens": 4010}
