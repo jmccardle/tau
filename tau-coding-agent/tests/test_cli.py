@@ -182,11 +182,16 @@ class _FakeBackend:
             callback(d)
             if on_event is not None:
                 on_event({"kind": "text_delta", "delta": d})
-        return "Hello world", {"total_tokens": 3}, [], []
+        # A realistic (if minimal) agent-loop transcript so the persistence
+        # test sees an assistant message land in the saved session.
+        new_messages = [
+            {"role": "assistant", "content": [{"type": "text", "text": "Hello world"}]},
+        ]
+        return "Hello world", {"total_tokens": 3}, new_messages, []
 
 
 @pytest.fixture
-def fake_backend(monkeypatch):
+def fake_backend(monkeypatch, tmp_path):
     holder = {}
 
     def factory(config):
@@ -195,6 +200,13 @@ def fake_backend(monkeypatch):
         return be
 
     monkeypatch.setattr("tau_coding_agent.backends.create_backend", factory)
+    # Sandbox session persistence: run_print() now saves a Chat, and tests must
+    # not write into the user's real ~/.tau/chats. Chat.save() reads
+    # session_store.TAU_DIR at call time, so redirecting it here is sufficient.
+    import tau_coding_agent.session_store as store
+
+    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    holder["tau_dir"] = tmp_path
     return holder
 
 
@@ -232,6 +244,49 @@ async def test_run_print_system_prompt_override(fake_backend, capsys):
         _config(),
     )
     assert fake_backend["backend"].messages[0] == {"role": "system", "content": "ROLE"}
+
+
+# ── headless persistence (sessions resumable from the TUI) ──────────────────
+
+async def test_run_print_persists_resumable_session(fake_backend, capsys):
+    rc = await run_print(CLIArgs(messages=["hi"], print_mode=True), _config())
+    assert rc == 0
+
+    # Exactly one session file written to the sandboxed chats dir.
+    chats = list((fake_backend["tau_dir"] / "chats").glob("*.json"))
+    assert len(chats) == 1
+    saved = json.loads(chats[0].read_text())
+
+    # Resumable from the TUI: `model` is a configured key (on_chat_selected looks
+    # it up in config["models"]), and the transcript is [system, user, *loop].
+    assert saved["model"] == "local-llm"
+    assert saved["backend"] == "openai"
+    roles = [m["role"] for m in saved["messages"]]
+    assert roles == ["system", "user", "assistant"]
+    # The user message is preserved verbatim as the resume anchor / title source.
+    assert saved["messages"][1] == {"role": "user", "content": "hi"}
+
+
+async def test_run_print_persists_in_json_mode_too(fake_backend, capsys):
+    # Persistence is independent of output format — json mode saves a session too.
+    rc = await run_print(
+        CLIArgs(messages=["hi"], print_mode=True, mode="json"), _config()
+    )
+    assert rc == 0
+    assert len(list((fake_backend["tau_dir"] / "chats").glob("*.json"))) == 1
+
+
+async def test_run_print_save_failure_propagates(fake_backend, monkeypatch):
+    # Fail-Early: if persistence fails, surface it — don't swallow it so the run
+    # silently "succeeds" without a resumable session.
+    import tau_coding_agent.session_store as store
+
+    def boom(self):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store.Chat, "save", boom)
+    with pytest.raises(OSError, match="disk full"):
+        await run_print(CLIArgs(messages=["hi"], print_mode=True), _config())
 
 
 # ── main() dispatch ─────────────────────────────────────────────────────────

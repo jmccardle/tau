@@ -18,8 +18,13 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+# Persistence is the Textual-free session_store module, so a headless run can
+# write a sidebar-visible, resumable session without importing the TUI.
+from tau_coding_agent.session_store import Chat
 
 if TYPE_CHECKING:  # avoid importing the dataclass module at runtime cost
     from tau_coding_agent.cli import CLIArgs
@@ -158,7 +163,7 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
         def noop(_delta: str) -> None:
             pass
 
-        text, usage, _new, _tcs = await backend.stream_chat(
+        text, usage, new_messages, _tcs = await backend.stream_chat(
             messages, noop, on_event=on_event
         )
         sys.stdout.write(
@@ -170,8 +175,37 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
             sys.stdout.write(delta)
             sys.stdout.flush()
 
-        await backend.stream_chat(messages, emit)
+        _text, _usage, new_messages, _tcs = await backend.stream_chat(messages, emit)
         sys.stdout.write("\n")
         sys.stdout.flush()
 
+    # Persist the run as a resumable session (same on-disk format the TUI uses),
+    # so `tau -p` conversations appear in the sidebar and can be continued there.
+    _save_session(name, model_config, messages, new_messages)
+
     return 0
+
+
+def _save_session(
+    name: str,
+    model_config: dict,
+    context_messages: list[dict],
+    new_messages: list[dict],
+) -> Path:
+    """Persist a headless run as a :class:`Chat` under ``~/.tau/chats/``.
+
+    The saved transcript mirrors ``Parley._get_assistant_response``: the
+    ``[system?, user]`` context messages followed by the agent loop's non-user
+    output (assistant + toolResult messages). ``name`` — the config key or
+    shorthand from ``resolve_model_config`` — is stored as the chat's ``model``
+    so the TUI can resolve a backend when the session is resumed.
+    """
+    transcript = list(context_messages)
+    transcript.extend(m for m in new_messages if m.get("role") != "user")
+    chat = Chat(
+        model=name,
+        backend=model_config.get("backend", ""),
+        messages=transcript,
+        created_at=time.time(),
+    )
+    return chat.save()

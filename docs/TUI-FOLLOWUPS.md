@@ -5,43 +5,53 @@ unified `MessageBox` + arrival-order streaming). They were **deliberately not
 patched** in that change — per the repo's Fail-Early rule, papering over them
 with fallbacks would hide the real defect. Captured here so they aren't lost.
 
-Status: open. Owner decision (2026-06-19): document now, fix soon.
+Status: item 1 FIXED (2026-06-19); items 2–3 open. Owner decision (2026-06-19):
+document now, fix soon.
 
 ---
 
-## 1. Saved-chat reload renders list-content as a string — BUG
+## 1. Saved-chat reload renders list-content as a string — FIXED ✅
 
-**Where:** `tau-coding-agent/src/tau_coding_agent/app.py`
-- `on_chat_selected` (`app.py:845`) reloads a persisted chat and renders each
-  message via `display.add_message(msg["role"], msg["content"])` (`app.py:865-867`).
-- `ChatDisplay.add_message(self, role, content: str, ...)` (`app.py:321`) and the
-  underlying `MessageBox` (`app.py:125`) expect `content` to be a **`str`**.
-- The system-prompt/history rebuild at `app.py:816-818` (`content = msg["content"]`)
-  makes the same assumption.
+**Was:** clicking a sidebar session busy-looped and froze the TUI.
 
-**Root cause:** message persistence is asymmetric. The *user* message is stored
-with a string body (`{"role": "user", "content": message}`, `app.py:626`), but
-*assistant* and *toolResult* messages are appended straight from the agent loop's
-result (`app.py:687`), where `content` is a **list of block dicts**
-(`[{"type": "text", "text": ...}, {"type": "toolCall", ...}]`) — the τ message
-shape from `SUBPHASE-0.0.md`. On reload, the list is handed to a `Static`/`Markdown`
-that wants a string, so saved assistant turns render wrong (or raise).
+**Root cause (confirmed):** message persistence is asymmetric. The *user* message
+is stored with a string body, but *assistant* and *toolResult* messages are
+appended straight from the agent loop, where `content` is a **list of block
+dicts** (`[{"type": "text", ...}, {"type": "toolCall", ...}]`). The reload path
+(`on_chat_selected`) handed that list to the **str-only** `MessageBox`, whose
+`_format` does `content.replace(...)` → `AttributeError: 'list' object has no
+attribute 'replace'` *inside* `compose()`. Fired for every message during the
+mount/layout cycle, that manifested as the freeze (reproduced: a Pilot
+`add_message("assistant", [block])` raises in compose).
 
-**Why not patched yet:** the correct fix is to render persisted list-content
-through the *same* block-formatting the live streaming path uses (extract text
-blocks; render toolCall/toolResult as their own `MessageBox`es, exactly like the
-live `tool_call`/`tool_result` events do), not to `str()` the list at the call
-site. That is a real rendering path, not a one-liner, and it belongs with a pass
-over the persistence format.
+**Fix (commit on master, 2026-06-19):**
+- Persistence (`Chat` + `TAU_DIR`) extracted to a Textual-free
+  `tau_coding_agent/session_store.py` (so `tau -p` can save sessions without
+  importing the TUI). `app.py` re-exports both for back-compat.
+- New `ChatDisplay.add_persisted_message(msg)` normalizes `str | list[dict]`
+  content and emits one `MessageBox` per block kind (text → assistant box;
+  `toolCall` → tool-call box; `toolResult` role → tool-result box), preserving
+  arrival order — so a *reloaded* turn looks identical to a freshly *streamed*
+  one. It raises `TypeError` on an unrenderable shape (Fail-Early), never
+  `str()`s a list.
+- Tool-call / tool-result Markdown formatting is now shared between the live and
+  reload paths via `format_tool_call_body` / `format_tool_result_body`, so they
+  can't drift.
+- `on_chat_selected` and `action_export_chat` go through the normalizer.
+- Verified against all 28 real saved chats: 27 render cleanly (incl. tool-heavy
+  ones with the old corrupted `{"raw": ...}` args). New regression tests in
+  `tests/test_chat_rendering.py` (reload section).
 
-**Fix sketch:**
-- Give `add_message` (or a new `add_persisted_message`) a content-normalizer that
-  accepts `str | list[dict]` and, for a list, emits one `MessageBox` per block
-  kind (text → assistant box; toolCall/toolResult → their boxes) — reusing the
-  `_on_text_delta` / `_on_tool_call` / `_on_tool_result` rendering rules.
-- Alternatively, normalize at persistence time so saved `content` is always the
-  same shape the renderer expects. Decide which side owns the contract.
-- mypy already flags the related `Chat | None` unions here (`app.py:626`, `:652`).
+**Known remaining edge case (separate cause, not the systemic bug):** a single
+*degenerate* chat — `1781803484.json`, an 827 KB runaway assistant **string**
+(not a list) — still times out, because parsing that much Markdown at once is
+genuinely slow. It is plain-string content, so the normalizer renders it fine in
+principle; the cost is the Markdown size, not the shape. That file (and the rest
+of the pre-fix test garbage) was deleted from `~/.tau/chats/` with the owner's
+go-ahead (one-session backup at `/tmp/tau-chats-backup-pre-reset.tar.gz`). If
+pathologically large assistant messages recur in normal use, consider a
+display-only large-content strategy (lazy/plain-Static render) — but do **not**
+silently truncate assistant prose (Fail-Early).
 
 ---
 

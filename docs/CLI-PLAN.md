@@ -29,14 +29,23 @@ The **Core** set below is now implemented in `tau-coding-agent/src/tau_coding_ag
 - `--provider` (long-only), `--tools`/`-t`, `--no-tools`/`-nt`, `--system-prompt`.
 - `--version`/`-v` (pi-aligned: `-v` is version; τ's old `-v`=verbose is dropped),
   `--verbose` (long-only), `--help`/`-h`.
+- **Session persistence** — a `--print` run now saves a `Chat` to `~/.tau/chats/`
+  in the same on-disk format the TUI writes (`session_store.py`), so a headless
+  conversation shows up in the sidebar and can be **resumed from the TUI** (pick
+  it → it loads the transcript and the next message continues it). The saved
+  `model` is the config key, so resume can resolve a backend. Both `text` and
+  `json` modes persist. (This satisfies "`tau -p` creates browsable/resumable
+  sessions" without the CLI-side `--continue`/`--resume` flags below.)
 
 **Deferred — Fail-Early, NOT stubbed (a `:level` thinking suffix or these flags
 error clearly rather than silently no-op):**
 - `--thinking` — needs a `reasoning_effort` send-path in τ-ai (`Model` has no
   reasoning field; `openai.py` only *reads* it). `--model x:high` raises until then.
-- `--continue`/`-c`, `--resume`, `--session`, `--fork`, `--name` — `SessionManager`
-  has `list()`/`load()`/`fork()`, but headless continuation also needs session→context
-  wiring + tests. Tracked, not yet exposed.
+- `--continue`/`-c`, `--resume`, `--session`, `--fork`, `--name` — the **CLI-side**
+  continuation flags. Sessions now persist (above) and resume *from the TUI*, but
+  resuming a prior session *headlessly* (load instead of `new_session()` in
+  `TauBackend.__init__`, select by `--continue`/`--session`) still needs the
+  session→context wiring + tests. Tracked, not yet exposed.
 
 Removed the old inert/non-pi flags (`--output`/`-o`, `-s`, `--config`, `--cwd`,
 `--context-window`, `--max-tokens`) and the `-p`=provider / `-v`=verbose short-alias

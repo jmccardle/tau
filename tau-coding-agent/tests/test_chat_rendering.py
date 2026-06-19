@@ -174,6 +174,138 @@ async def test_error_tool_result_gets_error_class():
 
 
 # ---------------------------------------------------------------------------
+# Saved-chat reload: persisted block-content must render, not freeze.
+#
+# Regression for the busy-loop/freeze on clicking a sidebar session: a saved
+# assistant/toolResult message stores content as a *list of block dicts*, and
+# handing that straight to the str-only MessageBox raised
+# `'list' object has no attribute 'replace'` inside compose() — which, fired
+# for every message during the mount/layout cycle, manifested as a freeze.
+# ---------------------------------------------------------------------------
+
+
+# The persisted shape of a [text -> tool call -> result -> final text] turn, as
+# written to ~/.tau/chats/*.json (assistant content is a block list; toolResult
+# is its own role with tool_name/is_error at the message level).
+_PERSISTED_TURN = [
+    {"role": "user", "content": "list the files"},
+    {"role": "assistant", "content": [
+        {"type": "text", "text": "Sure, let me look."},
+        {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {"path": "."}},
+    ]},
+    {"role": "toolResult", "tool_name": "ls", "is_error": False,
+     "content": [{"type": "text", "text": "a.py\nb.py"}]},
+    {"role": "assistant", "content": [{"type": "text", "text": "There are two files."}]},
+]
+
+
+async def test_reload_list_content_renders_in_arrival_order():
+    """Reloading a saved chat renders the SAME boxes/order as live streaming."""
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        for msg in _PERSISTED_TURN:
+            display.add_persisted_message(msg)
+        await pilot.pause()
+
+        roles = _box_roles(display)
+        assert roles == ["user", "assistant", "toolCall", "toolResult", "assistant"], roles
+        # Final assistant text lands last, identical to the live path.
+        assert roles[-1] == "assistant"
+        assert _box_texts(display)[-1] == "There are two files."
+
+
+async def test_reload_does_not_raise_on_list_content():
+    """The exact regression: list content must not raise (the old freeze)."""
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        # Tool-only assistant message (no preamble text) — pure block list.
+        display.add_persisted_message(
+            {"role": "assistant", "content": [
+                {"type": "toolCall", "id": "x", "name": "bash", "arguments": {"command": "date"}},
+            ]}
+        )
+        await pilot.pause()
+        assert _box_roles(display) == ["toolCall"]
+
+
+async def test_reload_plain_string_content():
+    """Older chats store assistant content as a plain string; still renders."""
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        display.add_persisted_message({"role": "user", "content": "hi"})
+        display.add_persisted_message({"role": "assistant", "content": "hello there"})
+        await pilot.pause()
+        assert _box_roles(display) == ["user", "assistant"]
+        assert _box_texts(display)[-1] == "hello there"
+
+
+async def test_reload_toolresult_error_gets_error_class():
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        display.add_persisted_message(
+            {"role": "toolResult", "tool_name": "bash", "is_error": True,
+             "content": [{"type": "text", "text": "boom"}]}
+        )
+        await pilot.pause()
+        box = display.query_one(MessageBox)
+        assert box.role == "toolResult"
+        assert box.has_class("box-error")
+
+
+async def test_reload_unrenderable_content_raises():
+    """Fail-Early: an unexpected content shape raises rather than dropping it."""
+    import pytest
+
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        with pytest.raises(TypeError):
+            display.add_persisted_message({"role": "assistant", "content": {"unexpected": "dict"}})
+
+
+async def test_headless_saved_session_round_trips(tmp_path, monkeypatch):
+    """End-to-end contract: a session written by `tau -p` (_save_session) reloads
+    cleanly through the renderer — the write format and read renderer agree, which
+    is what makes a headless run *resumable* from the TUI."""
+    import tau_coding_agent.session_store as store
+    from tau_coding_agent.headless import _save_session
+
+    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+
+    context = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "run date"},
+    ]
+    new_messages = [
+        {"role": "assistant", "content": [
+            {"type": "text", "text": "ok"},
+            {"type": "toolCall", "id": "c1", "name": "bash", "arguments": {"command": "date"}},
+        ]},
+        {"role": "toolResult", "tool_name": "bash", "is_error": False,
+         "content": [{"type": "text", "text": "Thu"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "It's Thursday."}]},
+    ]
+    path = _save_session("local-llm", {"backend": "openai"}, context, new_messages)
+
+    loaded = store.Chat.load(path)
+    assert loaded.model == "local-llm"  # resolvable config key -> resumable
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        for msg in loaded.messages:
+            if msg.get("role") != "system":
+                display.add_persisted_message(msg)
+        await pilot.pause()
+        assert _box_roles(display) == [
+            "user", "assistant", "toolCall", "toolResult", "assistant",
+        ]
+
+
+# ---------------------------------------------------------------------------
 # Focused unit test: TauBackend agent-event -> structured-event mapping.
 # ---------------------------------------------------------------------------
 

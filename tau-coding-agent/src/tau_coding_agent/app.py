@@ -12,7 +12,6 @@ from textual.reactive import reactive
 from textual import events
 from textual.message import Message
 from textual.screen import ModalScreen
-from dataclasses import dataclass, asdict
 from pathlib import Path
 from datetime import datetime, timedelta
 import json
@@ -22,9 +21,10 @@ import traceback
 from typing import Optional
 
 from tau_coding_agent.backends import create_backend, Backend
-
-# Get the tau data directory for config and chat storage
-TAU_DIR = Path.home() / ".tau"
+# Chat persistence lives in a Textual-free module so `tau -p` can save sessions
+# without importing the TUI. TAU_DIR/Chat are re-exported here for the TUI's use
+# (and so existing `from tau_coding_agent.app import Chat` keeps working).
+from tau_coding_agent.session_store import TAU_DIR, Chat
 
 
 class SystemPromptEditor(ModalScreen):
@@ -54,61 +54,6 @@ class SystemPromptEditor(ModalScreen):
             self.dismiss(None)
 
 
-@dataclass
-class Chat:
-    """Represents a chat conversation."""
-    model: str
-    backend: str
-    messages: list[dict]
-    created_at: float
-    title: Optional[str] = None
-
-    def save(self) -> Path:
-        """Save chat to JSON file."""
-        chats_dir = TAU_DIR / "chats"
-        chats_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"{int(self.created_at)}.json"
-        path = chats_dir / filename
-        path.write_text(json.dumps(asdict(self), indent=2))
-        return path
-
-    @classmethod
-    def load(cls, path: Path) -> 'Chat':
-        """Load chat from JSON file."""
-        data = json.loads(path.read_text())
-        return cls(**data)
-
-    @classmethod
-    def list_recent(cls, limit: int = 50) -> list[Path]:
-        """List recent chat files, newest first."""
-        chats_dir = TAU_DIR / "chats"
-        if not chats_dir.exists():
-            return []
-
-        files = sorted(
-            chats_dir.glob("*.json"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True
-        )
-        return files[:limit]
-
-    def get_display_title(self) -> str:
-        """Get display title for this chat."""
-        if self.title:
-            return self.title
-
-        # Use first user message as title (strip newlines for display)
-        for msg in self.messages:
-            if msg["role"] == "user":
-                # Replace newlines with spaces for title display
-                content = msg["content"].replace('\n', ' ')[:50]
-                if len(msg["content"]) > 50:
-                    content += "..."
-                return content
-
-        return f"Chat ({self.model})"
-
-
 # Role → (display label, CSS modifier class). ONE widget renders every kind of
 # message; the role only selects a label + color (via the `box-<role>` class in
 # parley.tcss). Adding a kind = adding an entry here + a CSS rule, nothing else.
@@ -120,6 +65,34 @@ ROLE_LABELS: dict[str, str] = {
     "toolCall": "Tool call",
     "toolResult": "Tool result",
 }
+
+
+def format_tool_call_body(name: str, arguments: object) -> str:
+    """Render a tool call's Markdown body. Shared by the live streaming path and
+    the saved-chat reload path so the two can never drift apart."""
+    args_text = json.dumps(arguments, indent=2, default=str)
+    return f"`{name}`\n\n```json\n{args_text}\n```"
+
+
+def format_tool_result_body(name: str, result_text: str, is_error: bool) -> str:
+    """Render a tool result's Markdown body (live + reload). Truncated for
+    display, matching the live ``tool_execution_end`` rendering."""
+    status = "Error" if is_error else "Success"
+    return f"`{name}` — {status}\n\n```\n{result_text[:500]}\n```"
+
+
+def _join_text_blocks(blocks: object) -> str:
+    """Concatenate the ``text`` blocks of a τ message content list (or pass a
+    plain string through). Used to flatten persisted assistant/toolResult bodies."""
+    if isinstance(blocks, str):
+        return blocks
+    if isinstance(blocks, list):
+        return "".join(
+            b.get("text", "")
+            for b in blocks
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return ""
 
 
 class MessageBox(Static):
@@ -276,10 +249,14 @@ class ChatSidebar(Container):
         """Refresh chats when mounted."""
         self.refresh_chats()
 
-    def on_button_pressed(self, event: Button.Pressed):
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses."""
         if event.button.id == "new-chat-button":
-            self.app.action_new_chat()
+            # action_new_chat is async; dispatch through run_action so it is
+            # actually awaited. A bare self.app.action_new_chat() just builds an
+            # un-awaited coroutine and silently does nothing — the "+ New Chat"
+            # button bug.
+            await self.app.run_action("new_chat")
 
 
 class ChatDisplay(VerticalScroll):
@@ -324,6 +301,72 @@ class ChatDisplay(VerticalScroll):
         self.mount(box)
         self.scroll_end(animate=False)
         return box
+
+    def add_persisted_message(self, msg: dict) -> None:
+        """Render one *persisted* message (from a saved chat) in arrival order.
+
+        Unlike the live path — driven by streaming lifecycle events — a reloaded
+        message carries its content as the τ on-disk shape: a plain string
+        (user/system), or a list of block dicts (assistant: ``text`` +
+        ``toolCall`` blocks; ``toolResult``: a separate role with ``text`` blocks
+        plus top-level ``tool_name``/``is_error``). Each block becomes the SAME
+        ``MessageBox`` kind the live path would have produced — a ``str``-only
+        renderer here is exactly the bug that froze the TUI on chat reload, so we
+        normalize instead of handing a list to ``MessageBox``.
+
+        Raises ``TypeError`` on an unrenderable content shape rather than
+        silently dropping it (Fail-Early): an unexpected shape is a real bug.
+        """
+        role = msg.get("role", "")
+
+        # toolResult is its own message role; the tool name + error flag live at
+        # the message level, the result text in `text` blocks.
+        if role == "toolResult":
+            result_text = _join_text_blocks(msg.get("content", []))
+            box = self.add_message(
+                "toolResult",
+                format_tool_result_body(
+                    msg.get("tool_name", ""),
+                    result_text,
+                    bool(msg.get("is_error", False)),
+                ),
+            )
+            if msg.get("is_error"):
+                box.add_class("box-error")
+            return
+
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            self.add_message(role, content)
+            return
+        if isinstance(content, list):
+            # Assistant turns interleave text and tool calls. Accumulate text
+            # into one box, flushing it before each tool call so order is kept
+            # (text-then-call renders as two boxes, the call after the text).
+            text_buf: list[str] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "text":
+                    text_buf.append(block.get("text", ""))
+                elif btype == "toolCall":
+                    if text_buf:
+                        self.add_message(role, "".join(text_buf))
+                        text_buf = []
+                    self.add_message(
+                        "toolCall",
+                        format_tool_call_body(
+                            block.get("name", ""), block.get("arguments", {})
+                        ),
+                    )
+            if text_buf:
+                self.add_message(role, "".join(text_buf))
+            return
+
+        raise TypeError(
+            f"cannot render persisted message content of type {type(content).__name__}"
+        )
 
     # ------------------------------------------------------------------
     # Streaming state machine (driven by TauBackend.stream_chat on_event)
@@ -387,8 +430,7 @@ class ChatDisplay(VerticalScroll):
         self._flush_text()
         tool_name = event.get("name", "")
         arguments = event.get("arguments", {})
-        args_text = json.dumps(arguments, indent=2, default=str)
-        content = f"`{tool_name}`\n\n```json\n{args_text}\n```"
+        content = format_tool_call_body(tool_name, arguments)
         # If the pending slot is still empty (model went straight to a tool
         # call with no preamble text), resolve it in place; else mount a new
         # box after whatever came before (preserves order).
@@ -410,10 +452,8 @@ class ChatDisplay(VerticalScroll):
         tool_name = event.get("name", "")
         result_text = str(event.get("result", ""))
         is_error = bool(event.get("is_error", False))
-        role = "toolResult"
-        status = "Error" if is_error else "Success"
-        content = f"`{tool_name}` — {status}\n\n```\n{result_text[:500]}\n```"
-        box = self.add_message(role, content)
+        content = format_tool_result_body(tool_name, result_text, is_error)
+        box = self.add_message("toolResult", content)
         if is_error:
             box.add_class("box-error")
 
@@ -815,7 +855,9 @@ class Parley(App):
 
         for msg in self.current_chat.messages:
             role = msg["role"].capitalize()
-            content = msg["content"]
+            # Persisted assistant/tool messages store content as a block list;
+            # flatten to readable text rather than dumping a Python list repr.
+            content = _join_text_blocks(msg.get("content", ""))
             lines.append(f"## {role}\n\n{content}\n")
 
         # Save to file
@@ -861,10 +903,11 @@ class Parley(App):
             display = self.query_one(ChatDisplay)
             display.clear_messages()
 
-            # Display all messages
+            # Display all messages, normalizing the persisted block shape. A raw
+            # list handed to add_message is exactly what froze reload before.
             for msg in chat.messages:
-                if msg["role"] != "system":  # Skip system message
-                    display.add_message(msg["role"], msg["content"])
+                if msg.get("role") != "system":  # Skip system message
+                    display.add_persisted_message(msg)
 
             # Update UI
             self.sub_title = f"{chat.model}"
