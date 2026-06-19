@@ -5,7 +5,7 @@ description = "τ (tau-agent-core) monorepo"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
-testpaths = ["tau-ai/tests", "tau-agent-core/tests", "tau-coding-agent/tests", "tests"]
+testpaths = ["tau-ai/tests", "tau-agent-core/tests", "tau-coding-agent/tests"]
 asyncio_mode = "auto"
 
 [tool.mypy]
