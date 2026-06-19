@@ -8,6 +8,42 @@ This plan supersedes the priority/mapping content in `docs/COMMAND_LINE.md`, whi
 
 ---
 
+## Implementation status (2026-06-19)
+
+The **Core** set below is now implemented in `tau-coding-agent/src/tau_coding_agent/cli.py`
+(argparse) + `headless.py` (the `--print` run path), with tests in
+`tau-coding-agent/tests/test_cli.py`.
+
+**Shipped (wired end-to-end, not inert):**
+- `--print`/`-p` → headless run via `create_backend(model_config).stream_chat(...)`
+  (the same path the TUI uses), printing to stdout and exiting. Note: built on the
+  real backend path, **not** `run_agent_loop.py` (that file shells out to `pi` to
+  *build* τ — it is not a headless τ runner; the original plan misidentified it).
+- positional `messages` + `@file` inlining; message-eating works via argparse positionals.
+- `--mode {text,json}` — text transcript, or JSONL of the backend's normalized
+  lifecycle events (`turn_start`/`text_delta`/`tool_call`/`tool_result`) + a final
+  `{"kind":"done", ...}`. (`rpc` deferred.)
+- `--model`/`-m` with `provider/id` shorthand; resolves against the config `models`
+  map, else constructs an ad-hoc entry. Wired into **both** headless and the TUI
+  (via `Parley(cli_overrides=...)`).
+- `--provider` (long-only), `--tools`/`-t`, `--no-tools`/`-nt`, `--system-prompt`.
+- `--version`/`-v` (pi-aligned: `-v` is version; τ's old `-v`=verbose is dropped),
+  `--verbose` (long-only), `--help`/`-h`.
+
+**Deferred — Fail-Early, NOT stubbed (a `:level` thinking suffix or these flags
+error clearly rather than silently no-op):**
+- `--thinking` — needs a `reasoning_effort` send-path in τ-ai (`Model` has no
+  reasoning field; `openai.py` only *reads* it). `--model x:high` raises until then.
+- `--continue`/`-c`, `--resume`, `--session`, `--fork`, `--name` — `SessionManager`
+  has `list()`/`load()`/`fork()`, but headless continuation also needs session→context
+  wiring + tests. Tracked, not yet exposed.
+
+Removed the old inert/non-pi flags (`--output`/`-o`, `-s`, `--config`, `--cwd`,
+`--context-window`, `--max-tokens`) and the `-p`=provider / `-v`=verbose short-alias
+collisions. `CLIArgs` was reshaped accordingly (see `cli.py`).
+
+---
+
 ## 1. pi's actual CLI surface (the reference)
 
 Every flag below is parsed in `args.ts:63-210` (`parseArgs`) and documented in `printHelp` (`args.ts:212-390`). Short aliases are *exactly* as pi defines them — note they differ from tau's current `cli.py`.

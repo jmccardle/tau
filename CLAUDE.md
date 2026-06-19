@@ -34,10 +34,16 @@ pytest -k tool_call                                 # by name substring
 mypy tau-ai/src tau-agent-core/src tau-coding-agent/src
 
 # Run the TUI (console script defined in tau-coding-agent)
-tau
+tau                                                 # interactive
+tau --model gpt-4o                                  # TUI, pick a config model
 
-# Run headless (no TUI) — root-level demo/eval driver of the agent loop
-python run_agent_loop.py
+# Run headless (no TUI) — print mode (cli.py → headless.py; same backend path as the TUI)
+tau -p "summarize @README.md"                       # text transcript to stdout
+tau -p --mode json "list the files"                 # JSONL lifecycle events
+# CLI flag plan + status: docs/CLI-PLAN.md
+
+# NOTE: run_agent_loop.py is NOT a headless τ runner — it is a meta-orchestrator
+# that shells out to `pi -p` to BUILD τ (the self-build loop). Don't use it to run τ.
 ```
 
 There is no separate lint step (no ruff/flake8 config); `mypy` is the only static check. `async` tests need no `@pytest.mark.asyncio` decorator — `asyncio_mode=auto` is set globally.

@@ -509,9 +509,25 @@ class Parley(App):
     current_backend: Optional[Backend] = None
     config: dict = {}
 
-    def __init__(self):
+    def __init__(self, cli_overrides: Optional[dict] = None):
         super().__init__()
         self.load_config()
+        if cli_overrides:
+            self._apply_cli_overrides(cli_overrides)
+
+    def _apply_cli_overrides(self, overrides: dict) -> None:
+        """Merge CLI flag overrides over the loaded config (CLI > config.json).
+
+        Used by ``tau --model …``/``--system-prompt …`` so the TUI opens with
+        the requested model/prompt instead of the config default.
+        """
+        models = overrides.get("models")
+        if models:
+            self.config.setdefault("models", {}).update(models)
+        if "default_model" in overrides:
+            self.config["default_model"] = overrides["default_model"]
+        if "system_prompt" in overrides:
+            self.config["system_prompt"] = overrides["system_prompt"]
 
     def load_config(self):
         """Load configuration from config.json."""

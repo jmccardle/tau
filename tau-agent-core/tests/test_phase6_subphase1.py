@@ -1579,6 +1579,8 @@ class TestCLIEntryPoint:
         args = CLIArgs()
         assert args.model is None
         assert args.provider is None
-        assert args.session_name is None
-        assert args.output == "text"
+        assert args.mode == "text"
         assert args.verbose is False
+        assert args.print_mode is False
+        assert args.no_tools is False
+        assert args.messages == []

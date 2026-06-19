@@ -1,27 +1,58 @@
 """CLI entry point for τ-coding-agent.
 
-Launches the Parley TUI with tau-agent-core backend.
+Parses arguments (argparse, pi-aligned flags), then either runs a headless
+``--print`` turn (see :mod:`tau_coding_agent.headless`) or launches the Parley
+TUI. Model/provider/tool flags override ``~/.tau/config.json`` per-invocation in
+both paths.
+
+Flag set and pi citations live in docs/CLI-PLAN.md. Short-alias divergences from
+pi are intentional and documented there; notably ``-v``/``--version`` matches pi
+(τ's old ``-v``=verbose is dropped; ``--verbose`` is long-only now).
+
+Reference: docs/CLI-PLAN.md (Core flag set).
 """
 
 from __future__ import annotations
 
+import argparse
+import asyncio
+import json
+import sys
 from dataclasses import dataclass, field
-from typing import Optional
+from pathlib import Path
+
+from tau_coding_agent.headless import CLIError, resolve_model_config, run_print
+
+# τ data dir / config (matches app.py's TAU_DIR).
+TAU_DIR = Path.home() / ".tau"
+
+
+def _version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("tau-coding-agent")
+    except Exception:
+        return "0.0.0"
 
 
 @dataclass
 class CLIArgs:
-    """CLI argument types for the τ coding agent."""
+    """Parsed τ CLI arguments.
 
+    Kept as a typed dataclass (rather than a bare argparse Namespace) for clean
+    attribute access and so callers/tests can construct defaults directly.
+    """
+
+    messages: list[str] = field(default_factory=list)
+    print_mode: bool = False
+    mode: str = "text"  # text | json
     model: str | None = None
     provider: str | None = None
-    session_name: str | None = None
-    output: str = "tui"
+    tools: str | None = None  # comma-separated allowlist
+    no_tools: bool = False
+    system_prompt: str | None = None
     verbose: bool = False
-    config_file: str | None = None
-    cwd: str | None = None
-    context_window: int | None = None
-    max_tokens: int | None = None
 
     @property
     def is_verbose(self) -> bool:
@@ -29,87 +60,141 @@ class CLIArgs:
 
     @property
     def is_json_output(self) -> bool:
-        return self.output == "json"
+        return self.mode == "json"
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the argparse parser for the τ CLI (Core flag set)."""
+    parser = argparse.ArgumentParser(
+        prog="tau",
+        description="τ — programmable coding agent (TUI + headless CLI).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  tau                         # interactive TUI (default model)\n"
+            "  tau --model gpt-4o          # TUI with a specific model\n"
+            '  tau -p "explain @main.py"   # headless: print the answer and exit\n'
+            '  tau -p --mode json "hi"     # headless, JSONL event stream\n'
+            "\n"
+            "deferred (see docs/CLI-PLAN.md): --thinking (needs τ-ai reasoning\n"
+            "send-path), --continue/--resume/--session (needs session wiring)."
+        ),
+    )
+    parser.add_argument("--version", "-v", action="version", version=f"tau {_version()}")
+    parser.add_argument(
+        "messages",
+        nargs="*",
+        help="prompt text and/or @file references (used with --print)",
+    )
+    parser.add_argument(
+        "--print", "-p", dest="print_mode", action="store_true",
+        help="run one turn headlessly, print the result, and exit",
+    )
+    parser.add_argument(
+        "--mode", choices=["text", "json"], default="text",
+        help="headless output format: text transcript (default) or JSONL events",
+    )
+    parser.add_argument(
+        "--model", "-m", default=None,
+        help="model name from ~/.tau/config.json, or provider/id shorthand",
+    )
+    parser.add_argument(
+        "--provider", default=None,
+        help="provider/backend override (long-only, matching pi)",
+    )
+    parser.add_argument(
+        "--tools", "-t", default=None,
+        help="comma-separated tool allowlist (e.g. read,bash)",
+    )
+    parser.add_argument(
+        "--no-tools", "-nt", dest="no_tools", action="store_true",
+        help="disable all tools (read-only agent)",
+    )
+    parser.add_argument(
+        "--system-prompt", dest="system_prompt", default=None,
+        help="override the system prompt for this run",
+    )
+    parser.add_argument(
+        "--verbose", action="store_true",
+        help="verbose logging (long-only; pi-aligned, -v is --version)",
+    )
+    return parser
 
 
 def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
-    """Parse command-line arguments into CLIArgs."""
-    import sys
-
-    args = argv if argv is not None else sys.argv[1:]
-
-    result = CLIArgs()
-    i = 0
-    while i < len(args):
-        arg = args[i]
-        if arg in ("--model", "-m"):
-            i += 1
-            if i < len(args):
-                result.model = args[i]
-        elif arg in ("--provider", "-p"):
-            i += 1
-            if i < len(args):
-                result.provider = args[i]
-        elif arg in ("--session", "-s"):
-            i += 1
-            if i < len(args):
-                result.session_name = args[i]
-        elif arg in ("--output", "-o"):
-            i += 1
-            if i < len(args):
-                result.output = args[i]
-        elif arg in ("--verbose", "-v"):
-            result.verbose = True
-        elif arg in ("--config",):
-            i += 1
-            if i < len(args):
-                result.config_file = args[i]
-        elif arg in ("--cwd",):
-            i += 1
-            if i < len(args):
-                result.cwd = args[i]
-        elif arg in ("--context-window",):
-            i += 1
-            if i < len(args):
-                try:
-                    result.context_window = int(args[i])
-                except ValueError:
-                    pass
-        elif arg in ("--max-tokens",):
-            i += 1
-            if i < len(args):
-                try:
-                    result.max_tokens = int(args[i])
-                except ValueError:
-                    pass
-        i += 1
-
-    return result
+    """Parse argv into :class:`CLIArgs`."""
+    parser = build_parser()
+    ns = parser.parse_args(argv if argv is not None else sys.argv[1:])
+    return CLIArgs(
+        messages=list(ns.messages),
+        print_mode=ns.print_mode,
+        mode=ns.mode,
+        model=ns.model,
+        provider=ns.provider,
+        tools=ns.tools,
+        no_tools=ns.no_tools,
+        system_prompt=ns.system_prompt,
+        verbose=ns.verbose,
+    )
 
 
-def main():
-    """Entry point for the `tau` CLI command.
+def load_config() -> dict:
+    """Load ``~/.tau/config.json`` (or an empty config if absent)."""
+    config_path = TAU_DIR / "config.json"
+    if not config_path.exists():
+        return {}
+    loaded = json.loads(config_path.read_text())
+    if not isinstance(loaded, dict):
+        raise CLIError(f"{config_path} must contain a JSON object")
+    return loaded
 
-    Launches the Parley TUI which manages its own config and backend.
-    """
-    import sys
-    from pathlib import Path
 
-    args = parse_cli_args()
+def _launch_tui(args: CLIArgs, config: dict) -> int:
+    """Launch the Parley TUI, applying model/system-prompt overrides."""
+    overrides: dict = {}
+    if args.model or args.provider or args.tools or args.no_tools:
+        name, model_config = resolve_model_config(config, args)
+        # Merge over any existing entry so config-derived keys (api_key, etc.)
+        # survive when only some fields are overridden.
+        existing = config.get("models", {}).get(name, {})
+        overrides["models"] = {name: {**existing, **model_config}}
+        overrides["default_model"] = name
+    if args.system_prompt is not None:
+        overrides["system_prompt"] = args.system_prompt
 
-    if args.verbose:
-        print(f"τ-coding-agent starting with args: {args}")
-
-    # Launch the Parley TUI
     from tau_coding_agent.app import Parley
 
-    app = Parley()
+    app = Parley(cli_overrides=overrides or None)
+    app.run()
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Entry point for the ``tau`` console script."""
+    args = parse_cli_args(argv)
 
     if args.verbose:
-        print(f"τ-coding-agent starting Parley")
+        print(f"τ-coding-agent args: {args}", file=sys.stderr)
 
-    app.run()
+    try:
+        config = load_config()
+        # Headless print mode is opt-in via -p/--print. Messages without --print
+        # are a usage error (Fail-Early: don't silently ignore them, and don't
+        # quietly drop into the TUI discarding the prompt).
+        if args.print_mode:
+            return asyncio.run(run_print(args, config))
+        if args.messages:
+            raise CLIError(
+                "messages were given without --print; add -p to run headlessly "
+                "(e.g. tau -p \"...\"), or omit the message to start the TUI"
+            )
+        if args.mode == "json":
+            raise CLIError("--mode json only applies to headless --print runs")
+        return _launch_tui(args, config)
+    except CLIError as exc:
+        print(f"tau: error: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

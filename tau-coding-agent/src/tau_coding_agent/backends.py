@@ -23,8 +23,8 @@ class Backend(ABC):
         self.model = config.get("model", "")
 
     @abstractmethod
-    async def chat(self, messages: list[dict]) -> tuple[str, dict]:
-        pass
+    async def chat(self, messages: list[dict]) -> tuple[str, dict, list[dict]]:
+        """Return (assistant_text, usage, new_messages)."""
 
     @abstractmethod
     async def stream_chat(
@@ -32,8 +32,8 @@ class Backend(ABC):
         messages: list[dict],
         callback: Callable[[str], None],
         on_event: Callable[[dict], None] | None = None,
-    ) -> tuple[str, dict]:
-        pass
+    ) -> tuple[str, dict, list[dict], list[dict]]:
+        """Return (assistant_text, usage, new_messages, tool_calls)."""
 
 
 class TauBackend(Backend):
@@ -222,7 +222,7 @@ class TauBackend(Backend):
                 break
 
         if not last_user_message:
-            return "", {"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0}, []
+            return "", {"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0}, [], []
 
         # Capture streaming chunks — track the last accumulated text
         # per assistant message (reset on message_start for multi-turn loops)
