@@ -25,6 +25,10 @@ from tau_coding_agent.backends import create_backend, Backend
 # without importing the TUI. TAU_DIR/Chat are re-exported here for the TUI's use
 # (and so existing `from tau_coding_agent.app import Chat` keeps working).
 from tau_coding_agent.session_store import TAU_DIR, Chat
+# Collapsible chat components. MessageBox (below) is the universal per-message
+# host; these are the children it composes — one reasoning region and N tool
+# boxes — plus the exchange grouping used by the streaming state machine.
+from tau_coding_agent.chat_widgets import ExchangeBox, ReasoningRegion, ToolBox
 
 
 class SystemPromptEditor(ModalScreen):
@@ -96,18 +100,26 @@ def _join_text_blocks(blocks: object) -> str:
 
 
 class MessageBox(Static):
-    """One reusable bordered message widget for EVERY chat entry.
+    """The ONE universal widget per message — the messages-list 1:1 mapping.
 
-    User / assistant / tool-call / tool-result are all this widget — the
-    ``role`` only changes the border label and color (CSS class ``box-<role>``).
-    There is no bespoke "label overlapping the border" treatment and no
-    "prepend a first line of text" treatment: the role label lives in the
-    border title uniformly, and the body is *only* the message content.
+    Every ``{"role": ...}`` dict in the transcript renders as exactly one
+    MessageBox, so the widget tree mirrors the data model (which is what makes
+    reload trivial and freeze-proof). A box renders, top to bottom:
 
-    A box starts life as ``role="pending"`` (an unknown/placeholder slot
-    created the instant a turn begins) and is later *resolved* in place into a
-    concrete role via :meth:`set_role`. Resolving never re-mounts the widget,
-    so its position in the scroll — i.e. its true arrival order — is preserved.
+      - an optional :class:`ReasoningRegion` (assistant reasoning — streamed and
+        collapsible), mounted lazily the instant reasoning arrives,
+      - the message text (a Markdown body),
+      - zero or more :class:`ToolBox` children (one per tool call; the matching
+        tool *result* folds into its box by ``tool_call_id``).
+
+    user/system messages use only the text body; an assistant turn may add
+    reasoning and tool boxes — reasoning + answer + the turn's tools are one
+    completion, so they live in one bordered box (per the design discussion).
+    The role selects the border label + color (``box-<role>``); the border is
+    on the box itself so the whole completion reads as a single box.
+
+    A box may start as ``role="pending"`` and be *resolved* in place via
+    :meth:`set_role` without re-mounting, preserving true arrival order.
     """
 
     def __init__(self, role: str, content: str = "", subtitle: str = ""):
@@ -115,29 +127,43 @@ class MessageBox(Static):
         self.role = role
         self._content = content
         self._subtitle = subtitle
+        self._reasoning: ReasoningRegion | None = None
+        self._tool_boxes: dict[str, ToolBox] = {}
 
     def _format(self, content: str) -> str:
         # Preserve single newlines as paragraph breaks for Markdown.
         return content.replace("\n", "\n\n")
 
     def compose(self) -> ComposeResult:
+        # Three stacked slots: reasoning (lazy), the text body, tool boxes (lazy).
+        # Empty slots collapse to zero height, so a plain user message looks
+        # exactly like a single text box.
+        self._reasoning_slot = Vertical(classes="message-reasoning")
+        yield self._reasoning_slot
         md = Markdown(self._format(self._content), classes="message-content")
         self._md_widget = md
-        md.border_title = ROLE_LABELS.get(self.role, self.role.capitalize())
-        if self._subtitle:
-            md.border_subtitle = self._subtitle
         yield md
+        self._tools_slot = Vertical(classes="message-tools")
+        yield self._tools_slot
+
+    def on_mount(self) -> None:
+        # The role label + color live on the box border (not the inner Markdown),
+        # so reasoning + text + tools sit inside one titled border.
+        self.border_title = ROLE_LABELS.get(self.role, self.role.capitalize())
+        if self._subtitle:
+            self.border_subtitle = self._subtitle
+
+    # -- text body -----------------------------------------------------------
 
     def set_role(self, role: str) -> None:
         """Resolve/retype this box in place (e.g. pending → assistant)."""
         self.remove_class(f"box-{self.role}")
         self.role = role
         self.add_class(f"box-{role}")
-        if hasattr(self, "_md_widget"):
-            self._md_widget.border_title = ROLE_LABELS.get(role, role.capitalize())
+        self.border_title = ROLE_LABELS.get(role, role.capitalize())
 
     def update_content(self, content: str) -> None:
-        """Replace the body content in place (used for streaming text)."""
+        """Replace the text body in place (used for streaming text)."""
         self._content = content
         if hasattr(self, "_md_widget"):
             self._md_widget.update(self._format(content))
@@ -148,8 +174,41 @@ class MessageBox(Static):
 
     def set_subtitle(self, subtitle: str) -> None:
         self._subtitle = subtitle
-        if hasattr(self, "_md_widget"):
-            self._md_widget.border_subtitle = subtitle
+        self.border_subtitle = subtitle
+
+    # -- reasoning + tools: the unified host API (used by the task-4 wiring) --
+
+    def ensure_reasoning(self) -> ReasoningRegion:
+        """Lazily mount (once) and return this message's reasoning region."""
+        if self._reasoning is None:
+            self._reasoning = ReasoningRegion()
+            self._reasoning_slot.mount(self._reasoning)
+        return self._reasoning
+
+    def add_tool_call(self, name: str, arguments: object, tool_call_id: str = "") -> ToolBox:
+        """Append a tool call as a child ToolBox, tracked by id for its result."""
+        box = ToolBox(name, arguments, tool_call_id)
+        if tool_call_id:
+            self._tool_boxes[tool_call_id] = box
+        self._tools_slot.mount(box)
+        return box
+
+    def set_tool_result(self, tool_call_id: str, result_text: str, is_error: bool = False) -> bool:
+        """Fold a tool result into its matching ToolBox. Returns ``False`` if no
+        box matches the id — the caller decides what to do, nothing is fabricated."""
+        box = self._tool_boxes.get(tool_call_id)
+        if box is None:
+            return False
+        box.set_result(result_text, is_error)
+        return True
+
+    @property
+    def reasoning(self) -> ReasoningRegion | None:
+        return self._reasoning
+
+    @property
+    def tool_boxes(self) -> dict[str, ToolBox]:
+        return self._tool_boxes
 
 
 # Backwards-compatible alias: older code/tests referenced `ChatMessage`.
