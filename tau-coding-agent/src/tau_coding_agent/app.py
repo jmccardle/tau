@@ -6,6 +6,7 @@ Clean, simple, fast. Built with Textual.
 
 from textual.app import App, ComposeResult, SystemCommand
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.widget import Widget
 from textual.widgets import Static, Input, Header, Footer, Label, Markdown, Button, TextArea
 from textual.binding import Binding
 from textual.reactive import reactive
@@ -28,7 +29,13 @@ from tau_coding_agent.session_store import TAU_DIR, Chat
 # Collapsible chat components. MessageBox (below) is the universal per-message
 # host; these are the children it composes — one reasoning region and N tool
 # boxes — plus the exchange grouping used by the streaming state machine.
-from tau_coding_agent.chat_widgets import ExchangeBox, ReasoningRegion, ToolBox
+from tau_coding_agent.chat_widgets import (
+    ExchangeBox,
+    ReasoningRegion,
+    ToolBox,
+    format_duration,
+    format_tokens,
+)
 
 
 class SystemPromptEditor(ModalScreen):
@@ -179,7 +186,11 @@ class MessageBox(Static):
     # -- reasoning + tools: the unified host API (used by the task-4 wiring) --
 
     def ensure_reasoning(self) -> ReasoningRegion:
-        """Lazily mount (once) and return this message's reasoning region."""
+        """Lazily mount (once) and return this message's reasoning region.
+
+        The region buffers its own streamed text until it mounts, so callers may
+        ``set_text``/``append`` on the returned region immediately.
+        """
         if self._reasoning is None:
             self._reasoning = ReasoningRegion()
             self._reasoning_slot.mount(self._reasoning)
@@ -321,38 +332,57 @@ class ChatSidebar(Container):
 class ChatDisplay(VerticalScroll):
     """Main chat display area with incremental, arrival-ordered rendering.
 
-    Every entry is a :class:`MessageBox`. During a streaming turn the display
-    runs a small state machine driven by normalized backend events
-    (see ``TauBackend.stream_chat``'s ``on_event``):
+    One user→answer span is an **exchange**. While the agent loop streams, the
+    display runs a state machine driven by normalized backend events (see
+    ``TauBackend.stream_chat``'s ``on_event``) that groups the span under one
+    collapsible :class:`ExchangeBox`:
 
-    - ``turn_start`` opens a *pending* box (unknown type) at the end.
-    - the first ``text_delta`` *resolves* that pending box into an assistant
-      box and streams text into it in place (so text is never duplicated).
-    - a ``tool_call`` resolves an *empty* pending box into a tool-call box,
-      otherwise mounts a NEW tool-call box below (text-then-call keeps both,
-      in order).
-    - a ``tool_result`` mounts a tool-result box.
+    - :meth:`begin_exchange` (before the loop) opens an expanded ``ExchangeBox``.
+    - each ``turn_start`` mounts ONE assistant :class:`MessageBox` *step* into
+      the exchange — a completion's reasoning + text + tool boxes share it.
+    - ``reasoning_delta`` streams into the step's lazily-mounted reasoning
+      region; the region collapses the instant answer text / a tool call begins.
+    - ``text_delta`` streams into the step's text body (in place, never dup'd).
+    - ``tool_call`` adds a :class:`ToolBox` child to the step; ``tool_result``
+      folds into it, matched by ``tool_call_id`` (routed across the exchange).
+    - :meth:`finalize_exchange` (after the loop) flushes tails, snaps the final
+      text-only answer OUT below the now-collapsed summary line, and stamps the
+      summary (``N tools · X tok · M:SS``). A trivial no-tool exchange is
+      unwrapped entirely — just the plain answer, no grouping. ONE reparent, at
+      the end (Textual has no live reparent, so the answer is reconstructed).
 
-    Because pending boxes resolve in place and new boxes mount at the end, the
-    assistant's final text (a fresh turn after the tool calls) lands LAST.
+    Reloaded (persisted) chats still render as flat boxes via
+    :meth:`add_persisted_message` — rebuilding exchanges from the saved message
+    list is a separate concern.
     """
 
     def __init__(self):
         super().__init__(id="chat-display")
         self._last_render_time = 0.0
-        # The current turn's text accumulates into exactly ONE box.
+        # Per-exchange streaming state (one user→answer span).
+        self._exchange: Optional[ExchangeBox] = None
+        # The current turn's assistant step box (reasoning + text + tools).
+        self._active_box: Optional[MessageBox] = None
+        # Accumulators for the active step (the 30 Hz throttle can skip the
+        # final delta, so the tails are flushed when the target changes).
         self._active_text: str = ""
-        # The pending/active box for the current turn (resolved in place).
-        self._pending_box: Optional[MessageBox] = None
-        # The box currently receiving streamed assistant text.
-        self._text_box: Optional[MessageBox] = None
+        self._active_reasoning: str = ""
+        # Route each tool result to the step that issued the call, by id.
+        self._tool_routes: dict[str, MessageBox] = {}
 
     def clear_messages(self):
         """Clear all messages from display and reset streaming state."""
+        self.query(ExchangeBox).remove()
         self.query(MessageBox).remove()
-        self._pending_box = None
-        self._text_box = None
+        self._reset_exchange_state()
+
+    def _reset_exchange_state(self) -> None:
+        """Drop all per-exchange streaming references."""
+        self._exchange = None
+        self._active_box = None
         self._active_text = ""
+        self._active_reasoning = ""
+        self._tool_routes = {}
 
     def add_message(self, role: str, content: str, subtitle: str = ""):
         """Add a finished (non-streaming) message box to the display."""
@@ -431,11 +461,27 @@ class ChatDisplay(VerticalScroll):
     # Streaming state machine (driven by TauBackend.stream_chat on_event)
     # ------------------------------------------------------------------
 
+    async def begin_exchange(self) -> None:
+        """Open a new exchange (one user→answer span) before the agent loop runs.
+
+        Awaits the mount so the exchange's collapsible body has composed before
+        the first ``turn_start`` adds a step into it (begin→turn_start has no
+        natural render tick between them, unlike the network-paced events that
+        follow). Steps mount into the expanded ``ExchangeBox`` as the loop
+        streams; :meth:`finalize_exchange` later collapses it to a summary line.
+        """
+        self._reset_exchange_state()
+        self._exchange = ExchangeBox()
+        await self.mount(self._exchange)
+        self.scroll_end(animate=False)
+
     def handle_stream_event(self, event: dict) -> None:
         """Render one normalized backend lifecycle event in arrival order."""
         kind = event.get("kind")
         if kind == "turn_start":
             self._on_turn_start()
+        elif kind == "reasoning_delta":
+            self._on_reasoning_delta(event.get("delta", ""))
         elif kind == "text_delta":
             self._on_text_delta(event.get("delta", ""))
         elif kind == "tool_call":
@@ -443,98 +489,179 @@ class ChatDisplay(VerticalScroll):
         elif kind == "tool_result":
             self._on_tool_result(event)
 
-    def _flush_text(self) -> None:
-        """Force the active text box to show all accumulated text.
+    def _start_step(self) -> MessageBox:
+        """Mount a fresh assistant step box for the current turn.
 
-        The 30 Hz throttle in :meth:`_on_text_delta` can skip the final delta;
-        call this whenever the current text box stops being the active target
-        (a new turn, a tool call, or end of stream) so no tail text is lost.
+        Steps live inside the exchange so the whole span groups under one
+        summary. If no exchange is open (defensive — the live path always calls
+        :meth:`begin_exchange` first), the step mounts at top level.
         """
-        if self._text_box is not None:
-            self._text_box.update_content(self._active_text)
-            self.scroll_end(animate=False)
+        box = MessageBox("assistant", "")
+        if self._exchange is not None:
+            self._exchange.add_step(box)
+        else:
+            self.mount(box)
+        return box
 
-    def _on_turn_start(self) -> None:
-        # Flush any throttled tail from the previous turn's text box, then open
-        # a fresh unknown/pending slot for this turn and reset text state.
-        self._flush_text()
-        self._active_text = ""
-        self._text_box = None
-        self._pending_box = MessageBox("pending", "")
-        self.mount(self._pending_box)
+    def _flush(self) -> None:
+        """Force the active step to show all accumulated reasoning + text.
+
+        The 30 Hz throttle can skip the final delta; call this whenever the
+        active step stops being the target (new turn, tool call, end of stream).
+        """
+        box = self._active_box
+        if box is None:
+            return
+        if self._active_reasoning and box.reasoning is not None:
+            box.reasoning.set_text(self._active_reasoning)
+        if self._active_text:
+            box.update_content(self._active_text)
         self.scroll_end(animate=False)
 
-    def _on_text_delta(self, delta: str) -> None:
-        if not delta:
+    def _collapse_active_reasoning(self) -> None:
+        """Freeze + collapse the active step's reasoning once the answer begins.
+
+        Reasoning precedes a completion's answer/tool calls, so the first text
+        or tool event marks it complete. Runs once per step (a collapsed region
+        short-circuits), flushing the full reasoning text before it folds away.
+        """
+        box = self._active_box
+        if box is not None and box.reasoning is not None and not box.reasoning.collapsed:
+            if self._active_reasoning:
+                box.reasoning.set_text(self._active_reasoning)
+            box.reasoning.mark_done()
+            box.reasoning.collapsed = True
+
+    def _on_turn_start(self) -> None:
+        # Flush the previous step's throttled tail and freeze its reasoning (a
+        # new turn means the previous completion is done, even if it was
+        # reasoning-only), then open a fresh step and reset the accumulators.
+        self._flush()
+        self._collapse_active_reasoning()
+        self._active_text = ""
+        self._active_reasoning = ""
+        self._active_box = self._start_step()
+        self.scroll_end(animate=False)
+
+    def _on_reasoning_delta(self, delta: str) -> None:
+        if not delta or self._active_box is None:
             return
-        # Resolve the pending slot into the assistant text box (in place), or
-        # open one if the turn produced text without a turn_start (defensive).
-        if self._text_box is None:
-            if self._pending_box is not None:
-                self._pending_box.set_role("assistant")
-                self._text_box = self._pending_box
-                self._pending_box = None
-            else:
-                self._text_box = self.add_message("assistant", "")
-        self._active_text += delta
-        # Throttle re-render to ~30 Hz.
+        self._active_reasoning += delta
+        region = self._active_box.ensure_reasoning()
+        # Throttle re-render to ~30 Hz (shared with text; within a turn reasoning
+        # fully precedes text, so they don't contend).
         now = time.time()
         if now - self._last_render_time > 0.033:
-            self._text_box.update_content(self._active_text)
+            region.set_text(self._active_reasoning)
+            self.scroll_end(animate=False)
+            self._last_render_time = now
+
+    def _on_text_delta(self, delta: str) -> None:
+        if not delta or self._active_box is None:
+            return
+        # Answer content has begun — this step's reasoning is complete.
+        self._collapse_active_reasoning()
+        self._active_text += delta
+        now = time.time()
+        if now - self._last_render_time > 0.033:
+            self._active_box.update_content(self._active_text)
             self.scroll_end(animate=False)
             self._last_render_time = now
 
     def _on_tool_call(self, event: dict) -> None:
-        # Preamble text (if any) belongs to its own box and is now complete.
-        self._flush_text()
-        tool_name = event.get("name", "")
-        arguments = event.get("arguments", {})
-        content = format_tool_call_body(tool_name, arguments)
-        # If the pending slot is still empty (model went straight to a tool
-        # call with no preamble text), resolve it in place; else mount a new
-        # box after whatever came before (preserves order).
-        if self._pending_box is not None and not self._active_text:
-            box = self._pending_box
-            box.set_role("toolCall")
-            box.update_content(content)
-            self._pending_box = None
-        else:
-            box = self.add_message("toolCall", content)
-        # Once a tool call lands, the current turn's assistant-text box (if any)
-        # is finished; subsequent text belongs to a later turn / new box.
-        self._text_box = None
-        self._active_text = ""
-        box._tool_call_id = event.get("id", "")  # type: ignore[attr-defined]
+        # Preamble reasoning/text for this step is complete; show it, fold the
+        # reasoning, then add the tool box below the text (reasoning→text→tools).
+        if self._active_box is None:
+            self._active_box = self._start_step()
+        self._flush()
+        self._collapse_active_reasoning()
+        tc_id = event.get("id", "") or ""
+        self._active_box.add_tool_call(
+            event.get("name", ""), event.get("arguments", {}), tc_id
+        )
+        if tc_id:
+            self._tool_routes[tc_id] = self._active_box
         self.scroll_end(animate=False)
 
     def _on_tool_result(self, event: dict) -> None:
-        tool_name = event.get("name", "")
+        tc_id = event.get("id", "") or ""
         result_text = str(event.get("result", ""))
         is_error = bool(event.get("is_error", False))
-        content = format_tool_result_body(tool_name, result_text, is_error)
-        box = self.add_message("toolResult", content)
-        if is_error:
-            box.add_class("box-error")
+        box = self._tool_routes.get(tc_id)
+        if box is not None and box.set_tool_result(tc_id, result_text, is_error):
+            self.scroll_end(animate=False)
+            return
+        # No matching tool box: the call always precedes its result in the live
+        # loop, so this means an id we never saw a call for. Don't fabricate a
+        # standalone box — surface it loudly instead (Fail-Early).
+        self.app.log(f"tool_result for unknown tool_call_id {tc_id!r}; no ToolBox to fold into")
 
-    def finalize_turn(self, subtitle: str = "") -> None:
-        """Flush the active text box and clear per-turn streaming state.
+    async def finalize_exchange(self, *, tokens: int, seconds: float) -> None:
+        """Close the current exchange after the agent loop finishes.
 
-        Called once after the whole agent loop finishes. Any box that never
-        received text (a leftover pending slot) is removed so an empty
-        placeholder is never left behind.
+        Flushes tails, then snaps the final text-only answer OUT below the
+        collapsed summary so it stays visible. A trivial exchange (no tools) is
+        unwrapped to just the plain answer — no grouping where there's nothing
+        to group. One reparent, here, by reconstruction (Textual cannot move a
+        live widget across parents).
         """
-        if self._text_box is not None:
-            self._text_box.update_content(self._active_text)
-            if subtitle:
-                self._text_box.set_subtitle(subtitle)
-        # A pending slot that was opened but never resolved (e.g. the final
-        # turn was tool-only and produced no trailing text) is empty — drop it.
-        if self._pending_box is not None:
-            self._pending_box.remove()
-        self._pending_box = None
-        self._text_box = None
-        self._active_text = ""
+        self._flush()
+        self._collapse_active_reasoning()  # freeze the last step's reasoning
+        exchange = self._exchange
+        if exchange is None:
+            self._reset_exchange_state()
+            return
+
+        steps = list(exchange.query(MessageBox))
+        tool_count = sum(len(b.tool_boxes) for b in steps)
+        # The terminal turn is the no-tool-call answer; pull it out so it stays
+        # visible. If the last step still has tools (e.g. max_turns hit mid-
+        # tool), there is no clean final answer — leave everything collapsed.
+        final = steps[-1] if steps and not steps[-1].tool_boxes else None
+        # An entirely empty terminal step (no text, no reasoning) is not a real
+        # answer — don't promote a blank box (Fail-Early: render nothing, not a
+        # placeholder).
+        if final is not None and not final.content_text.strip() and final.reasoning is None:
+            final = None
+
+        promoted = None
+        if final is not None:
+            promoted = await self._promote_answer(final, after=exchange)
+
+        if tool_count == 0:
+            # Nothing worth grouping — drop the wrapper entirely (this also
+            # removes the original `final` box it still contains). A trivial
+            # span has no summary line, so the (real) token + duration would be
+            # lost — stamp them on the answer's subtitle instead of hiding them.
+            if promoted is not None:
+                promoted.set_subtitle(
+                    f"{format_tokens(tokens)} tok · {format_duration(seconds)}"
+                )
+            exchange.remove()
+        else:
+            if final is not None:
+                final.remove()
+            exchange.collapsed = True
+            exchange.set_summary(tools=tool_count, tokens=tokens, seconds=seconds)
+
+        self._reset_exchange_state()
         self.scroll_end(animate=False)
+
+    async def _promote_answer(self, src: MessageBox, *, after: Widget) -> MessageBox:
+        """Mount a fresh top-level answer box copied from ``src``, after ``after``.
+
+        Reconstructs rather than reparents (Textual has no cross-parent move).
+        The terminal answer is text + optional reasoning (no tools), so copying
+        its text and reasoning string is faithful and cheap.
+        """
+        new = MessageBox("assistant", src.content_text)
+        await self.mount(new, after=after)
+        if src.reasoning is not None:
+            region = new.ensure_reasoning()
+            region.set_text(src.reasoning.text)
+            region.mark_done()
+            region.collapsed = True
+        return new
 
 
 class ChatInput(TextArea):
@@ -753,11 +880,13 @@ class Parley(App):
     async def _get_assistant_response(self):
         """Get and display assistant response with streaming.
 
-        Widgets are mounted live, in true arrival order, off the backend's
-        normalized event stream (``on_event``): a pending placeholder opens at
-        each turn and resolves into an assistant-text or tool-call box, with
-        tool results mounted as they complete. The assistant's final text
-        therefore lands LAST, after the tool calls it follows.
+        One user→answer span renders as a single collapsible exchange. The span
+        is opened (:meth:`ChatDisplay.begin_exchange`) before the loop runs and
+        closed (:meth:`ChatDisplay.finalize_exchange`) after it returns; in
+        between, the backend's normalized ``on_event`` stream drives the steps
+        (reasoning, text, tool calls/results) in true arrival order. The summary
+        line is stamped from REAL usage + measured wall-clock — never an
+        approximation (Fail-Early: a true 0 is shown as 0).
         """
         display = self.query_one(ChatDisplay)
 
@@ -768,15 +897,19 @@ class Parley(App):
         def on_event(event: dict) -> None:
             display.handle_stream_event(event)
 
+        start = time.time()
+        await display.begin_exchange()
         content, usage, new_messages, tool_calls_info = await self.current_backend.stream_chat(
             self.current_chat.messages,
             lambda _delta: None,
             on_event=on_event,
         )
+        elapsed = time.time() - start
 
-        # Flush the active text box and clear per-turn streaming state.
-        tokens_str = f"{usage['completion_tokens']} tokens"
-        display.finalize_turn(tokens_str)
+        # Collapse the exchange to its summary and surface the final answer.
+        await display.finalize_exchange(
+            tokens=usage.get("total_tokens", 0), seconds=elapsed
+        )
 
         # Update chat history with new messages from agent loop
         # (assistant responses + tool results, skip user message which

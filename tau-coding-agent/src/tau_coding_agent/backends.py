@@ -233,6 +233,19 @@ class TauBackend(Backend):
         # Track tool calls and results for display in the TUI
         tool_calls_info: list[dict] = []
 
+        # Real token usage, summed across every completion in this exchange.
+        # The agent loop attaches per-completion usage to the message_end it
+        # emits once per turn (see agent_loop._stream_response), so summing is
+        # double-count-safe. We surface the REAL numbers (Fail-Early: never the
+        # old len//4 approximation, which fabricated a count that looked real).
+        usage_totals = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+        }
+
         def _emit(structured: dict) -> None:
             """Forward a normalized lifecycle event to the optional sink."""
             if on_event is not None:
@@ -328,6 +341,13 @@ class TauBackend(Backend):
                                     "name": block.get("name", ""),
                                     "arguments": block.get("arguments", {}),
                                 })
+                    # Sum the real usage carried on this completion's message_end.
+                    # Only the per-completion message_end (_stream_response) carries
+                    # it, so the duplicate run() emit adds nothing — no double count.
+                    usage = message.get("usage")
+                    if isinstance(usage, dict):
+                        for key in usage_totals:
+                            usage_totals[key] += int(usage.get(key, 0) or 0)
             elif event.type == "tool_execution_start":
                 # Render the tool call as soon as it begins — this is the
                 # authoritative, ordered signal (carries name + args directly).
@@ -378,14 +398,16 @@ class TauBackend(Backend):
         # Combine all streaming chunks
         full_content = "".join(streaming_chunks)
 
-        # Approximate token count
-        prompt_tokens = sum(len(m.get("content", "")) // 4 for m in messages)
-        completion_tokens = len(full_content) // 4 if full_content else 0
-
+        # Real token usage, summed across the exchange's completions. The dict
+        # keeps the prompt/completion/total key names the TUI + headless paths
+        # already read, mapped from τ's input/output/total fields. No fabricated
+        # fallback — if a provider reports nothing, the count is a true 0.
         return full_content, {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
+            "prompt_tokens": usage_totals["input_tokens"],
+            "completion_tokens": usage_totals["output_tokens"],
+            "total_tokens": usage_totals["total_tokens"],
+            "cache_read_tokens": usage_totals["cache_read_tokens"],
+            "cache_write_tokens": usage_totals["cache_write_tokens"],
         }, new_messages, tool_calls_info
 
 

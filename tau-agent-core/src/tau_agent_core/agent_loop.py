@@ -518,6 +518,15 @@ class AgentLoop:
                                 c.model_dump() if hasattr(c, "model_dump") else c
                                 for c in final_msg.content
                             ],
+                            # Real token usage for THIS completion. Attached to the
+                            # per-completion message_end (emitted exactly once here,
+                            # in _stream_response) rather than the duplicate
+                            # message_end run() emits for tool-bearing turns — so a
+                            # consumer can sum usage across turns without double-
+                            # counting. The provider fills final_msg.usage from the
+                            # stream's terminal usage chunk (Fail-Early: a real 0 is
+                            # surfaced as 0, never approximated).
+                            "usage": final_msg.usage.model_dump(),
                         },
                     )
                 )

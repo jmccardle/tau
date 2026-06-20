@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 
+from textual.widget import Widget
 from textual.widgets import Collapsible, Markdown
 
 
@@ -153,8 +154,13 @@ class ExchangeBox(Collapsible):
         self.add_class("exchange-box")
         self._tool_count = 0
 
-    def add_step(self, widget) -> None:
-        """Mount a step widget into the exchange body, in arrival order."""
+    def add_step(self, widget: Widget) -> None:
+        """Mount a step widget into the exchange body, in arrival order.
+
+        The exchange is mounted (and its ``Collapsible.Contents`` composed)
+        before any step is added — the caller awaits the exchange mount — so the
+        body container is always present here.
+        """
         self.query_one(Collapsible.Contents).mount(widget)
         if isinstance(widget, ToolBox):
             self._tool_count += 1

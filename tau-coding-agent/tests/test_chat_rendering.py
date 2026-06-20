@@ -1,19 +1,25 @@
-"""Regression tests for the three chat-rendering bugs.
+"""Tests for the exchange-grouped chat-rendering state machine.
 
-Covers:
+One user→answer span renders as a single collapsible ``ExchangeBox``; each turn
+is one assistant ``MessageBox`` *step* (reasoning + text + ``ToolBox`` children)
+mounted inside it, and the final text-only answer snaps OUT below the collapsed
+summary. Covers:
 
-1. Widget unification — user / assistant / tool-call / tool-result all render
-   via the single ``MessageBox`` widget.
-2. Arrival-order streaming — the pending placeholder opened at stream start
-   resolves in place, and the assistant's FINAL text ends up LAST (after the
-   tool calls it follows), not pinned at the top.
-3. No whole-message text duplication — streamed assistant text updates one box
-   in place; each assistant text block is one widget populated exactly once,
-   even across a multi-turn [text -> tool call -> result -> final text] turn.
+1. Widget uniformity — every message is a ``MessageBox``; every tool call+result
+   is one ``ToolBox`` (no bespoke per-kind widget classes).
+2. Exchange grouping + promotion — intermediate steps live inside the collapsed
+   summarized exchange; the final answer stays visible below it. A no-tool span
+   is unwrapped to a plain answer.
+3. No whole-message text duplication — each step keeps only its own turn's text;
+   reasoning streams into its region and folds when the answer begins.
 
-These drive the real ``ChatDisplay`` state machine (the bug surface) headlessly
-via ``App.run_test()`` (see docs/textual-headless-testing.md), plus a focused
+These drive the real ``ChatDisplay`` state machine headlessly via
+``App.run_test()`` (see docs/textual-headless-testing.md), pacing events with a
+render tick between them to mirror the network-paced live loop, plus a focused
 unit test of ``TauBackend``'s agent-event -> structured-event mapping.
+
+The saved-chat *reload* path still renders flat boxes (its own section below) —
+rebuilding exchanges from the persisted message list is a separate concern.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ from __future__ import annotations
 from textual.app import App, ComposeResult
 
 from tau_coding_agent.app import ChatDisplay, MessageBox
+from tau_coding_agent.chat_widgets import ExchangeBox, ToolBox
 
 
 # ---------------------------------------------------------------------------
@@ -42,135 +49,207 @@ def _box_texts(display: ChatDisplay) -> list[str]:
     return [b.content_text for b in display.query(MessageBox)]
 
 
-# A realistic one-turn-with-tools event sequence as produced by
-# TauBackend.stream_chat's on_event sink:
-#   user already on screen, then the assistant loop runs:
-#     turn 0: preamble text -> tool call -> (loop continues)
-#     tool result arrives
-#     turn 1: final answer text  (must land LAST)
-def _replay_full_turn(display: ChatDisplay) -> None:
+def _top_level(display: ChatDisplay) -> list:
+    """Immediate children of the display (top-level boxes + exchanges)."""
+    return list(display.children)
+
+
+async def _send(display: ChatDisplay, pilot, event: dict) -> None:
+    """Deliver one lifecycle event, then yield a render tick.
+
+    The live loop is network-paced: every agent event is separated by an await
+    (a stream chunk or a tool execution), so Textual settles pending mounts
+    between events. Pausing here mirrors that cadence — without it the test
+    would fire a synchronous burst the real backend never produces.
+    """
+    display.handle_stream_event(event)
+    await pilot.pause()
+
+
+# A realistic one-turn-with-tools span as produced by TauBackend.stream_chat's
+# on_event sink, now grouped into an exchange:
+#   user already on screen, then the assistant loop runs inside one exchange:
+#     turn 0: preamble text -> tool call -> result   (a step inside the exchange)
+#     turn 1: final answer text                       (snaps OUT below the summary)
+async def _replay_tool_turn(display: ChatDisplay, pilot) -> None:
     display.add_message("user", "list the files")
+    await display.begin_exchange()
 
-    # turn 0 begins -> pending placeholder opens
-    display.handle_stream_event({"kind": "turn_start", "turn_index": 0})
-    # preamble assistant text streams in (fragments)
-    display.handle_stream_event({"kind": "text_delta", "delta": "Sure, "})
-    display.handle_stream_event({"kind": "text_delta", "delta": "let me look."})
-    # then a tool call
-    display.handle_stream_event(
-        {"kind": "tool_call", "id": "c1", "name": "ls", "arguments": {"path": "."}}
-    )
-    # tool result
-    display.handle_stream_event(
-        {"kind": "tool_result", "id": "c1", "name": "ls", "result": "a.py\nb.py", "is_error": False}
-    )
-    # turn 1 begins -> a NEW pending placeholder, resolves to the final answer
-    display.handle_stream_event({"kind": "turn_start", "turn_index": 1})
-    display.handle_stream_event({"kind": "text_delta", "delta": "There are "})
-    display.handle_stream_event({"kind": "text_delta", "delta": "two files."})
-    # whole loop done
-    display.finalize_turn("12 tokens")
+    await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
+    await _send(display, pilot, {"kind": "text_delta", "delta": "Sure, "})
+    await _send(display, pilot, {"kind": "text_delta", "delta": "let me look."})
+    await _send(display, pilot, {"kind": "tool_call", "id": "c1", "name": "ls", "arguments": {"path": "."}})
+    await _send(display, pilot, {"kind": "tool_result", "id": "c1", "name": "ls", "result": "a.py\nb.py", "is_error": False})
+    await _send(display, pilot, {"kind": "turn_start", "turn_index": 1})
+    await _send(display, pilot, {"kind": "text_delta", "delta": "There are "})
+    await _send(display, pilot, {"kind": "text_delta", "delta": "two files."})
+
+    await display.finalize_exchange(tokens=12, seconds=6)
 
 
-async def test_arrival_order_final_text_last():
-    """Bug 2: widgets appear in arrival order; final assistant text is LAST."""
+async def test_exchange_groups_tools_and_promotes_final_answer():
+    """The span collapses to ONE summarized exchange; the final answer snaps
+    out below it, staying visible. Intermediate steps live inside the exchange."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
         display = pilot.app.query_one(ChatDisplay)
-        _replay_full_turn(display)
+        await _replay_tool_turn(display, pilot)
         await pilot.pause()
 
-        roles = _box_roles(display)
-        assert roles == [
-            "user",
-            "assistant",   # preamble text (resolved from the turn-0 pending box)
-            "toolCall",
-            "toolResult",
-            "assistant",   # FINAL answer — last
-        ], roles
-        # The very last widget is the assistant's final text, not a tool block.
-        assert roles[-1] == "assistant"
-        assert _box_texts(display)[-1] == "There are two files."
+        # Top level: user box, the collapsed exchange, the promoted final answer.
+        top = _top_level(display)
+        assert isinstance(top[0], MessageBox) and top[0].role == "user"
+        assert isinstance(top[1], ExchangeBox)
+        assert isinstance(top[2], MessageBox) and top[2].role == "assistant"
+        assert top[2].content_text == "There are two files."
+
+        exchange = top[1]
+        assert exchange.collapsed is True
+        assert "1 tool" in exchange.title and "tok" in exchange.title
+
+        # The preamble step lives INSIDE the exchange with its tool folded in.
+        step_boxes = list(exchange.query(MessageBox))
+        assert len(step_boxes) == 1
+        assert step_boxes[0].content_text == "Sure, let me look."
+        tools = list(step_boxes[0].tool_boxes.values())
+        assert len(tools) == 1 and tools[0].has_result is True
 
 
 async def test_no_text_duplication():
-    """Bug 3: no assistant box contains duplicated/concatenated message text."""
+    """No box concatenates another turn's text: the preamble step keeps only its
+    own text, the promoted answer keeps only the final text."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
         display = pilot.app.query_one(ChatDisplay)
-        _replay_full_turn(display)
+        await _replay_tool_turn(display, pilot)
         await pilot.pause()
 
-        texts = _box_texts(display)
-        # The two assistant boxes hold exactly their own turn's text — the
-        # final-turn text is NOT appended onto the preamble box, and neither
-        # text repeats inside a single box.
-        assistant_texts = [
-            t for b, t in zip(display.query(MessageBox), texts) if b.role == "assistant"
-        ]
+        assistant_texts = [b.content_text for b in display.query(MessageBox) if b.role == "assistant"]
         assert assistant_texts == ["Sure, let me look.", "There are two files."], assistant_texts
         for t in assistant_texts:
-            # No box should contain the same sentence twice.
             assert t.count("There are two files.") <= 1
             assert t.count("Sure, let me look.") <= 1
 
 
-async def test_all_kinds_share_one_widget_class():
-    """Bug 1: every chat entry is the same widget class (MessageBox)."""
+async def test_messages_and_tools_use_uniform_widgets():
+    """Every message is a MessageBox; every tool call+result is one ToolBox —
+    no bespoke per-kind widget classes."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
         display = pilot.app.query_one(ChatDisplay)
-        _replay_full_turn(display)
+        await _replay_tool_turn(display, pilot)
         await pilot.pause()
 
+        # user + preamble step + promoted answer = 3 MessageBoxes (the tool
+        # call/result do NOT become their own MessageBoxes anymore).
         boxes = list(display.query(MessageBox))
-        # user, assistant, toolCall, toolResult, assistant -> 5 boxes
-        assert len(boxes) == 5, len(boxes)
         assert all(type(b) is MessageBox for b in boxes)
-        # All four distinct kinds are present and rendered by the SAME class.
-        assert {"user", "assistant", "toolCall", "toolResult"} <= set(_box_roles(display))
+        assert _box_roles(display) == ["user", "assistant", "assistant"]
+        tool_boxes = list(display.query(ToolBox))
+        assert len(tool_boxes) == 1 and all(type(t) is ToolBox for t in tool_boxes)
 
 
-async def test_pending_placeholder_resolves_in_place_for_toolcall():
-    """A tool-only turn (no preamble) resolves the pending box in place."""
+async def test_trivial_exchange_unwrapped_to_plain_answer():
+    """A no-tool span has nothing to group — the wrapper is dropped and only the
+    plain answer remains (no empty '0 tools' summary line)."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
         display = pilot.app.query_one(ChatDisplay)
-        display.handle_stream_event({"kind": "turn_start", "turn_index": 0})
-        # No text — straight to a tool call. The pending box becomes the call.
-        display.handle_stream_event(
-            {"kind": "tool_call", "id": "c1", "name": "read", "arguments": {"file": "x"}}
-        )
+        display.add_message("user", "hi")
+        await display.begin_exchange()
+        await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
+        await _send(display, pilot, {"kind": "text_delta", "delta": "hello"})
+        await display.finalize_exchange(tokens=3, seconds=1)
         await pilot.pause()
-        roles = _box_roles(display)
-        # Exactly one box, resolved from pending -> toolCall (NOT a leftover
-        # empty pending box sitting above it).
-        assert roles == ["toolCall"], roles
+
+        assert list(display.query(ExchangeBox)) == []
+        assert _box_roles(display) == ["user", "assistant"]
+        answer = list(display.query(MessageBox))[-1]
+        assert answer.content_text == "hello"
+        # Real token + duration are surfaced on the answer (no summary line here).
+        assert answer._subtitle == "3 tok · 0:01"
 
 
-async def test_no_leftover_pending_box_after_finalize():
-    """A turn that opens a pending slot but yields no content leaves nothing."""
+async def test_reasoning_streams_into_step_and_collapses_on_text():
+    """Reasoning streams into the step's region (expanded), then folds away the
+    instant answer text begins; the promoted answer keeps the reasoning."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
         display = pilot.app.query_one(ChatDisplay)
-        display.handle_stream_event({"kind": "turn_start", "turn_index": 0})
-        # ...stream produced nothing renderable, then the loop ended.
-        display.finalize_turn("")
+        await display.begin_exchange()
+        await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
+        await _send(display, pilot, {"kind": "reasoning_delta", "delta": "Let me think. "})
+        await _send(display, pilot, {"kind": "reasoning_delta", "delta": "2+2=4."})
+
+        step = display._active_box
+        assert step is not None and step.reasoning is not None
+        assert step.reasoning.collapsed is False  # expanded while thinking
+        assert step.reasoning.text == "Let me think. 2+2=4."
+
+        await _send(display, pilot, {"kind": "text_delta", "delta": "The answer is 4."})
+        assert step.reasoning.collapsed is True  # answer began -> reasoning folds
+
+        await display.finalize_exchange(tokens=5, seconds=1)
+        await pilot.pause()
+
+        # No tools -> unwrapped to a single answer box that carries the reasoning.
+        assert list(display.query(ExchangeBox)) == []
+        answer = display.query_one(MessageBox)
+        assert answer.content_text == "The answer is 4."
+        assert answer.reasoning is not None
+        assert answer.reasoning.text == "Let me think. 2+2=4."
+        assert answer.reasoning.collapsed is True
+
+
+async def test_empty_terminal_turn_leaves_nothing():
+    """A turn that streams nothing renderable then ends leaves no placeholder."""
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.begin_exchange()
+        await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
+        await display.finalize_exchange(tokens=0, seconds=0)
         await pilot.pause()
         assert _box_roles(display) == []
+        assert list(display.query(ExchangeBox)) == []
 
 
-async def test_error_tool_result_gets_error_class():
+async def test_tool_only_final_turn_keeps_collapsed_exchange():
+    """If the terminal step still has a tool (no clean answer), leave it grouped
+    and collapsed rather than snapping a tool box out as a fake 'answer'."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
         display = pilot.app.query_one(ChatDisplay)
-        display.handle_stream_event(
-            {"kind": "tool_result", "id": "c1", "name": "bash", "result": "boom", "is_error": True}
-        )
+        await display.begin_exchange()
+        await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
+        await _send(display, pilot, {"kind": "tool_call", "id": "c1", "name": "ls", "arguments": {}})
+        await _send(display, pilot, {"kind": "tool_result", "id": "c1", "name": "ls", "result": "x", "is_error": False})
+        await display.finalize_exchange(tokens=4, seconds=1)
         await pilot.pause()
-        box = display.query_one(MessageBox)
-        assert box.role == "toolResult"
-        assert box.has_class("box-error")
+
+        exchanges = list(display.query(ExchangeBox))
+        assert len(exchanges) == 1 and exchanges[0].collapsed is True
+        assert "1 tool" in exchanges[0].title
+        # No promoted answer at top level — only the exchange.
+        assert [c for c in display.children if isinstance(c, MessageBox)] == []
+
+
+async def test_tool_result_error_marks_toolbox():
+    """An errored tool result marks ITS ToolBox (folded in by id), not a
+    separate error box."""
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.begin_exchange()
+        await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
+        await _send(display, pilot, {"kind": "tool_call", "id": "c1", "name": "bash", "arguments": {"command": "false"}})
+        await _send(display, pilot, {"kind": "tool_result", "id": "c1", "name": "bash", "result": "boom", "is_error": True})
+
+        step = display._active_box
+        assert step is not None
+        tb = step.tool_boxes["c1"]
+        assert tb.has_result is True
+        assert tb.has_class("box-error")
 
 
 # ---------------------------------------------------------------------------
