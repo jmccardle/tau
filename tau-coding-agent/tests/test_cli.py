@@ -140,9 +140,43 @@ def test_resolve_bare_id_uses_provider_default():
     assert mc == {"backend": "openai", "model": "some-model"}
 
 
-def test_resolve_thinking_suffix_raises():
-    with pytest.raises(CLIError, match="thinking level"):
-        resolve_model_config(_config(), CLIArgs(model="gpt-4o:high"))
+def test_resolve_thinking_suffix_sets_level():
+    # gpt-4o:high is not a config key, so the :high suffix is parsed off the
+    # ad-hoc id and lands on model_config["thinking"].
+    name, mc = resolve_model_config(_config(), CLIArgs(model="gpt-4o:high"))
+    assert mc["thinking"] == "high"
+    assert mc["model"] == "gpt-4o"
+
+
+def test_resolve_thinking_flag_on_config_model():
+    # --thinking applies to a config-key model too.
+    _name, mc = resolve_model_config(
+        _config(), CLIArgs(model="gpt-4o", thinking="medium")
+    )
+    assert mc["thinking"] == "medium"
+
+
+def test_resolve_thinking_flag_overrides_suffix():
+    # An explicit --thinking wins over a :level suffix (pi: cliThinking ?? suffix).
+    _name, mc = resolve_model_config(
+        _config(), CLIArgs(model="some-model:low", thinking="high")
+    )
+    assert mc["thinking"] == "high"
+
+
+def test_resolve_no_thinking_leaves_key_absent():
+    _name, mc = resolve_model_config(_config(), CLIArgs(model="gpt-4o"))
+    assert "thinking" not in mc
+
+
+def test_parse_thinking_flag():
+    args = parse_cli_args(["--thinking", "high", "-p", "hi"])
+    assert args.thinking == "high"
+
+
+def test_parse_invalid_thinking_level_rejected():
+    with pytest.raises(SystemExit):
+        parse_cli_args(["--thinking", "bogus"])
 
 
 def test_resolve_no_model_no_default_raises():

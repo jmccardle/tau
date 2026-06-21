@@ -129,6 +129,19 @@ class Model(BaseModel):
     base_url: str
     context_window: int
     max_tokens: int
+    # Whether this model accepts a request-side reasoning/thinking effort
+    # (OpenAI o-series, Qwen3, DeepSeek-R1, …). False means the provider never
+    # sends `reasoning_effort`, so a requested level is clamped to "off" and
+    # dropped — sending it to a non-reasoning model is an upstream 400. pi calls
+    # this `Model.reasoning` (types.ts:585). Default False (Fail-Early: opt in,
+    # don't guess capability).
+    reasoning: bool = False
+    # Maps τ thinking levels ("off".."xhigh") to provider/model-specific
+    # `reasoning_effort` values. Missing keys pass the level through unchanged; a
+    # ``None`` value marks a level unsupported; an entry is what makes "xhigh"
+    # available at all. pi: `Model.thinkingLevelMap` (types.ts:589). None = no
+    # remapping.
+    thinking_level_map: dict[str, str | None] | None = None
 
     def to_openai_format(self) -> dict[str, Any]:
         """Serialize to OpenAI-compatible format.

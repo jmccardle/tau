@@ -21,6 +21,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from tau_ai.models import EXTENDED_THINKING_LEVELS
 from tau_coding_agent.headless import CLIError, resolve_model_config, run_print
 
 # τ data dir / config (matches app.py's TAU_DIR).
@@ -52,6 +53,7 @@ class CLIArgs:
     tools: str | None = None  # comma-separated allowlist
     no_tools: bool = False
     system_prompt: str | None = None
+    thinking: str | None = None  # off|minimal|low|medium|high|xhigh
     verbose: bool = False
 
     @property
@@ -75,9 +77,10 @@ def build_parser() -> argparse.ArgumentParser:
             "  tau --model gpt-4o          # TUI with a specific model\n"
             '  tau -p "explain @main.py"   # headless: print the answer and exit\n'
             '  tau -p --mode json "hi"     # headless, JSONL event stream\n'
+            '  tau --thinking high         # TUI, request high reasoning effort\n'
             "\n"
-            "deferred (see docs/CLI-PLAN.md): --thinking (needs τ-ai reasoning\n"
-            "send-path), --continue/--resume/--session (needs session wiring)."
+            "deferred (see docs/CLI-PLAN.md): --continue/--resume/--session\n"
+            "(needs headless session wiring)."
         ),
     )
     parser.add_argument("--version", "-v", action="version", version=f"tau {_version()}")
@@ -115,6 +118,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="override the system prompt for this run",
     )
     parser.add_argument(
+        "--thinking", default=None, choices=list(EXTENDED_THINKING_LEVELS),
+        help="reasoning effort: off, minimal, low, medium, high, xhigh "
+             "(requires a reasoning-capable model)",
+    )
+    parser.add_argument(
         "--verbose", action="store_true",
         help="verbose logging (long-only; pi-aligned, -v is --version)",
     )
@@ -134,6 +142,7 @@ def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
         tools=ns.tools,
         no_tools=ns.no_tools,
         system_prompt=ns.system_prompt,
+        thinking=ns.thinking,
         verbose=ns.verbose,
     )
 
@@ -152,7 +161,7 @@ def load_config() -> dict:
 def _launch_tui(args: CLIArgs, config: dict) -> int:
     """Launch the Parley TUI, applying model/system-prompt overrides."""
     overrides: dict = {}
-    if args.model or args.provider or args.tools or args.no_tools:
+    if args.model or args.provider or args.tools or args.no_tools or args.thinking:
         name, model_config = resolve_model_config(config, args)
         # Merge over any existing entry so config-derived keys (api_key, etc.)
         # survive when only some fields are overridden.

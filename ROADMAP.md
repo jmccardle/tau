@@ -5,15 +5,16 @@ test) it came from so it can be audited against the source of truth (pi) and the
 "Fail Early" rule. Phase-build work (the `docs/PHASE-*` plan) is **complete**;
 this file tracks the post-build bug/feature backlog.
 
-**State (2026-06-20):** branch `master`. Suite: **1360 passed / 0 failed**
-(`pytest` from repo root) after closing Tier 1 and Tier 2. mypy: **57** errors
-(was 58 — the Tier 2 #3 dedup removal dropped one; no new errors).
+**State (2026-06-21):** branch `master`. Suite: **1385 passed / 0 failed**
+(`pytest` from repo root) after closing Tier 1, Tier 2, and Tier 3 #4. mypy:
+**57** errors (unchanged; the reasoning_effort work added no new errors).
 
-Last shipped (commits `4e20240`, `9cb472d`, `83efb1a`): thinking consolidation,
-real usage via `stream_options`, multi-turn `_assistant_content_to_openai` fix,
-reasoning round-trip (pi parity), the `prompt()`/`continue_conversation()`
-return-only-this-turn duplication fix, TUI reload renderer, and global
-reasoning/tool toggles.
+Last shipped (commits `4e20240`, `9cb472d`, `83efb1a`, `29869fe`): thinking
+consolidation, real usage via `stream_options`, multi-turn
+`_assistant_content_to_openai` fix, reasoning round-trip (pi parity), the
+`prompt()`/`continue_conversation()` return-only-this-turn duplication fix, TUI
+reload renderer, global reasoning/tool toggles, pi-parity prompt threading, and
+the `reasoning_effort` send-path + `--thinking` flag (Tier 3 #4).
 
 ---
 
@@ -86,15 +87,32 @@ mypy errors −1; suite 1360/0.
 
 ## Tier 3 — Missing features (deferred from `docs/CLI-PLAN.md`, Fail-Early gated)
 
-### 4. `--thinking` — blocked on a `reasoning_effort` send-path in tau-ai
-**Verified still blocked:** `grep reasoning_effort tau-ai/src` → not sent
-anywhere; `Model` (`tau-ai/src/tau_ai/types.py`) has no reasoning/thinking field
-(only the `ThinkingContent` *block* carries `thinking_signature`). The recent
-reasoning **round-trip** work replays *captured* reasoning back to the model — it
-does **not** add a request-side `reasoning_effort` param, so `--thinking` is
-still gated. Work: add a thinking level to `Model` + a send-path in `openai.py`
-(pi `reasoning_effort`, levels `off..xhigh`, default `medium`). Until then the
-flag must error, not stub (`docs/CLI-PLAN.md` "Deferred").
+### 4. `--thinking` — ✅ DONE (2026-06-21)
+**Shipped the full `reasoning_effort` send-path + CLI flag:**
+- **τ-ai (`types.py`):** `Model` gained `reasoning: bool` (capability) and
+  `thinking_level_map` (per-model level→value remap), mirroring pi `Model`
+  (`types.ts:585,589`). New `tau_ai/models.py` ports pi's `clampThinkingLevel`/
+  `getSupportedThinkingLevels` (`models.ts:51-84`) + `EXTENDED_THINKING_LEVELS`
+  (`off..xhigh`) and `is_valid_thinking_level`.
+- **τ-ai (`openai.py`):** `stream_chat` reads the τ-internal `reasoning` option,
+  clamps it, and emits `payload["reasoning_effort"]` per pi's default "openai"
+  `thinkingFormat` branch (`openai-completions.ts:620-628`); gated on
+  `Model.reasoning` (Fail-Early: never sent to a non-reasoning model). The
+  `reasoning` key is stripped from the body (never leaks).
+- **τ-agent-core:** `AgentLoopConfig.reasoning`, `_stream_response` adds
+  `options["reasoning"]`, `AgentSession(reasoning=…)` threads it into both
+  `prompt()` and `continue_conversation()`, and `create_agent_session` now
+  *uses* its (previously inert) `thinking_level` arg (non-"off" → `reasoning=True`
+  on the model, level forwarded).
+- **τ-coding-agent:** `--thinking {off..xhigh}` flag (argparse `choices`,
+  validated), plus the `--model x:high` suffix (`resolve_model_config` parses it
+  instead of raising). `TauBackend` derives `Model.reasoning` from a config
+  `thinking` level (or explicit `reasoning: true`) and threads the level.
+  Honored in both the TUI (`_launch_tui` overrides) and headless paths.
+- A non-"off" level marks the model reasoning-capable (pi
+  `model-resolver.ts:496`). xhigh needs a `thinking_level_map` entry, else it
+  clamps to high (pi parity). Tests: provider send/clamp/gate, level helpers,
+  CLI parse/resolve, backend wiring, session threading. Suite 1385/0; mypy 57.
 
 ### 5. Headless session continuation — `--continue`/`-c`, `--resume`, `--session`, `--fork`, `--name`
 Sessions already persist to `~/.tau/chats/` and resume **from the TUI**. The
@@ -142,6 +160,6 @@ the user's saved files). Left here so it isn't "rediscovered" as a bug.
 1. ~~**Tier 1 #1**~~ — ✅ done (2026-06-20).
 2. ~~**Tier 2 #2/#3**~~ — #3 ✅ done (pi-parity dedup removal, 2026-06-20);
    #2 closed as WONTFIX (down to 2 intentionally-divergent sites).
-3. **Tier 3 #4** (`reasoning_effort` send-path) — unblocks `--thinking` *and*
-   completes the reasoning story the recent round-trip work started. ← next.
-4. **Tier 3 #5** (headless resume), then Tier 4 cleanup.
+3. ~~**Tier 3 #4**~~ — ✅ done (`reasoning_effort` send-path + `--thinking`,
+   2026-06-21).
+4. **Tier 3 #5** (headless resume), then Tier 4 cleanup. ← next.

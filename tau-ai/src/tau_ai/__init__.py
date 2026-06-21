@@ -18,6 +18,13 @@ from tau_ai.types import (
     Usage,
     Model,
 )
+from tau_ai.models import (
+    DEFAULT_THINKING_LEVEL,
+    EXTENDED_THINKING_LEVELS,
+    clamp_thinking_level,
+    get_supported_thinking_levels,
+    is_valid_thinking_level,
+)
 from tau_ai.tools import define_tool, validate_tool_arguments
 from tau_ai.abort import AbortSignal
 from tau_ai.providers.base import Provider
@@ -35,6 +42,12 @@ __all__ = [
     "ToolCall",
     "Usage",
     "Model",
+    # Thinking / reasoning levels
+    "DEFAULT_THINKING_LEVEL",
+    "EXTENDED_THINKING_LEVELS",
+    "clamp_thinking_level",
+    "get_supported_thinking_levels",
+    "is_valid_thinking_level",
     # Tools
     "define_tool",
     "validate_tool_arguments",

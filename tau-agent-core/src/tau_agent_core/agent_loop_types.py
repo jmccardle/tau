@@ -65,6 +65,7 @@ class AgentLoopConfig(BaseModel):
         max_turns: Maximum number of turns before termination
         temperature: Model temperature
         api_key: API key forwarded to the provider (None = use env/provider default)
+        reasoning: Requested thinking level ("off".."xhigh"), or None
     """
 
     model: str | None = None
@@ -77,3 +78,8 @@ class AgentLoopConfig(BaseModel):
     # Model (which is serialized to session JSON on disk) so the credential is
     # never persisted.
     api_key: str | None = None
+    # Requested thinking/reasoning level ("off".."xhigh"), forwarded to the
+    # provider as the `reasoning` option (→ `reasoning_effort`). None means
+    # "don't request reasoning". The provider clamps it to the model's
+    # capabilities and only sends it when the model declares reasoning support.
+    reasoning: str | None = None

@@ -83,6 +83,7 @@ class AgentSession:
         tools: list | None = None,
         extensions: list[Callable] | None = None,
         api_key: str | None = None,
+        reasoning: str | None = None,
     ) -> None:
         self._session_manager = session_manager
         self._model = model
@@ -96,6 +97,9 @@ class AgentSession:
         # never written to the on-disk session JSON. None means "rely on the
         # env/provider default".
         self._api_key = api_key
+        # Requested thinking level ("off".."xhigh") forwarded to the loop ->
+        # provider as the `reasoning` option. None = don't request reasoning.
+        self._reasoning = reasoning
 
         # Register extensions
         for ext in self._extensions:
@@ -207,6 +211,7 @@ class AgentSession:
                 system_prompt=self._system_prompt,
                 temperature=getattr(self._model, "temperature", 0.7),
                 api_key=self._api_key,
+                reasoning=self._reasoning,
             )
 
             # Create and run the agent loop
@@ -292,6 +297,7 @@ class AgentSession:
                 system_prompt=self._system_prompt,
                 temperature=getattr(self._model, "temperature", 0.7),
                 api_key=self._api_key,
+                reasoning=self._reasoning,
             )
 
             # Create and run the agent loop (continuation mode)

@@ -410,6 +410,10 @@ class AgentLoop:
         options: dict[str, Any] = {"temperature": self.config.temperature}
         if self.config.api_key:
             options["api_key"] = self.config.api_key
+        # Forward the requested thinking level; the provider clamps it and emits
+        # `reasoning_effort`. Only when set, so None = "don't request reasoning".
+        if self.config.reasoning is not None:
+            options["reasoning"] = self.config.reasoning
 
         stream = await stream_simple(
             model,

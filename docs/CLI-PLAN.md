@@ -37,10 +37,17 @@ The **Core** set below is now implemented in `tau-coding-agent/src/tau_coding_ag
   `json` modes persist. (This satisfies "`tau -p` creates browsable/resumable
   sessions" without the CLI-side `--continue`/`--resume` flags below.)
 
-**Deferred — Fail-Early, NOT stubbed (a `:level` thinking suffix or these flags
-error clearly rather than silently no-op):**
-- `--thinking` — needs a `reasoning_effort` send-path in τ-ai (`Model` has no
-  reasoning field; `openai.py` only *reads* it). `--model x:high` raises until then.
+**Implemented (2026-06-21):**
+- `--thinking {off|minimal|low|medium|high|xhigh}` and the `--model x:high`
+  suffix — both set the requested reasoning level. τ-ai now has the
+  `reasoning_effort` send-path: `Model` gained `reasoning`/`thinking_level_map`
+  fields, `tau_ai/models.py` ports pi's `clampThinkingLevel`, and
+  `openai.py` emits `reasoning_effort` (clamped, gated on `Model.reasoning`).
+  A non-"off" level marks the model reasoning-capable (pi
+  `model-resolver.ts:496`); levels thread backend → session → loop → provider.
+
+**Deferred — Fail-Early, NOT stubbed (these flags error clearly rather than
+silently no-op):**
 - `--continue`/`-c`, `--resume`, `--session`, `--fork`, `--name` — the **CLI-side**
   continuation flags. Sessions now persist (above) and resume *from the TUI*, but
   resuming a prior session *headlessly* (load instead of `new_session()` in

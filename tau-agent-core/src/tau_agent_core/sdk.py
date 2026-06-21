@@ -327,7 +327,9 @@ def create_agent_session(
         session_manager: Optional SessionManager instance.
         extensions: List of extension factory callables.
         system_prompt: Optional custom system prompt.
-        thinking_level: Thinking level ("off", "low", "high").
+        thinking_level: Thinking level ("off", "minimal", "low", "medium",
+            "high", "xhigh"). A non-"off" level marks the model reasoning-capable
+            and is forwarded to the provider as `reasoning_effort`.
         cwd: Current working directory.
         settings: Optional settings dict.
 
@@ -341,6 +343,14 @@ def create_agent_session(
     # 1. Resolve model
     if isinstance(model, str):
         model = resolve_model(model, provider=provider, base_url=base_url)
+
+    # A non-"off" thinking level asserts the model is reasoning-capable (pi
+    # model-resolver.ts:496 sets `reasoning: true` on an ad-hoc model when a
+    # non-off level is requested). Without this the provider would clamp the
+    # level to "off" and never send `reasoning_effort`.
+    reasoning_arg = thinking_level if thinking_level != "off" else None
+    if reasoning_arg is not None:
+        model.reasoning = True
 
     # 2. Discover and create tools
     tool_objs = _resolve_tools(tools)
@@ -363,4 +373,5 @@ def create_agent_session(
         tools=tool_objs,
         extensions=ext_factories,
         api_key=api_key,
+        reasoning=reasoning_arg,
     )

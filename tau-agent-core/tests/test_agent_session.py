@@ -527,6 +527,44 @@ class TestApiKeyThreadedToProvider:
         assert "api_key" not in captured["options"]
 
 
+class TestReasoningThreadedToProvider:
+    """The requested thinking level must reach the provider via stream_simple's
+    options as ``reasoning``. The provider clamps it and emits
+    ``reasoning_effort``; here we only assert the level is threaded (or omitted
+    when None) — same capture technique as the api_key tests."""
+
+    def _session(self, reasoning):
+        return AgentSession(
+            session_manager=SessionManager.in_memory(),
+            model=Model(
+                id="gpt-4o", name="GPT-4o", api="openai-completions",
+                provider="openai", base_url="https://api.openai.com/v1",
+                context_window=128000, max_tokens=4096, reasoning=True,
+            ),
+            reasoning=reasoning,
+        )
+
+    def test_reasoning_level_appears_in_stream_options(self):
+        captured: dict = {}
+        session = self._session("high")
+        with patch(
+            "tau_agent_core.agent_loop.stream_simple",
+            side_effect=TestApiKeyThreadedToProvider._capturing_stream_simple(captured),
+        ):
+            asyncio.run(session.prompt("hi"))
+        assert captured["options"].get("reasoning") == "high"
+
+    def test_no_reasoning_means_no_option(self):
+        captured: dict = {}
+        session = self._session(None)
+        with patch(
+            "tau_agent_core.agent_loop.stream_simple",
+            side_effect=TestApiKeyThreadedToProvider._capturing_stream_simple(captured),
+        ):
+            asyncio.run(session.prompt("hi"))
+        assert "reasoning" not in captured["options"]
+
+
 # =============================================================================
 # Test 4: Abort during prompt
 # =============================================================================

@@ -26,16 +26,14 @@ from typing import TYPE_CHECKING
 # write a sidebar-visible, resumable session without importing the TUI.
 from tau_coding_agent.session_store import Chat
 
+# Canonical thinking levels live in τ-ai (single source of truth); pi: the same
+# set in ``args.ts:57``. A ``model:level`` suffix or the ``--thinking`` flag is
+# carried into the model config as ``thinking`` and threaded to the provider as
+# ``reasoning_effort``.
+from tau_ai.models import is_valid_thinking_level
+
 if TYPE_CHECKING:  # avoid importing the dataclass module at runtime cost
     from tau_coding_agent.cli import CLIArgs
-
-
-# pi's thinking levels (``args.ts:57``). We detect a ``model:level`` suffix only
-# to FAIL EARLY: τ-ai has no ``reasoning_effort`` send-path yet, so silently
-# dropping the level would corrupt the request contract.
-THINKING_LEVELS = frozenset(
-    {"off", "minimal", "low", "medium", "high", "xhigh"}
-)
 
 
 class CLIError(Exception):
@@ -53,7 +51,8 @@ def resolve_model_config(config: dict, args: "CLIArgs") -> tuple[str, dict]:
       1. ``--model NAME`` matching a key in ``config["models"]`` → that entry.
       2. ``provider/id`` shorthand → an ad-hoc entry (provider from the prefix).
       3. a bare id → an ad-hoc entry (provider from ``--provider`` or ``openai``).
-    A ``:level`` thinking suffix raises (unsupported; see ``THINKING_LEVELS``).
+    A ``model:level`` thinking suffix (or the ``--thinking`` flag) sets the
+    requested reasoning level on ``model_config["thinking"]``.
     """
     models = config.get("models", {})
     spec = args.model or config.get("default_model")
@@ -63,26 +62,33 @@ def resolve_model_config(config: dict, args: "CLIArgs") -> tuple[str, dict]:
             "pass --model NAME or set default_model in ~/.tau/config.json"
         )
 
+    suffix_thinking: str | None = None
     if spec in models:
         # Exact config-key match wins (so a key may legitimately contain a colon).
         model_config = dict(models[spec])
     else:
-        # Fail-Early on a thinking suffix (split on the LAST colon, like pi)
-        # before treating the remainder as an ad-hoc model id.
-        _head, sep, tail = spec.rpartition(":")
-        if sep and tail in THINKING_LEVELS:
-            raise CLIError(
-                f"thinking level ':{tail}' is not yet supported — τ-ai has no "
-                "reasoning_effort send-path. See docs/CLI-PLAN.md (deferred flags)."
-            )
+        # Parse a ``model:level`` thinking suffix (split on the LAST colon, like
+        # pi resolveCliModel) before treating the remainder as an ad-hoc id.
+        head, sep, tail = spec.rpartition(":")
+        spec_id = spec
+        if sep and is_valid_thinking_level(tail):
+            suffix_thinking = tail
+            spec_id = head
         # Ad-hoc model not present in the config map.
-        if "/" in spec:
-            prov, _, mid = spec.partition("/")
+        if "/" in spec_id:
+            prov, _, mid = spec_id.partition("/")
         else:
-            prov, mid = (args.provider or "openai"), spec
+            prov, mid = (args.provider or "openai"), spec_id
         if not mid:
             raise CLIError(f"invalid --model value: {spec!r}")
         model_config = {"backend": prov, "model": mid}
+
+    # Requested thinking level: an explicit ``--thinking`` flag wins over a
+    # ``:level`` suffix (pi: ``cliThinking ?? fallbackThinking``). argparse has
+    # already validated ``args.thinking`` against the known levels.
+    thinking = args.thinking or suffix_thinking
+    if thinking is not None:
+        model_config["thinking"] = thinking
 
     # Per-invocation overrides (CLI > config).
     if args.provider:

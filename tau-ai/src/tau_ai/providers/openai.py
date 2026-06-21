@@ -32,6 +32,7 @@ import httpx
 
 from tau_ai.providers.base import Provider
 from tau_ai.json_parse import parse_json_with_repair, parse_streaming_json
+from tau_ai.models import clamp_thinking_level
 from tau_ai.streaming import (
     DoneEvent,
     ErrorEvent,
@@ -784,9 +785,13 @@ class OpenAICompletionsProvider(Provider):
         # llama.cpp) never emit the trailing usage chunk, so token counts come
         # back as 0. pi sends this unconditionally (openai-completions.ts:522).
         # Placed before `**body_options` so an explicit caller override still wins.
-        # `api_key` is a transport credential, not a request-body field — strip
-        # it so threading it through `options` never leaks it into the JSON body.
-        body_options = {k: v for k, v in options.items() if k != "api_key"}
+        # `api_key` is a transport credential, not a request-body field, and
+        # `reasoning` is a τ-internal level (converted to `reasoning_effort`
+        # below) — strip both so threading them through `options` never leaks
+        # them into the JSON body.
+        body_options = {
+            k: v for k, v in options.items() if k not in ("api_key", "reasoning")
+        }
         payload: dict[str, Any] = {
             "model": model.id,
             "messages": openai_messages,
@@ -796,6 +801,26 @@ class OpenAICompletionsProvider(Provider):
         }
         if openai_tools:
             payload["tools"] = openai_tools
+
+        # Reasoning / thinking effort. The requested level arrives as the
+        # τ-internal `reasoning` option; clamp it to what the model supports,
+        # then map "off" → don't send (pi: streamSimple clamp at
+        # openai-completions.ts:441-442, default "openai" thinkingFormat send at
+        # :620-628). Only sent when the model declares reasoning support
+        # (Fail-Early: never send `reasoning_effort` to a non-reasoning model,
+        # which would 400). pi additionally gates on a per-provider
+        # `compat.supportsReasoningEffort` auto-detected from the URL; τ has no
+        # such machinery, so `Model.reasoning` is the single gate.
+        requested = options.get("reasoning")
+        if requested is not None and getattr(model, "reasoning", False):
+            clamped = clamp_thinking_level(model, requested)
+            tlm = model.thinking_level_map or {}
+            if clamped != "off":
+                payload["reasoning_effort"] = tlm.get(clamped, clamped)
+            else:
+                off_value = tlm.get("off")
+                if isinstance(off_value, str):
+                    payload["reasoning_effort"] = off_value
 
         client = self._get_client()
         accum = _Accumulator()

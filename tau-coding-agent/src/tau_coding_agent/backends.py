@@ -63,6 +63,19 @@ class TauBackend(Backend):
         self.model_name = model_id
         self.system_prompt = config.get("system_prompt", "")
 
+        # Thinking/reasoning level. The CLI's --thinking flag (or a model:level
+        # suffix) lands here as config["thinking"]; a model config entry may also
+        # declare a default "thinking" level and a "thinking_level_map". A
+        # non-"off" level asserts the model is reasoning-capable (mirrors pi
+        # model-resolver.ts:496), so reasoning_effort is actually sent; an
+        # explicit config "reasoning": true also enables it. None/"off" → no
+        # reasoning requested.
+        thinking_level = config.get("thinking")
+        reasoning_arg = (
+            thinking_level if thinking_level and thinking_level != "off" else None
+        )
+        model_reasoning = bool(config.get("reasoning")) or reasoning_arg is not None
+
         # Build the AgentSession
         self.session_manager = SessionManager()
         model = Model(
@@ -73,6 +86,8 @@ class TauBackend(Backend):
             base_url=base_url,
             context_window=128000,
             max_tokens=4096,
+            reasoning=model_reasoning,
+            thinking_level_map=config.get("thinking_level_map"),
         )
 
         # Discover tools from config. Defaults to all built-in tools.
@@ -93,6 +108,7 @@ class TauBackend(Backend):
             system_prompt=self.system_prompt,
             tools=tools,
             api_key=api_key,
+            reasoning=reasoning_arg,
         )
 
         # Create a new session in the session manager (required before use)
