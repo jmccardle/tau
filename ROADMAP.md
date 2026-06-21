@@ -114,6 +114,20 @@ mypy errors −1; suite 1360/0.
   clamps to high (pi parity). Tests: provider send/clamp/gate, level helpers,
   CLI parse/resolve, backend wiring, session threading. Suite 1385/0; mypy 57.
 
+**Test-rig caveat (not a bug — verified 2026-06-21):** against the local
+llama.cpp + Qwen3 GGUF server, `reasoning_effort` is a **silent no-op**. τ puts
+it on the wire correctly, but llama.cpp accepts it with HTTP 200, never
+validates it (even `reasoning_effort: bogus` → 200), and the jinja template has
+no reference to it — so it's parsed off the request and dropped before
+templating. Deterministic A/B (temp=0, seed=42): output is byte-identical across
+`high`/`minimal`/`bogus`/absent (same reasoning SHA). The *only* working thinking
+toggle on this rig is `chat_template_kwargs: {enable_thinking: false}` (reasoning
+590→0 chars). Implication: `--thinking <level>` against `local-llm` exercises the
+full τ send-path (and the unit tests assert the *payload*, so they stay valid)
+but has no server-side effect. Graded *or* on/off control of local Qwen would
+require porting pi's `"qwen"` thinkingFormat (a `chat_template_kwargs.enable_thinking`
+send-path) — out of scope until local thinking control is wanted.
+
 ### 5. Headless session continuation — `--continue`/`-c`, `--resume`, `--session`, `--fork`, `--name`
 Sessions already persist to `~/.tau/chats/` and resume **from the TUI**. The
 CLI-side flags to resume *headlessly* still need: load-instead-of-`new_session()`
