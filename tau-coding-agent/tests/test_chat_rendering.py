@@ -18,8 +18,10 @@ These drive the real ``ChatDisplay`` state machine headlessly via
 render tick between them to mirror the network-paced live loop, plus a focused
 unit test of ``TauBackend``'s agent-event -> structured-event mapping.
 
-The saved-chat *reload* path still renders flat boxes (its own section below) —
-rebuilding exchanges from the persisted message list is a separate concern.
+The saved-chat *reload* path reconstructs the SAME exchange grouping from the
+persisted flat message list (``reload_messages``), so a reloaded chat looks like
+a freshly-streamed one; ``add_persisted_message`` remains the per-message
+normalizer it builds on (covered in its own section below).
 """
 
 from __future__ import annotations
@@ -253,13 +255,14 @@ async def test_tool_result_error_marks_toolbox():
 
 
 # ---------------------------------------------------------------------------
-# Saved-chat reload: persisted block-content must render, not freeze.
+# add_persisted_message: the per-message normalizer (flat boxes).
 #
 # Regression for the busy-loop/freeze on clicking a sidebar session: a saved
 # assistant/toolResult message stores content as a *list of block dicts*, and
 # handing that straight to the str-only MessageBox raised
 # `'list' object has no attribute 'replace'` inside compose() — which, fired
-# for every message during the mount/layout cycle, manifested as a freeze.
+# for every message during the mount/layout cycle, manifested as a freeze. This
+# normalizer is the building block reload_messages composes into exchanges.
 # ---------------------------------------------------------------------------
 
 
@@ -272,7 +275,7 @@ _PERSISTED_TURN = [
         {"type": "text", "text": "Sure, let me look."},
         {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {"path": "."}},
     ]},
-    {"role": "toolResult", "tool_name": "ls", "is_error": False,
+    {"role": "toolResult", "tool_call_id": "c1", "tool_name": "ls", "is_error": False,
      "content": [{"type": "text", "text": "a.py\nb.py"}]},
     {"role": "assistant", "content": [{"type": "text", "text": "There are two files."}]},
 ]
@@ -364,7 +367,7 @@ async def test_headless_saved_session_round_trips(tmp_path, monkeypatch):
             {"type": "text", "text": "ok"},
             {"type": "toolCall", "id": "c1", "name": "bash", "arguments": {"command": "date"}},
         ]},
-        {"role": "toolResult", "tool_name": "bash", "is_error": False,
+        {"role": "toolResult", "tool_call_id": "c1", "tool_name": "bash", "is_error": False,
          "content": [{"type": "text", "text": "Thu"}]},
         {"role": "assistant", "content": [{"type": "text", "text": "It's Thursday."}]},
     ]
@@ -375,13 +378,130 @@ async def test_headless_saved_session_round_trips(tmp_path, monkeypatch):
     async with _Harness().run_test() as pilot:
         await pilot.pause()
         display = pilot.app.query_one(ChatDisplay)
-        for msg in loaded.messages:
-            if msg.get("role") != "system":
-                display.add_persisted_message(msg)
+        await display.reload_messages(loaded.messages)
         await pilot.pause()
-        assert _box_roles(display) == [
-            "user", "assistant", "toolCall", "toolResult", "assistant",
-        ]
+        # Reconstructs the exchange: user box, collapsed exchange, final answer.
+        top = _top_level(display)
+        assert isinstance(top[0], MessageBox) and top[0].role == "user"
+        assert isinstance(top[1], ExchangeBox)
+        assert isinstance(top[2], MessageBox) and top[2].role == "assistant"
+        assert top[2].content_text == "It's Thursday."
+
+
+# ---------------------------------------------------------------------------
+# reload_messages: reconstruct exchanges from the persisted flat list (#5).
+#
+# Walks the flat transcript back into the SAME widget tree the live state
+# machine leaves behind — collapsed ExchangeBox per span, folded tool boxes, the
+# terminal answer promoted out. The only difference is the summary omits
+# wall-clock duration (not persisted; not fabricated — Fail-Early).
+# ---------------------------------------------------------------------------
+
+
+async def test_reload_reconstructs_exchange_like_live():
+    """A persisted [text -> tool -> result -> answer] turn reloads into the same
+    shape the live path produces: user box, collapsed exchange, promoted answer."""
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.reload_messages([{"role": "system", "content": "s"}] + _PERSISTED_TURN)
+        await pilot.pause()
+
+        top = _top_level(display)
+        assert isinstance(top[0], MessageBox) and top[0].role == "user"
+        assert isinstance(top[1], ExchangeBox)
+        assert isinstance(top[2], MessageBox) and top[2].role == "assistant"
+        assert top[2].content_text == "There are two files."
+
+        exchange = top[1]
+        assert exchange.collapsed is True
+        assert "1 tool" in exchange.title and "tok" in exchange.title
+        # No fabricated duration on reload — the title has no 'M:SS' segment.
+        assert ":" not in exchange.title
+
+        step_boxes = list(exchange.query(MessageBox))
+        assert len(step_boxes) == 1
+        assert step_boxes[0].content_text == "Sure, let me look."
+        tools = list(step_boxes[0].tool_boxes.values())
+        assert len(tools) == 1 and tools[0].has_result is True
+
+
+async def test_reload_aggregates_tokens_across_span():
+    """The exchange summary sums each completion's persisted usage.total_tokens."""
+    messages = [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "usage": {"total_tokens": 30},
+         "content": [{"type": "toolCall", "id": "c1", "name": "ls", "arguments": {}}]},
+        {"role": "toolResult", "tool_call_id": "c1", "tool_name": "ls", "is_error": False,
+         "content": [{"type": "text", "text": "x"}]},
+        {"role": "assistant", "usage": {"total_tokens": 12},
+         "content": [{"type": "text", "text": "done"}]},
+    ]
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.reload_messages(messages)
+        await pilot.pause()
+        exchange = display.query_one(ExchangeBox)
+        assert "42 tok" in exchange.title  # 30 + 12, summed across the span
+
+
+async def test_reload_consolidates_legacy_bloated_blocks():
+    """A legacy assistant message with many one-fragment thinking/text blocks
+    (written before the provider consolidated them) reloads as ONE reasoning
+    region + ONE answer body, not hundreds of boxes."""
+    bloated = {"role": "assistant", "content":
+        [{"type": "thinking", "thinking": t} for t in ("Let ", "me ", "think.")]
+        + [{"type": "text", "text": t} for t in ("The ", "answer.")]}
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.reload_messages([{"role": "user", "content": "q"}, bloated])
+        await pilot.pause()
+        # No tools -> unwrapped to a single answer carrying the joined reasoning.
+        assert list(display.query(ExchangeBox)) == []
+        answer = [b for b in display.query(MessageBox) if b.role == "assistant"][-1]
+        assert answer.content_text == "The answer."
+        assert answer.reasoning is not None
+        assert answer.reasoning.text == "Let me think."
+
+
+async def test_reload_tool_only_final_keeps_collapsed_exchange():
+    """A span whose last completion is still a tool call (cut off) stays grouped
+    and collapsed — no tool box promoted as a fake answer."""
+    messages = [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": [
+            {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {}}]},
+        {"role": "toolResult", "tool_call_id": "c1", "tool_name": "ls", "is_error": False,
+         "content": [{"type": "text", "text": "x"}]},
+    ]
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.reload_messages(messages)
+        await pilot.pause()
+        exchanges = list(display.query(ExchangeBox))
+        assert len(exchanges) == 1 and exchanges[0].collapsed is True
+        top_boxes = [c for c in display.children if isinstance(c, MessageBox)]
+        assert len(top_boxes) == 1 and top_boxes[0].role == "user"  # only the user box
+
+
+async def test_reload_multiple_user_turns_make_separate_exchanges():
+    """Each user turn starts a fresh span; a trivial second turn is unwrapped."""
+    messages = _PERSISTED_TURN + [
+        {"role": "user", "content": "again"},
+        {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+    ]
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.reload_messages(messages)
+        await pilot.pause()
+        users = [b for b in display.query(MessageBox) if b.role == "user"]
+        assert len(users) == 2
+        # First span has a tool -> one collapsed exchange; second is trivial.
+        assert len(list(display.query(ExchangeBox))) == 1
 
 
 # ---------------------------------------------------------------------------

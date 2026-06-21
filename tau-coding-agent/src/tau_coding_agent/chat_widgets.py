@@ -165,13 +165,32 @@ class ExchangeBox(Collapsible):
         if isinstance(widget, ToolBox):
             self._tool_count += 1
 
+    async def add_step_async(self, widget: Widget) -> None:
+        """Like :meth:`add_step` but awaits the mount.
+
+        The reload path builds an exchange synchronously — it writes reasoning,
+        text and tool *results* into a step right after mounting it — so it must
+        wait for the step (and its slots) to compose before touching them. The
+        live path is network-paced and doesn't need to wait, so it uses the
+        fire-and-forget :meth:`add_step`.
+        """
+        await self.query_one(Collapsible.Contents).mount(widget)
+        if isinstance(widget, ToolBox):
+            self._tool_count += 1
+
     @property
     def tool_count(self) -> int:
         return self._tool_count
 
-    def set_summary(self, *, tools: int, tokens: int, seconds: float) -> None:
+    def set_summary(self, *, tools: int, tokens: int, seconds: float | None = None) -> None:
         """Finalize the title with the exchange's stats. Token count of 0 is
-        shown as 0 — we never hide a real value behind a branch."""
+        shown as 0 — we never hide a real value behind a branch.
+
+        ``seconds`` is omitted on the reload path: wall-clock duration is not
+        persisted, so a reconstructed exchange shows ``N tools · X tok`` without
+        a fabricated time (Fail-Early)."""
         label = f"{tools} tool" + ("" if tools == 1 else "s")
-        parts = [label, f"{format_tokens(tokens)} tok", format_duration(seconds)]
+        parts = [label, f"{format_tokens(tokens)} tok"]
+        if seconds is not None:
+            parts.append(format_duration(seconds))
         self.title = "✓ " + " · ".join(parts)

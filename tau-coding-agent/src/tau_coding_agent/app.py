@@ -106,6 +106,34 @@ def _join_text_blocks(blocks: object) -> str:
     return ""
 
 
+def _split_assistant_blocks(content: object) -> tuple[str, str, list[dict]]:
+    """Split a persisted assistant message's content into ``(thinking, text,
+    tool_calls)`` for exchange reconstruction.
+
+    Mirrors how a completion is composed live: one reasoning region, one answer
+    body, and N tool calls. Fragments are joined — both the fixed single-block
+    shape and the legacy bloated shape (hundreds of one-fragment blocks, written
+    before the provider consolidated them) collapse to one reasoning + one answer
+    string here. A plain-string body is treated as answer text."""
+    thinking_parts: list[str] = []
+    text_parts: list[str] = []
+    calls: list[dict] = []
+    if isinstance(content, str):
+        text_parts.append(content)
+    elif isinstance(content, list):
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            btype = b.get("type")
+            if btype == "thinking":
+                thinking_parts.append(b.get("thinking", ""))
+            elif btype == "text":
+                text_parts.append(b.get("text", ""))
+            elif btype == "toolCall":
+                calls.append(b)
+    return "".join(thinking_parts), "".join(text_parts), calls
+
+
 class MessageBox(Static):
     """The ONE universal widget per message — the messages-list 1:1 mapping.
 
@@ -202,6 +230,19 @@ class MessageBox(Static):
         if tool_call_id:
             self._tool_boxes[tool_call_id] = box
         self._tools_slot.mount(box)
+        return box
+
+    async def add_tool_call_async(self, name: str, arguments: object, tool_call_id: str = "") -> ToolBox:
+        """Like :meth:`add_tool_call` but awaits the ToolBox mount.
+
+        The reload path folds a tool *result* into this box immediately after the
+        next persisted message, so the box must have composed first (a Markdown
+        update before mount is silently lost — see ``ReasoningRegion``). The live
+        path is network-paced and uses the fire-and-forget variant."""
+        box = ToolBox(name, arguments, tool_call_id)
+        if tool_call_id:
+            self._tool_boxes[tool_call_id] = box
+        await self._tools_slot.mount(box)
         return box
 
     def set_tool_result(self, tool_call_id: str, result_text: str, is_error: bool = False) -> bool:
@@ -612,6 +653,31 @@ class ChatDisplay(VerticalScroll):
             self._reset_exchange_state()
             return
 
+        await self._close_exchange(exchange, tokens=tokens, seconds=seconds)
+        self._reset_exchange_state()
+        self.scroll_end(animate=False)
+
+    @staticmethod
+    def _exchange_subtitle(tokens: int, seconds: float | None) -> str:
+        """The stats line stamped on an unwrapped (no-tool) answer. Duration is
+        omitted when unknown (reload) rather than fabricated (Fail-Early)."""
+        if seconds is None:
+            return f"{format_tokens(tokens)} tok"
+        return f"{format_tokens(tokens)} tok · {format_duration(seconds)}"
+
+    async def _close_exchange(
+        self, exchange: ExchangeBox, *, tokens: int, seconds: float | None
+    ) -> None:
+        """Collapse a fully-built exchange to its summary and surface the answer.
+
+        Shared close-out for both the live state machine (:meth:`finalize_exchange`,
+        which builds the exchange as events stream) and the reload reconstruction
+        (:meth:`_reload_exchange`, which builds it all at once). Given an exchange
+        already populated with step boxes, it: promotes the terminal text answer
+        OUT below the exchange so it stays visible, unwraps a no-tool span to a
+        plain answer, and otherwise collapses the exchange behind its summary
+        line. ``seconds=None`` means duration is unknown (reload) and is omitted.
+        """
         steps = list(exchange.query(MessageBox))
         tool_count = sum(len(b.tool_boxes) for b in steps)
         # The terminal turn is the no-tool-call answer; pull it out so it stays
@@ -634,18 +700,13 @@ class ChatDisplay(VerticalScroll):
             # span has no summary line, so the (real) token + duration would be
             # lost — stamp them on the answer's subtitle instead of hiding them.
             if promoted is not None:
-                promoted.set_subtitle(
-                    f"{format_tokens(tokens)} tok · {format_duration(seconds)}"
-                )
+                promoted.set_subtitle(self._exchange_subtitle(tokens, seconds))
             exchange.remove()
         else:
             if final is not None:
                 final.remove()
             exchange.collapsed = True
             exchange.set_summary(tools=tool_count, tokens=tokens, seconds=seconds)
-
-        self._reset_exchange_state()
-        self.scroll_end(animate=False)
 
     async def _promote_answer(self, src: MessageBox, *, after: Widget) -> MessageBox:
         """Mount a fresh top-level answer box copied from ``src``, after ``after``.
@@ -662,6 +723,95 @@ class ChatDisplay(VerticalScroll):
             region.mark_done()
             region.collapsed = True
         return new
+
+    # ------------------------------------------------------------------
+    # Reload: reconstruct exchanges from the persisted flat message list
+    # ------------------------------------------------------------------
+
+    async def reload_messages(self, messages: list[dict]) -> None:
+        """Render a saved chat as exchanges, matching the finalized live look.
+
+        The persisted transcript is a flat list — ``system``, ``user``, then per
+        completion an ``assistant`` message (reasoning + text + ``toolCall``
+        blocks) and a ``toolResult`` message per call. This walks it back into
+        the same widget tree the live state machine leaves behind: each
+        user→answer span groups under one collapsed :class:`ExchangeBox` (summary
+        ``N tools · X tok``), the terminal answer promoted out below it; a no-tool
+        span is unwrapped to a plain answer.
+
+        The ONE difference from live is the summary omits wall-clock duration —
+        it is not persisted and we do not fabricate it (Fail-Early). Tokens come
+        from each completion's persisted ``usage`` (a true 0 for pre-fix chats).
+        """
+        self.clear_messages()
+        n = len(messages)
+        i = 0
+        while i < n:
+            role = messages[i].get("role", "")
+            if role == "system":
+                i += 1
+                continue
+            if role == "user":
+                # The user box sits above the exchange, as in the live path.
+                self.add_persisted_message(messages[i])
+                i += 1
+            # Collect the answer span (assistant + toolResult) up to the next
+            # user/system message, and rebuild it as one exchange.
+            span: list[dict] = []
+            while i < n and messages[i].get("role") not in ("user", "system"):
+                span.append(messages[i])
+                i += 1
+            if span:
+                await self._reload_exchange(span)
+        self.scroll_end(animate=False)
+
+    async def _reload_exchange(self, span: list[dict]) -> None:
+        """Rebuild one user→answer span (assistant + toolResult messages) as a
+        collapsed exchange, then close it out exactly like the live path."""
+        exchange = ExchangeBox()
+        await self.mount(exchange)
+        routes: dict[str, ToolBox] = {}
+        tokens = 0
+        for msg in span:
+            role = msg.get("role", "")
+            if role == "assistant":
+                step = MessageBox("assistant", "")
+                await exchange.add_step_async(step)
+                thinking, text, calls = _split_assistant_blocks(msg.get("content"))
+                if thinking:
+                    region = step.ensure_reasoning()
+                    region.set_text(thinking)
+                    region.mark_done()
+                    region.collapsed = True
+                if text:
+                    step.update_content(text)
+                for call in calls:
+                    tc_id = call.get("id", "") or ""
+                    box = await step.add_tool_call_async(
+                        call.get("name", ""), call.get("arguments", {}), tc_id
+                    )
+                    if tc_id:
+                        routes[tc_id] = box
+                usage = msg.get("usage")
+                if isinstance(usage, dict):
+                    tokens += int(usage.get("total_tokens", 0) or 0)
+            elif role == "toolResult":
+                tc_id = msg.get("tool_call_id", "") or ""
+                target = routes.get(tc_id)
+                result_text = _join_text_blocks(msg.get("content", []))
+                if target is not None:
+                    target.set_result(result_text, bool(msg.get("is_error", False)))
+                else:
+                    # The call always precedes its result on disk; a missing box
+                    # means a dangling id — surface it, don't fabricate one.
+                    self.app.log(
+                        f"reload: toolResult for unknown tool_call_id {tc_id!r}"
+                    )
+            else:
+                # Unexpected role inside an answer span — render flat rather than
+                # drop it (add_persisted_message raises on a bad content shape).
+                self.add_persisted_message(msg)
+        await self._close_exchange(exchange, tokens=tokens, seconds=None)
 
 
 class ChatInput(TextArea):
@@ -726,6 +876,8 @@ class Parley(App):
         Binding("ctrl+b", "toggle_sidebar", "Sidebar"),
         Binding("ctrl+n", "new_chat", "New Chat"),
         Binding("ctrl+e", "edit_system_prompt", "Edit Prompt"),
+        Binding("ctrl+r", "toggle_reasoning", "Reasoning", priority=True),
+        Binding("ctrl+t", "toggle_tools", "Tools", priority=True),
         Binding("ctrl+j", "focus_and_send", "^Enter=Send", show=True),
         Binding("ctrl+p", "command_palette", "Commands", show=False),
         Binding("ctrl+c", "quit", "Quit"),
@@ -734,6 +886,11 @@ class Parley(App):
     current_chat: reactive[Optional[Chat]] = reactive(None)
     current_backend: Optional[Backend] = None
     config: dict = {}
+    # Global show/hide state for the two collapsible content kinds. Each toggle
+    # flips every reasoning region / tool box in the transcript at once; the
+    # reactive records the last-applied intent (for the toggle's feedback).
+    reasoning_collapsed: reactive[bool] = reactive(False)
+    tools_collapsed: reactive[bool] = reactive(False)
 
     def __init__(self, cli_overrides: Optional[dict] = None):
         super().__init__()
@@ -875,7 +1032,9 @@ class Parley(App):
             # Re-enable input
             input_widget.disabled = False
             input_widget.focus()
-            self.sub_title = f"{self.current_chat.model}"
+            # Show the running conversation rollup (tools · tokens) next to the
+            # model, refreshed now that this exchange has been appended + saved.
+            self._refresh_subtitle()
 
     async def _get_assistant_response(self):
         """Get and display assistant response with streaming.
@@ -975,6 +1134,69 @@ class Parley(App):
         sidebar = self.query_one(ChatSidebar)
         sidebar.styles.display = "none" if sidebar.styles.display == "block" else "block"
 
+    def action_toggle_reasoning(self) -> None:
+        """Fold/unfold every reasoning region in the transcript at once.
+
+        A global override of the per-completion behavior (reasoning streams
+        expanded then auto-folds when the answer begins): one keypress hides all
+        the thinking, or expands it for review. Smart-toggle — if any region is
+        open it collapses all, otherwise it expands all — so the key always does
+        something visible regardless of the mixed starting states."""
+        self.reasoning_collapsed = self._fold_all(
+            self.query(ReasoningRegion), "Reasoning"
+        )
+
+    def action_toggle_tools(self) -> None:
+        """Fold/unfold every tool box (call + result) in the transcript at once."""
+        self.tools_collapsed = self._fold_all(self.query(ToolBox), "Tool output")
+
+    def _fold_all(self, widgets, label: str) -> bool:
+        """Collapse all ``widgets`` if any is currently expanded, else expand all.
+
+        Returns the applied collapsed state (also recorded on the reactive for
+        the binding's intent). A no-op when there are no such widgets yet."""
+        items = list(widgets)
+        if not items:
+            return False
+        target_collapsed = any(not w.collapsed for w in items)
+        for w in items:
+            w.collapsed = target_collapsed
+        self.notify(f"{label} {'collapsed' if target_collapsed else 'expanded'}")
+        return target_collapsed
+
+    @staticmethod
+    def _aggregate_label(messages: list[dict]) -> str:
+        """Conversation-level rollup: total tool calls + summed completion tokens.
+
+        Derived purely from the transcript, so it reads identically for a live
+        session and a reloaded one. Wall-clock time is intentionally absent — it
+        is not persisted per completion, and we don't fabricate it (Fail-Early).
+        Returns an empty string when there's nothing to roll up yet."""
+        tools = sum(
+            1
+            for m in messages
+            if m.get("role") == "assistant"
+            for b in (m.get("content") or [])
+            if isinstance(b, dict) and b.get("type") == "toolCall"
+        )
+        tokens = sum(
+            int((m.get("usage") or {}).get("total_tokens", 0) or 0)
+            for m in messages
+            if m.get("role") == "assistant"
+        )
+        if not tools and not tokens:
+            return ""
+        label = f"{tools} tool" + ("" if tools == 1 else "s")
+        return f"{label} · {format_tokens(tokens)} tok"
+
+    def _refresh_subtitle(self) -> None:
+        """Set the header subtitle to the model plus the conversation rollup."""
+        if not self.current_chat:
+            return
+        agg = self._aggregate_label(self.current_chat.messages)
+        model = str(self.current_chat.model)
+        self.sub_title = f"{model} · {agg}" if agg else model
+
     def action_focus_and_send(self):
         """Focus input and send if focused (for global hotkey)."""
         input_widget = self.query_one(ChatInput)
@@ -1015,6 +1237,18 @@ class Parley(App):
             "Edit System Prompt",
             "Edit the system prompt for new chats",
             self.action_edit_system_prompt
+        )
+
+        yield SystemCommand(
+            "Toggle Reasoning",
+            "Collapse/expand all reasoning regions",
+            self.action_toggle_reasoning,
+        )
+
+        yield SystemCommand(
+            "Toggle Tool Output",
+            "Collapse/expand all tool call/result boxes",
+            self.action_toggle_tools,
         )
 
     async def action_clear_chat(self):
@@ -1091,18 +1325,14 @@ class Parley(App):
             self.current_backend = create_backend(model_config)
             self.current_chat = chat
 
-            # Clear and reload display
+            # Reload the display, reconstructing exchanges from the persisted
+            # flat message list so a reloaded chat looks like a freshly-streamed
+            # one (collapsed exchanges, folded tool boxes, promoted final answer).
             display = self.query_one(ChatDisplay)
-            display.clear_messages()
+            await display.reload_messages(chat.messages)
 
-            # Display all messages, normalizing the persisted block shape. A raw
-            # list handed to add_message is exactly what froze reload before.
-            for msg in chat.messages:
-                if msg.get("role") != "system":  # Skip system message
-                    display.add_persisted_message(msg)
-
-            # Update UI
-            self.sub_title = f"{chat.model}"
+            # Update UI — model + the reloaded conversation's rollup.
+            self._refresh_subtitle()
             self.notify(f"Loaded chat: {chat.get_display_title()}")
 
         except Exception as e:
