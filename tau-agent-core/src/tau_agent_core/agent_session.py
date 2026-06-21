@@ -192,7 +192,32 @@ class AgentSession:
                 context=context_messages,
             )
 
-            # Save all new messages (assistant responses, tool results)
+            # Persist this turn's messages AND collect them to return. The
+            # return value is THIS turn's new messages only — the user message
+            # (when it wasn't already supplied in the context) plus the
+            # assistant/tool messages the loop produced — NOT the full
+            # accumulated session history.
+            #
+            # Returning the whole history here was a compounding bug: the TUI
+            # appends prompt()'s return to its own message store (which already
+            # holds every prior turn), so each turn re-appended all earlier
+            # assistant/tool messages. The model then saw earlier exchanges
+            # duplicated and got confused about what it had already done.
+            turn_messages: list[dict[str, Any]] = []
+
+            # The user message is new to the conversation only when the caller
+            # didn't already include it in the provided context (the TUI does;
+            # a bare prompt("hi") does not).
+            if not context_ends_with_user:
+                user_dict = user_msg.model_dump()
+                self._session_manager.append_entry({
+                    "id": f"msg_{len(self._session_manager._get_entries())}",
+                    "type": "message",
+                    "message": user_dict,
+                })
+                turn_messages.append(user_dict)
+
+            # Assistant responses and tool results produced this turn.
             for msg in final_messages:
                 if hasattr(msg, "model_dump"):
                     msg_dict = msg.model_dump()
@@ -207,8 +232,9 @@ class AgentSession:
                     "type": msg_type,
                     "message": msg_dict,
                 })
+                turn_messages.append(msg_dict)
 
-            return self.messages
+            return turn_messages
 
         finally:
             self._is_streaming = False
@@ -249,7 +275,12 @@ class AgentSession:
                 context=context_messages,
             )
 
-            # Save all new messages (assistant responses, tool results)
+            # Save all new messages (assistant responses, tool results) and
+            # collect them to return. Like prompt(), the return value is only
+            # the messages produced THIS continuation — not the accumulated
+            # session history — so a caller appending the result to its own
+            # store doesn't re-append prior turns.
+            turn_messages: list[dict[str, Any]] = []
             for msg in final_messages:
                 if hasattr(msg, "model_dump"):
                     msg_dict = msg.model_dump()
@@ -264,8 +295,9 @@ class AgentSession:
                     "type": msg_type,
                     "message": msg_dict,
                 })
+                turn_messages.append(msg_dict)
 
-            return self.messages
+            return turn_messages
 
         finally:
             self._is_streaming = False

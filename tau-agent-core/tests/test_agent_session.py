@@ -376,6 +376,90 @@ class TestPromptRunsLoop:
         assert session.is_streaming is False
 
 
+class TestPromptReturnsOnlyThisTurnsMessages:
+    """prompt() must return ONLY the messages produced this turn, never the
+    accumulated session history.
+
+    Regression for a compounding history-duplication bug: the TUI appends
+    prompt()'s return to its own message store (which already holds every prior
+    turn), so returning the full history made each turn re-append all earlier
+    assistant/tool messages. The model then saw earlier exchanges duplicated
+    (observed live in chats/1781920975.json: turn-1's date exchange reappeared
+    verbatim inside turn 2, with identical usage stats — proving it was copied,
+    not regenerated). These tests stub the agent loop so no network is needed.
+    """
+
+    def _session(self) -> AgentSession:
+        return AgentSession(
+            session_manager=SessionManager.in_memory(),
+            model=Model(
+                id="gpt-4o", name="GPT-4o", api="openai-completions",
+                provider="openai", base_url="https://api.openai.com/v1",
+                context_window=128000, max_tokens=4096,
+            ),
+        )
+
+    @staticmethod
+    def _fake_loop(answer: str):
+        """A drop-in for AgentLoop whose run() returns one assistant message."""
+
+        class _FakeLoop:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            async def run(self, prompts, context):  # noqa: ANN001
+                return [{
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": answer}],
+                }]
+
+        return _FakeLoop
+
+    @staticmethod
+    def _assistant_texts(messages: list[dict]) -> list[str]:
+        return [
+            block.get("text")
+            for m in messages
+            if m.get("role") == "assistant"
+            for block in m.get("content", [])
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+
+    def test_second_prompt_return_excludes_first_turn(self):
+        session = self._session()
+
+        with patch("tau_agent_core.agent_session.AgentLoop", self._fake_loop("answer 1")):
+            first = asyncio.run(session.prompt("hello"))
+        with patch("tau_agent_core.agent_session.AgentLoop", self._fake_loop("answer 2")):
+            second = asyncio.run(session.prompt("again"))
+
+        # Turn 1's return carries that turn's user + assistant.
+        assert "answer 1" in self._assistant_texts(first)
+        assert any(m.get("role") == "user" for m in first)
+
+        # Turn 2's return is ONLY turn 2 — turn 1 must not reappear.
+        assert "answer 2" in self._assistant_texts(second)
+        assert "answer 1" not in self._assistant_texts(second)
+
+    def test_appending_returns_never_duplicates_prior_turns(self):
+        """Replays the exact TUI persistence pattern (app.py: append every
+        non-user message of prompt()'s return to a store that already holds the
+        prior turns) and asserts no assistant message is ever duplicated."""
+        session = self._session()
+        store: list[dict] = []
+
+        for i, answer in enumerate(["answer 1", "answer 2", "answer 3"]):
+            store.append({"role": "user", "content": f"turn {i}"})
+            with patch("tau_agent_core.agent_session.AgentLoop", self._fake_loop(answer)):
+                returned = asyncio.run(session.prompt(f"turn {i}"))
+            for msg in returned:
+                if msg.get("role") != "user":
+                    store.append(msg)
+
+        texts = self._assistant_texts(store)
+        assert texts == ["answer 1", "answer 2", "answer 3"]
+
+
 # =============================================================================
 # Test 4: Abort during prompt
 # =============================================================================
