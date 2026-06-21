@@ -6,8 +6,8 @@ test) it came from so it can be audited against the source of truth (pi) and the
 this file tracks the post-build bug/feature backlog.
 
 **State (2026-06-21):** branch `master`. Suite: **1403 passed / 0 failed**
-(`pytest` from repo root) after closing Tier 1, Tier 2, and Tier 3 #4 + #5. mypy:
-**57** errors (unchanged; the session-continuation work added no new errors).
+(`pytest` from repo root) after closing Tier 1, Tier 2, Tier 3 #4 + #5, and the
+Tier 4 cleanup (docs only — no code/test change). mypy: **57** errors (unchanged).
 
 Last shipped (commits `4e20240`, `9cb472d`, `83efb1a`, `29869fe`): thinking
 consolidation, real usage via `stream_options`, multi-turn
@@ -167,26 +167,38 @@ and same `stream_chat` path everything else uses. No `SessionManager` surgery.
 
 ## Tier 4 — Low priority / cleanup
 
-### 6. Message-label placement — DESIGN NOTE (`docs/TUI-FOLLOWUPS.md` #3)
-`MessageBox` uses `border_title` for the role label. Switching to an in-box
-first-line header is a localized `MessageBox.compose` + `parley.tcss` change,
-no behavioral impact. Only if the visual treatment is preferred.
+### 6. Message-label placement — ✅ REVIEWED, KEEP AS-IS (2026-06-21)
+`MessageBox` uses `border_title` for the role label (`app.py:187,198`). The
+alternative — an in-box first-line header — is a localized `MessageBox.compose` +
+`parley.tcss` change with no behavioral impact. Offered as an explicit visual
+choice; **the maintainer chose to keep the border-title treatment**, so no code
+change. Closed (reopen only if the in-box header is later wanted).
 
-### 7. Doc hygiene
+### 7. Doc hygiene — ✅ DONE (2026-06-21)
 - **`docs/TUI-FOLLOWUPS.md` removed (2026-06-20)** — it was a session-companion
   doc; all three items are resolved or captured here: item 1 (reload renderer)
   FIXED, item 2 (stray dir) already removed as CODE-QUALITY #9, item 3 (message
   label placement) lives at Tier 4 #6 above.
-- **`docs/COMMAND_LINE.md`** still needs the 11 corrections enumerated in
-  `docs/CLI-PLAN.md` §4 (invented flags/env vars, short-alias collisions,
-  lossy thinking map). Correct, don't delete.
+- **`docs/COMMAND_LINE.md` corrected (not deleted)** — applied all 11 corrections
+  enumerated in `docs/CLI-PLAN.md` §4: removed invented pi flags
+  (`--output`/`-o`, `--cwd`/`--config`/`--context-window`/`--max-tokens`), flagged
+  + documented the resolved short-alias collisions (`-p`/`-v`/`-s`/`-o`/`-m`),
+  fixed the lossy thinking map (`minimal`/`xhigh` are distinct levels; only `off`
+  → no param), replaced the fabricated `TAU_*` env-var table with what τ actually
+  reads (`OPENAI_API_KEY`) + pi's real `PI_CODING_AGENT_*` derivation, corrected
+  the wrong-layer session claim (Chat store, not `SessionManager`), the default
+  provider (pi = `google`), the `--api-key` framing (deliberate divergence), and
+  noted the `--mode json` schema diverges from pi's. Added a superseded-by-
+  `CLI-PLAN.md` banner and refreshed "Current State" to the shipped surface.
 
-### 9. Large single-message render strategy — DESIGN NOTE (low priority)
+### 9. Large single-message render strategy — ✅ REVIEWED, NO ACTION (2026-06-21)
 A pathologically large *string* assistant message (the old 827 KB
 `1781803484.json`) renders correctly but is slow because Markdown parsing scales
-with size. If such messages recur in normal use, consider a display-only
-lazy/plain-`Static` strategy for oversized content — but never silently truncate
-assistant prose (Fail-Early). Carried over from the removed TUI-FOLLOWUPS #1.
+with size. **Trigger-gated and not recurring:** that file is gone and no
+oversized single-message render has resurfaced in normal use, so there is nothing
+to build. Kept as a design note: *if* such messages recur, consider a display-only
+lazy/plain-`Static` strategy for oversized content — but **never silently truncate
+assistant prose** (Fail-Early). Carried over from the removed TUI-FOLLOWUPS #1.
 
 ### 8. Durable caveat (not a task) — pre-fix chats stay bloated on disk
 Chats written before the thinking-consolidation fix keep hundreds of blocks per
@@ -206,4 +218,9 @@ the user's saved files). Left here so it isn't "rediscovered" as a bug.
    2026-06-21).
 4. ~~**Tier 3 #5**~~ — ✅ done (headless `--continue`/`--session`/`--fork`/
    `--name` via the Chat store, 2026-06-21).
-5. **Tier 4 cleanup** (doc hygiene #7, message-label #6, large-render #9). ← next.
+5. ~~**Tier 4 cleanup**~~ — ✅ done (2026-06-21): doc hygiene #7 (COMMAND_LINE.md
+   corrected, 11 fixes); #6 reviewed → keep border-title (no change); #9 reviewed
+   → trigger-gated design note, not recurring (no action).
+
+**All tiers closed.** Backlog is empty; ROADMAP tracks only the durable caveat
+(#8, not a task). Next work is new scope from pi parity or the maintainer.
