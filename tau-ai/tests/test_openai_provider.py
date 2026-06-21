@@ -1160,6 +1160,122 @@ class TestConvertMessagesDict:
         assert result[0]["role"] == "tool"
         assert result[0]["tool_call_id"] == "c1"
 
+    def test_dict_assistant_block_list_converts_text_and_tool_calls(self):
+        """Regression: on a follow-up turn the context carries the prior assistant
+        message as a block-list DICT. It must convert to a plain-string content +
+        a tool_calls array — NOT pass the raw blocks through (thinking/toolCall are
+        not valid OpenAI content[].type → HTTP 400 unsupported content[].type)."""
+        messages = [{
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "I should run date."},
+                {"type": "text", "text": "Sure."},
+                {"type": "toolCall", "id": "c1", "name": "bash",
+                 "arguments": {"command": "date"}},
+            ],
+        }]
+        result = self.provider._convert_messages_to_openai(messages)
+        msg = result[0]
+        # content is a plain string (the text only); thinking is not sent as content.
+        assert msg["content"] == "Sure."
+        # the tool call is hoisted into a proper tool_calls array.
+        assert msg["tool_calls"][0]["id"] == "c1"
+        assert msg["tool_calls"][0]["function"]["name"] == "bash"
+        assert '"command"' in msg["tool_calls"][0]["function"]["arguments"]
+        # no content[].type the API would reject.
+        assert not isinstance(msg["content"], list)
+
+    def test_dict_assistant_tool_call_only_has_empty_content(self):
+        """A tool-call turn with no text sends content='' (the call carries the
+        turn) — reasoning is not shipped back as content."""
+        messages = [{
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "x" * 500},
+                {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {}},
+            ],
+        }]
+        msg = self.provider._convert_messages_to_openai(messages)[0]
+        assert msg["content"] == ""
+        assert msg["tool_calls"][0]["function"]["name"] == "ls"
+
+    def test_dict_assistant_thinking_only_falls_back_to_string(self):
+        """A thinking-only turn (no text, no tools) keeps a non-empty string body
+        so the message isn't dropped — but never a block list."""
+        messages = [{
+            "role": "assistant",
+            "content": [{"type": "thinking", "thinking": "just pondering"}],
+        }]
+        msg = self.provider._convert_messages_to_openai(messages)[0]
+        assert msg["content"] == "just pondering"
+        assert "tool_calls" not in msg
+
+    def test_dict_assistant_legacy_text_fragments_concatenated(self):
+        """A legacy bloated message (one text block per stream fragment) joins by
+        concatenation, not with newlines — so the text reconstructs faithfully."""
+        messages = [{
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "The "},
+                {"type": "text", "text": "answer "},
+                {"type": "text", "text": "is 42."},
+            ],
+        }]
+        msg = self.provider._convert_messages_to_openai(messages)[0]
+        assert msg["content"] == "The answer is 42."
+
+    def test_dict_assistant_plain_string_passthrough(self):
+        """Older chats store assistant content as a plain string — pass through."""
+        messages = [{"role": "assistant", "content": "hello there"}]
+        msg = self.provider._convert_messages_to_openai(messages)[0]
+        assert msg["content"] == "hello there"
+
+    def test_dict_assistant_replays_reasoning_under_captured_signature(self):
+        """A thinking block that captured its field (``thinking_signature``) is
+        replayed to the same model under that exact field, so the model keeps its
+        chain-of-thought across a multi-step turn (pi parity). The tool call still
+        carries the turn, so ``content`` stays empty."""
+        messages = [{
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "I should call ls.",
+                 "thinking_signature": "reasoning_content"},
+                {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {"all": True}},
+            ],
+        }]
+        msg = self.provider._convert_messages_to_openai(messages)[0]
+        assert msg["content"] == ""
+        assert msg["reasoning_content"] == "I should call ls."
+        assert msg["tool_calls"][0]["function"]["name"] == "ls"
+
+    def test_dict_assistant_reasoning_replayed_alongside_text(self):
+        """With answer text present, reasoning is replayed in its own field and the
+        text is the message content (never concatenated together)."""
+        messages = [{
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "2+2 is 4.",
+                 "thinking_signature": "reasoning"},
+                {"type": "text", "text": "The answer is 4."},
+            ],
+        }]
+        msg = self.provider._convert_messages_to_openai(messages)[0]
+        assert msg["content"] == "The answer is 4."
+        assert msg["reasoning"] == "2+2 is 4."
+
+    def test_dict_assistant_no_signature_does_not_replay_reasoning(self):
+        """Pre-change chats stored thinking WITHOUT a signature. We never guess the
+        field, so reasoning is NOT replayed (Fail-Early) — a thinking-only turn
+        keeps its text as content so it isn't dropped."""
+        messages = [{
+            "role": "assistant",
+            "content": [{"type": "thinking", "thinking": "old reasoning"}],
+        }]
+        msg = self.provider._convert_messages_to_openai(messages)[0]
+        assert "reasoning_content" not in msg
+        assert "reasoning" not in msg
+        assert msg["content"] == "old reasoning"  # thinking-only fallback, unchanged
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Additional: Provider instantiation and configuration

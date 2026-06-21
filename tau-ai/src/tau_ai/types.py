@@ -31,6 +31,14 @@ class ThinkingContent(BaseModel):
     type: Literal["thinking"] = "thinking"
     thinking: str
     cached_tokens: int = 0
+    # The streaming field this reasoning arrived on (``reasoning_content`` /
+    # ``reasoning`` / ``reasoning_text``). Recorded so a follow-up turn can send
+    # the reasoning back to the SAME model under the exact field its chat
+    # template reads (pi calls this the ``thinkingSignature``). Empty when the
+    # block predates this capture (e.g. older persisted chats) — in which case
+    # reasoning is NOT replayed, never guessed (Fail-Early; mirrors pi, which
+    # only replays when a signature is present).
+    thinking_signature: str = ""
 
 
 class ImageContent(BaseModel):
