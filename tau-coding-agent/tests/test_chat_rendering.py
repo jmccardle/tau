@@ -350,11 +350,11 @@ async def test_reload_unrenderable_content_raises():
 
 
 async def test_headless_saved_session_round_trips(tmp_path, monkeypatch):
-    """End-to-end contract: a session written by `tau -p` (_save_session) reloads
-    cleanly through the renderer — the write format and read renderer agree, which
-    is what makes a headless run *resumable* from the TUI."""
+    """End-to-end contract: a session written by `tau -p` (_persist_session)
+    reloads cleanly through the renderer — the write format and read renderer
+    agree, which is what makes a headless run *resumable* from the TUI."""
     import tau_coding_agent.session_store as store
-    from tau_coding_agent.headless import _save_session
+    from tau_coding_agent.headless import _persist_session
 
     monkeypatch.setattr(store, "TAU_DIR", tmp_path)
 
@@ -371,7 +371,7 @@ async def test_headless_saved_session_round_trips(tmp_path, monkeypatch):
          "content": [{"type": "text", "text": "Thu"}]},
         {"role": "assistant", "content": [{"type": "text", "text": "It's Thursday."}]},
     ]
-    path = _save_session("local-llm", {"backend": "openai"}, context, new_messages)
+    path = _persist_session("local-llm", {"backend": "openai"}, context, new_messages)
 
     loaded = store.Chat.load(path)
     assert loaded.model == "local-llm"  # resolvable config key -> resumable

@@ -5,9 +5,9 @@ test) it came from so it can be audited against the source of truth (pi) and the
 "Fail Early" rule. Phase-build work (the `docs/PHASE-*` plan) is **complete**;
 this file tracks the post-build bug/feature backlog.
 
-**State (2026-06-21):** branch `master`. Suite: **1385 passed / 0 failed**
-(`pytest` from repo root) after closing Tier 1, Tier 2, and Tier 3 #4. mypy:
-**57** errors (unchanged; the reasoning_effort work added no new errors).
+**State (2026-06-21):** branch `master`. Suite: **1403 passed / 0 failed**
+(`pytest` from repo root) after closing Tier 1, Tier 2, and Tier 3 #4 + #5. mypy:
+**57** errors (unchanged; the session-continuation work added no new errors).
 
 Last shipped (commits `4e20240`, `9cb472d`, `83efb1a`, `29869fe`): thinking
 consolidation, real usage via `stream_options`, multi-turn
@@ -128,12 +128,40 @@ but has no server-side effect. Graded *or* on/off control of local Qwen would
 require porting pi's `"qwen"` thinkingFormat (a `chat_template_kwargs.enable_thinking`
 send-path) — out of scope until local thinking control is wanted.
 
-### 5. Headless session continuation — `--continue`/`-c`, `--resume`, `--session`, `--fork`, `--name`
-Sessions already persist to `~/.tau/chats/` and resume **from the TUI**. The
-CLI-side flags to resume *headlessly* still need: load-instead-of-`new_session()`
-in `TauBackend.__init__` (`backends.py:90`), session→context wiring, and tests.
-Confirm `SessionManager.fork()` exists before promising `--fork` (open question
-in `docs/CLI-PLAN.md` §3).
+### 5. Headless session continuation — ✅ DONE (2026-06-21)
+**Shipped `--continue`/`-c`, `--session REF`, `--fork REF`, `--name`/`-n`;
+`--resume`/`-r` deferred (Fail-Early error — it's an interactive picker, TUI-only).**
+
+**Key correction to the original framing:** the planned "load-instead-of-
+`new_session()` in `TauBackend.__init__`" pointed at the wrong layer. Tracing the
+code, *neither* the TUI nor headless uses `SessionManager` for context —
+`TauBackend.stream_chat(messages, …)` treats its `messages` arg as authoritative
+and passes `context=messages` straight to `agent_session.prompt()`
+(`backends.py:162,241`); the internal `SessionManager`/`new_session()` is
+vestigial on that path. Both the TUI (`app.py:1061`) and `tau -p`
+(`headless.py`) persist/resume via the **`Chat` store** (`~/.tau/chats/*.json`,
+`session_store.py`). So headless resume = **load a `Chat`, prepend its
+`.messages` as context, append the new user turn, run, save back** — same store
+and same `stream_chat` path everything else uses. No `SessionManager` surgery.
+
+- **`cli.py`:** `--continue`/`--resume`/`--session`/`--fork` in a mutually-
+  exclusive argparse group, plus `--name`; `CLIArgs` fields + threading. `main()`
+  rejects `--resume` (deferred) and `--continue/--session/--fork` without
+  `--print` (Fail-Early, before `load_config()`).
+- **`headless.py`:** `_select_chat`/`_resolve_selector` (REF = `.json` path or
+  filename **stem**; exact-stem wins, unique-substring accepted, else raise).
+  `run_print` loads the prior chat, uses its transcript as context, and resolves
+  the model with a `fallback_model` = the session's stored model (so a bare
+  `-c` keeps the model unless `--model` overrides). `_persist_session` (was
+  `_save_session`) writes **in place** for continue/session (preserving
+  `created_at`, growing the file) and a **new file** for fork/fresh (with a
+  same-second collision guard so a fork never clobbers its source). Combining
+  `--system-prompt` with a resume raises (the session already has one).
+- **Tests:** `test_headless_resume.py` (continue/session/fork/name, selector
+  ambiguity/miss, model fallback + override, system-prompt conflict) and CLI
+  parse/dispatch tests. Verified **live** against the local server: turn-2 `-c`
+  recalled a planted fact (context truly resent), grew the file in place; `--fork`
+  made a new file, left the source byte-identical, carried the history.
 
 ---
 
@@ -176,4 +204,6 @@ the user's saved files). Left here so it isn't "rediscovered" as a bug.
    #2 closed as WONTFIX (down to 2 intentionally-divergent sites).
 3. ~~**Tier 3 #4**~~ — ✅ done (`reasoning_effort` send-path + `--thinking`,
    2026-06-21).
-4. **Tier 3 #5** (headless resume), then Tier 4 cleanup. ← next.
+4. ~~**Tier 3 #5**~~ — ✅ done (headless `--continue`/`--session`/`--fork`/
+   `--name` via the Chat store, 2026-06-21).
+5. **Tier 4 cleanup** (doc hygiene #7, message-label #6, large-render #9). ← next.

@@ -179,6 +179,49 @@ def test_parse_invalid_thinking_level_rejected():
         parse_cli_args(["--thinking", "bogus"])
 
 
+# ── session continuation flags ──────────────────────────────────────────────
+
+def test_parse_continue_flag():
+    assert parse_cli_args(["-p", "-c", "go"]).continue_session is True
+    assert parse_cli_args(["-p", "--continue", "go"]).continue_session is True
+
+
+def test_parse_session_fork_name():
+    args = parse_cli_args(
+        ["-p", "--session", "1718", "--name", "My chat", "go"]
+    )
+    assert args.session == "1718"
+    assert args.name == "My chat"
+    assert parse_cli_args(["-p", "--fork", "1718", "go"]).fork == "1718"
+    assert parse_cli_args(["-p", "-n", "Title", "go"]).name == "Title"
+
+
+def test_parse_resume_flag():
+    assert parse_cli_args(["-r"]).resume is True
+    assert parse_cli_args(["--resume"]).resume is True
+
+
+def test_continuation_flags_mutually_exclusive():
+    # --continue and --session can't be combined (argparse exits 2).
+    with pytest.raises(SystemExit):
+        parse_cli_args(["-p", "-c", "--session", "x", "go"])
+    with pytest.raises(SystemExit):
+        parse_cli_args(["-p", "--fork", "x", "--resume", "go"])
+
+
+def test_main_resume_is_deferred_error(capsys):
+    rc = cli.main(["--resume"])
+    assert rc == 2
+    assert "interactive picker" in capsys.readouterr().err
+
+
+def test_main_continue_without_print_errors(capsys):
+    # The continuation/print check runs before load_config(), so no config needed.
+    rc = cli.main(["-c"])
+    assert rc == 2
+    assert "require --print" in capsys.readouterr().err
+
+
 def test_resolve_no_model_no_default_raises():
     with pytest.raises(CLIError, match="no model"):
         resolve_model_config({"models": {}}, CLIArgs(model=None))

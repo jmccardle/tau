@@ -46,13 +46,26 @@ The **Core** set below is now implemented in `tau-coding-agent/src/tau_coding_ag
   A non-"off" level marks the model reasoning-capable (pi
   `model-resolver.ts:496`); levels thread backend → session → loop → provider.
 
-**Deferred — Fail-Early, NOT stubbed (these flags error clearly rather than
-silently no-op):**
-- `--continue`/`-c`, `--resume`, `--session`, `--fork`, `--name` — the **CLI-side**
-  continuation flags. Sessions now persist (above) and resume *from the TUI*, but
-  resuming a prior session *headlessly* (load instead of `new_session()` in
-  `TauBackend.__init__`, select by `--continue`/`--session`) still needs the
-  session→context wiring + tests. Tracked, not yet exposed.
+**Implemented (2026-06-21) — headless session continuation:**
+- `--continue`/`-c` (most recent), `--session REF` (specific, by `.json` path or
+  filename **stem**), `--fork REF` (continue into a *new* file, source untouched),
+  `--name`/`-n` (session title). Mutually-exclusive argparse group + `--name`.
+- **Correction to the original plan:** the "load instead of `new_session()` in
+  `TauBackend.__init__`" idea targeted the wrong layer. `TauBackend.stream_chat`
+  takes its `messages` as the authoritative context (`backends.py:162,241`); the
+  internal `SessionManager` is vestigial on the TUI/headless path. Resume is done
+  at the **`Chat` store** (`~/.tau/chats/`) — load a `Chat`, prepend `.messages`
+  as context, append the new user turn, run, save back (in place for
+  continue/session; new file for fork). A resumed run keeps the session's stored
+  model unless `--model` overrides; `--system-prompt` + resume raises. See
+  `headless.py` (`_select_chat`/`_resolve_selector`/`_persist_session`) and
+  `tests/test_headless_resume.py`.
+
+**Deferred — Fail-Early, NOT stubbed (errors clearly rather than silently
+no-op):**
+- `--resume`/`-r` — pi's *interactive* session picker (`args.ts:85`). It has no
+  headless meaning and τ's TUI resumes from the sidebar, so `main()` rejects it
+  with a clear message pointing at `--continue`/`--session` or the sidebar.
 
 Removed the old inert/non-pi flags (`--output`/`-o`, `-s`, `--config`, `--cwd`,
 `--context-window`, `--max-tokens`) and the `-p`=provider / `-v`=verbose short-alias

@@ -54,6 +54,14 @@ class CLIArgs:
     no_tools: bool = False
     system_prompt: str | None = None
     thinking: str | None = None  # off|minimal|low|medium|high|xhigh
+    # Session continuation (headless): resume/fork a persisted ~/.tau/chats
+    # session. continue/resume/session/fork are mutually exclusive (argparse
+    # group). `name` sets the session title and may combine with any of them.
+    continue_session: bool = False  # --continue/-c → most-recent session
+    resume: bool = False            # --resume/-r → interactive picker (TUI-only)
+    session: str | None = None      # --session REF → specific session (path|stem)
+    fork: str | None = None         # --fork REF → fork a session into a new one
+    name: str | None = None         # --name/-n → session display title
     verbose: bool = False
 
     @property
@@ -78,9 +86,10 @@ def build_parser() -> argparse.ArgumentParser:
             '  tau -p "explain @main.py"   # headless: print the answer and exit\n'
             '  tau -p --mode json "hi"     # headless, JSONL event stream\n'
             '  tau --thinking high         # TUI, request high reasoning effort\n'
+            '  tau -p -c "and then?"       # continue the most recent session\n'
+            '  tau -p --session 17188 "go" # resume a session by filename stem\n'
             "\n"
-            "deferred (see docs/CLI-PLAN.md): --continue/--resume/--session\n"
-            "(needs headless session wiring)."
+            "--resume (interactive picker) is available in the TUI, not headlessly."
         ),
     )
     parser.add_argument("--version", "-v", action="version", version=f"tau {_version()}")
@@ -117,6 +126,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--system-prompt", dest="system_prompt", default=None,
         help="override the system prompt for this run",
     )
+    # Session continuation (headless --print). continue/resume/session/fork are
+    # mutually exclusive; --name combines with any of them (or a fresh run).
+    sess = parser.add_mutually_exclusive_group()
+    sess.add_argument(
+        "--continue", "-c", dest="continue_session", action="store_true",
+        help="continue the most recent session (use with --print)",
+    )
+    sess.add_argument(
+        "--resume", "-r", action="store_true",
+        help="resume via interactive picker (TUI only; not headless)",
+    )
+    sess.add_argument(
+        "--session", default=None, metavar="REF",
+        help="resume a specific session by path or filename stem",
+    )
+    sess.add_argument(
+        "--fork", default=None, metavar="REF",
+        help="fork a session (path or stem) into a new one and continue it",
+    )
+    parser.add_argument(
+        "--name", "-n", default=None,
+        help="set the session display title",
+    )
     parser.add_argument(
         "--thinking", default=None, choices=list(EXTENDED_THINKING_LEVELS),
         help="reasoning effort: off, minimal, low, medium, high, xhigh "
@@ -143,6 +175,11 @@ def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
         no_tools=ns.no_tools,
         system_prompt=ns.system_prompt,
         thinking=ns.thinking,
+        continue_session=ns.continue_session,
+        resume=ns.resume,
+        session=ns.session,
+        fork=ns.fork,
+        name=ns.name,
         verbose=ns.verbose,
     )
 
@@ -186,6 +223,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"τ-coding-agent args: {args}", file=sys.stderr)
 
     try:
+        # --resume is an interactive picker; it has no headless meaning and the
+        # TUI uses the sidebar, so reject it clearly rather than no-op (Fail-Early).
+        if args.resume:
+            raise CLIError(
+                "--resume opens an interactive picker, which isn't available "
+                "headlessly; use --continue (most recent) or --session REF, or "
+                "pick a session from the TUI sidebar"
+            )
+        # Session continuation is a headless feature; in the TUI you resume from
+        # the sidebar. Requiring --print keeps the flag from silently no-op'ing.
+        if (args.continue_session or args.session or args.fork) and not args.print_mode:
+            raise CLIError(
+                "--continue/--session/--fork require --print (headless); in the "
+                "TUI, resume a session from the sidebar"
+            )
         config = load_config()
         # Headless print mode is opt-in via -p/--print. Messages without --print
         # are a usage error (Fail-Early: don't silently ignore them, and don't
