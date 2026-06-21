@@ -28,6 +28,37 @@ from tau_agent_core.agent_loop import AgentLoop
 from tau_agent_core.agent_loop_types import AgentLoopConfig
 
 
+def _message_text(content: Any) -> str:
+    """Join the text blocks of a message ``content`` (a str, or a list of blocks).
+
+    Non-text blocks (images, etc.) are ignored — this is a text-only view used
+    for comparing whether two user turns are "the same" prompt.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            b.get("text", "")
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return ""
+
+
+def _ends_with_user_text(messages: list[Any], text: str) -> bool:
+    """True if ``messages`` ends with a user message whose text equals ``text``.
+
+    Detects a caller (e.g. the TUI, which passes the full history including the
+    latest user turn) that already placed the current prompt at the tail of the
+    context, so it can be threaded to the loop exactly once instead of twice.
+    Context messages are always dicts (``context: list[dict]``).
+    """
+    last = messages[-1] if messages else None
+    if not isinstance(last, dict) or last.get("role") != "user":
+        return False
+    return _message_text(last.get("content", "")).strip() == text.strip()
+
+
 class AgentSession:
     """High-level session API. Combines agent loop, session manager, and events.
 
@@ -150,31 +181,26 @@ class AgentSession:
                 timestamp=self._timestamp(),
             )
 
-            # Get context: use provided context or fall back to session messages
+            # Get context: use provided context or fall back to session messages.
             if context is not None:
                 context_messages = list(context)  # copy to avoid mutation
-                # If context already ends with this user message (as a dict),
-                # skip appending the UserMessage object to avoid duplication
-                _last = context_messages[-1] if context_messages else None
-                context_ends_with_user = False
-                if _last and _last.get("role") == "user":
-                    _last_content = _last.get("content", "")
-                    if isinstance(_last_content, str):
-                        context_ends_with_user = (_last_content == text)
-                    elif isinstance(_last_content, list):
-                        _last_text = " ".join(
-                            b.get("text", "")
-                            for b in _last_content
-                            if isinstance(b, dict) and b.get("type") == "text"
-                        )
-                        context_ends_with_user = (_last_text.strip() == text.strip())
+                # Did the caller already include this user turn as the final
+                # context message? The TUI passes the full history (which ends
+                # with the latest user turn); a bare prompt("hi") does not. This
+                # flag also drives the persist/return logic below.
+                context_ends_with_user = _ends_with_user_text(context_messages, text)
             else:
                 context_messages = self._session_manager.get_active_messages()
                 context_ends_with_user = False
 
-            # Append user message to context only if not already present
-            if not context_ends_with_user:
-                context_messages.append(user_msg)
+            # Thread the user message to the loop exactly once — via
+            # prompts=[user_msg] passed to loop.run() below. The context must
+            # therefore NOT also carry a trailing copy, so drop the duplicate the
+            # caller supplied. (pi parity: runAgentLoop concatenates context +
+            # prompts with no dedup, agent-loop.ts:103-106; the old loop-level
+            # strip-compare dedup is removed.)
+            if context_ends_with_user:
+                context_messages = context_messages[:-1]
 
             # Build the agent loop config
             config = AgentLoopConfig(

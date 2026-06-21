@@ -138,49 +138,17 @@ class AgentLoop:
         Returns:
             List of messages produced by the agent loop.
         """
+        # pi parity (agent-loop.ts:103-106): the loop simply concatenates the
+        # prior context with the new prompts — de-duplication is the caller's
+        # responsibility. AgentSession.prompt() threads the user message exactly
+        # once and never hands us a context that already ends with it. The old
+        # strip-compare dedup that lived here was a tau divergence: redundant
+        # with the session-layer check, blind to non-text (multimodal) content,
+        # and crash-prone (it referenced prev_text, which was only bound when the
+        # context tail was itself a user message).
         context = list(context) if context else []
         messages = list(context)
-        for prompt in prompts:
-            # Check if context already ends with a user message
-            # matching this prompt — if so, skip the duplicate
-            if messages:
-                last = messages[-1]
-                # Handle both dict and Pydantic UserMessage objects
-                if hasattr(last, "role"):
-                    last_role = last.role
-                elif isinstance(last, dict):
-                    last_role = last.get("role", "")
-                else:
-                    last_role = ""
-
-                if last_role == "user":
-                    prev_content = messages[-1].content if hasattr(messages[-1], "content") else messages[-1].get("content", "")
-                    if isinstance(prev_content, str):
-                        prev_text = prev_content
-                    elif isinstance(prev_content, list):
-                        prev_text = " ".join(
-                            (b.get("text", "") if isinstance(b, dict) else getattr(b, "text", ""))
-                            for b in prev_content
-                            if (isinstance(b, dict) and b.get("type") == "text") or (hasattr(b, "text"))
-                        )
-                    else:
-                        prev_text = ""
-
-                prompt_content = prompt.content
-                if isinstance(prompt_content, str):
-                    prompt_text = prompt_content
-                elif isinstance(prompt_content, list):
-                    prompt_text = " ".join(
-                        (b.get("text", "") if isinstance(b, dict) else getattr(b, "text", ""))
-                        for b in prompt_content
-                        if (isinstance(b, dict) and b.get("type") == "text") or (hasattr(b, "text"))
-                    )
-                else:
-                    prompt_text = ""
-
-                if prev_text.strip() == prompt_text.strip():
-                    continue  # already in context, skip
-            messages.append(prompt)
+        messages.extend(prompts)
 
         await self._emit(
             AgentEvent(type="agent_start", timestamp=int(time.time() * 1000))

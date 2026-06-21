@@ -5,9 +5,9 @@ test) it came from so it can be audited against the source of truth (pi) and the
 "Fail Early" rule. Phase-build work (the `docs/PHASE-*` plan) is **complete**;
 this file tracks the post-build bug/feature backlog.
 
-**State (2026-06-20):** branch `master`, clean tree. Suite: **1360 passed / 0
-failed** (`pytest` from repo root) after closing Tier 1. mypy baseline unchanged
-(58 pre-existing errors, none in the Tier 1 changes).
+**State (2026-06-20):** branch `master`. Suite: **1360 passed / 0 failed**
+(`pytest` from repo root) after closing Tier 1 and Tier 2. mypy: **57** errors
+(was 58 — the Tier 2 #3 dedup removal dropped one; no new errors).
 
 Last shipped (commits `4e20240`, `9cb472d`, `83efb1a`): thinking consolidation,
 real usage via `stream_options`, multi-turn `_assistant_content_to_openai` fix,
@@ -54,19 +54,33 @@ Fail-Early violation.
 
 ---
 
-## Tier 2 — Code quality (open findings, no behavior change)
+## Tier 2 — Code quality
 
-### 2. Duplicated "join → parse → ToolCall" logic — DRY (`docs/CODE-QUALITY-NOTES.md` #7)
-The ~8-line join/parse/finalize block is still repeated across `openai.py`'s
-build methods. Centralize into one `_finalize_tool_call_args(parts) -> dict` so
-the parsing contract lives in exactly one place. (#1–#4, #6, #8 of that doc are
-already FIXED; this is the remaining parsing-related debt.)
+### 2. Duplicated "join → parse → ToolCall" logic — CLOSED / WONTFIX (`docs/CODE-QUALITY-NOTES.md` #7)
+Re-audited 2026-06-20: the tool-call fix already collapsed this from five sites
+to **two**, and the two are *intentionally divergent* — `_build_partial_message`
+parses leniently (`parse_streaming_json`, best-effort for display) while
+`_build_final_message` parses strictly and **raises** (`parse_json_with_repair`
++ dict-check, the authoritative path). The done-event yield loop and
+`agent_loop.py` no longer parse at all (they consume already-built `ToolCall`s).
+The only shared lines are `"".join(parts)` and the `ToolCall(...)` construction;
+a shared helper would have to re-introduce a `strict` flag to thread the
+deliberate difference, netting ~nothing. Left as-is.
 
-### 3. Fragile prompt/context de-duplication — LOW (`docs/CODE-QUALITY-NOTES.md` #10)
-`agent_loop.py:143-183` skips a "duplicate" prompt by stringifying + `.strip()`
--comparing text blocks (whitespace/multimodal-fragile). Related to the
-session-layer duplication bug just fixed in `agent_session.py`. Add an explicit
-dedupe key or a comment stating the exact invariant it protects.
+### 3. Fragile prompt/context de-duplication — ✅ DONE (2026-06-20) (`docs/CODE-QUALITY-NOTES.md` #10)
+Re-audit found the loop-level dedup (`agent_loop.py`) was worse than "fragile":
+(a) a **latent `UnboundLocalError`** — `prev_text` was bound only when the
+context tail was a user message but referenced unconditionally; (b) **load-bearing
+redundancy** — `prompt()` deliberately put the user message in *both* the context
+and `prompts=[user_msg]`, relying on this strip-compare to collapse it, while the
+session layer already did the same compare; (c) **multimodal-blind** — only text
+blocks compared, so same-text/different-image prompts were silently dropped.
+**Fixed by restoring pi parity:** `runAgentLoop` simply concatenates
+`context + prompts` (agent-loop.ts:103-106), so the loop-level dedup is removed
+and `run()` now does `messages = [*context, *prompts]`. `prompt()` threads the
+user message exactly once (via `prompts`) and drops the duplicate the caller
+supplies through an explicit `_ends_with_user_text(messages, text)` helper. Net
+mypy errors −1; suite 1360/0.
 
 ---
 
@@ -126,7 +140,8 @@ the user's saved files). Left here so it isn't "rediscovered" as a bug.
 ## Suggested order
 
 1. ~~**Tier 1 #1**~~ — ✅ done (2026-06-20).
-2. **Tier 2 #2/#3** (cheap, localizes the parsing/dedup contracts) ← next.
+2. ~~**Tier 2 #2/#3**~~ — #3 ✅ done (pi-parity dedup removal, 2026-06-20);
+   #2 closed as WONTFIX (down to 2 intentionally-divergent sites).
 3. **Tier 3 #4** (`reasoning_effort` send-path) — unblocks `--thinking` *and*
-   completes the reasoning story the recent round-trip work started.
+   completes the reasoning story the recent round-trip work started. ← next.
 4. **Tier 3 #5** (headless resume), then Tier 4 cleanup.
