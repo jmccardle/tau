@@ -385,3 +385,83 @@ def sample_clone_result():
         cloned_at=1700000020000,
         entry_count=50,
     )
+
+
+# ---------------------------------------------------------------------------
+# Fake LLM — run the FULL agent loop without a network call or an API key.
+#
+# Patches only the network boundary (`stream_simple`) with a canned text
+# response, so AgentLoop.run still executes for real: agent_start / turn_start /
+# message_start / message_update / message_end / turn_end / agent_end all fire,
+# messages are assembled and appended, extension handlers run. Tests that
+# exercise session/loop wiring opt in with `@pytest.mark.usefixtures("fake_llm")`
+# on the class. This is the same patch point test_agent_loop.py uses per-test;
+# it also removes those tests' previous hidden dependency on a live OPENAI_API_KEY
+# (which made them 401 in CI). Mirrors the real call signature
+# stream_simple(model, context, options).
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def fake_llm():
+    """Patch ``tau_agent_core.agent_loop.stream_simple`` with a canned reply."""
+    from unittest.mock import patch
+
+    from tau_ai.streaming import DoneEvent, TextDeltaEvent
+    from tau_ai.types import AssistantMessage, TextContent, Usage
+
+    def _assistant(text: str) -> AssistantMessage:
+        return AssistantMessage(
+            content=[TextContent(text=text)],
+            api="openai-completions",
+            provider="openai",
+            model="gpt-4o",
+            stop_reason="stop",
+            timestamp=0,
+            usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
+        )
+
+    class _EventIterator:
+        def __init__(self, events):
+            self._events = events
+            self._i = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self._i >= len(self._events):
+                raise StopAsyncIteration
+            event = self._events[self._i]
+            self._i += 1
+            return event
+
+    class _Stream:
+        def __init__(self, events):
+            self._events = events
+
+        def __aiter__(self):
+            return _EventIterator(self._events)
+
+        async def result(self):
+            for event in self._events:
+                if isinstance(event, DoneEvent):
+                    return event.final
+            return None
+
+        def abort(self):
+            pass
+
+    async def fake_stream_simple(model, context, options=None):
+        text = "ok"
+        return _Stream([
+            TextDeltaEvent(delta=text, partial=_assistant(text)),
+            DoneEvent(
+                final=_assistant(text),
+                usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
+            ),
+        ])
+
+    with patch(
+        "tau_agent_core.agent_loop.stream_simple", side_effect=fake_stream_simple
+    ):
+        yield

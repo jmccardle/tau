@@ -82,20 +82,21 @@ class TauBackend(Backend):
         else:
             tools = []
 
+        # Forward the configured API key to the session -> agent loop ->
+        # provider. The provider requires a truthy key (Fail-Early); local
+        # servers use the "not-needed" sentinel, which is passed through as-is.
+        # (Previously this was stashed in an unused self._api_key and dropped,
+        # so a real-OpenAI key from config never reached the provider.)
         self.agent_session = AgentSession(
             session_manager=self.session_manager,
             model=model,
             system_prompt=self.system_prompt,
             tools=tools,
+            api_key=api_key,
         )
 
         # Create a new session in the session manager (required before use)
         self.session_manager.new_session()
-
-        # Set the API key if provided
-        if api_key and api_key != "not-needed":
-            # Store for later use by the LLM provider
-            self._api_key = api_key
 
     async def _extract_last_user_message(self, messages: list[dict]) -> str:
         """Extract the last user message text from a Parley messages list."""

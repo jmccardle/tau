@@ -362,4 +362,5 @@ def create_agent_session(
         system_prompt=sys_prompt,
         tools=tool_objs,
         extensions=ext_factories,
+        api_key=api_key,
     )

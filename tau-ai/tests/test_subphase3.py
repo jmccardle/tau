@@ -785,7 +785,7 @@ class TestToolCallStreamAccumulates:
 
         async def run():
             model = _make_model()
-            provider = OpenAICompletionsProvider()
+            provider = OpenAICompletionsProvider(api_key="sk-test")
 
             # Patch the client
             class MockClient:

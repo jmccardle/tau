@@ -51,6 +51,7 @@ class AgentSession:
         system_prompt: str = "",
         tools: list | None = None,
         extensions: list[Callable] | None = None,
+        api_key: str | None = None,
     ) -> None:
         self._session_manager = session_manager
         self._model = model
@@ -60,6 +61,10 @@ class AgentSession:
         self._extensions = extensions or []
         self._is_streaming = False
         self._abort_signal = AbortSignal()
+        # Forwarded to the agent loop -> provider. Kept off the Model so it is
+        # never written to the on-disk session JSON. None means "rely on the
+        # env/provider default".
+        self._api_key = api_key
 
         # Register extensions
         for ext in self._extensions:
@@ -175,6 +180,7 @@ class AgentSession:
             config = AgentLoopConfig(
                 system_prompt=self._system_prompt,
                 temperature=getattr(self._model, "temperature", 0.7),
+                api_key=self._api_key,
             )
 
             # Create and run the agent loop
@@ -259,6 +265,7 @@ class AgentSession:
             config = AgentLoopConfig(
                 system_prompt=self._system_prompt,
                 temperature=getattr(self._model, "temperature", 0.7),
+                api_key=self._api_key,
             )
 
             # Create and run the agent loop (continuation mode)

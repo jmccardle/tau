@@ -58,11 +58,15 @@ def _make_session(in_memory=None) -> AgentSession:
 # ============================================================================
 
 
+@pytest.mark.usefixtures("fake_llm")
 class TestProviderErrorHandling:
     """Test 1: Provider error → error event → error message in chat.
 
     When stream_simple() returns an ErrorEvent, the agent loop converts it
     to an AgentEvent with is_error=True and a human-readable message.
+
+    The prompt()-based tests use ``fake_llm`` so the loop runs without a live
+    network call (previously they 401'd against the real OpenAI API).
     """
 
     def test_event_bus_handles_error_events(self):
@@ -266,6 +270,7 @@ class TestProviderErrorHandling:
 # ============================================================================
 
 
+@pytest.mark.usefixtures("fake_llm")
 class TestToolErrorHandling:
     """Test 2: Tool error → error result → sent to LLM.
 
@@ -519,6 +524,7 @@ class TestToolErrorHandling:
 # ============================================================================
 
 
+@pytest.mark.usefixtures("fake_llm")
 class TestExtensionErrorHandling:
     """Test 3: Extension error → logged → agent continues.
 

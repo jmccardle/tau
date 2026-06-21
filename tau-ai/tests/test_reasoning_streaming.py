@@ -96,7 +96,7 @@ _LLAMACPP_SHAPE = [
 
 
 def test_reasoning_content_streams_live_and_finalizes():
-    events = _run(OpenAICompletionsProvider(), _FakeResponse(_sse(_LLAMACPP_SHAPE)))
+    events = _run(OpenAICompletionsProvider(api_key="sk-test"), _FakeResponse(_sse(_LLAMACPP_SHAPE)))
 
     # Gate 1+2: reasoning_content extracted AND yielded live, in order, distinct
     # from the answer text.
@@ -120,7 +120,7 @@ def test_final_thinking_block_captures_the_reasoning_signature():
     """The consolidated thinking block records which field reasoning streamed on
     (``reasoning_content`` here) so a follow-up turn can replay it under the same
     field. The capture is what makes the pi-style reasoning round-trip possible."""
-    final = [e for e in _run(OpenAICompletionsProvider(), _FakeResponse(_sse(_LLAMACPP_SHAPE)))
+    final = [e for e in _run(OpenAICompletionsProvider(api_key="sk-test"), _FakeResponse(_sse(_LLAMACPP_SHAPE)))
              if isinstance(e, DoneEvent)][0].final
     thinking = [c for c in final.content if isinstance(c, ThinkingContent)]
     assert len(thinking) == 1
@@ -135,7 +135,7 @@ def test_reasoning_field_fallback_signature_is_recorded():
         {"id": "x", "choices": [{"index": 0, "delta": {"content": "done"}}]},
         {"id": "x", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
     ]
-    final = [e for e in _run(OpenAICompletionsProvider(), _FakeResponse(_sse(shape)))
+    final = [e for e in _run(OpenAICompletionsProvider(api_key="sk-test"), _FakeResponse(_sse(shape)))
              if isinstance(e, DoneEvent)][0].final
     thinking = [c for c in final.content if isinstance(c, ThinkingContent)]
     assert thinking and thinking[0].thinking_signature == "reasoning"
@@ -144,7 +144,7 @@ def test_reasoning_field_fallback_signature_is_recorded():
 def test_final_message_consolidates_blocks_thinking_before_text():
     """Fix A: a streamed message persists as ONE thinking + ONE text block (not
     one per fragment), with thinking before text — the stream order and pi's."""
-    final = [e for e in _run(OpenAICompletionsProvider(), _FakeResponse(_sse(_LLAMACPP_SHAPE)))
+    final = [e for e in _run(OpenAICompletionsProvider(api_key="sk-test"), _FakeResponse(_sse(_LLAMACPP_SHAPE)))
              if isinstance(e, DoneEvent)][0].final
     thinking = [c for c in final.content if isinstance(c, ThinkingContent)]
     text = [c for c in final.content if isinstance(c, TextContent)]
@@ -178,7 +178,7 @@ def test_partial_messages_carry_single_thinking_block_through_tool_call_deltas()
     argument fragment — carries exactly one thinking block holding the full
     reasoning, never N fragment-blocks. That is what stops the backend from
     re-emitting the whole reasoning trace per fragment."""
-    events = _run(OpenAICompletionsProvider(), _FakeResponse(_sse(_REASON_THEN_TOOL_SHAPE)))
+    events = _run(OpenAICompletionsProvider(api_key="sk-test"), _FakeResponse(_sse(_REASON_THEN_TOOL_SHAPE)))
     partials = [e.partial for e in events if isinstance(e, ToolCallDeltaEvent)]
     assert partials, "expected tool-call delta events"
     for partial in partials:
@@ -201,7 +201,7 @@ def test_stream_payload_requests_usage():
             captured.update(kwargs.get("json", {}))
             return _FakeResponse(_sse(_LLAMACPP_SHAPE))
 
-    provider = OpenAICompletionsProvider()
+    provider = OpenAICompletionsProvider(api_key="sk-test")
     provider._get_client = lambda: _CapturingClient()  # type: ignore[method-assign]
 
     async def go():
@@ -218,7 +218,7 @@ def test_stream_payload_requests_usage():
 def test_usage_captured_from_trailing_empty_choices_chunk():
     """The bug "show the zero would always show zero": usage lived in a chunk
     AFTER finish_reason with empty choices, and the loop returned too early."""
-    done = [e for e in _run(OpenAICompletionsProvider(), _FakeResponse(_sse(_LLAMACPP_SHAPE)))
+    done = [e for e in _run(OpenAICompletionsProvider(api_key="sk-test"), _FakeResponse(_sse(_LLAMACPP_SHAPE)))
             if isinstance(e, DoneEvent)]
     usage = done[0].usage
     assert usage.total_tokens == 111
@@ -233,7 +233,7 @@ def test_reasoning_field_fallback_names():
         {"id": "x", "choices": [{"index": 0, "delta": {"content": "done"}}]},
         {"id": "x", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
     ]
-    events = _run(OpenAICompletionsProvider(), _FakeResponse(_sse(chunks)))
+    events = _run(OpenAICompletionsProvider(api_key="sk-test"), _FakeResponse(_sse(chunks)))
     assert [e.delta for e in events if isinstance(e, ThinkingDeltaEvent)] == ["thinking…"]
 
 
@@ -243,7 +243,7 @@ def test_no_reasoning_means_no_thinking_events():
         {"id": "x", "choices": [{"index": 0, "delta": {"content": "hi"}}]},
         {"id": "x", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
     ]
-    events = _run(OpenAICompletionsProvider(), _FakeResponse(_sse(chunks)))
+    events = _run(OpenAICompletionsProvider(api_key="sk-test"), _FakeResponse(_sse(chunks)))
     assert not any(isinstance(e, ThinkingDeltaEvent) for e in events)
     final = [e for e in events if isinstance(e, DoneEvent)][0].final
     assert not any(isinstance(c, ThinkingContent) for c in final.content)

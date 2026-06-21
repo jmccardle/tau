@@ -64,6 +64,7 @@ class AgentLoopConfig(BaseModel):
         max_retries: Maximum retry attempts for failed tool calls
         max_turns: Maximum number of turns before termination
         temperature: Model temperature
+        api_key: API key forwarded to the provider (None = use env/provider default)
     """
 
     model: str | None = None
@@ -72,3 +73,7 @@ class AgentLoopConfig(BaseModel):
     max_retries: int = Field(default=3, ge=0)
     max_turns: int = Field(default=50, ge=1)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    # Forwarded to the provider via stream_simple's options. Kept out of the
+    # Model (which is serialized to session JSON on disk) so the credential is
+    # never persisted.
+    api_key: str | None = None

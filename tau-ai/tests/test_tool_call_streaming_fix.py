@@ -109,7 +109,7 @@ def test_fragmented_arguments_accumulate_to_valid_json():
         [{"id": "call_1", "name": "bash", "arguments": {"command": "ls -la", "cwd": "/tmp"}}],
         arg_fragment=3,
     )
-    events = _run_stream(OpenAICompletionsProvider(), _FakeResponse(_sse(chunks)))
+    events = _run_stream(OpenAICompletionsProvider(api_key="sk-test"), _FakeResponse(_sse(chunks)))
     done = [e for e in events if isinstance(e, DoneEvent)]
     assert len(done) == 1
     tcs = [c for c in done[0].final.content if isinstance(c, ToolCall)]
@@ -125,7 +125,7 @@ def test_parallel_tool_calls_routed_by_index():
         {"id": "call_a", "name": "read", "arguments": {"path": "main.py"}},
         {"id": "call_b", "name": "bash", "arguments": {"command": "npm test"}},
     ], arg_fragment=2)
-    events = _run_stream(OpenAICompletionsProvider(), _FakeResponse(_sse(chunks)))
+    events = _run_stream(OpenAICompletionsProvider(api_key="sk-test"), _FakeResponse(_sse(chunks)))
     done = [e for e in events if isinstance(e, DoneEvent)]
     assert len(done) == 1
     tcs = [c for c in done[0].final.content if isinstance(c, ToolCall)]
@@ -137,7 +137,7 @@ def test_parallel_tool_calls_routed_by_index():
 
 def test_empty_arguments_become_empty_dict():
     chunks = _tool_call_chunks([{"id": "call_x", "name": "now", "arguments": {}}])
-    events = _run_stream(OpenAICompletionsProvider(), _FakeResponse(_sse(chunks)))
+    events = _run_stream(OpenAICompletionsProvider(api_key="sk-test"), _FakeResponse(_sse(chunks)))
     done = [e for e in events if isinstance(e, DoneEvent)]
     tcs = [c for c in done[0].final.content if isinstance(c, ToolCall)]
     assert tcs[0].arguments == {}
@@ -147,7 +147,7 @@ def test_complete_but_invalid_final_arguments_raise_error_event():
     """Fail-early: a finished tool call with unparseable JSON surfaces an
     ErrorEvent — it does NOT fabricate {"raw": ...} or run the tool with {}."""
     chunks = _tool_call_chunks([{"id": "call_bad", "name": "bash", "arguments": '{"command": '}])
-    events = _run_stream(OpenAICompletionsProvider(), _FakeResponse(_sse(chunks)))
+    events = _run_stream(OpenAICompletionsProvider(api_key="sk-test"), _FakeResponse(_sse(chunks)))
     assert any(isinstance(e, ErrorEvent) for e in events)
     assert not any(isinstance(e, DoneEvent) for e in events)
 

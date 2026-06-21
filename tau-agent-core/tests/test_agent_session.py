@@ -283,8 +283,13 @@ class TestSubscribeUnsubscribe:
 # =============================================================================
 
 
+@pytest.mark.usefixtures("fake_llm")
 class TestPromptRunsLoop:
-    """Tests for AgentSession.prompt()."""
+    """Tests for AgentSession.prompt().
+
+    Uses ``fake_llm`` so the full agent loop runs without a network call: real
+    events fire and messages are assembled from a canned provider reply.
+    """
 
     def create_session(self) -> AgentSession:
         return AgentSession(
@@ -336,7 +341,10 @@ class TestPromptRunsLoop:
         """prompt() accepts optional images parameter."""
         session = self.create_session()
         messages = asyncio.run(
-            session.prompt("hello", images=[{"type": "image", "data": "base64"}])
+            session.prompt(
+                "hello",
+                images=[{"type": "image", "data": "base64", "mime_type": "image/png"}],
+            )
         )
         assert len(messages) > 0
 
@@ -460,11 +468,71 @@ class TestPromptReturnsOnlyThisTurnsMessages:
         assert texts == ["answer 1", "answer 2", "answer 3"]
 
 
+class TestApiKeyThreadedToProvider:
+    """The configured API key must reach the provider via stream_simple's
+    options. It was previously dropped (backends stored it in an unused
+    self._api_key and create_agent_session ignored its api_key arg), so a real
+    key never reached the provider. These tests capture the options dict the loop
+    hands to stream_simple."""
+
+    def _session(self, api_key):
+        return AgentSession(
+            session_manager=SessionManager.in_memory(),
+            model=Model(
+                id="gpt-4o", name="GPT-4o", api="openai-completions",
+                provider="openai", base_url="https://api.openai.com/v1",
+                context_window=128000, max_tokens=4096,
+            ),
+            api_key=api_key,
+        )
+
+    @staticmethod
+    def _capturing_stream_simple(captured: dict):
+        class _Empty:
+            def __aiter__(self):
+                async def _gen():
+                    return
+                    yield  # pragma: no cover - makes this an async generator
+                return _gen()
+
+            async def result(self):
+                return None
+
+        async def _stream_simple(model, context, options=None):
+            captured["options"] = options
+            return _Empty()
+
+        return _stream_simple
+
+    def test_api_key_appears_in_stream_options(self):
+        captured: dict = {}
+        session = self._session("sk-thread-123")
+        with patch(
+            "tau_agent_core.agent_loop.stream_simple",
+            side_effect=self._capturing_stream_simple(captured),
+        ):
+            asyncio.run(session.prompt("hi"))
+        assert captured["options"].get("api_key") == "sk-thread-123"
+
+    def test_no_api_key_means_no_override(self):
+        """With api_key=None the loop must not inject an empty api_key (so the
+        provider/env default still applies)."""
+        captured: dict = {}
+        session = self._session(None)
+        with patch(
+            "tau_agent_core.agent_loop.stream_simple",
+            side_effect=self._capturing_stream_simple(captured),
+        ):
+            asyncio.run(session.prompt("hi"))
+        assert "api_key" not in captured["options"]
+
+
 # =============================================================================
 # Test 4: Abort during prompt
 # =============================================================================
 
 
+@pytest.mark.usefixtures("fake_llm")
 class TestAbortDuringPrompt:
     """Tests for AgentSession.abort() during prompt execution."""
 
@@ -525,6 +593,7 @@ class TestAbortDuringPrompt:
 # =============================================================================
 
 
+@pytest.mark.usefixtures("fake_llm")
 class TestContinueConversation:
     """Tests for AgentSession.continue_conversation()."""
 
@@ -845,6 +914,7 @@ class TestExtensions:
 # =============================================================================
 
 
+@pytest.mark.usefixtures("fake_llm")
 class TestInMemoryIsolation:
     """Tests for in-memory session isolation."""
 

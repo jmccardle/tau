@@ -250,7 +250,7 @@ class TestConvertMessagesTextOnly:
     """Test 1 from PHASE-1-SUBPHASE-2.md "Testing Strategy"."""
 
     def setup_method(self):
-        self.provider = OpenAICompletionsProvider()
+        self.provider = OpenAICompletionsProvider(api_key="sk-test")
 
     def test_single_user_text_message(self):
         """UserMessage with text converts to OpenAI user message with text block."""
@@ -332,7 +332,7 @@ class TestConvertMessagesImageContent:
     """Verify image content conversion rules from PHASE-1-SUBPHASE-2.md."""
 
     def setup_method(self):
-        self.provider = OpenAICompletionsProvider()
+        self.provider = OpenAICompletionsProvider(api_key="sk-test")
 
     def test_user_message_with_image(self):
         """UserMessage with ImageContent converts to image_url format."""
@@ -390,7 +390,7 @@ class TestConvertMessagesWithToolCalls:
     """Test 2 from PHASE-1-SUBPHASE-2.md "Testing Strategy"."""
 
     def setup_method(self):
-        self.provider = OpenAICompletionsProvider()
+        self.provider = OpenAICompletionsProvider(api_key="sk-test")
 
     def test_assistant_with_tool_calls(self):
         """AssistantMessage with ToolCall content blocks has tool_calls in output."""
@@ -516,7 +516,7 @@ class TestConvertTools:
     """Test 3 from PHASE-1-SUBPHASE-2.md "Testing Strategy"."""
 
     def setup_method(self):
-        self.provider = OpenAICompletionsProvider()
+        self.provider = OpenAICompletionsProvider(api_key="sk-test")
 
     def _make_bash_tool(self) -> ToolDefinition:
         return ToolDefinition(
@@ -638,7 +638,7 @@ class TestStreamTextResponse:
             self._make_mock_client(mock_response),
         )
 
-        provider = OpenAICompletionsProvider()
+        provider = OpenAICompletionsProvider(api_key="sk-test")
         stream = asyncio.run(provider.stream_chat(
             model=_make_model(),
             messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
@@ -659,7 +659,7 @@ class TestStreamTextResponse:
             self._make_mock_client(mock_response),
         )
 
-        provider = OpenAICompletionsProvider()
+        provider = OpenAICompletionsProvider(api_key="sk-test")
         stream = asyncio.run(provider.stream_chat(
             model=_make_model(),
             messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
@@ -683,7 +683,7 @@ class TestStreamTextResponse:
             self._make_mock_client(mock_response),
         )
 
-        provider = OpenAICompletionsProvider()
+        provider = OpenAICompletionsProvider(api_key="sk-test")
         stream = asyncio.run(provider.stream_chat(
             model=_make_model(),
             messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
@@ -705,7 +705,7 @@ class TestStreamTextResponse:
             self._make_mock_client(mock_response),
         )
 
-        provider = OpenAICompletionsProvider()
+        provider = OpenAICompletionsProvider(api_key="sk-test")
         stream = asyncio.run(provider.stream_chat(
             model=_make_model(),
             messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
@@ -725,7 +725,7 @@ class TestStreamTextResponse:
             self._make_mock_client(mock_response),
         )
 
-        provider = OpenAICompletionsProvider()
+        provider = OpenAICompletionsProvider(api_key="sk-test")
         stream = asyncio.run(provider.stream_chat(
             model=_make_model(),
             messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
@@ -770,7 +770,7 @@ class TestStreamToolCallDelta:
             self._make_mock_client(mock_response),
         )
 
-        provider = OpenAICompletionsProvider()
+        provider = OpenAICompletionsProvider(api_key="sk-test")
         stream = asyncio.run(provider.stream_chat(
             model=_make_model(),
             messages=[UserMessage(content=[TextContent(text="list files")], timestamp=0)],
@@ -800,7 +800,7 @@ class TestStreamToolCallDelta:
             self._make_mock_client(mock_response),
         )
 
-        provider = OpenAICompletionsProvider()
+        provider = OpenAICompletionsProvider(api_key="sk-test")
         stream = asyncio.run(provider.stream_chat(
             model=_make_model(),
             messages=[UserMessage(content=[TextContent(text="list files")], timestamp=0)],
@@ -835,7 +835,7 @@ class TestStreamToolCallDelta:
             self._make_mock_client(mock_response),
         )
 
-        provider = OpenAICompletionsProvider()
+        provider = OpenAICompletionsProvider(api_key="sk-test")
         stream = asyncio.run(provider.stream_chat(
             model=_make_model(),
             messages=[UserMessage(content=[TextContent(text="list files")], timestamp=0)],
@@ -871,7 +871,7 @@ class TestStreamToolCallDelta:
             self._make_mock_client(mock_response),
         )
 
-        provider = OpenAICompletionsProvider()
+        provider = OpenAICompletionsProvider(api_key="sk-test")
         stream = asyncio.run(provider.stream_chat(
             model=_make_model(),
             messages=[UserMessage(content=[TextContent(text="list files")], timestamp=0)],
@@ -936,7 +936,7 @@ class TestErrorHandling:
             self._make_mock_client(mock_response),
         )
 
-        provider = OpenAICompletionsProvider()
+        provider = OpenAICompletionsProvider(api_key="sk-test")
         stream = asyncio.run(provider.stream_chat(
             model=_make_model(),
             messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
@@ -959,7 +959,7 @@ class TestErrorHandling:
             self._make_mock_client(mock_response),
         )
 
-        provider = OpenAICompletionsProvider()
+        provider = OpenAICompletionsProvider(api_key="sk-test")
         stream = asyncio.run(provider.stream_chat(
             model=_make_model(),
             messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
@@ -978,7 +978,7 @@ class TestErrorHandling:
             self._make_mock_client(mock_response),
         )
 
-        provider = OpenAICompletionsProvider()
+        provider = OpenAICompletionsProvider(api_key="sk-test")
         stream = asyncio.run(provider.stream_chat(
             model=_make_model(),
             messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
@@ -1009,7 +1009,7 @@ class TestErrorHandling:
             FailingClient,
         )
 
-        provider = OpenAICompletionsProvider()
+        provider = OpenAICompletionsProvider(api_key="sk-test")
         stream = asyncio.run(provider.stream_chat(
             model=_make_model(),
             messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
@@ -1028,7 +1028,7 @@ class TestErrorHandling:
             self._make_mock_client(mock_response),
         )
 
-        provider = OpenAICompletionsProvider()
+        provider = OpenAICompletionsProvider(api_key="sk-test")
         stream = asyncio.run(provider.stream_chat(
             model=_make_model(),
             messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
@@ -1047,7 +1047,7 @@ class TestErrorHandling:
             self._make_mock_client(mock_response),
         )
 
-        provider = OpenAICompletionsProvider()
+        provider = OpenAICompletionsProvider(api_key="sk-test")
         stream = asyncio.run(provider.stream_chat(
             model=_make_model(),
             messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
@@ -1067,7 +1067,7 @@ class TestConvertOpenaiChoiceToMessage:
     """Tests for _convert_openai_choice_to_message (streaming delta accumulation)."""
 
     def setup_method(self):
-        self.provider = OpenAICompletionsProvider()
+        self.provider = OpenAICompletionsProvider(api_key="sk-test")
 
     def test_convert_text_delta_to_assistant_message(self):
         """Text delta is converted to AssistantMessage with TextContent."""
@@ -1144,7 +1144,7 @@ class TestConvertMessagesDict:
     """Test conversion of dict messages (already in OpenAI format)."""
 
     def setup_method(self):
-        self.provider = OpenAICompletionsProvider()
+        self.provider = OpenAICompletionsProvider(api_key="sk-test")
 
     def test_dict_user_message_passthrough(self):
         """Dict messages are passed through."""
@@ -1284,10 +1284,20 @@ class TestConvertMessagesDict:
 class TestProviderConfiguration:
     """Tests for provider initialization and configuration."""
 
-    def test_provider_default_api_key(self):
-        """Provider uses default API key when none provided."""
+    def test_provider_no_key_does_not_fabricate_default(self, monkeypatch):
+        """Fail-Early: with no key and no env var, api_key stays None — the
+        provider must NOT invent a fake 'sk-fake-key-for-testing' default
+        (CODE-QUALITY #5). The missing key surfaces as a clear error at request
+        time (see TestApiKeyResolution), not a confusing upstream 401."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         provider = OpenAICompletionsProvider()
-        assert provider.api_key == "sk-fake-key-for-testing"
+        assert provider.api_key is None
+
+    def test_provider_reads_api_key_from_env(self, monkeypatch):
+        """A real OPENAI_API_KEY env var is used when no explicit key is given."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-from-env")
+        provider = OpenAICompletionsProvider()
+        assert provider.api_key == "sk-from-env"
 
     def test_provider_custom_api_key(self):
         """Provider accepts custom API key."""
@@ -1301,7 +1311,7 @@ class TestProviderConfiguration:
 
     def test_provider_default_base_url(self):
         """Provider uses OpenAI default URL."""
-        provider = OpenAICompletionsProvider()
+        provider = OpenAICompletionsProvider(api_key="sk-test")
         assert provider.base_url == "https://api.openai.com/v1"
 
     def test_provider_inherits_from_base(self):
@@ -1311,7 +1321,7 @@ class TestProviderConfiguration:
 
     def test_provider_implements_stream_chat(self):
         """Provider implements stream_chat method."""
-        provider = OpenAICompletionsProvider()
+        provider = OpenAICompletionsProvider(api_key="sk-test")
         assert hasattr(provider, "stream_chat")
         assert callable(provider.stream_chat)
 
@@ -1324,7 +1334,7 @@ class TestThinkingContentConversion:
     """Tests for thinking/reasoning content handling."""
 
     def setup_method(self):
-        self.provider = OpenAICompletionsProvider()
+        self.provider = OpenAICompletionsProvider(api_key="sk-test")
 
     def test_assistant_with_thinking_content(self):
         """AssistantMessage with ThinkingContent converts correctly."""
@@ -1386,7 +1396,7 @@ class TestTokenLimitHandling:
 
     def test_stop_reason_length_mapping(self):
         """finish_reason 'length' correctly maps to stop_reason 'length'."""
-        provider = OpenAICompletionsProvider()
+        provider = OpenAICompletionsProvider(api_key="sk-test")
         choice = {"delta": {"content": "text"}, "finish_reason": "length"}
         result = provider._convert_openai_choice_to_message(choice)
         assert result.stop_reason == "length"
@@ -1399,7 +1409,7 @@ class TestTokenLimitHandling:
             self._make_mock_client(mock_response),
         )
 
-        provider = OpenAICompletionsProvider()
+        provider = OpenAICompletionsProvider(api_key="sk-test")
         stream = asyncio.run(provider.stream_chat(
             model=_make_model(),
             messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
@@ -1410,3 +1420,63 @@ class TestTokenLimitHandling:
         assert len(done_events) == 1
         assert done_events[0].final.stop_reason == "length"
         assert done_events[0].usage.total_tokens == 4010
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# API key resolution (Fail-Early): no fabricated fallback
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestApiKeyResolution:
+    """The provider must require an API key at request time rather than send a
+    fabricated one. Replaces the old ``sk-fake-key-for-testing`` default that
+    silently surfaced as a confusing upstream 401 (CODE-QUALITY #5)."""
+
+    def test_missing_api_key_raises_at_request_time(self, monkeypatch):
+        """stream_chat raises a clear error when no key is configured anywhere."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        provider = OpenAICompletionsProvider()  # no key, no env
+        assert provider.api_key is None  # no fabricated fallback
+
+        with pytest.raises(ValueError, match="No API key for provider"):
+            asyncio.run(provider.stream_chat(
+                model=_make_model(),
+                messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
+            ))
+
+    def test_api_key_from_options_satisfies_request(self, monkeypatch):
+        """A key passed via options (not the constructor) is accepted and the
+        Authorization header picks it up — no raise."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        provider = OpenAICompletionsProvider()
+
+        mock_response = _make_mock_text_response(["hi"])
+
+        class MockClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def post(self, *args, **kwargs):
+                return mock_response
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                pass
+
+        monkeypatch.setattr("tau_ai.providers.openai.httpx.AsyncClient", MockClient)
+
+        stream = asyncio.run(provider.stream_chat(
+            model=_make_model(),
+            messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
+            options={"api_key": "sk-from-options"},
+        ))
+        events = _collect_events(stream)
+        assert any(isinstance(e, DoneEvent) for e in events)
+        # The resolved key is recorded so the cached client authorizes with it.
+        assert provider.api_key == "sk-from-options"
+
+    def test_local_server_sentinel_key_is_accepted(self):
+        """A truthy 'not-needed' sentinel (local servers) passes the check."""
+        provider = OpenAICompletionsProvider(api_key="not-needed")
+        assert provider.api_key == "not-needed"  # truthy → no raise at request

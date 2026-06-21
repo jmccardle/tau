@@ -435,10 +435,18 @@ class AgentLoop:
 
         model = self._model or self.config.model
 
+        # Forward the API key to the provider via options. client.py reads
+        # options["api_key"] to construct the provider, which then strips it from
+        # the request body. Only included when set, so None means "rely on the
+        # env/provider default" rather than sending an empty override.
+        options: dict[str, Any] = {"temperature": self.config.temperature}
+        if self.config.api_key:
+            options["api_key"] = self.config.api_key
+
         stream = await stream_simple(
             model,
             context_dict,
-            {"temperature": self.config.temperature},
+            options,
         )
 
         partial_text = ""

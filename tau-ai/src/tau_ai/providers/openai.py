@@ -240,12 +240,20 @@ class OpenAICompletionsProvider(Provider):
         """Initialize the OpenAI provider.
 
         Args:
-            api_key: OpenAI API key. If None, reads from OPENAI_API_KEY env var.
+            api_key: API key. If None, falls back to the OPENAI_API_KEY env var.
+                May remain None here; it is resolved and *required* at request
+                time in ``stream_chat``. Local servers that need no real auth
+                must still pass a truthy sentinel (e.g. ``"not-needed"``).
             base_url: Custom API base URL. Defaults to OpenAI production URL.
         """
         import os
 
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "sk-fake-key-for-testing")
+        # No fabricated fallback (Fail-Early): a missing key must surface as a
+        # clear "No API key" error at request time, not a bogus key that the
+        # upstream server rejects with a confusing 401. Mirrors pi, which throws
+        # "No API key for provider" rather than inventing one
+        # (openai-completions.ts:141).
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self.base_url = base_url or "https://api.openai.com/v1"
         self._client: httpx.AsyncClient | None = None
 
@@ -745,6 +753,24 @@ class OpenAICompletionsProvider(Provider):
         if options is None:
             options = {}
 
+        # Resolve the API key (Fail-Early). The key may arrive via the
+        # constructor (client.py builds the provider with options["api_key"]) or
+        # directly in `options` when stream_chat is called without going through
+        # client.py. A genuinely missing key must raise a clear error here rather
+        # than send a bogus "Bearer None"/fake key that the server rejects as a
+        # confusing 401. Local servers pass a truthy sentinel ("not-needed"),
+        # which satisfies this check. Mirrors pi (openai-completions.ts:141).
+        api_key = self.api_key or options.get("api_key")
+        if not api_key:
+            raise ValueError(
+                f"No API key for provider: {getattr(model, 'provider', 'openai')}. "
+                "Set OPENAI_API_KEY, pass api_key=..., or configure it in "
+                "~/.tau/config.json (use \"not-needed\" for a local server)."
+            )
+        # Ensure the cached HTTP client's Authorization header uses the resolved
+        # key (it may have come from options rather than the constructor).
+        self.api_key = api_key
+
         # Convert τ messages to OpenAI format
         openai_messages = self._convert_messages_to_openai(messages)
 
@@ -757,13 +783,16 @@ class OpenAICompletionsProvider(Provider):
         # `stream_options.include_usage` many OpenAI-compatible servers (notably
         # llama.cpp) never emit the trailing usage chunk, so token counts come
         # back as 0. pi sends this unconditionally (openai-completions.ts:522).
-        # Placed before `**options` so an explicit caller override still wins.
+        # Placed before `**body_options` so an explicit caller override still wins.
+        # `api_key` is a transport credential, not a request-body field — strip
+        # it so threading it through `options` never leaks it into the JSON body.
+        body_options = {k: v for k, v in options.items() if k != "api_key"}
         payload: dict[str, Any] = {
             "model": model.id,
             "messages": openai_messages,
             "stream": True,
             "stream_options": {"include_usage": True},
-            **options,
+            **body_options,
         }
         if openai_tools:
             payload["tools"] = openai_tools
