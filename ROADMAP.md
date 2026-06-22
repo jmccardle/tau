@@ -5,8 +5,9 @@ test) it came from so it can be audited against the source of truth (pi) and the
 "Fail Early" rule.
 
 **State (2026-06-22):** branch `master`. Suite **1403 passed / 0 failed**.
-Static checks: **ruff clean** (0 issues), **mypy 55** (down from 57; the Tier-5
-gate-blocker). The phase-build (`docs/PHASE-*`) and the post-build bug/quality
+Static checks: **ruff clean** (0 issues), **mypy 0** (was 55; the Tier-5 gate is
+green and now enforced by a blocking pre-commit hook — commits `5fd4c4f`,
+`ac6236c`). The phase-build (`docs/PHASE-*`) and the post-build bug/quality
 backlog (former Tiers 1–4, summarized below) are **complete**. Forward work is
 Tiers 5–12, sequenced around the committed **`docs/SESSION-UX-REDESIGN.md`**
 sprint. Scope/complexity for Tiers 6–12 was established by a five-agent research
@@ -47,33 +48,42 @@ retires itself.
 
 ## The path forward (Tiers 5–12)
 
-### Tier 5 — Quality gate (IN PROGRESS) — *now*
+### Tier 5 — Quality gate (DONE, one item open) — *shipped 2026-06-22*
 
-A no-new-dependency `.git/hooks/pre-commit` running **ruff check + ruff format
-+ mypy** over the three `src` trees, hard-gating once green ("clear debt first,
-then hard-gate", maintainer 2026-06-22).
+A tracked `.githooks/pre-commit` (`core.hooksPath .githooks`) running **ruff
+check + ruff format --check + mypy** over the three `src` trees, hard-gating
+commits ("clear debt first, then hard-gate", maintainer 2026-06-22). No new
+dependency; Fail-Early (requires the in-repo venv tools, no PATH fallback).
 
-- **ruff: DONE.** 31→0 (22 auto-fixed, 24 files reformatted, 8 hand-fixed).
-  `[tool.ruff]` in `pyproject.toml`: `line-length = 100`, `target-version =
-  "py311"`, default lint rules; import-sorting (`I`) deferred. Fixing the
-  `rpc.py` forward-refs (`TYPE_CHECKING`) also cleared 2 mypy `name-defined`
-  errors. **Held uncommitted** to land with mypy as one lint/format overhaul
-  commit (incl. the hook).
-- **mypy: 55 → 0 (remaining; the blocker).** Histogram: `attr-defined` 12,
-  `no-any-return` 11, `union-attr` 8, `valid-type` 6, `arg-type` 6, `assignment`
-  4, `override` 3, then `return-value`/`index`/`misc`. **Fail-Early: no blanket
-  `# type: ignore`** — fix the types.
-- **During the mypy pass — remove dead code:** `sdk.py:_build_system_prompt`
-  reads `AGENTS.md`/`.tau/SYSTEM.md` but is **off the live path**
-  (`backends.py:64,105-112` builds the system prompt from `config` only), so τ
-  injects no context files today. Delete it (its real replacement is Tier 8);
-  also stop silently swallowing extension-load errors (`sdk.py:226 except: pass`).
-- **Then install the blocking hook** (ruff check + `ruff format --check` + mypy).
-- **New item — LLM-backed compaction.** `compaction.py:151-153` is a marked
+- **ruff: DONE** (commit `5fd4c4f`). 31→0; `[tool.ruff]` in `pyproject.toml`:
+  `line-length = 100`, `target-version = "py311"`, exclude `venv`, default lint
+  rules; import-sorting (`I`) deferred.
+- **mypy: 55 → 0, DONE** (commit `5fd4c4f`, **no blanket `# type: ignore`**).
+  Notable fixes: renamed `SessionManager.list()` → `list_sessions()` (it
+  shadowed builtin `list` in this module's annotations — 17 of 21 errors);
+  updated the stale `Provider` ABC to the real contract (`Model`/`ToolDefinition`
+  params + a `StreamEventStream` Protocol return both stream impls satisfy);
+  removed a dead, unreachable `resolve_model()` registry branch that called a
+  nonexistent `Provider.resolve_model()`.
+- **`sdk._build_system_prompt` — KEPT (decision 2026-06-22).** It is *not* dead:
+  it's the **only** `AGENTS.md`/`.tau/SYSTEM.md` loader in τ, reached via the
+  public `create_agent_session` (+3 tests, `test_agent_session.py:1305-1333`).
+  It is off the live TUI/headless path (which take a literal
+  `config["system_prompt"]`, default `"You are a helpful assistant."`), so it's
+  a **stranded precursor of pi's live-path `resource-loader.ts`** — **Tier 8 is
+  its real port, not deletion**. Keep it as the working reference until Tier 8
+  supersedes it.
+- **Extension-load errors: DONE** (commit `ac6236c`). `_load_extensions_from_dir`
+  no longer swallows failures (`except (ImportError, OSError): pass`) — each
+  broken extension is logged to stderr and skipped; `_make_ext_factory` raises on
+  a missing spec/`extend()` instead of fabricating a silent no-op.
+- **Blocking hook: DONE** (commit `5fd4c4f`). Activate per-clone with
+  `git config core.hooksPath .githooks`.
+- **STILL OPEN — LLM-backed compaction.** `compaction.py:151-153` is a marked
   placeholder that builds the compaction prompt, discards it, and **fabricates**
   `summary = config.system_prompt + " - Compacted N entries"` — a standing
   Fail-Early violation, currently `# noqa: F841` with a pointer. pi's compaction
-  is the reference. Address alongside or shortly after the gate.
+  is the reference. The one remaining Tier-5 item.
 
 ### Tier 6 — CLI parity quick-wins + json doc-fix — *pre/parallel to the session sprint*
 
@@ -111,8 +121,11 @@ Ride the Phase-A seams (below). pi `args.ts:104,108,112`.
   `loadProjectContextFiles` (`resource-loader.ts:61-117`): candidate set
   `AGENTS.md`/`CLAUDE.md` (±uppercase), global + cwd→root walk, dedupe,
   `<project_context>` / `<project_instructions path=…>` injection
-  (`system-prompt.ts:154-161`). Unify onto the live `backends.py` path (the dead
-  `sdk._build_system_prompt` was removed in Tier 5). Add `--no-context-files`/`-nc`.
+  (`system-prompt.ts:154-161`). Unify onto the live `backends.py`/headless path,
+  **superseding** the SDK-only `sdk._build_system_prompt` stub (kept in Tier 5 as
+  the working reference — see Tier 5). Fold its `.tau/SYSTEM.md` loading in here
+  too (pi `resource-loader.ts:952-966`: project/global `SYSTEM.md` +
+  `APPEND_SYSTEM.md`). Add `--no-context-files`/`-nc`.
 - **Trust gate (M/L, security-sensitive).** Port pi's `trust.json`
   (`~/.tau/trust.json`, cwd-canonical keys, ancestor inheritance;
   `trust-manager.ts:27-35,42-57`), `resolve_project_trusted`
