@@ -14,6 +14,7 @@ This module provides:
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -182,6 +183,25 @@ def _load_extensions(
     return exts
 
 
+def _make_ext_factory(path_str: str) -> Callable:
+    """Import an extension module and return a factory that runs its extend().
+
+    Fail-Early: raises if the module spec cannot be created or the module has
+    no ``extend(api)`` function (rather than returning a silent no-op). The
+    caller logs and skips a failing extension.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("ext_module", path_str)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot create module spec for {path_str}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    if not hasattr(mod, "extend"):
+        raise AttributeError(f"{path_str} has no extend(api) function")
+    return lambda api: mod.extend(api)
+
+
 def _load_extensions_from_dir(extensions_dir: str, exts: list[Callable]) -> None:
     """Load Python modules from an extensions directory.
 
@@ -192,31 +212,20 @@ def _load_extensions_from_dir(extensions_dir: str, exts: list[Callable]) -> None
         extensions_dir: Path to the extensions directory.
         exts: List to append extension factories to.
     """
-    try:
-        ext_path = Path(extensions_dir)
-        if not ext_path.exists() or not ext_path.is_dir():
-            return
+    ext_path = Path(extensions_dir)
+    if not ext_path.exists() or not ext_path.is_dir():
+        return
 
-        for py_file in sorted(ext_path.glob("*.py")):
-            if py_file.name.startswith("_"):
-                continue
-
-            # Create a simple factory that imports and runs the extension
-            def make_ext_factory(path_str: str) -> Callable:
-                import importlib.util
-
-                spec = importlib.util.spec_from_file_location("ext_module", path_str)
-                if spec and spec.loader:
-                    mod = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(mod)
-                    if hasattr(mod, "extend"):
-                        return lambda api: mod.extend(api)
-                return lambda api: None  # No-op
-
-            factory = make_ext_factory(str(py_file))
-            exts.append(factory)
-    except (ImportError, OSError):
-        pass  # Silently ignore missing or unparseable extensions
+    for py_file in sorted(ext_path.glob("*.py")):
+        if py_file.name.startswith("_"):
+            continue
+        try:
+            exts.append(_make_ext_factory(str(py_file)))
+        except Exception as exc:
+            # A broken extension is surfaced loudly but does not abort the
+            # agent — the remaining extensions still load (decided 2026-06-22).
+            # Fail-Early: we no longer silently swallow load failures.
+            print(f"[τ] failed to load extension {py_file}: {exc}", file=sys.stderr)
 
 
 def _build_system_prompt(
