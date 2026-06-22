@@ -95,15 +95,15 @@ class Settings:
 
         # Merge list fields by appending (extension_dirs)
         if "extension_dirs" in merged_data and "extension_dirs" in self.__dict__:
-            existing = list(self.extension_dirs)
-            existing.extend(merged_data["extension_dirs"])
-            merged_data["extension_dirs"] = existing
+            existing_dirs = list(self.extension_dirs)
+            existing_dirs.extend(merged_data["extension_dirs"])
+            merged_data["extension_dirs"] = existing_dirs
 
         # Merge dict fields by updating (api_keys)
         if "api_keys" in merged_data and "api_keys" in self.__dict__:
-            existing = dict(self.api_keys)
-            existing.update(merged_data["api_keys"])
-            merged_data["api_keys"] = existing
+            existing_keys = dict(self.api_keys)
+            existing_keys.update(merged_data["api_keys"])
+            merged_data["api_keys"] = existing_keys
 
         # Apply merged values, preserving defaults for missing keys
         result_data = self.__dict__.copy()

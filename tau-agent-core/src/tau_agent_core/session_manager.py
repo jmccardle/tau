@@ -13,13 +13,11 @@ Reference: PHASE-2-SUBPHASE-2.md, SUBPHASE-0.0.md "6. Session Entry JSON Schema"
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Literal
 
 
@@ -117,8 +115,9 @@ class SessionManager:
             f"{uuid.uuid4().hex}.jsonl",
         )
 
+        entry_id = uuid.uuid4().hex
         entry = {
-            "id": uuid.uuid4().hex,
+            "id": entry_id,
             "type": "session",
             "timestamp": int(time.time() * 1000),
             "parent_id": None,
@@ -128,7 +127,7 @@ class SessionManager:
 
         # Set active session path BEFORE appending
         self._active_session_path = session_path
-        self._active_entry_id = entry["id"]
+        self._active_entry_id = entry_id
         # Track in-memory session path
         if self._memory_store is not None:
             self._memory_session_paths.append(session_path)
@@ -173,7 +172,7 @@ class SessionManager:
 
         Returns the entry's id.
         """
-        entry_id = entry.get("id", uuid.uuid4().hex)
+        entry_id: str = entry.get("id", uuid.uuid4().hex)
         entry["id"] = entry_id
         if "timestamp" not in entry:
             entry["timestamp"] = int(time.time() * 1000)
@@ -208,21 +207,26 @@ class SessionManager:
                 messages.append(msg)
             elif entry.get("type") == "compaction":
                 summary = entry.get("summary", "")
-                messages.append({
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"[[Compaction summary: {summary}]]",
-                        }
-                    ],
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"[[Compaction summary: {summary}]]",
+                            }
+                        ],
+                    }
+                )
         return messages
 
-    def list(self) -> list[SessionInfo]:
+    def list_sessions(self) -> list[SessionInfo]:
         """List sessions for the current working directory.
 
         Returns sessions sorted by creation timestamp (newest first).
+
+        Note: named ``list_sessions`` rather than ``list`` so it does not
+        shadow the builtin ``list`` in this module's annotations.
         """
         return self._list_sessions_from_dir(self._sessions_dir)
 
@@ -246,9 +250,8 @@ class SessionManager:
                     next_session_idx = len(self._memory_store)
                     for later in range(idx + 1, len(self._memory_store)):
                         later_entry = self._memory_store[later]
-                        if (
-                            later_entry.get("type") == "session"
-                            and not later_entry.get("parent_id")
+                        if later_entry.get("type") == "session" and not later_entry.get(
+                            "parent_id"
                         ):
                             next_session_idx = later
                             break
@@ -261,18 +264,12 @@ class SessionManager:
                 if path_idx < 0:
                     path_idx = 0
                 sess_path = (
-                    self._memory_session_paths[path_idx]
-                    if self._memory_session_paths
-                    else ""
+                    self._memory_session_paths[path_idx] if self._memory_session_paths else ""
                 )
 
                 # Entries for this session (between this session and next)
                 session_entries = self._memory_store[sess_start:sess_end]
-                message_count = sum(
-                    1
-                    for e in session_entries
-                    if e.get("type") == "message"
-                )
+                message_count = sum(1 for e in session_entries if e.get("type") == "message")
 
                 info = SessionInfo(
                     session_path=sess_path,
@@ -297,9 +294,9 @@ class SessionManager:
             if not filename.endswith(".jsonl"):
                 continue
             session_path = os.path.join(sessions_dir, filename)
-            info = self._extract_session_info(session_path)
-            if info:
-                results.append(info)
+            file_info = self._extract_session_info(session_path)
+            if file_info:
+                results.append(file_info)
 
         # Sort by creation timestamp, newest first
         results.sort(key=lambda s: s.created_at, reverse=True)
@@ -360,9 +357,7 @@ class SessionManager:
 
         # Skip session entries in the forked entries
         # (we're creating a new session entry)
-        non_session_entries = [
-            e for e in new_entries if e.get("type") != "session"
-        ]
+        non_session_entries = [e for e in new_entries if e.get("type") != "session"]
 
         # Rewrite all entries with updated parent_id chain
         parent = session_entry["id"]
@@ -496,11 +491,11 @@ class SessionManager:
 
         while current_id and current_id not in visited:
             visited.add(current_id)
-            entry = entry_by_id.get(current_id)
-            if entry is None:
+            node = entry_by_id.get(current_id)
+            if node is None:
                 break
-            path.append(entry)
-            current_id = entry.get("parent_id")
+            path.append(node)
+            current_id = node.get("parent_id")
 
         # Reverse to get root-to-leaf order
         path.reverse()

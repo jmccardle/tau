@@ -7,7 +7,7 @@ Clean, simple, fast. Built with Textual.
 from textual.app import App, ComposeResult, SystemCommand
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.widget import Widget
-from textual.widgets import Static, Input, Header, Footer, Label, Markdown, Button, TextArea
+from textual.widgets import Static, Input, Header, Footer, Markdown, Button, TextArea
 from textual.binding import Binding
 from textual.reactive import reactive
 from textual import events
@@ -17,15 +17,16 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import json
 import time
-import asyncio
 import traceback
 from typing import Optional
 
 from tau_coding_agent.backends import create_backend, Backend
+
 # Chat persistence lives in a Textual-free module so `tau -p` can save sessions
 # without importing the TUI. TAU_DIR/Chat are re-exported here for the TUI's use
 # (and so existing `from tau_coding_agent.app import Chat` keeps working).
 from tau_coding_agent.session_store import TAU_DIR, Chat
+
 # Collapsible chat components. MessageBox (below) is the universal per-message
 # host; these are the children it composes — one reasoning region and N tool
 # boxes — plus the exchange grouping used by the streaming state machine.
@@ -99,9 +100,7 @@ def _join_text_blocks(blocks: object) -> str:
         return blocks
     if isinstance(blocks, list):
         return "".join(
-            b.get("text", "")
-            for b in blocks
-            if isinstance(b, dict) and b.get("type") == "text"
+            b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"
         )
     return ""
 
@@ -232,7 +231,9 @@ class MessageBox(Static):
         self._tools_slot.mount(box)
         return box
 
-    async def add_tool_call_async(self, name: str, arguments: object, tool_call_id: str = "") -> ToolBox:
+    async def add_tool_call_async(
+        self, name: str, arguments: object, tool_call_id: str = ""
+    ) -> ToolBox:
         """Like :meth:`add_tool_call` but awaits the ToolBox mount.
 
         The reload path folds a tool *result* into this box immediately after the
@@ -486,17 +487,13 @@ class ChatDisplay(VerticalScroll):
                         text_buf = []
                     self.add_message(
                         "toolCall",
-                        format_tool_call_body(
-                            block.get("name", ""), block.get("arguments", {})
-                        ),
+                        format_tool_call_body(block.get("name", ""), block.get("arguments", {})),
                     )
             if text_buf:
                 self.add_message(role, "".join(text_buf))
             return
 
-        raise TypeError(
-            f"cannot render persisted message content of type {type(content).__name__}"
-        )
+        raise TypeError(f"cannot render persisted message content of type {type(content).__name__}")
 
     # ------------------------------------------------------------------
     # Streaming state machine (driven by TauBackend.stream_chat on_event)
@@ -617,9 +614,7 @@ class ChatDisplay(VerticalScroll):
         self._flush()
         self._collapse_active_reasoning()
         tc_id = event.get("id", "") or ""
-        self._active_box.add_tool_call(
-            event.get("name", ""), event.get("arguments", {}), tc_id
-        )
+        self._active_box.add_tool_call(event.get("name", ""), event.get("arguments", {}), tc_id)
         if tc_id:
             self._tool_routes[tc_id] = self._active_box
         self.scroll_end(animate=False)
@@ -804,9 +799,7 @@ class ChatDisplay(VerticalScroll):
                 else:
                     # The call always precedes its result on disk; a missing box
                     # means a dangling id — surface it, don't fabricate one.
-                    self.app.log(
-                        f"reload: toolResult for unknown tool_call_id {tc_id!r}"
-                    )
+                    self.app.log(f"reload: toolResult for unknown tool_call_id {tc_id!r}")
             else:
                 # Unexpected role inside an answer span — render flat rather than
                 # drop it (add_persisted_message raises on a bad content shape).
@@ -839,7 +832,11 @@ class ChatInput(TextArea):
         # Up/Down for history (only when on first/last line)
         if event.key == "up":
             cursor_row, _ = self.cursor_location
-            if cursor_row == 0 and self.command_history and self.command_history_index < len(self.command_history) - 1:
+            if (
+                cursor_row == 0
+                and self.command_history
+                and self.command_history_index < len(self.command_history) - 1
+            ):
                 if self.command_history_index == -1:
                     self.current_draft = self.text
                 self.command_history_index += 1
@@ -928,30 +925,30 @@ class Parley(App):
                         "model": "gpt-4o",
                         "base_url": "https://api.openai.com/v1",
                         "api_key": "your-api-key-here",
-                        "tools": ["read", "write", "edit", "bash", "ls", "grep", "find"]
+                        "tools": ["read", "write", "edit", "bash", "ls", "grep", "find"],
                     },
                     "claude-3.5-sonnet": {
                         "backend": "anthropic",
                         "model": "claude-3-5-sonnet-20241022",
                         "api_key": "your-api-key-here",
-                        "tools": ["read", "write", "edit", "bash", "ls", "grep", "find"]
+                        "tools": ["read", "write", "edit", "bash", "ls", "grep", "find"],
                     },
                     "gemini-2.0": {
                         "backend": "gemini",
                         "model": "gemini-2.0-flash-exp",
                         "api_key": "your-api-key-here",
-                        "tools": ["read", "write", "edit", "bash", "ls", "grep", "find"]
+                        "tools": ["read", "write", "edit", "bash", "ls", "grep", "find"],
                     },
                     "local-llm": {
                         "backend": "openai",
                         "model": "qwen3-32b-kv4b",
                         "base_url": "http://192.168.1.100:8000/v1",
                         "api_key": "not-needed",
-                        "tools": ["read", "write", "edit", "bash", "ls", "grep", "find"]
-                    }
+                        "tools": ["read", "write", "edit", "bash", "ls", "grep", "find"],
+                    },
                 },
                 "default_model": "local-llm",
-                "system_prompt": "You are a helpful assistant. Be concise and clear."
+                "system_prompt": "You are a helpful assistant. Be concise and clear.",
             }
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(json.dumps(self.config, indent=2))
@@ -980,30 +977,23 @@ class Parley(App):
 
     async def on_input_submitted(self, event: Input.Submitted):
         """Handle message submission."""
-        # Handle both Input and TextArea submissions
-        if hasattr(event, 'input'):
-            input_widget = event.input
-        else:
-            input_widget = self.query_one(ChatInput)
+        # ChatInput is the app's only Input.Submitted source (it posts
+        # Input.Submitted(self, ...)), so the submitting widget is always the
+        # #chat-input ChatInput.
+        input_widget = self.query_one("#chat-input", ChatInput)
 
         message = event.value.strip()
 
         if not message:
             return
 
-        # Add to history
-        if hasattr(input_widget, 'add_to_history'):
-            input_widget.add_to_history(message)
-
-        # Clear input
-        if hasattr(input_widget, 'clear_input'):
-            input_widget.clear_input()
-        else:
-            input_widget.value = ""
+        input_widget.add_to_history(message)
+        input_widget.clear_input()
 
         # Create new chat if needed
         if self.current_chat is None:
             await self.action_new_chat()
+        assert self.current_chat is not None  # action_new_chat sets current_chat
 
         # Add user message to chat
         self.current_chat.messages.append({"role": "user", "content": message})
@@ -1027,7 +1017,9 @@ class Parley(App):
 
             # Display error in chat
             display = self.query_one(ChatDisplay)
-            display.add_message("system", f"**Error occurred:**\n```\n{str(e)}\n{traceback.format_exc()}\n```")
+            display.add_message(
+                "system", f"**Error occurred:**\n```\n{str(e)}\n{traceback.format_exc()}\n```"
+            )
         finally:
             # Re-enable input
             input_widget.disabled = False
@@ -1066,9 +1058,7 @@ class Parley(App):
         elapsed = time.time() - start
 
         # Collapse the exchange to its summary and surface the final answer.
-        await display.finalize_exchange(
-            tokens=usage.get("total_tokens", 0), seconds=elapsed
-        )
+        await display.finalize_exchange(tokens=usage.get("total_tokens", 0), seconds=elapsed)
 
         # Update chat history with new messages from agent loop
         # (assistant responses + tool results, skip user message which
@@ -1112,7 +1102,7 @@ class Parley(App):
             model=model,
             backend=model_config["backend"],
             messages=[{"role": "system", "content": system_prompt}],
-            created_at=time.time()
+            created_at=time.time(),
         )
 
         # Clear display
@@ -1142,9 +1132,7 @@ class Parley(App):
         the thinking, or expands it for review. Smart-toggle — if any region is
         open it collapses all, otherwise it expands all — so the key always does
         something visible regardless of the mixed starting states."""
-        self.reasoning_collapsed = self._fold_all(
-            self.query(ReasoningRegion), "Reasoning"
-        )
+        self.reasoning_collapsed = self._fold_all(self.query(ReasoningRegion), "Reasoning")
 
     def action_toggle_tools(self) -> None:
         """Fold/unfold every tool box (call + result) in the transcript at once."""
@@ -1217,26 +1205,18 @@ class Parley(App):
             yield SystemCommand(
                 f"New Chat: {model_name}",
                 f"Start a new chat with {model_name}",
-                lambda m=model_name: self.run_action(f'new_chat("{m}")')
+                lambda m=model_name: self.run_action(f'new_chat("{m}")'),
             )
 
         # General commands
-        yield SystemCommand(
-            "Clear Chat",
-            "Clear current conversation",
-            self.action_clear_chat
-        )
+        yield SystemCommand("Clear Chat", "Clear current conversation", self.action_clear_chat)
 
-        yield SystemCommand(
-            "Export Chat",
-            "Export chat to markdown",
-            self.action_export_chat
-        )
+        yield SystemCommand("Export Chat", "Export chat to markdown", self.action_export_chat)
 
         yield SystemCommand(
             "Edit System Prompt",
             "Edit the system prompt for new chats",
-            self.action_edit_system_prompt
+            self.action_edit_system_prompt,
         )
 
         yield SystemCommand(
@@ -1255,7 +1235,9 @@ class Parley(App):
         """Clear the current chat."""
         if self.current_chat:
             # Keep only system message
-            system_msg = next((m for m in self.current_chat.messages if m["role"] == "system"), None)
+            system_msg = next(
+                (m for m in self.current_chat.messages if m["role"] == "system"), None
+            )
             if system_msg:
                 self.current_chat.messages = [system_msg]
             else:
@@ -1276,7 +1258,9 @@ class Parley(App):
         # Build markdown
         lines = [f"# {self.current_chat.get_display_title()}\n"]
         lines.append(f"Model: {self.current_chat.model}\n")
-        lines.append(f"Date: {datetime.fromtimestamp(self.current_chat.created_at).strftime('%Y-%m-%d %H:%M')}\n")
+        lines.append(
+            f"Date: {datetime.fromtimestamp(self.current_chat.created_at).strftime('%Y-%m-%d %H:%M')}\n"
+        )
         lines.append("---\n")
 
         for msg in self.current_chat.messages:

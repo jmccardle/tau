@@ -29,10 +29,7 @@ class LsTool:
 
     name = "ls"
     label = "List Directory"
-    description = (
-        "List directory contents. "
-        "Supports listing hidden files and long format output."
-    )
+    description = "List directory contents. Supports listing hidden files and long format output."
     parameters: dict[str, Any] = {
         "type": "object",
         "properties": {

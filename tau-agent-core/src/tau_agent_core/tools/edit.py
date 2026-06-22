@@ -141,8 +141,8 @@ class EditTool:
             return AgentToolResult.from_error(
                 tool_name=self.name,
                 error_message=(
-                    f'Found {occurrences} occurrences of the string. '
-                    f'Use replace_all=True to replace all, or make the old_string more specific.'
+                    f"Found {occurrences} occurrences of the string. "
+                    f"Use replace_all=True to replace all, or make the old_string more specific."
                 ),
                 tool_call_id=tool_call_id,
             ).model_dump()

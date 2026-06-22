@@ -80,7 +80,6 @@ class SessionInfo(BaseModel):
     status: Literal["idle", "running", "aborting", "error"] = "idle"
 
 
-
 class SessionEntry(BaseModel):
     """Root session entry.
 

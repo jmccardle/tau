@@ -132,9 +132,7 @@ class BashTool:
                     if signal and signal.is_aborted():
                         raise asyncio.CancelledError("Command aborted")
                     try:
-                        line = await asyncio.wait_for(
-                            stream.readline(), timeout=0.1
-                        )
+                        line = await asyncio.wait_for(stream.readline(), timeout=0.1)
                         if not line:
                             break
                         text = line.decode("utf-8", errors="replace")
@@ -229,7 +227,12 @@ class BashTool:
                 result = AgentToolResult(
                     tool_name=self.name,
                     tool_call_id=tool_call_id,
-                    content=[{"type": "text", "text": full_output or f"Command exited with code {exit_code}"}],
+                    content=[
+                        {
+                            "type": "text",
+                            "text": full_output or f"Command exited with code {exit_code}",
+                        }
+                    ],
                 )
             else:
                 result = AgentToolResult(

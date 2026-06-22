@@ -5,14 +5,12 @@ Wraps tau-agent-core's AgentSession to provide Parley-compatible
 Backend interfaces (chat, stream_chat).
 """
 
-import os
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import Any, Callable
 from tau_ai.types import Model
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_manager import SessionManager
-from tau_agent_core.sdk import create_agent_session, _resolve_tools
+from tau_agent_core.sdk import _resolve_tools
 
 
 class Backend(ABC):
@@ -71,9 +69,7 @@ class TauBackend(Backend):
         # explicit config "reasoning": true also enables it. None/"off" → no
         # reasoning requested.
         thinking_level = config.get("thinking")
-        reasoning_arg = (
-            thinking_level if thinking_level and thinking_level != "off" else None
-        )
+        reasoning_arg = thinking_level if thinking_level and thinking_level != "off" else None
         model_reasoning = bool(config.get("reasoning")) or reasoning_arg is not None
 
         # Build the AgentSession
@@ -159,9 +155,7 @@ class TauBackend(Backend):
 
         # Send through the agent loop with full conversation context
         # so the model sees prior tool calls and results
-        result_messages = await self.agent_session.prompt(
-            last_user_message, context=messages
-        )
+        result_messages = await self.agent_session.prompt(last_user_message, context=messages)
 
         # Extract the last assistant message text
         assistant_content = ""
@@ -183,11 +177,15 @@ class TauBackend(Backend):
         prompt_tokens = sum(len(m.get("content", "")) // 4 for m in messages)
         completion_tokens = len(assistant_content) // 4 if assistant_content else 0
 
-        return assistant_content, {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-        }, result_messages
+        return (
+            assistant_content,
+            {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+            },
+            result_messages,
+        )
 
     async def stream_chat(
         self,
@@ -289,10 +287,12 @@ class TauBackend(Backend):
                 # caller to open a new pending widget for this turn.
                 streaming_text = ""
                 streaming_reasoning = ""
-                _emit({
-                    "kind": "turn_start",
-                    "turn_index": getattr(event, "turn_index", None),
-                })
+                _emit(
+                    {
+                        "kind": "turn_start",
+                        "turn_index": getattr(event, "turn_index", None),
+                    }
+                )
             elif event.type == "message_update":
                 message = getattr(event, "message", None)
                 if message:
@@ -311,7 +311,7 @@ class TauBackend(Backend):
                                 # the real delta is the suffix beyond what we've
                                 # already seen this turn.
                                 if full_text.startswith(streaming_text):
-                                    delta = full_text[len(streaming_text):]
+                                    delta = full_text[len(streaming_text) :]
                                 else:
                                     # Defensive: provider replaced rather than
                                     # extended the text mid-turn.
@@ -332,7 +332,7 @@ class TauBackend(Backend):
                                 if not full_reasoning:
                                     continue
                                 if full_reasoning.startswith(streaming_reasoning):
-                                    delta = full_reasoning[len(streaming_reasoning):]
+                                    delta = full_reasoning[len(streaming_reasoning) :]
                                 else:
                                     delta = full_reasoning
                                 if not delta:
@@ -353,11 +353,13 @@ class TauBackend(Backend):
                                 tc_id = block.get("id", "")
                                 if any(tc["id"] == tc_id for tc in tool_calls_info):
                                     continue
-                                tool_calls_info.append({
-                                    "id": tc_id,
-                                    "name": block.get("name", ""),
-                                    "arguments": block.get("arguments", {}),
-                                })
+                                tool_calls_info.append(
+                                    {
+                                        "id": tc_id,
+                                        "name": block.get("name", ""),
+                                        "arguments": block.get("arguments", {}),
+                                    }
+                                )
                     # Sum the real usage carried on this completion's message_end.
                     # Only the per-completion message_end (_stream_response) carries
                     # it, so the duplicate run() emit adds nothing — no double count.
@@ -368,20 +370,21 @@ class TauBackend(Backend):
             elif event.type == "tool_execution_start":
                 # Render the tool call as soon as it begins — this is the
                 # authoritative, ordered signal (carries name + args directly).
-                _emit({
-                    "kind": "tool_call",
-                    "id": getattr(event, "tool_call_id", "") or "",
-                    "name": getattr(event, "tool_name", "") or "",
-                    "arguments": getattr(event, "args", None) or {},
-                })
+                _emit(
+                    {
+                        "kind": "tool_call",
+                        "id": getattr(event, "tool_call_id", "") or "",
+                        "name": getattr(event, "tool_name", "") or "",
+                        "arguments": getattr(event, "args", None) or {},
+                    }
+                )
             elif event.type == "tool_execution_end":
                 tool_call_id = getattr(event, "tool_call_id", "") or ""
                 is_error = getattr(event, "is_error", False)
                 result = getattr(event, "result", "")
                 if isinstance(result, list):
                     result = " ".join(
-                        b.get("text", "") if isinstance(b, dict) else str(b)
-                        for b in result
+                        b.get("text", "") if isinstance(b, dict) else str(b) for b in result
                     )
                 result_str = str(result)
                 # Record result against the persisted tool call (if tracked).
@@ -390,13 +393,15 @@ class TauBackend(Backend):
                         tc["result"] = result_str[:200]
                         tc["error"] = is_error
                         break
-                _emit({
-                    "kind": "tool_result",
-                    "id": tool_call_id,
-                    "name": getattr(event, "tool_name", "") or "",
-                    "result": result_str,
-                    "is_error": is_error,
-                })
+                _emit(
+                    {
+                        "kind": "tool_result",
+                        "id": tool_call_id,
+                        "name": getattr(event, "tool_name", "") or "",
+                        "result": result_str,
+                        "is_error": is_error,
+                    }
+                )
 
         # Subscribe to events before running the prompt
         # This captures ALL events during the full agent loop (LLM calls + tool execution)
@@ -405,9 +410,7 @@ class TauBackend(Backend):
         # Send through the agent loop with full conversation context
         # The loop handles LLM calls, tool execution, and re-calls the LLM
         # for tool results — all streaming flows through the event bus
-        new_messages = await self.agent_session.prompt(
-            last_user_message, context=messages
-        )
+        new_messages = await self.agent_session.prompt(last_user_message, context=messages)
 
         # Unsubscribe
         unsubscribe()
@@ -419,13 +422,18 @@ class TauBackend(Backend):
         # keeps the prompt/completion/total key names the TUI + headless paths
         # already read, mapped from τ's input/output/total fields. No fabricated
         # fallback — if a provider reports nothing, the count is a true 0.
-        return full_content, {
-            "prompt_tokens": usage_totals["input_tokens"],
-            "completion_tokens": usage_totals["output_tokens"],
-            "total_tokens": usage_totals["total_tokens"],
-            "cache_read_tokens": usage_totals["cache_read_tokens"],
-            "cache_write_tokens": usage_totals["cache_write_tokens"],
-        }, new_messages, tool_calls_info
+        return (
+            full_content,
+            {
+                "prompt_tokens": usage_totals["input_tokens"],
+                "completion_tokens": usage_totals["output_tokens"],
+                "total_tokens": usage_totals["total_tokens"],
+                "cache_read_tokens": usage_totals["cache_read_tokens"],
+                "cache_write_tokens": usage_totals["cache_write_tokens"],
+            },
+            new_messages,
+            tool_calls_info,
+        )
 
 
 def create_backend(config: dict[str, Any]) -> Backend:

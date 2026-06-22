@@ -12,18 +12,15 @@ Reference: SUBPHASE-0.0.md, "8. Extension API Surface" section.
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
 from typing import Any, Callable
 
 from tau_ai.abort import AbortSignal
 from tau_ai.types import Model, UserMessage
 
 from tau_agent_core.events import AgentEvent, EventBus
-from tau_agent_core.extension_types import ExtensionAPI, ExtensionContext
+from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.session import SessionState
 from tau_agent_core.session_manager import SessionManager
-from tau_agent_core.tools.base import AgentTool
 from tau_agent_core.agent_loop import AgentLoop
 from tau_agent_core.agent_loop_types import AgentLoopConfig
 
@@ -38,9 +35,7 @@ def _message_text(content: Any) -> str:
         return content
     if isinstance(content, list):
         return " ".join(
-            b.get("text", "")
-            for b in content
-            if isinstance(b, dict) and b.get("type") == "text"
+            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
         )
     return ""
 
@@ -147,7 +142,9 @@ class AgentSession:
         return self._events.on("all", handler)
 
     async def prompt(
-        self, text: str, images: list[dict] | None = None,
+        self,
+        text: str,
+        images: list[dict] | None = None,
         context: list[dict] | None = None,
     ) -> list[dict[str, Any]]:
         """Send a prompt and run the agent loop.
@@ -179,10 +176,14 @@ class AgentSession:
             content: list[dict[str, Any]] = [{"type": "text", "text": text}]
             if images:
                 content.extend(images)
-            user_msg = UserMessage(
-                role="user",
-                content=content,
-                timestamp=self._timestamp(),
+            # content holds raw block dicts; model_validate lets pydantic coerce
+            # them into the TextContent | ImageContent union UserMessage declares.
+            user_msg = UserMessage.model_validate(
+                {
+                    "role": "user",
+                    "content": content,
+                    "timestamp": self._timestamp(),
+                }
             )
 
             # Get context: use provided context or fall back to session messages.
@@ -247,11 +248,13 @@ class AgentSession:
             # a bare prompt("hi") does not).
             if not context_ends_with_user:
                 user_dict = user_msg.model_dump()
-                self._session_manager.append_entry({
-                    "id": f"msg_{len(self._session_manager._get_entries())}",
-                    "type": "message",
-                    "message": user_dict,
-                })
+                self._session_manager.append_entry(
+                    {
+                        "id": f"msg_{len(self._session_manager._get_entries())}",
+                        "type": "message",
+                        "message": user_dict,
+                    }
+                )
                 turn_messages.append(user_dict)
 
             # Assistant responses and tool results produced this turn.
@@ -264,11 +267,13 @@ class AgentSession:
                     continue
 
                 msg_type = msg_dict.get("type", "message")
-                self._session_manager.append_entry({
-                    "id": f"msg_{len(self._session_manager._get_entries())}",
-                    "type": msg_type,
-                    "message": msg_dict,
-                })
+                self._session_manager.append_entry(
+                    {
+                        "id": f"msg_{len(self._session_manager._get_entries())}",
+                        "type": msg_type,
+                        "message": msg_dict,
+                    }
+                )
                 turn_messages.append(msg_dict)
 
             return turn_messages
@@ -329,11 +334,13 @@ class AgentSession:
                     continue
 
                 msg_type = msg_dict.get("type", "message")
-                self._session_manager.append_entry({
-                    "id": f"cont_{len(self._session_manager._get_entries())}",
-                    "type": msg_type,
-                    "message": msg_dict,
-                })
+                self._session_manager.append_entry(
+                    {
+                        "id": f"cont_{len(self._session_manager._get_entries())}",
+                        "type": msg_type,
+                        "message": msg_dict,
+                    }
+                )
                 turn_messages.append(msg_dict)
 
             return turn_messages
@@ -347,9 +354,7 @@ class AgentSession:
         Args:
             custom_instructions: Optional instructions for the compaction.
         """
-        await self._events.emit(
-            AgentEvent(type="agent_start", timestamp=self._timestamp())
-        )
+        await self._events.emit(AgentEvent(type="agent_start", timestamp=self._timestamp()))
         await self._events.emit(
             AgentEvent(
                 type="turn_start",
@@ -359,9 +364,7 @@ class AgentSession:
         )
         # Note: Actual compaction logic is in tau_agent_core.compaction
         # For now, emit the events to signal compaction intent
-        await self._events.emit(
-            AgentEvent(type="agent_end", timestamp=self._timestamp())
-        )
+        await self._events.emit(AgentEvent(type="agent_end", timestamp=self._timestamp()))
 
     def abort(self) -> None:
         """Abort the current agent turn."""
@@ -385,4 +388,5 @@ class AgentSession:
     def _timestamp() -> int:
         """Get current timestamp in milliseconds."""
         import time
+
         return int(time.time() * 1000)

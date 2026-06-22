@@ -19,6 +19,7 @@ class TextContent(BaseModel):
 
     Reference: SUBPHASE-0.0.md, "1. Messages" section.
     """
+
     type: Literal["text"] = "text"
     text: str
 
@@ -28,6 +29,7 @@ class ThinkingContent(BaseModel):
 
     Reference: SUBPHASE-0.0.md, "1. Messages" section.
     """
+
     type: Literal["thinking"] = "thinking"
     thinking: str
     cached_tokens: int = 0
@@ -46,6 +48,7 @@ class ImageContent(BaseModel):
 
     Reference: SUBPHASE-0.0.md, "1. Messages" section.
     """
+
     type: Literal["image"] = "image"
     data: str  # base64 encoded image data
     mime_type: str
@@ -56,6 +59,7 @@ class ToolCall(BaseModel):
 
     Reference: SUBPHASE-0.0.md, "1. Messages" section.
     """
+
     type: Literal["toolCall"] = "toolCall"
     id: str
     name: str
@@ -69,6 +73,7 @@ class Usage(BaseModel):
 
     Usage is immutable (frozen) — once created, its fields cannot be modified.
     """
+
     model_config = {"frozen": True}
 
     input_tokens: int = 0
@@ -84,6 +89,7 @@ class UserMessage(BaseModel):
 
     Reference: SUBPHASE-0.0.md, "1. Messages" section.
     """
+
     role: Literal["user"] = "user"
     content: str | list[TextContent | ImageContent]
     timestamp: int = Field(ge=0)
@@ -94,6 +100,7 @@ class AssistantMessage(BaseModel):
 
     Reference: SUBPHASE-0.0.md, "1. Messages" section.
     """
+
     role: Literal["assistant"] = "assistant"
     content: list[TextContent | ThinkingContent | ToolCall]
     api: Literal["openai-completions", "openai-responses"]
@@ -122,6 +129,7 @@ class Model(BaseModel):
     Represents a model with its provider and connection details.
     Serializes to OpenAI-compatible dict format.
     """
+
     id: str
     name: str
     api: Literal["openai-completions", "openai-responses"]
@@ -169,6 +177,7 @@ class ToolResultMessage(BaseModel):
 
     Reference: SUBPHASE-0.0.md, "1. Messages" section.
     """
+
     role: Literal["toolResult"] = "toolResult"
     tool_call_id: str
     tool_name: str

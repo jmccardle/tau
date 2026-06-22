@@ -15,14 +15,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 from tau_ai.types import Model
-from tau_ai.providers.registry import ProviderRegistry
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_manager import SessionManager
-from tau_agent_core.tools.base import AgentTool
 
 
 # ─── Default model definitions ───────────────────────────────────────
@@ -81,15 +79,9 @@ def resolve_model(
         if base_url:
             m.base_url = base_url
         return m
-    # Try provider registry
-    try:
-        registry = ProviderRegistry()
-        prov = registry.get(provider)
-        if prov:
-            return prov.resolve_model(model)
-    except KeyError:
-        pass
-    # Fallback: create a generic model
+    # Not a known default — build a generic model from the provider/base_url.
+    # (No provider implements a resolve_model() hook; pi resolves via a
+    # module-level getModel() lookup, so there is no registry path here.)
     return Model(
         id=model,
         name=model,
@@ -208,12 +200,12 @@ def _load_extensions_from_dir(extensions_dir: str, exts: list[Callable]) -> None
         for py_file in sorted(ext_path.glob("*.py")):
             if py_file.name.startswith("_"):
                 continue
+
             # Create a simple factory that imports and runs the extension
             def make_ext_factory(path_str: str) -> Callable:
                 import importlib.util
-                spec = importlib.util.spec_from_file_location(
-                    "ext_module", path_str
-                )
+
+                spec = importlib.util.spec_from_file_location("ext_module", path_str)
                 if spec and spec.loader:
                     mod = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(mod)

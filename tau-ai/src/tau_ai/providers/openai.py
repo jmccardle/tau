@@ -23,7 +23,6 @@ Usage:
 
 from __future__ import annotations
 
-import base64
 import json
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Literal
@@ -61,6 +60,7 @@ class _ToolCallAccumulator:
     ``name`` and ``arguments_parts`` are accumulated by concatenation: OpenAI
     streams them as incremental fragments, one piece per chunk.
     """
+
     id: str = ""
     name: str = ""
     index: int | None = None
@@ -78,6 +78,7 @@ class _Accumulator:
     OpenAI stream ``index`` and tool-call ``id`` so that follow-up argument
     fragments — which carry only ``index`` — route to the right call.
     """
+
     text_parts: list[str] = field(default_factory=list)
     thinking_parts: list[str] = field(default_factory=list)
     # The field name reasoning streamed on (``reasoning_content`` etc.), captured
@@ -167,11 +168,13 @@ def _consolidate_text_and_thinking(accum: _Accumulator) -> list[Any]:
     """
     blocks: list[Any] = []
     if accum.thinking_parts:
-        blocks.append(ThinkingContent(
-            type="thinking",
-            thinking="".join(accum.thinking_parts),
-            thinking_signature=accum.thinking_signature,
-        ))
+        blocks.append(
+            ThinkingContent(
+                type="thinking",
+                thinking="".join(accum.thinking_parts),
+                thinking_signature=accum.thinking_signature,
+            )
+        )
     if accum.text_parts:
         blocks.append(TextContent(type="text", text="".join(accum.text_parts)))
     return blocks
@@ -331,10 +334,12 @@ class OpenAICompletionsProvider(Provider):
                 blocks.append({"type": "text", "text": block.text})
             elif isinstance(block, ImageContent):
                 b64_data = self._encode_image(block)
-                blocks.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{block.mime_type};base64,{b64_data}"},
-                })
+                blocks.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{block.mime_type};base64,{b64_data}"},
+                    }
+                )
             elif isinstance(block, dict):
                 blocks.append(block)
 
@@ -387,14 +392,16 @@ class OpenAICompletionsProvider(Provider):
                     if not thinking_signature:
                         thinking_signature = block.get("thinking_signature", "")
                 elif btype == "toolCall":
-                    tool_calls.append({
-                        "id": block.get("id", ""),
-                        "type": "function",
-                        "function": {
-                            "name": block.get("name", ""),
-                            "arguments": json.dumps(block.get("arguments", {})),
-                        },
-                    })
+                    tool_calls.append(
+                        {
+                            "id": block.get("id", ""),
+                            "type": "function",
+                            "function": {
+                                "name": block.get("name", ""),
+                                "arguments": json.dumps(block.get("arguments", {})),
+                            },
+                        }
+                    )
             elif isinstance(block, TextContent):
                 text_parts.append(block.text)
             elif isinstance(block, ThinkingContent):
@@ -402,14 +409,16 @@ class OpenAICompletionsProvider(Provider):
                 if not thinking_signature:
                     thinking_signature = block.thinking_signature
             elif isinstance(block, ToolCall):
-                tool_calls.append({
-                    "id": block.id,
-                    "type": "function",
-                    "function": {
-                        "name": block.name,
-                        "arguments": json.dumps(block.arguments),
-                    },
-                })
+                tool_calls.append(
+                    {
+                        "id": block.id,
+                        "type": "function",
+                        "function": {
+                            "name": block.name,
+                            "arguments": json.dumps(block.arguments),
+                        },
+                    }
+                )
 
         result: dict[str, Any] = {"role": "assistant"}
         text = "".join(text_parts)
@@ -584,19 +593,23 @@ class OpenAICompletionsProvider(Provider):
                 tc_args = tc_delta.get("function", {}).get("arguments", "")
                 if tc_id and tc_name:
                     args_dict = parse_streaming_json(tc_args)
-                    tool_calls.append(ToolCall(
-                        id=tc_id,
-                        name=tc_name,
-                        arguments=args_dict,
-                    ))
+                    tool_calls.append(
+                        ToolCall(
+                            id=tc_id,
+                            name=tc_name,
+                            arguments=args_dict,
+                        )
+                    )
 
         # Build content blocks
         content_blocks: list[Any] = []
         content_blocks.extend([TextContent(type="text", text=t) for t in text_parts])
-        content_blocks.extend([
-            ThinkingContent(type="thinking", thinking=t, thinking_signature=reasoning_field)
-            for t in thinking_parts
-        ])
+        content_blocks.extend(
+            [
+                ThinkingContent(type="thinking", thinking=t, thinking_signature=reasoning_field)
+                for t in thinking_parts
+            ]
+        )
         content_blocks.extend(tool_calls)
 
         model_id = delta.get("model", "unknown")
@@ -613,9 +626,11 @@ class OpenAICompletionsProvider(Provider):
             timestamp=0,
         )
 
-    def _map_finish_reason(self, reason: str | None) -> Literal["stop", "length", "toolUse", "error", "aborted"]:
+    def _map_finish_reason(
+        self, reason: str | None
+    ) -> Literal["stop", "length", "toolUse", "error", "aborted"]:
         """Map OpenAI finish_reason to τ stop_reason."""
-        mapping = {
+        mapping: dict[str | None, Literal["stop", "length", "toolUse", "error", "aborted"]] = {
             "stop": "stop",
             "length": "length",
             "tool_calls": "toolUse",
@@ -766,7 +781,7 @@ class OpenAICompletionsProvider(Provider):
             raise ValueError(
                 f"No API key for provider: {getattr(model, 'provider', 'openai')}. "
                 "Set OPENAI_API_KEY, pass api_key=..., or configure it in "
-                "~/.tau/config.json (use \"not-needed\" for a local server)."
+                '~/.tau/config.json (use "not-needed" for a local server).'
             )
         # Ensure the cached HTTP client's Authorization header uses the resolved
         # key (it may have come from options rather than the constructor).
@@ -789,9 +804,7 @@ class OpenAICompletionsProvider(Provider):
         # `reasoning` is a τ-internal level (converted to `reasoning_effort`
         # below) — strip both so threading them through `options` never leaks
         # them into the JSON body.
-        body_options = {
-            k: v for k, v in options.items() if k not in ("api_key", "reasoning")
-        }
+        body_options = {k: v for k, v in options.items() if k not in ("api_key", "reasoning")}
         payload: dict[str, Any] = {
             "model": model.id,
             "messages": openai_messages,
@@ -835,7 +848,9 @@ class OpenAICompletionsProvider(Provider):
                         error_body = response.json()
                     except Exception:
                         pass
-                    error_msg = error_body.get("error", {}).get("message", f"HTTP {response.status_code}")
+                    error_msg = error_body.get("error", {}).get(
+                        "message", f"HTTP {response.status_code}"
+                    )
                     error_event = ErrorEvent(
                         type="error",
                         message=f"HTTP {response.status_code}: {error_msg}",
@@ -844,9 +859,10 @@ class OpenAICompletionsProvider(Provider):
                     yield error_event
                     return
 
-                response_id = response.headers.get("x-request-id", "unknown")
                 usage_data: dict[str, Any] = {}
-                final_stop_reason: Literal["stop", "length", "toolUse", "error", "aborted"] | None = None
+                final_stop_reason: (
+                    Literal["stop", "length", "toolUse", "error", "aborted"] | None
+                ) = None
 
                 # Handle streaming response — read SSE lines async
                 async for line in response.aiter_lines():
@@ -933,9 +949,7 @@ class OpenAICompletionsProvider(Provider):
                 # Stream ended ([DONE] or closed). Emit the final message with
                 # whatever usage arrived, including a trailing usage-only chunk.
                 usage_obj = _usage_from_openai(usage_data) if usage_data else Usage()
-                final_msg = self._build_final_message(
-                    accum, model, usage_obj, final_stop_reason
-                )
+                final_msg = self._build_final_message(accum, model, usage_obj, final_stop_reason)
 
                 # Emit one final tool-call delta per call, derived from the
                 # already-parsed ToolCall blocks on final_msg (no re-parse).

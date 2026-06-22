@@ -163,7 +163,9 @@ class GrepTool:
         return result_dict
 
     @staticmethod
-    def _search_file(file_path: str, pattern: re.Pattern, base_path: str | None = None) -> list[str]:
+    def _search_file(
+        file_path: str, pattern: re.Pattern, base_path: str | None = None
+    ) -> list[str]:
         """Search a single file for pattern matches."""
         try:
             with open(file_path, "r", encoding="utf-8") as f:

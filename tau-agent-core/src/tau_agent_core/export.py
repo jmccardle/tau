@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal
 
 
@@ -51,9 +51,7 @@ class ExportConfig:
     def __post_init__(self) -> None:
         """Validate the export configuration after initialization."""
         if self.format not in ("markdown", "html"):
-            raise ValueError(
-                f"format must be 'markdown' or 'html', got: {self.format!r}"
-            )
+            raise ValueError(f"format must be 'markdown' or 'html', got: {self.format!r}")
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a dictionary.
@@ -112,9 +110,7 @@ def _extract_text(content: list[dict]) -> str:
     Returns:
         All text blocks joined with a space.
     """
-    return " ".join(
-        c.get("text", "") for c in content if c.get("type") == "text"
-    )
+    return " ".join(c.get("text", "") for c in content if c.get("type") == "text")
 
 
 def _format_timestamp(timestamp: int | None) -> str:
@@ -147,9 +143,7 @@ class MarkdownExporter:
     user, assistant, and (optionally) tool messages.
     """
 
-    def export(
-        self, messages: list[dict], config: ExportConfig
-    ) -> str:
+    def export(self, messages: list[dict], config: ExportConfig) -> str:
         """Export a session's messages to Markdown.
 
         Args:
@@ -168,9 +162,7 @@ class MarkdownExporter:
             lines.pop()
         return "\n".join(lines)
 
-    def _export_message(
-        self, msg: dict, config: ExportConfig
-    ) -> str:
+    def _export_message(self, msg: dict, config: ExportConfig) -> str:
         """Export a single message to Markdown.
 
         Args:
@@ -210,16 +202,12 @@ class MarkdownExporter:
                 elif block_type == "toolCall" and config.include_tool_calls:
                     name = block.get("name", "")
                     arguments = block.get("arguments", {})
-                    assistant_parts.append(
-                        f"\n```tool\n{name}: {json.dumps(arguments)}\n```\n"
-                    )
+                    assistant_parts.append(f"\n```tool\n{name}: {json.dumps(arguments)}\n```\n")
             result = "".join(assistant_parts).strip()
             header = "### Assistant"
             if config.include_timestamps and timestamp:
                 header += f" ({_format_timestamp(timestamp)})"
-            return "\n".join(
-                list(parts) + [header, "", result] if parts else [header, "", result]
-            )
+            return "\n".join(list(parts) + [header, "", result] if parts else [header, "", result])
 
         elif role == "toolResult":
             if not config.include_tool_calls:
@@ -255,9 +243,7 @@ class HTMLExporter:
     user, assistant, and (optionally) tool messages.
     """
 
-    def export(
-        self, messages: list[dict], config: ExportConfig
-    ) -> str:
+    def export(self, messages: list[dict], config: ExportConfig) -> str:
         """Export a session's messages to HTML.
 
         Args:
@@ -283,9 +269,7 @@ class HTMLExporter:
         html.extend(["</body>", "</html>"])
         return "\n".join(html)
 
-    def _export_message(
-        self, msg: dict, config: ExportConfig
-    ) -> str:
+    def _export_message(self, msg: dict, config: ExportConfig) -> str:
         """Export a single message to HTML.
 
         Args:
@@ -312,14 +296,11 @@ class HTMLExporter:
         content_html = self._extract_html_content(content, config, role)
         timestamp_html = ""
         if config.include_timestamps and timestamp:
-            timestamp_html = (
-                f'<div class="timestamp">'
-                f"{_format_timestamp(timestamp)}</div>"
-            )
+            timestamp_html = f'<div class="timestamp">{_format_timestamp(timestamp)}</div>'
 
         return (
             f'<div class="{role_class}">'
-            f'<strong>{role}</strong>\n'
+            f"<strong>{role}</strong>\n"
             f"{timestamp_html}\n"
             f"{content_html}\n"
             f"</div>"
@@ -347,9 +328,7 @@ class HTMLExporter:
             if block_type == "text":
                 text = block.get("text", "")
                 if text:
-                    parts.append(
-                        f"<p>{_html_escape(text)}</p>"
-                    )
+                    parts.append(f"<p>{_html_escape(text)}</p>")
             elif block_type == "thinking" and config.include_thinking:
                 text = block.get("text", "")
                 parts.append(
@@ -418,7 +397,7 @@ def export_session(
     if config is None:
         config = ExportConfig(format="markdown")
 
-    exporters: dict[str, Any] = {
+    exporters: dict[str, MarkdownExporter | HTMLExporter] = {
         "markdown": MarkdownExporter(),
         "html": HTMLExporter(),
     }

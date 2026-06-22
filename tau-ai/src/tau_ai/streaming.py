@@ -27,18 +27,11 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Literal
+from dataclasses import dataclass
+from typing import Any, AsyncIterable, Literal
 
 from tau_ai.json_parse import parse_streaming_json
 from tau_ai.types import AssistantMessage, TextContent, ThinkingContent, ToolCall, Usage
-
-# Forward reference for type hints
-try:
-    from types import UnionType
-    _HAS_UNION_TYPE = True
-except ImportError:
-    _HAS_UNION_TYPE = False
 
 
 @dataclass
@@ -55,6 +48,7 @@ class TextDeltaEvent:
         delta: The text chunk from this event.
         partial: The partially accumulated AssistantMessage.
     """
+
     delta: str
     partial: AssistantMessage
     type: Literal["text_delta"] = "text_delta"
@@ -77,6 +71,7 @@ class ThinkingDeltaEvent:
         delta: The reasoning chunk from this event.
         partial: The partially accumulated AssistantMessage.
     """
+
     delta: str
     partial: AssistantMessage
     type: Literal["thinking_delta"] = "thinking_delta"
@@ -96,6 +91,7 @@ class ToolCallDeltaEvent:
         delta: The OpenAI-style tool call delta dict.
         partial: The partially accumulated AssistantMessage.
     """
+
     delta: dict[str, Any]
     partial: AssistantMessage
     type: Literal["toolcall_delta"] = "toolcall_delta"
@@ -114,6 +110,7 @@ class DoneEvent:
         final: The fully accumulated AssistantMessage.
         usage: Token usage information for the response.
     """
+
     final: AssistantMessage
     usage: Usage
     type: Literal["done"] = "done"
@@ -133,6 +130,7 @@ class ErrorEvent:
         message: Description of the error.
         is_error: Always True.
     """
+
     message: str
     is_error: Literal[True] = True
     type: Literal["error"] = "error"
@@ -172,14 +170,14 @@ class AssistantMessageEventStream:
 
     def __init__(
         self,
-        provider_stream: AsyncIterator[Any],
+        provider_stream: AsyncIterable[Any],
         model: Any,
         context: dict[str, Any] | None = None,
     ) -> None:
         """Initialize the event stream.
 
         Args:
-            provider_stream: Async iterator yielding raw provider dicts.
+            provider_stream: Async-iterable yielding raw provider dicts.
             model: The Model configuration.
             context: Context dict with messages, tools, etc.
         """
@@ -238,26 +236,30 @@ class AssistantMessageEventStream:
         """
         try:
             async for chunk in self._provider_stream:
-                processed = await self._process_chunk(chunk)
+                await self._process_chunk(chunk)
                 # If the provider yielded its own DoneEvent or ErrorEvent,
                 # we should not emit our own wrapper. Otherwise keep going.
                 if self._done:
                     break
             # Only emit our own DoneEvent if the provider didn't.
             if not self._done:
-                self._final = self._partial
-                await self._event_queue.put(DoneEvent(
-                    type="done",
-                    final=self._final,
-                    usage=self._usage,
-                ))
+                self._final = self._partial or self._make_empty_partial()
+                await self._event_queue.put(
+                    DoneEvent(
+                        type="done",
+                        final=self._final,
+                        usage=self._usage,
+                    )
+                )
                 self._done = True
         except Exception as e:
-            await self._event_queue.put(ErrorEvent(
-                type="error",
-                message=str(e),
-                is_error=True,
-            ))
+            await self._event_queue.put(
+                ErrorEvent(
+                    type="error",
+                    message=str(e),
+                    is_error=True,
+                )
+            )
             self._done = True
 
     async def _process_chunk(self, chunk: Any) -> bool:
@@ -279,7 +281,11 @@ class AssistantMessageEventStream:
         """
         # Check if chunk is already a StreamEvent dataclass
         if hasattr(chunk, "type") and chunk.type in (
-            "text_delta", "thinking_delta", "toolcall_delta", "done", "error",
+            "text_delta",
+            "thinking_delta",
+            "toolcall_delta",
+            "done",
+            "error",
         ):
             await self._event_queue.put(chunk)
             # Update state from forwarded events
@@ -302,11 +308,13 @@ class AssistantMessageEventStream:
 
         if "content" in delta and delta["content"]:
             partial = self._partial or self._make_empty_partial()
-            await self._event_queue.put(TextDeltaEvent(
-                type="text_delta",
-                delta=delta["content"],
-                partial=partial,
-            ))
+            await self._event_queue.put(
+                TextDeltaEvent(
+                    type="text_delta",
+                    delta=delta["content"],
+                    partial=partial,
+                )
+            )
             if self._partial is None:
                 self._partial = partial
             # Accumulate text content
@@ -321,11 +329,13 @@ class AssistantMessageEventStream:
                 break
         if reasoning:
             partial = self._partial or self._make_empty_partial()
-            await self._event_queue.put(ThinkingDeltaEvent(
-                type="thinking_delta",
-                delta=reasoning,
-                partial=partial,
-            ))
+            await self._event_queue.put(
+                ThinkingDeltaEvent(
+                    type="thinking_delta",
+                    delta=reasoning,
+                    partial=partial,
+                )
+            )
             if self._partial is None:
                 self._partial = partial
             self._partial.content.append(ThinkingContent(thinking=reasoning))
@@ -383,11 +393,13 @@ class AssistantMessageEventStream:
             self._tool_args_by_index[index] += tc_args
             tc_block.arguments = parse_streaming_json(self._tool_args_by_index[index])
 
-        await self._event_queue.put(ToolCallDeltaEvent(
-            type="toolcall_delta",
-            delta=delta,
-            partial=self._partial,
-        ))
+        await self._event_queue.put(
+            ToolCallDeltaEvent(
+                type="toolcall_delta",
+                delta=delta,
+                partial=self._partial,
+            )
+        )
 
     async def result(self) -> AssistantMessage:
         """Wait for the stream to complete and return the final message.
@@ -405,6 +417,8 @@ class AssistantMessageEventStream:
             await self._wait_for_done()
         if self._error:
             raise Exception(self._error)
+        if self._final is None:
+            raise RuntimeError("Stream completed without producing a final AssistantMessage")
         return self._final
 
     async def _wait_for_done(self) -> None:
@@ -429,7 +443,6 @@ class AssistantMessageEventStream:
             # Any other event type is stored in the queue for iteration;
             # keep waiting for done/error.
 
-
     def abort(self) -> None:
         """Abort the stream by propagating to the underlying provider.
 
@@ -441,4 +454,3 @@ class AssistantMessageEventStream:
         # Cancel collector task if running
         if self._collector_task and not self._collector_task.done():
             self._collector_task.cancel()
-

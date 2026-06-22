@@ -33,6 +33,7 @@ from tau_ai.tools import validate_tool_arguments
 from tau_ai.types import (
     AssistantMessage,
     TextContent,
+    ThinkingContent,
     ToolCall,
     ToolResultMessage,
     UserMessage,
@@ -41,7 +42,6 @@ from tau_ai.types import (
 
 from tau_agent_core.agent_loop_types import (
     AgentLoopConfig,
-    FinalizedToolCall,
     PreparedToolCall,
 )
 from tau_agent_core.events import AgentEvent
@@ -96,7 +96,7 @@ class AgentLoop:
         self._emit = emit or (lambda e: asyncio.create_task(self._noop_emit(e)))
         self._turn_index = 0
         self._tools: dict[str, AgentTool] = {}
-        for t in (tools or []):
+        for t in tools or []:
             self._tools[t.name] = t
         self._model = model
         self._abort_signal: AbortSignal | None = abort_signal
@@ -150,13 +150,10 @@ class AgentLoop:
         messages = list(context)
         messages.extend(prompts)
 
-        await self._emit(
-            AgentEvent(type="agent_start", timestamp=int(time.time() * 1000))
-        )
+        await self._emit(AgentEvent(type="agent_start", timestamp=int(time.time() * 1000)))
 
         turn_index = 0
         final_messages: list[Any] = []
-        terminated = False
 
         while turn_index < self.config.max_turns:
             if self._abort_signal and self._abort_signal.is_aborted():
@@ -191,8 +188,7 @@ class AgentLoop:
 
             # Emit message_end for the assistant's text/tool call response
             msg_content = [
-                c.model_dump() if hasattr(c, "model_dump") else c
-                for c in assistant.content
+                c.model_dump() if hasattr(c, "model_dump") else c for c in assistant.content
             ]
             await self._emit(
                 AgentEvent(
@@ -234,7 +230,6 @@ class AgentLoop:
             )
 
             if batch.terminate:
-                terminated = True
                 break
 
             turn_index += 1
@@ -244,8 +239,7 @@ class AgentLoop:
                 type="agent_end",
                 timestamp=int(time.time() * 1000),
                 messages=[
-                    m.model_dump() if hasattr(m, "model_dump") else m
-                    for m in final_messages
+                    m.model_dump() if hasattr(m, "model_dump") else m for m in final_messages
                 ],
             )
         )
@@ -271,11 +265,8 @@ class AgentLoop:
         messages = list(context)
         turn_index = self._turn_index
         final_messages: list[Any] = []
-        terminated = False
 
-        await self._emit(
-            AgentEvent(type="agent_start", timestamp=int(time.time() * 1000))
-        )
+        await self._emit(AgentEvent(type="agent_start", timestamp=int(time.time() * 1000)))
 
         while turn_index < self.config.max_turns:
             if self._abort_signal and self._abort_signal.is_aborted():
@@ -345,7 +336,6 @@ class AgentLoop:
             )
 
             if batch.terminate:
-                terminated = True
                 break
 
             turn_index += 1
@@ -355,8 +345,7 @@ class AgentLoop:
                 type="agent_end",
                 timestamp=int(time.time() * 1000),
                 messages=[
-                    m.model_dump() if hasattr(m, "model_dump") else m
-                    for m in final_messages
+                    m.model_dump() if hasattr(m, "model_dump") else m for m in final_messages
                 ],
             )
         )
@@ -367,9 +356,7 @@ class AgentLoop:
     # Internal methods
     # ------------------------------------------------------------------
 
-    async def _stream_response(
-        self, context: list[Any]
-    ) -> AssistantMessage:
+    async def _stream_response(self, context: list[Any]) -> AssistantMessage:
         """Stream assistant response from LLM.
 
         1. Convert context to LLM format
@@ -390,8 +377,10 @@ class AgentLoop:
         system_prompt = self.config.system_prompt
         if system_prompt:
             # Check if context already starts with a system message
-            _first_role = messages[0].get("role", "") if isinstance(messages[0], dict) else (
-                getattr(messages[0], "role", "")
+            _first_role = (
+                messages[0].get("role", "")
+                if isinstance(messages[0], dict)
+                else (getattr(messages[0], "role", ""))
             )
             if _first_role != "system":
                 messages.insert(0, {"role": "system", "content": system_prompt})
@@ -459,9 +448,7 @@ class AgentLoop:
                         timestamp=int(time.time() * 1000),
                         message={
                             "role": "assistant",
-                            "content": [
-                                {"type": "thinking", "thinking": partial_reasoning}
-                            ],
+                            "content": [{"type": "thinking", "thinking": partial_reasoning}],
                         },
                     )
                 )
@@ -471,10 +458,9 @@ class AgentLoop:
                 # raw per-chunk delta (which is only a fragment).
                 partial = event.partial
                 if partial is not None:
-                    partial_content_blocks = [
-                        c.model_dump() if hasattr(c, "model_dump") else c
-                        for c in partial.content
-                    ]
+                    # partial.content holds pydantic blocks (TextContent /
+                    # ThinkingContent / ToolCall), each with model_dump().
+                    partial_content_blocks = [c.model_dump() for c in partial.content]
 
                 await self._emit(
                     AgentEvent(
@@ -533,7 +519,7 @@ class AgentLoop:
                 raise RuntimeError(event.message)
 
         # Stream completed without DoneEvent
-        content_blocks = (
+        content_blocks: list[TextContent | ThinkingContent | ToolCall] = (
             [TextContent(text=partial_text)] if partial_text else []
         )
         model_id = model if isinstance(model, str) else "unknown"
@@ -696,9 +682,7 @@ class AgentLoop:
         # Execute all in parallel
         async def _run_tool(pc):
             if isinstance(pc, (BlockedCall, ErrorCall)):
-                return AgentToolResult.from_error(
-                    pc.call.name, pc.error, pc.call.id
-                )
+                return AgentToolResult.from_error(pc.call.name, pc.error, pc.call.id)
             # pc is a PreparedToolCall
             result = await self._execute_tool(pc)
             result = await self._apply_after_hooks(result)
@@ -710,7 +694,9 @@ class AgentLoop:
         all_results: list[AgentToolResult] = []
         for i, res in enumerate(results):
             pc = prepared_calls[i]
-            if isinstance(res, Exception):
+            # gather(return_exceptions=True) yields BaseException (not just
+            # Exception) for a failed/cancelled task — narrow on the broader type.
+            if isinstance(res, BaseException):
                 # Task raised an exception
                 error_result = AgentToolResult(
                     tool_name=pc.name if isinstance(pc, PreparedToolCall) else pc.call.name,
@@ -768,14 +754,19 @@ class AgentLoop:
                 if isinstance(r.content, list)
                 else [{"type": "text", "text": str(r.content)}]
             )
+            # content_list holds raw block dicts; model_validate lets pydantic
+            # coerce them into the TextContent | ImageContent union the field
+            # declares (a plain constructor call can't be typed against dicts).
             result_messages.append(
-                ToolResultMessage(
-                    role="toolResult",
-                    tool_call_id=r.tool_call_id or "",
-                    tool_name=r.tool_name,
-                    content=content_list,
-                    is_error=r.is_error,
-                    timestamp=int(time.time() * 1000),
+                ToolResultMessage.model_validate(
+                    {
+                        "role": "toolResult",
+                        "tool_call_id": r.tool_call_id or "",
+                        "tool_name": r.tool_name,
+                        "content": content_list,
+                        "is_error": r.is_error,
+                        "timestamp": int(time.time() * 1000),
+                    }
                 )
             )
         return ToolBatchResult(
@@ -877,9 +868,7 @@ class AgentLoop:
                 )
             else:
                 content_list = (
-                    result
-                    if isinstance(result, list)
-                    else [{"type": "text", "text": str(result)}]
+                    result if isinstance(result, list) else [{"type": "text", "text": str(result)}]
                 )
                 return AgentToolResult(
                     tool_name=call.name,

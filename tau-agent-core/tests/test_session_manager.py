@@ -743,7 +743,7 @@ class TestSessionListing:
         mgr.new_session(model_id="model-a")
         mgr.new_session(model_id="model-b")
 
-        sessions = mgr.list()
+        sessions = mgr.list_sessions()
         assert len(sessions) == 2
         for s in sessions:
             assert isinstance(s, SessionInfo)
@@ -751,21 +751,21 @@ class TestSessionListing:
     def test_list_has_correct_count(self, tmp_path):
         """list() returns the correct number of sessions."""
         mgr = SessionManager(sessions_dir=str(tmp_path))
-        assert len(mgr.list()) == 0
+        assert len(mgr.list_sessions()) == 0
 
         mgr.new_session()
-        assert len(mgr.list()) == 1
+        assert len(mgr.list_sessions()) == 1
 
         mgr.new_session()
         mgr.new_session()
-        assert len(mgr.list()) == 3
+        assert len(mgr.list_sessions()) == 3
 
     def test_list_session_info_fields(self, tmp_path):
         """SessionInfo has required fields set correctly."""
         mgr = SessionManager(sessions_dir=str(tmp_path))
         mgr.new_session(model_id="gpt-4o")
 
-        sessions = mgr.list()
+        sessions = mgr.list_sessions()
         session = sessions[0]
         assert session.session_path is not None
         assert session.session_path.endswith(".jsonl")
@@ -774,7 +774,7 @@ class TestSessionListing:
     def test_list_nonexistent_directory(self):
         """list() returns empty list when sessions directory does not exist."""
         mgr = SessionManager(sessions_dir="/nonexistent/path/that/does/not/exist")
-        sessions = mgr.list()
+        sessions = mgr.list_sessions()
         assert sessions == []
 
     def test_list_all_returns_all_sessions(self, tmp_path):
@@ -802,7 +802,7 @@ class TestSessionListing:
         mgr = SessionManager(sessions_dir=sessions_dir)
         mgr.new_session()
 
-        sessions = mgr.list()
+        sessions = mgr.list_sessions()
         assert len(sessions) == 1
 
     def test_list_order_newest_first(self, tmp_path):
@@ -812,7 +812,7 @@ class TestSessionListing:
         time.sleep(0.01)
         path2 = mgr.new_session(model_id="second")
 
-        sessions = mgr.list()
+        sessions = mgr.list_sessions()
         assert len(sessions) == 2
         # Sessions should be sorted by creation timestamp (newest first)
         assert sessions[0].created_at >= sessions[1].created_at

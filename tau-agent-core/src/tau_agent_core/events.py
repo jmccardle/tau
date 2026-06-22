@@ -19,7 +19,7 @@ Constraint: Events are fire-and-forget. Handlers are called synchronously.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Callable, Coroutine, Literal
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
 

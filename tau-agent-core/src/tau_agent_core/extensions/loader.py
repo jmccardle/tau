@@ -104,13 +104,15 @@ class ExtensionLoader:
 
             module_name = f"tau_ext_{path.stem}_{id(path)}"
             spec = importlib.util.spec_from_file_location(module_name, module_path)
+            if spec is None or spec.loader is None:
+                raise ImportError(f"Cannot create module spec for extension {module_path}")
             module = importlib.util.module_from_spec(spec)
             sys.modules[module_name] = module
             spec.loader.exec_module(module)
 
             # Call register function
-            register_fn = getattr(module, "register", None)
-            if register_fn:
+            register_fn: Callable | None = getattr(module, "register", None)
+            if register_fn is not None:
                 return register_fn
             return None
 

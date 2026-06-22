@@ -14,57 +14,62 @@ Usage:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator, Protocol
+
+if TYPE_CHECKING:
+    from tau_ai.tools import ToolDefinition
+    from tau_ai.types import AssistantMessage, Model
+
+
+class StreamEventStream(Protocol):
+    """Structural return type for ``Provider.stream_chat``.
+
+    A provider stream is async-iterable over typed streaming events
+    (TextDeltaEvent / ToolCallDeltaEvent / DoneEvent / ErrorEvent) and
+    exposes the terminal ``AssistantMessage`` via ``result()``. Both
+    ``AssistantMessageEventStream`` implementations (streaming.py and the
+    OpenAI provider) satisfy this Protocol structurally.
+    """
+
+    def __aiter__(self) -> AsyncIterator[Any]: ...
+
+    async def result(self) -> AssistantMessage: ...
 
 
 class Provider(ABC):
     """Abstract base class for LLM chat providers.
 
     All providers (OpenAI, Anthropic, etc.) must implement this interface.
-    The primary method is ``stream_chat``, which returns an async iterator
-    of streaming events.
+    The primary method is ``stream_chat``, which returns an async-iterable
+    stream of typed streaming events.
 
     Reference: SUBPHASE-0.0.md, Phase 1 Subphase 0 — Provider interface.
 
-    Attributes:
-        model: The model identifier (e.g. "gpt-4").
-        messages: List of message dicts (user/assistant/toolResult).
-        tools: Optional list of tool definitions.
-        options: Optional provider-specific options dict.
-
     Methods:
         stream_chat(model, messages, tools, options):
-            Async generator yielding StreamEvent dicts.
-
-    Example:
-        >>> class MyProvider(Provider):
-        ...     async def stream_chat(self, model, messages, tools=None, options=None):
-        ...         yield {"type": "text_delta", "delta": "Hello"}
-        ...         yield {"type": "done", "final": {...}, "usage": {...}}
+            Returns a StreamEventStream yielding typed StreamEvents.
     """
 
     @abstractmethod
     async def stream_chat(
         self,
-        model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
+        model: Model,
+        messages: list[Any],
+        tools: list[ToolDefinition] | None = None,
         options: dict[str, Any] | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> StreamEventStream:
         """Stream chat completions from the LLM.
 
         Args:
-            model: The model identifier to use (e.g. "gpt-4", "claude-3-opus").
-            messages: List of message dicts with role, content, etc.
-            tools: Optional list of tool definitions in JSON Schema format.
+            model: The Model configuration to use for the request.
+            messages: List of τ message objects (user/assistant/toolResult).
+            tools: Optional list of τ ToolDefinitions.
             options: Optional provider-specific options (temperature, max_tokens, etc.).
 
-        Yields:
-            dict: Streaming events with one of these types:
-                - {"type": "text_delta", "delta": str, "partial": AssistantMessage}
-                - {"type": "toolcall_delta", "delta": dict, "partial": AssistantMessage}
-                - {"type": "done", "final": AssistantMessage, "usage": Usage}
-                - {"type": "error", "message": str, "is_error": True}
+        Returns:
+            A StreamEventStream yielding TextDeltaEvent, ToolCallDeltaEvent,
+            DoneEvent, and ErrorEvent instances, with the terminal
+            AssistantMessage available via ``result()``.
 
         Raises:
             NotImplementedError: If the provider hasn't implemented this method.

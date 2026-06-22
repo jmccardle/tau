@@ -78,9 +78,7 @@ def get_supported_thinking_levels(model: Model) -> list[ModelThinkingLevel]:
     return supported
 
 
-def clamp_thinking_level(
-    model: Model, level: ModelThinkingLevel
-) -> ModelThinkingLevel:
+def clamp_thinking_level(model: Model, level: ModelThinkingLevel) -> ModelThinkingLevel:
     """Clamp ``level`` to the nearest level ``model`` actually supports.
 
     If the exact level is supported it is returned unchanged. Otherwise search

@@ -29,6 +29,7 @@ from textual.widgets import Collapsible, Markdown
 # Formatting helpers (shared by the live and reload paths)
 # ──────────────────────────────────────────────────────────────────────────
 
+
 def format_tool_summary(name: str, arguments: object) -> str:
     """A one-line call signature, ``name(key=val, …)``, truncated for the
     collapsed title row. Values are shortened individually and the whole
@@ -65,6 +66,7 @@ def format_duration(seconds: float) -> str:
 # ──────────────────────────────────────────────────────────────────────────
 # Widgets
 # ──────────────────────────────────────────────────────────────────────────
+
 
 class ReasoningRegion(Collapsible):
     """A collapsible reasoning/thinking block that streams live.

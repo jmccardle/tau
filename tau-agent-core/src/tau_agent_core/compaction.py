@@ -8,11 +8,10 @@ Reference: docs/IMPLEMENTATION-PLAN.md lines 360-420
 
 from __future__ import annotations
 
-import asyncio
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Sequence
+from typing import Any, Awaitable, Callable
 
 from tau_ai.types import Model
 from tau_agent_core.session import SessionEntry
@@ -92,7 +91,8 @@ def write_compaction_entry(
         "tokens_saved": tokens_saved,
         "compacted_entries": compacted_entry_ids,
     }
-    return session_manager.append_entry(entry)
+    entry_id: str = session_manager.append_entry(entry)
+    return entry_id
 
 
 async def compact_session(
@@ -138,8 +138,11 @@ async def compact_session(
     to_compact = entries[:-1]
     compacted_ids = [e.id for e in to_compact]
 
-    # Build the compaction prompt
-    prompt = build_compaction_prompt(to_compact, config)
+    # Build the compaction prompt. NOTE: `prompt` is intentionally unused for now —
+    # the "LLM call" below is still a placeholder that fabricates `summary` instead
+    # of sending this prompt to a model. Wiring real LLM-backed compaction is a
+    # tracked ROADMAP item, not a lint fix.
+    prompt = build_compaction_prompt(to_compact, config)  # noqa: F841
 
     # Emit progress callback if provided
     if config.compact_callback:
@@ -199,9 +202,7 @@ def estimate_tokens(entries: list[SessionEntry]) -> int:
         Estimated token count
     """
     # Simple character-based estimate: ~4 chars per token
-    total_chars = sum(
-        len(e.model_dump_json()) for e in entries
-    )
+    total_chars = sum(len(e.model_dump_json()) for e in entries)
     return total_chars // 4
 
 
@@ -356,9 +357,7 @@ def build_compaction_conversation_text(entries: list[dict]) -> str:
                         if block.get("type") == "text":
                             texts.append(block.get("text", ""))
                         elif block.get("type") == "toolCall":
-                            texts.append(
-                                f"[Tool call: {block.get('name', 'unknown')}]"
-                            )
+                            texts.append(f"[Tool call: {block.get('name', 'unknown')}]")
                 text = " ".join(texts)
                 if text:
                     parts.append(f"{role}: {text}")

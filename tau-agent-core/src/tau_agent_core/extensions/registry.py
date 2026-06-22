@@ -68,6 +68,7 @@ class ExtensionRegistry:
         name = definition["name"]
         if name in self._tools:
             import logging
+
             logging.warning(f"Tool '{name}' already registered, overwriting")
         self._tools[name] = definition
 
@@ -75,12 +76,14 @@ class ExtensionRegistry:
         """Get all registered tools (built-in + extension)."""
         result = []
         for name, defn in self._tools.items():
-            result.append(ToolInfo(
-                name=name,
-                description=defn.get("description", ""),
-                parameters=defn.get("parameters", {}),
-                source=defn.get("_source", "built-in"),
-            ))
+            result.append(
+                ToolInfo(
+                    name=name,
+                    description=defn.get("description", ""),
+                    parameters=defn.get("parameters", {}),
+                    source=defn.get("_source", "built-in"),
+                )
+            )
         return result
 
     def set_active_tools(self, names: list[str]) -> None:

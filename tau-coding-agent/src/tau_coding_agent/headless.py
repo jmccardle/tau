@@ -158,9 +158,7 @@ def _resolve_selector(selector: str) -> tuple[Path, Chat]:
         )
     if len(matches) > 1:
         names = ", ".join(sorted(c.stem for c in matches))
-        raise CLIError(
-            f"{selector!r} matches multiple sessions ({names}); be more specific"
-        )
+        raise CLIError(f"{selector!r} matches multiple sessions ({names}); be more specific")
     return matches[0], Chat.load(matches[0])
 
 
@@ -195,7 +193,7 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
     if not prompt_text:
         raise CLIError(
             "--print requires a message (positional text or @file), e.g. "
-            "tau -p \"summarize @README.md\""
+            'tau -p "summarize @README.md"'
         )
 
     # Resolve a session to continue/fork (None for a fresh run).
@@ -212,9 +210,7 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
 
     # A resumed run keeps the session's model unless --model overrides it.
     fallback_model = prior_chat.model if prior_chat is not None else None
-    name, model_config = resolve_model_config(
-        config, args, fallback_model=fallback_model
-    )
+    name, model_config = resolve_model_config(config, args, fallback_model=fallback_model)
 
     if prior_chat is not None:
         # Resume/fork: the stored transcript (system + every prior turn) is the
@@ -242,6 +238,7 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
     backend = create_backend(model_config)
 
     if args.mode == "json":
+
         def on_event(event: dict) -> None:
             sys.stdout.write(json.dumps(event) + "\n")
             sys.stdout.flush()
@@ -252,11 +249,10 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
         text, usage, new_messages, _tcs = await backend.stream_chat(
             messages, noop, on_event=on_event
         )
-        sys.stdout.write(
-            json.dumps({"kind": "done", "text": text, "usage": usage}) + "\n"
-        )
+        sys.stdout.write(json.dumps({"kind": "done", "text": text, "usage": usage}) + "\n")
         sys.stdout.flush()
     else:  # text
+
         def emit(delta: str) -> None:
             sys.stdout.write(delta)
             sys.stdout.flush()

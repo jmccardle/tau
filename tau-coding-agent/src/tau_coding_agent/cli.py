@@ -58,10 +58,10 @@ class CLIArgs:
     # session. continue/resume/session/fork are mutually exclusive (argparse
     # group). `name` sets the session title and may combine with any of them.
     continue_session: bool = False  # --continue/-c → most-recent session
-    resume: bool = False            # --resume/-r → interactive picker (TUI-only)
-    session: str | None = None      # --session REF → specific session (path|stem)
-    fork: str | None = None         # --fork REF → fork a session into a new one
-    name: str | None = None         # --name/-n → session display title
+    resume: bool = False  # --resume/-r → interactive picker (TUI-only)
+    session: str | None = None  # --session REF → specific session (path|stem)
+    fork: str | None = None  # --fork REF → fork a session into a new one
+    name: str | None = None  # --name/-n → session display title
     verbose: bool = False
 
     @property
@@ -85,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  tau --model gpt-4o          # TUI with a specific model\n"
             '  tau -p "explain @main.py"   # headless: print the answer and exit\n'
             '  tau -p --mode json "hi"     # headless, JSONL event stream\n'
-            '  tau --thinking high         # TUI, request high reasoning effort\n'
+            "  tau --thinking high         # TUI, request high reasoning effort\n"
             '  tau -p -c "and then?"       # continue the most recent session\n'
             '  tau -p --session 17188 "go" # resume a session by filename stem\n'
             "\n"
@@ -99,63 +99,92 @@ def build_parser() -> argparse.ArgumentParser:
         help="prompt text and/or @file references (used with --print)",
     )
     parser.add_argument(
-        "--print", "-p", dest="print_mode", action="store_true",
+        "--print",
+        "-p",
+        dest="print_mode",
+        action="store_true",
         help="run one turn headlessly, print the result, and exit",
     )
     parser.add_argument(
-        "--mode", choices=["text", "json"], default="text",
+        "--mode",
+        choices=["text", "json"],
+        default="text",
         help="headless output format: text transcript (default) or JSONL events",
     )
     parser.add_argument(
-        "--model", "-m", default=None,
+        "--model",
+        "-m",
+        default=None,
         help="model name from ~/.tau/config.json, or provider/id shorthand",
     )
     parser.add_argument(
-        "--provider", default=None,
+        "--provider",
+        default=None,
         help="provider/backend override (long-only, matching pi)",
     )
     parser.add_argument(
-        "--tools", "-t", default=None,
+        "--tools",
+        "-t",
+        default=None,
         help="comma-separated tool allowlist (e.g. read,bash)",
     )
     parser.add_argument(
-        "--no-tools", "-nt", dest="no_tools", action="store_true",
+        "--no-tools",
+        "-nt",
+        dest="no_tools",
+        action="store_true",
         help="disable all tools (read-only agent)",
     )
     parser.add_argument(
-        "--system-prompt", dest="system_prompt", default=None,
+        "--system-prompt",
+        dest="system_prompt",
+        default=None,
         help="override the system prompt for this run",
     )
     # Session continuation (headless --print). continue/resume/session/fork are
     # mutually exclusive; --name combines with any of them (or a fresh run).
     sess = parser.add_mutually_exclusive_group()
     sess.add_argument(
-        "--continue", "-c", dest="continue_session", action="store_true",
+        "--continue",
+        "-c",
+        dest="continue_session",
+        action="store_true",
         help="continue the most recent session (use with --print)",
     )
     sess.add_argument(
-        "--resume", "-r", action="store_true",
+        "--resume",
+        "-r",
+        action="store_true",
         help="resume via interactive picker (TUI only; not headless)",
     )
     sess.add_argument(
-        "--session", default=None, metavar="REF",
+        "--session",
+        default=None,
+        metavar="REF",
         help="resume a specific session by path or filename stem",
     )
     sess.add_argument(
-        "--fork", default=None, metavar="REF",
+        "--fork",
+        default=None,
+        metavar="REF",
         help="fork a session (path or stem) into a new one and continue it",
     )
     parser.add_argument(
-        "--name", "-n", default=None,
+        "--name",
+        "-n",
+        default=None,
         help="set the session display title",
     )
     parser.add_argument(
-        "--thinking", default=None, choices=list(EXTENDED_THINKING_LEVELS),
+        "--thinking",
+        default=None,
+        choices=list(EXTENDED_THINKING_LEVELS),
         help="reasoning effort: off, minimal, low, medium, high, xhigh "
-             "(requires a reasoning-capable model)",
+        "(requires a reasoning-capable model)",
     )
     parser.add_argument(
-        "--verbose", action="store_true",
+        "--verbose",
+        action="store_true",
         help="verbose logging (long-only; pi-aligned, -v is --version)",
     )
     return parser
@@ -247,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.messages:
             raise CLIError(
                 "messages were given without --print; add -p to run headlessly "
-                "(e.g. tau -p \"...\"), or omit the message to start the TUI"
+                '(e.g. tau -p "..."), or omit the message to start the TUI'
             )
         if args.mode == "json":
             raise CLIError("--mode json only applies to headless --print runs")

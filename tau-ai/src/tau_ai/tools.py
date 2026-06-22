@@ -8,9 +8,9 @@ with the LLM and the agent loop respectively.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Coroutine, Literal
+from typing import Any, Callable, Literal
 
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel
 
 
 def _validate_json_schema(schema: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
@@ -27,7 +27,6 @@ def _validate_json_schema(schema: dict[str, Any], data: dict[str, Any]) -> dict[
         ValueError: If data doesn't match the schema.
     """
     try:
-        ta = TypeAdapter(object)
         # Use a simple approach: try to validate required fields
         required = schema.get("required", [])
         properties = schema.get("properties", {})
@@ -77,6 +76,7 @@ class ToolDefinition(BaseModel):
 
     Reference: SUBPHASE-0.0.md, "2. Tool Definitions" section.
     """
+
     name: str
     label: str
     description: str
@@ -92,6 +92,7 @@ class AgentToolResult(BaseModel):
 
     Reference: SUBPHASE-0.0.md, "2. Tool Definitions" section.
     """
+
     content: list[Any]
     details: dict[str, Any]
     terminate: bool = False
@@ -127,7 +128,13 @@ def validate_tool_arguments(tool: Any, tool_call: Any) -> dict[str, Any]:
     Reference: SUBPHASE-0.0.md, "2. Tool Definitions" section.
     """
     schema = getattr(tool, "parameters", {})
-    arguments = getattr(tool_call, "arguments", {}) if hasattr(tool_call, "arguments") else tool_call if isinstance(tool_call, dict) else {}
+    arguments = (
+        getattr(tool_call, "arguments", {})
+        if hasattr(tool_call, "arguments")
+        else tool_call
+        if isinstance(tool_call, dict)
+        else {}
+    )
 
     if isinstance(schema, dict):
         return _validate_json_schema(schema, arguments)

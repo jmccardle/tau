@@ -13,7 +13,11 @@ The ui property is a no-op in headless mode (RPC, SDK).
 
 from __future__ import annotations
 
-from typing import Any, Callable, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
+
+if TYPE_CHECKING:
+    from tau_agent_core.events import EventBus
+    from tau_agent_core.extensions.registry import ExtensionRegistry
 
 
 class ExtensionUI:
@@ -50,7 +54,8 @@ class ExtensionUI:
         In headless mode, returns True (auto-approve).
         """
         if self._mode == "tui" and self._tui_delegate:
-            return await self._tui_delegate.confirm(title, message)
+            confirmed: bool = await self._tui_delegate.confirm(title, message)
+            return confirmed
         return True  # headless: auto-approve
 
     async def select(self, title: str, items: list[str]) -> str | None:
@@ -60,7 +65,8 @@ class ExtensionUI:
         In headless mode, returns the first item (or None if empty).
         """
         if self._mode == "tui" and self._tui_delegate:
-            return await self._tui_delegate.select(title, items)
+            selected: str | None = await self._tui_delegate.select(title, items)
+            return selected
         return items[0] if items else None  # headless: pick first
 
     async def input(self, title: str, default: str = "") -> str:
@@ -70,7 +76,8 @@ class ExtensionUI:
         In headless mode, returns the default value.
         """
         if self._mode == "tui" and self._tui_delegate:
-            return await self._tui_delegate.input(title, default)
+            entered: str = await self._tui_delegate.input(title, default)
+            return entered
         return default  # headless: use default
 
     def notify(self, message: str, level: str = "info") -> None:
@@ -148,7 +155,7 @@ class ExtensionContext:
 
     def shutdown(self) -> None:
         """Shutdown the agent by calling session_manager.shutdown() if available."""
-        if hasattr(self._session_manager, "shutdown"):
+        if self._session_manager is not None and hasattr(self._session_manager, "shutdown"):
             self._session_manager.shutdown()
 
     def get_context_usage(self) -> dict:
@@ -186,8 +193,8 @@ class ExtensionAPI:
 
     def __init__(
         self,
-        registry: Any = None,
-        event_bus: Any = None,
+        registry: ExtensionRegistry | None = None,
+        event_bus: EventBus | None = None,
         context: ExtensionContext | None = None,
         session: Any = None,
     ) -> None:

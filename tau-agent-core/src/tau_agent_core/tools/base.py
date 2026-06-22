@@ -120,7 +120,9 @@ class AgentToolResult(BaseModel):
     terminate: bool = False
 
     @classmethod
-    def from_error(cls, tool_name: str, error_message: str, tool_call_id: str | None = None) -> "AgentToolResult":
+    def from_error(
+        cls, tool_name: str, error_message: str, tool_call_id: str | None = None
+    ) -> "AgentToolResult":
         """Create a failure result."""
         return cls(
             tool_name=tool_name,

@@ -19,7 +19,11 @@ import asyncio
 import json
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from tau_agent_core.agent_session import AgentSession
+    from tau_agent_core.events import AgentEvent
 
 
 @dataclass
@@ -33,6 +37,7 @@ class RPCRequest:
                 "get_commands", etc.).
         params: Method-specific parameters, or None.
     """
+
     jsonrpc: Literal["2.0"] = "2.0"
     id: int | None = None
     method: str = ""
@@ -45,6 +50,7 @@ class RPCRequest:
             JSON string suitable for LF-delimited framing.
         """
         import json
+
         return json.dumps(self.__dict__, separators=(",", ":"))
 
     @classmethod
@@ -58,6 +64,7 @@ class RPCRequest:
             An RPCRequest instance.
         """
         import json
+
         data = json.loads(line)
         return cls(**data)
 
@@ -76,6 +83,7 @@ class RPCResponse:
         result: The response result, or None on error.
         error: The error dict on failure, or None on success.
     """
+
     jsonrpc: Literal["2.0"] = "2.0"
     id: int | None = None
     result: dict[str, Any] | None = None
@@ -88,6 +96,7 @@ class RPCResponse:
             JSON string suitable for LF-delimited framing.
         """
         import json
+
         return json.dumps(self.__dict__, separators=(",", ":"))
 
     @classmethod
@@ -101,6 +110,7 @@ class RPCResponse:
             An RPCResponse instance.
         """
         import json
+
         data = json.loads(line)
         return cls(**data)
 
@@ -121,6 +131,7 @@ class RPCEvent:
         method: Always "event" for notifications.
         params: The event payload (AgentEvent serialized as dict).
     """
+
     jsonrpc: Literal["2.0"] = "2.0"
     method: Literal["event"] = "event"
     params: dict[str, Any] = field(default_factory=dict)
@@ -132,6 +143,7 @@ class RPCEvent:
             JSON string suitable for LF-delimited framing.
         """
         import json
+
         return json.dumps(self.__dict__, separators=(",", ":"))
 
     @classmethod
@@ -145,6 +157,7 @@ class RPCEvent:
             An RPCEvent instance.
         """
         import json
+
         data = json.loads(line)
         return cls(**data)
 
@@ -173,8 +186,6 @@ class RPCHandler:
         Args:
             session: The AgentSession to manage.
         """
-        from tau_agent_core.agent_session import AgentSession
-
         self._session = session  # type: ignore[assignment]
         self._request_id = 0
         self._pending_requests: dict[int, asyncio.Future] = {}
@@ -299,9 +310,7 @@ class RPCHandler:
             except Exception as e:
                 await self._send_error(msg_id, str(e))
         else:
-            await self._send_error(
-                msg_id, f"Unknown method: {method}"
-            )
+            await self._send_error(msg_id, f"Unknown method: {method}")
 
     async def _handle_send_prompt(self, params: dict) -> dict:
         """Handle a prompt request.
@@ -325,11 +334,13 @@ class RPCHandler:
             """Capture events and send them to output queue."""
             event_count[0] += 1
             event_data = self._serialize_event(event)
-            self._output_queue.put_nowait({
-                "jsonrpc": "2.0",
-                "method": "event",
-                "params": event_data,
-            })
+            self._output_queue.put_nowait(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "event",
+                    "params": event_data,
+                }
+            )
 
         # Subscribe to events before running prompt
         self._session.subscribe(capture_event)
@@ -431,11 +442,13 @@ class RPCHandler:
             id: The request ID to match.
             result: The response result dict.
         """
-        await self._output_queue.put({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": result,
-        })
+        await self._output_queue.put(
+            {
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": result,
+            }
+        )
 
     async def _send_error(self, id: int | None, message: str) -> None:
         """Send a JSON-RPC error response.
@@ -444,11 +457,13 @@ class RPCHandler:
             id: The request ID to match, or None for notifications.
             message: The error message.
         """
-        await self._output_queue.put({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": {"code": -32603, "message": message},
-        })
+        await self._output_queue.put(
+            {
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {"code": -32603, "message": message},
+            }
+        )
 
     def _serialize_event(self, event: "AgentEvent") -> dict:
         """Serialize an AgentEvent to a dict for RPC.
@@ -462,19 +477,14 @@ class RPCHandler:
         return {
             "type": event.type,
             "timestamp": event.timestamp,
-            "message": self._serialize_message(event.message)
-            if event.message else None,
+            "message": self._serialize_message(event.message) if event.message else None,
             "tool_call_id": event.tool_call_id,
             "tool_name": event.tool_name,
             "args": event.args,
             "result": event.result,
             "is_error": event.is_error,
-            "tool_results": [
-                self._serialize_message(m) for m in (event.tool_results or [])
-            ],
-            "messages": [
-                self._serialize_message(m) for m in (event.messages or [])
-            ],
+            "tool_results": [self._serialize_message(m) for m in (event.tool_results or [])],
+            "messages": [self._serialize_message(m) for m in (event.messages or [])],
         }
 
     def _serialize_message(self, message) -> dict | None:
@@ -489,7 +499,8 @@ class RPCHandler:
         if message is None:
             return None
         if hasattr(message, "model_dump"):
-            return message.model_dump()
+            dumped: dict[Any, Any] = message.model_dump()
+            return dumped
         if isinstance(message, dict):
             return message
         return dict(message)
