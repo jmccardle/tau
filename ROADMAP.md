@@ -2,225 +2,221 @@
 
 Living schedule of open work. Each item cites the evidence (file:line, doc, or
 test) it came from so it can be audited against the source of truth (pi) and the
-"Fail Early" rule. Phase-build work (the `docs/PHASE-*` plan) is **complete**;
-this file tracks the post-build bug/feature backlog.
+"Fail Early" rule.
 
-**State (2026-06-21):** branch `master`. Suite: **1403 passed / 0 failed**
-(`pytest` from repo root) after closing Tier 1, Tier 2, Tier 3 #4 + #5, and the
-Tier 4 cleanup (docs only — no code/test change). mypy: **57** errors (unchanged).
-
-Last shipped (commits `4e20240`, `9cb472d`, `83efb1a`, `29869fe`): thinking
-consolidation, real usage via `stream_options`, multi-turn
-`_assistant_content_to_openai` fix, reasoning round-trip (pi parity), the
-`prompt()`/`continue_conversation()` return-only-this-turn duplication fix, TUI
-reload renderer, global reasoning/tool toggles, pi-parity prompt threading, and
-the `reasoning_effort` send-path + `--thinking` flag (Tier 3 #4).
+**State (2026-06-22):** branch `master`. Suite **1403 passed / 0 failed**.
+Static checks: **ruff clean** (0 issues), **mypy 55** (down from 57; the Tier-5
+gate-blocker). The phase-build (`docs/PHASE-*`) and the post-build bug/quality
+backlog (former Tiers 1–4, summarized below) are **complete**. Forward work is
+Tiers 5–12, sequenced around the committed **`docs/SESSION-UX-REDESIGN.md`**
+sprint. Scope/complexity for Tiers 6–12 was established by a five-agent research
+pass (2026-06-22); each tier cites the pi parity targets it rests on.
 
 ---
 
-## Tier 1 — Known bugs
+## Shipped (compressed — former Tiers 1–4)
 
-### 1. Fake API-key default → 24 failing tests hit the live network — ✅ DONE (2026-06-20)
-**Was:** `openai.py:248` did
-`self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "sk-fake-key-for-testing")`,
-so a missing key was silently sent to the **real** OpenAI API and every one of
-24 tests raised `RuntimeError: HTTP 401: Incorrect API key provided: sk-fake-…`.
-This was finding **#5** in `docs/CODE-QUALITY-NOTES.md` and a `CLAUDE.md`
-Fail-Early violation.
+- **API key (Tier 1):** no fabricated `sk-fake-…` default; key threaded
+  end-to-end (`AgentLoopConfig.api_key` → provider), raises
+  `No API key for provider: …` when absent. `fake_llm` fixture patches the
+  network boundary so the full loop still runs in tests.
+- **Loop/prompt quality (Tier 2/3):** restored pi-parity prompt threading
+  (`runAgentLoop` concatenates `context + prompts`); removed the fragile,
+  multimodal-blind, crash-prone loop-level dedup (`_ends_with_user_text` helper).
+  Tool-call join/parse collapsed to two intentionally-divergent sites (WONTFIX).
+- **Thinking (Tier 3 #4):** full `reasoning_effort` send-path —
+  `Model.reasoning`/`thinking_level_map`, `tau_ai/models.py` (`clampThinkingLevel`),
+  `openai.py` emits `reasoning_effort` (clamped, gated on `Model.reasoning`);
+  `--thinking {off…xhigh}` + `--model x:high`. *Caveat:* on the local llama.cpp
+  rig `reasoning_effort` is a silent no-op (tests assert the wire payload; the
+  server ignores it — the real local toggle is `chat_template_kwargs.enable_thinking`).
+- **Headless session continuation (Tier 3 #5):** `--continue`/`-c`,
+  `--session REF`, `--fork REF`, `--name`/`-n` over the **`Chat` store**;
+  `--resume`/`-r` deferred (interactive-only). **Superseded by the session
+  sprint**, which moves all of this onto the new JSONL `Session` store.
+- **Docs/cleanup (Tier 4):** `COMMAND_LINE.md` corrected (11 fixes); border-title
+  message label kept; large-message render reviewed (no action).
 
-**Fixed (one root cause, several coordinated changes):**
-- **No fabricated key (`tau-ai/providers/openai.py`):** constructor no longer
-  defaults to a fake key (`api_key or os.environ.get("OPENAI_API_KEY")`, may be
-  None). `stream_chat` resolves `self.api_key or options["api_key"]` and **raises
-  `ValueError("No API key for provider: …")`** when none is found (mirrors pi
-  `openai-completions.ts:141`). Local servers pass the truthy `"not-needed"`
-  sentinel, which satisfies the check.
-- **Threaded the real key end-to-end** (it was previously dropped, so configuring
-  a real OpenAI key never worked — only local did, because base_url routed
-  locally): `AgentLoopConfig.api_key` → `_stream_response` adds it to
-  `stream_simple`'s options → `client.py` builds the provider with it →
-  `stream_chat` strips it from the request body. `AgentSession` accepts `api_key`;
-  `create_agent_session` stopped ignoring its `api_key` arg; `backends.py` passes
-  the configured key instead of stashing it in an unused field.
-- **Tests:** new `fake_llm` fixture in `tau-agent-core/tests/conftest.py` patches
-  the network boundary (`stream_simple`) with a canned reply so the **full agent
-  loop still runs** (real events, message assembly) without a network call;
-  applied via `@pytest.mark.usefixtures("fake_llm")` to the 7 affected classes.
-  New provider tests assert the raise, env-var read, options-key path, and
-  `not-needed` sentinel; new session tests assert the key is threaded into
-  `stream_simple` options (and that None injects no override). The streaming
-  provider tests that mock the transport now construct with `api_key="sk-test"`.
-
-**Result:** suite **1360 passed / 0 failed**; mypy baseline unchanged.
+**Durable caveat (not a task):** chats written before the thinking-consolidation
+fix keep hundreds of blocks/message on disk; they render fine via the reload
+normalizer but are not rewritten (Fail-Early: don't silently rewrite saved files).
+The session sprint abandons `~/.tau/chats` entirely (no migration), so this
+retires itself.
 
 ---
 
-## Tier 2 — Code quality
+## The path forward (Tiers 5–12)
 
-### 2. Duplicated "join → parse → ToolCall" logic — CLOSED / WONTFIX (`docs/CODE-QUALITY-NOTES.md` #7)
-Re-audited 2026-06-20: the tool-call fix already collapsed this from five sites
-to **two**, and the two are *intentionally divergent* — `_build_partial_message`
-parses leniently (`parse_streaming_json`, best-effort for display) while
-`_build_final_message` parses strictly and **raises** (`parse_json_with_repair`
-+ dict-check, the authoritative path). The done-event yield loop and
-`agent_loop.py` no longer parse at all (they consume already-built `ToolCall`s).
-The only shared lines are `"".join(parts)` and the `ToolCall(...)` construction;
-a shared helper would have to re-introduce a `strict` flag to thread the
-deliberate difference, netting ~nothing. Left as-is.
+### Tier 5 — Quality gate (IN PROGRESS) — *now*
 
-### 3. Fragile prompt/context de-duplication — ✅ DONE (2026-06-20) (`docs/CODE-QUALITY-NOTES.md` #10)
-Re-audit found the loop-level dedup (`agent_loop.py`) was worse than "fragile":
-(a) a **latent `UnboundLocalError`** — `prev_text` was bound only when the
-context tail was a user message but referenced unconditionally; (b) **load-bearing
-redundancy** — `prompt()` deliberately put the user message in *both* the context
-and `prompts=[user_msg]`, relying on this strip-compare to collapse it, while the
-session layer already did the same compare; (c) **multimodal-blind** — only text
-blocks compared, so same-text/different-image prompts were silently dropped.
-**Fixed by restoring pi parity:** `runAgentLoop` simply concatenates
-`context + prompts` (agent-loop.ts:103-106), so the loop-level dedup is removed
-and `run()` now does `messages = [*context, *prompts]`. `prompt()` threads the
-user message exactly once (via `prompts`) and drops the duplicate the caller
-supplies through an explicit `_ends_with_user_text(messages, text)` helper. Net
-mypy errors −1; suite 1360/0.
+A no-new-dependency `.git/hooks/pre-commit` running **ruff check + ruff format
++ mypy** over the three `src` trees, hard-gating once green ("clear debt first,
+then hard-gate", maintainer 2026-06-22).
+
+- **ruff: DONE.** 31→0 (22 auto-fixed, 24 files reformatted, 8 hand-fixed).
+  `[tool.ruff]` in `pyproject.toml`: `line-length = 100`, `target-version =
+  "py311"`, default lint rules; import-sorting (`I`) deferred. Fixing the
+  `rpc.py` forward-refs (`TYPE_CHECKING`) also cleared 2 mypy `name-defined`
+  errors. **Held uncommitted** to land with mypy as one lint/format overhaul
+  commit (incl. the hook).
+- **mypy: 55 → 0 (remaining; the blocker).** Histogram: `attr-defined` 12,
+  `no-any-return` 11, `union-attr` 8, `valid-type` 6, `arg-type` 6, `assignment`
+  4, `override` 3, then `return-value`/`index`/`misc`. **Fail-Early: no blanket
+  `# type: ignore`** — fix the types.
+- **During the mypy pass — remove dead code:** `sdk.py:_build_system_prompt`
+  reads `AGENTS.md`/`.tau/SYSTEM.md` but is **off the live path**
+  (`backends.py:64,105-112` builds the system prompt from `config` only), so τ
+  injects no context files today. Delete it (its real replacement is Tier 8);
+  also stop silently swallowing extension-load errors (`sdk.py:226 except: pass`).
+- **Then install the blocking hook** (ruff check + `ruff format --check` + mypy).
+- **New item — LLM-backed compaction.** `compaction.py:151-153` is a marked
+  placeholder that builds the compaction prompt, discards it, and **fabricates**
+  `summary = config.system_prompt + " - Compacted N entries"` — a standing
+  Fail-Early violation, currently `# noqa: F841` with a pointer. pi's compaction
+  is the reference. Address alongside or shortly after the gate.
+
+### Tier 6 — CLI parity quick-wins + json doc-fix — *pre/parallel to the session sprint*
+
+No session-layer dependency; small, over existing plumbing (`cli.py
+build_parser`, `headless.py`, `backends.py`).
+
+- `--append-system-prompt` (repeatable; pi `args.ts:95`) — concat after the base
+  prompt.
+- `--exclude-tools`/`-xt` (denylist; pi `args.ts:125`) — `.filter` over the
+  active tool set.
+- `--no-builtin-tools`/`-nbt` (pi `args.ts:118`) — ≡ `--no-tools` in τ until an
+  extension-tool subsystem exists (Tier 11); document the equivalence, don't fake
+  a difference.
+- `--list-models [search]` (pi `args.ts:171`) — over the **`config.json` models
+  map**, *not* a bundled registry (τ has none; **do not fabricate one** —
+  Fail-Early). Reuse `textual.fuzzy.Matcher`.
+- **json doc-fix.** The `--mode json` claim in `CLI-PLAN.md §4 #11` /
+  `COMMAND_LINE.md:126` is **false**: τ emits the backend's flat `{"kind":…}`
+  events (`headless.py` / `backends.py:210-214`), not the `AgentEvent`
+  vocabulary. Correct the docs to describe reality now; the actual re-emit to
+  pi's schema is Tier 9. **Decision (locked 2026-06-22):** τ will emit **pi's**
+  json schema.
+
+### Tier 7 — Post-session CLI flags — *after session Phase A*
+
+Ride the Phase-A seams (below). pi `args.ts:104,108,112`.
+
+- `--session-dir` — threads `base_dir` through the new helpers (seam 1).
+- `--session-id` — `Session.create(id=…)` + exact-id lookup in the cwd dir (seam 1).
+- `--no-session` — `Session.create_in_memory` ephemeral mode (seam 1).
+
+### Tier 8 — Context files + trust — *security-ordered*
+
+- **Context-file discovery (S/M, low-risk, high-value).** Port pi's
+  `loadProjectContextFiles` (`resource-loader.ts:61-117`): candidate set
+  `AGENTS.md`/`CLAUDE.md` (±uppercase), global + cwd→root walk, dedupe,
+  `<project_context>` / `<project_instructions path=…>` injection
+  (`system-prompt.ts:154-161`). Unify onto the live `backends.py` path (the dead
+  `sdk._build_system_prompt` was removed in Tier 5). Add `--no-context-files`/`-nc`.
+- **Trust gate (M/L, security-sensitive).** Port pi's `trust.json`
+  (`~/.tau/trust.json`, cwd-canonical keys, ancestor inheritance;
+  `trust-manager.ts:27-35,42-57`), `resolve_project_trusted`
+  (`project-trust.ts:45-95`), `--approve`/`-a`/`--no-approve`/`-na`. UX: a
+  **Textual `ModalScreen`** (consistent with the session picker) registered as a
+  `trust`/`untrust` **command** in the session registry (seam 4 — one handler,
+  three surfaces). The trust store stays **separate** from the session dir
+  (different keying: raw abspath + inheritance vs. dashed slug).
+- **HARD CONSTRAINT (Fail-Early / security).** Context files are inert text and
+  may ship ungated (pi-faithful). But τ **must not** auto-load *executable*
+  project-local resources (extensions, `.tau/SYSTEM.md`) before the trust gate
+  exists. Trust (this tier) **precedes** any project-local extension/SYSTEM.md
+  loading (Tier 11).
+
+### Tier 9 — Export + json reconciliation — *after session Phase A*
+
+- **`--export` HTML (M).** Port pi's `exportFromFile` (`export-html/index.ts:288`)
+  onto the new `Session.entries()`/`header` (seam 2); a self-contained
+  `template.html`+css+js. τ **owns the template look** (personality); only the
+  embedded `SessionData` contract must match pi's exporter.
+- **pi-faithful `--mode json` (M).** Re-emit pi's `AgentSessionEvent` schema:
+  `type` discriminator (not `kind`), camelCase `toolCallId`/`toolName`, the
+  session **header line first** (`print-mode.ts:114-119`). A `tau_event → pi-json`
+  serializer behind `--mode json`, sourced from the `AgentEvent` bus
+  (`events.py`), not the backend `kind` stream. Finalize the Tier-6 doc.
+
+### Tier 10 — Themes / templates / skills — *after the session command registry*
+
+- **Shared resource loader (M).** Frontmatter parser + `~/.tau/<kind>/` &
+  `.tau/<kind>/` discovery + `--no-X`-keeps-explicit-paths. Build once; all three
+  reuse it.
+- **Themes (S) — Tau's identity divergence; ship early.** Adopt **Textual-native**
+  theming (`App.theme`/`register_theme` + a `$variable` refactor of
+  `parley.tcss`), **not** pi's 51-slot ANSI-baked JSON (tied to pi's custom
+  renderer). The one subsystem where diverging on *format* is correct; offer a
+  thin pi-theme import only if demand appears. `--theme`/`--no-themes`.
+- **Prompt templates (S/M).** Keep pi's flat-`.md`+frontmatter + `$ARGUMENTS`/`$1`
+  substitution (`prompt-templates.ts`) so pi templates port; route `/<name>`
+  through the session **command registry** (seam 4) + palette.
+- **Skills (M/L).** Match pi/Claude-Code **`SKILL.md`** exactly (ecosystem
+  interop; `~/.agents/skills/` cross-harness dir): two-tier progressive disclosure
+  (`<available_skills>` gated on `read`), `/skill:name` body inlining. Defer
+  `disable-model-invocation`/`allowed-tools` (experimental in pi).
+
+### Tier 11 — Extensions epic — *multi-sprint*
+
+The biggest frontier. τ has a **half-wired skeleton** (`extension_types.py`,
+`extensions/{loader,registry}.py`, `sdk._load_extensions`, and
+`agent_session.py:104-106` actually invokes factories) but: **no runner**
+(registered tools/commands/flags are never read back), loop hooks are no-ops
+(`agent_loop.py:898`), **two contradictory loaders** (`sdk.py` calls
+`mod.extend(api)` vs `extensions/loader.py` calls `mod.register(api)`), **no CLI
+surface** (`--extension` absent), and load errors are silently swallowed
+(`sdk.py:226` — Fail-Early).
+
+Milestones: **M0** reconcile the two loaders (→ `register(api)`, importlib +
+`importlib.metadata` entry points, Fail-Early on errors) + surface
+`--extension`/`-e`, `--no-extensions`/`-ne` → **M1** runner + tool registration
+(registered tools become live `AgentTool`s) → **M2** hooks/interceptors (the ~33
+events, return-value mutation) → **M3** session-lifecycle (consume the Phase-A
+emit seam 3) + Textual UI registration (`registerShortcut`/`registerMessageRenderer`)
+→ **M4** `registerProvider` → **M5** package manager (lean on `pip`/entry points;
+`list`/`config` over `settings.json` first; defer git/npm fetching).
+
+Faithful: factory shape, single `ExtensionAPI`, event names/semantics, interceptor
+pattern, registration verbs, discovery locations. Personality: importlib + entry
+points (no jiti), `Protocol` API, Pydantic tool schemas, Textual bindings/widgets.
+
+### Tier 12 — RPC mode — *deferred, narrow audience*
+
+`--mode rpc` (pi `args.ts:80`; pi's `modes/rpc/`: 28 command verbs, LF-only JSONL,
+extension-UI round-trips). XL, embedding-only audience → lowest priority. Gate on
+the session **command registry** (seam 4) as the dispatch table. *Note:*
+tau-agent-core already has a partial `rpc.py` (JSON-RPC 2.0 types + `RPCHandler`
+skeleton) — **distinct** from pi's `RpcCommand` protocol; reconcile here.
 
 ---
 
-## Tier 3 — Missing features (deferred from `docs/CLI-PLAN.md`, Fail-Early gated)
+## Cross-cutting: the 4 Phase-A seams (approved 2026-06-22)
 
-### 4. `--thinking` — ✅ DONE (2026-06-21)
-**Shipped the full `reasoning_effort` send-path + CLI flag:**
-- **τ-ai (`types.py`):** `Model` gained `reasoning: bool` (capability) and
-  `thinking_level_map` (per-model level→value remap), mirroring pi `Model`
-  (`types.ts:585,589`). New `tau_ai/models.py` ports pi's `clampThinkingLevel`/
-  `getSupportedThinkingLevels` (`models.ts:51-84`) + `EXTENDED_THINKING_LEVELS`
-  (`off..xhigh`) and `is_valid_thinking_level`.
-- **τ-ai (`openai.py`):** `stream_chat` reads the τ-internal `reasoning` option,
-  clamps it, and emits `payload["reasoning_effort"]` per pi's default "openai"
-  `thinkingFormat` branch (`openai-completions.ts:620-628`); gated on
-  `Model.reasoning` (Fail-Early: never sent to a non-reasoning model). The
-  `reasoning` key is stripped from the body (never leaks).
-- **τ-agent-core:** `AgentLoopConfig.reasoning`, `_stream_response` adds
-  `options["reasoning"]`, `AgentSession(reasoning=…)` threads it into both
-  `prompt()` and `continue_conversation()`, and `create_agent_session` now
-  *uses* its (previously inert) `thinking_level` arg (non-"off" → `reasoning=True`
-  on the model, level forwarded).
-- **τ-coding-agent:** `--thinking {off..xhigh}` flag (argparse `choices`,
-  validated), plus the `--model x:high` suffix (`resolve_model_config` parses it
-  instead of raising). `TauBackend` derives `Model.reasoning` from a config
-  `thinking` level (or explicit `reasoning: true`) and threads the level.
-  Honored in both the TUI (`_launch_tui` overrides) and headless paths.
-- A non-"off" level marks the model reasoning-capable (pi
-  `model-resolver.ts:496`). xhigh needs a `thinking_level_map` entry, else it
-  clamps to high (pi parity). Tests: provider send/clamp/gate, level helpers,
-  CLI parse/resolve, backend wiring, session threading. Suite 1385/0; mypy 57.
+`docs/SESSION-UX-REDESIGN.md` Phase A now bakes in four small forward-compat seams
+— cheap to add during the rewrite, expensive to retrofit — each unlocking a later
+tier with near-zero rework:
 
-**Test-rig caveat (not a bug — verified 2026-06-21):** against the local
-llama.cpp + Qwen3 GGUF server, `reasoning_effort` is a **silent no-op**. τ puts
-it on the wire correctly, but llama.cpp accepts it with HTTP 200, never
-validates it (even `reasoning_effort: bogus` → 200), and the jinja template has
-no reference to it — so it's parsed off the request and dropped before
-templating. Deterministic A/B (temp=0, seed=42): output is byte-identical across
-`high`/`minimal`/`bogus`/absent (same reasoning SHA). The *only* working thinking
-toggle on this rig is `chat_template_kwargs: {enable_thinking: false}` (reasoning
-590→0 chars). Implication: `--thinking <level>` against `local-llm` exercises the
-full τ send-path (and the unit tests assert the *payload*, so they stay valid)
-but has no server-side effect. Graded *or* on/off control of local Qwen would
-require porting pi's `"qwen"` thinkingFormat (a `chat_template_kwargs.enable_thinking`
-send-path) — out of scope until local thinking control is wanted.
-
-### 5. Headless session continuation — ✅ DONE (2026-06-21)
-**Shipped `--continue`/`-c`, `--session REF`, `--fork REF`, `--name`/`-n`;
-`--resume`/`-r` deferred (Fail-Early error — it's an interactive picker, TUI-only).**
-
-**Key correction to the original framing:** the planned "load-instead-of-
-`new_session()` in `TauBackend.__init__`" pointed at the wrong layer. Tracing the
-code, *neither* the TUI nor headless uses `SessionManager` for context —
-`TauBackend.stream_chat(messages, …)` treats its `messages` arg as authoritative
-and passes `context=messages` straight to `agent_session.prompt()`
-(`backends.py:162,241`); the internal `SessionManager`/`new_session()` is
-vestigial on that path. Both the TUI (`app.py:1061`) and `tau -p`
-(`headless.py`) persist/resume via the **`Chat` store** (`~/.tau/chats/*.json`,
-`session_store.py`). So headless resume = **load a `Chat`, prepend its
-`.messages` as context, append the new user turn, run, save back** — same store
-and same `stream_chat` path everything else uses. No `SessionManager` surgery.
-
-- **`cli.py`:** `--continue`/`--resume`/`--session`/`--fork` in a mutually-
-  exclusive argparse group, plus `--name`; `CLIArgs` fields + threading. `main()`
-  rejects `--resume` (deferred) and `--continue/--session/--fork` without
-  `--print` (Fail-Early, before `load_config()`).
-- **`headless.py`:** `_select_chat`/`_resolve_selector` (REF = `.json` path or
-  filename **stem**; exact-stem wins, unique-substring accepted, else raise).
-  `run_print` loads the prior chat, uses its transcript as context, and resolves
-  the model with a `fallback_model` = the session's stored model (so a bare
-  `-c` keeps the model unless `--model` overrides). `_persist_session` (was
-  `_save_session`) writes **in place** for continue/session (preserving
-  `created_at`, growing the file) and a **new file** for fork/fresh (with a
-  same-second collision guard so a fork never clobbers its source). Combining
-  `--system-prompt` with a resume raises (the session already has one).
-- **Tests:** `test_headless_resume.py` (continue/session/fork/name, selector
-  ambiguity/miss, model fallback + override, system-prompt conflict) and CLI
-  parse/dispatch tests. Verified **live** against the local server: turn-2 `-c`
-  recalled a planted fact (context truly resent), grew the file in place; `--fork`
-  made a new file, left the source byte-identical, carried the history.
-
----
-
-## Tier 4 — Low priority / cleanup
-
-### 6. Message-label placement — ✅ REVIEWED, KEEP AS-IS (2026-06-21)
-`MessageBox` uses `border_title` for the role label (`app.py:187,198`). The
-alternative — an in-box first-line header — is a localized `MessageBox.compose` +
-`parley.tcss` change with no behavioral impact. Offered as an explicit visual
-choice; **the maintainer chose to keep the border-title treatment**, so no code
-change. Closed (reopen only if the in-box header is later wanted).
-
-### 7. Doc hygiene — ✅ DONE (2026-06-21)
-- **`docs/TUI-FOLLOWUPS.md` removed (2026-06-20)** — it was a session-companion
-  doc; all three items are resolved or captured here: item 1 (reload renderer)
-  FIXED, item 2 (stray dir) already removed as CODE-QUALITY #9, item 3 (message
-  label placement) lives at Tier 4 #6 above.
-- **`docs/COMMAND_LINE.md` corrected (not deleted)** — applied all 11 corrections
-  enumerated in `docs/CLI-PLAN.md` §4: removed invented pi flags
-  (`--output`/`-o`, `--cwd`/`--config`/`--context-window`/`--max-tokens`), flagged
-  + documented the resolved short-alias collisions (`-p`/`-v`/`-s`/`-o`/`-m`),
-  fixed the lossy thinking map (`minimal`/`xhigh` are distinct levels; only `off`
-  → no param), replaced the fabricated `TAU_*` env-var table with what τ actually
-  reads (`OPENAI_API_KEY`) + pi's real `PI_CODING_AGENT_*` derivation, corrected
-  the wrong-layer session claim (Chat store, not `SessionManager`), the default
-  provider (pi = `google`), the `--api-key` framing (deliberate divergence), and
-  noted the `--mode json` schema diverges from pi's. Added a superseded-by-
-  `CLI-PLAN.md` banner and refreshed "Current State" to the shipped surface.
-
-### 9. Large single-message render strategy — ✅ REVIEWED, NO ACTION (2026-06-21)
-A pathologically large *string* assistant message (the old 827 KB
-`1781803484.json`) renders correctly but is slow because Markdown parsing scales
-with size. **Trigger-gated and not recurring:** that file is gone and no
-oversized single-message render has resurfaced in normal use, so there is nothing
-to build. Kept as a design note: *if* such messages recur, consider a display-only
-lazy/plain-`Static` strategy for oversized content — but **never silently truncate
-assistant prose** (Fail-Early). Carried over from the removed TUI-FOLLOWUPS #1.
-
-### 8. Durable caveat (not a task) — pre-fix chats stay bloated on disk
-Chats written before the thinking-consolidation fix keep hundreds of blocks per
-message on disk. They render fine via the TUI reload normalizer
-(`ChatDisplay.reload_messages`), but the files aren't rewritten. A load-and-resave
-normalization was **deliberately not added** (Fail-Early: don't silently rewrite
-the user's saved files). Left here so it isn't "rediscovered" as a bug.
+1. **Session API parameter slots** — `base_dir: Path|None=None` on
+   `session_dir_for_cwd`/`list_sessions`/`most_recent`/`Session.create`/`fork`;
+   `id: str|None=None` on `Session.create`; a `Session.create_in_memory` ephemeral
+   mode. → **Tier 7** (`--session-dir`/`--session-id`/`--no-session`).
+2. **Raw `entries()`/`header` accessor** on `Session` (not just the folded
+   `messages`). → **Tier 9** (`--export`, pi-faithful json).
+3. **Session-lifecycle event emission** —
+   `Session.create/load/fork/append_compaction` emit
+   `session_start`/`before_fork`/`before_compact`/`shutdown` (no consumer yet).
+   → **Tier 11** (extension hooks, no loop retrofit).
+4. **Generic/dynamic command registry** — register at runtime (not a fixed
+   `resume/new/fork` enum); one slash-parser with "unknown `/x` → pass through";
+   a "register palette entries from a list" seam. → **Tier 10** (templates/themes),
+   **Tier 8** (trust commands), **Tier 12** (rpc dispatch).
 
 ---
 
 ## Suggested order
 
-1. ~~**Tier 1 #1**~~ — ✅ done (2026-06-20).
-2. ~~**Tier 2 #2/#3**~~ — #3 ✅ done (pi-parity dedup removal, 2026-06-20);
-   #2 closed as WONTFIX (down to 2 intentionally-divergent sites).
-3. ~~**Tier 3 #4**~~ — ✅ done (`reasoning_effort` send-path + `--thinking`,
-   2026-06-21).
-4. ~~**Tier 3 #5**~~ — ✅ done (headless `--continue`/`--session`/`--fork`/
-   `--name` via the Chat store, 2026-06-21).
-5. ~~**Tier 4 cleanup**~~ — ✅ done (2026-06-21): doc hygiene #7 (COMMAND_LINE.md
-   corrected, 11 fixes); #6 reviewed → keep border-title (no change); #9 reviewed
-   → trigger-gated design note, not recurring (no action).
-
-**All tiers closed.** Backlog is empty; ROADMAP tracks only the durable caveat
-(#8, not a task). Next work is new scope from pi parity or the maintainer.
+Tier 5 (now) → Tier 6 + the session sprint (with the 4 seams) in parallel →
+Tier 7 → Tier 8 → Tier 9 → Tier 10 → Tier 11 (epic) → Tier 12. Tier 5's mypy
+cleanup and the dead-code / `compaction` items are independent of everything else
+and can fill any gap.
