@@ -990,6 +990,13 @@ class Parley(App):
         input_widget.add_to_history(message)
         input_widget.clear_input()
 
+        # Slash commands are intercepted here, BEFORE the text reaches the model.
+        # Without this, "/compact" was just sent as a prompt and the model
+        # "played along" instead of the harness compacting the conversation.
+        if message == "/compact":
+            await self.action_compact()
+            return
+
         # Create new chat if needed
         if self.current_chat is None:
             await self.action_new_chat()
@@ -1214,6 +1221,12 @@ class Parley(App):
         yield SystemCommand("Export Chat", "Export chat to markdown", self.action_export_chat)
 
         yield SystemCommand(
+            "Compact Conversation",
+            "Summarize older messages into a checkpoint to free up context",
+            self.action_compact,
+        )
+
+        yield SystemCommand(
             "Edit System Prompt",
             "Edit the system prompt for new chats",
             self.action_edit_system_prompt,
@@ -1279,6 +1292,48 @@ class Parley(App):
         file_path.write_text("\n".join(lines))
 
         self.notify(f"Exported to {file_path}")
+
+    async def action_compact(self):
+        """Compact the current conversation into a summary checkpoint.
+
+        Summarizes the older messages via the model and replaces them with a
+        single checkpoint, freeing context for the conversation to continue.
+        Operates on ``current_chat.messages`` — the list actually sent to the
+        model — then re-renders.
+        """
+        if not self.current_chat:
+            self.notify("No chat to compact", severity="warning")
+            return
+
+        backend = self.current_backend
+        if not hasattr(backend, "compact_messages"):
+            self.notify("This backend does not support compaction", severity="warning")
+            return
+
+        self.notify("Compacting conversation…")
+        self.sub_title = "Compacting…"
+        before = len(self.current_chat.messages)
+        try:
+            new_messages = await backend.compact_messages(self.current_chat.messages)
+        except Exception as e:
+            self.notify(f"Compaction failed: {e}", severity="error")
+            self.log.error(f"Compaction failed: {e}")
+            self.log.error(traceback.format_exc())
+            self._refresh_subtitle()
+            return
+
+        if new_messages is None:
+            self.notify("Nothing to compact yet")
+            self._refresh_subtitle()
+            return
+
+        self.current_chat.messages = new_messages
+        self.current_chat.save()
+        # reload_messages lives on the ChatDisplay widget, not the app.
+        await self.query_one(ChatDisplay).reload_messages(self.current_chat.messages)
+        self.query_one(ChatSidebar).refresh_chats()
+        self._refresh_subtitle()
+        self.notify(f"Compacted {before} → {len(new_messages)} messages")
 
     async def action_edit_system_prompt(self):
         """Edit the system prompt."""

@@ -220,6 +220,87 @@ class SessionManager:
                 )
         return messages
 
+    def apply_compaction(
+        self,
+        first_kept_entry_id: str,
+        summary: str,
+        compacted_entry_ids: list[str] | None = None,
+        tokens_saved: int = 0,
+    ) -> str:
+        """Persist a compaction by splicing a summary entry at the boundary.
+
+        A new ``compaction`` entry C is inserted as the parent of
+        ``first_kept_entry_id``; C's own parent becomes the first-kept entry's
+        former parent. The active tip is left unchanged, so the conversation
+        continues seamlessly with the compacted prefix replaced by C's summary.
+
+        This is the structural counterpart to ``compaction.compact`` (which only
+        *computes* the summary). After it runs, ``get_active_messages`` /
+        ``_build_active_path`` yield ``[summary, <first_kept … tip>]``: the
+        entries before the boundary drop out of the active path entirely.
+
+        Works for both the in-memory and file-backed stores. The JSONL log is
+        otherwise append-only, but re-parenting an existing entry requires
+        rewriting it, so the file is rewritten with the updated links.
+
+        Args:
+            first_kept_entry_id: Id of the first entry to retain in full.
+            summary: The generated summary text replacing the compacted prefix.
+            compacted_entry_ids: Ids replaced by the summary (recorded as metadata).
+            tokens_saved: Estimated tokens saved (recorded as metadata).
+
+        Returns:
+            The id of the inserted compaction entry.
+
+        Raises:
+            KeyError: If ``first_kept_entry_id`` is not in the session.
+        """
+        entries = list(self._get_entries())
+        fk_index = next(
+            (i for i, e in enumerate(entries) if e.get("id") == first_kept_entry_id),
+            -1,
+        )
+        if fk_index < 0:
+            raise KeyError(f"first_kept entry {first_kept_entry_id} not found")
+
+        first_kept = dict(entries[fk_index])
+        boundary_parent_id = first_kept.get("parent_id")
+
+        compaction_id = uuid.uuid4().hex
+        compaction_entry: dict[str, Any] = {
+            "id": compaction_id,
+            "type": "compaction",
+            "timestamp": int(time.time() * 1000),
+            "parent_id": boundary_parent_id,
+            "first_kept_id": first_kept_entry_id,
+            "summary": summary,
+            "tokens_saved": tokens_saved,
+            "compacted_entries": list(compacted_entry_ids or []),
+        }
+
+        # Re-parent the first-kept entry onto the compaction entry, then splice
+        # the compaction entry in just before it (so the linear order keeps the
+        # recent entries, whose order stays >= first_kept's).
+        first_kept["parent_id"] = compaction_id
+        entries[fk_index] = first_kept
+        entries.insert(fk_index, compaction_entry)
+
+        self._persist_entries(entries)
+        return compaction_id
+
+    def _persist_entries(self, entries: list[dict]) -> None:
+        """Replace the whole entry log (in-memory list or JSONL file).
+
+        Used by tree-restructuring operations like ``apply_compaction`` that
+        cannot be expressed as a plain append.
+        """
+        if self._memory_store is not None:
+            self._memory_store[:] = entries
+        elif self._active_session_path:
+            with open(self._active_session_path, "w") as f:
+                for entry in entries:
+                    f.write(json.dumps(entry) + "\n")
+
     def list_sessions(self) -> list[SessionInfo]:
         """List sessions for the current working directory.
 
@@ -507,12 +588,16 @@ class SessionManager:
         # in the linear order are compacted.
         # We replace those with the compaction summary.
 
-        # Walk through path and find the first compaction entry from root
+        # Find the LAST (most recent) compaction entry in the path. With
+        # iterative compaction there can be several: each new summary is
+        # generated with the previous one as input (compaction.generate_summary's
+        # previous_summary), so the most recent compaction supersedes all earlier
+        # ones — anchoring on it drops the stale summaries and their kept regions.
+        # (With a single compaction this is identical to "first from root".)
         compaction_idx = None
         for idx, entry in enumerate(path):
             if entry.get("type") == "compaction":
                 compaction_idx = idx
-                break
 
         if compaction_idx is not None:
             compaction = path[compaction_idx]

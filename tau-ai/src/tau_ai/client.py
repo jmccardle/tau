@@ -25,6 +25,7 @@ from typing import Any
 from tau_ai.streaming import AssistantMessageEventStream
 from tau_ai.providers.registry import Registry
 from tau_ai.providers.openai import OpenAICompletionsProvider
+from tau_ai.types import AssistantMessage
 
 
 async def stream_simple(
@@ -87,3 +88,35 @@ async def stream_simple(
         model=model,
         context=context,
     )
+
+
+async def complete_simple(
+    model: Any,
+    context: dict[str, Any],
+    options: dict[str, Any] | None = None,
+) -> AssistantMessage:
+    """Non-streaming completion — drive a stream to its terminal message.
+
+    Faithful port of pi's ``completeSimple`` (stream.ts:67), which is simply
+    ``stream(...).result()``. Used where the caller wants the whole
+    AssistantMessage and not the intermediate deltas — e.g. compaction's
+    summary generation, which has no streaming UI to feed.
+
+    Args:
+        model: The Model configuration (has provider, id, etc.).
+        context: Context dict (same shape as ``stream_simple``): ``messages``
+            and optional ``tools``. A leading ``{"role": "system", ...}`` message
+            sets the system prompt (client.py does not read ``system_prompt``).
+        options: Optional provider options (``max_tokens``, ``api_key``,
+            ``reasoning``, ``temperature``, …).
+
+    Returns:
+        The fully accumulated AssistantMessage.
+
+    Raises:
+        Exception: If the stream produced an ErrorEvent (propagated by
+            ``AssistantMessageEventStream.result``). Fail-Early: no fabricated
+            fallback message.
+    """
+    stream = await stream_simple(model, context, options)
+    return await stream.result()

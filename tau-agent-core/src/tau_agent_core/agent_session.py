@@ -23,6 +23,17 @@ from tau_agent_core.session import SessionState
 from tau_agent_core.session_manager import SessionManager
 from tau_agent_core.agent_loop import AgentLoop
 from tau_agent_core.agent_loop_types import AgentLoopConfig
+from tau_agent_core.compaction import (
+    DEFAULT_COMPACTION_SETTINGS,
+    CompactionPreparation,
+    CompactionResult,
+    CompactionSettings,
+    compact as run_compaction,
+    estimate_context_tokens,
+    prepare_compaction,
+    should_compact,
+)
+from tau_agent_core.compaction_utils import create_file_ops, extract_file_ops_from_message
 
 
 def _message_text(content: Any) -> str:
@@ -79,6 +90,7 @@ class AgentSession:
         extensions: list[Callable] | None = None,
         api_key: str | None = None,
         reasoning: str | None = None,
+        compaction_settings: CompactionSettings | None = None,
     ) -> None:
         self._session_manager = session_manager
         self._model = model
@@ -95,6 +107,9 @@ class AgentSession:
         # Requested thinking level ("off".."xhigh") forwarded to the loop ->
         # provider as the `reasoning` option. None = don't request reasoning.
         self._reasoning = reasoning
+        # Compaction thresholds; drives both manual compact() and the automatic
+        # post-turn check in prompt(). Defaults to the harness defaults.
+        self._compaction_settings = compaction_settings or DEFAULT_COMPACTION_SETTINGS
 
         # Register extensions
         for ext in self._extensions:
@@ -276,6 +291,13 @@ class AgentSession:
                 )
                 turn_messages.append(msg_dict)
 
+            # Auto-compaction: now that this turn is persisted, compact in place
+            # if the conversation is approaching the model's context window, so
+            # the NEXT turn starts within budget (pi checks shouldCompact after
+            # each turn). A failure here propagates — Fail-Early, no silent skip —
+            # but this turn's messages are already saved and returned-to-be.
+            await self._maybe_auto_compact()
+
             return turn_messages
 
         finally:
@@ -348,23 +370,156 @@ class AgentSession:
         finally:
             self._is_streaming = False
 
-    async def compact(self, custom_instructions: str | None = None) -> None:
-        """Trigger manual compaction.
+    async def compact(self, custom_instructions: str | None = None) -> CompactionResult | None:
+        """Compact the active conversation into an LLM-generated summary.
+
+        Runs the full pipeline — build the active-path entries, choose the cut
+        point, generate the structured summary via the LLM
+        (:func:`tau_agent_core.compaction.compact`), and splice the summary into
+        the session tree (:meth:`SessionManager.apply_compaction`) so the
+        compacted prefix drops out of future context. ``agent_start`` /
+        ``agent_end`` bracket the work for subscribers (e.g. the TUI).
 
         Args:
-            custom_instructions: Optional instructions for the compaction.
+            custom_instructions: Optional extra focus for the summary.
+
+        Returns:
+            The CompactionResult, or None when there is nothing to compact (an
+            empty conversation, or one already ending in a compaction summary).
+
+        Raises:
+            CompactionError: if summary generation fails. Fail-Early — no
+                fabricated summary is written.
         """
         await self._events.emit(AgentEvent(type="agent_start", timestamp=self._timestamp()))
-        await self._events.emit(
-            AgentEvent(
-                type="turn_start",
-                timestamp=self._timestamp(),
-                turn_index=0,
-            )
+        try:
+            return await self._perform_compaction(custom_instructions=custom_instructions)
+        finally:
+            await self._events.emit(AgentEvent(type="agent_end", timestamp=self._timestamp()))
+
+    async def compact_messages(
+        self, messages: list[dict[str, Any]], custom_instructions: str | None = None
+    ) -> list[dict[str, Any]] | None:
+        """Compact a caller-supplied message list and return the shortened list.
+
+        This is the **manual** compaction path (the TUI's ``/compact``): it
+        summarizes everything before the most recent user turn and keeps that
+        turn intact, returning a new list shaped ``[<system messages>, <summary
+        as a user message>, <most recent user turn onward>]``. It is for callers
+        whose own store — not the session manager — is the authoritative context
+        they send to the model (the TUI's ``current_chat.messages`` is exactly
+        this).
+
+        The cut is **count-based** (keep the last user turn), deliberately unlike
+        auto-compaction's token-budget cut: a manual compaction should visibly do
+        something on a normal-sized chat, not no-op until the conversation
+        exceeds ``keep_recent_tokens``.
+
+        Returns None when there is nothing older to compact (zero or one user
+        turn), so the caller can no-op rather than grow the list with an empty
+        summary.
+
+        Raises:
+            CompactionError: if summary generation fails. Fail-Early.
+        """
+        # System messages are never summarized; set them aside and restore them.
+        system_msgs = [m for m in messages if m.get("role") == "system"]
+        convo = [m for m in messages if m.get("role") != "system"]
+
+        # Keep the most recent user turn (the last user message and everything
+        # after it); summarize everything before it.
+        last_user_idx = -1
+        for i, m in enumerate(convo):
+            if m.get("role") == "user":
+                last_user_idx = i
+        if last_user_idx <= 0:
+            return None  # zero or one user turn — nothing older to compact
+
+        to_summarize = convo[:last_user_idx]
+        kept = convo[last_user_idx:]
+
+        file_ops = create_file_ops()
+        for m in to_summarize:
+            extract_file_ops_from_message(m, file_ops)
+
+        preparation = CompactionPreparation(
+            first_kept_entry_id=str(last_user_idx),
+            messages_to_summarize=to_summarize,
+            turn_prefix_messages=[],
+            is_split_turn=False,
+            tokens_before=estimate_context_tokens(convo).tokens,
+            file_ops=file_ops,
+            settings=self._compaction_settings,
+            previous_summary=None,
+            compacted_entry_ids=[str(i) for i in range(last_user_idx)],
         )
-        # Note: Actual compaction logic is in tau_agent_core.compaction
-        # For now, emit the events to signal compaction intent
-        await self._events.emit(AgentEvent(type="agent_end", timestamp=self._timestamp()))
+        result = await run_compaction(
+            preparation,
+            self._model,
+            self._api_key,
+            custom_instructions=custom_instructions,
+            thinking_level=self._reasoning,
+        )
+
+        summary_msg: dict[str, Any] = {
+            "role": "user",
+            "content": [{"type": "text", "text": f"[[Compaction summary: {result.summary}]]"}],
+        }
+        return [*system_msgs, summary_msg, *kept]
+
+    async def _perform_compaction(
+        self, custom_instructions: str | None = None
+    ) -> CompactionResult | None:
+        """Compaction core shared by manual ``compact`` and the auto-trigger.
+
+        Emits no lifecycle events of its own; the callers bracket it.
+        """
+        sm = self._session_manager
+        path_entries = sm._build_active_path(sm._get_entries())
+        preparation = prepare_compaction(path_entries, self._compaction_settings)
+        if preparation is None:
+            return None
+
+        result = await run_compaction(
+            preparation,
+            self._model,
+            self._api_key,
+            custom_instructions=custom_instructions,
+            thinking_level=self._reasoning,
+        )
+        sm.apply_compaction(
+            first_kept_entry_id=result.first_kept_entry_id,
+            summary=result.summary,
+            compacted_entry_ids=result.compacted_entry_ids,
+            tokens_saved=result.tokens_saved,
+        )
+        return result
+
+    async def _maybe_auto_compact(self) -> None:
+        """Compact automatically when context approaches the model's window.
+
+        Mirrors pi's harness, which checks ``shouldCompact`` after each turn.
+        Skipped unless compaction is enabled and the window is larger than the
+        reserve (a window smaller than the reserve makes the threshold
+        meaningless — e.g. tiny test models — so we never auto-compact there).
+        """
+        settings = self._compaction_settings
+        if not settings.enabled:
+            return
+        context_window = getattr(self._model, "context_window", 0) or 0
+        if context_window <= settings.reserve_tokens:
+            return
+
+        messages = self._session_manager.get_active_messages()
+        estimate = estimate_context_tokens(messages)
+        if not should_compact(estimate.tokens, context_window, settings):
+            return
+
+        await self._events.emit(AgentEvent(type="agent_start", timestamp=self._timestamp()))
+        try:
+            await self._perform_compaction()
+        finally:
+            await self._events.emit(AgentEvent(type="agent_end", timestamp=self._timestamp()))
 
     def abort(self) -> None:
         """Abort the current agent turn."""

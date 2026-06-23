@@ -1280,7 +1280,15 @@ class TestCloneEdgeCases:
         assert msg_entries[1]["timestamp"] == 5001
 
     def test_clone_with_multiple_compaction_entries(self, tmp_path):
-        """clone() with multiple compaction entries includes them."""
+        """clone() of a path with multiple compaction entries keeps the most
+        recent compaction (the others are superseded).
+
+        The active path anchors on the LAST compaction in the chain (matching
+        pi's buildSessionContext, which reassigns ``compaction`` through the
+        loop): a later compaction's summary already incorporates the earlier one
+        via ``previous_summary``, so the stale summary and its kept region drop
+        out of context — and therefore out of the clone.
+        """
         mgr = SessionManager(sessions_dir=str(tmp_path))
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
@@ -1315,8 +1323,11 @@ class TestCloneEdgeCases:
         cloned = mgr.clone("keep2_last")
         cloned_entries = mgr._read_file(cloned)
         cloned_types = [e["type"] for e in cloned_entries]
+        summaries = [e["summary"] for e in cloned_entries if e.get("type") == "compaction"]
 
-        assert cloned_types.count("compaction") == 2
+        # Only the most recent compaction survives in the active path.
+        assert cloned_types.count("compaction") == 1
+        assert summaries == ["Second compaction"]
         assert cloned_types.count("message") >= 1
 
 

@@ -1,374 +1,799 @@
-"""τ-agent-core compaction: session compaction types and configuration.
+"""τ-agent-core compaction — LLM-backed session summarization.
 
-Reference: PHASE-5-SUBPHASE-0.md
-Reference: PHASE-5-SUBPHASE-1.md
-Reference: docs/tau-agent-core.md lines 350-450
-Reference: docs/IMPLEMENTATION-PLAN.md lines 360-420
+Faithful port of pi's ``packages/agent/src/harness/compaction/compaction.ts``,
+adapted to τ's session model. The valuable, behavior-defining pieces are carried
+over verbatim where possible: the structured summarization prompts, Usage-based
+token estimation, cut-point selection (with split-turn handling), iterative
+summary updates, and file-operation tracking.
+
+Two intentional divergences from pi, both Pythonic and documented inline:
+
+1. pi returns ``Result<T, CompactionError>``; τ raises :class:`CompactionError`.
+   This matches the repo's Fail-Early rule — a failed summarization raises rather
+   than silently yielding a fabricated summary.
+2. τ operates on active-path *entry dicts* and message *dicts* (pi uses typed
+   ``SessionTreeEntry`` / ``AgentMessage`` objects), because that is the shape
+   ``SessionManager`` already produces (``get_active_messages`` /
+   ``_build_active_path``).
+
+Persistence of the generated summary into the session tree lives in
+``SessionManager.apply_compaction`` — this module only *computes* the summary.
+
+Reference: pi packages/agent/src/harness/compaction/compaction.ts
 """
 
 from __future__ import annotations
 
+import asyncio
+import math
 import time
-import uuid
-from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from dataclasses import dataclass, field
+from typing import Any
 
-from tau_ai.types import Model
-from tau_agent_core.session import SessionEntry
+from tau_ai.client import complete_simple
+from tau_ai.types import Model, TextContent
+
+from tau_agent_core.compaction_utils import (
+    FileOperations,
+    compute_file_lists,
+    create_file_ops,
+    extract_file_ops_from_message,
+    format_file_operations,
+    serialize_conversation,
+)
+
+# Chars assumed per image content block when estimating tokens (pi: utils ↔
+# compaction.ts ESTIMATED_IMAGE_CHARS = 4800).
+ESTIMATED_IMAGE_CHARS = 4800
+
+
+# ─── Errors ──────────────────────────────────────────────────────────────
+
+
+class CompactionError(Exception):
+    """Raised when a compaction cannot complete.
+
+    Pythonic translation of pi's ``Result<T, CompactionError>`` error arm
+    (types.ts:161). ``code`` is one of ``"aborted"``, ``"summarization_failed"``,
+    or ``"invalid_session"``. Fail-Early: callers handle the failure rather than
+    receive a fabricated summary.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+# ─── Settings / results ──────────────────────────────────────────────────
 
 
 @dataclass
-class CompactionConfig:
-    """Configuration for a session compaction operation.
+class CompactionSettings:
+    """Compaction thresholds and retention settings (pi: CompactionSettings)."""
 
-    Attributes:
-        model: The LLM model to use for generating the summary
-        system_prompt: System prompt for the compaction LLM call
-        max_context_tokens: Maximum context window size for the model
-        margin: Tokens to keep as margin before hitting the context limit
-        custom_instructions: Optional custom instructions for the compaction
-        compact_callback: Optional async callback for progress updates
-    """
+    enabled: bool = True
+    reserve_tokens: int = 16384  # tokens reserved for summary prompt + output
+    keep_recent_tokens: int = 20000  # approx recent-context tokens to keep
 
-    model: Model
-    system_prompt: str
-    max_context_tokens: int
-    margin: int  # tokens to keep as margin before hitting max
-    custom_instructions: str | None = None
-    compact_callback: Callable[[str, int], Awaitable[None]] | None = None  # for progress
+
+# Default compaction settings used by the harness (pi: DEFAULT_COMPACTION_SETTINGS).
+DEFAULT_COMPACTION_SETTINGS = CompactionSettings()
+
+
+@dataclass
+class CompactionDetails:
+    """File-operation details stored alongside a compaction (pi: CompactionDetails)."""
+
+    read_files: list[str] = field(default_factory=list)
+    modified_files: list[str] = field(default_factory=list)
 
 
 @dataclass
 class CompactionResult:
-    """Result of a compaction operation.
+    """Generated compaction data ready to persist (pi: CompactionResult).
 
-    Attributes:
-        summary: The LLM-generated summary of compacted messages
-        first_kept_id: ID of the first message kept in full (after compaction)
-        compacted_entry_ids: IDs of entries that were compacted into the summary
-        tokens_saved: Estimated number of tokens saved by compaction
-        tokens_before: Token count before compaction
-        tokens_after: Token count after compaction
+    ``compacted_entry_ids`` and ``tokens_saved`` are τ additions — pi computes
+    these in its persistence layer; τ threads them through so
+    ``SessionManager.apply_compaction`` can record them on the compaction entry.
     """
 
-    summary: str  # The LLM-generated summary
-    first_kept_id: str  # ID of the first message kept in full
-    compacted_entry_ids: list[str]  # IDs of entries that were compacted
-    tokens_saved: int  # Estimated tokens saved
+    summary: str
+    first_kept_entry_id: str
     tokens_before: int
-    tokens_after: int
+    details: CompactionDetails | None = None
+    compacted_entry_ids: list[str] = field(default_factory=list)
+    tokens_saved: int = 0
 
 
-def write_compaction_entry(
-    session_manager: Any,
-    summary: str,
-    first_kept_id: str,
-    compacted_entry_ids: list[str],
-    tokens_saved: int = 0,
-) -> str:
-    """Write a compaction entry to the session manager.
+# ─── Token estimation ────────────────────────────────────────────────────
 
-    Creates a compaction entry that replaces all entries before first_kept_id
-    in the active path with a summary.
 
-    Args:
-        session_manager: SessionManager instance to write to
-        summary: The compaction summary text
-        first_kept_id: ID of the first entry to keep
-        compacted_entry_ids: IDs of entries that were compacted
-        tokens_saved: Estimated tokens saved
+def calculate_context_tokens(usage: dict[str, Any]) -> int:
+    """Total context tokens from a Usage dict (pi: calculateContextTokens).
 
-    Returns:
-        The ID of the written compaction entry
+    Prefers the provider-reported ``total_tokens``; falls back to the sum of the
+    component counts when total is absent/zero.
     """
-    entry = {
-        "id": uuid.uuid4().hex,
-        "type": "compaction",
-        "timestamp": int(time.time() * 1000),
-        "parent_id": None,
-        "first_kept_id": first_kept_id,
-        "summary": summary,
-        "tokens_saved": tokens_saved,
-        "compacted_entries": compacted_entry_ids,
-    }
-    entry_id: str = session_manager.append_entry(entry)
-    return entry_id
-
-
-async def compact_session(
-    config: CompactionConfig,
-    entries: list[SessionEntry],
-    session_manager: Any | None = None,
-) -> CompactionResult:
-    """Compact a session's messages into a summary.
-
-    Orchestrates the compaction process:
-    1. Determines which entries to compact
-    2. Builds the compaction prompt
-    3. Calls the LLM to generate a summary
-    4. Writes a compaction entry to the session
-    5. Returns the result
-
-    Args:
-        config: Compaction configuration
-        entries: Session entries to compact
-        session_manager: Optional session manager for writing the entry
-
-    Returns:
-        CompactionResult with summary and statistics
-    """
-    # Estimate tokens before compaction
-    tokens_before = estimate_tokens(entries)
-
-    # Determine the split point: keep the last portion of entries
-    # For the placeholder, we keep the last entry and compact the rest
-    if len(entries) <= 1:
-        # Nothing to compact
-        return CompactionResult(
-            summary="Session already compact or too short.",
-            first_kept_id=entries[0].id if entries else "",
-            compacted_entry_ids=[],
-            tokens_saved=0,
-            tokens_before=tokens_before,
-            tokens_after=tokens_before,
-        )
-
-    # Split: compact all but the last entry, keep the last entry
-    first_kept_entry = entries[-1]
-    to_compact = entries[:-1]
-    compacted_ids = [e.id for e in to_compact]
-
-    # Build the compaction prompt. NOTE: `prompt` is intentionally unused for now —
-    # the "LLM call" below is still a placeholder that fabricates `summary` instead
-    # of sending this prompt to a model. Wiring real LLM-backed compaction is a
-    # tracked ROADMAP item, not a lint fix.
-    prompt = build_compaction_prompt(to_compact, config)  # noqa: F841
-
-    # Emit progress callback if provided
-    if config.compact_callback:
-        try:
-            await config.compact_callback("Building compaction prompt", tokens_before)
-        except Exception:
-            pass  # Don't let callback errors break compaction
-
-    # Placeholder LLM call: in production this would call the actual LLM
-    # For now, generate a deterministic summary for testing
-    summary = config.system_prompt + " - Compacted " + str(len(to_compact)) + " entries"
-
-    # Estimate tokens after compaction (rough: summary + kept entry)
-    tokens_after_estimate = len(summary) // 4 + estimate_tokens([first_kept_entry])
-    tokens_saved = max(0, tokens_before - tokens_after_estimate)
-
-    # Write compaction entry if session manager is provided
-    if session_manager is not None:
-        try:
-            write_compaction_entry(
-                session_manager=session_manager,
-                summary=summary,
-                first_kept_id=first_kept_entry.id,
-                compacted_entry_ids=compacted_ids,
-                tokens_saved=tokens_saved,
-            )
-        except Exception:
-            pass  # Don't let write errors break compaction
-
-    # Emit progress callback for completion
-    if config.compact_callback:
-        try:
-            await config.compact_callback("Compaction complete", tokens_saved)
-        except Exception:
-            pass
-
-    return CompactionResult(
-        summary=summary,
-        first_kept_id=first_kept_entry.id,
-        compacted_entry_ids=compacted_ids,
-        tokens_saved=tokens_saved,
-        tokens_before=tokens_before,
-        tokens_after=tokens_after_estimate,
+    total = usage.get("total_tokens", 0) or 0
+    if total:
+        return int(total)
+    return (
+        int(usage.get("input_tokens", 0) or 0)
+        + int(usage.get("output_tokens", 0) or 0)
+        + int(usage.get("cache_read_tokens", 0) or 0)
+        + int(usage.get("cache_write_tokens", 0) or 0)
     )
 
 
-def estimate_tokens(entries: list[SessionEntry]) -> int:
-    """Estimate the total token count for a list of session entries.
+def _estimate_text_and_image_chars(content: Any) -> int:
+    """Char count for a string-or-block-list content value (pi helper)."""
+    if isinstance(content, str):
+        return len(content)
+    if not isinstance(content, list):
+        return 0
+    chars = 0
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text":
+            chars += len(str(block.get("text", "")))
+        elif block.get("type") == "image":
+            chars += ESTIMATED_IMAGE_CHARS
+    return chars
 
-    Placeholder implementation. Phase 5 will implement
-    proper token estimation.
 
-    Args:
-        entries: Session entries to estimate tokens for
+def estimate_tokens(message: dict[str, Any]) -> int:
+    """Estimate token count for one message dict (pi: estimateTokens).
 
-    Returns:
-        Estimated token count
+    Conservative ~4-chars-per-token heuristic over the textual payload, by role.
     """
-    # Simple character-based estimate: ~4 chars per token
-    total_chars = sum(len(e.model_dump_json()) for e in entries)
-    return total_chars // 4
+    role = message.get("role")
+    chars = 0
+
+    if role == "user":
+        chars = _estimate_text_and_image_chars(message.get("content"))
+    elif role == "assistant":
+        content = message.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "text":
+                    chars += len(str(block.get("text", "")))
+                elif btype == "thinking":
+                    chars += len(str(block.get("thinking", "")))
+                elif btype == "toolCall":
+                    args = block.get("arguments")
+                    args_len = len(_safe_json(args)) if args is not None else 0
+                    chars += len(str(block.get("name", ""))) + args_len
+    elif role == "toolResult":
+        chars = _estimate_text_and_image_chars(message.get("content"))
+    else:
+        return 0
+
+    return math.ceil(chars / 4)
 
 
-def build_compaction_prompt(
-    entries: list[SessionEntry],
-    config: CompactionConfig,
+def _safe_json(value: Any) -> str:
+    import json
+
+    try:
+        return json.dumps(value)
+    except (TypeError, ValueError):
+        return "[unserializable]"
+
+
+def _get_assistant_usage(message: dict[str, Any]) -> dict[str, Any] | None:
+    """Usage dict from a successful assistant message, else None (pi: getAssistantUsage)."""
+    if message.get("role") != "assistant":
+        return None
+    if message.get("stop_reason") in ("aborted", "error"):
+        return None
+    usage = message.get("usage")
+    if isinstance(usage, dict) and usage:
+        return usage
+    return None
+
+
+@dataclass
+class ContextUsageEstimate:
+    """Estimated context-token usage for a message list (pi: ContextUsageEstimate)."""
+
+    tokens: int
+    usage_tokens: int
+    trailing_tokens: int
+    last_usage_index: int | None
+
+
+def _last_assistant_usage_info(messages: list[dict[str, Any]]) -> tuple[dict[str, Any], int] | None:
+    for i in range(len(messages) - 1, -1, -1):
+        usage = _get_assistant_usage(messages[i])
+        if usage is not None:
+            return usage, i
+    return None
+
+
+def estimate_context_tokens(messages: list[dict[str, Any]]) -> ContextUsageEstimate:
+    """Estimate context tokens, anchoring on the last assistant Usage when present.
+
+    Faithful port of pi's estimateContextTokens (compaction.ts:165): the provider
+    is the source of truth for everything up to the last assistant turn; only the
+    trailing messages after it are heuristically estimated.
+    """
+    info = _last_assistant_usage_info(messages)
+    if info is None:
+        estimated = sum(estimate_tokens(m) for m in messages)
+        return ContextUsageEstimate(
+            tokens=estimated,
+            usage_tokens=0,
+            trailing_tokens=estimated,
+            last_usage_index=None,
+        )
+
+    usage, index = info
+    usage_tokens = calculate_context_tokens(usage)
+    trailing = sum(estimate_tokens(messages[i]) for i in range(index + 1, len(messages)))
+    return ContextUsageEstimate(
+        tokens=usage_tokens + trailing,
+        usage_tokens=usage_tokens,
+        trailing_tokens=trailing,
+        last_usage_index=index,
+    )
+
+
+def should_compact(context_tokens: int, context_window: int, settings: CompactionSettings) -> bool:
+    """Whether context usage exceeds the compaction threshold (pi: shouldCompact)."""
+    if not settings.enabled:
+        return False
+    return context_tokens > context_window - settings.reserve_tokens
+
+
+# ─── Cut-point selection ─────────────────────────────────────────────────
+#
+# Adapted to τ entry dicts. τ carries every conversation message as a
+# ``type=="message"`` entry distinguished by ``message.role`` (user/assistant/
+# toolResult); ``customMessage`` is its own entry type; ``compaction`` marks a
+# prior summary. Valid cut points are the user/assistant turn boundaries — never
+# mid tool-call (a toolResult must stay attached to its assistant turn).
+
+
+def _entry_message_role(entry: dict[str, Any]) -> str | None:
+    if entry.get("type") != "message":
+        return None
+    msg = entry.get("message")
+    if isinstance(msg, dict):
+        role = msg.get("role")
+        return role if isinstance(role, str) else None
+    return None
+
+
+def find_valid_cut_points(
+    entries: list[dict[str, Any]], start_index: int, end_index: int
+) -> list[int]:
+    """Indices where the conversation may be split (pi: findValidCutPoints)."""
+    cut_points: list[int] = []
+    for i in range(start_index, end_index):
+        entry = entries[i]
+        etype = entry.get("type")
+        if etype == "message":
+            if _entry_message_role(entry) in ("user", "assistant"):
+                cut_points.append(i)
+            # toolResult: not a cut point — keep it with its assistant turn.
+        elif etype == "customMessage":
+            cut_points.append(i)
+    return cut_points
+
+
+def find_turn_start_index(entries: list[dict[str, Any]], entry_index: int, start_index: int) -> int:
+    """First user-visible entry that starts the turn containing ``entry_index``
+    (pi: findTurnStartIndex). Returns -1 if none."""
+    for i in range(entry_index, start_index - 1, -1):
+        entry = entries[i]
+        if entry.get("type") == "customMessage":
+            return i
+        if _entry_message_role(entry) == "user":
+            return i
+    return -1
+
+
+@dataclass
+class CutPointResult:
+    """Cut point selected for compaction (pi: CutPointResult)."""
+
+    first_kept_entry_index: int
+    turn_start_index: int  # -1 when the cut is a clean user-message boundary
+    is_split_turn: bool
+
+
+def find_cut_point(
+    entries: list[dict[str, Any]],
+    start_index: int,
+    end_index: int,
+    keep_recent_tokens: int,
+) -> CutPointResult:
+    """Choose the cut that retains ~``keep_recent_tokens`` of recent context
+    (pi: findCutPoint)."""
+    cut_points = find_valid_cut_points(entries, start_index, end_index)
+    if not cut_points:
+        return CutPointResult(
+            first_kept_entry_index=start_index, turn_start_index=-1, is_split_turn=False
+        )
+
+    accumulated = 0
+    cut_index = cut_points[0]
+    for i in range(end_index - 1, start_index - 1, -1):
+        entry = entries[i]
+        if entry.get("type") != "message":
+            continue
+        accumulated += estimate_tokens(entry.get("message", {}))
+        if accumulated >= keep_recent_tokens:
+            for c in cut_points:
+                if c >= i:
+                    cut_index = c
+                    break
+            break
+
+    # Walk the cut back over non-message metadata entries so it lands on a real
+    # message/compaction boundary (pi: the while-loop at compaction.ts:358).
+    while cut_index > start_index:
+        prev = entries[cut_index - 1]
+        ptype = prev.get("type")
+        if ptype in ("compaction", "message"):
+            break
+        cut_index -= 1
+
+    cut_entry = entries[cut_index]
+    is_user_message = _entry_message_role(cut_entry) == "user"
+    turn_start_index = (
+        -1 if is_user_message else find_turn_start_index(entries, cut_index, start_index)
+    )
+    return CutPointResult(
+        first_kept_entry_index=cut_index,
+        turn_start_index=turn_start_index,
+        is_split_turn=(not is_user_message and turn_start_index != -1),
+    )
+
+
+# ─── Summarization prompts (verbatim from pi) ────────────────────────────
+
+SUMMARIZATION_SYSTEM_PROMPT = """You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
+
+Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary."""
+
+SUMMARIZATION_PROMPT = """The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
+
+Use this EXACT format:
+
+## Goal
+[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]
+
+## Constraints & Preferences
+- [Any constraints, preferences, or requirements mentioned by user]
+- [Or "(none)" if none were mentioned]
+
+## Progress
+### Done
+- [x] [Completed tasks/changes]
+
+### In Progress
+- [ ] [Current work]
+
+### Blocked
+- [Issues preventing progress, if any]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale]
+
+## Next Steps
+1. [Ordered list of what should happen next]
+
+## Critical Context
+- [Any data, examples, or references needed to continue]
+- [Or "(none)" if not applicable]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages."""
+
+UPDATE_SUMMARIZATION_PROMPT = """The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
+
+Update the existing structured summary with new information. RULES:
+- PRESERVE all existing information from the previous summary
+- ADD new progress, decisions, and context from the new messages
+- UPDATE the Progress section: move items from "In Progress" to "Done" when completed
+- UPDATE "Next Steps" based on what was accomplished
+- PRESERVE exact file paths, function names, and error messages
+- If something is no longer relevant, you may remove it
+
+Use this EXACT format:
+
+## Goal
+[Preserve existing goals, add new ones if the task expanded]
+
+## Constraints & Preferences
+- [Preserve existing, add new ones discovered]
+
+## Progress
+### Done
+- [x] [Include previously done items AND newly completed items]
+
+### In Progress
+- [ ] [Current work - update based on progress]
+
+### Blocked
+- [Current blockers - remove if resolved]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale] (preserve all previous, add new)
+
+## Next Steps
+1. [Update based on current state]
+
+## Critical Context
+- [Preserve important context, add new if needed]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages."""
+
+TURN_PREFIX_SUMMARIZATION_PROMPT = """This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
+
+Summarize the prefix to provide context for the retained suffix:
+
+## Original Request
+[What did the user ask for in this turn?]
+
+## Early Progress
+- [Key decisions and work done in the prefix]
+
+## Context for Suffix
+- [Information needed to understand the retained recent work]
+
+Be concise. Focus on what's needed to understand the kept suffix."""
+
+
+# ─── Summary generation (the LLM calls) ──────────────────────────────────
+
+
+def _summary_text(message: Any) -> str:
+    """Join the text content blocks of an AssistantMessage."""
+    return "\n".join(c.text for c in message.content if isinstance(c, TextContent))
+
+
+def _summary_options(
+    model: Model, api_key: str | None, max_tokens: int, thinking_level: str | None
+) -> dict[str, Any]:
+    options: dict[str, Any] = {"max_tokens": max_tokens}
+    if api_key:
+        options["api_key"] = api_key
+    if model.reasoning and thinking_level and thinking_level != "off":
+        options["reasoning"] = thinking_level
+    return options
+
+
+async def generate_summary(
+    current_messages: list[dict[str, Any]],
+    model: Model,
+    reserve_tokens: int,
+    api_key: str | None,
+    *,
+    custom_instructions: str | None = None,
+    previous_summary: str | None = None,
+    thinking_level: str | None = None,
 ) -> str:
-    """Build the system prompt for compaction.
+    """Generate (or iteratively update) a conversation summary (pi: generateSummary).
 
-    Constructs the full compaction prompt including the system prompt,
-    optional custom instructions, and conversation text from entries.
-
-    Args:
-        entries: Session entries to summarize
-        config: Compaction configuration
-
-    Returns:
-        System prompt string for the LLM
+    Raises:
+        CompactionError: on an aborted/errored or otherwise failed completion.
+            Fail-Early — no fabricated fallback summary.
     """
-    prompt = config.system_prompt
-    if config.custom_instructions:
-        prompt += f"\n\n{config.custom_instructions}"
+    budget = math.floor(0.8 * reserve_tokens)
+    max_tokens = min(budget, model.max_tokens) if model.max_tokens > 0 else budget
 
-    # Append conversation text from entries
-    conversation_parts: list[str] = []
+    base_prompt = UPDATE_SUMMARIZATION_PROMPT if previous_summary else SUMMARIZATION_PROMPT
+    if custom_instructions:
+        base_prompt = f"{base_prompt}\n\nAdditional focus: {custom_instructions}"
+
+    conversation_text = serialize_conversation(current_messages)
+    prompt_text = f"<conversation>\n{conversation_text}\n</conversation>\n\n"
+    if previous_summary:
+        prompt_text += f"<previous-summary>\n{previous_summary}\n</previous-summary>\n\n"
+    prompt_text += base_prompt
+
+    context = {
+        "messages": [
+            {"role": "system", "content": SUMMARIZATION_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": prompt_text}],
+                "timestamp": _now_ms(),
+            },
+        ]
+    }
+    options = _summary_options(model, api_key, max_tokens, thinking_level)
+
+    try:
+        response = await complete_simple(model, context, options)
+    except Exception as exc:  # provider/transport failure
+        raise CompactionError("summarization_failed", f"Summarization failed: {exc}") from exc
+
+    if response.stop_reason == "aborted":
+        raise CompactionError("aborted", response.error_message or "Summarization aborted")
+    if response.stop_reason == "error":
+        raise CompactionError(
+            "summarization_failed",
+            f"Summarization failed: {response.error_message or 'Unknown error'}",
+        )
+
+    return _summary_text(response)
+
+
+async def generate_turn_prefix_summary(
+    messages: list[dict[str, Any]],
+    model: Model,
+    reserve_tokens: int,
+    api_key: str | None,
+    *,
+    thinking_level: str | None = None,
+) -> str:
+    """Summarize the prefix of a split turn (pi: generateTurnPrefixSummary)."""
+    budget = math.floor(0.5 * reserve_tokens)
+    max_tokens = min(budget, model.max_tokens) if model.max_tokens > 0 else budget
+
+    conversation_text = serialize_conversation(messages)
+    prompt_text = (
+        f"<conversation>\n{conversation_text}\n</conversation>\n\n"
+        f"{TURN_PREFIX_SUMMARIZATION_PROMPT}"
+    )
+    context = {
+        "messages": [
+            {"role": "system", "content": SUMMARIZATION_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": prompt_text}],
+                "timestamp": _now_ms(),
+            },
+        ]
+    }
+    options = _summary_options(model, api_key, max_tokens, thinking_level)
+
+    try:
+        response = await complete_simple(model, context, options)
+    except Exception as exc:
+        raise CompactionError(
+            "summarization_failed", f"Turn prefix summarization failed: {exc}"
+        ) from exc
+
+    if response.stop_reason == "aborted":
+        raise CompactionError(
+            "aborted", response.error_message or "Turn prefix summarization aborted"
+        )
+    if response.stop_reason == "error":
+        raise CompactionError(
+            "summarization_failed",
+            f"Turn prefix summarization failed: {response.error_message or 'Unknown error'}",
+        )
+
+    return _summary_text(response)
+
+
+# ─── Preparation + orchestration ─────────────────────────────────────────
+
+
+@dataclass
+class CompactionPreparation:
+    """Prepared inputs for a compaction run (pi: CompactionPreparation)."""
+
+    first_kept_entry_id: str
+    messages_to_summarize: list[dict[str, Any]]
+    turn_prefix_messages: list[dict[str, Any]]
+    is_split_turn: bool
+    tokens_before: int
+    file_ops: FileOperations
+    settings: CompactionSettings
+    previous_summary: str | None = None
+    compacted_entry_ids: list[str] = field(default_factory=list)
+
+
+def _build_messages_from_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Flatten active-path entries to LLM messages.
+
+    Mirrors ``SessionManager.get_active_messages`` so token accounting here
+    matches what the live loop actually sends: ``message`` entries pass through;
+    a prior ``compaction`` entry becomes its summary as a user message.
+    """
+    messages: list[dict[str, Any]] = []
     for entry in entries:
-        # For SessionEntry objects, extract message text if available
-        # In practice this would parse the entry types properly
-        conversation_parts.append(entry.model_dump_json())
+        etype = entry.get("type")
+        if etype == "message":
+            msg = entry.get("message")
+            if isinstance(msg, dict):
+                messages.append(msg)
+        elif etype == "compaction":
+            summary = entry.get("summary", "")
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": f"[[Compaction summary: {summary}]]"}],
+                }
+            )
+    return messages
 
-    if conversation_parts:
-        prompt += "\n\nConversation before this point:\n"
-        prompt += "\n".join(conversation_parts)
 
-    prompt += "\n\nSummary:\n"
-    return prompt
+def _message_for_compaction(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """Message dict to summarize for an entry, or None to skip it.
 
-
-def should_compact(
-    messages: list[Any],
-    model_context_window: int,
-    margin: int = 2000,
-    estimated_tokens_per_message: int = 15,
-) -> bool:
-    """Check if the current context is approaching the model's context window.
-
-    Returns True if compaction should be triggered.
-
-    Uses a simple linear estimation: number_of_messages × estimated_tokens_per_message.
-
-    Args:
-        messages: List of message objects (any type with length)
-        model_context_window: The model's context window size in tokens
-        margin: Token margin to keep before hitting the context limit
-        estimated_tokens_per_message: Estimated tokens per message
-
-    Returns:
-        True if compaction should be triggered
+    pi's getMessageFromEntryForCompaction excludes prior compaction entries (they
+    are not re-summarized). τ likewise skips ``compaction``; ``message`` and
+    ``customMessage`` entries contribute their stored message dict.
     """
-    estimated_tokens = len(messages) * estimated_tokens_per_message
-    available = model_context_window - margin
-    return estimated_tokens >= available
+    etype = entry.get("type")
+    if etype == "compaction":
+        return None
+    if etype in ("message", "customMessage"):
+        msg = entry.get("message")
+        return msg if isinstance(msg, dict) else None
+    return None
 
 
 def prepare_compaction(
-    entries: list[dict],
-    first_kept_entry_id: str,
-    custom_instructions: str | None = None,
-) -> dict:
-    """Prepare the context for compaction.
+    path_entries: list[dict[str, Any]], settings: CompactionSettings
+) -> CompactionPreparation | None:
+    """Prepare active-path entries for compaction, or None when inapplicable.
 
-    Splits entries into compacted (before first_kept) and kept (at/after first_kept).
-    Builds the compaction prompt structure.
+    Faithful port of pi's prepareCompaction (compaction.ts:542), reading τ entry
+    dicts. Returns None when there is nothing to compact (empty path, or the path
+    already ends in a compaction entry).
 
-    Args:
-        entries: List of session entry dicts
-        first_kept_entry_id: ID of the first entry to keep in full
-        custom_instructions: Optional custom instructions for the compaction
-
-    Returns:
-        A dict with:
-        - first_kept_entry: the first entry to keep in full
-        - compacted_entries: entries to compact (before first_kept)
-        - instructions: system prompt for compaction
-        - messages: the full message list for the compaction prompt
+    Raises:
+        CompactionError("invalid_session"): when the chosen first-kept entry has
+            no id.
     """
-    # Find the first kept entry
-    first_kept_entry = None
-    compacted_entries = []
+    if not path_entries or path_entries[-1].get("type") == "compaction":
+        return None
 
-    for entry in entries:
-        if entry.get("id") == first_kept_entry_id:
-            first_kept_entry = entry
+    prev_compaction_index = -1
+    for i in range(len(path_entries) - 1, -1, -1):
+        if path_entries[i].get("type") == "compaction":
+            prev_compaction_index = i
             break
-        compacted_entries.append(entry)
 
-    # If first_kept_entry_id is not found, keep all entries
-    if first_kept_entry is None:
-        first_kept_entry = entries[0] if entries else {}
+    previous_summary: str | None = None
+    boundary_start = 0
+    if prev_compaction_index >= 0:
+        prev = path_entries[prev_compaction_index]
+        previous_summary = prev.get("summary")
+        prev_first_kept = prev.get("first_kept_id")
+        idx = next(
+            (j for j, e in enumerate(path_entries) if e.get("id") == prev_first_kept),
+            -1,
+        )
+        boundary_start = idx if idx >= 0 else prev_compaction_index + 1
 
-    # Build instructions for the compaction prompt
-    instructions = (
-        "You are a context compaction assistant. "
-        "Given the following conversation history before the current point, "
-        "provide a concise summary that captures the essential information, "
-        "decisions, and context needed for future turns.\n\n"
-        "IMPORTANT:\n"
-        "- Be concise but comprehensive\n"
-        "- Include all file paths, code snippets, and configurations mentioned\n"
-        "- Note any decisions made or preferences expressed\n"
-        "- Do NOT include verbatim conversation - summarize\n"
-        "- Include the user's intent and the assistant's approach"
+    boundary_end = len(path_entries)
+
+    tokens_before = estimate_context_tokens(_build_messages_from_entries(path_entries)).tokens
+
+    cut = find_cut_point(path_entries, boundary_start, boundary_end, settings.keep_recent_tokens)
+    first_kept_entry = path_entries[cut.first_kept_entry_index]
+    first_kept_entry_id = first_kept_entry.get("id")
+    if not first_kept_entry_id:
+        raise CompactionError(
+            "invalid_session", "First kept entry has no id - session may need migration"
+        )
+
+    history_end = cut.turn_start_index if cut.is_split_turn else cut.first_kept_entry_index
+    messages_to_summarize: list[dict[str, Any]] = []
+    for i in range(boundary_start, history_end):
+        msg = _message_for_compaction(path_entries[i])
+        if msg is not None:
+            messages_to_summarize.append(msg)
+
+    turn_prefix_messages: list[dict[str, Any]] = []
+    if cut.is_split_turn:
+        for i in range(cut.turn_start_index, cut.first_kept_entry_index):
+            msg = _message_for_compaction(path_entries[i])
+            if msg is not None:
+                turn_prefix_messages.append(msg)
+
+    # Files touched across the summarized range (pi seeds from the previous
+    # compaction's stored details; τ's CompactionEntry does not persist file
+    # lists, so accumulation starts fresh each compaction — documented divergence).
+    file_ops = create_file_ops()
+    for msg in messages_to_summarize:
+        extract_file_ops_from_message(msg, file_ops)
+    for msg in turn_prefix_messages:
+        extract_file_ops_from_message(msg, file_ops)
+
+    # Entry ids replaced by this compaction = everything from the boundary up to
+    # (not including) the first kept entry.
+    compacted_entry_ids = [
+        eid
+        for i in range(boundary_start, cut.first_kept_entry_index)
+        if (eid := path_entries[i].get("id"))
+    ]
+
+    return CompactionPreparation(
+        first_kept_entry_id=first_kept_entry_id,
+        messages_to_summarize=messages_to_summarize,
+        turn_prefix_messages=turn_prefix_messages,
+        is_split_turn=cut.is_split_turn,
+        tokens_before=tokens_before,
+        file_ops=file_ops,
+        settings=settings,
+        previous_summary=previous_summary,
+        compacted_entry_ids=compacted_entry_ids,
     )
 
-    if custom_instructions:
-        instructions += f"\n\n{custom_instructions}"
 
-    # Build the messages list (compactable entries only)
-    messages = compacted_entries
+async def compact(
+    preparation: CompactionPreparation,
+    model: Model,
+    api_key: str | None,
+    *,
+    custom_instructions: str | None = None,
+    thinking_level: str | None = None,
+) -> CompactionResult:
+    """Generate the compaction summary from prepared history (pi: compact).
 
-    return {
-        "first_kept_entry": first_kept_entry,
-        "compacted_entries": compacted_entries,
-        "instructions": instructions,
-        "messages": messages,
-    }
-
-
-def build_compaction_conversation_text(entries: list[dict]) -> str:
-    """Build conversation text from session entries for the compaction prompt.
-
-    Extracts readable conversation text from session entry dicts.
-
-    Args:
-        entries: List of session entry dicts
-
-    Returns:
-        Formatted conversation text
+    On a split turn, the history and the turn prefix are summarized concurrently
+    and stitched together (pi uses ``Promise.all``).
     """
-    parts: list[str] = []
-    for entry in entries:
-        entry_type = entry.get("type", "")
-        if entry_type == "message":
-            msg = entry.get("message", {})
-            role = msg.get("role", "unknown")
-            content = msg.get("content", [])
-            # Extract text from content blocks
-            if isinstance(content, list):
-                texts = []
-                for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "text":
-                            texts.append(block.get("text", ""))
-                        elif block.get("type") == "toolCall":
-                            texts.append(f"[Tool call: {block.get('name', 'unknown')}]")
-                text = " ".join(texts)
-                if text:
-                    parts.append(f"{role}: {text}")
-            elif isinstance(content, str) and content:
-                parts.append(f"{role}: {content}")
-        elif entry_type == "compaction":
-            summary = entry.get("summary", "")
-            if summary:
-                parts.append(f"[Compaction: {summary}]")
-        else:
-            # For other entry types, include a brief representation
-            if entry.get("id"):
-                parts.append(f"[{entry_type}: {entry['id']}]")
-    return "\n".join(parts)
+    if not preparation.first_kept_entry_id:
+        raise CompactionError(
+            "invalid_session", "First kept entry has no id - session may need migration"
+        )
+
+    if preparation.is_split_turn and preparation.turn_prefix_messages:
+
+        async def _history() -> str:
+            if not preparation.messages_to_summarize:
+                return "No prior history."
+            return await generate_summary(
+                preparation.messages_to_summarize,
+                model,
+                preparation.settings.reserve_tokens,
+                api_key,
+                custom_instructions=custom_instructions,
+                previous_summary=preparation.previous_summary,
+                thinking_level=thinking_level,
+            )
+
+        history_summary, turn_prefix_summary = await asyncio.gather(
+            _history(),
+            generate_turn_prefix_summary(
+                preparation.turn_prefix_messages,
+                model,
+                preparation.settings.reserve_tokens,
+                api_key,
+                thinking_level=thinking_level,
+            ),
+        )
+        summary = (
+            f"{history_summary}\n\n---\n\n**Turn Context (split turn):**\n\n{turn_prefix_summary}"
+        )
+    else:
+        summary = await generate_summary(
+            preparation.messages_to_summarize,
+            model,
+            preparation.settings.reserve_tokens,
+            api_key,
+            custom_instructions=custom_instructions,
+            previous_summary=preparation.previous_summary,
+            thinking_level=thinking_level,
+        )
+
+    read_files, modified_files = compute_file_lists(preparation.file_ops)
+    summary += format_file_operations(read_files, modified_files)
+
+    tokens_saved = max(0, preparation.tokens_before - math.ceil(len(summary) / 4))
+
+    return CompactionResult(
+        summary=summary,
+        first_kept_entry_id=preparation.first_kept_entry_id,
+        tokens_before=preparation.tokens_before,
+        details=CompactionDetails(read_files=read_files, modified_files=modified_files),
+        compacted_entry_ids=preparation.compacted_entry_ids,
+        tokens_saved=tokens_saved,
+    )
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)

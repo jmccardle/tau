@@ -29,7 +29,7 @@ from tau_ai.tools import define_tool, validate_tool_arguments
 from tau_ai.abort import AbortSignal
 from tau_ai.providers.base import Provider
 from tau_ai.providers.registry import ProviderRegistry
-from tau_ai.client import stream_simple
+from tau_ai.client import complete_simple, stream_simple
 
 __all__ = [
     # Types
@@ -58,4 +58,5 @@ __all__ = [
     "ProviderRegistry",
     # Client
     "stream_simple",
+    "complete_simple",
 ]

@@ -42,7 +42,17 @@ from tau_agent_core.tools.base import (
 )
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_manager import SessionManager
-from tau_agent_core.compaction import CompactionConfig, CompactionResult
+from tau_agent_core.compaction import (
+    DEFAULT_COMPACTION_SETTINGS,
+    CompactionDetails,
+    CompactionError,
+    CompactionResult,
+    CompactionSettings,
+    compact,
+    estimate_context_tokens,
+    prepare_compaction,
+    should_compact,
+)
 from tau_agent_core.sdk import create_agent_session
 from tau_agent_core.session_manager import summarize_branch
 from tau_agent_core.rpc import RPCRequest, RPCResponse, RPCEvent, RPCHandler
@@ -81,8 +91,15 @@ __all__ = [
     "AgentToolResult",
     "ToolBatchResult",
     # Compaction
-    "CompactionConfig",
+    "CompactionSettings",
     "CompactionResult",
+    "CompactionDetails",
+    "CompactionError",
+    "DEFAULT_COMPACTION_SETTINGS",
+    "prepare_compaction",
+    "compact",
+    "should_compact",
+    "estimate_context_tokens",
     # SDK
     "create_agent_session",
     # Branch summarization

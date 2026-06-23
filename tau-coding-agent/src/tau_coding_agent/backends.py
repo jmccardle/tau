@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable
 from tau_ai.types import Model
 from tau_agent_core.agent_session import AgentSession
+from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.session_manager import SessionManager
 from tau_agent_core.sdk import _resolve_tools
 
@@ -98,6 +99,12 @@ class TauBackend(Backend):
         # servers use the "not-needed" sentinel, which is passed through as-is.
         # (Previously this was stashed in an unused self._api_key and dropped,
         # so a real-OpenAI key from config never reached the provider.)
+        # Auto-compaction is disabled here: the TUI's own ``current_chat.messages``
+        # — not this session manager — is the context it sends to the model, so a
+        # post-turn auto-compaction on the session manager would do useless work
+        # (and fire a slow summary LLM call every turn once it crossed the
+        # threshold). The TUI compacts explicitly via ``/compact`` →
+        # ``compact_messages``, which still works with auto-compaction off.
         self.agent_session = AgentSession(
             session_manager=self.session_manager,
             model=model,
@@ -105,10 +112,21 @@ class TauBackend(Backend):
             tools=tools,
             api_key=api_key,
             reasoning=reasoning_arg,
+            compaction_settings=CompactionSettings(enabled=False),
         )
 
         # Create a new session in the session manager (required before use)
         self.session_manager.new_session()
+
+    async def compact_messages(self, messages: list[dict]) -> list[dict] | None:
+        """Compact the conversation the TUI sends, returning the shortened list.
+
+        Delegates to the AgentSession's compaction engine. Operates on the
+        caller's ``messages`` (the TUI's authoritative ``current_chat.messages``,
+        which ``stream_chat`` passes as the LLM context) — not the parallel
+        session-manager path. Returns None when there is nothing to compact.
+        """
+        return await self.agent_session.compact_messages(messages)
 
     async def _extract_last_user_message(self, messages: list[dict]) -> str:
         """Extract the last user message text from a Parley messages list."""

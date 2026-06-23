@@ -48,7 +48,7 @@ retires itself.
 
 ## The path forward (Tiers 5–12)
 
-### Tier 5 — Quality gate (DONE, one item open) — *shipped 2026-06-22*
+### Tier 5 — Quality gate (DONE) — *shipped 2026-06-22; compaction landed 2026-06-22*
 
 A tracked `.githooks/pre-commit` (`core.hooksPath .githooks`) running **ruff
 check + ruff format --check + mypy** over the three `src` trees, hard-gating
@@ -79,11 +79,35 @@ dependency; Fail-Early (requires the in-repo venv tools, no PATH fallback).
   a missing spec/`extend()` instead of fabricating a silent no-op.
 - **Blocking hook: DONE** (commit `5fd4c4f`). Activate per-clone with
   `git config core.hooksPath .githooks`.
-- **STILL OPEN — LLM-backed compaction.** `compaction.py:151-153` is a marked
-  placeholder that builds the compaction prompt, discards it, and **fabricates**
-  `summary = config.system_prompt + " - Compacted N entries"` — a standing
-  Fail-Early violation, currently `# noqa: F841` with a pointer. pi's compaction
-  is the reference. The one remaining Tier-5 item.
+- **LLM-backed compaction: DONE** — faithful port of pi's
+  `packages/agent/.../compaction/compaction.ts`. The fabricated-summary
+  placeholder is gone; `compaction.py` is a full port (Usage-based token
+  estimation, structured summarization prompts incl. the iterative `UPDATE`
+  prompt, split-turn handling, file-op tracking) operating on τ's active-path
+  entry dicts. Supporting changes:
+    - `tau-ai`: new `complete_simple(model, context, options)` (port of pi's
+      `completeSimple`, stream.ts:67) — the non-streaming primitive the summary
+      call uses.
+    - new `compaction_utils.py` (port of pi's `utils.ts`):
+      `serialize_conversation`, file-op extraction, `format_file_operations`.
+    - `SessionManager.apply_compaction` — splices the summary entry at the
+      boundary (re-parents `first_kept` onto it) so the compacted prefix drops
+      out of the active path; `_build_active_path` now anchors on the **last**
+      compaction (pi `buildSessionContext` parity) so iterative compaction
+      actually prunes.
+    - `AgentSession.compact()` runs the real pipeline (manual `/compact`) and
+      `prompt()` auto-compacts after a turn via `should_compact`
+      (`compaction_settings`, gated so a window ≤ reserve never trips it).
+    - Errors raise `CompactionError` (Pythonic translation of pi's
+      `Result<T, CompactionError>`); **no fabricated fallback summary** — Fail-Early.
+  Replaced the placeholder-era `compaction.py` API (`CompactionConfig`,
+  `compact_session`, `build_compaction_prompt`, …) and rewrote
+  `test_phase5_subphase1.py` against the new engine. **Tier 5 is now fully
+  closed.**
+- **Follow-up (separate concern, NOT compaction):** `session_manager.summarize_branch`
+  still falls back to truncated raw text on an LLM error (lines ~730-734) — the
+  same anti-pattern compaction just shed. It should be refactored onto
+  `complete_simple` + raise. Tracked here so it isn't forgotten.
 
 ### Tier 6 — CLI parity quick-wins + json doc-fix — *pre/parallel to the session sprint*
 
@@ -229,7 +253,7 @@ tier with near-zero rework:
 
 ## Suggested order
 
-Tier 5 (now) → Tier 6 + the session sprint (with the 4 seams) in parallel →
-Tier 7 → Tier 8 → Tier 9 → Tier 10 → Tier 11 (epic) → Tier 12. Tier 5's mypy
-cleanup and the dead-code / `compaction` items are independent of everything else
-and can fill any gap.
+Tier 6 + the session sprint (with the 4 seams) in parallel → Tier 7 → Tier 8 →
+Tier 9 → Tier 10 → Tier 11 (epic) → Tier 12. Tier 5 is fully closed (mypy gate +
+LLM-backed compaction); the only loose thread it leaves is the `summarize_branch`
+Fail-Early follow-up noted under Tier 5, which can fill any gap.
