@@ -4,13 +4,17 @@ Living schedule of open work. Each item cites the evidence (file:line, doc, or
 test) it came from so it can be audited against the source of truth (pi) and the
 "Fail Early" rule.
 
-**State (2026-06-23):** branch `master`. Suite **1397 passed / 0 failed**.
-Static checks: **ruff clean** (0 issues), **mypy 0** (was 55; the Tier-5 gate is
-green and now enforced by a blocking pre-commit hook — commits `5fd4c4f`,
-`ac6236c`). The phase-build (`docs/PHASE-*`) and the post-build bug/quality
-backlog (former Tiers 1–4, summarized below) are **complete**. Forward work is
-Tiers 5–12, sequenced around the committed **`docs/SESSION-UX-REDESIGN.md`**
-sprint — whose **Phase A (storage layer) is now landed** (see below). Scope/
+**State (2026-06-26):** `master` is at Phase A (`3968540`); a completed
+**`feat/streaming-ux`** branch (4 commits, `ea89735`→`5ed3892`) sits **in review,
+not yet merged**. Suite **1401 passed / 0 failed** (2 pre-existing "event loop is
+closed" ResourceWarnings). Static checks: **ruff clean**, **ruff format clean**
+(48 files), **mypy 0** (was 55) — the Tier-5 gate stayed green across the branch
+and is enforced by the blocking pre-commit hook (commits `5fd4c4f`, `ac6236c`).
+The phase-build (`docs/PHASE-*`) and the post-build bug/quality backlog (former
+Tiers 1–4, summarized below) are **complete**. Forward work is Tiers 5–12,
+sequenced around the committed **`docs/SESSION-UX-REDESIGN.md`** sprint — whose
+**Phase A (storage layer) is landed**; a **Streaming-UX** quality pass (live
+reasoning + cancellable generation) now sits in review (see below). Scope/
 complexity for Tiers 6–12 was established by a five-agent research pass
 (2026-06-22); each tier cites the pi parity targets it rests on.
 
@@ -76,6 +80,38 @@ replaced the chat-web `Chat` blob. Landed interface (`session_store.py`):
   `test_headless_resume.py`; suite 1397/0, gate green. **No migration of
   `~/.tau/chats`** (abandoned, decision 1). **Next: Phase B** (picker modal),
   **Phase C** (command unification + sidebar-closed default).
+
+### Streaming UX — live reasoning + cancellable generation (DONE, in review) — *`feat/streaming-ux`, 2026-06-26*
+
+Two live-path defects the session sprint surfaced: reasoning tokens were invisible
+until the whole turn completed, and the TUI message pump was parked for the full
+generation (no cancel). Four commits, **15 files, +650/−353**; gate green
+throughout; suite 1401/0. Not merged — awaiting maintainer review.
+
+- **`f9d1e3d` — stream the HTTP body.** `tau-ai` provider switched `client.post()`
+  (buffers the entire response before the first delta) → `async with
+  client.stream("POST", …)`; non-200 reads the body via `await response.aread()`
+  before raising. Root cause of "no reasoning until complete" — fixes it for
+  **both** the TUI and headless.
+- **`ea89735` — one stream class.** Collapsed the two same-named
+  `AssistantMessageEventStream` wrappers (provider-local + `streaming.py`) into one
+  and deleted a second, never-reached OpenAI-chunk accumulator path (kept alive
+  only by 2 tests). Net −184 lines. *(Correction on the record: the initial "one
+  class is dead in the live path" read was wrong — `stream_simple` does wrap the
+  provider stream; verified by grep before cutting, and the dead thing was the
+  duplicate accumulator, not a class.)*
+- **`3faf4ba` — abort into the stream.** The `AbortSignal` existed but never
+  reached the provider; threaded via `options["abort_signal"]`, stripped from the
+  request body, polled at the top of the SSE loop → finalizes with stop_reason
+  `aborted`. Mid-completion cancel, not just turn-boundary.
+- **`5ed3892` — worker + Esc-to-cancel.** TUI generation runs in a
+  `@work(exclusive=True, group="generation")` worker so the App message pump stays
+  live; `Esc` → `Backend.abort()` → cooperative stop at the next streamed delta,
+  partial answer kept (no hard task-cancel, no `CancelledError` half-state).
+- **Scope boundary (deliberate / Fail-Early):** cancel is cooperative — a fully
+  *stalled* server won't abort until the next byte or httpx timeout. A hard
+  worker-cancel backstop would cover that but reintroduces `CancelledError`
+  handling; left out by design, easy follow-up.
 
 ### Tier 5 — Quality gate (DONE) — *shipped 2026-06-22; compaction landed 2026-06-22*
 
