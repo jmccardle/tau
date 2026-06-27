@@ -16,16 +16,18 @@ from textual.screen import ModalScreen
 from pathlib import Path
 from datetime import datetime, timedelta
 import json
+import os
 import time
 import traceback
 from typing import Optional
 
 from tau_coding_agent.backends import create_backend, Backend
 
-# Chat persistence lives in a Textual-free module so `tau -p` can save sessions
-# without importing the TUI. TAU_DIR/Chat are re-exported here for the TUI's use
-# (and so existing `from tau_coding_agent.app import Chat` keeps working).
-from tau_coding_agent.session_store import TAU_DIR, Chat
+# Session persistence lives in a Textual-free module so `tau -p` can save
+# sessions without importing the TUI. Sessions are append-only JSONL transcripts
+# partitioned by cwd (docs/SESSION-UX-REDESIGN.md); the TUI keeps a live working
+# message list and funnels each produced message through Session.append_message.
+from tau_coding_agent.session_store import TAU_DIR, Session, SessionInfo, list_sessions
 
 # Collapsible chat components. MessageBox (below) is the universal per-message
 # host; these are the children it composes — one reasoning region and N tool
@@ -269,20 +271,20 @@ ChatMessage = MessageBox
 
 
 class ChatListItem(Static):
-    """A clickable chat list item."""
+    """A clickable session list item."""
 
-    def __init__(self, chat_path: Path, chat: Chat):
-        super().__init__(f"• {chat.get_display_title()}", classes="chat-list-item")
-        self.chat_path = chat_path
-        self.chat = chat
+    def __init__(self, info: SessionInfo):
+        super().__init__(f"• {info.display_title()}", classes="chat-list-item")
+        self.chat_path = info.path
+        self.info = info
 
     def on_click(self):
-        """Handle click to load this chat."""
+        """Handle click to load this session."""
         self.post_message(ChatSelected(self.chat_path))
 
 
 class ChatSelected(Message):
-    """Message sent when a chat is selected from the sidebar."""
+    """Message sent when a session is selected from the sidebar."""
 
     def __init__(self, chat_path: Path):
         super().__init__()
@@ -290,11 +292,11 @@ class ChatSelected(Message):
 
 
 class ChatSidebar(Container):
-    """Sidebar showing recent chats grouped by date."""
+    """Sidebar showing this directory's recent sessions, grouped by date."""
 
     def __init__(self):
         super().__init__(id="sidebar")
-        self.chats: list[Path] = []
+        self.sessions: list[SessionInfo] = []
 
     def compose(self) -> ComposeResult:
         """Compose sidebar contents."""
@@ -306,59 +308,54 @@ class ChatSidebar(Container):
             pass
 
     def refresh_chats(self):
-        """Refresh the list of chats."""
-        self.chats = Chat.list_recent()
+        """Refresh the session list (cwd-scoped — §8 of the redesign)."""
+        self.sessions = list_sessions(os.getcwd())
         self._render_chat_list()
 
     def _render_chat_list(self):
-        """Render the chat list grouped by date."""
+        """Render the session list grouped by recency."""
         chat_list = self.query_one("#chat-list", VerticalScroll)
 
         # Clear existing items
         chat_list.query("ChatListItem, Static").remove()
 
-        if not self.chats:
-            chat_list.mount(Static("No chats yet", classes="chat-list-empty"))
+        if not self.sessions:
+            chat_list.mount(Static("No sessions yet", classes="chat-list-empty"))
             return
 
-        # Group by date
+        # Group by date (SessionInfo.modified is UTC; compare in local time).
         now = datetime.now()
-        today = []
-        yesterday = []
-        older = []
+        today: list[SessionInfo] = []
+        yesterday: list[SessionInfo] = []
+        older: list[SessionInfo] = []
 
-        for path in self.chats:
-            try:
-                chat = Chat.load(path)
-                created = datetime.fromtimestamp(chat.created_at)
-
-                if created.date() == now.date():
-                    today.append((path, chat))
-                elif created.date() == (now - timedelta(days=1)).date():
-                    yesterday.append((path, chat))
-                else:
-                    older.append((path, chat))
-            except Exception as e:
-                self.app.log(f"Failed to load chat {path}: {e}")
+        for info in self.sessions:
+            when = info.modified.astimezone()
+            if when.date() == now.date():
+                today.append(info)
+            elif when.date() == (now - timedelta(days=1)).date():
+                yesterday.append(info)
+            else:
+                older.append(info)
 
         # Mount grouped items
         if today:
             chat_list.mount(Static("[bold]Today[/bold]", classes="chat-group-header"))
-            for path, chat in today:
-                chat_list.mount(ChatListItem(path, chat))
+            for info in today:
+                chat_list.mount(ChatListItem(info))
 
         if yesterday:
             chat_list.mount(Static("[bold]Yesterday[/bold]", classes="chat-group-header"))
-            for path, chat in yesterday:
-                chat_list.mount(ChatListItem(path, chat))
+            for info in yesterday:
+                chat_list.mount(ChatListItem(info))
 
         if older:
             chat_list.mount(Static("[bold]Older[/bold]", classes="chat-group-header"))
-            for path, chat in older[:10]:  # Limit older chats
-                chat_list.mount(ChatListItem(path, chat))
+            for info in older[:10]:  # Limit older sessions
+                chat_list.mount(ChatListItem(info))
 
     def on_mount(self):
-        """Refresh chats when mounted."""
+        """Refresh sessions when mounted."""
         self.refresh_chats()
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -880,7 +877,11 @@ class Parley(App):
         Binding("ctrl+c", "quit", "Quit"),
     ]
 
-    current_chat: reactive[Optional[Chat]] = reactive(None)
+    # The active persisted session (append-only sink) and the live working
+    # message list sent to the model. They are kept in step: every produced
+    # message is appended to both; clear/compact mutate the working list (the
+    # session file keeps the full transcript — append-only, no rewrite).
+    current_session: reactive[Optional[Session]] = reactive(None)
     current_backend: Optional[Backend] = None
     config: dict = {}
     # Global show/hide state for the two collapsible content kinds. Each toggle
@@ -891,6 +892,9 @@ class Parley(App):
 
     def __init__(self, cli_overrides: Optional[dict] = None):
         super().__init__()
+        # The live conversation context (sent to the model). Mirrors the active
+        # session's messages but is mutable for clear/compact.
+        self.messages: list[dict] = []
         self.load_config()
         if cli_overrides:
             self._apply_cli_overrides(cli_overrides)
@@ -997,13 +1001,14 @@ class Parley(App):
             await self.action_compact()
             return
 
-        # Create new chat if needed
-        if self.current_chat is None:
+        # Create new session if needed
+        if self.current_session is None:
             await self.action_new_chat()
-        assert self.current_chat is not None  # action_new_chat sets current_chat
+        assert self.current_session is not None  # action_new_chat sets current_session
 
-        # Add user message to chat
-        self.current_chat.messages.append({"role": "user", "content": message})
+        # Add user message to the working list + persist it.
+        self.messages.append({"role": "user", "content": message})
+        self.current_session.append_message({"role": "user", "content": message})
 
         # Display user message
         display = self.query_one(ChatDisplay)
@@ -1055,10 +1060,11 @@ class Parley(App):
         def on_event(event: dict) -> None:
             display.handle_stream_event(event)
 
+        assert self.current_session is not None  # set before a turn runs
         start = time.time()
         await display.begin_exchange()
         content, usage, new_messages, tool_calls_info = await self.current_backend.stream_chat(
-            self.current_chat.messages,
+            self.messages,
             lambda _delta: None,
             on_event=on_event,
         )
@@ -1067,15 +1073,13 @@ class Parley(App):
         # Collapse the exchange to its summary and surface the final answer.
         await display.finalize_exchange(tokens=usage.get("total_tokens", 0), seconds=elapsed)
 
-        # Update chat history with new messages from agent loop
-        # (assistant responses + tool results, skip user message which
-        # is already in self.current_chat.messages)
+        # Append the loop's new messages (assistant responses + tool results,
+        # skipping the user message already in self.messages) to both the working
+        # list and the session — append-on-message persists each as it lands.
         for msg in new_messages:
             if msg.get("role") != "user":
-                self.current_chat.messages.append(msg)
-
-        # Save chat
-        self.current_chat.save()
+                self.messages.append(msg)
+                self.current_session.append_message(msg)
 
         # Refresh sidebar
         self.query_one(ChatSidebar).refresh_chats()
@@ -1103,14 +1107,15 @@ class Parley(App):
             self.log.error(f"Backend creation failed: {e}", exc_info=True)
             return
 
-        # Create new chat
+        # Create new session (writes the header + system message; append-only).
         system_prompt = self.config.get("system_prompt", "You are a helpful assistant.")
-        self.current_chat = Chat(
-            model=model,
-            backend=model_config["backend"],
-            messages=[{"role": "system", "content": system_prompt}],
-            created_at=time.time(),
+        self.current_session = Session.create(
+            os.getcwd(),
+            model,
+            model_config["backend"],
+            system_prompt=system_prompt or None,
         )
+        self.messages = list(self.current_session.messages)
 
         # Clear display
         display = self.query_one(ChatDisplay)
@@ -1119,9 +1124,6 @@ class Parley(App):
         # Update UI
         self.sub_title = f"{model}"
         self.notify(f"Started new chat with {model}")
-
-        # Save initial chat
-        self.current_chat.save()
 
         # Refresh sidebar
         self.query_one(ChatSidebar).refresh_chats()
@@ -1186,10 +1188,10 @@ class Parley(App):
 
     def _refresh_subtitle(self) -> None:
         """Set the header subtitle to the model plus the conversation rollup."""
-        if not self.current_chat:
+        if not self.current_session:
             return
-        agg = self._aggregate_label(self.current_chat.messages)
-        model = str(self.current_chat.model)
+        agg = self._aggregate_label(self.messages)
+        model = str(self.current_session.model)
         self.sub_title = f"{model} · {agg}" if agg else model
 
     def action_focus_and_send(self):
@@ -1245,38 +1247,50 @@ class Parley(App):
         )
 
     async def action_clear_chat(self):
-        """Clear the current chat."""
-        if self.current_chat:
-            # Keep only system message
-            system_msg = next(
-                (m for m in self.current_chat.messages if m["role"] == "system"), None
-            )
-            if system_msg:
-                self.current_chat.messages = [system_msg]
-            else:
-                self.current_chat.messages = []
+        """Clear the current conversation, starting a fresh session.
 
-            # Clear display
-            display = self.query_one(ChatDisplay)
-            display.clear_messages()
+        The store is append-only, so "clear" can't truncate the file in place —
+        it begins a new session carrying just the system prompt (the prior
+        session stays on disk as its own transcript).
+        """
+        if not self.current_session:
+            return
 
-            self.notify("Chat cleared")
+        system_msg = next((m for m in self.messages if m.get("role") == "system"), None)
+        system_prompt = (
+            system_msg["content"]
+            if system_msg and isinstance(system_msg.get("content"), str)
+            else None
+        )
+        self.current_session = Session.create(
+            os.getcwd(),
+            self.current_session.model,
+            self.current_session.backend,
+            system_prompt=system_prompt,
+        )
+        self.messages = list(self.current_session.messages)
+
+        # Clear display
+        display = self.query_one(ChatDisplay)
+        display.clear_messages()
+        self.query_one(ChatSidebar).refresh_chats()
+
+        self.notify("Chat cleared")
 
     async def action_export_chat(self):
-        """Export current chat to markdown."""
-        if not self.current_chat:
+        """Export current session to markdown."""
+        if not self.current_session:
             self.notify("No chat to export", severity="warning")
             return
 
         # Build markdown
-        lines = [f"# {self.current_chat.get_display_title()}\n"]
-        lines.append(f"Model: {self.current_chat.model}\n")
-        lines.append(
-            f"Date: {datetime.fromtimestamp(self.current_chat.created_at).strftime('%Y-%m-%d %H:%M')}\n"
-        )
+        created = datetime.fromisoformat(self.current_session.header["timestamp"])
+        lines = [f"# {self.current_session.display_title()}\n"]
+        lines.append(f"Model: {self.current_session.model}\n")
+        lines.append(f"Date: {created.astimezone().strftime('%Y-%m-%d %H:%M')}\n")
         lines.append("---\n")
 
-        for msg in self.current_chat.messages:
+        for msg in self.messages:
             role = msg["role"].capitalize()
             # Persisted assistant/tool messages store content as a block list;
             # flatten to readable text rather than dumping a Python list repr.
@@ -1287,7 +1301,7 @@ class Parley(App):
         export_path = TAU_DIR / "exports"
         export_path.mkdir(parents=True, exist_ok=True)
 
-        filename = f"chat_{int(self.current_chat.created_at)}.md"
+        filename = f"chat_{self.current_session.id}.md"
         file_path = export_path / filename
         file_path.write_text("\n".join(lines))
 
@@ -1298,10 +1312,12 @@ class Parley(App):
 
         Summarizes the older messages via the model and replaces them with a
         single checkpoint, freeing context for the conversation to continue.
-        Operates on ``current_chat.messages`` — the list actually sent to the
-        model — then re-renders.
+        Operates on ``self.messages`` — the live list sent to the model — then
+        re-renders. The session file keeps the full transcript (append-only, no
+        rewrite); compaction is a runtime context optimization on the working
+        list, so a resumed session still has its complete history.
         """
-        if not self.current_chat:
+        if not self.current_session:
             self.notify("No chat to compact", severity="warning")
             return
 
@@ -1312,9 +1328,9 @@ class Parley(App):
 
         self.notify("Compacting conversation…")
         self.sub_title = "Compacting…"
-        before = len(self.current_chat.messages)
+        before = len(self.messages)
         try:
-            new_messages = await backend.compact_messages(self.current_chat.messages)
+            new_messages = await backend.compact_messages(self.messages)
         except Exception as e:
             self.notify(f"Compaction failed: {e}", severity="error")
             self.log.error(f"Compaction failed: {e}")
@@ -1327,11 +1343,9 @@ class Parley(App):
             self._refresh_subtitle()
             return
 
-        self.current_chat.messages = new_messages
-        self.current_chat.save()
+        self.messages = new_messages
         # reload_messages lives on the ChatDisplay widget, not the app.
-        await self.query_one(ChatDisplay).reload_messages(self.current_chat.messages)
-        self.query_one(ChatSidebar).refresh_chats()
+        await self.query_one(ChatDisplay).reload_messages(self.messages)
         self._refresh_subtitle()
         self.notify(f"Compacted {before} → {len(new_messages)} messages")
 
@@ -1350,33 +1364,34 @@ class Parley(App):
         await self.push_screen(SystemPromptEditor(current_prompt), handle_result)
 
     async def on_chat_selected(self, message: ChatSelected):
-        """Handle chat selection from sidebar."""
+        """Handle session selection from sidebar."""
         try:
-            # Load the selected chat
-            chat = Chat.load(message.chat_path)
+            # Load the selected session
+            session = Session.load(message.chat_path)
 
             # Get model config and create backend
-            model_config = self.config["models"].get(chat.model)
+            model_config = self.config["models"].get(session.model)
             if not model_config:
-                self.notify(f"Model {chat.model} not found in config", severity="error")
+                self.notify(f"Model {session.model} not found in config", severity="error")
                 return
 
             self.current_backend = create_backend(model_config)
-            self.current_chat = chat
+            self.current_session = session
+            self.messages = list(session.messages)
 
             # Reload the display, reconstructing exchanges from the persisted
-            # flat message list so a reloaded chat looks like a freshly-streamed
+            # flat message list so a reloaded session looks like a freshly-streamed
             # one (collapsed exchanges, folded tool boxes, promoted final answer).
             display = self.query_one(ChatDisplay)
-            await display.reload_messages(chat.messages)
+            await display.reload_messages(self.messages)
 
             # Update UI — model + the reloaded conversation's rollup.
             self._refresh_subtitle()
-            self.notify(f"Loaded chat: {chat.get_display_title()}")
+            self.notify(f"Loaded session: {session.display_title()}")
 
         except Exception as e:
-            self.notify(f"Error loading chat: {str(e)}", severity="error")
-            self.log.error(f"Failed to load chat: {e}", exc_info=True)
+            self.notify(f"Error loading session: {str(e)}", severity="error")
+            self.log.error(f"Failed to load session: {e}", exc_info=True)
 
 
 if __name__ == "__main__":

@@ -1,87 +1,532 @@
-"""Persistence for τ chat sessions — the on-disk format shared by the TUI and
-the headless ``--print`` path.
+"""Persistence for τ coding sessions — append-only JSONL, partitioned by cwd.
 
-A *session* is one :class:`Chat` JSON file under ``~/.tau/chats/``. Both the
-Parley TUI (``app.py``) and ``tau -p`` (``headless.py``) read and write this same
-format, so a headless run shows up in the sidebar and can be resumed there.
+A *session* is one ``.jsonl`` file under
+``~/.tau/sessions/<dashed-cwd>/<iso-ts>_<uuid4>.jsonl``. Line 1 is a header; lines
+2..N are append-only entries (messages, model/thinking changes, the mutable
+session name, compaction markers). Both the Parley TUI (``app.py``) and ``tau -p``
+(``headless.py``) read and write this format, so a headless run is resumable in
+the TUI and vice-versa.
 
-This module is deliberately free of any Textual import: ``tau -p`` must not pull
-in the TUI just to save a session.
+This is the **coding-agent** session shape (cwd-scoped transcripts), replacing the
+chat-web ``Chat`` blob τ inherited from Parley. The module is deliberately free of
+any Textual import: ``tau -p`` must not pull in the TUI just to persist a session.
 
-Reference: docs/CLI-PLAN.md (session persistence), docs/TUI-FOLLOWUPS.md (#1).
+Reference: docs/SESSION-UX-REDESIGN.md (§5 on-disk format; §9 Phase A seams).
+pi parity: packages/coding-agent/src/core/session-manager.ts (cited inline).
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+import os
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable
 
-# τ data dir for config and chat storage (matches app.py / cli.py).
+# τ data dir for config and session storage (matches app.py / cli.py).
 TAU_DIR = Path.home() / ".tau"
+# pi derives this from APP_NAME (config.ts:481-482, PI_CODING_AGENT_SESSION_DIR);
+# a TAU_CODING_AGENT_SESSION_DIR override is reserved but not implemented (§5.1).
+SESSIONS_DIRNAME = "sessions"
+# Header schema version (§5.3). Bumped only on a breaking on-disk change.
+SESSION_VERSION = 1
+
+# ---------------------------------------------------------------------------
+# Seam 3 — session lifecycle events (docs/SESSION-UX-REDESIGN.md §9 Phase A).
+#
+# Session.create/load/fork/append_compaction emit events here. There is *no*
+# consumer yet — this exists so the emit points are baked in now; Tier 11
+# (extension hooks) attaches subscribers without a loop retrofit. Kept minimal
+# and in-process; no fabricated behaviour (Fail-Early).
+# ---------------------------------------------------------------------------
+
+SESSION_START = "session_start"
+SESSION_BEFORE_FORK = "session_before_fork"
+SESSION_BEFORE_COMPACT = "session_before_compact"
+SESSION_SHUTDOWN = "session_shutdown"
+
+_session_listeners: list[Callable[[dict[str, Any]], None]] = []
+
+
+def subscribe_session_events(listener: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
+    """Register a session-lifecycle listener; returns an unsubscribe callable."""
+    _session_listeners.append(listener)
+
+    def _unsubscribe() -> None:
+        if listener in _session_listeners:
+            _session_listeners.remove(listener)
+
+    return _unsubscribe
+
+
+def _emit_session_event(event_type: str, session: "Session", **extra: Any) -> None:
+    event: dict[str, Any] = {"type": event_type, "session": session, **extra}
+    for listener in list(_session_listeners):
+        listener(event)
+
+
+# ---------------------------------------------------------------------------
+# Path / id / time helpers (pi parity cited inline).
+# ---------------------------------------------------------------------------
+
+
+def _sessions_base(base_dir: Path | None) -> Path:
+    """The directory that holds the per-cwd subdirs (seam 1: ``base_dir`` slot)."""
+    return base_dir if base_dir is not None else TAU_DIR / SESSIONS_DIRNAME
+
+
+def session_dir_for_cwd(cwd: str, base_dir: Path | None = None) -> Path:
+    """Map a working directory to its dashed-cwd session dir.
+
+    Ports pi's ``getDefaultSessionDirPath`` (session-manager.ts:438-442):
+    ``--`` + abspath (leading slash stripped, ``/`` ``\\`` ``:`` → ``-``) + ``--``.
+    ``/home/john/Development/agent-harness-py`` →
+    ``--home-john-Development-agent-harness-py--``.
+    """
+    abspath = os.path.abspath(cwd)
+    dashed = (
+        "--" + abspath.lstrip("/\\").replace("/", "-").replace("\\", "-").replace(":", "-") + "--"
+    )
+    return _sessions_base(base_dir) / dashed
+
+
+def _now_iso() -> str:
+    """Current UTC time as an ISO-8601 string with millisecond precision + ``Z``.
+
+    Mirrors JS ``new Date().toISOString()`` (e.g. ``2026-06-22T14:03:51.204Z``).
+    """
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+
+
+def _parse_iso(value: str) -> datetime:
+    """Parse an ISO timestamp (our own ``_now_iso`` output, incl. the ``Z``)."""
+    # Python 3.11+ datetime.fromisoformat accepts the trailing 'Z'.
+    return datetime.fromisoformat(value)
+
+
+def _session_filename(timestamp_iso: str, session_id: str) -> str:
+    """``<iso-ts-dashes>_<id>.jsonl`` (§5.2; pi session-manager.ts:845).
+
+    Colons and periods → ``-`` so the filename is filesystem-safe *and* sorts
+    chronologically under ``ls``.
+    """
+    file_ts = timestamp_iso.replace(":", "-").replace(".", "-")
+    return f"{file_ts}_{session_id}.jsonl"
+
+
+def _generate_entry_id(existing: set[str]) -> str:
+    """8-hex collision-checked entry id (pi ``generateId``, session-manager.ts:215)."""
+    for _ in range(100):
+        candidate = uuid.uuid4().hex[:8]
+        if candidate not in existing:
+            return candidate
+    return uuid.uuid4().hex  # pragma: no cover — 100 collisions is astronomically unlikely
+
+
+def _extract_text(message: dict[str, Any]) -> str:
+    """Flatten a τ message's content to plain text (for picker display/search)."""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            block["text"]
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text" and "text" in block
+        ]
+        return " ".join(parts)
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Session — wraps one .jsonl file; append-on-message.
+# ---------------------------------------------------------------------------
+
+
+class Session:
+    """One coding session: a header + an append-only list of entries.
+
+    ``path`` is ``None`` for an in-memory (ephemeral) session — every ``append_*``
+    becomes a pure in-memory mutation with no disk flush (seam 1, ``--no-session``).
+    """
+
+    def __init__(self, path: Path | None, header: dict[str, Any], entries: list[dict[str, Any]]):
+        self.path = path
+        self._header = header
+        self._entries = entries
+        self._ids: set[str] = {e["id"] for e in entries if "id" in e}
+        self._leaf_id: str | None = entries[-1]["id"] if entries else None
+
+    # --- identity / header -------------------------------------------------
+
+    @property
+    def id(self) -> str:
+        return str(self._header["id"])
+
+    @property
+    def cwd(self) -> str:
+        return str(self._header.get("cwd", ""))
+
+    @property
+    def parent(self) -> str | None:
+        return self._header.get("parent")
+
+    @property
+    def header(self) -> dict[str, Any]:
+        """The line-1 header (seam 2: export + pi-faithful json need it raw)."""
+        return dict(self._header)
+
+    # --- reconstructed views ----------------------------------------------
+
+    @property
+    def messages(self) -> list[dict[str, Any]]:
+        """Fold ``message`` entries → the flat loop list the agent consumes."""
+        return [e["message"] for e in self._entries if e.get("type") == "message"]
+
+    @property
+    def model(self) -> str:
+        """Latest ``model_change`` model (config key). Raises if none — a session
+        always has one from ``create`` (Fail-Early: don't fabricate a default)."""
+        for entry in reversed(self._entries):
+            if entry.get("type") == "model_change":
+                return str(entry["model"])
+        raise ValueError(f"session {self.id} has no model_change entry")
+
+    @property
+    def backend(self) -> str:
+        for entry in reversed(self._entries):
+            if entry.get("type") == "model_change":
+                return str(entry["backend"])
+        raise ValueError(f"session {self.id} has no model_change entry")
+
+    @property
+    def name(self) -> str | None:
+        """Latest ``session_info`` name (mutable; None if never set)."""
+        for entry in reversed(self._entries):
+            if entry.get("type") == "session_info":
+                value = entry.get("name")
+                return str(value) if value else None
+        return None
+
+    def entries(self) -> list[dict[str, Any]]:
+        """Ordered raw entries, all kinds (seam 2 — export / pi-faithful json)."""
+        return [dict(e) for e in self._entries]
+
+    def display_title(self) -> str:
+        """A short human label: the name, else the first user message, else model."""
+        if self.name:
+            return self.name
+        for message in self.messages:
+            if message.get("role") == "user":
+                text = _extract_text(message).replace("\n", " ")
+                if text:
+                    return text[:50] + ("..." if len(text) > 50 else "")
+        return f"Session ({self.model})"
+
+    # --- construction ------------------------------------------------------
+
+    @classmethod
+    def create(
+        cls,
+        cwd: str,
+        model: str,
+        backend: str,
+        *,
+        system_prompt: str | None = None,
+        name: str | None = None,
+        id: str | None = None,  # seam 1 → --session-id
+        base_dir: Path | None = None,  # seam 1 → --session-dir
+    ) -> "Session":
+        """Create a new persisted session; write header + initial entries."""
+        timestamp = _now_iso()
+        session_id = id if id is not None else uuid.uuid4().hex
+        directory = session_dir_for_cwd(cwd, base_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / _session_filename(timestamp, session_id)
+        header = cls._build_header(session_id, timestamp, os.path.abspath(cwd), parent=None)
+        session = cls(path, header, [])
+        session._persist_header()
+        session._init_state(model, backend, system_prompt, name)
+        _emit_session_event(SESSION_START, session)
+        return session
+
+    @classmethod
+    def create_in_memory(
+        cls,
+        cwd: str,
+        model: str,
+        backend: str,
+        *,
+        system_prompt: str | None = None,
+        name: str | None = None,
+    ) -> "Session":
+        """Ephemeral session (seam 1, pi ``inMemory`` session-manager.ts:1430):
+        ``path=None``, entries held in a list, every ``append_*`` skips the disk
+        flush. One API serves persisted and unpersisted runs. → ``--no-session``."""
+        timestamp = _now_iso()
+        header = cls._build_header(uuid.uuid4().hex, timestamp, os.path.abspath(cwd), parent=None)
+        session = cls(None, header, [])
+        session._init_state(model, backend, system_prompt, name)
+        _emit_session_event(SESSION_START, session)
+        return session
+
+    @classmethod
+    def load(cls, path: Path) -> "Session":
+        """Stream a ``.jsonl`` file and reconstruct the session."""
+        header: dict[str, Any] | None = None
+        entries: list[dict[str, Any]] = []
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                if header is None:
+                    if obj.get("type") != "session":
+                        raise ValueError(f"{path}: first line is not a session header")
+                    header = obj
+                else:
+                    entries.append(obj)
+        if header is None:
+            raise ValueError(f"{path}: empty session file (no header)")
+        session = cls(path, header, entries)
+        _emit_session_event(SESSION_START, session)
+        return session
+
+    @classmethod
+    def fork(
+        cls,
+        source: "Session",
+        cwd: str,
+        *,
+        base_dir: Path | None = None,  # seam 1
+    ) -> "Session":
+        """Fork ``source`` into a new file whose header ``parent`` is the source id.
+
+        Copies the source's entries (self-contained — no cross-file chaining), then
+        new turns append. The source file is never touched (§5.5)."""
+        _emit_session_event(SESSION_BEFORE_FORK, source, cwd=cwd)
+        timestamp = _now_iso()
+        session_id = uuid.uuid4().hex
+        directory = session_dir_for_cwd(cwd, base_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / _session_filename(timestamp, session_id)
+        header = cls._build_header(session_id, timestamp, os.path.abspath(cwd), parent=source.id)
+        copied = [dict(e) for e in source._entries]
+        session = cls(path, header, copied)
+        session._persist_header()
+        for entry in copied:
+            session._persist_entry(entry)
+        return session
+
+    # --- append API (append-on-message; §5.4) ------------------------------
+
+    def append_message(self, message: dict[str, Any]) -> str:
+        return self._append("message", message=message)
+
+    def append_model_change(self, model: str, backend: str) -> str:
+        return self._append("model_change", model=model, backend=backend)
+
+    def append_thinking_change(self, level: str) -> str:
+        return self._append("thinking_change", level=level)
+
+    def append_session_info(self, name: str) -> str:
+        return self._append("session_info", name=name)
+
+    def append_compaction(self, summary: str, first_kept_id: str, tokens_before: int) -> str:
+        _emit_session_event(SESSION_BEFORE_COMPACT, self, first_kept_id=first_kept_id)
+        return self._append(
+            "compaction",
+            summary=summary,
+            firstKeptId=first_kept_id,
+            tokensBefore=tokens_before,
+        )
+
+    def shutdown(self) -> None:
+        """Signal end-of-session (seam 3). Emits ``session_shutdown``; no disk
+        effect (every entry is already flushed on append)."""
+        _emit_session_event(SESSION_SHUTDOWN, self)
+
+    # --- internals ---------------------------------------------------------
+
+    @staticmethod
+    def _build_header(
+        session_id: str, timestamp: str, cwd: str, *, parent: str | None
+    ) -> dict[str, Any]:
+        return {
+            "type": "session",
+            "version": SESSION_VERSION,
+            "id": session_id,
+            "timestamp": timestamp,
+            "cwd": cwd,
+            "parent": parent,
+        }
+
+    def _init_state(
+        self, model: str, backend: str, system_prompt: str | None, name: str | None
+    ) -> None:
+        """Write the entries every new session carries: model, optional name, and
+        the system prompt as the first ``message`` entry (uniform reconstruction)."""
+        self.append_model_change(model, backend)
+        if name is not None:
+            self.append_session_info(name)
+        if system_prompt:
+            self.append_message({"role": "system", "content": system_prompt})
+
+    def _append(self, kind: str, **payload: Any) -> str:
+        entry: dict[str, Any] = {
+            "type": kind,
+            "id": _generate_entry_id(self._ids),
+            "parentId": self._leaf_id,
+            "timestamp": _now_iso(),
+            **payload,
+        }
+        self._entries.append(entry)
+        self._ids.add(entry["id"])
+        self._leaf_id = entry["id"]
+        self._persist_entry(entry)
+        return str(entry["id"])
+
+    def _persist_header(self) -> None:
+        if self.path is None:
+            return
+        # Exclusive create: the uuid4 filename makes a collision impossible, and
+        # 'x' guarantees we never silently clobber a sibling (Fail-Early).
+        with self.path.open("x", encoding="utf-8") as handle:
+            handle.write(json.dumps(self._header) + "\n")
+
+    def _persist_entry(self, entry: dict[str, Any]) -> None:
+        if self.path is None:
+            return
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# SessionInfo — the picker's lightweight streaming reader (§5.7).
+# ---------------------------------------------------------------------------
 
 
 @dataclass
-class Chat:
-    """One persisted chat conversation.
+class SessionInfo:
+    """List metadata extracted without building agent messages (fast listing)."""
 
-    ``model`` is the *config key* (e.g. ``"local-llm"``), not the API model id —
-    this is what the TUI looks up in ``config["models"]`` when resuming, so a
-    saved session is only resumable if its ``model`` is a configured key.
-    ``messages`` holds the full τ message list (system + user + assistant/tool),
-    where assistant/tool content is a list of block dicts (the τ message shape).
+    path: Path
+    id: str
+    cwd: str
+    name: str | None
+    created: datetime
+    modified: datetime
+    message_count: int
+    first_message: str
+    last_message: str
+    parent: str | None
+
+    def display_title(self) -> str:
+        if self.name:
+            return self.name
+        text = self.first_message.replace("\n", " ")
+        if not text:
+            return f"Session ({self.id[:8]})"
+        return text[:50] + ("..." if len(text) > 50 else "")
+
+    @classmethod
+    def read(cls, path: Path) -> "SessionInfo | None":
+        """Stream a file → SessionInfo, or None on any parse error (skip at the
+        list edge — Fail-Early: a corrupt file shouldn't break the whole listing)."""
+        try:
+            header: dict[str, Any] | None = None
+            name: str | None = None
+            message_count = 0
+            first_message = ""
+            last_message = ""
+            last_timestamp: str | None = None
+
+            with path.open("r", encoding="utf-8") as handle:
+                for raw in handle:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    entry = json.loads(raw)
+                    if header is None:
+                        if entry.get("type") != "session":
+                            return None
+                        header = entry
+                        continue
+
+                    timestamp = entry.get("timestamp")
+                    if isinstance(timestamp, str):
+                        last_timestamp = timestamp
+
+                    kind = entry.get("type")
+                    if kind == "session_info":
+                        value = entry.get("name")
+                        name = value.strip() if isinstance(value, str) and value.strip() else None
+                    elif kind == "message":
+                        message = entry.get("message", {})
+                        role = message.get("role")
+                        if role in ("user", "assistant"):
+                            message_count += 1
+                            text = _extract_text(message)
+                            if text:
+                                last_message = text
+                                if not first_message and role == "user":
+                                    first_message = text
+
+            if header is None:
+                return None
+
+            created = _parse_iso(str(header["timestamp"]))
+            modified = _parse_iso(last_timestamp) if last_timestamp else created
+            return cls(
+                path=path,
+                id=str(header["id"]),
+                cwd=str(header.get("cwd", "")),
+                name=name,
+                created=created,
+                modified=modified,
+                message_count=message_count,
+                first_message=first_message,
+                last_message=last_message,
+                parent=header.get("parent"),
+            )
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            return None
+
+
+# ---------------------------------------------------------------------------
+# Listing & scoping (§5.8).
+# ---------------------------------------------------------------------------
+
+
+def list_sessions(cwd: str | None = None, base_dir: Path | None = None) -> list[SessionInfo]:
+    """List sessions, newest (by ``modified``) first.
+
+    ``cwd`` given → list that one dashed-cwd dir (cheap; already partitioned).
+    ``cwd`` None → walk every dashed-cwd dir under the base.
     """
+    if cwd is not None:
+        dirs = [session_dir_for_cwd(cwd, base_dir)]
+    else:
+        base = _sessions_base(base_dir)
+        dirs = sorted(d for d in base.iterdir() if d.is_dir()) if base.exists() else []
 
-    model: str
-    backend: str
-    messages: list[dict]
-    created_at: float
-    title: Optional[str] = None
+    infos: list[SessionInfo] = []
+    for directory in dirs:
+        if not directory.exists():
+            continue
+        for file in directory.glob("*.jsonl"):
+            info = SessionInfo.read(file)
+            if info is not None:
+                infos.append(info)
+    infos.sort(key=lambda i: i.modified, reverse=True)
+    return infos
 
-    def save(self) -> Path:
-        """Save chat to ``~/.tau/chats/<created_at>.json`` and return the path."""
-        chats_dir = TAU_DIR / "chats"
-        chats_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"{int(self.created_at)}.json"
-        path = chats_dir / filename
-        path.write_text(json.dumps(asdict(self), indent=2))
-        return path
 
-    @classmethod
-    def load(cls, path: Path) -> "Chat":
-        """Load chat from a JSON file."""
-        data = json.loads(path.read_text())
-        return cls(**data)
-
-    @classmethod
-    def list_recent(cls, limit: int = 50) -> list[Path]:
-        """List recent chat files, newest first."""
-        chats_dir = TAU_DIR / "chats"
-        if not chats_dir.exists():
-            return []
-
-        files = sorted(
-            chats_dir.glob("*.json"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        return files[:limit]
-
-    def get_display_title(self) -> str:
-        """Get a display title for this chat (first user message, else model)."""
-        if self.title:
-            return self.title
-
-        # Use first user message as title (strip newlines for display).
-        for msg in self.messages:
-            if msg["role"] == "user":
-                content = msg["content"]
-                if not isinstance(content, str):
-                    continue
-                title = content.replace("\n", " ")[:50]
-                if len(content) > 50:
-                    title += "..."
-                return title
-
-        return f"Chat ({self.model})"
+def most_recent(cwd: str | None = None, base_dir: Path | None = None) -> Path | None:
+    """The most recently modified session's path (pi ``findMostRecentSession``)."""
+    infos = list_sessions(cwd, base_dir)
+    return infos[0].path if infos else None

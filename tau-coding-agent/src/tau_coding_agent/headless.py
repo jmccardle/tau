@@ -17,17 +17,17 @@ Reference: docs/CLI-PLAN.md (Core flag set).
 from __future__ import annotations
 
 import json
+import os
 import sys
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 # Persistence is the Textual-free session_store module, so a headless run can
-# write a sidebar-visible, resumable session without importing the TUI. The
-# module itself is imported (not just `Chat`) so `session_store.TAU_DIR` is read
-# dynamically — tests monkeypatch it, and a stale module-level copy would miss.
-from tau_coding_agent import session_store
-from tau_coding_agent.session_store import Chat
+# write a picker-visible, resumable session without importing the TUI. Sessions
+# are append-only JSONL files partitioned by cwd (docs/SESSION-UX-REDESIGN.md);
+# the listing helpers read the dir lazily, so tests that monkeypatch
+# ``session_store.TAU_DIR`` redirect storage without a stale module-level copy.
+from tau_coding_agent.session_store import Session, list_sessions, most_recent
 
 # Canonical thinking levels live in τ-ai (single source of truth); pi: the same
 # set in ``args.ts:57``. A ``model:level`` suffix or the ``--thinking`` flag is
@@ -136,49 +136,64 @@ def assemble_prompt(messages: list[str]) -> str:
     return "\n".join(parts).strip()
 
 
-def _resolve_selector(selector: str) -> tuple[Path, Chat]:
-    """Resolve a ``--session``/``--fork`` REF to an existing ``(path, Chat)``.
+def _resolve_session_ref(selector: str, *, all_sessions: bool = False) -> Session:
+    """Resolve a ``--session``/``--fork`` REF to a loaded :class:`Session`.
 
-    A REF is either a path to a ``.json`` chat file, or a filename *stem* — the
-    integer timestamp ``~/.tau/chats/<stem>.json`` is named with. An exact stem
-    match wins; otherwise a unique substring match is accepted. Zero or multiple
-    matches raise (Fail-Early: never guess which session was meant).
+    A REF is either a path to a ``.jsonl`` session file, or a session **id** (the
+    uuid in the header/filename) — an exact id match wins; otherwise a unique id
+    *prefix* is accepted. Resolution is scoped to the **current cwd's** session
+    dir (``all_sessions`` widens to every dir). Zero or multiple matches raise
+    (Fail-Early: never guess which session was meant).
     """
     p = Path(selector)
-    if p.suffix == ".json" and p.exists():
-        return p, Chat.load(p)
+    if p.suffix == ".jsonl" and p.exists():
+        return Session.load(p)
 
-    recent = Chat.list_recent(limit=10_000)
-    exact = [c for c in recent if c.stem == selector]
-    matches = exact or [c for c in recent if selector in c.stem]
+    infos = list_sessions(None if all_sessions else os.getcwd())
+    exact = [i for i in infos if i.id == selector]
+    matches = exact or [i for i in infos if i.id.startswith(selector)]
     if not matches:
+        scope = "any directory" if all_sessions else "this directory"
         raise CLIError(
-            f"no session matches {selector!r} (looked for a .json path and a "
-            f"filename stem under ~/.tau/chats)"
+            f"no session matches {selector!r} (looked for a .jsonl path and a "
+            f"session id under {scope}'s ~/.tau/sessions history)"
         )
     if len(matches) > 1:
-        names = ", ".join(sorted(c.stem for c in matches))
-        raise CLIError(f"{selector!r} matches multiple sessions ({names}); be more specific")
-    return matches[0], Chat.load(matches[0])
+        ids = ", ".join(sorted(i.id for i in matches))
+        raise CLIError(f"{selector!r} matches multiple sessions ({ids}); be more specific")
+    return Session.load(matches[0].path)
 
 
-def _select_chat(args: "CLIArgs") -> tuple[Path, Chat] | None:
-    """Resolve the continuation flags to an existing ``(path, Chat)``, or None.
+def _select_session(args: "CLIArgs") -> Session | None:
+    """Resolve the continuation flags to a loaded source :class:`Session`, or None.
 
-    ``--continue`` selects the most recent session; ``--session``/``--fork``
-    select a specific one. The flags are mutually exclusive at the argparse
-    layer, so at most one is set. Returns None for a fresh run.
+    ``--continue`` selects the most recent session in the current cwd;
+    ``--session``/``--fork`` select a specific one. The flags are mutually
+    exclusive at the argparse layer, so at most one is set. Returns None for a
+    fresh run. For ``--fork`` this is the *source* — the caller forks it.
     """
     if args.continue_session:
-        recent = Chat.list_recent(limit=1)
-        if not recent:
-            raise CLIError("no saved sessions to continue (~/.tau/chats is empty)")
-        return recent[0], Chat.load(recent[0])
+        path = most_recent(os.getcwd())
+        if path is None:
+            raise CLIError(
+                "no saved sessions to continue (this directory has no ~/.tau/sessions history)"
+            )
+        return Session.load(path)
 
     selector = args.session or args.fork
     if selector is None:
         return None
-    return _resolve_selector(selector)
+    return _resolve_session_ref(selector)
+
+
+def _apply_resume_metadata(
+    session: Session, model_name: str, backend_name: str, prior: Session, title: str | None
+) -> None:
+    """On resume/fork, record a model switch and/or a rename if they changed."""
+    if model_name != prior.model or backend_name != prior.backend:
+        session.append_model_change(model_name, backend_name)
+    if title is not None:
+        session.append_session_info(title)
 
 
 async def run_print(args: "CLIArgs", config: dict) -> int:
@@ -188,6 +203,11 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
     ``--mode json`` emits one JSON object per line: the backend's normalized
     lifecycle events (``turn_start``/``text_delta``/``tool_call``/``tool_result``)
     followed by a final ``{"kind": "done", ...}`` record with usage.
+
+    The run is persisted as an append-only JSONL session under the current cwd's
+    ``~/.tau/sessions`` dir — each produced message is appended as it is known
+    (no whole-file rewrite). In-place for ``--continue``/``--session``; a new
+    forked file for ``--fork``; a fresh file otherwise.
     """
     prompt_text = assemble_prompt(args.messages)
     if not prompt_text:
@@ -196,29 +216,25 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
             'tau -p "summarize @README.md"'
         )
 
-    # Resolve a session to continue/fork (None for a fresh run).
-    selection = _select_chat(args)
-    prior_chat = selection[1] if selection else None
+    # Resolve a source session to continue/fork (None for a fresh run).
+    prior = _select_session(args)
 
     # The stored session already carries its system message; injecting another
     # (or silently dropping an override) would both be wrong — reject the combo.
-    if prior_chat is not None and args.system_prompt is not None:
+    if prior is not None and args.system_prompt is not None:
         raise CLIError(
             "--system-prompt can't be combined with --continue/--session/--fork; "
             "the resumed session already has a system prompt"
         )
 
     # A resumed run keeps the session's model unless --model overrides it.
-    fallback_model = prior_chat.model if prior_chat is not None else None
-    name, model_config = resolve_model_config(config, args, fallback_model=fallback_model)
+    fallback_model = prior.model if prior is not None else None
+    model_name, model_config = resolve_model_config(config, args, fallback_model=fallback_model)
+    backend_name = model_config.get("backend", "")
+    cwd = os.getcwd()
 
-    if prior_chat is not None:
-        # Resume/fork: the stored transcript (system + every prior turn) is the
-        # context; append only this turn's new user message.
-        messages: list[dict] = list(prior_chat.messages)
-        messages.append({"role": "user", "content": prompt_text})
-    else:
-        # Fresh run: system prompt flows as the first context message (matching
+    if prior is None:
+        # Fresh run: system prompt is stored as the first message entry (matching
         # the TUI), so the backend's own system_prompt stays empty and is not
         # double-counted.
         system_prompt = (
@@ -226,10 +242,19 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
             if args.system_prompt is not None
             else config.get("system_prompt", "")
         )
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt_text})
+        session = Session.create(
+            cwd, model_name, backend_name, system_prompt=system_prompt or None, name=args.name
+        )
+    elif args.fork is not None:
+        session = Session.fork(prior, cwd)
+        _apply_resume_metadata(session, model_name, backend_name, prior, args.name)
+    else:  # --continue / --session: append in place
+        session = prior
+        _apply_resume_metadata(session, model_name, backend_name, prior, args.name)
+
+    # This turn's user message, then hand the full transcript to the backend.
+    session.append_message({"role": "user", "content": prompt_text})
+    messages: list[dict] = session.messages
 
     # Imported lazily: keeps `import tau_coding_agent.headless` free of the
     # backend/agent-core import chain until a run actually happens.
@@ -261,74 +286,10 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
         sys.stdout.write("\n")
         sys.stdout.flush()
 
-    # Persist the run as a resumable session (same on-disk format the TUI uses),
-    # so `tau -p` conversations appear in the sidebar and can be continued there.
-    # In-place for --continue/--session; a new file for --fork or a fresh run.
-    _persist_session(
-        name,
-        model_config,
-        messages,
-        new_messages,
-        prior_chat=prior_chat,
-        is_fork=args.fork is not None,
-        title=args.name,
-    )
+    # Append the loop's non-user output (assistant + toolResult); the user turn
+    # was already appended above, so skip any echoed user message.
+    for message in new_messages:
+        if message.get("role") != "user":
+            session.append_message(message)
 
     return 0
-
-
-def _persist_session(
-    name: str,
-    model_config: dict,
-    context_messages: list[dict],
-    new_messages: list[dict],
-    *,
-    prior_chat: Chat | None = None,
-    is_fork: bool = False,
-    title: str | None = None,
-) -> Path:
-    """Persist a headless run as a :class:`Chat` under ``~/.tau/chats/``.
-
-    The saved transcript mirrors ``Parley._get_assistant_response``: the context
-    messages (system + any prior turns + this turn's user message) followed by
-    the agent loop's non-user output (assistant + toolResult messages). Three
-    modes:
-
-    - **fresh run** (``prior_chat is None``) → a new ``<created_at>.json``.
-    - **continue/resume** (``prior_chat`` set, ``is_fork`` False) → overwrite the
-      same file in place, preserving its ``created_at`` and growing its history.
-    - **fork** (``is_fork`` True) → a new file holding ``prior_chat``'s history
-      plus this turn, leaving the source session file untouched.
-
-    ``name`` — the config key or shorthand from ``resolve_model_config`` — is
-    stored as the chat's ``model`` so the TUI can resolve a backend on resume.
-    """
-    transcript = list(context_messages)
-    transcript.extend(m for m in new_messages if m.get("role") != "user")
-    backend = model_config.get("backend", "")
-
-    if prior_chat is not None and not is_fork:
-        # In-place continue: Chat.save() targets <created_at>.json, so reusing
-        # the loaded chat's created_at overwrites (grows) the same file.
-        prior_chat.messages = transcript
-        prior_chat.model = name
-        prior_chat.backend = backend
-        if title is not None:
-            prior_chat.title = title
-        return prior_chat.save()
-
-    # Fresh run or fork → a new file. Guard against same-second filename
-    # collisions (the store keys files on int(created_at)) so a fork never
-    # clobbers its source and a rapid fresh run never overwrites a sibling.
-    chats_dir = session_store.TAU_DIR / "chats"
-    created = time.time()
-    while (chats_dir / f"{int(created)}.json").exists():
-        created += 1.0
-    chat = Chat(
-        model=name,
-        backend=backend,
-        messages=transcript,
-        created_at=created,
-        title=title,
-    )
-    return chat.save()

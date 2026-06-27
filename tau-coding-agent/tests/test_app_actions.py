@@ -36,7 +36,7 @@ _RELOAD = [
 
 @pytest.fixture
 def app(monkeypatch, tmp_path):
-    # Sandbox session persistence (Chat.save reads session_store.TAU_DIR) and
+    # Sandbox session persistence (the store reads session_store.TAU_DIR) and
     # avoid building a real backend (no network).
     import tau_coding_agent.session_store as store
 
@@ -56,17 +56,17 @@ def app(monkeypatch, tmp_path):
 async def test_new_chat_button_creates_chat(app, tmp_path):
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.current_chat is None
+        assert app.current_session is None
 
         await pilot.click("#new-chat-button")
         await pilot.pause()
 
-        # The async action actually ran: a chat is active, seeded with the
-        # system prompt, and persisted to the (sandboxed) chats dir.
-        assert app.current_chat is not None
-        assert app.current_chat.model == "m"
-        assert app.current_chat.messages[0] == {"role": "system", "content": "sys"}
-        assert len(list((tmp_path / "chats").glob("*.json"))) == 1
+        # The async action actually ran: a session is active, seeded with the
+        # system prompt, and persisted to the (sandboxed) sessions dir.
+        assert app.current_session is not None
+        assert app.current_session.model == "m"
+        assert app.messages[0] == {"role": "system", "content": "sys"}
+        assert len(list((tmp_path / "sessions").rglob("*.jsonl"))) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -150,9 +150,9 @@ async def test_subtitle_shows_rollup_after_reload(app):
     async with app.run_test() as pilot:
         await pilot.pause()
         await _reload(app, pilot)
-        # The real reload path sets current_chat to the loaded chat; mirror that
-        # so the rollup (derived from current_chat.messages) has the transcript.
-        app.current_chat.messages = _RELOAD
+        # The real reload path sets the working list to the loaded transcript;
+        # mirror that so the rollup (derived from app.messages) has it.
+        app.messages = _RELOAD
         app._refresh_subtitle()
         await pilot.pause()
         assert app.sub_title == "m · 1 tool · 42 tok"

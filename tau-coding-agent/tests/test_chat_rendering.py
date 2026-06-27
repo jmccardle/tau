@@ -350,19 +350,16 @@ async def test_reload_unrenderable_content_raises():
 
 
 async def test_headless_saved_session_round_trips(tmp_path, monkeypatch):
-    """End-to-end contract: a session written by `tau -p` (_persist_session)
+    """End-to-end contract: a session written by `tau -p` (append-on-message)
     reloads cleanly through the renderer — the write format and read renderer
     agree, which is what makes a headless run *resumable* from the TUI."""
     import tau_coding_agent.session_store as store
-    from tau_coding_agent.headless import _persist_session
 
     monkeypatch.setattr(store, "TAU_DIR", tmp_path)
 
-    context = [
-        {"role": "system", "content": "sys"},
-        {"role": "user", "content": "run date"},
-    ]
-    new_messages = [
+    session = store.Session.create("/proj", "local-llm", "openai", system_prompt="sys")
+    session.append_message({"role": "user", "content": "run date"})
+    for msg in [
         {"role": "assistant", "content": [
             {"type": "text", "text": "ok"},
             {"type": "toolCall", "id": "c1", "name": "bash", "arguments": {"command": "date"}},
@@ -370,10 +367,10 @@ async def test_headless_saved_session_round_trips(tmp_path, monkeypatch):
         {"role": "toolResult", "tool_call_id": "c1", "tool_name": "bash", "is_error": False,
          "content": [{"type": "text", "text": "Thu"}]},
         {"role": "assistant", "content": [{"type": "text", "text": "It's Thursday."}]},
-    ]
-    path = _persist_session("local-llm", {"backend": "openai"}, context, new_messages)
+    ]:
+        session.append_message(msg)
 
-    loaded = store.Chat.load(path)
+    loaded = store.Session.load(session.path)
     assert loaded.model == "local-llm"  # resolvable config key -> resumable
     async with _Harness().run_test() as pilot:
         await pilot.pause()

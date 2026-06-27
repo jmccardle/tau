@@ -4,14 +4,15 @@ Living schedule of open work. Each item cites the evidence (file:line, doc, or
 test) it came from so it can be audited against the source of truth (pi) and the
 "Fail Early" rule.
 
-**State (2026-06-22):** branch `master`. Suite **1403 passed / 0 failed**.
+**State (2026-06-23):** branch `master`. Suite **1397 passed / 0 failed**.
 Static checks: **ruff clean** (0 issues), **mypy 0** (was 55; the Tier-5 gate is
 green and now enforced by a blocking pre-commit hook — commits `5fd4c4f`,
 `ac6236c`). The phase-build (`docs/PHASE-*`) and the post-build bug/quality
 backlog (former Tiers 1–4, summarized below) are **complete**. Forward work is
 Tiers 5–12, sequenced around the committed **`docs/SESSION-UX-REDESIGN.md`**
-sprint. Scope/complexity for Tiers 6–12 was established by a five-agent research
-pass (2026-06-22); each tier cites the pi parity targets it rests on.
+sprint — whose **Phase A (storage layer) is now landed** (see below). Scope/
+complexity for Tiers 6–12 was established by a five-agent research pass
+(2026-06-22); each tier cites the pi parity targets it rests on.
 
 ---
 
@@ -47,6 +48,34 @@ retires itself.
 ---
 
 ## The path forward (Tiers 5–12)
+
+### Session UX sprint — Phase A: storage layer (DONE) — *landed 2026-06-23*
+
+The append-only JSONL session store (`docs/SESSION-UX-REDESIGN.md` §5/§9 Phase A)
+replaced the chat-web `Chat` blob. Landed interface (`session_store.py`):
+
+- **`Session`** (wraps one `.jsonl`): `messages`/`model`/`backend`/`name`/`header`
+  reconstructed views + raw `entries()` (seam 2); `append_message` /
+  `append_model_change` / `append_thinking_change` / `append_session_info` /
+  `append_compaction` (append-on-message, flush per line); `create(cwd, model,
+  backend, *, system_prompt, name, id=None, base_dir=None)`, `create_in_memory`,
+  `load`, `fork` (header `parent` = source id, copies entries, source untouched).
+- **`SessionInfo.read(path)`** — streaming picker reader (count / first / last /
+  `modified` from last entry); `None` on parse error (skip at the list edge).
+- **`session_dir_for_cwd` / `list_sessions(cwd|None) / most_recent`** — cwd
+  partitioning via pi's `--<dashed-cwd>--` slug; `base_dir` override (seam 1).
+- **Seam 3** lifecycle events (`session_start`/`before_fork`/`before_compact`/
+  `shutdown`) via `subscribe_session_events` — emit points baked in, no consumer
+  yet (→ Tier 11).
+- **Consumers migrated:** `headless.py` (`--continue`/`--session`/`--fork`/`--name`
+  now cwd-scoped, id-based selectors; `_persist_session` + the `+1.0s` collision
+  hack deleted) and `app.py` (sidebar → `SessionInfo`; TUI keeps a live working
+  `self.messages` list + the active `Session` as an append sink; clear starts a
+  fresh session; compact stays a runtime context op — the file keeps full
+  history, no rewrite). New `test_session_store.py` (15) + rewritten
+  `test_headless_resume.py`; suite 1397/0, gate green. **No migration of
+  `~/.tau/chats`** (abandoned, decision 1). **Next: Phase B** (picker modal),
+  **Phase C** (command unification + sidebar-closed default).
 
 ### Tier 5 — Quality gate (DONE) — *shipped 2026-06-22; compaction landed 2026-06-22*
 

@@ -1,6 +1,10 @@
 # Session UX Redesign — JSONL storage, cwd scoping, modal picker, unified commands
 
-> **Status: DESIGN (approved shape, not yet implemented) — 2026-06-22.**
+> **Status: Phase A (storage layer) IMPLEMENTED 2026-06-23; Phases B/C are
+> design (approved shape).** Phase A landed the append-only JSONL `Session`
+> store, cwd partitioning, fork, the `SessionInfo` reader, and all four seams
+> (`session_store.py`), with `headless.py`/`app.py` migrated off `Chat` (suite
+> 1397/0). Phases B (picker modal) and C (command unification) remain to build.
 > This is the spec for moving τ's session layer off the chat-web shape it
 > inherited from Parley and onto the coding-agent shape pi/Claude Code use:
 > append-only JSONL transcripts, partitioned by working directory, surfaced
