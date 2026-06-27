@@ -774,11 +774,15 @@ class OpenAICompletionsProvider(Provider):
         # llama.cpp) never emit the trailing usage chunk, so token counts come
         # back as 0. pi sends this unconditionally (openai-completions.ts:522).
         # Placed before `**body_options` so an explicit caller override still wins.
-        # `api_key` is a transport credential, not a request-body field, and
+        # `api_key` is a transport credential, not a request-body field;
         # `reasoning` is a τ-internal level (converted to `reasoning_effort`
-        # below) — strip both so threading them through `options` never leaks
-        # them into the JSON body.
-        body_options = {k: v for k, v in options.items() if k not in ("api_key", "reasoning")}
+        # below); `abort_signal` is a τ-internal cancellation handle (polled in the
+        # stream loop) — strip all three so threading them through `options` never
+        # leaks them into the JSON body (a non-serializable object would 400/raise).
+        abort_signal = options.get("abort_signal")
+        body_options = {
+            k: v for k, v in options.items() if k not in ("api_key", "reasoning", "abort_signal")
+        }
         payload: dict[str, Any] = {
             "model": model.id,
             "messages": openai_messages,
@@ -848,6 +852,14 @@ class OpenAICompletionsProvider(Provider):
 
                     # Read SSE lines as they arrive (no full-body buffering).
                     async for line in response.aiter_lines():
+                        # Cooperative cancellation: an abort raised mid-completion
+                        # stops the stream here (exiting `async with` closes the
+                        # connection) instead of draining the whole response. The
+                        # partial accumulated so far is finalized with an
+                        # "aborted" stop_reason. pi aborts the fetch the same way.
+                        if abort_signal is not None and abort_signal.is_aborted():
+                            final_stop_reason = "aborted"
+                            break
                         line = line.strip()
                         if not line or not line.startswith("data:"):
                             continue

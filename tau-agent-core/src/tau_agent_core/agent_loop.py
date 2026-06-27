@@ -403,6 +403,12 @@ class AgentLoop:
         # `reasoning_effort`. Only when set, so None = "don't request reasoning".
         if self.config.reasoning is not None:
             options["reasoning"] = self.config.reasoning
+        # Forward the abort signal so an abort mid-completion stops the LLM stream
+        # cooperatively — not just at the turn boundaries checked in `run`. The
+        # provider polls it per SSE line; client.py strips it from the request
+        # body. Without this an aborted turn still drains the whole completion.
+        if self._abort_signal is not None:
+            options["abort_signal"] = self._abort_signal
 
         stream = await stream_simple(
             model,
