@@ -10,7 +10,7 @@ from textual.widget import Widget
 from textual.widgets import Static, Input, Header, Footer, Markdown, Button, TextArea
 from textual.binding import Binding
 from textual.reactive import reactive
-from textual import events
+from textual import events, work
 from textual.message import Message
 from textual.screen import ModalScreen
 from pathlib import Path
@@ -875,6 +875,9 @@ class Parley(App):
         Binding("ctrl+j", "focus_and_send", "^Enter=Send", show=True),
         Binding("ctrl+p", "command_palette", "Commands", show=False),
         Binding("ctrl+c", "quit", "Quit"),
+        # priority=True: caught during generation regardless of which widget holds
+        # focus. The action no-ops when nothing is generating.
+        Binding("escape", "cancel_generation", "Cancel", show=False, priority=True),
     ]
 
     # The active persisted session (append-only sink) and the live working
@@ -889,6 +892,10 @@ class Parley(App):
     # reactive records the last-applied intent (for the toggle's feedback).
     reasoning_collapsed: reactive[bool] = reactive(False)
     tools_collapsed: reactive[bool] = reactive(False)
+    # True while a response worker is streaming. Gates Esc-to-cancel and the
+    # input-disabled state; flipped on in on_input_submitted, off in the worker's
+    # finally.
+    is_generating: reactive[bool] = reactive(False)
 
     def __init__(self, cli_overrides: Optional[dict] = None):
         super().__init__()
@@ -1014,31 +1021,54 @@ class Parley(App):
         display = self.query_one(ChatDisplay)
         display.add_message("user", message)
 
-        # Disable input during response
+        # Run the turn in a worker so the event loop stays free while the model
+        # streams — that is what lets Esc-to-cancel be processed mid-response
+        # (a direct `await` here parked the App message pump for the whole turn).
+        # Input is disabled for the duration; the worker re-enables it on finish.
         input_widget.disabled = True
-        self.sub_title = "Thinking..."
+        self.is_generating = True
+        self.sub_title = "Thinking… (Esc to cancel)"
+        self._generate_response()
 
+    @work(exclusive=True, group="generation")
+    async def _generate_response(self) -> None:
+        """Background worker: run one assistant turn and render it.
+
+        Replaces the old inline ``await``. ``exclusive``/``group`` let
+        :meth:`action_cancel_generation` target it. The ``finally`` restores the
+        input regardless of how the turn ended (normal, error, or cooperative
+        abort — which returns the partial answer rather than raising).
+        """
+        input_widget = self.query_one("#chat-input", ChatInput)
         try:
-            # Get response
             await self._get_assistant_response()
         except Exception as e:
-            error_msg = f"Error: {str(e)}"
-            self.notify(error_msg, severity="error")
+            self.notify(f"Error: {str(e)}", severity="error")
             self.log.error(f"Error getting response: {e}")
             self.log.error(traceback.format_exc())
-
-            # Display error in chat
-            display = self.query_one(ChatDisplay)
-            display.add_message(
+            self.query_one(ChatDisplay).add_message(
                 "system", f"**Error occurred:**\n```\n{str(e)}\n{traceback.format_exc()}\n```"
             )
         finally:
-            # Re-enable input
+            self.is_generating = False
             input_widget.disabled = False
             input_widget.focus()
             # Show the running conversation rollup (tools · tokens) next to the
             # model, refreshed now that this exchange has been appended + saved.
             self._refresh_subtitle()
+
+    def action_cancel_generation(self) -> None:
+        """Esc: cooperatively abort the in-flight response (no-op if idle).
+
+        Trips the backend's abort signal — the provider stops at the next streamed
+        delta and the agent loop unwinds, so ``_get_assistant_response`` returns
+        with the partial answer and the worker's ``finally`` re-enables input. No
+        hard task-cancel, so there is no half-applied widget/persistence state.
+        """
+        if not self.is_generating or self.current_backend is None:
+            return
+        self.current_backend.abort()
+        self.sub_title = "Cancelling…"
 
     async def _get_assistant_response(self):
         """Get and display assistant response with streaming.

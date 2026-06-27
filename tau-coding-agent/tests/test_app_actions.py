@@ -11,9 +11,12 @@ Driven through the real app via ``App.run_test()`` / Pilot.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from tau_coding_agent.app import ChatDisplay, Parley
+from tau_coding_agent.backends import TauBackend
 from tau_coding_agent.chat_widgets import ReasoningRegion, ToolBox
 
 
@@ -156,3 +159,104 @@ async def test_subtitle_shows_rollup_after_reload(app):
         app._refresh_subtitle()
         await pilot.pause()
         assert app.sub_title == "m · 1 tool · 42 tok"
+
+
+# ---------------------------------------------------------------------------
+# Generation runs in a worker; Esc cooperatively cancels it.
+# ---------------------------------------------------------------------------
+
+
+class _BlockingBackend:
+    """A backend whose ``stream_chat`` blocks until ``abort()`` releases it.
+
+    Lets a test observe the in-flight state (worker running, UI responsive) and
+    the cooperative cancel: ``abort()`` both records the call and unblocks the
+    stream, mimicking the real provider stopping at the next streamed delta.
+    """
+
+    def __init__(self) -> None:
+        self.aborted = False
+        self._released = asyncio.Event()
+
+    def abort(self) -> None:
+        self.aborted = True
+        self._released.set()
+
+    async def stream_chat(self, messages, callback, on_event=None):
+        await self._released.wait()
+        new_messages = [{"role": "assistant", "content": [{"type": "text", "text": "partial"}]}]
+        return "partial", {"total_tokens": 0}, new_messages, []
+
+
+@pytest.fixture
+def blocking_app(monkeypatch, tmp_path):
+    """Like ``app`` but ``create_backend`` yields a controllable blocking backend."""
+    import tau_coding_agent.session_store as store
+
+    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    backend = _BlockingBackend()
+    monkeypatch.setattr("tau_coding_agent.app.create_backend", lambda cfg: backend)
+
+    a = Parley()
+    a.config = {
+        "models": {"m": {"backend": "openai", "model": "m"}},
+        "default_model": "m",
+        "system_prompt": "sys",
+    }
+    return a, backend
+
+
+class _Submit:
+    """Duck-typed Input.Submitted — on_input_submitted only reads ``.value``."""
+
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+
+async def test_generation_runs_in_worker_and_esc_aborts(blocking_app):
+    app, backend = blocking_app
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        # Submit a turn. on_input_submitted starts a worker and returns — so this
+        # await completes even though the backend is still "streaming".
+        await app.on_input_submitted(_Submit("hello"))
+        await pilot.pause()
+
+        # In flight: worker running (blocked in stream_chat), UI live, input gated.
+        assert app.is_generating is True
+        assert app.query_one("#chat-input").disabled is True
+        assert backend.aborted is False
+
+        # Esc → cooperative abort. The backend records it and unblocks the stream.
+        app.action_cancel_generation()
+        assert backend.aborted is True
+
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        # Worker finalized: input restored, flag cleared, partial answer kept.
+        assert app.is_generating is False
+        assert app.query_one("#chat-input").disabled is False
+        assert app.messages[-1]["content"][0]["text"] == "partial"
+
+
+async def test_cancel_generation_is_noop_when_idle(blocking_app):
+    app, backend = blocking_app
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.is_generating is False
+        app.action_cancel_generation()  # nothing in flight
+        assert backend.aborted is False
+
+
+def test_taubackend_abort_delegates_to_session():
+    from unittest.mock import MagicMock
+
+    backend = TauBackend(
+        {"backend": "openai", "model": "m", "base_url": "http://x/v1",
+         "api_key": "not-needed", "tools": []}
+    )
+    backend.agent_session = MagicMock()
+    backend.abort()
+    backend.agent_session.abort.assert_called_once_with()

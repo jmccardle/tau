@@ -34,6 +34,14 @@ class Backend(ABC):
     ) -> tuple[str, dict, list[dict], list[dict]]:
         """Return (assistant_text, usage, new_messages, tool_calls)."""
 
+    @abstractmethod
+    def abort(self) -> None:
+        """Cooperatively abort the in-flight turn (LLM stream + tool loop).
+
+        Safe to call when nothing is running. The TUI binds this to Esc so a
+        long response can be cancelled mid-stream; the active ``stream_chat``
+        returns with whatever streamed so far."""
+
 
 class TauBackend(Backend):
     """tau-agent-core backend adapter.
@@ -117,6 +125,14 @@ class TauBackend(Backend):
 
         # Create a new session in the session manager (required before use)
         self.session_manager.new_session()
+
+    def abort(self) -> None:
+        """Abort the current turn by tripping the AgentSession's abort signal.
+
+        The signal is threaded down to the provider (agent_loop forwards it to
+        ``stream_simple``), which polls it per SSE line and stops the stream — so
+        an in-flight completion ends promptly instead of draining in full."""
+        self.agent_session.abort()
 
     async def compact_messages(self, messages: list[dict]) -> list[dict] | None:
         """Compact the conversation the TUI sends, returning the shortened list.
