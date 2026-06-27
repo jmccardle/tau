@@ -18,22 +18,20 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Protocol
 
 if TYPE_CHECKING:
     from tau_ai.tools import ToolDefinition
-    from tau_ai.types import AssistantMessage, Model
+    from tau_ai.types import Model
 
 
 class StreamEventStream(Protocol):
     """Structural return type for ``Provider.stream_chat``.
 
     A provider stream is async-iterable over typed streaming events
-    (TextDeltaEvent / ToolCallDeltaEvent / DoneEvent / ErrorEvent) and
-    exposes the terminal ``AssistantMessage`` via ``result()``. Both
-    ``AssistantMessageEventStream`` implementations (streaming.py and the
-    OpenAI provider) satisfy this Protocol structurally.
+    (TextDeltaEvent / ThinkingDeltaEvent / ToolCallDeltaEvent / DoneEvent /
+    ErrorEvent). The client (``stream_simple``) wraps it once in
+    ``AssistantMessageEventStream`` (streaming.py) — the single stream type
+    that adds queue buffering and the terminal ``result()``.
     """
 
     def __aiter__(self) -> AsyncIterator[Any]: ...
-
-    async def result(self) -> AssistantMessage: ...
 
 
 class Provider(ABC):
@@ -67,9 +65,10 @@ class Provider(ABC):
             options: Optional provider-specific options (temperature, max_tokens, etc.).
 
         Returns:
-            A StreamEventStream yielding TextDeltaEvent, ToolCallDeltaEvent,
-            DoneEvent, and ErrorEvent instances, with the terminal
-            AssistantMessage available via ``result()``.
+            A StreamEventStream — an async iterator of typed streaming events
+            (TextDeltaEvent, ThinkingDeltaEvent, ToolCallDeltaEvent, DoneEvent,
+            ErrorEvent). ``stream_simple`` wraps it in AssistantMessageEventStream,
+            which exposes the terminal AssistantMessage via ``result()``.
 
         Raises:
             NotImplementedError: If the provider hasn't implemented this method.

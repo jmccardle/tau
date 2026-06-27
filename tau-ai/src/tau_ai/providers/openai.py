@@ -203,34 +203,6 @@ def _usage_from_openai(data: dict) -> Usage:
     )
 
 
-class AssistantMessageEventStream:
-    """Async iterator that yields streaming events and exposes the final result.
-
-    This class implements the return type for OpenAICompletionsProvider.stream_chat().
-    It yields TextDeltaEvent, ToolCallDeltaEvent, and DoneEvent instances.
-
-    The final result is available via .result() after the stream completes.
-    """
-
-    def __init__(self, event_iter: AsyncIterator[Any]) -> None:
-        self._event_iter = event_iter
-        self._result: AssistantMessage | None = None
-        self._done = False
-
-    def __aiter__(self) -> AsyncIterator[Any]:
-        return self._event_iter
-
-    async def result(self) -> AssistantMessage:
-        """Return the final AssistantMessage after the stream completes."""
-        if not self._done:
-            async for _ in self._event_iter:
-                pass
-            self._done = True
-        if self._result is None:
-            raise RuntimeError("No final result available — stream did not produce a DoneEvent")
-        return self._result
-
-
 class OpenAICompletionsProvider(Provider):
     """Provider for OpenAI-compatible APIs (OpenAI, Ollama, vLLM, etc.).
 
@@ -748,7 +720,7 @@ class OpenAICompletionsProvider(Provider):
         messages: list,
         tools: list[ToolDefinition] | None = None,
         options: dict | None = None,
-    ) -> AssistantMessageEventStream:
+    ) -> AsyncIterator[Any]:
         """Stream chat completions from OpenAI-compatible API.
 
         Converts τ messages to OpenAI format, streams the response,
@@ -763,8 +735,10 @@ class OpenAICompletionsProvider(Provider):
             options: Optional provider-specific options (temperature, max_tokens, etc.).
 
         Returns:
-            AssistantMessageEventStream yielding TextDeltaEvent, ToolCallDeltaEvent,
-            DoneEvent, and ErrorEvent instances.
+            An async iterator of typed streaming events — TextDeltaEvent,
+            ThinkingDeltaEvent, ToolCallDeltaEvent, DoneEvent, ErrorEvent. The
+            client wraps it once in ``AssistantMessageEventStream`` (streaming.py),
+            the single stream type τ-agent-core consumes.
         """
         if options is None:
             options = {}
@@ -986,4 +960,4 @@ class OpenAICompletionsProvider(Provider):
                 yield error_event
                 return
 
-        return AssistantMessageEventStream(event_generator())
+        return event_generator()

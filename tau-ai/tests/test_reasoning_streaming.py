@@ -23,7 +23,6 @@ from tau_ai.providers.openai import (
     _usage_from_openai,
 )
 from tau_ai.streaming import (
-    AssistantMessageEventStream,
     DoneEvent,
     TextDeltaEvent,
     ThinkingDeltaEvent,
@@ -247,26 +246,6 @@ def test_no_reasoning_means_no_thinking_events():
     assert not any(isinstance(e, ThinkingDeltaEvent) for e in events)
     final = [e for e in events if isinstance(e, DoneEvent)][0].final
     assert not any(isinstance(c, ThinkingContent) for c in final.content)
-
-
-def test_wrapper_raw_dict_path_emits_thinking():
-    """The streaming.py raw-dict accumulation path also surfaces reasoning."""
-    raw = [
-        {"delta": {"reasoning_content": "let me think"}},
-        {"delta": {"content": "answer"}},
-    ]
-
-    async def raw_stream():
-        for c in raw:
-            yield c
-
-    async def go():
-        stream = AssistantMessageEventStream(provider_stream=raw_stream(), model=_model())
-        events = [e async for e in stream]
-        return events
-
-    events = asyncio.run(go())
-    assert [e.delta for e in events if isinstance(e, ThinkingDeltaEvent)] == ["let me think"]
 
 
 # ──────────────────────────────────────────────────────────────────────────

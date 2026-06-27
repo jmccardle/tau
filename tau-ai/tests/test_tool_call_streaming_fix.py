@@ -21,7 +21,7 @@ from tau_ai.json_parse import (
 )
 from tau_ai.client import stream_simple
 from tau_ai.providers.openai import OpenAICompletionsProvider
-from tau_ai.streaming import AssistantMessageEventStream, DoneEvent, ErrorEvent
+from tau_ai.streaming import DoneEvent, ErrorEvent
 from tau_ai.types import Model, TextContent, ToolCall, UserMessage
 
 
@@ -181,38 +181,6 @@ def test_stream_simple_end_to_end_tool_call(monkeypatch):
     assert len(tcs) == 1
     assert tcs[0].name == "bash"
     assert tcs[0].arguments == {"command": "echo hi", "n": 3}
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# The wrapper's raw-dict accumulation path (used when fed raw chunks rather
-# than typed events). Verifies fragments are concatenated, not parsed per-piece.
-# ──────────────────────────────────────────────────────────────────────────
-
-def test_wrapper_raw_dict_fragments_concatenate():
-    raw_chunks = [
-        {"delta": {"content": "ok"}},
-        {"delta": {"tool_calls": [{"index": 0, "id": "call_raw",
-                                   "function": {"name": "bash", "arguments": ""}}]}},
-        {"delta": {"tool_calls": [{"index": 0,
-                                   "function": {"name": None, "arguments": '{"comm'}}]}},
-        {"delta": {"tool_calls": [{"index": 0,
-                                   "function": {"name": None, "arguments": 'and": "ls -la"}'}}]}},
-    ]
-
-    async def raw_stream():
-        for c in raw_chunks:
-            yield c
-
-    async def go():
-        stream = AssistantMessageEventStream(provider_stream=raw_stream(), model=_model())
-        return await stream.result()
-
-    final = asyncio.run(go())
-    tcs = [c for c in final.content if isinstance(c, ToolCall)]
-    assert len(tcs) == 1
-    assert tcs[0].id == "call_raw"
-    assert tcs[0].name == "bash"
-    assert tcs[0].arguments == {"command": "ls -la"}
 
 
 # ──────────────────────────────────────────────────────────────────────────

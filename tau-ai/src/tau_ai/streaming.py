@@ -30,8 +30,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, AsyncIterable, Literal
 
-from tau_ai.json_parse import parse_streaming_json
-from tau_ai.types import AssistantMessage, TextContent, ThinkingContent, ToolCall, Usage
+from tau_ai.types import AssistantMessage, Usage
 
 
 @dataclass
@@ -141,10 +140,11 @@ class AssistantMessageEventStream:
 
     Yields: TextDeltaEvent, ToolCallDeltaEvent, DoneEvent, ErrorEvent
 
-    This class wraps an underlying provider stream (an async iterator of
-    dicts) and produces typed StreamEvent objects. A background ``_collect``
-    coroutine processes the provider stream chunks and puts events into an
-    internal queue.  The main coroutine yields events from that queue.
+    This class wraps an underlying provider stream (an async iterator of typed
+    StreamEvents) and re-publishes those events through an internal queue. A
+    background ``_collect`` coroutine drains the provider stream into the queue
+    so ``result()`` and ``async for`` can be awaited independently; the main
+    coroutine yields events from that queue.
 
     Usage:
         stream = await stream_simple(model, context, options)
@@ -158,7 +158,6 @@ class AssistantMessageEventStream:
     Attributes:
         _provider_stream: The underlying provider async iterator.
         _model: The Model configuration.
-        _context: The context dict (messages, tools, system_prompt).
         _partial: Accumulating AssistantMessage.
         _done: Whether the stream has completed.
         _final: The final AssistantMessage (set on DoneEvent).
@@ -172,18 +171,15 @@ class AssistantMessageEventStream:
         self,
         provider_stream: AsyncIterable[Any],
         model: Any,
-        context: dict[str, Any] | None = None,
     ) -> None:
         """Initialize the event stream.
 
         Args:
-            provider_stream: Async-iterable yielding raw provider dicts.
+            provider_stream: Async-iterable yielding typed provider StreamEvents.
             model: The Model configuration.
-            context: Context dict with messages, tools, etc.
         """
         self._provider_stream = provider_stream
         self._model = model
-        self._context = context or {}
         self._partial: AssistantMessage | None = None
         self._done = False
         self._final: AssistantMessage | None = None
@@ -191,10 +187,6 @@ class AssistantMessageEventStream:
         self._error: str | None = None
         self._event_queue: asyncio.Queue[Any] = asyncio.Queue()
         self._collector_task: asyncio.Task[None] | None = None
-        # Raw-dict accumulation path only: per-index tool-call block and the
-        # growing raw argument-fragment buffer (concatenated, then parsed).
-        self._tool_blocks_by_index: dict[int, ToolCall] = {}
-        self._tool_args_by_index: dict[int, str] = {}
 
     def __aiter__(self) -> "AssistantMessageEventStream":
         """Return self as the async iterator."""
@@ -262,90 +254,38 @@ class AssistantMessageEventStream:
             )
             self._done = True
 
-    async def _process_chunk(self, chunk: Any) -> bool:
-        """Process a single provider stream chunk or event.
+    async def _process_chunk(self, chunk: Any) -> None:
+        """Forward one typed provider StreamEvent and track terminal state.
 
-        If *chunk* is already a StreamEvent (TextDeltaEvent, ToolCallDeltaEvent,
-        DoneEvent, ErrorEvent) it is forwarded directly to the queue and
-        returns ``True`` so that ``_collect`` does not emit its own wrapper.
-
-        If *chunk* is a raw dict (OpenAI format) it is processed into typed
-        events and returns ``False``.
+        The provider yields fully-typed StreamEvents (TextDeltaEvent /
+        ThinkingDeltaEvent / ToolCallDeltaEvent / DoneEvent / ErrorEvent); each
+        is forwarded to the queue, and the final message / usage / error is read
+        off the terminal events so ``result()`` can return it. A non-StreamEvent
+        chunk is a provider contract violation — raise (Fail-Early) rather than
+        silently re-accumulate raw dicts (the sole provider never emits them).
 
         Args:
-            chunk: A dict (OpenAI streaming chunk) or a StreamEvent object.
-
-        Returns:
-            True if the chunk was already a StreamEvent (forwarded),
-            False if it was processed as a raw chunk.
+            chunk: A StreamEvent object produced by the provider stream.
         """
-        # Check if chunk is already a StreamEvent dataclass
-        if hasattr(chunk, "type") and chunk.type in (
-            "text_delta",
-            "thinking_delta",
-            "toolcall_delta",
-            "done",
-            "error",
+        if not (
+            hasattr(chunk, "type")
+            and chunk.type in ("text_delta", "thinking_delta", "toolcall_delta", "done", "error")
         ):
-            await self._event_queue.put(chunk)
-            # Update state from forwarded events
-            if chunk.type == "done":
-                self._final = chunk.final
-                self._usage = chunk.usage
-                self._done = True
-            elif chunk.type == "error":
-                self._error = chunk.message
-                self._done = True
-            elif hasattr(chunk, "partial") and chunk.partial is not None:
-                self._partial = chunk.partial
-            return True
-
-        # Otherwise treat as raw dict chunk
-        if not isinstance(chunk, dict):
-            return False
-
-        delta = chunk.get("delta", {})
-
-        if "content" in delta and delta["content"]:
-            partial = self._partial or self._make_empty_partial()
-            await self._event_queue.put(
-                TextDeltaEvent(
-                    type="text_delta",
-                    delta=delta["content"],
-                    partial=partial,
-                )
+            raise TypeError(
+                "provider stream yielded a non-event chunk "
+                f"({type(chunk).__name__}); expected a typed StreamEvent"
             )
-            if self._partial is None:
-                self._partial = partial
-            # Accumulate text content
-            self._partial.content.append(TextContent(text=delta["content"]))
 
-        # Reasoning: first non-empty of the OpenAI-compatible field names.
-        reasoning = ""
-        for _field in ("reasoning_content", "reasoning", "reasoning_text"):
-            _val = delta.get(_field)
-            if isinstance(_val, str) and _val:
-                reasoning = _val
-                break
-        if reasoning:
-            partial = self._partial or self._make_empty_partial()
-            await self._event_queue.put(
-                ThinkingDeltaEvent(
-                    type="thinking_delta",
-                    delta=reasoning,
-                    partial=partial,
-                )
-            )
-            if self._partial is None:
-                self._partial = partial
-            self._partial.content.append(ThinkingContent(thinking=reasoning))
-
-        if "tool_calls" in delta:
-            for tc_delta in delta["tool_calls"]:
-                idx = tc_delta.get("index", 0)
-                await self._handle_tool_call_delta(tc_delta, idx)
-
-        return False
+        await self._event_queue.put(chunk)
+        if chunk.type == "done":
+            self._final = chunk.final
+            self._usage = chunk.usage
+            self._done = True
+        elif chunk.type == "error":
+            self._error = chunk.message
+            self._done = True
+        elif getattr(chunk, "partial", None) is not None:
+            self._partial = chunk.partial
 
     def _make_empty_partial(self) -> AssistantMessage:
         """Create a minimal AssistantMessage for the _partial field."""
@@ -357,48 +297,6 @@ class AssistantMessageEventStream:
             usage=Usage(),
             stop_reason="stop",
             timestamp=0,
-        )
-
-    async def _handle_tool_call_delta(self, delta: dict, index: int) -> None:
-        """Handle a tool call delta, accumulating arguments into _partial.
-
-        Args:
-            delta: OpenAI-style tool call delta dict.
-            index: The index of this tool call.
-        """
-        if self._partial is None:
-            self._partial = self._make_empty_partial()
-
-        tc_id = delta.get("id", "") or ""
-        func = delta.get("function") or {}
-        tc_name = func.get("name") or ""
-        tc_args = func.get("arguments") or ""
-
-        # Resolve (or create) the block for this call. Follow-up fragments carry
-        # only `index`, so the stream index is the stable key.
-        tc_block = self._tool_blocks_by_index.get(index)
-        if tc_block is None:
-            tc_block = ToolCall(id=tc_id, name="", arguments={})
-            self._tool_blocks_by_index[index] = tc_block
-            self._tool_args_by_index[index] = ""
-            self._partial.content.append(tc_block)
-        if tc_id and not tc_block.id:
-            tc_block.id = tc_id
-
-        # Name and arguments stream as fragments — concatenate. The argument
-        # buffer is parsed best-effort for live display (no fabricated values).
-        if tc_name:
-            tc_block.name += tc_name
-        if tc_args:
-            self._tool_args_by_index[index] += tc_args
-            tc_block.arguments = parse_streaming_json(self._tool_args_by_index[index])
-
-        await self._event_queue.put(
-            ToolCallDeltaEvent(
-                type="toolcall_delta",
-                delta=delta,
-                partial=self._partial,
-            )
         )
 
     async def result(self) -> AssistantMessage:

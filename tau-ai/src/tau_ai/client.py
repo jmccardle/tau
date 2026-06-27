@@ -78,15 +78,13 @@ async def stream_simple(
         options=options,
     )
 
-    # The provider's stream_chat returns an AssistantMessageEventStream
-    # that is itself async-iterable and has .result() and .abort().
-    # We wrap it in our streaming.py AssistantMessageEventStream so that
-    # the outer stream proxies the inner stream's events and provides
-    # the unified API expected by τ-agent-core.
+    # The provider yields typed streaming events (a bare async iterator). Wrap it
+    # once in AssistantMessageEventStream, which runs a background collector so
+    # ``result()`` and ``async for`` can be awaited independently — the single
+    # stream type τ-agent-core consumes.
     return AssistantMessageEventStream(
         provider_stream=provider_stream,
         model=model,
-        context=context,
     )
 
 
