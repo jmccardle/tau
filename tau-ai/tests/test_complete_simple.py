@@ -44,6 +44,19 @@ def _text_chunks(text: str, *, fragment: int = 4) -> list[dict]:
     return chunks
 
 
+class _StreamCM:
+    """Async context manager mimicking ``httpx.AsyncClient.stream(...)``."""
+
+    def __init__(self, response: "_FakeResponse") -> None:
+        self._response = response
+
+    async def __aenter__(self) -> "_FakeResponse":
+        return self._response
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
+
+
 class _FakeResponse:
     def __init__(self, lines: list[str], status_code: int = 200) -> None:
         self.status_code = status_code
@@ -53,6 +66,9 @@ class _FakeResponse:
 
     def json(self) -> dict:
         return {"usage": {"total_tokens": 11}}
+
+    async def aread(self) -> bytes:
+        return b""
 
     async def aiter_lines(self):
         for line in self._lines:
@@ -69,6 +85,10 @@ class _RecordingClient:
     async def post(self, *args, **kwargs):
         self.last_payload = kwargs.get("json")
         return self._response
+
+    def stream(self, *args, **kwargs):
+        self.last_payload = kwargs.get("json")
+        return _StreamCM(self._response)
 
 
 def test_complete_simple_returns_accumulated_message(monkeypatch):

@@ -53,8 +53,21 @@ def _ok_response() -> MagicMock:
     return response
 
 
+class _StreamCM:
+    """Async context manager mimicking ``httpx.AsyncClient.stream(...)``."""
+
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self._response
+
+    async def __aexit__(self, *exc):
+        return False
+
+
 class _CapturingClient:
-    """A fake httpx.AsyncClient that records the JSON payload of the POST."""
+    """A fake httpx.AsyncClient that records the JSON payload of the request."""
 
     last_payload: dict | None = None
 
@@ -64,6 +77,10 @@ class _CapturingClient:
     async def post(self, *args, **kwargs):
         _CapturingClient.last_payload = kwargs.get("json")
         return _ok_response()
+
+    def stream(self, *args, **kwargs):
+        _CapturingClient.last_payload = kwargs.get("json")
+        return _StreamCM(_ok_response())
 
     async def __aenter__(self):
         return self

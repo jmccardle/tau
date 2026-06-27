@@ -35,6 +35,19 @@ from tau_ai.types import Model, TextContent, ThinkingContent, ToolCall, UserMess
 # SSE harness (feeds aiter_lines like real httpx)
 # ──────────────────────────────────────────────────────────────────────────
 
+class _StreamCM:
+    """Async context manager mimicking ``httpx.AsyncClient.stream(...)``."""
+
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self._response
+
+    async def __aexit__(self, *exc):
+        return False
+
+
 class _FakeResponse:
     def __init__(self, lines, status_code=200):
         self.status_code = status_code
@@ -44,6 +57,9 @@ class _FakeResponse:
 
     def json(self):
         return {}
+
+    async def aread(self):
+        return b""
 
     async def aiter_lines(self):
         for line in self._lines:
@@ -56,6 +72,9 @@ class _FakeClient:
 
     async def post(self, *args, **kwargs):
         return self._response
+
+    def stream(self, *args, **kwargs):
+        return _StreamCM(self._response)
 
 
 def _model() -> Model:
@@ -199,6 +218,10 @@ def test_stream_payload_requests_usage():
         async def post(self, *args, **kwargs):
             captured.update(kwargs.get("json", {}))
             return _FakeResponse(_sse(_LLAMACPP_SHAPE))
+
+        def stream(self, *args, **kwargs):
+            captured.update(kwargs.get("json", {}))
+            return _StreamCM(_FakeResponse(_sse(_LLAMACPP_SHAPE)))
 
     provider = OpenAICompletionsProvider(api_key="sk-test")
     provider._get_client = lambda: _CapturingClient()  # type: ignore[method-assign]

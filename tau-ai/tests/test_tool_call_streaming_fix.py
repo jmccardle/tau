@@ -29,6 +29,19 @@ from tau_ai.types import Model, TextContent, ToolCall, UserMessage
 # SSE test harness (feeds aiter_lines, the way real httpx does)
 # ──────────────────────────────────────────────────────────────────────────
 
+class _StreamCM:
+    """Async context manager mimicking ``httpx.AsyncClient.stream(...)``."""
+
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self._response
+
+    async def __aexit__(self, *exc):
+        return False
+
+
 class _FakeResponse:
     def __init__(self, lines, status_code=200, json_body=None):
         self.status_code = status_code
@@ -39,6 +52,9 @@ class _FakeResponse:
 
     def json(self):
         return self._json_body
+
+    async def aread(self):
+        return b""
 
     async def aiter_lines(self):
         for line in self._lines:
@@ -51,6 +67,9 @@ class _FakeClient:
 
     async def post(self, *args, **kwargs):
         return self._response
+
+    def stream(self, *args, **kwargs):
+        return _StreamCM(self._response)
 
 
 def _model() -> Model:

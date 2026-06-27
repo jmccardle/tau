@@ -814,111 +814,119 @@ class OpenAICompletionsProvider(Provider):
 
         async def event_generator() -> AsyncIterator[Any]:
             try:
-                response = await client.post("/chat/completions", json=payload)
-
-                if response.status_code != 200:
-                    error_body = {}
-                    try:
-                        error_body = response.json()
-                    except Exception:
-                        pass
-                    error_msg = error_body.get("error", {}).get(
-                        "message", f"HTTP {response.status_code}"
-                    )
-                    error_event = ErrorEvent(
-                        type="error",
-                        message=f"HTTP {response.status_code}: {error_msg}",
-                        is_error=True,
-                    )
-                    yield error_event
-                    return
-
+                # Declared before the streaming context so the post-loop final
+                # message build (after the response closes) can still read them.
                 usage_data: dict[str, Any] = {}
                 final_stop_reason: (
                     Literal["stop", "length", "toolUse", "error", "aborted"] | None
                 ) = None
 
-                # Handle streaming response — read SSE lines async
-                async for line in response.aiter_lines():
-                    line = line.strip()
-                    if not line or not line.startswith("data:"):
-                        continue
-                    data_str = line[5:].strip()
-                    if data_str == "[DONE]":
-                        break
+                # `client.stream(...)` keeps the HTTP body OPEN and yields SSE
+                # lines as they arrive. `client.post(...)` (the old call) buffered
+                # the WHOLE response before returning, so every reasoning/text delta
+                # only surfaced in one burst at the end — the "reasoning invisible
+                # until complete" bug. pi streams the fetch body the same way.
+                async with client.stream("POST", "/chat/completions", json=payload) as response:
+                    if response.status_code != 200:
+                        # A streaming response's body is not read yet; pull it in
+                        # so the provider's error message can be surfaced.
+                        await response.aread()
+                        error_body = {}
+                        try:
+                            error_body = response.json()
+                        except Exception:
+                            pass
+                        error_msg = error_body.get("error", {}).get(
+                            "message", f"HTTP {response.status_code}"
+                        )
+                        yield ErrorEvent(
+                            type="error",
+                            message=f"HTTP {response.status_code}: {error_msg}",
+                            is_error=True,
+                        )
+                        return
 
-                    try:
-                        chunk = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        continue
+                    # Read SSE lines as they arrive (no full-body buffering).
+                    async for line in response.aiter_lines():
+                        line = line.strip()
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data_str = line[5:].strip()
+                        if data_str == "[DONE]":
+                            break
 
-                    # Usage and id can arrive in a trailing chunk whose `choices`
-                    # is empty (llama.cpp; OpenAI stream_options.include_usage).
-                    # Read them BEFORE the empty-choices guard or the token counts
-                    # are silently dropped.
-                    if chunk.get("id"):
-                        accum.response_id = chunk["id"]
-                    chunk_usage = chunk.get("usage")
-                    if chunk_usage:
-                        usage_data = chunk_usage
+                        try:
+                            chunk = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
 
-                    choices = chunk.get("choices", [])
-                    if not choices:
-                        continue
+                        # Usage and id can arrive in a trailing chunk whose `choices`
+                        # is empty (llama.cpp; OpenAI stream_options.include_usage).
+                        # Read them BEFORE the empty-choices guard or the token counts
+                        # are silently dropped.
+                        if chunk.get("id"):
+                            accum.response_id = chunk["id"]
+                        chunk_usage = chunk.get("usage")
+                        if chunk_usage:
+                            usage_data = chunk_usage
 
-                    choice = choices[0]
-                    delta = choice.get("delta", {})
-                    finish_reason = choice.get("finish_reason")
-                    choice_usage = choice.get("usage")
-                    if choice_usage:
-                        usage_data = choice_usage
+                        choices = chunk.get("choices", [])
+                        if not choices:
+                            continue
 
-                    # Process text delta
-                    text = delta.get("content", "") or ""
-                    if text:
-                        accum.text_parts.append(text)
-                        accum.has_text = True
-                        partial = self._build_partial_message(accum, model)
-                        yield self._make_text_event(text, accum, partial)
+                        choice = choices[0]
+                        delta = choice.get("delta", {})
+                        finish_reason = choice.get("finish_reason")
+                        choice_usage = choice.get("usage")
+                        if choice_usage:
+                            usage_data = choice_usage
 
-                    # Process reasoning/thinking delta — first non-empty of
-                    # reasoning_content / reasoning / reasoning_text, yielded live.
-                    # (Previously accumulated but never yielded, so reasoning never
-                    # streamed to the UI.)
-                    reasoning, reasoning_field = _extract_reasoning(delta)
-                    if reasoning:
-                        accum.thinking_parts.append(reasoning)
-                        if not accum.thinking_signature:
-                            accum.thinking_signature = reasoning_field
-                        accum.has_thinking = True
-                        partial = self._build_partial_message(accum, model)
-                        yield self._make_thinking_event(reasoning, accum, partial)
+                        # Process text delta
+                        text = delta.get("content", "") or ""
+                        if text:
+                            accum.text_parts.append(text)
+                            accum.has_text = True
+                            partial = self._build_partial_message(accum, model)
+                            yield self._make_text_event(text, accum, partial)
 
-                    # Process tool call deltas. OpenAI streams name and arguments
-                    # as incremental FRAGMENTS, one piece per chunk — concatenate
-                    # them. Route each fragment to its call by stream `index`
-                    # (falling back to `id`), since follow-up argument fragments
-                    # carry only the index.
-                    deltas = delta.get("tool_calls", [])
-                    for i, tc_delta in enumerate(deltas):
-                        block = _resolve_tool_call_block(accum, tc_delta, i)
-                        func = tc_delta.get("function") or {}
-                        tc_name = func.get("name") or ""
-                        if tc_name:
-                            block.name += tc_name
-                        tc_args = func.get("arguments") or ""
-                        if tc_args:
-                            block.arguments_parts.append(tc_args)
-                        accum.has_tool_calls = True
+                        # Process reasoning/thinking delta — first non-empty of
+                        # reasoning_content / reasoning / reasoning_text, yielded live.
+                        # (Previously accumulated but never yielded, so reasoning never
+                        # streamed to the UI.)
+                        reasoning, reasoning_field = _extract_reasoning(delta)
+                        if reasoning:
+                            accum.thinking_parts.append(reasoning)
+                            if not accum.thinking_signature:
+                                accum.thinking_signature = reasoning_field
+                            accum.has_thinking = True
+                            partial = self._build_partial_message(accum, model)
+                            yield self._make_thinking_event(reasoning, accum, partial)
 
-                        partial = self._build_partial_message(accum, model)
-                        yield self._make_toolcall_event(tc_delta, accum, partial)
+                        # Process tool call deltas. OpenAI streams name and arguments
+                        # as incremental FRAGMENTS, one piece per chunk — concatenate
+                        # them. Route each fragment to its call by stream `index`
+                        # (falling back to `id`), since follow-up argument fragments
+                        # carry only the index.
+                        deltas = delta.get("tool_calls", [])
+                        for i, tc_delta in enumerate(deltas):
+                            block = _resolve_tool_call_block(accum, tc_delta, i)
+                            func = tc_delta.get("function") or {}
+                            tc_name = func.get("name") or ""
+                            if tc_name:
+                                block.name += tc_name
+                            tc_args = func.get("arguments") or ""
+                            if tc_args:
+                                block.arguments_parts.append(tc_args)
+                            accum.has_tool_calls = True
 
-                    # Record finish, but DON'T return yet: usage may arrive in a
-                    # later chunk (servers emit finish_reason and usage in separate
-                    # chunks). Returning here would drop that usage.
-                    if finish_reason:
-                        final_stop_reason = self._map_finish_reason(finish_reason)
+                            partial = self._build_partial_message(accum, model)
+                            yield self._make_toolcall_event(tc_delta, accum, partial)
+
+                        # Record finish, but DON'T return yet: usage may arrive in a
+                        # later chunk (servers emit finish_reason and usage in separate
+                        # chunks). Returning here would drop that usage.
+                        if finish_reason:
+                            final_stop_reason = self._map_finish_reason(finish_reason)
 
                 # Stream ended ([DONE] or closed). Emit the final message with
                 # whatever usage arrived, including a trailing usage-only chunk.

@@ -48,6 +48,24 @@ from tau_ai.abort import AbortSignal
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════
 
+class _StreamCM:
+    """Async context manager mimicking ``httpx.AsyncClient.stream(...)``.
+
+    The provider does ``async with client.stream("POST", url, json=payload) as
+    response:``, so each mock client's ``stream`` must be a plain method that
+    returns this object (NOT a coroutine).
+    """
+
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self._response
+
+    async def __aexit__(self, *exc):
+        return False
+
+
 def _make_model(**overrides) -> Model:
     """Create a test Model with defaults."""
     defaults = {
@@ -213,6 +231,11 @@ def _make_mock_error_response(status_code: int = 401, error_msg: str = "Invalid 
     response.json.return_value = {
         "error": {"message": error_msg, "type": "invalid_request_error"}
     }
+
+    async def _aread():
+        return b""
+
+    response.aread = _aread
     return response
 
 
@@ -225,6 +248,9 @@ def _make_mock_client(response: MagicMock):
 
         async def post(self, *args, **kwargs):
             return self._response
+
+        def stream(self, *args, **kwargs):
+            return _StreamCM(self._response)
 
         async def __aenter__(self):
             return self
@@ -658,6 +684,8 @@ class TestToolCallStreamAccumulates:
                 self._response = mock_response
             async def post(self, *args, **kwargs):
                 return self._response
+            def stream(self, *args, **kwargs):
+                return _StreamCM(self._response)
             async def __aenter__(self):
                 return self
             async def __aexit__(self, *exc):
@@ -793,6 +821,8 @@ class TestToolCallStreamAccumulates:
                     self._response = mock_response
                 async def post(self, *args, **kwargs):
                     return self._response
+                def stream(self, *args, **kwargs):
+                    return _StreamCM(self._response)
                 async def __aenter__(self):
                     return self
                 async def __aexit__(self, *exc):

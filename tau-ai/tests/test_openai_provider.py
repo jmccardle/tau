@@ -38,6 +38,29 @@ from tau_ai.types import (
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Helper: async context manager mimicking httpx's ``client.stream(...)``
+# ═══════════════════════════════════════════════════════════════════════════
+
+class _StreamCM:
+    """Mimics ``httpx.AsyncClient.stream(...)``: a sync call returning an async
+    context manager whose ``__aenter__`` yields the (already-built) response.
+
+    The provider does ``async with client.stream("POST", url, json=payload) as
+    response:`` — so the mock client's ``stream`` must be a plain method that
+    returns this object, NOT a coroutine.
+    """
+
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self._response
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Helper: build_sse_chunk and build_sse_stream (avoid nested f-strings)
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -193,6 +216,11 @@ def _make_mock_error_response(status_code: int = 401, error_msg: str = "Invalid 
     response.json.return_value = {
         "error": {"message": error_msg, "type": "invalid_request_error"}
     }
+
+    async def _aread():
+        return b""
+
+    response.aread = _aread
     return response
 
 
@@ -622,6 +650,9 @@ class TestStreamTextResponse:
             async def post(self, *args, **kwargs):
                 return self._response
 
+            def stream(self, *args, **kwargs):
+                return _StreamCM(self._response)
+
             async def __aenter__(self):
                 return self
 
@@ -752,6 +783,9 @@ class TestStreamToolCallDelta:
 
             async def post(self, *args, **kwargs):
                 return self._response
+
+            def stream(self, *args, **kwargs):
+                return _StreamCM(self._response)
 
             async def __aenter__(self):
                 return self
@@ -920,6 +954,9 @@ class TestErrorHandling:
             async def post(self, *args, **kwargs):
                 return self._response
 
+            def stream(self, *args, **kwargs):
+                return _StreamCM(self._response)
+
             async def __aenter__(self):
                 return self
 
@@ -996,6 +1033,9 @@ class TestErrorHandling:
                 pass
 
             async def post(self, *args, **kwargs):
+                raise ConnectionError("Connection refused")
+
+            def stream(self, *args, **kwargs):
                 raise ConnectionError("Connection refused")
 
             async def __aenter__(self):
@@ -1386,6 +1426,9 @@ class TestTokenLimitHandling:
             async def post(self, *args, **kwargs):
                 return self._response
 
+            def stream(self, *args, **kwargs):
+                return _StreamCM(self._response)
+
             async def __aenter__(self):
                 return self
 
@@ -1457,6 +1500,9 @@ class TestApiKeyResolution:
 
             async def post(self, *args, **kwargs):
                 return mock_response
+
+            def stream(self, *args, **kwargs):
+                return _StreamCM(mock_response)
 
             async def __aenter__(self):
                 return self
