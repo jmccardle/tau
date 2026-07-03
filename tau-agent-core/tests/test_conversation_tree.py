@@ -202,25 +202,57 @@ def test_multi_compaction_anchors_on_last() -> None:
     assert [m["content"][0]["text"] for m in msgs[1:]] == ["a3", "u4"]
 
 
-# --- branch_summary == compaction splice equivalence (§2.4) -----------------
+# --- branch_summary is an INLINE node, NOT a splice anchor (Decision 5, §5) --
+#
+# The 1b test here asserted branch_summary spliced *like* compaction (the §2.4
+# unification). That was verified WRONG against pi (Decision 5, fix 2): pi's
+# buildSessionContext anchors the drop-prefix splice on ``compaction`` alone
+# (session-manager.ts:367); branch_summary is emitted inline via
+# createBranchSummaryMessage (:390-397). These tests lock the pi-correct topology.
 
 
-def test_branch_summary_splices_like_compaction() -> None:
-    compaction_tree = _single_compaction()
-    # Same shape, but the anchor is a branch_summary with fromId == firstKeptId.
-    branch_tree = [
+def test_branch_summary_is_inline_not_a_splice_yields_A_B_S() -> None:
+    # A real summarized branch: root A → point B, with an abandoned child C.
+    # branchWithSummary parents the summary S at the branch point B (fix 1), so the
+    # active path is A → B → S and C drops out purely via the parentId walk — NOT a
+    # splice. pi gives context [A, B, S]; the old unified splice wrongly gave [S, B].
+    entries = [
+        _msg("e01", None, "system", "rootA"),
+        _msg("e02", "e01", "user", "pointB"),
+        _msg("e03", "e02", "assistant", "abandonedC"),  # sibling of the summary
+        _branch_summary("e04", "e02", "e02", "SUMMARY-S"),  # parented at B (fix 1)
+    ]
+    msgs = ConversationTree(entries, cursor="e04").context_for()
+    assert msgs == [
+        {"role": "system", "content": [{"type": "text", "text": "rootA"}]},
+        {"role": "user", "content": [{"type": "text", "text": "pointB"}]},
+        {"role": "user", "content": [{"type": "text", "text": "[[Branch summary: SUMMARY-S]]"}]},
+    ]
+
+
+def test_mixed_compaction_and_branch_summary_path() -> None:
+    # Both kinds on one path: compaction drops the pre-boundary prefix; the later
+    # branch_summary renders inline (no prefix drop). Matches pi buildSessionContext
+    # (compaction is the sole anchor; the post-anchor branch_summary is appendMessage'd).
+    entries = [
         _msg("e01", None, "system", "sys"),
         _msg("e02", "e01", "user", "u1"),
         _msg("e03", "e02", "assistant", "a1"),
-        _msg("e04", "e03", "user", "u2"),
-        _branch_summary("e08", "e03", "e05", "SUMMARY-1"),
-        _msg("e05", "e08", "assistant", "a2"),
+        _compaction("e04", "e03", "e05", "COMP"),  # firstKeptId=e05
+        _msg("e05", "e04", "assistant", "a2"),
         _msg("e06", "e05", "user", "u3"),
-        _msg("e07", "e06", "assistant", "a3"),
+        _branch_summary("e07", "e06", "e05", "BR"),  # inline, after the compaction
+        _msg("e08", "e07", "assistant", "a4"),
     ]
-    a = ConversationTree(compaction_tree, cursor="e07").context_for()
-    b = ConversationTree(branch_tree, cursor="e07").context_for()
-    assert a == b
+    msgs = ConversationTree(entries, cursor="e08").context_for()
+    texts = [m["content"][0]["text"] for m in msgs]
+    assert texts == [
+        "[[Compaction summary: COMP]]",  # prefix (sys/u1/a1) dropped by the compaction
+        "a2",
+        "u3",
+        "[[Branch summary: BR]]",  # inline — drops nothing
+        "a4",
+    ]
 
 
 # --- navigate / path --------------------------------------------------------

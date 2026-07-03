@@ -7,7 +7,7 @@ Clean, simple, fast. Built with Textual.
 from textual.app import App, ComposeResult, SystemCommand
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.widget import Widget
-from textual.widgets import Static, Input, Header, Footer, Markdown, Button, TextArea
+from textual.widgets import Static, Input, Header, Footer, Markdown, Button, TextArea, Tree
 from textual.binding import Binding
 from textual.reactive import reactive
 from textual import events, work
@@ -19,7 +19,7 @@ import json
 import os
 import time
 import traceback
-from typing import Optional
+from typing import Any, Optional
 
 from tau_coding_agent.backends import create_backend, Backend
 
@@ -28,6 +28,10 @@ from tau_coding_agent.backends import create_backend, Backend
 # partitioned by cwd (docs/SESSION-UX-REDESIGN.md); the TUI keeps a live working
 # message list and funnels each produced message through Session.append_message.
 from tau_coding_agent.session_store import TAU_DIR, Session, SessionInfo, list_sessions
+
+# The pure session-tree algebra lives in tau-agent-core (the loop's package, not
+# the TUI); the tree-browser (§3) is a view over ConversationTree.tree().
+from tau_agent_core.conversation_tree import ConversationTree, TreeNode
 
 # Collapsible chat components. MessageBox (below) is the universal per-message
 # host; these are the children it composes — one reasoning region and N tool
@@ -65,6 +69,122 @@ class SystemPromptEditor(ModalScreen):
             self.new_prompt = textarea.text
             self.dismiss(self.new_prompt)
         elif event.button.id == "prompt-cancel":
+            self.dismiss(None)
+
+
+class SessionTreeModal(ModalScreen[Optional[str]]):
+    """Browse the conversation tree and pick a node to branch from (§3.2).
+
+    Port of pi's ``showTreeSelector`` (interactive-mode.ts:4446): a
+    ``textual.widgets.Tree`` populated from ``ConversationTree.tree()``, the current
+    leaf highlighted. ``Enter`` dismisses with the chosen entry id; ``Esc`` cancels
+    (``None``). Copies the ``SystemPromptEditor`` modal template.
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(self, roots: list[TreeNode]) -> None:
+        super().__init__()
+        self._roots = roots
+
+    def compose(self) -> ComposeResult:
+        with Container(id="tree-browser-dialog"):
+            yield Static("Browse Conversation Tree", id="tree-browser-title")
+            tree: Tree[str] = Tree("session", id="tree-browser-tree")
+            tree.show_root = False
+            yield tree
+            yield Static("Enter: branch from node    Esc: cancel", id="tree-browser-help")
+
+    def on_mount(self) -> None:
+        tree = self.query_one("#tree-browser-tree", Tree)
+        leaf_widget: list[Any] = []
+
+        def _add(parent, node: TreeNode) -> None:
+            widget_node = parent.add(self._label(node), data=node.id)
+            widget_node.expand()
+            if node.is_leaf:
+                leaf_widget.append(widget_node)
+            for child in node.children:
+                _add(widget_node, child)
+
+        for root in self._roots:
+            _add(tree.root, root)
+
+        # Highlight the current leaf (pi passes realLeafId to the selector). Defer
+        # until after the first refresh — a node's ``line`` (which ``move_cursor``
+        # reads) is only assigned once the tree has laid out.
+        if leaf_widget:
+            leaf_node = leaf_widget[0]
+            tree.call_after_refresh(tree.move_cursor, leaf_node)
+        tree.focus()
+
+    @staticmethod
+    def _label(node: TreeNode) -> str:
+        tag = node.role or node.kind
+        text = node.preview or f"({node.kind})"
+        marker = "  ◀ current" if node.is_leaf else ""
+        return f"{tag}: {text}{marker}"
+
+    def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
+        # Enter (or click) on a node confirms the branch point.
+        event.stop()
+        self.dismiss(event.node.data)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class TreeModeModal(ModalScreen[Optional[str]]):
+    """The three-mode chooser after a branch point is picked (§3.1).
+
+    pi's ``showExtensionSelector`` (interactive-mode.ts:4479-4483): "No summary" /
+    "Summarize" / "Summarize with custom instructions". Dismisses with
+    ``"navigate"`` / ``"summarize"`` / ``"custom"`` (or ``None`` on cancel).
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def compose(self) -> ComposeResult:
+        with Container(id="tree-mode-dialog"):
+            yield Static("Branch from selected node", id="tree-mode-title")
+            with Vertical(id="tree-mode-buttons"):
+                yield Button("No summary", variant="primary", id="mode-navigate")
+                yield Button("Summarize abandoned branch", id="mode-summarize")
+                yield Button("Summarize with custom instructions…", id="mode-custom")
+                yield Button("Cancel", id="mode-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        mapping = {
+            "mode-navigate": "navigate",
+            "mode-summarize": "summarize",
+            "mode-custom": "custom",
+        }
+        self.dismiss(mapping.get(event.button.id or ""))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class TreeCustomInstructionsModal(ModalScreen[Optional[str]]):
+    """Collect the custom summarizer instructions for mode 3 (§3.1).
+
+    pi's ``showExtensionEditor`` (interactive-mode.ts:4494). Reuses the
+    ``SystemPromptEditor`` ``TextArea`` shell; Save dismisses with the text, Cancel
+    with ``None``.
+    """
+
+    def compose(self) -> ComposeResult:
+        with Container(id="prompt-editor-dialog"):
+            yield Static("Custom Summary Instructions", id="prompt-editor-title")
+            yield TextArea("", id="prompt-editor-textarea")
+            with Horizontal(id="prompt-editor-buttons"):
+                yield Button("Summarize", variant="primary", id="custom-save")
+                yield Button("Cancel", variant="default", id="custom-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "custom-save":
+            self.dismiss(self.query_one("#prompt-editor-textarea", TextArea).text)
+        elif event.button.id == "custom-cancel":
             self.dismiss(None)
 
 
@@ -870,6 +990,7 @@ class Parley(App):
         Binding("ctrl+b", "toggle_sidebar", "Sidebar"),
         Binding("ctrl+n", "new_chat", "New Chat"),
         Binding("ctrl+e", "edit_system_prompt", "Edit Prompt"),
+        Binding("ctrl+g", "browse_tree", "Tree"),
         Binding("ctrl+r", "toggle_reasoning", "Reasoning", priority=True),
         Binding("ctrl+t", "toggle_tools", "Tools", priority=True),
         Binding("ctrl+j", "focus_and_send", "^Enter=Send", show=True),
@@ -1006,6 +1127,12 @@ class Parley(App):
         # "played along" instead of the harness compacting the conversation.
         if message == "/compact":
             await self.action_compact()
+            return
+
+        # /tree and /fork both open the tree-browser (pi aliases,
+        # keybindings.ts:252-253). Intercepted here so the text never reaches the model.
+        if message in ("/tree", "/fork"):
+            self.action_browse_tree()
             return
 
         # Create new session if needed
@@ -1259,6 +1386,12 @@ class Parley(App):
         )
 
         yield SystemCommand(
+            "Browse conversation tree…",
+            "Navigate to an earlier node; optionally summarize the abandoned branch",
+            self.action_browse_tree,
+        )
+
+        yield SystemCommand(
             "Edit System Prompt",
             "Edit the system prompt for new chats",
             self.action_edit_system_prompt,
@@ -1378,6 +1511,74 @@ class Parley(App):
         await self.query_one(ChatDisplay).reload_messages(self.messages)
         self._refresh_subtitle()
         self.notify(f"Compacted {before} → {len(new_messages)} messages")
+
+    @work
+    async def action_browse_tree(self) -> None:
+        """Open the tree-browser and act on the chosen branch point (§3).
+
+        Runs as a worker so it can ``push_screen_wait`` the three modal steps
+        (browse → mode → optional custom instructions). Operates on the LIVE
+        ``current_session`` — the TUI owns persistence (§2.6) — building a
+        ``ConversationTree`` over its entries and handing the picked node to
+        ``backend.navigate_tree``, which appends the ``navigate``/``branch_summary``
+        entry and returns the post-navigate context. Re-renders through the same
+        path ``action_compact`` uses (§3.4): swap ``self.messages`` + reload.
+        """
+        session = self.current_session
+        if session is None:
+            self.notify("No conversation to browse", severity="warning")
+            return
+        # Bind the method up front: it survives the intervening ``await``s (unlike a
+        # hasattr-narrowed local) and is ``None`` for a backend that lacks it.
+        navigate_tree = getattr(self.current_backend, "navigate_tree", None)
+        if navigate_tree is None:
+            self.notify("This backend does not support tree navigation", severity="warning")
+            return
+
+        roots = ConversationTree(session.entries(), session.cursor).tree()
+        if not roots:
+            self.notify("Conversation tree is empty", severity="warning")
+            return
+
+        target_id = await self.push_screen_wait(SessionTreeModal(roots))
+        if target_id is None:
+            return
+        if target_id == session.cursor:
+            self.notify("Already at that node")
+            return
+
+        mode = await self.push_screen_wait(TreeModeModal())
+        if mode is None:
+            return
+
+        custom_instructions: Optional[str] = None
+        if mode == "custom":
+            custom_instructions = await self.push_screen_wait(TreeCustomInstructionsModal())
+            if custom_instructions is None:
+                return
+
+        summarize = mode in ("summarize", "custom")
+        self.sub_title = "Summarizing branch…" if summarize else "Navigating tree…"
+        try:
+            new_messages = await navigate_tree(
+                session,
+                target_id,
+                summarize=summarize,
+                custom_instructions=custom_instructions,
+            )
+        except Exception as e:
+            self.notify(f"Tree navigation failed: {e}", severity="error")
+            self.log.error(f"Tree navigation failed: {e}")
+            self.log.error(traceback.format_exc())
+            self._refresh_subtitle()
+            return
+
+        self.messages = new_messages
+        await self.query_one(ChatDisplay).reload_messages(self.messages)
+        self._refresh_subtitle()
+        self.notify(
+            "Summarized and moved to selected node" if summarize else "Moved to selected node"
+        )
 
     async def action_edit_system_prompt(self):
         """Edit the system prompt."""

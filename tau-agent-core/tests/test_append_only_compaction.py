@@ -81,9 +81,12 @@ def test_navigate_behind_boundary_restores_pre_compaction_messages() -> None:
     ]
 
 
-def test_branch_summary_appended_at_tip_splices_like_compaction() -> None:
-    entries = _linear_then_appended_compaction()
-    branch = list(entries[:-1]) + [
+def test_branch_summary_appended_at_tip_is_inline_not_a_splice() -> None:
+    # Decision 5 fix 2 (§5): a branch_summary is NOT a splice anchor — appended at the
+    # tip it renders INLINE, dropping no prefix (unlike a compaction). The 1c version
+    # of this test asserted branch_summary spliced *like* compaction via the now-removed
+    # §2.4 unification; corrected here to the pi-verified behavior.
+    branch = _linear_then_appended_compaction()[:-1] + [
         {
             "id": "c06",
             "type": "branch_summary",
@@ -93,9 +96,16 @@ def test_branch_summary_appended_at_tip_splices_like_compaction() -> None:
             "fromId": "e04",
         }
     ]
-    a = ConversationTree(entries, cursor="c06").context_for()
-    b = ConversationTree(branch, cursor="c06").context_for()
-    assert a == b
+    msgs = ConversationTree(branch, cursor="c06").context_for()
+    # Full linear prefix survives; the summary is appended inline (no drop-prefix).
+    assert [m["content"][0]["text"] for m in msgs] == [
+        "sys",
+        "u1",
+        "a1",
+        "u2",
+        "a2",
+        "[[Branch summary: SUMMARY]]",
+    ]
 
 
 # --- SessionManager: append-only + byte-prefix stability --------------------

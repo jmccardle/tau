@@ -203,6 +203,72 @@ Screen {
     background: #45475a;
 }
 
+/* === Session Tree Browser Modal === */
+#tree-browser-dialog {
+    width: 90;
+    height: 30;
+    background: #181825;
+    border: thick #45475a;
+    padding: 1;
+}
+
+#tree-browser-title {
+    text-align: center;
+    text-style: bold;
+    color: #cba6f7;
+    margin-bottom: 1;
+}
+
+#tree-browser-tree {
+    height: 1fr;
+    background: #1e1e2e;
+    border: solid #45475a;
+    color: #cdd6f4;
+}
+
+#tree-browser-tree:focus {
+    border: solid #cba6f7;
+}
+
+#tree-browser-help {
+    text-align: center;
+    color: #6c7086;
+    margin-top: 1;
+}
+
+/* === Tree three-mode chooser Modal === */
+#tree-mode-dialog {
+    width: 60;
+    height: auto;
+    background: #181825;
+    border: thick #45475a;
+    padding: 1;
+}
+
+#tree-mode-title {
+    text-align: center;
+    text-style: bold;
+    color: #cba6f7;
+    margin-bottom: 1;
+}
+
+#tree-mode-buttons {
+    height: auto;
+    align: center middle;
+}
+
+#tree-mode-buttons Button {
+    width: 100%;
+    margin-bottom: 1;
+    background: #313244;
+    border: solid #45475a;
+    color: #cdd6f4;
+}
+
+#tree-mode-buttons Button:hover {
+    background: #45475a;
+}
+
 /* === Code blocks in markdown === */
 Markdown CodeBlock {
     background: #11111b;

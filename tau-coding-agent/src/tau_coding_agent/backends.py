@@ -95,6 +95,11 @@ class TauBackend(Backend):
             reasoning=model_reasoning,
             thinking_level_map=config.get("thinking_level_map"),
         )
+        # Kept for the tree-browser's summarizer (navigate_tree, §3.3): the
+        # branch-summary ``complete_simple`` call needs the model + api key directly,
+        # not via the AgentSession loop.
+        self._model = model
+        self._api_key = api_key
 
         # Discover tools from config. Defaults to all built-in tools.
         tool_names = config.get("tools", ["read", "write", "edit", "bash", "ls", "grep", "find"])
@@ -150,6 +155,55 @@ class TauBackend(Backend):
         session-manager path. Returns None when there is nothing to compact.
         """
         return await self.agent_session.compact_messages(messages)
+
+    async def navigate_tree(
+        self,
+        session: Any,
+        target_id: str,
+        *,
+        summarize: bool = False,
+        custom_instructions: str | None = None,
+    ) -> list[dict]:
+        """Move the live session's cursor to ``target_id`` and return the new context.
+
+        Port of pi's ``AgentSession.navigateTree`` (agent-session.ts:2708). The live
+        coding-agent ``Session`` is passed in (the TUI owns it, §2.6): this method
+        operates on IT, not on the scratch ``InMemorySessionLog`` the AgentSession runs
+        against. Two modes (§3.1):
+
+        - ``summarize=False`` → append a ``navigate`` entry (zero LLM calls). The
+          abandoned branch drops out of context via the ``parentId`` walk but stays on
+          disk (append-only, still browsable).
+        - ``summarize=True`` → summarize the abandoned subtree (``ConversationTree
+          .subtree_text(target_id)`` → ``summarize_branch``, Fail-Early: raises on a
+          failed/empty summary) and append a ``branch_summary`` parented at the branch
+          point (Decision 5, fix 1). Mode-3 ``custom_instructions`` reach the summarizer
+          SYSTEM prompt.
+
+        Returns ``ConversationTree.context_for(cursor)`` — the flat message list the TUI
+        swaps into ``self.messages`` and re-renders (reusing the compaction path, §3.4).
+        """
+        from tau_agent_core.conversation_tree import ConversationTree
+        from tau_agent_core.session_manager import summarize_branch
+
+        old_leaf = session.cursor
+        if target_id == old_leaf:
+            # No-op (pi navigateTree:2716) — already at the target.
+            return ConversationTree(session.entries(), session.cursor).context_for()
+
+        if summarize:
+            branch_text = ConversationTree(session.entries(), old_leaf).subtree_text(target_id)
+            summary = await summarize_branch(
+                branch_text,
+                self._model,
+                api_key=self._api_key,
+                custom_instructions=custom_instructions,
+            )
+            session.append_branch_summary(summary, target_id)
+        else:
+            session.append_navigate(target_id)
+
+        return ConversationTree(session.entries(), session.cursor).context_for()
 
     async def _extract_last_user_message(self, messages: list[dict]) -> str:
         """Extract the last user message text from a Parley messages list."""

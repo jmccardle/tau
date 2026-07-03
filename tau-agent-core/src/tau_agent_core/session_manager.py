@@ -695,83 +695,64 @@ class SessionManager:
             return None
 
 
+_BRANCH_SUMMARY_SYSTEM_PROMPT = (
+    "You are summarizing an abandoned branch of a coding conversation so its "
+    "essential context can be carried forward. Produce a concise summary that "
+    "captures the key decisions, findings, and resulting state."
+)
+
+
 async def summarize_branch(
-    session: Any,
-    branch_entry: dict,
+    branch_text: str,
     model: Any,
-    system_prompt: str | None = None,
+    *,
+    api_key: str | None = None,
+    custom_instructions: str | None = None,
 ) -> str:
-    """Summarize an abandoned branch of the session tree.
+    """Summarize an abandoned branch's text into a concise summary.
 
-    Used when navigating back to a previous entry — the branch
-    from that entry to the current tip is summarized and the
-    summary is appended as a compacted summary entry.
+    The summarizer engine behind the tree-browser's "Summarize" modes (pi
+    ``generateBranchSummary`` / ``navigateTree``, agent-session.ts:2794). ``branch_text``
+    is produced by ``ConversationTree.subtree_text`` (§2.1) and passed in; the caller
+    (``TauBackend.navigate_tree``, §3.3) then persists the result as a ``branch_summary``
+    entry. Mode 3's ``custom_instructions`` are threaded into the summarizer's SYSTEM
+    prompt.
 
-    Args:
-        session: An AgentSession or dict-like object with:
-            - session_manager: SessionManager instance
-            - model: Model configuration for LLM calls
-        branch_entry: The entry dict where the branch starts.
-        model: Model configuration with at least a 'provider' attribute.
-        system_prompt: Optional custom system prompt.
+    Fail-Early (§3.1): the previous truncated-raw-text fallback is GONE — a failed,
+    aborted, or empty LLM response RAISES rather than fabricating a summary from raw
+    text. No branch-summary is ever silently invented.
 
-    Returns:
-        A concise summary string of the branch conversation.
+    Reference: SESSION-TREE-IMPLEMENTATION.md §3.1, §3.3.
     """
-    # Resolve the SessionManager this helper reads (the legacy System-A tree
-    # store). AgentSession no longer wraps a SessionManager — §2.6 retired it from
-    # the live path — so the accepted inputs are a SessionManager or an object
-    # exposing one; the subtree extraction moves to ConversationTree.subtree_text
-    # when this helper is reworked in Part 2 (§3.1).
-    if hasattr(session, "session_manager"):
-        sm = session.session_manager
-    elif hasattr(session, "_session_manager"):
-        sm = session._session_manager
-    else:
-        sm = session  # Assume it is itself a SessionManager
+    from tau_ai.client import complete_simple
+    from tau_ai.types import TextContent
 
-    # Extract messages from the branch
-    entries = sm._get_entries()
-    branch_entry_id = branch_entry.get("id") or ""
-    branch_messages = sm._extract_branch_messages(entries, branch_entry_id)
+    text = branch_text.strip()
+    if not text:
+        raise ValueError("Cannot summarize an empty branch")
 
-    if not branch_messages:
-        return "(No messages in this branch)"
+    system_prompt = _BRANCH_SUMMARY_SYSTEM_PROMPT
+    if custom_instructions:
+        system_prompt = f"{system_prompt}\n\nAdditional focus: {custom_instructions}"
 
-    prompt = f"""Summarize this conversation branch:
-{branch_messages}
-
-Provide a concise summary that captures the essential context."""
-
-    if system_prompt:
-        prompt = f"{system_prompt}\n\n{prompt}"
-
-    # Call LLM via tau-ai's stream_simple
-    from tau_ai.client import stream_simple
-
+    prompt = (
+        "Summarize this conversation branch:\n"
+        f"{text}\n\n"
+        "Provide a concise summary that captures the essential context."
+    )
     context = {
         "messages": [
-            {"role": "user", "content": prompt},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": [{"type": "text", "text": prompt}]},
         ],
     }
+    options: dict[str, Any] | None = {"api_key": api_key} if api_key is not None else None
 
-    try:
-        stream = await stream_simple(model, context)
-        # Collect all text deltas
-        summary_parts: list[str] = []
-        async for event in stream:
-            delta = getattr(event, "delta", None)
-            if delta is not None:
-                summary_parts.append(delta)
-            else:
-                text = getattr(event, "text", None)
-                if text is not None:
-                    summary_parts.append(text)
-        summary = "".join(summary_parts).strip()
-    except Exception as e:
-        # If LLM call fails, return the raw messages as a fallback summary
-        summary = f"Branch summary unavailable (error: {e})"  # noqa: B950
-        # Fallback: use first 500 chars of branch messages
-        summary = branch_messages[:500] if len(branch_messages) > 500 else branch_messages
-
+    response = await complete_simple(model, context, options)
+    if getattr(response, "stop_reason", None) in ("error", "aborted"):
+        detail = getattr(response, "error_message", None) or getattr(response, "stop_reason", "")
+        raise RuntimeError(f"Branch summarization failed: {detail}")
+    summary = "\n".join(c.text for c in response.content if isinstance(c, TextContent)).strip()
+    if not summary:
+        raise RuntimeError("Branch summarization returned an empty summary")
     return summary

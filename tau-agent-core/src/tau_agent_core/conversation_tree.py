@@ -7,24 +7,27 @@ the raw ``session_store.Session.entries()`` dicts (camelCase ``parentId`` /
 turns the persisted branching tree into the flat message list the agent loop
 consumes, without touching the filesystem, ``Session``, or ``asyncio``.
 
-Provenance (ported verbatim, only the field names reconciled camelCase and the
-splice generalised over both summary kinds):
+Provenance (ported verbatim, only the field names reconciled camelCase):
 
 - ``context_for`` / ``_active_path_entries`` ← pi ``buildSessionContext``
   (``session-manager.ts:325-423``) — the leaf→root ``parentId`` walk, the "anchor on
-  the LAST compaction/branch_summary in the path" rule (``:591-600``), and the
-  splice that emits the summary node, the kept entries before it from the boundary
-  (``firstKeptId`` / ``fromId``), then everything after (``:400-423``). This reads a
-  summary appended at the tip (append-only compaction, step 1c) as well as one whose
-  kept region trails it; the entry→message conversion mirrors
-  ``SessionManager.get_active_messages`` (``:191-221``).
+  the LAST **compaction** in the path" rule (``:367, :400-423``), and the splice that
+  emits the summary node, the kept entries before it from ``firstKeptId``, then
+  everything after. Only ``compaction`` drops a prefix; ``branch_summary`` is a plain
+  INLINE node (pi ``createBranchSummaryMessage``, ``:390-397``) whose ``fromId`` is
+  display metadata, *not* a splice boundary — the abandoned branch drops out purely
+  via the ``parentId`` walk, because ``branchWithSummary`` parents the summary at the
+  branch point (Decision 5, §5). This reads a compaction appended at the tip
+  (append-only, step 1c) as well as one whose kept region trails it; the entry→message
+  conversion mirrors ``SessionManager.get_active_messages`` (``:191-221``).
 - ``tree`` ← pi ``getTree(): SessionTreeNode[]`` (``session-manager.ts:1191``):
   parent/child nodes, children sorted by timestamp, ``is_leaf`` == the cursor.
 - ``subtree_text`` ← ``SessionManager._extract_branch_messages``
   (``session_manager.py:627-702``).
 - ``navigate`` ← pi ``branch(id)`` (``session-manager.ts:1241``) — cursor move only.
 
-Reference: SESSION-TREE-IMPLEMENTATION.md §2.1, §2.5, §2.7 (step 1a);
+Reference: SESSION-TREE-IMPLEMENTATION.md §2.1, §2.5, §2.7 (step 1a); §5 Decision 5
+(branch_summary is an inline node, not a splice anchor — step 2);
 EXTENSIONS-ORCHESTRATION-PLAN.md §4 (tree-as-truth).
 """
 
@@ -33,29 +36,33 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-# The two "summary anchor" kinds. §2.4 unifies them: both replace a subpath with
-# a single summary node at read time, differing only in ``type`` and in the field
-# naming their linear-order boundary (``firstKeptId`` vs ``fromId``).
+# Kinds that carry a ``summary`` field (for previews + subtree extraction). NOTE:
+# only ``compaction`` is a read-time *splice anchor* (Decision 5, §5) — pi's
+# ``buildSessionContext`` sets its ``compaction`` local solely from
+# ``entry.type === "compaction"`` (``session-manager.ts:367``); ``branch_summary``
+# renders inline. This tuple is therefore about "has a summary to show", not "drops
+# a prefix"; the fold in ``_active_path_entries`` anchors on ``"compaction"`` alone.
 _SUMMARY_KINDS = ("compaction", "branch_summary")
 
 
-def _boundary_id(entry: dict[str, Any]) -> str | None:
-    """The first-kept boundary id of a summary anchor (``firstKeptId`` for a
-    compaction, ``fromId`` for a branch_summary)."""
-    if entry.get("type") == "compaction":
-        value = entry.get("firstKeptId")
-    else:
-        value = entry.get("fromId")
-    return str(value) if value is not None else None
-
-
-def _summary_message(summary: str) -> dict[str, Any]:
-    """Render a summary anchor as the loop-consumable user message. Mirrors
+def _compaction_message(summary: str) -> dict[str, Any]:
+    """Render a compaction anchor as the loop-consumable user message. Mirrors
     ``SessionManager.get_active_messages`` (``session_manager.py:208-220``) so the
-    fold parity test holds; branch_summary uses the same shape (§2.4)."""
+    fold parity test holds."""
     return {
         "role": "user",
         "content": [{"type": "text", "text": f"[[Compaction summary: {summary}]]"}],
+    }
+
+
+def _branch_summary_message(summary: str) -> dict[str, Any]:
+    """Render a ``branch_summary`` as a plain INLINE user message (pi
+    ``createBranchSummaryMessage`` → ``convertToLlm`` branchSummary case,
+    ``messages.ts:100, 169``). Unlike a compaction it does NOT splice out a
+    prefix — it sits in the path exactly where it was appended (Decision 5, §5)."""
+    return {
+        "role": "user",
+        "content": [{"type": "text", "text": f"[[Branch summary: {summary}]]"}],
     }
 
 
@@ -152,8 +159,11 @@ class ConversationTree:
             kind = entry.get("type")
             if kind == "message":
                 messages.append(entry.get("message", {}))
-            elif kind in _SUMMARY_KINDS:
-                messages.append(_summary_message(str(entry.get("summary", ""))))
+            elif kind == "compaction":
+                messages.append(_compaction_message(str(entry.get("summary", ""))))
+            elif kind == "branch_summary":
+                # Inline node, not a splice (Decision 5, §5): rendered in place.
+                messages.append(_branch_summary_message(str(entry.get("summary", ""))))
         return messages
 
     def context_entries(self, leaf: str | None = None) -> list[dict[str, Any]]:
@@ -171,7 +181,8 @@ class ConversationTree:
     def _active_path_entries(self, leaf_id: str | None) -> list[dict[str, Any]]:
         """Faithful side-effect-free port of pi ``buildSessionContext``
         (``session-manager.ts:325-423``) over camelCase entries: leaf→root walk,
-        then the summary-anchor splice."""
+        then the compaction splice. ``branch_summary`` is NOT an anchor — it stays
+        on the path as a plain inline entry (Decision 5, §5)."""
         entries = self._entries
         if not entries:
             return []
@@ -180,27 +191,28 @@ class ConversationTree:
         # cursor is unset), then reverse to root→leaf order (``:568-582``).
         path = self._walk(leaf_id or entries[0]["id"])
 
-        # Anchor on the LAST (most recent) summary entry in the path. With
-        # iterative compaction each new summary supersedes the earlier ones, so
-        # anchoring on the last drops the stale summaries and their kept regions
-        # (``:591-600``). Identical to "first from root" with a single summary.
+        # Anchor on the LAST (most recent) COMPACTION entry in the path — pi sets
+        # its ``compaction`` local solely from ``entry.type === "compaction"``
+        # (``:367``). With iterative compaction each new summary supersedes the
+        # earlier ones, so anchoring on the last drops the stale summaries and their
+        # kept regions. ``branch_summary`` is deliberately excluded (Decision 5).
         anchor_idx: int | None = None
         for idx, entry in enumerate(path):
-            if entry.get("type") in _SUMMARY_KINDS:
+            if entry.get("type") == "compaction":
                 anchor_idx = idx
 
         if anchor_idx is None:
             return path
 
         anchor = path[anchor_idx]
-        boundary = _boundary_id(anchor)
+        boundary_value = anchor.get("firstKeptId")
+        boundary = str(boundary_value) if boundary_value is not None else None
 
         # pi ``buildSessionContext`` (``:400-423``): emit the summary node, then the
-        # kept entries BEFORE the anchor starting at the boundary (``firstKeptId`` /
-        # ``fromId``), then every entry AFTER the anchor. Correct whether the summary
-        # was appended at the tip (append-only compaction: the boundary is an
-        # ancestor, so the kept region precedes the anchor) or its kept region
-        # trails it — the shape the frozen System-A oracle produced.
+        # kept entries BEFORE the anchor starting at ``firstKeptId``, then every entry
+        # AFTER the anchor. Correct whether the compaction was appended at the tip
+        # (append-only: the boundary is an ancestor, so the kept region precedes the
+        # anchor) or its kept region trails it — the frozen System-A oracle's shape.
         result: list[dict[str, Any]] = [anchor]
         found = False
         for entry in path[:anchor_idx]:

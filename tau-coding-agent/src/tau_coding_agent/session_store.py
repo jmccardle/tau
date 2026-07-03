@@ -393,18 +393,23 @@ class Session:
         return entry_id
 
     def append_branch_summary(self, summary: str, from_id: str | None) -> str:
-        """Persist a ``branch_summary`` splice marker (§2.4).
+        """Persist a ``branch_summary`` inline node at the branch point (§2.4, §5).
 
-        The second summary-anchor kind, unified with ``compaction`` at read time by
-        ``ConversationTree.context_for`` (pi ``branchWithSummary``,
-        session-manager.ts:1262-1279). Here it is only persisted/round-tripped; the
-        splice semantics live in the fold (step 1a). The leaf advances to this
+        pi ``branchWithSummary`` (session-manager.ts:1262-1279) sets
+        ``this.leafId = branchFromId`` *first*, then appends — so the summary parents
+        at the branch point and the abandoned children become a **sibling branch off
+        the active path** (Decision 5, fix 1). We mirror that: move the in-memory leaf
+        to ``from_id`` before appending, so ``parentId == from_id``. The abandoned
+        branch then drops out of ``context_for`` purely via the ``parentId`` walk —
+        ``branch_summary`` is a plain inline node at read time, NOT a splice anchor
+        (Decision 5, fix 2; ``ConversationTree`` §5). The leaf then advances to this
         entry (pi ``_appendEntry``, session-manager.ts:937-942).
 
         Fail-Early: a non-``None`` ``from_id`` must name a real entry, mirroring pi's
         ``branchWithSummary`` "Entry ... not found" throw (session-manager.ts:1266-1268)."""
         if from_id is not None and from_id not in self._ids:
             raise ValueError(f"branch_summary from {from_id!r} not found")
+        self._leaf_id = from_id  # branch point, not the current leaf (pi :1272)
         return self._append("branch_summary", summary=summary, fromId=from_id)
 
     def shutdown(self) -> None:
