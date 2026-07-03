@@ -345,6 +345,19 @@ bindings to `action_browse_tree`, matching the current code.
 
 ## Part 3 — The external-store seam (database by UUID) — **documented, not built**
 
+> **Status: REALIZED AS DOCUMENTATION (2026-07-03, step 3).** Per §5, Part 3
+> ships **no code** — its structural prerequisites were delivered by 1d
+> (`93befae`) and verified here against the live tree: §4.2's identity cleanup
+> (session identity is the UUID `Session.id`/`SessionLog.id`, never a filesystem
+> path, everywhere on the live path — `AgentSession.state.session_id =
+> self._session_log.id`, `agent_session.py:146`; System-A `SessionManager` is no
+> longer instantiated on the live path) and §4.3's two-method write funnel (all
+> durable writes go through `_persist_header`/`_persist_entry`, and `_append`
+> stays backend-agnostic — `session_store.py:446-472`). One structural Protocol
+> *did* land in 1d — `SessionLog` (`tau_agent_core/session_log.py`) — but at a
+> higher altitude than §4.4's byte-level `SessionStore`; the two are reconciled
+> in §4.4/§4.6 below. This part is therefore complete as a documented seam.
+
 > **Goal (verbatim from the request):** "transparently to Tau, I'd like to be
 > able to use a database and look up a session by UUID, and return the same
 > tree datastructure. Don't implement any theoretical database features, just
@@ -423,6 +436,26 @@ a **maintainer decision** (§5) — Fail-Early cautions against introducing an
 abstraction with a single implementation. Either way the contract a DB fork
 satisfies is:
 
+> **Reconciliation (step 3, after 1d).** 1d shipped a `Protocol` — but *not this
+> one*. Decision 4 (option **B**, RESOLVED) landed **`SessionLog`**
+> (`tau_agent_core/session_log.py`), the persistence facade **`AgentSession`
+> depends on**: `id`/`cursor`/`entries()` + `append_message`/`append_compaction`/
+> `append_navigate`/`append_branch_summary`. That is a *different, higher-altitude*
+> seam than the five-operation `SessionStore` below: `SessionLog` is the **log**
+> `AgentSession` reads/appends through (satisfied on the live path by injecting
+> the coding-agent file `Session`, and on the SDK path by the in-core
+> `InMemorySessionLog`); the `SessionStore` here is the **byte/row store** a
+> `Session` would *delegate its bytes to* for a DB fork. The byte-level
+> `SessionStore` is **still documented-only** — `Session` writes bytes directly
+> via the two funnel methods (`_persist_header`/`_persist_entry`); it does not yet
+> hold an injected `_store`. So the §4.4 injection-point paragraph below remains a
+> plan, unchanged and unbuilt; only the `SessionLog` facade is real. This split is
+> deliberate and Fail-Early-clean: `SessionLog` shipped because the layering fix
+> for 1d *forced* a boundary there (`tau-agent-core` can't import
+> `tau-coding-agent`), and it forward-delivers the DB seam at the `AgentSession`
+> boundary; the byte-store abstraction stays on paper until a second store is
+> real (§4.6).
+
 ```python
 # The boundary — a fork provides an object with these five methods.
 # (Presented as the CONTRACT, not shipped as code, per Fail-Early.)
@@ -473,11 +506,16 @@ surface is unchanged too.
 - **No speculative config** — no store-URL env var, no `[store]` config block
   until a real backend exists (mirrors the reserved-but-unwired
   `TAU_CODING_AGENT_SESSION_DIR`, `SESSION-UX-REDESIGN.md:130-132`).
-- **No abstraction shipped on spec alone** — whether to introduce the
-  `SessionStore` Protocol during E3 (vs. leave §4.3 as the documented
-  monkeypatch surface) is deferred to the maintainer (§5, decision 3). The
-  honest default: don't add the ABC until a second store is real; keep the
-  write surface funnelled through the two named methods so the fork is
+- **No *byte-store* abstraction shipped on spec alone** — the five-operation
+  `SessionStore` (write_header/append_entry/read/list/most_recent inside
+  `Session`) is **not built**; `Session` still writes bytes directly through the
+  two funnel methods, and no second store implementation exists. Decision 3
+  (§5) is answered "document now" *for this byte-store*. Note the one Protocol
+  that *did* ship in 1d — `SessionLog` — is the higher-altitude `AgentSession`
+  facade, not this byte-store (§4.4 reconciliation); it landed because the 1d
+  layering fix forced a boundary there, not as a speculative abstraction over
+  the file store. Keeping the write surface funnelled through the two named
+  methods (verified: `session_store.py:446-472`) leaves the byte-store fork
   mechanical either way.
 
 ---
@@ -506,16 +544,17 @@ requires **no new code beyond 1d** — the UUID-identity cleanup (§4.2) and the
 two-method write funnel (§4.3) already exist after Part 1; the section is
 documentation of a seam, per the request.
 
-**Build status (2026-07-03, branch `feat/session-tree`).** 1a/1b/1c landed
-green (full suite 1401→1442), each adversarially reviewed:
+**Build status (2026-07-03, branch `feat/session-tree`).** 1a–1d + Part 2 + 3
+all landed green (full suite 1401→1469), each adversarially reviewed:
 
 | Step | Commit | Status |
 |---|---|---|
 | 1a `ConversationTree` | `b9303b1` | ✅ done — parity battery is a real differential oracle |
 | 1b cursor + entry kinds | `dfb99ec` | ✅ done — review caught + fixed a Fail-Early silent-data-loss bug (dangling cursor wiped context on reload); `append_navigate`/`append_branch_summary` now `raise` on unknown ids |
 | 1c append-only compaction | `509851f` | ✅ done — byte-prefix test proves append-only; `_persist_entries` `"w"` rewrite deleted |
-| 1d wire + retire System A | — | ▶ **in progress** — decision 4 resolved: option **(B)** `SessionLog` Protocol |
-| 2 TUI tree-browser | — | pending 1d; must carry both Decision-5 fixes |
+| 1d wire + retire System A | `93befae` | ✅ done — decision 4 resolved option **(B)**: `SessionLog` Protocol + `InMemorySessionLog` in `tau-agent-core`; `AgentSession` persists through the facade; live-path identity is the UUID (`AgentSession.state.session_id = session_log.id`); System-A `SessionManager` no longer instantiated on the live path |
+| 2 TUI tree-browser | `253a3d9` | ✅ done — `SessionTreeModal` + three modes + `navigate_tree`; both Decision-5 fixes carried |
+| 3 DB seam (docs only) | *(this commit)* | ✅ done — realized as documentation: §4.2 identity cleanup + §4.3 two-method funnel verified present from 1d; §4.4/§4.6 reconciled (shipped `SessionLog` facade vs documented-only byte-level `SessionStore`) |
 
 Two issues surfaced during the build, recorded as decisions 4–5:
 
@@ -591,4 +630,10 @@ summarized real branch, plus a mixed compaction+branch_summary path.
    `keybindings.ts:111`)?
 3. **Ship the `SessionStore` Protocol in E3, or leave §4.3 as the documented
    monkeypatch surface?** Fail-Early leans "document now, abstract when a second
-   store is real."
+   store is real." **RESOLVED 2026-07-03 (step 3), split by altitude:** 1d's
+   decision-4-(B) shipped the **`SessionLog`** facade Protocol (the `AgentSession`
+   boundary) because the layering fix forced a boundary there — answering "ship
+   the Protocol now" at *that* seam. The **byte-level `SessionStore`** (§4.4,
+   inside `Session`) stays **documented-only** — `Session` still writes bytes
+   directly through the two funnel methods; no ABC over the file store until a
+   second store is real. See the §4.4 reconciliation note.
