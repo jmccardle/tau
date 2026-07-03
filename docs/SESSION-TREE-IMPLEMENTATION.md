@@ -506,6 +506,49 @@ requires **no new code beyond 1d** — the UUID-identity cleanup (§4.2) and the
 two-method write funnel (§4.3) already exist after Part 1; the section is
 documentation of a seam, per the request.
 
+**Build status (2026-07-03, branch `feat/session-tree`).** 1a/1b/1c landed
+green (full suite 1401→1442), each adversarially reviewed:
+
+| Step | Commit | Status |
+|---|---|---|
+| 1a `ConversationTree` | `b9303b1` | ✅ done — parity battery is a real differential oracle |
+| 1b cursor + entry kinds | `dfb99ec` | ✅ done — review caught + fixed a Fail-Early silent-data-loss bug (dangling cursor wiped context on reload); `append_navigate`/`append_branch_summary` now `raise` on unknown ids |
+| 1c append-only compaction | `509851f` | ✅ done — byte-prefix test proves append-only; `_persist_entries` `"w"` rewrite deleted |
+| 1d wire + retire System A | — | ⛔ **blocked** on decision 4 below |
+| 2 TUI tree-browser | — | pending 1d |
+
+Two issues surfaced during the build, recorded as decisions 4–5:
+
+**Decision 4 — `SessionLog` package placement (BLOCKS 1d).** §2.6 wires
+`AgentSession` (in `tau-agent-core`) to persist through `session_store.Session`
+(in `tau-coding-agent`) — but `tau-coding-agent` *depends on* `tau-agent-core`,
+so that import is circular. The live path is fine (`TauBackend`/headless inject
+a `Session` by duck-typing), but the **SDK default path**
+(`create_agent_session()` with no session, `sdk.py:366`) needs a store
+constructible *inside* `tau-agent-core`. §4.1 names `SessionLog` as a first-class
+object but never states its package. Two viable resolutions:
+- **(A) Relocate** `session_store.py` into `tau-agent-core` + a re-export shim in
+  `tau-coding-agent`. One class, one format — literal to §4.5. Cost: import churn
+  in `app.py`/`headless.py` + ~8 test files.
+- **(B) `SessionLog` Protocol in `tau-agent-core`** (= the Part-3 §4.4 DB-seam
+  boundary) + a minimal in-memory default in core for the SDK path;
+  coding-agent's file `Session` satisfies it and is injected on the live path.
+  Less churn; **forward-delivers Part 3's DB seam structurally**. The in-memory
+  default is not a second *file* format, so §4.5 ("one write path") holds.
+
+  *Recommendation: (B)* — it unifies the layering fix with the DB-by-UUID seam
+  the request explicitly wants, and minimizes churn to existing coding-agent
+  code. (A) is the lower-conceptual-risk, §4.5-literal fallback.
+
+**Decision 5 — `append_branch_summary` parenting (fix before Part 2 wires it).**
+As built in 1b, `append_branch_summary` parents the summary at the *current
+leaf*; pi's `branchWithSummary` (`session-manager.ts:1262-1279`) moves the leaf
+to `fromId` *first*, so the entry parents at the branch point and the abandoned
+branch falls off the active path. Resolve in Part 2 either by moving the cursor
+to `from_id` before the append, or by having `navigate_tree` call
+`append_navigate(from_id)` first. Not a live defect yet (unwired); a
+`context_for`-level topology test should lock it when fixed.
+
 **Open maintainer decisions:**
 1. **`navigate` entry kind** — persist the cursor as a first-class entry (§2.2,
    deliberate pi divergence)? *Plan §4.3 assumes yes.*
