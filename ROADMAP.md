@@ -4,9 +4,13 @@ Living schedule of open work. Each item cites the evidence (file:line, doc, or
 test) it came from so it can be audited against the source of truth (pi) and the
 "Fail Early" rule.
 
-**State (2026-06-26):** `master` is at Phase A (`3968540`); a completed
-**`feat/streaming-ux`** branch (4 commits, `ea89735`→`5ed3892`) sits **in review,
-not yet merged**. Suite **1401 passed / 0 failed** (2 pre-existing "event loop is
+**State (2026-06-26, updated 2026-07-03):** the **`feat/streaming-ux`** branch
+(4 commits, `ea89735`→`5ed3892`) is **merged** — `master` fast-forwarded to
+`ffd1167`. New (2026-07-03): **`docs/EXTENSIONS-ORCHESTRATION-PLAN.md`** — an
+approved-in-shape plan to beeline Tier 11 (phases E0–E4) so the
+`docs/pi_orchestration_patterns.md` / `docs/pi_planning_implementing_evaluating.md`
+patterns ship as demo extensions; it carries one **decided** architecture
+change (tree-as-truth session substrate, see Tier 11 note below). Suite **1401 passed / 0 failed** (2 pre-existing "event loop is
 closed" ResourceWarnings). Static checks: **ruff clean**, **ruff format clean**
 (48 files), **mypy 0** (was 55) — the Tier-5 gate stayed green across the branch
 and is enforced by the blocking pre-commit hook (commits `5fd4c4f`, `ac6236c`).
@@ -283,6 +287,22 @@ Faithful: factory shape, single `ExtensionAPI`, event names/semantics, intercept
 pattern, registration verbs, discovery locations. Personality: importlib + entry
 points (no jiti), `Protocol` API, Pydantic tool schemas, Textual bindings/widgets.
 
+**Beeline (2026-07-03): `docs/EXTENSIONS-ORCHESTRATION-PLAN.md`.** M0→M2 are
+pulled forward as phases E0–E2 (plus `--exclude-tools` from Tier 6 and
+`--no-session` from Tier 7); M3's session-lifecycle half lands in E3; M3's UI
+half, M4, M5 keep this tier's order. E3 also carries the **decided
+(2026-07-03) tree-as-truth session substrate** (plan §4): the conversation
+tree — including a persisted cursor via a new `navigate` entry kind (a
+deliberate pi divergence; pi's leaf pointer is in-memory only) — is the
+genuine persisted structure over `session_store` entries (`ConversationTree`
++ read-time splice fold); the linear message list becomes a derived view.
+Consequences: Tier 5's landed `apply_compaction` **file-rewrite is reworked**
+to pi-parity append-only + read-time splicing (the compaction engine itself
+is untouched); `SessionManager` persistence retires; seams 2+3 get their
+consumer; the trust constraint (Tier 8) is honored by loading global +
+explicit `-e` extensions only. Demo extensions (delegate/reminders/
+gatekeeper/context-surgeon/budget) land in `examples/` as E4.
+
 ### Tier 12 — RPC mode — *deferred, narrow audience*
 
 `--mode rpc` (pi `args.ts:80`; pi's `modes/rpc/`: 28 command verbs, LF-only JSONL,
@@ -322,3 +342,9 @@ Tier 6 + the session sprint (with the 4 seams) in parallel → Tier 7 → Tier 8
 Tier 9 → Tier 10 → Tier 11 (epic) → Tier 12. Tier 5 is fully closed (mypy gate +
 LLM-backed compaction); the only loose thread it leaves is the `summarize_branch`
 Fail-Early follow-up noted under Tier 5, which can fill any gap.
+
+**Amended 2026-07-03 (extensions beeline):** Tier 11 E0–E3 + the two flag
+items (`--exclude-tools`, `--no-session`) jump the queue per
+`docs/EXTENSIONS-ORCHESTRATION-PLAN.md` §7; the `summarize_branch` follow-up
+is absorbed into E3. Tiers 8/9/10, session-sprint Phases B/C, and Tier 11's
+remaining milestones (M3-UI/M4/M5) keep the order above.
