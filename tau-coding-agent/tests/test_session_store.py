@@ -240,3 +240,94 @@ def test_unsubscribe_stops_delivery(tmp_path):
     unsubscribe()
     _create(tmp_path)
     assert events == []
+
+
+# ── navigate / branch_summary entry kinds + persisted cursor (§2.2, §2.4) ────
+
+
+def test_navigate_entry_round_trips(tmp_path):
+    session = _create(tmp_path)
+    interior = session.append_message({"role": "user", "content": "hello"})
+    session.append_message({"role": "assistant", "content": "hi"})
+    nav_id = session.append_navigate(interior)
+
+    reloaded = Session.load(session.path)
+    entries = reloaded.entries()
+    nav = next(e for e in entries if e["id"] == nav_id)
+    assert nav["type"] == "navigate"
+    assert nav["targetId"] == interior
+    # navigate carries no message → skipped by reconstruction.
+    assert reloaded.messages == [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ]
+
+
+def test_navigate_null_target_is_pre_root(tmp_path):
+    session = _create(tmp_path)
+    session.append_message({"role": "user", "content": "hello"})
+    session.append_navigate(None)
+
+    reloaded = Session.load(session.path)
+    assert reloaded._leaf_id is None  # navigate(None) → before-first-entry cursor
+    assert reloaded.entries()[-1]["targetId"] is None
+
+
+def test_branch_summary_round_trips(tmp_path):
+    session = _create(tmp_path)
+    from_id = session.append_message({"role": "user", "content": "explore"})
+    bs_id = session.append_branch_summary("did some exploring", from_id)
+
+    reloaded = Session.load(session.path)
+    bs = next(e for e in reloaded.entries() if e["id"] == bs_id)
+    assert bs["type"] == "branch_summary"
+    assert bs["summary"] == "did some exploring"
+    assert bs["fromId"] == from_id
+    # branch_summary is a marker, not a message → reconstruction skips it.
+    assert reloaded.messages == [{"role": "user", "content": "explore"}]
+    # leaf advances to the branch_summary entry (pi _appendEntry).
+    assert reloaded._leaf_id == bs_id
+
+
+def test_cursor_persists_across_navigate_reload(tmp_path):
+    session = _create(tmp_path)
+    interior = session.append_message({"role": "user", "content": "first"})
+    session.append_message({"role": "assistant", "content": "second"})
+    session.append_navigate(interior)
+    # In-memory cursor advanced to the target, not the navigate entry.
+    assert session._leaf_id == interior
+
+    reloaded = Session.load(session.path)
+    assert reloaded._leaf_id == interior  # persisted cursor survives reload
+
+
+def test_navigate_unknown_target_raises(tmp_path):
+    # Fail-Early: a dangling cursor would silently drop the whole conversation at
+    # read time; mirror pi branch()'s "Entry ... not found" throw.
+    session = _create(tmp_path)
+    session.append_message({"role": "user", "content": "hello"})
+    with pytest.raises(ValueError, match="navigate target"):
+        session.append_navigate("deadbeef")
+    # nothing persisted for the bad call.
+    assert all(e.get("type") != "navigate" for e in session.entries())
+
+
+def test_branch_summary_unknown_from_raises(tmp_path):
+    # Mirror pi branchWithSummary()'s "Entry ... not found" throw.
+    session = _create(tmp_path)
+    session.append_message({"role": "user", "content": "explore"})
+    with pytest.raises(ValueError, match="branch_summary from"):
+        session.append_branch_summary("summary", "deadbeef")
+    assert all(e.get("type") != "branch_summary" for e in session.entries())
+
+
+def test_pi_parity_no_navigate_cursor_is_last_entry(tmp_path):
+    # A pi-style file with no navigate entries: cursor = last entry, identical
+    # to pi's fall-back-to-last-entry on load.
+    session = _create(tmp_path)
+    session.append_message({"role": "user", "content": "hello"})
+    last_id = session.append_message({"role": "assistant", "content": "hi"})
+
+    reloaded = Session.load(session.path)
+    assert reloaded._leaf_id == last_id
+    assert reloaded.entries()[-1]["id"] == last_id

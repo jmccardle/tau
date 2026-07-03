@@ -158,7 +158,24 @@ class Session:
         self._header = header
         self._entries = entries
         self._ids: set[str] = {e["id"] for e in entries if "id" in e}
-        self._leaf_id: str | None = entries[-1]["id"] if entries else None
+        self._leaf_id: str | None = self._resolve_cursor(entries)
+
+    @staticmethod
+    def _resolve_cursor(entries: list[dict[str, Any]]) -> str | None:
+        """Resolve the persisted cursor (leaf pointer) from the LAST entry.
+
+        Latest-wins, mirroring how ``model``/``name`` resolve (§2.2): a ``navigate``
+        entry points at its ``targetId`` (``null`` = pre-root, before the first
+        entry); any other kind points at itself. Pi-style files carry no
+        ``navigate`` entries, so the cursor is the last entry — identical to pi's
+        "fall back to last entry" on load (session-manager.ts:855-859)."""
+        if not entries:
+            return None
+        last = entries[-1]
+        if last.get("type") == "navigate":
+            target = last.get("targetId")
+            return str(target) if target is not None else None
+        return str(last["id"])
 
     # --- identity / header -------------------------------------------------
 
@@ -344,6 +361,41 @@ class Session:
             firstKeptId=first_kept_id,
             tokensBefore=tokens_before,
         )
+
+    def append_navigate(self, target_id: str | None) -> str:
+        """Persist a cursor move as a first-class ``navigate`` entry (§2.2).
+
+        pi's ``leafId`` is in-memory only and evaporates on quit (branch() moves
+        the cursor without appending, session-manager.ts:1241-1246); τ diverges so
+        an agent (or the tree-browser) can move the tip *without* new content and
+        have it survive a reload. The entry's ``parentId`` is the previous leaf;
+        ``targetId`` (``None`` = before-first-entry) is where the cursor now sits,
+        and the in-memory leaf advances to it (not to the navigate entry itself).
+
+        Fail-Early: a non-``None`` target must name a real entry, mirroring pi's
+        ``branch()`` "Entry ... not found" throw (session-manager.ts:1242-1244)
+        and ``ConversationTree.navigate`` (conversation_tree.py:121-125); persisting
+        a dangling cursor would silently drop the whole conversation at read time."""
+        if target_id is not None and target_id not in self._ids:
+            raise ValueError(f"navigate target {target_id!r} not found")
+        entry_id = self._append("navigate", targetId=target_id)
+        self._leaf_id = target_id
+        return entry_id
+
+    def append_branch_summary(self, summary: str, from_id: str | None) -> str:
+        """Persist a ``branch_summary`` splice marker (§2.4).
+
+        The second summary-anchor kind, unified with ``compaction`` at read time by
+        ``ConversationTree.context_for`` (pi ``branchWithSummary``,
+        session-manager.ts:1262-1279). Here it is only persisted/round-tripped; the
+        splice semantics live in the fold (step 1a). The leaf advances to this
+        entry (pi ``_appendEntry``, session-manager.ts:937-942).
+
+        Fail-Early: a non-``None`` ``from_id`` must name a real entry, mirroring pi's
+        ``branchWithSummary`` "Entry ... not found" throw (session-manager.ts:1266-1268)."""
+        if from_id is not None and from_id not in self._ids:
+            raise ValueError(f"branch_summary from {from_id!r} not found")
+        return self._append("branch_summary", summary=summary, fromId=from_id)
 
     def shutdown(self) -> None:
         """Signal end-of-session (seam 3). Emits ``session_shutdown``; no disk
