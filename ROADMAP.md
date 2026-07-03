@@ -301,7 +301,12 @@ to pi-parity append-only + read-time splicing (the compaction engine itself
 is untouched); `SessionManager` persistence retires; seams 2+3 get their
 consumer; the trust constraint (Tier 8) is honored by loading global +
 explicit `-e` extensions only. Demo extensions (delegate/reminders/
-gatekeeper/context-surgeon/budget) land in `examples/` as E4.
+gatekeeper/context-surgeon/budget) land in `examples/` as E4. The E3 slice —
+tree persistence, the TUI tree-browser with three-mode subtree compaction
+("no summary" / "summarize" / "summarize with custom instructions", ported
+from pi's `showTreeSelector`), and the documented external-store seam
+(swap file persistence for a DB by UUID, no DB built) — is spec'd
+step-by-step in `docs/SESSION-TREE-IMPLEMENTATION.md`.
 
 ### Tier 12 — RPC mode — *deferred, narrow audience*
 

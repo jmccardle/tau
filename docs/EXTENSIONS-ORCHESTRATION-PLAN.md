@@ -144,6 +144,10 @@ function, so the Tier-9 swap touches one place). Cost-in-dollars → §6.
 
 ## 4. The session substrate: tree-as-truth (DECIDED 2026-07-03)
 
+> **Concrete build:** the E3 slice below (persist the tree, TUI tree-browser
+> with three-mode subtree compaction, and the external-store seam) is spec'd
+> step-by-step in `docs/SESSION-TREE-IMPLEMENTATION.md`.
+
 A fork/summarize tool must operate on the store that is *authoritative*, and
 today that's split: agent-core `SessionManager` owns context assembly + tree
 surgery; `session_store.Session` owns live persistence (TUI + headless), with
@@ -276,7 +280,7 @@ front-run and say so.
 | **E0 — loader + flags** | S | One loader (`register(api)`), importlib + entry points, Fail-Early on load errors; `--extension/-e`, `--no-extensions`; discovery = global + explicit only (trust-gated project dir deferred); `--exclude-tools`; `--no-session` | Tier 11 M0 · Tier 6 item 2 · Tier 7 item 3 |
 | **E1 — connect the API** | M | Session-bound `ExtensionAPI` (real bus/registry/session); registered tools live in the loop; awaited handlers with real payloads; real `get_context_usage()`; delete `extensions/events.py` stub | Tier 11 M1 |
 | **E2 — mutating hooks** | M | `tool_call` veto/patch in `_prepare_tool_call`; `tool_result` in `_apply_after_hooks`; `before_agent_start`; `context`; chain semantics + tests | Tier 11 M2 (scoped subset) |
-| **E3 — tree-as-truth substrate + session control** | M/L | §4: extract `ConversationTree` over `Session.entries()` (pure; splice fold ported from `_build_active_path`); `navigate` entry kind (§4.3); append-only compaction replacing the `apply_compaction` rewrite (§4.2); retire `SessionManager` persistence; then expose `compact`/`fork`/`entries`/`summarize_branch` (refactored to raise) on `ExtensionContext`; turn-boundary deferral; minimal `send_user_message` queue; route seam-3 lifecycle events onto the extension bus | Tier 11 M3 (session-lifecycle half) · reworks Tier 5's landed `apply_compaction` (structural half only — the summarization engine is untouched) · Tier 5 loose thread · seam 2+3 consumer |
+| **E3 — tree-as-truth substrate + session control** | M/L | *(full spec: `docs/SESSION-TREE-IMPLEMENTATION.md`)* §4: extract `ConversationTree` over `Session.entries()` (pure; splice fold ported from `_build_active_path`); `navigate` entry kind (§4.3); append-only compaction replacing the `apply_compaction` rewrite (§4.2); retire `SessionManager` persistence; then expose `compact`/`fork`/`entries`/`summarize_branch` (refactored to raise) on `ExtensionContext`; turn-boundary deferral; minimal `send_user_message` queue; route seam-3 lifecycle events onto the extension bus | Tier 11 M3 (session-lifecycle half) · reworks Tier 5's landed `apply_compaction` (structural half only — the summarization engine is untouched) · Tier 5 loose thread · seam 2+3 consumer |
 | **E4 — demos + cost** | M (5×S) | Extensions 20–24, walkthrough doc, optional per-model `cost` config | the point of the exercise |
 | **later (unchanged order)** | — | TUI view-discipline refactor (`self.messages` → subscribed `transcript_view`, §4.5 — natural companion to session-sprint Phase B/C picker & command work), TUI command registry & UI registration (M3 UI half, seam 4), `registerProvider` (M4), packages (M5), trust-gated project extensions (Tier 8), pi-faithful json swap in the delegate parser (Tier 9) | session sprint Phases B/C · ROADMAP as written |
 
