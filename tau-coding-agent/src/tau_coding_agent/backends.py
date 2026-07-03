@@ -3,6 +3,9 @@ Backend abstraction layer for tau-coding-agent.
 
 Wraps tau-agent-core's AgentSession to provide Parley-compatible
 Backend interfaces (chat, stream_chat).
+
+Reference: SESSION-TREE-IMPLEMENTATION.md §2.6 (throwaway SessionManager retired;
+AgentSession runs against a scratch InMemorySessionLog, caller owns persistence).
 """
 
 from abc import ABC, abstractmethod
@@ -10,7 +13,7 @@ from typing import Any, Callable
 from tau_ai.types import Model
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
-from tau_agent_core.session_manager import SessionManager
+from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.sdk import _resolve_tools
 
 
@@ -81,8 +84,6 @@ class TauBackend(Backend):
         reasoning_arg = thinking_level if thinking_level and thinking_level != "off" else None
         model_reasoning = bool(config.get("reasoning")) or reasoning_arg is not None
 
-        # Build the AgentSession
-        self.session_manager = SessionManager()
         model = Model(
             id=model_id,
             name=model_id,
@@ -107,14 +108,23 @@ class TauBackend(Backend):
         # servers use the "not-needed" sentinel, which is passed through as-is.
         # (Previously this was stashed in an unused self._api_key and dropped,
         # so a real-OpenAI key from config never reached the provider.)
-        # Auto-compaction is disabled here: the TUI's own ``current_chat.messages``
-        # — not this session manager — is the context it sends to the model, so a
-        # post-turn auto-compaction on the session manager would do useless work
-        # (and fire a slow summary LLM call every turn once it crossed the
-        # threshold). The TUI compacts explicitly via ``/compact`` →
-        # ``compact_messages``, which still works with auto-compaction off.
+        #
+        # SessionLog: the caller (TUI ``app.py`` / ``headless.py``) owns the
+        # persistence-of-record — the coding-agent ``Session`` it appends each
+        # produced message to, and the ``self.messages`` it passes as context.
+        # This AgentSession therefore runs against a scratch ``InMemorySessionLog``
+        # (never flushed, never read: context arrives via ``stream_chat``'s
+        # ``messages`` argument). This retires the former throwaway ``SessionManager``
+        # (System A) whose appends went to a *second* on-disk file nobody read — so
+        # there is now a single live on-disk persistence path (§2.6, §4.5).
+        #
+        # Auto-compaction is disabled here: the caller's own message list — not this
+        # log — is the context sent to the model, so a post-turn auto-compaction on
+        # the scratch log would do useless work (and fire a slow summary LLM call
+        # every turn once it crossed the threshold). The TUI compacts explicitly via
+        # ``/compact`` → ``compact_messages``, which works with auto-compaction off.
         self.agent_session = AgentSession(
-            session_manager=self.session_manager,
+            session_log=InMemorySessionLog(),
             model=model,
             system_prompt=self.system_prompt,
             tools=tools,
@@ -122,9 +132,6 @@ class TauBackend(Backend):
             reasoning=reasoning_arg,
             compaction_settings=CompactionSettings(enabled=False),
         )
-
-        # Create a new session in the session manager (required before use)
-        self.session_manager.new_session()
 
     def abort(self) -> None:
         """Abort the current turn by tripping the AgentSession's abort signal.

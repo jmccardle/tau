@@ -39,6 +39,7 @@ from tau_agent_core.compaction import (
     prepare_compaction,
     should_compact,
 )
+from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.session_manager import SessionManager
 from tau_ai.types import AssistantMessage, Model, TextContent
 
@@ -74,6 +75,14 @@ def _msg_entry(eid: str, role: str, text: str, **extra) -> dict:
     msg: dict = {"role": role, "content": [{"type": "text", "text": text}]}
     msg.update(extra)
     return {"id": eid, "type": "message", "message": msg}
+
+
+def _msg(role: str, text: str, **extra) -> dict:
+    """A bare message dict for InMemorySessionLog.append_message (the log stamps
+    the entry id/parentId itself, unlike the raw _msg_entry helper)."""
+    msg: dict = {"role": role, "content": [{"type": "text", "text": text}]}
+    msg.update(extra)
+    return msg
 
 
 def _fake_complete(text: str, stop_reason: str = "stop", capture: list | None = None):
@@ -423,13 +432,12 @@ class TestApplyCompaction:
 
 class TestAgentSessionCompaction:
     def _session(self, settings: CompactionSettings | None = None) -> AgentSession:
-        mgr = SessionManager.in_memory()
-        mgr.new_session()
-        mgr.append_entry(_msg_entry("u1", "user", "old question"))
-        mgr.append_entry(_msg_entry("a1", "assistant", "old answer", stop_reason="stop"))
-        mgr.append_entry(_msg_entry("u2", "user", "current"))
+        log = InMemorySessionLog()
+        log.append_message(_msg("user", "old question"))
+        log.append_message(_msg("assistant", "old answer", stop_reason="stop"))
+        log.append_message(_msg("user", "current"))
         return AgentSession(
-            session_manager=mgr,
+            session_log=log,
             model=_model(),
             api_key="sk-test",
             compaction_settings=settings,
@@ -449,8 +457,7 @@ class TestAgentSessionCompaction:
 
     def test_compact_noop_returns_none_on_empty_session(self):
         # no messages -> nothing to compact, no LLM call, just lifecycle events
-        mgr = SessionManager.in_memory()
-        session = AgentSession(session_manager=mgr, model=_model())
+        session = AgentSession(session_log=InMemorySessionLog(), model=_model())
         assert asyncio.run(session.compact()) is None
 
     def test_maybe_auto_compact_triggers_over_threshold(self, monkeypatch):
@@ -459,13 +466,12 @@ class TestAgentSessionCompaction:
             _fake_complete("auto recap"),
         )
         # tiny window (> reserve) so the existing small convo crosses the threshold
-        mgr = SessionManager.in_memory()
-        mgr.new_session()
-        mgr.append_entry(_msg_entry("u1", "user", "q" * 400))  # ~100 tok
-        mgr.append_entry(_msg_entry("a1", "assistant", "a" * 400, stop_reason="stop"))
-        mgr.append_entry(_msg_entry("u2", "user", "now"))
+        log = InMemorySessionLog()
+        log.append_message(_msg("user", "q" * 400))  # ~100 tok
+        log.append_message(_msg("assistant", "a" * 400, stop_reason="stop"))
+        log.append_message(_msg("user", "now"))
         session = AgentSession(
-            session_manager=mgr,
+            session_log=log,
             model=_model(context_window=100, max_tokens=64),
             api_key="sk-test",
             compaction_settings=CompactionSettings(reserve_tokens=10, keep_recent_tokens=1),
@@ -493,7 +499,7 @@ class TestAgentSessionCompaction:
         # Default settings — manual compaction is count-based, so it must NOT
         # depend on a small keep_recent_tokens to do anything.
         session = AgentSession(
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
             model=_model(),
             api_key="sk-test",
         )
@@ -518,7 +524,7 @@ class TestAgentSessionCompaction:
             _fake_complete("tiny recap"),
         )
         session = AgentSession(
-            session_manager=SessionManager.in_memory(), model=_model(), api_key="sk-test"
+            session_log=InMemorySessionLog(), model=_model(), api_key="sk-test"
         )
         messages = [
             {"role": "system", "content": "sys"},
@@ -545,7 +551,7 @@ class TestAgentSessionCompaction:
             raise AssertionError("LLM must not be called")
 
         monkeypatch.setattr("tau_agent_core.compaction.complete_simple", _boom)
-        session = AgentSession(session_manager=SessionManager.in_memory(), model=_model())
+        session = AgentSession(session_log=InMemorySessionLog(), model=_model())
         messages = [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": [{"type": "text", "text": "only message"}]},

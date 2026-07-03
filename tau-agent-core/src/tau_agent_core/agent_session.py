@@ -8,6 +8,8 @@ This module implements:
 Reference: PHASE-2-SUBPHASE-4.md — Agent Session and SDK Entry Point.
 Reference: SUBPHASE-0.0.md, "7. AgentSession Interface" section.
 Reference: SUBPHASE-0.0.md, "8. Extension API Surface" section.
+Reference: SESSION-TREE-IMPLEMENTATION.md §2.6 (persist via SessionLog, read via
+ConversationTree; System-A SessionManager retired), §4.2 (identity = UUID).
 """
 
 from __future__ import annotations
@@ -20,7 +22,8 @@ from tau_ai.types import Model, UserMessage
 from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.session import SessionState
-from tau_agent_core.session_manager import SessionManager
+from tau_agent_core.session_log import SessionLog
+from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.agent_loop import AgentLoop
 from tau_agent_core.agent_loop_types import AgentLoopConfig
 from tau_agent_core.compaction import (
@@ -66,12 +69,19 @@ def _ends_with_user_text(messages: list[Any], text: str) -> bool:
 
 
 class AgentSession:
-    """High-level session API. Combines agent loop, session manager, and events.
+    """High-level session API. Combines agent loop, a session log, and events.
 
     This is the primary entry point for both SDK and TUI usage.
 
+    Persistence goes through a :class:`~tau_agent_core.session_log.SessionLog`
+    (the coding-agent's file ``Session`` on the live path, an
+    :class:`~tau_agent_core.session_log.InMemorySessionLog` on the SDK default
+    path); context is rebuilt from the log's entries + cursor via
+    :class:`~tau_agent_core.conversation_tree.ConversationTree` — the retired
+    System-A ``SessionManager`` no longer participates (§2.6).
+
     Attributes:
-        _session_manager: SessionManager for persistence.
+        _session_log: SessionLog the turn's messages/compactions append to.
         _model: Model configuration for LLM calls.
         _system_prompt: System prompt for the agent.
         _tools: List of AgentTool instances.
@@ -83,7 +93,7 @@ class AgentSession:
 
     def __init__(
         self,
-        session_manager: SessionManager,
+        session_log: SessionLog,
         model: Model,
         system_prompt: str = "",
         tools: list | None = None,
@@ -92,7 +102,7 @@ class AgentSession:
         reasoning: str | None = None,
         compaction_settings: CompactionSettings | None = None,
     ) -> None:
-        self._session_manager = session_manager
+        self._session_log = session_log
         self._model = model
         self._system_prompt = system_prompt
         self._tools = tools or []
@@ -121,14 +131,19 @@ class AgentSession:
 
     @property
     def messages(self) -> list[dict[str, Any]]:
-        """Current conversation messages (active path)."""
-        return self._session_manager.get_active_messages()
+        """Current conversation messages (active path).
+
+        Built at read time from the log's raw entries + persisted cursor by
+        ``ConversationTree.context_for`` — the leaf→root walk plus the
+        compaction/branch_summary splice (§2.1, §2.6).
+        """
+        return ConversationTree(self._session_log.entries(), self._session_log.cursor).context_for()
 
     @property
     def state(self) -> SessionState:
-        """Read-only access to session state."""
+        """Read-only access to session state. Identity is the session UUID (§4.2)."""
         return SessionState(
-            session_id=self._session_manager._active_session_path or "",
+            session_id=self._session_log.id,
             status="running" if self._is_streaming else "idle",
         )
 
@@ -210,7 +225,7 @@ class AgentSession:
                 # flag also drives the persist/return logic below.
                 context_ends_with_user = _ends_with_user_text(context_messages, text)
             else:
-                context_messages = self._session_manager.get_active_messages()
+                context_messages = self.messages
                 context_ends_with_user = False
 
             # Thread the user message to the loop exactly once — via
@@ -263,13 +278,7 @@ class AgentSession:
             # a bare prompt("hi") does not).
             if not context_ends_with_user:
                 user_dict = user_msg.model_dump()
-                self._session_manager.append_entry(
-                    {
-                        "id": f"msg_{len(self._session_manager._get_entries())}",
-                        "type": "message",
-                        "message": user_dict,
-                    }
-                )
+                self._session_log.append_message(user_dict)
                 turn_messages.append(user_dict)
 
             # Assistant responses and tool results produced this turn.
@@ -281,14 +290,7 @@ class AgentSession:
                 else:
                     continue
 
-                msg_type = msg_dict.get("type", "message")
-                self._session_manager.append_entry(
-                    {
-                        "id": f"msg_{len(self._session_manager._get_entries())}",
-                        "type": msg_type,
-                        "message": msg_dict,
-                    }
-                )
+                self._session_log.append_message(msg_dict)
                 turn_messages.append(msg_dict)
 
             # Auto-compaction: now that this turn is persisted, compact in place
@@ -317,7 +319,7 @@ class AgentSession:
 
         try:
             # Get existing messages from session for context
-            context_messages = self._session_manager.get_active_messages()
+            context_messages = self.messages
 
             # Build the agent loop config
             config = AgentLoopConfig(
@@ -355,14 +357,7 @@ class AgentSession:
                 else:
                     continue
 
-                msg_type = msg_dict.get("type", "message")
-                self._session_manager.append_entry(
-                    {
-                        "id": f"cont_{len(self._session_manager._get_entries())}",
-                        "type": msg_type,
-                        "message": msg_dict,
-                    }
-                )
+                self._session_log.append_message(msg_dict)
                 turn_messages.append(msg_dict)
 
             return turn_messages
@@ -373,13 +368,13 @@ class AgentSession:
     async def compact(self, custom_instructions: str | None = None) -> CompactionResult | None:
         """Compact the active conversation into an LLM-generated summary.
 
-        Runs the full pipeline — build the active-path entries, choose the cut
-        point, generate the structured summary via the LLM
-        (:func:`tau_agent_core.compaction.compact`), and record the boundary by
-        APPENDING a compaction entry (:meth:`SessionManager.apply_compaction`,
-        append-only) so the compacted prefix drops out of future context at read
-        time. ``agent_start`` / ``agent_end`` bracket the work for subscribers
-        (e.g. the TUI).
+        Runs the full pipeline — build the active-path entries
+        (``ConversationTree.context_entries``), choose the cut point, generate the
+        structured summary via the LLM (:func:`tau_agent_core.compaction.compact`),
+        and record the boundary by APPENDING a compaction entry
+        (``SessionLog.append_compaction``, append-only) so the compacted prefix
+        drops out of future context at read time. ``agent_start`` / ``agent_end``
+        bracket the work for subscribers (e.g. the TUI).
 
         Args:
             custom_instructions: Optional extra focus for the summary.
@@ -475,8 +470,9 @@ class AgentSession:
 
         Emits no lifecycle events of its own; the callers bracket it.
         """
-        sm = self._session_manager
-        path_entries = sm._build_active_path(sm._get_entries())
+        path_entries = ConversationTree(
+            self._session_log.entries(), self._session_log.cursor
+        ).context_entries()
         preparation = prepare_compaction(path_entries, self._compaction_settings)
         if preparation is None:
             return None
@@ -488,11 +484,14 @@ class AgentSession:
             custom_instructions=custom_instructions,
             thinking_level=self._reasoning,
         )
-        sm.apply_compaction(
-            first_kept_entry_id=result.first_kept_entry_id,
+        # Append-only boundary through the same log the caller persists through.
+        # The System-B compaction entry records ``tokensBefore`` (not the retired
+        # manager's tokens_saved/compacted_entry_ids); the read-time splice needs
+        # only the summary + firstKeptId (§2.3).
+        self._session_log.append_compaction(
             summary=result.summary,
-            compacted_entry_ids=result.compacted_entry_ids,
-            tokens_saved=result.tokens_saved,
+            first_kept_id=result.first_kept_entry_id,
+            tokens_before=result.tokens_before,
         )
         return result
 
@@ -511,7 +510,7 @@ class AgentSession:
         if context_window <= settings.reserve_tokens:
             return
 
-        messages = self._session_manager.get_active_messages()
+        messages = self.messages
         estimate = estimate_context_tokens(messages)
         if not should_compact(estimate.tokens, context_window, settings):
             return

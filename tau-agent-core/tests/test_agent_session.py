@@ -27,7 +27,7 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.session import SessionState
-from tau_agent_core.session_manager import SessionManager
+from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
 from tau_agent_core.sdk import (
     AgentSession as SDKAgentSession,
@@ -59,14 +59,14 @@ class TestAgentSessionCreation:
             max_tokens=4096,
         )
 
-    def create_sample_session_manager(self) -> SessionManager:
-        """Create an in-memory SessionManager for testing."""
-        return SessionManager.in_memory()
+    def create_sample_session_manager(self) -> InMemorySessionLog:
+        """Create an in-memory SessionLog for testing."""
+        return InMemorySessionLog()
 
     def test_create_agent_session(self):
         """Test 1: AgentSession can be instantiated with all parameters."""
         session = AgentSession(
-            session_manager=self.create_sample_session_manager(),
+            session_log=self.create_sample_session_manager(),
             model=self.create_sample_model(),
             system_prompt="You are a helpful assistant.",
             tools=[],
@@ -80,7 +80,7 @@ class TestAgentSessionCreation:
     def test_create_agent_session_minimal(self):
         """AgentSession can be created with minimal parameters."""
         session = AgentSession(
-            session_manager=self.create_sample_session_manager(),
+            session_log=self.create_sample_session_manager(),
             model=self.create_sample_model(),
         )
         assert session is not None
@@ -103,7 +103,7 @@ class TestAgentSessionCreation:
         )
 
         session = AgentSession(
-            session_manager=self.create_sample_session_manager(),
+            session_log=self.create_sample_session_manager(),
             model=self.create_sample_model(),
             tools=[tool],
         )
@@ -113,7 +113,7 @@ class TestAgentSessionCreation:
     def test_create_agent_session_default_tools_empty(self):
         """AgentSession defaults tools to empty list."""
         session = AgentSession(
-            session_manager=self.create_sample_session_manager(),
+            session_log=self.create_sample_session_manager(),
             model=self.create_sample_model(),
         )
         assert session._tools == []
@@ -121,7 +121,7 @@ class TestAgentSessionCreation:
     def test_agent_session_has_events_bus(self):
         """AgentSession creates an EventBus internally."""
         session = AgentSession(
-            session_manager=self.create_sample_session_manager(),
+            session_log=self.create_sample_session_manager(),
             model=self.create_sample_model(),
         )
         assert isinstance(session._events, EventBus)
@@ -129,7 +129,7 @@ class TestAgentSessionCreation:
     def test_agent_session_has_abort_signal(self):
         """AgentSession creates an AbortSignal internally."""
         session = AgentSession(
-            session_manager=self.create_sample_session_manager(),
+            session_log=self.create_sample_session_manager(),
             model=self.create_sample_model(),
         )
         assert session._abort_signal is not None
@@ -137,19 +137,15 @@ class TestAgentSessionCreation:
     def test_agent_session_is_streaming_initially_false(self):
         """AgentSession starts with _is_streaming = False."""
         session = AgentSession(
-            session_manager=self.create_sample_session_manager(),
+            session_log=self.create_sample_session_manager(),
             model=self.create_sample_model(),
         )
         assert session._is_streaming is False
 
     def test_messages_property_returns_active_messages(self):
         """AgentSession.messages returns the current active path messages."""
-        mgr = SessionManager.in_memory()
-        session_path = mgr.new_session()
-        mgr._active_session_path = session_path
-
         session = AgentSession(
-            session_manager=mgr,
+            session_log=InMemorySessionLog(),
             model=self.create_sample_model(),
         )
         messages = session.messages
@@ -158,7 +154,7 @@ class TestAgentSessionCreation:
     def test_state_property_returns_session_state(self):
         """AgentSession.state returns a SessionState."""
         session = AgentSession(
-            session_manager=self.create_sample_session_manager(),
+            session_log=self.create_sample_session_manager(),
             model=self.create_sample_model(),
         )
         state = session.state
@@ -176,7 +172,7 @@ class TestSubscribeUnsubscribe:
 
     def create_session(self) -> AgentSession:
         return AgentSession(
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
             model=Model(
                 id="gpt-4o", name="GPT-4o", api="openai-completions",
                 provider="openai", base_url="https://api.openai.com/v1",
@@ -293,7 +289,7 @@ class TestPromptRunsLoop:
 
     def create_session(self) -> AgentSession:
         return AgentSession(
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
             model=Model(
                 id="gpt-4o", name="GPT-4o", api="openai-completions",
                 provider="openai", base_url="https://api.openai.com/v1",
@@ -399,7 +395,7 @@ class TestPromptReturnsOnlyThisTurnsMessages:
 
     def _session(self) -> AgentSession:
         return AgentSession(
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
             model=Model(
                 id="gpt-4o", name="GPT-4o", api="openai-completions",
                 provider="openai", base_url="https://api.openai.com/v1",
@@ -477,7 +473,7 @@ class TestApiKeyThreadedToProvider:
 
     def _session(self, api_key):
         return AgentSession(
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
             model=Model(
                 id="gpt-4o", name="GPT-4o", api="openai-completions",
                 provider="openai", base_url="https://api.openai.com/v1",
@@ -535,7 +531,7 @@ class TestReasoningThreadedToProvider:
 
     def _session(self, reasoning):
         return AgentSession(
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
             model=Model(
                 id="gpt-4o", name="GPT-4o", api="openai-completions",
                 provider="openai", base_url="https://api.openai.com/v1",
@@ -576,7 +572,7 @@ class TestAbortDuringPrompt:
 
     def create_session(self) -> AgentSession:
         return AgentSession(
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
             model=Model(
                 id="gpt-4o", name="GPT-4o", api="openai-completions",
                 provider="openai", base_url="https://api.openai.com/v1",
@@ -637,7 +633,7 @@ class TestContinueConversation:
 
     def create_session(self) -> AgentSession:
         return AgentSession(
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
             model=Model(
                 id="gpt-4o", name="GPT-4o", api="openai-completions",
                 provider="openai", base_url="https://api.openai.com/v1",
@@ -728,7 +724,7 @@ class TestCreateAgentSession:
         """Test 6: create_agent_session() resolves model strings to Model objects."""
         session = create_agent_session(
             model="gpt-4o",
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
         )
         assert session._model.id == "gpt-4o"
         assert session._model.provider == "openai"
@@ -737,7 +733,7 @@ class TestCreateAgentSession:
         """create_agent_session() resolves gpt-4."""
         session = create_agent_session(
             model="gpt-4",
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
         )
         assert session._model.id == "gpt-4"
 
@@ -745,7 +741,7 @@ class TestCreateAgentSession:
         """create_agent_session() resolves gpt-4-turbo."""
         session = create_agent_session(
             model="gpt-4-turbo",
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
         )
         assert session._model.id == "gpt-4-turbo"
 
@@ -753,7 +749,7 @@ class TestCreateAgentSession:
         """create_agent_session() handles unknown model strings."""
         session = create_agent_session(
             model="my-custom-model",
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
             provider="openai",
         )
         assert session._model.id == "my-custom-model"
@@ -762,7 +758,7 @@ class TestCreateAgentSession:
         """create_agent_session() passes base_url to model."""
         session = create_agent_session(
             model="gpt-4o",
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
             base_url="https://custom.api.com/v1",
         )
         assert session._model.base_url == "https://custom.api.com/v1"
@@ -780,7 +776,7 @@ class TestCreateAgentSession:
         )
         session = create_agent_session(
             model=custom_model,
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
         )
         assert session._model.id == "custom-model"
         assert session._model.provider == "custom"
@@ -789,7 +785,7 @@ class TestCreateAgentSession:
         """create_agent_session() discovers and resolves tools from strings."""
         session = create_agent_session(
             model="gpt-4o",
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
             tools=["read", "bash"],
         )
         assert session._model.id == "gpt-4o"
@@ -803,7 +799,7 @@ class TestCreateAgentSession:
         with pytest.raises(ValueError, match="Unknown tool"):
             create_agent_session(
                 model="gpt-4o",
-                session_manager=SessionManager.in_memory(),
+                session_log=InMemorySessionLog(),
                 tools=["nonexistent_tool"],
             )
 
@@ -811,7 +807,7 @@ class TestCreateAgentSession:
         """create_agent_session() builds a default system prompt."""
         session = create_agent_session(
             model="gpt-4o",
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
         )
         assert session._system_prompt is not None
         assert "τ" in session._system_prompt or "helpful" in session._system_prompt.lower()
@@ -821,7 +817,7 @@ class TestCreateAgentSession:
         custom_prompt = "You are a test assistant."
         session = create_agent_session(
             model="gpt-4o",
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
             system_prompt=custom_prompt,
         )
         assert session._system_prompt == custom_prompt
@@ -830,7 +826,7 @@ class TestCreateAgentSession:
         """create_agent_session() returns an AgentSession instance."""
         session = create_agent_session(
             model="gpt-4o",
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
         )
         assert isinstance(session, AgentSession)
 
@@ -845,7 +841,7 @@ class TestExtensions:
 
     def create_session(self, extensions=None) -> AgentSession:
         return AgentSession(
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
             model=Model(
                 id="gpt-4o", name="GPT-4o", api="openai-completions",
                 provider="openai", base_url="https://api.openai.com/v1",
@@ -911,7 +907,7 @@ class TestExtensions:
     def test_none_extensions_defaults_to_empty(self):
         """Session with extensions=None defaults to empty list."""
         session = AgentSession(
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
             model=Model(
                 id="gpt-4o", name="GPT-4o", api="openai-completions",
                 provider="openai", base_url="https://api.openai.com/v1",
@@ -960,11 +956,11 @@ class TestInMemoryIsolation:
         """Test 8: In-memory sessions are independent."""
         session1 = create_agent_session(
             model="gpt-4o",
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
         )
         session2 = create_agent_session(
             model="gpt-4o",
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
         )
 
         asyncio.run(session1.prompt("hello from session 1"))
@@ -975,11 +971,11 @@ class TestInMemoryIsolation:
         """Messages in one session don't leak to another."""
         session1 = create_agent_session(
             model="gpt-4o",
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
         )
         session2 = create_agent_session(
             model="gpt-4o",
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
         )
 
         asyncio.run(session1.prompt("hello"))
@@ -998,11 +994,11 @@ class TestInMemoryIsolation:
         """Session state is independent between sessions."""
         session1 = create_agent_session(
             model="gpt-4o",
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
         )
         session2 = create_agent_session(
             model="gpt-4o",
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
         )
 
         assert session1.state.status == "idle"
@@ -1015,16 +1011,16 @@ class TestInMemoryIsolation:
 
     def test_different_session_managers(self):
         """Different SessionManager instances are truly isolated."""
-        mgr1 = SessionManager.in_memory()
-        mgr2 = SessionManager.in_memory()
+        log1 = InMemorySessionLog()
+        log2 = InMemorySessionLog()
 
         session1 = create_agent_session(
             model="gpt-4o",
-            session_manager=mgr1,
+            session_log=log1,
         )
         session2 = create_agent_session(
             model="gpt-4o",
-            session_manager=mgr2,
+            session_log=log2,
         )
 
         asyncio.run(session1.prompt("session1"))
@@ -1036,7 +1032,7 @@ class TestInMemoryIsolation:
         sessions = [
             create_agent_session(
                 model="gpt-4o",
-                session_manager=SessionManager.in_memory(),
+                session_log=InMemorySessionLog(),
             )
             for _ in range(5)
         ]
@@ -1063,7 +1059,7 @@ class TestCompact:
 
     def create_session(self) -> AgentSession:
         return AgentSession(
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
             model=Model(
                 id="gpt-4o", name="GPT-4o", api="openai-completions",
                 provider="openai", base_url="https://api.openai.com/v1",

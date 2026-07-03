@@ -718,12 +718,12 @@ async def summarize_branch(
     Returns:
         A concise summary string of the branch conversation.
     """
-    from tau_agent_core import AgentSession
-
-    # Get the session manager
-    if isinstance(session, AgentSession):
-        sm = session._session_manager
-    elif hasattr(session, "session_manager"):
+    # Resolve the SessionManager this helper reads (the legacy System-A tree
+    # store). AgentSession no longer wraps a SessionManager — §2.6 retired it from
+    # the live path — so the accepted inputs are a SessionManager or an object
+    # exposing one; the subtree extraction moves to ConversationTree.subtree_text
+    # when this helper is reworked in Part 2 (§3.1).
+    if hasattr(session, "session_manager"):
         sm = session.session_manager
     elif hasattr(session, "_session_manager"):
         sm = session._session_manager

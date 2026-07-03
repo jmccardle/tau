@@ -192,6 +192,16 @@ class Session:
         return self._header.get("parent")
 
     @property
+    def cursor(self) -> str | None:
+        """The current leaf (tip) entry id; ``None`` before the first entry.
+
+        Exposes ``_leaf_id`` under the name the ``tau_agent_core.session_log``
+        ``SessionLog`` Protocol reads, so ``Session`` satisfies that facade
+        structurally and ``AgentSession`` can build a ``ConversationTree`` view
+        over the live session (§2.6, §4.2)."""
+        return self._leaf_id
+
+    @property
     def header(self) -> dict[str, Any]:
         """The line-1 header (seam 2: export + pi-faithful json need it raw)."""
         return dict(self._header)

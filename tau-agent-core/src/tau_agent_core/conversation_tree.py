@@ -156,6 +156,18 @@ class ConversationTree:
                 messages.append(_summary_message(str(entry.get("summary", ""))))
         return messages
 
+    def context_entries(self, leaf: str | None = None) -> list[dict[str, Any]]:
+        """Root→leaf *entry* list with the compaction/branch_summary splice applied.
+
+        The entry-level counterpart of :meth:`context_for` (which converts these
+        to loop messages). This is exactly what ``SessionManager._build_active_path``
+        returned, so it feeds ``compaction.prepare_compaction`` unchanged — the
+        AgentSession compaction path builds it over the live entries instead of
+        the retired System-A manager (§2.6). ``leaf=None`` uses the stored cursor.
+        """
+        leaf_id = self._cursor if leaf is None else leaf
+        return self._active_path_entries(leaf_id)
+
     def _active_path_entries(self, leaf_id: str | None) -> list[dict[str, Any]]:
         """Faithful side-effect-free port of pi ``buildSessionContext``
         (``session-manager.ts:325-423``) over camelCase entries: leaf→root walk,

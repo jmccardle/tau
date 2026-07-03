@@ -42,6 +42,7 @@ from tau_agent_core.tools.base import (
 )
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree, TreeNode
+from tau_agent_core.session_log import InMemorySessionLog, SessionLog
 from tau_agent_core.session_manager import SessionManager
 from tau_agent_core.compaction import (
     DEFAULT_COMPACTION_SETTINGS,
@@ -69,6 +70,8 @@ __all__ = [
     "AgentSession",
     "ConversationTree",
     "TreeNode",
+    "SessionLog",
+    "InMemorySessionLog",
     "SessionManager",
     "AgentEvent",
     "EventBus",
