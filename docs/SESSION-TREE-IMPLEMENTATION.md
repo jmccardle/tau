@@ -514,8 +514,8 @@ green (full suite 1401→1442), each adversarially reviewed:
 | 1a `ConversationTree` | `b9303b1` | ✅ done — parity battery is a real differential oracle |
 | 1b cursor + entry kinds | `dfb99ec` | ✅ done — review caught + fixed a Fail-Early silent-data-loss bug (dangling cursor wiped context on reload); `append_navigate`/`append_branch_summary` now `raise` on unknown ids |
 | 1c append-only compaction | `509851f` | ✅ done — byte-prefix test proves append-only; `_persist_entries` `"w"` rewrite deleted |
-| 1d wire + retire System A | — | ⛔ **blocked** on decision 4 below |
-| 2 TUI tree-browser | — | pending 1d |
+| 1d wire + retire System A | — | ▶ **in progress** — decision 4 resolved: option **(B)** `SessionLog` Protocol |
+| 2 TUI tree-browser | — | pending 1d; must carry both Decision-5 fixes |
 
 Two issues surfaced during the build, recorded as decisions 4–5:
 
@@ -540,14 +540,49 @@ object but never states its package. Two viable resolutions:
   the request explicitly wants, and minimizes churn to existing coding-agent
   code. (A) is the lower-conceptual-risk, §4.5-literal fallback.
 
-**Decision 5 — `append_branch_summary` parenting (fix before Part 2 wires it).**
-As built in 1b, `append_branch_summary` parents the summary at the *current
-leaf*; pi's `branchWithSummary` (`session-manager.ts:1262-1279`) moves the leaf
-to `fromId` *first*, so the entry parents at the branch point and the abandoned
-branch falls off the active path. Resolve in Part 2 either by moving the cursor
-to `from_id` before the append, or by having `navigate_tree` call
-`append_navigate(from_id)` first. Not a live defect yet (unwired); a
-`context_for`-level topology test should lock it when fixed.
+  **RESOLVED 2026-07-03: option (B).** The maintainer chose "do what we'd be
+  doing eventually anyway" — ship the `SessionLog` Protocol in `tau-agent-core`
+  (which *is* the Part-3 §4.4 DB-seam boundary) plus a minimal in-memory default
+  in core for the SDK path; coding-agent's file `Session` satisfies it and is
+  injected on the live path. This forward-delivers Part 3 structurally and
+  answers open maintainer decision 3 (ship the Protocol now).
+
+**Decision 5 — `branch_summary` topology: TWO coupled divergences from pi (fix
+in Part 2, before it is wired).** Verified against pi 2026-07-03. Both are
+latent (branch_summary is unwired today), and they compound — the second is
+*not* in the original 1b write-up:
+
+1. **Parenting.** As built in 1b, `append_branch_summary` parents the summary at
+   the *current leaf*. pi's `branchWithSummary` (`session-manager.ts:1262-1279`)
+   sets `this.leafId = branchFromId` *first*, then appends with
+   `parentId = branchFromId`, so the entry parents at the **branch point** and
+   the abandoned children become a **sibling branch, off the active path**. Fix:
+   move the cursor to `from_id` before the append (or have `navigate_tree` call
+   `append_navigate(from_id)` first).
+
+2. **`branch_summary` must NOT be a splice anchor** (the §2.4 unification is
+   wrong vs pi). pi's `buildSessionContext` (`session-manager.ts:325-430`) runs
+   the drop-prefix splice **only for `compaction`** — the `compaction` local is
+   set solely from `entry.type === "compaction"` (`:367`). `branch_summary` is
+   emitted as a **plain inline node** via `appendMessage` →
+   `createBranchSummaryMessage` (`:390-397`); its `fromId` is *display metadata*,
+   never a splice boundary. The abandoned branch drops out **purely via the
+   parentId walk** (given fix 1's parenting) — no splice needed. But τ's
+   `conversation_tree.py:39` puts `branch_summary` in `_SUMMARY_KINDS` and
+   anchors the compaction drop-prefix splice on whichever summary kind is *last*
+   in the path. This was masked in 1b because its tests only exercised
+   `branch_summary` appended at the tip over a linear chain (compaction-shaped),
+   where the two coincide. With real branch topology it breaks: even *with* fix 1
+   (S parented at B, path `[A,B,S]`, `fromId=B`), τ's unified splice yields
+   `[S, B]` — it **drops A and reorders** — where pi gives the correct
+   `[A, B, S]`. It also diverges on any path holding *both* a `compaction` and a
+   `branch_summary`. Fix: make `branch_summary` a plain inline node in
+   `context_for` (remove it from `_SUMMARY_KINDS`, or split the fold so only
+   `compaction` drops a prefix); render it via a branch-summary message shape
+   like pi's `createBranchSummaryMessage`.
+
+Lock both with a `context_for`-level topology test asserting `[A, B, S]` for a
+summarized real branch, plus a mixed compaction+branch_summary path.
 
 **Open maintainer decisions:**
 1. **`navigate` entry kind** — persist the cursor as a first-class entry (§2.2,
