@@ -10,11 +10,14 @@ consumes, without touching the filesystem, ``Session``, or ``asyncio``.
 Provenance (ported verbatim, only the field names reconciled camelCase and the
 splice generalised over both summary kinds):
 
-- ``context_for`` / ``_active_path_entries`` ← ``SessionManager._build_active_path``
-  (``session_manager.py:544-625``), including the "anchor on the LAST
-  compaction/branch_summary in the path" rule (``:597-600``) and the
-  ``linear_order``-vs-``firstKeptId`` filter (``:602-622``); the entry→message
-  conversion mirrors ``SessionManager.get_active_messages`` (``:191-221``).
+- ``context_for`` / ``_active_path_entries`` ← pi ``buildSessionContext``
+  (``session-manager.ts:325-423``) — the leaf→root ``parentId`` walk, the "anchor on
+  the LAST compaction/branch_summary in the path" rule (``:591-600``), and the
+  splice that emits the summary node, the kept entries before it from the boundary
+  (``firstKeptId`` / ``fromId``), then everything after (``:400-423``). This reads a
+  summary appended at the tip (append-only compaction, step 1c) as well as one whose
+  kept region trails it; the entry→message conversion mirrors
+  ``SessionManager.get_active_messages`` (``:191-221``).
 - ``tree`` ← pi ``getTree(): SessionTreeNode[]`` (``session-manager.ts:1191``):
   parent/child nodes, children sorted by timestamp, ``is_leaf`` == the cursor.
 - ``subtree_text`` ← ``SessionManager._extract_branch_messages``
@@ -106,7 +109,6 @@ class ConversationTree:
     def __init__(self, entries: list[dict[str, Any]], cursor: str | None) -> None:
         self._entries = entries  # append-only, load order
         self._by_id: dict[str, dict[str, Any]] = {e["id"]: e for e in entries}
-        self._order: dict[str, int] = {e["id"]: i for i, e in enumerate(entries)}
         self._children: dict[str | None, list[str]] = {}
         for e in entries:
             self._children.setdefault(e.get("parentId"), []).append(e["id"])
@@ -155,8 +157,9 @@ class ConversationTree:
         return messages
 
     def _active_path_entries(self, leaf_id: str | None) -> list[dict[str, Any]]:
-        """Faithful side-effect-free port of ``_build_active_path`` over camelCase
-        entries: leaf→root walk, then the summary-anchor splice."""
+        """Faithful side-effect-free port of pi ``buildSessionContext``
+        (``session-manager.ts:325-423``) over camelCase entries: leaf→root walk,
+        then the summary-anchor splice."""
         entries = self._entries
         if not entries:
             return []
@@ -178,18 +181,23 @@ class ConversationTree:
             return path
 
         anchor = path[anchor_idx]
-        boundary_order = self._order.get(_boundary_id(anchor) or "", len(entries))
+        boundary = _boundary_id(anchor)
 
-        # Keep the anchor (it IS the summary) plus every kept-region entry whose
-        # linear order is at or after the boundary (``:602-622``).
-        filtered: list[dict[str, Any]] = []
-        for entry in path[anchor_idx:]:
-            if entry.get("type") in _SUMMARY_KINDS:
-                filtered.append(entry)
-                continue
-            if self._order.get(entry["id"], len(entries)) >= boundary_order:
-                filtered.append(entry)
-        return filtered
+        # pi ``buildSessionContext`` (``:400-423``): emit the summary node, then the
+        # kept entries BEFORE the anchor starting at the boundary (``firstKeptId`` /
+        # ``fromId``), then every entry AFTER the anchor. Correct whether the summary
+        # was appended at the tip (append-only compaction: the boundary is an
+        # ancestor, so the kept region precedes the anchor) or its kept region
+        # trails it — the shape the frozen System-A oracle produced.
+        result: list[dict[str, Any]] = [anchor]
+        found = False
+        for entry in path[:anchor_idx]:
+            if entry["id"] == boundary:
+                found = True
+            if found:
+                result.append(entry)
+        result.extend(path[anchor_idx + 1 :])
+        return result
 
     def _walk(self, start_id: str | None) -> list[dict[str, Any]]:
         """Leaf→root ``parentId`` walk with a cycle guard, reversed to root→leaf."""

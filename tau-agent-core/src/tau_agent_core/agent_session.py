@@ -375,10 +375,11 @@ class AgentSession:
 
         Runs the full pipeline — build the active-path entries, choose the cut
         point, generate the structured summary via the LLM
-        (:func:`tau_agent_core.compaction.compact`), and splice the summary into
-        the session tree (:meth:`SessionManager.apply_compaction`) so the
-        compacted prefix drops out of future context. ``agent_start`` /
-        ``agent_end`` bracket the work for subscribers (e.g. the TUI).
+        (:func:`tau_agent_core.compaction.compact`), and record the boundary by
+        APPENDING a compaction entry (:meth:`SessionManager.apply_compaction`,
+        append-only) so the compacted prefix drops out of future context at read
+        time. ``agent_start`` / ``agent_end`` bracket the work for subscribers
+        (e.g. the TUI).
 
         Args:
             custom_instructions: Optional extra focus for the summary.

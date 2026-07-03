@@ -227,79 +227,52 @@ class SessionManager:
         compacted_entry_ids: list[str] | None = None,
         tokens_saved: int = 0,
     ) -> str:
-        """Persist a compaction by splicing a summary entry at the boundary.
+        """Record a compaction boundary by APPENDING a summary entry (append-only).
 
-        A new ``compaction`` entry C is inserted as the parent of
-        ``first_kept_entry_id``; C's own parent becomes the first-kept entry's
-        former parent. The active tip is left unchanged, so the conversation
-        continues seamlessly with the compacted prefix replaced by C's summary.
+        Ports pi's ``appendCompaction`` (session-manager.ts:990): a new
+        ``compaction`` entry is appended as a child of the current tip — carrying
+        ``first_kept_id`` / ``summary`` / ``tokens_saved`` — and the tip advances
+        to it. Nothing already on the log is mutated. The read-time fold
+        (``_build_active_path`` / ``ConversationTree.context_for``) splices the
+        summary in and drops the pre-boundary prefix, so ``get_active_messages``
+        yields ``[summary, <first_kept … tip>]`` just as before.
+
+        This replaces the former re-parent-and-rewrite: appending restores the
+        append-only invariant and crash-safety (a torn ``"w"`` rewrite could
+        destroy a session) and keeps the pre-compaction history addressable —
+        navigating behind the boundary reveals it again, nothing was deleted.
 
         This is the structural counterpart to ``compaction.compact`` (which only
-        *computes* the summary). After it runs, ``get_active_messages`` /
-        ``_build_active_path`` yield ``[summary, <first_kept … tip>]``: the
-        entries before the boundary drop out of the active path entirely.
-
-        Works for both the in-memory and file-backed stores. The JSONL log is
-        otherwise append-only, but re-parenting an existing entry requires
-        rewriting it, so the file is rewritten with the updated links.
+        *computes* the summary); the compaction *engine* is unchanged — only
+        where/how the boundary is recorded differs (append, not rewrite).
 
         Args:
-            first_kept_entry_id: Id of the first entry to retain in full.
+            first_kept_entry_id: Id of the first entry to retain in full (an
+                existing entry; the boundary is resolved at read time).
             summary: The generated summary text replacing the compacted prefix.
             compacted_entry_ids: Ids replaced by the summary (recorded as metadata).
             tokens_saved: Estimated tokens saved (recorded as metadata).
 
         Returns:
-            The id of the inserted compaction entry.
+            The id of the appended compaction entry.
 
         Raises:
             KeyError: If ``first_kept_entry_id`` is not in the session.
         """
-        entries = list(self._get_entries())
-        fk_index = next(
-            (i for i, e in enumerate(entries) if e.get("id") == first_kept_entry_id),
-            -1,
-        )
-        if fk_index < 0:
+        entries = self._get_entries()
+        if not any(e.get("id") == first_kept_entry_id for e in entries):
             raise KeyError(f"first_kept entry {first_kept_entry_id} not found")
 
-        first_kept = dict(entries[fk_index])
-        boundary_parent_id = first_kept.get("parent_id")
-
-        compaction_id = uuid.uuid4().hex
-        compaction_entry: dict[str, Any] = {
-            "id": compaction_id,
-            "type": "compaction",
-            "timestamp": int(time.time() * 1000),
-            "parent_id": boundary_parent_id,
-            "first_kept_id": first_kept_entry_id,
-            "summary": summary,
-            "tokens_saved": tokens_saved,
-            "compacted_entries": list(compacted_entry_ids or []),
-        }
-
-        # Re-parent the first-kept entry onto the compaction entry, then splice
-        # the compaction entry in just before it (so the linear order keeps the
-        # recent entries, whose order stays >= first_kept's).
-        first_kept["parent_id"] = compaction_id
-        entries[fk_index] = first_kept
-        entries.insert(fk_index, compaction_entry)
-
-        self._persist_entries(entries)
-        return compaction_id
-
-    def _persist_entries(self, entries: list[dict]) -> None:
-        """Replace the whole entry log (in-memory list or JSONL file).
-
-        Used by tree-restructuring operations like ``apply_compaction`` that
-        cannot be expressed as a plain append.
-        """
-        if self._memory_store is not None:
-            self._memory_store[:] = entries
-        elif self._active_session_path:
-            with open(self._active_session_path, "w") as f:
-                for entry in entries:
-                    f.write(json.dumps(entry) + "\n")
+        return self.append_entry(
+            {
+                "id": uuid.uuid4().hex,
+                "type": "compaction",
+                "first_kept_id": first_kept_entry_id,
+                "summary": summary,
+                "tokens_saved": tokens_saved,
+                "compacted_entries": list(compacted_entry_ids or []),
+            }
+        )
 
     def list_sessions(self) -> list[SessionInfo]:
         """List sessions for the current working directory.
@@ -560,11 +533,6 @@ class SessionManager:
         for entry in entries:
             entry_by_id[entry["id"]] = entry
 
-        # Build the linear order of entries (from file/memory order)
-        linear_order: dict[str, int] = {}
-        for idx, entry in enumerate(entries):
-            linear_order[entry["id"]] = idx
-
         # Walk backwards from active_entry_id to root
         path = []
         current_id = self._active_entry_id or (entries[0]["id"] if entries else None)
@@ -581,48 +549,36 @@ class SessionManager:
         # Reverse to get root-to-leaf order
         path.reverse()
 
-        # Now handle compaction:
-        # Find any compaction entry in the path.
-        # A compaction entry means all entries before it in the path
-        # (closer to root) that appear before its first_kept_id
-        # in the linear order are compacted.
-        # We replace those with the compaction summary.
-
-        # Find the LAST (most recent) compaction entry in the path. With
-        # iterative compaction there can be several: each new summary is
-        # generated with the previous one as input (compaction.generate_summary's
-        # previous_summary), so the most recent compaction supersedes all earlier
-        # ones — anchoring on it drops the stale summaries and their kept regions.
-        # (With a single compaction this is identical to "first from root".)
+        # Splice compaction — port of pi's buildSessionContext (session-manager.ts:400-423).
+        # Anchor on the LAST (most recent) compaction in the path: with iterative
+        # compaction each new summary is generated with the previous one as input
+        # (compaction.generate_summary's previous_summary), so the most recent
+        # supersedes all earlier ones — anchoring on it drops the stale summaries and
+        # their kept regions. Then emit: the summary node, the kept entries BEFORE it
+        # starting at first_kept_id, and every entry AFTER it. This reads a compaction
+        # appended at the tip (append-only — first_kept is an ancestor) as well as one
+        # whose kept region trails it.
         compaction_idx = None
         for idx, entry in enumerate(path):
             if entry.get("type") == "compaction":
                 compaction_idx = idx
 
-        if compaction_idx is not None:
-            compaction = path[compaction_idx]
-            first_kept_id = compaction.get("first_kept_id", "")
-            first_kept_order = linear_order.get(first_kept_id, len(entries))
+        if compaction_idx is None:
+            # No compaction in path — return full path
+            return path
 
-            # Split: entries before compaction in path = compacted
-            # entries from compaction onwards = kept
-            kept_path = path[compaction_idx:]
+        compaction = path[compaction_idx]
+        first_kept_id = compaction.get("first_kept_id", "")
 
-            # Filter: entries in kept_path before first_kept_id in linear order
-            filtered = []
-            for entry in kept_path:
-                # Always keep the compaction entry itself (it IS the summary)
-                if entry.get("type") == "compaction":
-                    filtered.append(entry)
-                    continue
-                entry_order = linear_order.get(entry["id"], len(entries))
-                if entry_order >= first_kept_order:
-                    filtered.append(entry)
-
-            return filtered
-
-        # No compaction in path — return full path
-        return path
+        result: list[dict] = [compaction]
+        found_first_kept = False
+        for entry in path[:compaction_idx]:
+            if entry["id"] == first_kept_id:
+                found_first_kept = True
+            if found_first_kept:
+                result.append(entry)
+        result.extend(path[compaction_idx + 1 :])
+        return result
 
     def _extract_branch_messages(self, entries: list[dict], branch_entry_id: str) -> str:
         """Extract all messages from a branch (subtree) rooted at branch_entry_id.
