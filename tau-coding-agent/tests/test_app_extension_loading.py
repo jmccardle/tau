@@ -165,3 +165,93 @@ async def test_explicit_failure_surfaces_error_notice(app, monkeypatch):
         await pilot.pause()
 
     assert any("boom" in msg and sev == "error" for msg, sev in notices)
+
+
+# ── /extensions palette listing (E5 §5 / S34) ─────────────────────────────────
+
+# A file extension registering a tool, a command, and a hook — everything the
+# /extensions listing must surface for one loaded extension.
+_FULL_EXT = """
+async def _exec(tool_call_id, params, signal, on_update, ctx):
+    return {"content": [{"type": "text", "text": "ok"}]}
+
+def register(api):
+    api.register_tool({
+        "name": "probe",
+        "description": "a probe tool",
+        "parameters": {"type": "object", "properties": {}},
+        "execute": _exec,
+    })
+    api.register_command("hello", {"description": "say hi"})
+    api.on("tool_result", lambda event, ctx: None)
+"""
+
+
+async def test_extensions_command_lists_loaded_extension(app, tmp_path):
+    """/extensions renders a system box with the loaded extension's name/path/…."""
+    from tau_coding_agent.app import ChatDisplay, ChatInput, MessageBox
+
+    ext = tmp_path / "full_ext.py"
+    ext.write_text(_FULL_EXT)
+    app._extension_paths = [str(ext)]
+    app._discover_extensions = False
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+
+        # Drive the real slash path (text → interception → listing), exactly as a
+        # user typing /extensions: proves the dispatch wiring, not just the action.
+        input_widget = app.query_one("#chat-input", ChatInput)
+        input_widget.text = "/extensions"
+        input_widget.action_submit()
+        await pilot.pause()
+
+        boxes = [b for b in app.query(MessageBox) if b.role == "system"]
+        assert boxes, "no system box rendered for /extensions"
+        listing = boxes[-1]._content
+        assert "full_ext" in listing  # name
+        assert str(ext) in listing  # path
+        assert "probe" in listing  # registered tool
+        assert "hello" in listing  # registered command
+        assert "tool_result" in listing  # registered hook
+
+        # Read-only: the listing is UI chrome, NOT a conversation node — it must not
+        # leak into the working message list the model is sent (invariant, E5 §1).
+        assert not any(m.get("content") == listing for m in app.messages)
+        # And the ChatDisplay is where it lives.
+        assert app.query_one(ChatDisplay) is not None
+
+
+def test_format_extensions_listing_surfaces_load_errors(tmp_path):
+    """The listing text carries both a loaded extension AND any load errors (S34)."""
+    import asyncio
+
+    from tau_agent_core.sdk import ExtensionLoadError, _load_extensions
+
+    from tau_coding_agent.app import Parley
+
+    ext = tmp_path / "full_ext.py"
+    ext.write_text(_FULL_EXT)
+
+    result = asyncio.run(_load_extensions([str(ext)], discover=False))
+    # A discovered failure the loader would have collected alongside the good one.
+    result.errors.append(ExtensionLoadError(path="/x/broken.py", error="boom during import"))
+
+    text = Parley._format_extensions_listing(result)
+    assert "full_ext" in text
+    assert "probe" in text  # tool
+    assert "hello" in text  # command
+    assert "Load errors" in text
+    assert "/x/broken.py" in text
+    assert "boom during import" in text
+
+
+def test_format_extensions_listing_empty_when_nothing_loaded():
+    """With no extensions and no errors the listing says so (honest empty state)."""
+    from tau_agent_core.sdk import LoadExtensionsResult
+
+    from tau_coding_agent.app import Parley
+
+    assert Parley._format_extensions_listing(LoadExtensionsResult()) == "No extensions loaded."

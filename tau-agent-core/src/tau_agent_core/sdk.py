@@ -212,6 +212,57 @@ class LoadExtensionsResult:
     errors: list[ExtensionLoadError] = field(default_factory=list)
 
 
+@dataclass
+class ExtensionInfo:
+    """Read-only summary of one loaded extension for the ``/extensions`` surface.
+
+    Reference: EXTENSIONS-E5-WIRING.md §5 (E5.4 / S34). Carries an extension's
+    display ``name``, source ``path``, and the ``tools`` / ``commands`` / ``hooks``
+    it registered — everything the palette listing shows for a loaded extension.
+    """
+
+    name: str
+    path: str
+    tools: list[str]
+    commands: list[str]
+    hooks: list[str]
+
+
+def summarize_extensions(result: LoadExtensionsResult) -> list[ExtensionInfo]:
+    """Per-extension name/path/tools/commands/hooks from a ``LoadExtensionsResult``.
+
+    Reference: EXTENSIONS-E5-WIRING.md §5 (E5.4 / S34). The palette (``/extensions``)
+    reads this to list each loaded extension; ``result.errors`` is surfaced
+    alongside by the caller (load failures).
+
+    Each loaded extension's ``api`` is bound to its own runner bucket
+    (:class:`~tau_agent_core.extensions.runner.ExtensionHandlers`, labelled by the
+    extension's file path — see ``AgentSession._bind_extension_api`` /
+    ``_standalone_api_factory``), which is the ONLY place that records which
+    extension registered which tool/command/hook. A loaded extension whose api has
+    no bucket is a construction bug, so this raises rather than fabricating an empty
+    listing (Fail-Early).
+    """
+    infos: list[ExtensionInfo] = []
+    for ext in result.extensions:
+        bucket = ext.api._hook_handlers
+        if bucket is None:
+            raise RuntimeError(
+                f"loaded extension {ext.path!r} has no runner bucket; it was not "
+                "bound through the extension load path (this is a construction bug)."
+            )
+        infos.append(
+            ExtensionInfo(
+                name=Path(ext.path).stem,
+                path=ext.path,
+                tools=list(bucket.tools),
+                commands=list(bucket.commands),
+                hooks=sorted(bucket.handlers.keys()),
+            )
+        )
+    return infos
+
+
 def _discover_extension_paths(user_dir: str) -> list[Path]:
     """Discover extension entry points in a directory (one level, pi-faithful).
 

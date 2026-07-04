@@ -551,6 +551,11 @@ class ExtensionAPI:
         definition = dict(definition)  # don't mutate caller's dict
         definition["_source"] = "extension"
         self._registry.register_tool(definition)
+        # Attribute the tool to THIS extension for the /extensions surface (E5 §5 /
+        # S34). The registry stores tools globally (by name); the per-extension
+        # runner bucket is the only place that records which extension owns it.
+        if self._hook_handlers is not None:
+            self._hook_handlers.tools.append(definition["name"])
 
     def get_all_tools(self) -> list[Any]:
         """Get all registered tools.
@@ -567,6 +572,11 @@ class ExtensionAPI:
     def register_command(self, name: str, command: dict) -> None:
         """Register a slash command (forwards to the registry)."""
         self._registry.register_command(name, command)
+        # Attribute the command to THIS extension for the /extensions surface (E5
+        # §5 / S34); the registry stores commands globally, with no per-extension
+        # source (see register_tool).
+        if self._hook_handlers is not None:
+            self._hook_handlers.commands.append(name)
 
     def append_entry(self, custom_type: str, data: dict) -> None:
         """Persist extension state through the registry."""

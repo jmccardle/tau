@@ -40,6 +40,10 @@ from tau_coding_agent.session_store import (
 # the TUI); the tree-browser (§3) is a view over ConversationTree.tree().
 from tau_agent_core.conversation_tree import ConversationTree, TreeNode
 
+# Extension load result + the read-only per-extension summary the /extensions
+# palette listing renders (E5 §5 / S34).
+from tau_agent_core.sdk import LoadExtensionsResult, summarize_extensions
+
 # Collapsible chat components. MessageBox (below) is the universal per-message
 # host; these are the children it composes — one reasoning region and N tool
 # boxes — plus the exchange grouping used by the streaming state machine.
@@ -1095,6 +1099,10 @@ class Parley(App):
         run_config = cli_run_config or {}
         self._extension_paths: list[str] = list(run_config.get("extensions", []))
         self._discover_extensions: bool = not run_config.get("no_extensions", False)
+        # The most recent extension load result (E5 §5 / S34) — read by the
+        # ``/extensions`` palette listing. Starts empty (nothing loaded yet); every
+        # ``_load_backend_extensions`` replaces it with the live result.
+        self._extension_load_result: LoadExtensionsResult = LoadExtensionsResult()
         # Run-level tool/prompt flags (S28), applied at each create_backend /
         # new-chat so a model switch keeps them. Defaults are inert (a bare tau).
         self._exclude_tools: list[str] = list(run_config.get("exclude_tools", []))
@@ -1210,6 +1218,12 @@ class Parley(App):
         # keybindings.ts:252-253). Intercepted here so the text never reaches the model.
         if message in ("/tree", "/fork"):
             self.action_browse_tree()
+            return
+
+        # /extensions lists the loaded extensions (read-only, E5 §5 / S34).
+        # Intercepted here so the text is UI chrome, never a prompt to the model.
+        if message == "/extensions":
+            self.action_show_extensions()
             return
 
         # Create new session if needed
@@ -1395,6 +1409,10 @@ class Parley(App):
         if set_delegate is not None:
             set_delegate(_ExtensionUIDelegate(self))
 
+        # Reset first so a backend swap never leaves the /extensions listing (S34)
+        # showing the previous backend's extensions if this load fails or no-ops.
+        self._extension_load_result = LoadExtensionsResult()
+
         loader = getattr(self.current_backend, "load_extensions", None)
         if loader is None:
             return
@@ -1404,6 +1422,8 @@ class Parley(App):
             self.notify(f"Extension failed to load: {e}", severity="error")
             self.log.error(f"Extension load failed: {e}", exc_info=True)
             return
+        # Keep the result for the /extensions palette listing (E5 §5 / S34).
+        self._extension_load_result = result
         for err in result.errors:
             self.notify(f"Extension error ({err.path}): {err.error}", severity="warning")
         if result.extensions:
@@ -1478,6 +1498,47 @@ class Parley(App):
     def action_toggle_tools(self) -> None:
         """Fold/unfold every tool box (call + result) in the transcript at once."""
         self.tools_collapsed = self._fold_all(self.query(ToolBox), "Tool output")
+
+    def action_show_extensions(self) -> None:
+        """List loaded extensions + load errors in the transcript (E5 §5 / S34).
+
+        Read-only (D-E5-6: runtime enable/reload deferred). Reads the last
+        ``_load_backend_extensions`` result — the now-populated registry/runner via
+        :func:`summarize_extensions` — and renders it as a display-only ``system``
+        box. This is UI chrome, NOT a conversation node: it is neither appended to
+        the working message list nor persisted, so the durable-hook invariant (the
+        model's input = system prompt + the linear active path) is untouched.
+        """
+        listing = self._format_extensions_listing(self._extension_load_result)
+        self.query_one(ChatDisplay).add_message("system", listing)
+
+    @staticmethod
+    def _format_extensions_listing(result: LoadExtensionsResult) -> str:
+        """Render a ``LoadExtensionsResult`` as the ``/extensions`` listing text (S34).
+
+        Pure (no widget access) so it is unit-testable: given the load result it
+        returns the exact markdown the listing box shows — a section per loaded
+        extension (name, path, tools/commands/hooks) plus a load-errors section.
+        """
+        infos = summarize_extensions(result)
+        if not infos and not result.errors:
+            return "No extensions loaded."
+
+        lines: list[str] = ["# Extensions"]
+        for info in infos:
+            lines.append("")
+            lines.append(f"**{info.name}** — `{info.path}`")
+            lines.append(f"- hooks: {', '.join(info.hooks) if info.hooks else '(none)'}")
+            lines.append(f"- tools: {', '.join(info.tools) if info.tools else '(none)'}")
+            lines.append(f"- commands: {', '.join(info.commands) if info.commands else '(none)'}")
+
+        if result.errors:
+            lines.append("")
+            lines.append("## Load errors")
+            for err in result.errors:
+                lines.append(f"- `{err.path}`: {err.error}")
+
+        return "\n".join(lines)
 
     def _fold_all(self, widgets, label: str) -> bool:
         """Collapse all ``widgets`` if any is currently expanded, else expand all.
@@ -1582,6 +1643,12 @@ class Parley(App):
             "Toggle Tool Output",
             "Collapse/expand all tool call/result boxes",
             self.action_toggle_tools,
+        )
+
+        yield SystemCommand(
+            "Extensions",
+            "List loaded extensions (name/path/tools/commands/hooks) and load errors",
+            self.action_show_extensions,
         )
 
     async def action_clear_chat(self):
