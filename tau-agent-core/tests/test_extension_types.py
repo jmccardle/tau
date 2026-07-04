@@ -344,18 +344,40 @@ class TestExtensionAPISession:
         api.set_session_name("new_name")
         assert mock_session._session_name == "new_name"
 
-    def test_send_user_message_noop_without_session(self):
-        """ExtensionAPI.send_user_message() is a no-op without session."""
+    def test_send_user_message_raises_without_queue(self):
+        """send_user_message() raises (not silent) until the E3-ctx queue exists.
+
+        ``ExtensionAPI()`` has no session, so there is no ``_queue_message``;
+        Fail-Early requires a raise rather than dropping the message silently.
+        """
         api = ExtensionAPI()
-        api.send_user_message("Hello")  # should not raise
+        with pytest.raises(RuntimeError):
+            api.send_user_message("Hello")
+
+    def test_send_user_message_defaults_to_follow_up(self):
+        """send_user_message() defaults deliver_as to 'followUp' (not 'steer')."""
+        mock_session = MagicMock()
+        mock_session._queue_message = MagicMock()
+        api = ExtensionAPI(session=mock_session)
+        api.send_user_message("Hello")
+        mock_session._queue_message.assert_called_once_with("Hello", deliver_as="followUp")
 
     def test_send_user_message_with_session(self):
         """ExtensionAPI.send_user_message() queues message on session."""
         mock_session = MagicMock()
         mock_session._queue_message = MagicMock()
         api = ExtensionAPI(session=mock_session)
-        api.send_user_message("Hello", deliver_as="steer")
-        mock_session._queue_message.assert_called_once_with("Hello", deliver_as="steer")
+        api.send_user_message("Hello", deliver_as="nextTurn")
+        mock_session._queue_message.assert_called_once_with("Hello", deliver_as="nextTurn")
+
+    def test_send_user_message_rejects_bad_deliver_as(self):
+        """send_user_message() validates deliver_as against {followUp, nextTurn}."""
+        mock_session = MagicMock()
+        mock_session._queue_message = MagicMock()
+        api = ExtensionAPI(session=mock_session)
+        with pytest.raises(ValueError):
+            api.send_user_message("Hello", deliver_as="steer")
+        mock_session._queue_message.assert_not_called()
 
     def test_send_message_noop_without_session(self):
         """ExtensionAPI.send_message() is a no-op without session."""
@@ -494,11 +516,11 @@ class TestExtensionContext:
         ctx.shutdown()
         mock_manager.shutdown.assert_called_once()
 
-    def test_context_get_context_usage(self):
-        """ExtensionContext.get_context_usage() returns dict."""
+    def test_context_get_context_usage_raises_without_session(self):
+        """get_context_usage() raises when no session is bound (Fail-Early)."""
         ctx = ExtensionContext()
-        usage = ctx.get_context_usage()
-        assert isinstance(usage, dict)
+        with pytest.raises(RuntimeError):
+            ctx.get_context_usage()
 
     def test_context_set_ui_delegate(self):
         """ExtensionContext.set_ui_delegate() sets the TUI delegate."""

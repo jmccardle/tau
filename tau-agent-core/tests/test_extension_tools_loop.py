@@ -233,3 +233,46 @@ async def test_second_register_tool_is_live_next_turn() -> None:
     ):
         await session.prompt("use the second tool")
     assert len(second_calls) == 1
+
+
+async def test_get_context_usage_real_over_seeded_session() -> None:
+    """S6: ctx.get_context_usage() returns real, non-zero pi ``ContextUsage``.
+
+    Runs a real ``prompt()`` turn (only the network boundary faked) whose final
+    assistant carries a real ``Usage``; the bound ``ExtensionContext`` then reads
+    the SAME ``estimate_context_tokens`` that drives auto-compaction and returns
+    ``{tokens, context_window, percent}`` — no more ``{"total_tokens": 0}`` stub.
+    """
+
+    async def _fake_text_with_usage(model, context, options=None):
+        final = AssistantMessage(
+            content=[TextContent(text="hello there")],
+            api="openai-completions",
+            provider="openai",
+            model="gpt-4o",
+            stop_reason="stop",
+            timestamp=0,
+            usage=Usage(input_tokens=500, output_tokens=100),
+        )
+        return _Stream(
+            [
+                TextDeltaEvent(delta="hello there", partial=final),
+                DoneEvent(final=final, usage=Usage(input_tokens=500, output_tokens=100)),
+            ]
+        )
+
+    session = _make_session()
+    with patch(
+        "tau_agent_core.agent_loop.stream_simple",
+        side_effect=_fake_text_with_usage,
+    ):
+        await session.prompt("hi")
+
+    usage = session._extension_api.context.get_context_usage()
+    assert usage is not None
+    # pi ContextUsage shape (snake_case): {tokens, context_window, percent}.
+    assert set(usage) == {"tokens", "context_window", "percent"}
+    assert usage["context_window"] == 128000
+    # Real, non-zero: the persisted assistant usage anchors the estimate.
+    assert usage["tokens"] > 0
+    assert usage["percent"] == (usage["tokens"] / 128000) * 100

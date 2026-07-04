@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
+from tau_agent_core.compaction import estimate_context_tokens
+
 if TYPE_CHECKING:
     from tau_agent_core.events import EventBus
     from tau_agent_core.extensions.registry import ExtensionRegistry
@@ -127,6 +129,9 @@ class ExtensionContext:
         self._signal = signal
         self._is_idle = is_idle
         self._ui = ExtensionUI(mode="headless")
+        # The live AgentSession, bound by ExtensionAPI so get_context_usage() can
+        # read real messages + model.context_window. None until bound.
+        self._session: Any | None = None
 
     @property
     def cwd(self) -> str:
@@ -158,9 +163,35 @@ class ExtensionContext:
         if self._session_manager is not None and hasattr(self._session_manager, "shutdown"):
             self._session_manager.shutdown()
 
-    def get_context_usage(self) -> dict:
-        """Get context usage information."""
-        return {"total_tokens": 0}
+    def get_context_usage(self) -> dict[str, Any] | None:
+        """Return context usage for the active model (pi ``ContextUsage`` shape).
+
+        Faithful port of pi's ``getContextUsage`` (agent-session.ts:2975 →
+        ``ContextUsage`` at types.ts:281-287): returns
+        ``{tokens, context_window, percent}`` where ``tokens`` is the estimated
+        context-token count from ``estimate_context_tokens`` — the SAME estimate
+        that drives auto-compaction (agent_session.py:523) — and ``percent`` is
+        ``tokens / context_window * 100``.
+
+        Returns ``None`` when the model has no positive ``context_window`` (pi
+        returns ``undefined``); that is a genuine "unknown", not a fabricated
+        zero.
+
+        Raises:
+            RuntimeError: if no session is bound — there is nothing to measure.
+                Replaces the old fictional ``{"total_tokens": 0}`` stub
+                (Fail-Early: raise rather than fabricate).
+        """
+        session = self._session
+        if session is None:
+            raise RuntimeError("get_context_usage: no session bound to ExtensionContext")
+        model = getattr(session, "_model", None)
+        context_window = int(getattr(model, "context_window", 0) or 0)
+        if context_window <= 0:
+            return None
+        tokens = estimate_context_tokens(session.messages).tokens
+        percent = (tokens / context_window) * 100
+        return {"tokens": tokens, "context_window": context_window, "percent": percent}
 
     def set_ui_delegate(self, delegate: Any) -> None:
         """Set the TUI delegate for UI methods.
@@ -222,6 +253,9 @@ class ExtensionAPI:
         self._event_bus = event_bus
         self._context = context
         self._session = session
+        # Bind the live session onto the context so ctx.get_context_usage()
+        # (delegated to the session in pi) reads real messages + model window.
+        self._context._session = session
         self._flags: dict[str, dict[str, Any]] = {}
 
     def on(self, event: str, handler: Callable) -> Callable[[], None]:
@@ -297,10 +331,34 @@ class ExtensionAPI:
         if hasattr(self._session, "_session_name"):
             self._session._session_name = name
 
-    def send_user_message(self, content: str, deliver_as: str = "steer") -> None:
-        """Send a user message to the agent."""
-        if hasattr(self._session, "_queue_message"):
-            self._session._queue_message(content, deliver_as=deliver_as)
+    def send_user_message(self, content: str, deliver_as: str = "followUp") -> None:
+        """Queue a user message for the agent (pi ``sendUserMessage``).
+
+        ``deliver_as`` selects the delivery mode. The parameter stays a plain
+        ``str`` so future modes stay extensible (decision 5), but the two modes
+        the queue supports are validated here:
+
+        - ``"followUp"`` (default): drains at the end of the current ``prompt()``
+          and re-enters within the same call.
+        - ``"nextTurn"``: queued for the next ``prompt()``.
+
+        Raises:
+            ValueError: if ``deliver_as`` is not ``"followUp"`` or ``"nextTurn"``.
+            RuntimeError: if the session has no message queue yet — the real
+                ``_queue_message`` lands in E3-ctx. Fail-Early: raise rather than
+                silently drop the message (the old ``hasattr`` no-op).
+        """
+        if deliver_as not in ("followUp", "nextTurn"):
+            raise ValueError(
+                "send_user_message: deliver_as must be 'followUp' or 'nextTurn', "
+                f"got {deliver_as!r}"
+            )
+        if not hasattr(self._session, "_queue_message"):
+            raise RuntimeError(
+                "send_user_message: session message queue not available yet "
+                "(the queue lands in E3-ctx)"
+            )
+        self._session._queue_message(content, deliver_as=deliver_as)
 
     def send_message(self, message: dict, options: dict) -> None:
         """Send a custom message into the session."""
