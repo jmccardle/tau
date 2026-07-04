@@ -343,7 +343,7 @@ class _FakeBackend:
     def __init__(self, config):
         self.config = config
 
-    async def stream_chat(self, messages, callback, on_event=None):
+    async def stream_chat(self, messages, callback, on_event=None, on_pi_event=None):
         self.messages = messages
         deltas = ["Hello ", "world"]
         if on_event is not None:
@@ -352,6 +352,33 @@ class _FakeBackend:
             callback(d)
             if on_event is not None:
                 on_event({"kind": "text_delta", "delta": d})
+        # pi-faithful ``--mode json`` sink (step S8): the real TauBackend feeds
+        # this from the AgentEvent bus; here a minimal but shaped stand-in proves
+        # headless writes the header FIRST and forwards these ``type``-discriminated
+        # events (no ``kind``/``done``). The message_end carries usage/model/
+        # stop_reason, the per-child limit signal the delegate reads.
+        if on_pi_event is not None:
+            on_pi_event({"type": "turn_start", "turn_index": 0})
+            on_pi_event(
+                {
+                    "type": "message_end",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Hello world"}],
+                        "usage": {"total_tokens": 3},
+                        "model": "qwen3-32b-kv4b",
+                        "stop_reason": "stop",
+                    },
+                }
+            )
+            on_pi_event(
+                {
+                    "type": "agent_end",
+                    "messages": [
+                        {"role": "assistant", "content": [{"type": "text", "text": "Hello world"}]},
+                    ],
+                }
+            )
         # A realistic (if minimal) agent-loop transcript so the persistence
         # test sees an assistant message land in the saved session.
         new_messages = [
@@ -397,15 +424,29 @@ async def test_run_print_text_mode(fake_backend, capsys):
 
 
 async def test_run_print_json_mode(fake_backend, capsys):
+    # pi-faithful --mode json (step S8): the session HEADER line first, then
+    # ``type``-discriminated AgentSessionEvents. No legacy ``kind`` key, no
+    # synthetic ``done`` line.
     rc = await run_print(
         CLIArgs(messages=["hi"], print_mode=True, mode="json"), _config()
     )
     assert rc == 0
     lines = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
-    kinds = [e["kind"] for e in lines]
-    assert kinds == ["turn_start", "text_delta", "text_delta", "done"]
-    assert lines[-1]["text"] == "Hello world"
-    assert lines[-1]["usage"] == {"total_tokens": 3}
+
+    # Header FIRST (pi print-mode.ts:113-116): the raw session header entry.
+    assert lines[0]["type"] == "session"
+
+    # Every line is ``type``-discriminated — never the legacy ``kind`` schema.
+    assert all("kind" not in e for e in lines)
+    types = [e["type"] for e in lines]
+    assert types == ["session", "turn_start", "message_end", "agent_end"]
+
+    # The message_end carries the per-message usage/model/stop_reason the delegate
+    # (step S9) reads for per-child limits + the stop_reason taxonomy.
+    (message_end,) = [e for e in lines if e["type"] == "message_end"]
+    assert message_end["message"]["usage"] == {"total_tokens": 3}
+    assert message_end["message"]["model"] == "qwen3-32b-kv4b"
+    assert message_end["message"]["stop_reason"] == "stop"
 
 
 async def test_run_print_requires_message(fake_backend):

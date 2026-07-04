@@ -499,6 +499,15 @@ class AgentLoop:
                             # stream's terminal usage chunk (Fail-Early: a real 0 is
                             # surfaced as 0, never approximated).
                             "usage": final_msg.usage.model_dump(),
+                            # model + stop_reason ride the SAME per-completion
+                            # message_end so the pi-faithful ``--mode json`` serializer
+                            # (E-json / step S8) can surface a message_end carrying
+                            # usage/model/stop_reason — matching pi, where the full
+                            # assistant message is emitted on message_end
+                            # (agent-session.ts:639-644). Additive: existing consumers
+                            # read ``.get("usage")``/content and ignore these keys.
+                            "model": final_msg.model,
+                            "stop_reason": final_msg.stop_reason,
                         },
                     )
                 )

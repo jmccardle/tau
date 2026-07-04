@@ -13,8 +13,36 @@ from typing import Any, Callable
 from tau_ai.types import Model
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
+from tau_agent_core.events import AgentEvent
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.sdk import _resolve_tools
+
+
+def tau_event_to_pi_event(event: AgentEvent) -> dict[str, Any] | None:
+    """Serialize one τ :class:`AgentEvent` into a pi-faithful ``AgentSessionEvent``.
+
+    pi's ``--mode json`` writes every session-subscribe event straight to stdout
+    as a ``type``-discriminated JSON line (``print-mode.ts:104-108``). τ's
+    ``AgentEvent`` already carries a ``type`` discriminator and τ-snake field
+    names, so the wire shape is the event's own ``model_dump(exclude_none=True)``
+    — there is no legacy ``kind`` remap here (that schema is the TUI widget
+    channel; this is the pi-faithful channel the delegate reads, step S8 /
+    D-delegate).
+
+    One faithfulness adjustment — dedup ``message_end``. The agent loop emits
+    ``message_end`` **twice** for a tool-bearing turn: once per-completion
+    (carrying ``usage``/``model``/``stop_reason``, ``agent_loop.py:485``) and once
+    from ``run()``/``run_continue`` (content only). pi emits exactly **one**
+    ``message_end`` per assistant message, so keep the usage-bearing one and drop
+    the content-only duplicate (``None`` → the caller skips it). Every emitted
+    ``message_end`` therefore carries usage/model/stop_reason, which is what the
+    delegate's per-child limit / stop_reason taxonomy reads.
+    """
+    if event.type == "message_end":
+        message = event.message or {}
+        if "usage" not in message:
+            return None
+    return event.model_dump(exclude_none=True)
 
 
 def compute_cost_usd(
@@ -70,8 +98,15 @@ class Backend(ABC):
         messages: list[dict],
         callback: Callable[[str], None],
         on_event: Callable[[dict], None] | None = None,
+        on_pi_event: Callable[[dict], None] | None = None,
     ) -> tuple[str, dict, list[dict], list[dict]]:
-        """Return (assistant_text, usage, new_messages, tool_calls)."""
+        """Return (assistant_text, usage, new_messages, tool_calls).
+
+        ``on_pi_event`` (optional) is the pi-faithful ``--mode json`` sink:
+        every bus event serialized via :func:`tau_event_to_pi_event` (``type``
+        discriminator, deduped ``message_end`` carrying usage/model/stop_reason).
+        Distinct from ``on_event`` (the legacy ``kind`` widget-lifecycle channel).
+        """
 
     @abstractmethod
     def abort(self) -> None:
@@ -323,6 +358,7 @@ class TauBackend(Backend):
         messages: list[dict],
         callback: Callable[[str], None],
         on_event: Callable[[dict], None] | None = None,
+        on_pi_event: Callable[[dict], None] | None = None,
     ) -> tuple[str, dict, list[dict], list[dict]]:
         """Stream a chat completion via tau-agent-core's AgentSession.
 
@@ -534,9 +570,27 @@ class TauBackend(Backend):
                     }
                 )
 
+        def pi_capture(event: AgentEvent) -> None:
+            """Forward each bus event to the pi-faithful ``--mode json`` sink.
+
+            Sourced directly from the AgentEvent bus (not the ``kind`` widget
+            channel above): :func:`tau_event_to_pi_event` maps each event to its
+            ``type``-discriminated pi shape, deduping the double ``message_end`` so
+            each assistant message yields one message_end with usage/model/
+            stop_reason (step S8). ``None`` = the content-only duplicate; skip it.
+            """
+            if on_pi_event is None:
+                return
+            pi_event = tau_event_to_pi_event(event)
+            if pi_event is not None:
+                on_pi_event(pi_event)
+
         # Subscribe to events before running the prompt
         # This captures ALL events during the full agent loop (LLM calls + tool execution)
         unsubscribe = self.agent_session.subscribe(capture_event)
+        unsubscribe_pi = (
+            self.agent_session.subscribe(pi_capture) if on_pi_event is not None else None
+        )
 
         # Send through the agent loop with full conversation context
         # The loop handles LLM calls, tool execution, and re-calls the LLM
@@ -545,6 +599,8 @@ class TauBackend(Backend):
 
         # Unsubscribe
         unsubscribe()
+        if unsubscribe_pi is not None:
+            unsubscribe_pi()
 
         # Combine all streaming chunks
         full_content = "".join(streaming_chunks)

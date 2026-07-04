@@ -226,9 +226,10 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
     """Run one headless turn and render to stdout. Returns a process exit code.
 
     ``--mode text`` streams raw assistant text deltas (a plain transcript).
-    ``--mode json`` emits one JSON object per line: the backend's normalized
-    lifecycle events (``turn_start``/``text_delta``/``tool_call``/``tool_result``)
-    followed by a final ``{"kind": "done", ...}`` record with usage.
+    ``--mode json`` is pi-faithful (E-json / step S8): the session header line
+    FIRST, then one JSON object per line — each a ``type``-discriminated
+    ``AgentSessionEvent`` from the agent bus (``message_end`` carries
+    usage/model/stop_reason). No legacy ``kind`` schema, no synthetic ``done``.
 
     The run is persisted as an append-only JSONL session under the current cwd's
     ``~/.tau/sessions`` dir — each produced message is appended as it is known
@@ -304,24 +305,27 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
     backend = create_backend(model_config)
 
     if args.mode == "json":
+        # pi-faithful ``--mode json`` (E-json / step S8, D-delegate). Emit the
+        # session HEADER line FIRST (pi ``print-mode.ts:113-116``), then every bus
+        # event serialized to its ``type``-discriminated pi ``AgentSessionEvent``
+        # shape (NOT the legacy ``kind`` schema, and no synthetic ``done`` line):
+        # each ``message_end`` carries usage/model/stop_reason, which is the real
+        # per-child limit / failure signal the delegate (step S9) consumes. The
+        # delegate prices its own budget from those per-message tokens × config
+        # ``cost`` (E4.cost), so no ``cost_usd`` rides the json stream.
+        sys.stdout.write(json.dumps(session.header) + "\n")
+        sys.stdout.flush()
 
-        def on_event(event: dict) -> None:
+        def on_pi_event(event: dict) -> None:
             sys.stdout.write(json.dumps(event) + "\n")
             sys.stdout.flush()
 
         def noop(_delta: str) -> None:
             pass
 
-        text, usage, new_messages, _tcs = await backend.stream_chat(
-            messages, noop, on_event=on_event
+        _text, _usage, new_messages, _tcs = await backend.stream_chat(
+            messages, noop, on_pi_event=on_pi_event
         )
-        # The final ``done`` is the emit boundary for the headless json path. Cost
-        # was priced in the backend from ``model_config``'s optional per-model
-        # ``cost`` block (E4.cost / step S7) and rides inside ``usage`` as
-        # ``cost_usd`` — present only when the block is configured (an absent block
-        # stays tokens-only; never a fabricated ``$0``). Final event only.
-        sys.stdout.write(json.dumps({"kind": "done", "text": text, "usage": usage}) + "\n")
-        sys.stdout.flush()
     else:  # text
 
         def emit(delta: str) -> None:
