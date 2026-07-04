@@ -18,6 +18,16 @@ wired mutating-hook dispatch surface (same pattern as ``test_gatekeeper.py``). T
 retired ``context`` hook is gone (E5 §3.2 / S31): the reminder is a DURABLE edit to
 the triggering ``tool_result`` node, not an ephemeral per-call message injection.
 
+The S31 **proving test**
+(``test_both_reminder_channels_are_durable_in_tree_transcript_and_reload``) drives one
+real prompt and asserts BOTH durable channels — the ``before_agent_start`` discipline
+preamble (a persisted ``customMessage`` node, S29) and the ``tool_result`` edit —
+agree across three surfaces that must be identical under the durable-hook invariant:
+the emitted transcript (the wire payload), the persisted tree (the ``session_log``
+entries), and a reload (a fresh ``ConversationTree`` fold over those entries). That
+rules out an ephemeral injection that would show on the wire but be absent from the
+tree / a reload.
+
 Reference: EXTENSIONS-IMPLEMENTATION.md §E-demo-2, §8 S16; EXTENSIONS-E5-WIRING.md
 §3.3 / S31.
 """
@@ -34,6 +44,7 @@ from tau_ai.streaming import DoneEvent, TextDeltaEvent
 from tau_ai.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 
 from tau_agent_core.agent_session import AgentSession
+from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_log import InMemorySessionLog
 
 # ── load the example module (its filename is not a valid identifier) ─────────
@@ -210,6 +221,125 @@ async def test_rules_fire_once_then_cool_down_through_the_loop(tmp_path, monkeyp
     # and root-cause did not appear before the second failure.
     assert root_cause not in blobs[0]
     assert root_cause not in blobs[1]
+
+
+# ── the S31 proving test: both channels are durable in tree + transcript + reload ─
+
+
+def _entry_message_text(entry: dict[str, Any]) -> str:
+    """Concatenated text of an entry's stored ``message`` content blocks."""
+    message = entry.get("message") or {}
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for block in content or []:
+        if isinstance(block, dict):
+            parts.append(str(block.get("text", "")))
+    return "\n".join(parts)
+
+
+async def test_both_reminder_channels_are_durable_in_tree_transcript_and_reload() -> None:
+    """S31 Verify: the reminders are DURABLE nodes, not ephemeral injections.
+
+    Drive one prompt that exercises both channels: the ``before_agent_start`` hook
+    seeds the discipline preamble before the first LLM call, and a ``write`` to a test
+    file trips ``tests-readonly`` so the ``tool_result`` hook edits the *triggering*
+    result in place. The fake emits one ``write`` (an error, since ``write`` is
+    unregistered) then stops, so there are exactly two LLM calls: call 1 sees only the
+    preamble; call 2 additionally carries the ``tests-readonly`` edit on call 1's
+    ``tool_result``.
+
+    Each reminder must then be present on THREE surfaces that the durable-hook
+    invariant forces to agree:
+
+    * the emitted TRANSCRIPT — the wire payload the model actually received;
+    * the persisted TREE — the ``session_log`` entries (the on-disk nodes): the
+      preamble is a ``customMessage`` entry, the reminder is content on a
+      ``toolResult`` message entry;
+    * a RELOAD — a fresh ``ConversationTree`` folded over those persisted entries,
+      whose ``context_for`` rebuilds the model context from the durable path alone.
+
+    An ephemeral injection would appear on the wire but be absent from the tree and a
+    reload — so all three agreeing is the honesty/reload-fidelity proof, not a tautology.
+    """
+    wire_payloads: list[list[Any]] = []
+
+    async def fake(model, context, options=None):
+        messages = context.get("messages", []) if isinstance(context, dict) else []
+        wire_payloads.append(list(messages))
+        if _count_tool_results(messages, "write") >= 1:
+            final = _text_assistant("done")
+            return _Stream(
+                [
+                    TextDeltaEvent(delta="done", partial=final),
+                    DoneEvent(final=final, usage=Usage()),
+                ]
+            )
+        final = _tool_call_assistant("call_1", "write", {"path": "tests/test_x.py", "content": "x"})
+        return _Stream([DoneEvent(final=final, usage=Usage())])
+
+    session = _make_session()
+    reminders.reminders_extension(session._bind_extension_api("examples/21_reminders.py"))
+
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=fake):
+        await session.prompt("edit the test until it passes")
+
+    preamble = reminders.PREAMBLE_TEXT
+    tests_ro = reminders.REMINDER_TEXT["tests-readonly"]
+
+    # ── surface 1: the TRANSCRIPT (the last wire payload carries the full path) ──
+    assert len(wire_payloads) == 2
+    wire_blob = _message_text_blob(wire_payloads[-1])
+    assert preamble in wire_blob
+    assert tests_ro in wire_blob
+    # The preamble rode the FIRST call (pre-first-call), before any tool_result.
+    assert preamble in _message_text_blob(wire_payloads[0])
+
+    # ── surface 2: the TREE (the persisted session_log entries) ──
+    entries = session._session_log.entries()
+
+    # the preamble is a durable customMessage node with the reminder-bank origin type.
+    custom_entries = [e for e in entries if e.get("type") == "customMessage"]
+    assert len(custom_entries) == 1
+    assert custom_entries[0]["customType"] == reminders.PREAMBLE_CUSTOM_TYPE
+    assert preamble in _entry_message_text(custom_entries[0])
+
+    # the tests-readonly reminder is durable content on a toolResult message node.
+    tool_result_entries = [
+        e
+        for e in entries
+        if e.get("type") == "message" and (e.get("message") or {}).get("role") == "toolResult"
+    ]
+    assert tool_result_entries, "expected a persisted toolResult node"
+    assert any(tests_ro in _entry_message_text(e) for e in tool_result_entries)
+
+    # ── surface 3: a RELOAD (fold a fresh tree over the persisted entries) ──
+    reloaded = ConversationTree(session._session_log.entries(), session._session_log.cursor)
+    reload_blob = _message_text_blob(reloaded.context_for())
+    assert preamble in reload_blob
+    assert tests_ro in reload_blob
+
+
+# ── pure-unit: the before_agent_start preamble seeds once, then falls silent ──
+
+
+class _CtxCwd:
+    """A minimal ExtensionContext stand-in (the preamble handler ignores ctx)."""
+
+    cwd = "/project"
+
+
+def test_before_agent_start_seeds_the_preamble_exactly_once() -> None:
+    bank = reminders.ReminderBank()
+    first = bank.on_before_agent_start({"type": "before_agent_start"}, _CtxCwd())
+    assert first is not None
+    message = first["message"]
+    assert message["customType"] == reminders.PREAMBLE_CUSTOM_TYPE
+    assert reminders.PREAMBLE_TEXT in message["content"]
+    assert message["content"].startswith("<system-reminder>")
+    # Pre-first-call means ONCE: a second before_agent_start injects nothing.
+    assert bank.on_before_agent_start({"type": "before_agent_start"}, _CtxCwd()) is None
 
 
 # ── pure-unit: each rule fires once then cools down for its window ────────────
@@ -413,7 +543,7 @@ def test_a_quiet_result_is_untouched() -> None:
 # ── pure-unit: the extension entry point wires both hooks ────────────────────
 
 
-def test_extension_registers_both_hooks() -> None:
+def test_extension_registers_all_three_hooks() -> None:
     registered: list[str] = []
 
     class _RecordingApi:
@@ -421,4 +551,4 @@ def test_extension_registers_both_hooks() -> None:
             registered.append(event)
 
     reminders.reminders_extension(_RecordingApi())
-    assert registered == ["tool_call", "tool_result"]
+    assert registered == ["before_agent_start", "tool_call", "tool_result"]

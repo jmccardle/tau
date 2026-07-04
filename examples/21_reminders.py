@@ -8,6 +8,14 @@ editing the **triggering ``tool_result`` node in place** — a DURABLE edit (E5 
 with its own cooldown so a tripped rule nags **once** and then falls silent for a
 while instead of screaming on every single turn.
 
+Alongside the four reactive rules it also seeds a one-time **discipline preamble**
+via the ``before_agent_start`` hook — the "pre-first-call" case (E5 §1.2 / §3.3): the
+first LLM call of a session has no preceding ``tool_result`` to carry a reminder, so
+the standing statement of the disciplines rides the ``before_agent_start`` node
+instead, persisted as a durable ``customMessage`` tree node (S29). Both channels are
+therefore durable, reloadable nodes on the active path — never an ephemeral per-call
+injection.
+
 ## Why a durable ``tool_result`` edit (E5 §3.2), not the retired ``context`` hook
 
 E5 eliminated the per-call ``context`` transform: under the durable-hook invariant
@@ -128,6 +136,27 @@ REMINDER_TEXT: dict[str, str] = {
     ),
 }
 
+#: The standing discipline preamble injected ONCE, before the very first LLM call,
+#: via the ``before_agent_start`` hook — the "pre-first-call" case (E5 §1.2 / §3.3 /
+#: S31). The four reactive rules above ride the ``tool_result`` that triggered them,
+#: but the first LLM call of a session has NO preceding ``tool_result`` to carry a
+#: reminder; it is preceded only by the ``before_agent_start`` node. So the proactive
+#: discipline statement rides THAT node instead: it states the bank's disciplines
+#: up-front so the agent carries them from turn zero rather than only learning each
+#: one after it has already tripped the corresponding rule.
+PREAMBLE_TEXT: str = (
+    "Coding discipline for this session: tests encode the spec — satisfy them by "
+    "changing the implementation under test, never by editing test files. Keep every "
+    "edit inside the project's working directory, add no new dependencies, and if the "
+    "same action fails twice in a row, diagnose the root cause before retrying."
+)
+
+#: The extension-origin ``customType`` carried by the durable preamble node
+#: (E5 §3.1 / S29): it marks the injected message as reminder-bank-authored for the
+#: TUI / tree browser, while the wire remaps ``custom`` → ``user`` so it still reaches
+#: the model.
+PREAMBLE_CUSTOM_TYPE: str = "reminder-preamble"
+
 #: Number of consecutive same-tool errors that trips the root-cause rule.
 FAILURE_THRESHOLD = 2
 
@@ -211,11 +240,12 @@ def is_outside_scope(path: str, cwd: str) -> bool:
 class ReminderBank:
     """Tracks rule state across hook calls and drains it into reminders.
 
-    One instance per loaded extension (state is per-session). The two bound methods
-    (:meth:`on_tool_call`, :meth:`on_tool_result`) are the hook handlers registered
-    by :func:`reminders_extension`. :meth:`on_tool_result` both advances failure
-    state and drains pending rules into a durable ``<system-reminder>`` appended to
-    the result's ``content``.
+    One instance per loaded extension (state is per-session). The three bound methods
+    (:meth:`on_before_agent_start`, :meth:`on_tool_call`, :meth:`on_tool_result`) are
+    the hook handlers registered by :func:`reminders_extension`.
+    :meth:`on_before_agent_start` seeds the one-time discipline preamble as a durable
+    custom node; :meth:`on_tool_result` both advances failure state and drains pending
+    rules into a durable ``<system-reminder>`` appended to the result's ``content``.
     """
 
     def __init__(self) -> None:
@@ -225,6 +255,10 @@ class ReminderBank:
         self._cooldown: dict[str, int] = {}
         # tool name -> consecutive error count (reset on a success).
         self._failures: dict[str, int] = {}
+        # Whether the pre-first-call discipline preamble has been seeded yet. In
+        # memory only: a reload resets it, but the already-seeded custom node
+        # persists in the tree (E5 §3.3 / S31 — the demo's in-memory-state contract).
+        self._seeded: bool = False
 
     # -- state transitions ----------------------------------------------------
 
@@ -254,6 +288,34 @@ class ReminderBank:
         return fired
 
     # -- hook handlers --------------------------------------------------------
+
+    def on_before_agent_start(self, event: dict[str, Any], ctx: Any) -> dict[str, Any] | None:
+        """``before_agent_start`` handler: seed the discipline preamble once (pre-first-call).
+
+        The first LLM call of the session has no preceding ``tool_result`` to carry a
+        reminder — it is preceded only by the ``before_agent_start`` node (E5 §1.2). So
+        the standing discipline preamble rides THAT node: returned here as a durable
+        custom message (``customType`` :data:`PREAMBLE_CUSTOM_TYPE`), the session
+        persists it as a ``customMessage`` tree node AND threads it to the loop this
+        turn — one artifact, reloadable, no ephemeral channel (E5 §3.1/§3.3, S29/S31).
+
+        Fires exactly ONCE per loaded bank (:attr:`_seeded`): the preamble seeds the
+        session, it does not nag every prompt. The flag is in-memory and resets on
+        reload — acceptable, because the already-seeded node is durable in the tree, so
+        a reload replays it (the demo's in-memory-state contract).
+
+        Returns the ``{"message": …}`` result on the first call, ``None`` thereafter
+        (pi ``BeforeAgentStartEventResult``; the runner accumulates the ``message``).
+        """
+        if self._seeded:
+            return None
+        self._seeded = True
+        return {
+            "message": {
+                "customType": PREAMBLE_CUSTOM_TYPE,
+                "content": f"<system-reminder>{PREAMBLE_TEXT}</system-reminder>",
+            }
+        }
 
     def on_tool_call(self, event: dict[str, Any], ctx: Any) -> None:
         """``tool_call`` handler: inspect the prepared call, never veto.
@@ -322,12 +384,17 @@ def reminder_body(rules: list[str]) -> str:
 
 
 def reminders_extension(api: Any) -> None:
-    """Extension entry point: register the reminder bank's two hook handlers.
+    """Extension entry point: register the reminder bank's three hook handlers.
 
-    ``tool_call`` accumulates rule triggers; ``tool_result`` accounts failures and
-    performs the durable ``<system-reminder>`` edit. The retired ``context`` hook is
-    gone (E5 §3.2 / S31) — there is no per-call message-list transform.
+    ``before_agent_start`` seeds the discipline preamble once, before the first LLM
+    call (the pre-first-call case, E5 §3.3 / S31); ``tool_call`` accumulates rule
+    triggers; ``tool_result`` accounts failures and performs the durable
+    ``<system-reminder>`` edit on the triggering result. Both injection channels are
+    DURABLE tree nodes — a persisted ``customMessage`` for the preamble and an edited
+    ``tool_result`` for the four reactive rules — so the retired ``context`` hook (E5
+    §3.2 / S30) is not needed: there is no per-call message-list transform.
     """
     bank = ReminderBank()
+    api.on("before_agent_start", bank.on_before_agent_start)
     api.on("tool_call", bank.on_tool_call)
     api.on("tool_result", bank.on_tool_result)
