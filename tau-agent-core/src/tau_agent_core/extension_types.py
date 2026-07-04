@@ -223,16 +223,9 @@ class ExtensionAPI:
         self._context = context
         self._session = session
         self._flags: dict[str, dict[str, Any]] = {}
-        # Backward-compatible internal attributes (used by legacy tests)
-        self._handlers: dict[str, list[Callable]] = {}  # event -> [handlers]
-        self._active_tools: list[str] = []  # active tool names
-        self._commands: dict[str, dict] = {}  # name -> command
-        self._session_name: str = ""  # session display name
 
     def on(self, event: str, handler: Callable) -> Callable[[], None]:
-        """Subscribe to an event via the event bus.
-
-        Also stores a copy in _handlers for backward compatibility.
+        """Subscribe to an event on the live session event bus.
 
         Args:
             event: Event type (e.g., 'agent_start', 'all').
@@ -241,15 +234,7 @@ class ExtensionAPI:
         Returns:
             An unsubscribe function.
         """
-        if event == "all":
-            unsub = self._event_bus.on("all", handler)
-        else:
-            unsub = self._event_bus.on(event, handler)
-        # Backward compat: also store in _handlers
-        if event not in self._handlers:
-            self._handlers[event] = []
-        self._handlers[event].append(handler)
-        return unsub
+        return self._event_bus.on(event, handler)
 
     def register_tool(self, definition: dict) -> None:
         """Register a tool callable by the LLM.
@@ -273,32 +258,19 @@ class ExtensionAPI:
         return self._registry.get_all_tools()
 
     def set_active_tools(self, names: list[str]) -> None:
-        """Enable/disable tools by name.
-
-        Also stores active tool names in _active_tools for backward
-        compatibility.
-        """
+        """Enable/disable tools by name (forwards to the registry)."""
         self._registry.set_active_tools(names)
-        self._active_tools = names
 
     def register_command(self, name: str, command: dict) -> None:
-        """Register a slash command.
-
-        Also stores in _commands for backward compatibility.
-        """
+        """Register a slash command (forwards to the registry)."""
         self._registry.register_command(name, command)
-        self._commands[name] = command
 
     def append_entry(self, custom_type: str, data: dict) -> None:
         """Persist extension state through the registry."""
         self._registry.append_entry(custom_type, data)
 
     def set_session_name(self, name: str) -> None:
-        """Set the session display name.
-
-        Also stores in _session_name for backward compatibility.
-        """
-        self._session_name = name
+        """Set the session display name on the bound session."""
         if hasattr(self._session, "_session_name"):
             self._session._session_name = name
 

@@ -21,6 +21,7 @@ from tau_ai.types import Model, UserMessage
 
 from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.extension_types import ExtensionAPI
+from tau_agent_core.extensions.registry import ExtensionRegistry
 from tau_agent_core.session import SessionState
 from tau_agent_core.session_log import SessionLog
 from tau_agent_core.conversation_tree import ConversationTree
@@ -107,6 +108,9 @@ class AgentSession:
         self._system_prompt = system_prompt
         self._tools = tools or []
         self._events = EventBus()
+        # Session-owned registry for extension-registered tools/commands/flags.
+        # Bound into the one ExtensionAPI below; read by the loop in a later step.
+        self._registry = ExtensionRegistry()
         self._extensions = extensions or []
         self._is_streaming = False
         self._abort_signal = AbortSignal()
@@ -121,9 +125,12 @@ class AgentSession:
         # post-turn check in prompt(). Defaults to the harness defaults.
         self._compaction_settings = compaction_settings or DEFAULT_COMPACTION_SETTINGS
 
-        # Register extensions
+        # Register extensions against a SINGLE ExtensionAPI bound to this
+        # session's real event bus + registry, so handlers subscribe to the
+        # live loop bus and registered tools land in the session-owned registry.
+        api = self._make_extension_api()
         for ext in self._extensions:
-            ext(self._make_extension_api())
+            ext(api)
 
     # ------------------------------------------------------------------
     # Properties
@@ -531,13 +538,21 @@ class AgentSession:
     # ------------------------------------------------------------------
 
     def _make_extension_api(self) -> ExtensionAPI:
-        """Create an ExtensionAPI bound to this session.
+        """Create an ExtensionAPI bound to this session's real refs.
+
+        Binds the live loop event bus (``self._events``) and the session-owned
+        registry so ``api.on(event, handler)`` subscribes to the same bus the
+        agent loop emits on, and registered tools/commands land where the
+        session can read them (E1.1 / step S3).
 
         Returns:
-            ExtensionAPI instance with session-bound methods.
+            An ExtensionAPI bound to this session, its event bus, and registry.
         """
-        api = ExtensionAPI()
-        return api
+        return ExtensionAPI(
+            session=self,
+            event_bus=self._events,
+            registry=self._registry,
+        )
 
     @staticmethod
     def _timestamp() -> int:

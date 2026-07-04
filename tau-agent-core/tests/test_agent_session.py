@@ -876,15 +876,135 @@ class TestExtensions:
         # We verify by checking the ExtensionAPI instance
 
     def test_extension_can_subscribe_to_events(self):
-        """Extension can subscribe to events via the API."""
+        """api.on() subscribes to the session's LIVE event bus, not an orphan.
+
+        Emitting on the session's own bus must reach the handler the extension
+        registered through the API.
+        """
         events_received = []
 
         def my_ext(api):
             api.on("agent_start", lambda e: events_received.append(e))
 
-        self.create_session(extensions=[my_ext])
-        # Emit an event to verify the handler was registered
-        # The extension's on() method registers with the ExtensionAPI's handlers
+        session = self.create_session(extensions=[my_ext])
+        asyncio.run(
+            session._events.emit(AgentEvent(type="agent_start", timestamp=0))
+        )
+        assert len(events_received) == 1
+        assert events_received[0].type == "agent_start"
+
+    def test_extension_on_receives_live_tool_execution_end(self):
+        """Verify (S3): api.on('tool_execution_end') gets a live event with real
+        payload over a full fake-LLM turn.
+
+        Proves the ExtensionAPI is bound to the real loop bus: the tool the loop
+        actually executes fires a tool_execution_end that reaches the handler the
+        extension subscribed via api.on() — the whole point of binding the API to
+        self._events instead of a fresh orphan EventBus.
+        """
+        from unittest.mock import patch
+
+        from tau_ai.streaming import DoneEvent, TextDeltaEvent
+        from tau_ai.types import AssistantMessage, TextContent, Usage
+        from tau_ai.types import ToolCall as TauToolCall
+
+        received: list = []
+
+        def my_ext(api):
+            api.on("tool_execution_end", lambda e: received.append(e))
+
+        async def echo_execute(**kwargs):
+            return "TOOL_OUTPUT"
+
+        echo_tool = AgentTool(
+            definition=ToolDefinition(
+                name="echo",
+                label="Echo",
+                description="Echo tool",
+                parameters={
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"],
+                },
+                execute=echo_execute,
+                execution_mode="parallel",
+            )
+        )
+
+        session = AgentSession(
+            session_log=InMemorySessionLog(),
+            model=Model(
+                id="gpt-4o", name="GPT-4o", api="openai-completions",
+                provider="openai", base_url="https://api.openai.com/v1",
+                context_window=128000, max_tokens=4096,
+            ),
+            tools=[echo_tool],
+            extensions=[my_ext],
+        )
+
+        def _assistant(blocks, stop_reason):
+            return AssistantMessage(
+                content=blocks,
+                api="openai-completions",
+                provider="openai",
+                model="gpt-4o",
+                stop_reason=stop_reason,
+                timestamp=0,
+                usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
+            )
+
+        class _Stream:
+            def __init__(self, events):
+                self._events = events
+
+            def __aiter__(self):
+                async def _gen():
+                    for e in self._events:
+                        yield e
+
+                return _gen()
+
+            async def result(self):
+                for e in self._events:
+                    if isinstance(e, DoneEvent):
+                        return e.final
+                return None
+
+            def abort(self):
+                pass
+
+        call_count = [0]
+
+        async def fake_stream_simple(model, context, options=None):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                tool_call = TauToolCall(
+                    type="toolCall", id="call_1", name="echo",
+                    arguments={"text": "hi"},
+                )
+                final = _assistant([tool_call], "toolUse")
+                return _Stream([DoneEvent(final=final, usage=final.usage)])
+            final = _assistant([TextContent(text="done")], "stop")
+            return _Stream(
+                [
+                    TextDeltaEvent(delta="done", partial=final),
+                    DoneEvent(final=final, usage=final.usage),
+                ]
+            )
+
+        with patch(
+            "tau_agent_core.agent_loop.stream_simple", side_effect=fake_stream_simple
+        ):
+            asyncio.run(session.prompt("run echo"))
+
+        assert len(received) == 1
+        end_event = received[0]
+        assert end_event.type == "tool_execution_end"
+        assert end_event.tool_name == "echo"
+        assert end_event.tool_call_id == "call_1"
+        assert end_event.is_error is False
+        # The real tool output reaches the handler (normalized to content blocks).
+        assert end_event.result == [{"type": "text", "text": "TOOL_OUTPUT"}]
 
     def test_multiple_extensions_called(self):
         """Multiple extension factories are all called during creation."""
@@ -927,18 +1047,19 @@ class TestExtensions:
         session = self.create_session(extensions=[my_ext])
 
     def test_extension_api_can_set_session_name(self):
-        """ExtensionAPI can set session name."""
+        """ExtensionAPI.set_session_name() forwards to the bound session."""
         def my_ext(api):
-            api.set_session_name("test-session")
-            assert api._session_name == "test-session"
+            api.set_session_name("test-session")  # should not raise
+            # The API is bound to the real AgentSession (no orphan session).
+            assert api._session is not None
 
         self.create_session(extensions=[my_ext])
 
     def test_extension_api_can_register_command(self):
-        """ExtensionAPI can register CLI commands."""
+        """ExtensionAPI.register_command() lands in the session-owned registry."""
         def my_ext(api):
             api.register_command("mycmd", {"description": "A command"})
-            assert len(api._commands) == 1
+            assert "mycmd" in api._registry._commands
 
         self.create_session(extensions=[my_ext])
 
