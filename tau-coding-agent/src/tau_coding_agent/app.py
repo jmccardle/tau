@@ -1024,7 +1024,11 @@ class Parley(App):
     # finally.
     is_generating: reactive[bool] = reactive(False)
 
-    def __init__(self, cli_overrides: Optional[dict] = None):
+    def __init__(
+        self,
+        cli_overrides: Optional[dict] = None,
+        cli_run_config: Optional[dict] = None,
+    ):
         super().__init__()
         # The live conversation context (sent to the model). Mirrors the active
         # session's messages but is mutable for clear/compact.
@@ -1034,6 +1038,13 @@ class Parley(App):
         # (new-chat / clear / resume / model-swap) — unsub the old backend first so a
         # replaced backend's dead bus stops receiving events (no listener leak).
         self._session_event_unsub: Optional[Callable[[], None]] = None
+        # Run-level extension loading config (CLI ``-e`` / ``-ne``), applied to
+        # EVERY backend this app creates via ``_load_backend_extensions`` so a model
+        # switch doesn't drop extensions (E5 §2.2). Defaults match a bare ``tau``:
+        # no explicit paths, discovery ON (scan ``~/.tau/extensions``).
+        run_config = cli_run_config or {}
+        self._extension_paths: list[str] = list(run_config.get("extensions", []))
+        self._discover_extensions: bool = not run_config.get("no_extensions", False)
         self.load_config()
         if cli_overrides:
             self._apply_cli_overrides(cli_overrides)
@@ -1284,6 +1295,37 @@ class Parley(App):
         if agent_session is not None:
             self._session_event_unsub = subscribe_session_events(agent_session.route_session_event)
 
+    async def _load_backend_extensions(self) -> None:
+        """Load file-path extensions into the current backend's live session (E5 §2.2).
+
+        Called after every ``create_backend`` (new-chat, model-swap, resume) so a
+        file extension's mutating hooks fire in the ``AgentSession`` that backend
+        drives — the TUI half of the seam the E0–E4 loader left disconnected (§0).
+        Loads the run-level explicit ``-e`` paths + ``~/.tau/extensions`` discovery
+        (unless ``-ne``).
+
+        Errors are surfaced as TUI notices, never to stderr — a stderr write during
+        a live Textual render corrupts the screen (this is why the loader stopped
+        printing, S25). A *discovered* failure shows a per-extension warning; an
+        *explicit* ``-e`` failure raises out of ``load_extensions`` (Fail-Early) and
+        is caught here into a loud error notice, since a launched TUI can't cleanly
+        exit mid-session. Guarded by ``getattr`` so a backend without the seam (a
+        test double, a non-``TauBackend``) is a no-op.
+        """
+        loader = getattr(self.current_backend, "load_extensions", None)
+        if loader is None:
+            return
+        try:
+            result = await loader(self._extension_paths or None, discover=self._discover_extensions)
+        except Exception as e:
+            self.notify(f"Extension failed to load: {e}", severity="error")
+            self.log.error(f"Extension load failed: {e}", exc_info=True)
+            return
+        for err in result.errors:
+            self.notify(f"Extension error ({err.path}): {err.error}", severity="warning")
+        if result.extensions:
+            self.log(f"Loaded {len(result.extensions)} extension(s)")
+
     async def action_new_chat(self, model: Optional[str] = None):
         """Start a new chat."""
         if model is None:
@@ -1316,6 +1358,7 @@ class Parley(App):
             system_prompt=system_prompt or None,
         )
         self._bind_backend_session()
+        await self._load_backend_extensions()
         self.messages = list(self.current_session.context)
 
         # Clear display
@@ -1654,6 +1697,7 @@ class Parley(App):
             self.current_backend = create_backend(model_config)
             self.current_session = session
             self._bind_backend_session()
+            await self._load_backend_extensions()
             # Seed from the active-path context (cursor + compaction/branch splices),
             # NOT the raw linear fold — else a resumed compacted/branched session
             # would render its dropped history and hide the summary (§2.6).

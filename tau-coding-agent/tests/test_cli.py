@@ -564,15 +564,19 @@ def test_main_launches_tui_with_overrides(monkeypatch):
     captured = {}
 
     class FakeParley:
-        def __init__(self, cli_overrides=None):
+        def __init__(self, cli_overrides=None, cli_run_config=None):
             captured["overrides"] = cli_overrides
+            captured["run_config"] = cli_run_config
 
         def run(self):
             captured["ran"] = True
 
     monkeypatch.setattr("tau_coding_agent.app.Parley", FakeParley)
     monkeypatch.setattr(cli, "load_config", lambda: _config())
-    rc = cli.main(["--model", "gpt-4o"])
+    rc = cli.main(["--model", "gpt-4o", "-e", "demo.py"])
     assert rc == 0 and captured["ran"] is True
     assert captured["overrides"]["default_model"] == "gpt-4o"
     assert "gpt-4o" in captured["overrides"]["models"]
+    # Run-level extension flags reach the app separately from the model overrides.
+    assert captured["run_config"]["extensions"] == ["demo.py"]
+    assert captured["run_config"]["no_extensions"] is False
