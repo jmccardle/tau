@@ -38,10 +38,12 @@ SESSION_VERSION = 1
 # ---------------------------------------------------------------------------
 # Seam 3 — session lifecycle events (docs/SESSION-UX-REDESIGN.md §9 Phase A).
 #
-# Session.create/load/fork/append_compaction emit events here. There is *no*
-# consumer yet — this exists so the emit points are baked in now; Tier 11
-# (extension hooks) attaches subscribers without a loop retrofit. Kept minimal
-# and in-process; no fabricated behaviour (Fail-Early).
+# Session.create/load/fork/append_compaction emit events here. The extension bus
+# is the first consumer (S21 / §E3c.4): the TUI wires each new backend's
+# ``AgentSession.route_session_event`` here (app.py ``_bind_backend_session``), which
+# re-emits the dict onto the session's ``EventBus`` on a separate string channel so an
+# ``api.on("session_before_compact", …)`` extension handler fires. Kept minimal and
+# in-process; no fabricated behaviour (Fail-Early).
 # ---------------------------------------------------------------------------
 
 SESSION_START = "session_start"

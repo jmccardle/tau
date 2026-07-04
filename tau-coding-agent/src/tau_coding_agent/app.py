@@ -19,7 +19,7 @@ import json
 import os
 import time
 import traceback
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from tau_coding_agent.backends import create_backend, Backend
 
@@ -27,7 +27,13 @@ from tau_coding_agent.backends import create_backend, Backend
 # sessions without importing the TUI. Sessions are append-only JSONL transcripts
 # partitioned by cwd (docs/SESSION-UX-REDESIGN.md); the TUI keeps a live working
 # message list and funnels each produced message through Session.append_message.
-from tau_coding_agent.session_store import TAU_DIR, Session, SessionInfo, list_sessions
+from tau_coding_agent.session_store import (
+    TAU_DIR,
+    Session,
+    SessionInfo,
+    list_sessions,
+    subscribe_session_events,
+)
 
 # The pure session-tree algebra lives in tau-agent-core (the loop's package, not
 # the TUI); the tree-browser (§3) is a view over ConversationTree.tree().
@@ -1023,6 +1029,11 @@ class Parley(App):
         # The live conversation context (sent to the model). Mirrors the active
         # session's messages but is mutable for clear/compact.
         self.messages: list[dict] = []
+        # Seam-3 → extension bus bridge (S21): the module-global session-lifecycle
+        # subscription for the CURRENT backend. Rebound on every _bind_backend_session
+        # (new-chat / clear / resume / model-swap) — unsub the old backend first so a
+        # replaced backend's dead bus stops receiving events (no listener leak).
+        self._session_event_unsub: Optional[Callable[[], None]] = None
         self.load_config()
         if cli_overrides:
             self._apply_cli_overrides(cli_overrides)
@@ -1260,6 +1271,18 @@ class Parley(App):
         binder = getattr(self.current_backend, "bind_session_log", None)
         if binder is not None and self.current_session is not None:
             binder(self.current_session)
+
+        # Seam-3 → extension bus (S21 / §E3c.4): route this backend's session
+        # lifecycle events onto its AgentSession's EventBus so extension handlers
+        # (api.on("session_before_compact", …)) fire. Rebind on every current-session
+        # change, dropping the previous backend's subscription first so a swapped
+        # backend's dead bus stops receiving events (single live listener, no leak).
+        if self._session_event_unsub is not None:
+            self._session_event_unsub()
+            self._session_event_unsub = None
+        agent_session = getattr(self.current_backend, "agent_session", None)
+        if agent_session is not None:
+            self._session_event_unsub = subscribe_session_events(agent_session.route_session_event)
 
     async def action_new_chat(self, model: Optional[str] = None):
         """Start a new chat."""

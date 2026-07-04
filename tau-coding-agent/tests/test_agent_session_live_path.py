@@ -24,7 +24,11 @@ from tau_ai.types import AssistantMessage, Model, TextContent, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_log import SessionLog
-from tau_coding_agent.session_store import Session
+from tau_coding_agent.session_store import (
+    SESSION_BEFORE_COMPACT,
+    Session,
+    subscribe_session_events,
+)
 
 
 def _model() -> Model:
@@ -137,3 +141,70 @@ def test_prompt_persists_through_the_live_session(fake_llm):
     assert "user" in roles and "assistant" in roles
     # Identity is the session UUID, never a path (§4.2).
     assert session.state.session_id == store.id
+
+
+# ── seam-3 lifecycle events reach the extension bus (S21 / §E3c.4) ───────────
+
+
+async def test_seam3_before_compact_reaches_extension_handler():
+    """A coding-agent ``session_before_compact`` event routed through the bridge
+    fires an ``api.on("session_before_compact", …)`` extension handler.
+
+    End-to-end through the real seam: a real ``session_store.Session`` (which IS the
+    AgentSession's SessionLog on the live path) emits the raw dict via
+    ``_emit_session_event`` on ``append_compaction`` — the genuine emit point that
+    ``AgentSession.compact`` drives. ``subscribe_session_events`` delivers it to
+    ``AgentSession.route_session_event``, which re-emits it onto the session's
+    ``EventBus`` on the ``"session_before_compact"`` channel where the extension's
+    handler is subscribed. Nothing here is faked: real emitter, real bridge, real
+    bus, real ExtensionAPI-registered handler.
+    """
+    received: list[dict] = []
+
+    def ext(api):
+        api.on(SESSION_BEFORE_COMPACT, lambda event: received.append(event))
+
+    store = Session.create_in_memory("/tmp", "gpt-4o", "openai")
+    first_kept = store.append_message({"role": "user", "content": "keep me"})
+    session = AgentSession(session_log=store, model=_model(), extensions=[ext])
+
+    unsub = subscribe_session_events(session.route_session_event)
+    try:
+        # The genuine seam-3 emit point (append_compaction), which compact() calls.
+        store.append_compaction("summary", first_kept_id=first_kept, tokens_before=42)
+        # The bus dispatch is a fire-and-forget task scheduled on the running loop;
+        # yield once so it runs before we assert.
+        await asyncio.sleep(0)
+    finally:
+        unsub()
+
+    assert len(received) == 1
+    event = received[0]
+    assert event["type"] == SESSION_BEFORE_COMPACT
+    assert event["session"] is store
+    assert event["first_kept_id"] == first_kept
+
+
+async def test_seam3_channel_isolation():
+    """The bridge routes onto the event's OWN string channel — a handler on a
+    different channel does NOT fire (separate-channel routing, §7 decision E3-c)."""
+    before_compact: list[dict] = []
+    other_channel: list[dict] = []
+
+    def ext(api):
+        api.on(SESSION_BEFORE_COMPACT, lambda event: before_compact.append(event))
+        api.on("session_start", lambda event: other_channel.append(event))
+
+    store = Session.create_in_memory("/tmp", "gpt-4o", "openai")
+    first_kept = store.append_message({"role": "user", "content": "keep me"})
+    session = AgentSession(session_log=store, model=_model(), extensions=[ext])
+
+    unsub = subscribe_session_events(session.route_session_event)
+    try:
+        store.append_compaction("summary", first_kept_id=first_kept, tokens_before=0)
+        await asyncio.sleep(0)
+    finally:
+        unsub()
+
+    assert len(before_compact) == 1
+    assert other_channel == []

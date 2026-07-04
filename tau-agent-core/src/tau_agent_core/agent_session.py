@@ -14,6 +14,7 @@ ConversationTree; System-A SessionManager retired), §4.2 (identity = UUID).
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from typing import Any, Callable
 
@@ -139,6 +140,12 @@ class AgentSession:
         self._pending_follow_up_messages: list[str] = []
         self._pending_next_turn_messages: list[str] = []
 
+        # Seam-3 bridge (S21 / §E3c.4): strong refs to the fire-and-forget tasks
+        # that route session-lifecycle events onto the extension bus. Held so the
+        # loop keeps them alive until they complete (an un-referenced create_task
+        # may be GC'd mid-flight); each task discards itself on done.
+        self._session_event_tasks: set[asyncio.Task[None]] = set()
+
         # Register extensions against a SINGLE ExtensionAPI bound to this
         # session's real event bus + registry, so handlers subscribe to the
         # live loop bus and registered tools land in the session-owned registry.
@@ -218,6 +225,36 @@ class AgentSession:
             >>> unsub()  # Remove the subscription
         """
         return self._events.on("all", handler)
+
+    def route_session_event(self, event: dict[str, Any]) -> None:
+        """Route a coding-agent session-lifecycle event onto the extension bus.
+
+        The seam-3 emitter (``session_store.subscribe_session_events``, coding-agent)
+        publishes raw dicts ``{"type": <name>, "session": <Session>, **extra}`` for
+        ``session_start`` / ``session_before_fork`` / ``session_before_compact`` /
+        ``session_shutdown``. This is the bridge that gives them their first
+        consumer: each dict is re-emitted onto this session's ``EventBus`` on a
+        **separate string channel** named by ``event["type"]`` (``emit_channel``),
+        so ``api.on("session_before_compact", handler)`` — a handler subscribed to
+        the same bus the loop emits on — fires. The seam is a distinct channel, NOT
+        a member of the ``AgentEvent`` Literal (which carries no session events;
+        §E3c.4, §7 decision E3-c).
+
+        Wired from the coding-agent layer (which owns both the emitter and this
+        session) — tau-agent-core never imports ``session_store``. Register it via
+        ``subscribe_session_events(agent_session.route_session_event)``.
+
+        The seam emitter is synchronous but fires from within the agent loop's
+        running event loop (e.g. ``append_compaction`` inside ``compact()``); the
+        bus dispatch is async, so the emit is scheduled as a fire-and-forget task
+        on the running loop (the ``EventBus`` contract is fire-and-forget). No
+        running loop is a misuse of the seam, surfaced loudly by ``get_running_loop``
+        (Fail-Early — no swallow, no synchronous fallback).
+        """
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(self._events.emit_channel(str(event["type"]), event))
+        self._session_event_tasks.add(task)
+        task.add_done_callback(self._session_event_tasks.discard)
 
     async def prompt(
         self,
