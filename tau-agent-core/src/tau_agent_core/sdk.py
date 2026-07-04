@@ -8,20 +8,24 @@ This module provides:
 - create_agent_session(): Main SDK entry point for creating fully configured sessions.
 - _resolve_model(): Resolve model string to Model object.
 - _resolve_tools(): Discover and create tool objects from string names.
-- _load_extensions(): Load extension factories from paths.
+- _load_extensions(): THE single extension loader — discover + import + register(api).
 - _build_system_prompt(): Build system prompt from context files.
 """
 
 from __future__ import annotations
 
+import importlib.util
+import inspect
 import os
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from tau_ai.types import Model
 
 from tau_agent_core.agent_session import AgentSession
+from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.session_log import InMemorySessionLog, SessionLog
 
 
@@ -149,84 +153,220 @@ def _resolve_tools(tool_names: list[str] | None) -> list:
     return tool_objs
 
 
-def _load_extensions(
-    extension_factories: list[Callable] | None,
-    user_dir: str | None = None,
-    project_dir: str | None = None,
-) -> list[Callable]:
-    """Load extension factories.
+# ─── The single extension loader (E0/S1) ────────────────────────────
+#
+# Verb: ``register(api)``. One loader — file-path importlib, awaits async
+# factories, discovery = global ``~/.tau/extensions`` + explicit paths only
+# (NO project-local dir, NO importlib.metadata entry_points; deferred to the
+# Tier-8 trust gate). Paths are deduped by resolved path, first-wins.
+#
+# Error policy (Fail-Early): a *discovered* extension that fails to load is
+# collected into ``errors`` + logged to stderr and skipped; an *explicit*
+# ``-e`` extension that fails **raises** — the user named it, so silently
+# skipping it is the anti-pattern.
+#
+# Reference: pi loader.ts (discoverAndLoadExtensions / loadExtensions /
+# loadExtension) — coding-agent/src/core/extensions/loader.ts; the returned
+# struct ports pi's LoadExtensionsResult (agent/../types.ts:1590, minus the
+# ``runtime`` field, which lands with the API binding in E1/S3).
+# docs/EXTENSIONS-IMPLEMENTATION.md E0.1.
 
-    Extensions are loaded from:
-    1. Explicit factory callables passed in
-    2. ~/.tau/extensions/ (user directory)
-    3. ./.tau/extensions/ (project directory)
+_GLOBAL_EXTENSIONS_DIR = "~/.tau/extensions"
+
+# Monotonic counter so each load gets a unique synthetic module name (extensions
+# may be re-loaded; distinct names avoid clobbering sys.modules entries).
+_ext_load_counter = 0
+
+
+@dataclass
+class LoadedExtension:
+    """A successfully loaded extension.
+
+    Narrowed port of pi's ``Extension`` record (coding-agent types.ts:1577) to
+    what S1 needs: the source ``path``, the module-level ``register`` factory
+    that was invoked, and the ``ExtensionAPI`` it registered against.
+    """
+
+    path: str
+    register: Callable[..., Any]
+    api: ExtensionAPI
+
+
+@dataclass
+class ExtensionLoadError:
+    """A discovered extension that failed to load (pi types.ts:1590 errors[])."""
+
+    path: str
+    error: str
+
+
+@dataclass
+class LoadExtensionsResult:
+    """Result of loading extensions — port of pi ``LoadExtensionsResult``.
+
+    Reference: pi agent/../types.ts:1590. The ``runtime`` field is intentionally
+    omitted until the API is bound to the live session (E1/S3).
+    """
+
+    extensions: list[LoadedExtension] = field(default_factory=list)
+    errors: list[ExtensionLoadError] = field(default_factory=list)
+
+
+def _discover_extension_paths(user_dir: str) -> list[Path]:
+    """Discover extension entry points in a directory (one level, pi-faithful).
+
+    Grammar (pi ``discoverExtensionsInDir``, loader.ts): a bare ``*.py`` file,
+    or a package dir (immediate subdir containing ``__init__.py``). No recursion
+    beyond one level; no ``package.json`` manifest (deferred, plan §7).
 
     Args:
-        extension_factories: Explicit extension factory callables.
-        user_dir: User extensions directory (~/.tau/extensions/).
-        project_dir: Project extensions directory (./.tau/extensions/).
+        user_dir: Directory to scan (``~`` is expanded).
 
     Returns:
-        List of extension factory callables.
+        Sorted list of entry-point paths (files and package dirs).
     """
-    exts = list(extension_factories) if extension_factories else []
-
-    # Load from user directory
-    if user_dir is None:
-        user_dir = os.path.expanduser("~/.tau/extensions")
-    _load_extensions_from_dir(user_dir, exts)
-
-    # Load from project directory
-    if project_dir is None:
-        project_dir = os.path.join(os.getcwd(), ".tau", "extensions")
-    _load_extensions_from_dir(project_dir, exts)
-
-    return exts
+    root = Path(user_dir).expanduser()
+    if not root.is_dir():
+        return []
+    discovered: list[Path] = []
+    for entry in sorted(root.iterdir()):
+        if entry.is_file() and entry.suffix == ".py" and entry.name != "__init__.py":
+            discovered.append(entry)
+        elif entry.is_dir() and (entry / "__init__.py").is_file():
+            discovered.append(entry)
+    return discovered
 
 
-def _make_ext_factory(path_str: str) -> Callable:
-    """Import an extension module and return a factory that runs its extend().
+async def _load_one_extension(
+    path: Path,
+    api_factory: Callable[[], ExtensionAPI],
+) -> LoadedExtension:
+    """Import one extension module and invoke its ``register(api)``.
 
-    Fail-Early: raises if the module spec cannot be created or the module has
-    no ``extend(api)`` function (rather than returning a silent no-op). The
-    caller logs and skips a failing extension.
+    Imports by file path (``importlib.util.spec_from_file_location``), fetches
+    the module-level ``register`` callable, invokes ``register(api)``, and
+    awaits the result when ``register`` is a coroutine function.
+
+    Raises on any failure (missing file/spec, missing or non-callable
+    ``register``, or an exception raised by ``register``); the caller applies
+    the explicit-vs-discovered error policy.
     """
-    import importlib.util
+    global _ext_load_counter
 
-    spec = importlib.util.spec_from_file_location("ext_module", path_str)
+    if path.is_dir():
+        module_file = path / "__init__.py"
+        submodule_search: list[str] | None = [str(path)]
+    else:
+        module_file = path
+        submodule_search = None
+
+    if not module_file.is_file():
+        raise FileNotFoundError(f"extension not found: {module_file}")
+
+    _ext_load_counter += 1
+    module_name = f"_tau_ext_{path.stem}_{_ext_load_counter}"
+    spec = importlib.util.spec_from_file_location(
+        module_name, module_file, submodule_search_locations=submodule_search
+    )
     if spec is None or spec.loader is None:
-        raise ImportError(f"cannot create module spec for {path_str}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    if not hasattr(mod, "extend"):
-        raise AttributeError(f"{path_str} has no extend(api) function")
-    return lambda api: mod.extend(api)
+        raise ImportError(f"cannot create module spec for extension {module_file}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        # Don't leave a half-initialized module in the import cache.
+        sys.modules.pop(module_name, None)
+        raise
+
+    register = getattr(module, "register", None)
+    if register is None:
+        raise AttributeError(f"{path} has no register(api) function")
+    if not callable(register):
+        raise TypeError(f"{path} register is not callable")
+
+    api = api_factory()
+    outcome = register(api)
+    if inspect.isawaitable(outcome):
+        await outcome
+
+    return LoadedExtension(path=str(path), register=register, api=api)
 
 
-def _load_extensions_from_dir(extensions_dir: str, exts: list[Callable]) -> None:
-    """Load Python modules from an extensions directory.
+async def _load_extensions(
+    explicit_paths: list[str] | None = None,
+    *,
+    discover: bool = True,
+    user_dir: str | None = None,
+    api_factory: Callable[[], ExtensionAPI] | None = None,
+) -> LoadExtensionsResult:
+    """Discover, import, and invoke ``register(api)`` for every extension.
 
-    Each .py file in the directory is loaded as an extension.
-    The module must have an `extend` function that takes an ExtensionAPI.
+    This is THE single extension loader. Discovery is global + explicit only:
+    when ``discover`` is True the global dir (``~/.tau/extensions`` unless
+    overridden by ``user_dir``) is scanned; every explicit ``-e`` path is then
+    appended. Paths are deduped by resolved path, first-wins. Each module is
+    imported by file path and its module-level ``register(api)`` is invoked
+    (awaited when async).
 
     Args:
-        extensions_dir: Path to the extensions directory.
-        exts: List to append extension factories to.
-    """
-    ext_path = Path(extensions_dir)
-    if not ext_path.exists() or not ext_path.is_dir():
-        return
+        explicit_paths: Explicit ``-e`` extension paths. A failure here RAISES.
+        discover: Whether to scan the global extensions dir. ``--no-extensions``
+            (``-ne``) sets this False, which suppresses discovery while still
+            loading ``explicit_paths``.
+        user_dir: Override for the global extensions dir (tests inject a temp
+            dir here). ``None`` means ``~/.tau/extensions``.
+        api_factory: Produces a fresh ``ExtensionAPI`` per extension. Defaults to
+            a bare ``ExtensionAPI()``; E1/S3 passes a session-bound factory.
 
-    for py_file in sorted(ext_path.glob("*.py")):
-        if py_file.name.startswith("_"):
-            continue
+    Returns:
+        ``LoadExtensionsResult`` with the loaded extensions and any discovered
+        load errors.
+
+    Raises:
+        Exception: propagated from an explicit ``-e`` extension that fails to
+            load (Fail-Early — the user named it).
+    """
+    if api_factory is None:
+        api_factory = ExtensionAPI
+
+    result = LoadExtensionsResult()
+
+    # Build the ordered (path, is_explicit) work list, deduped by resolved path.
+    seen: set[str] = set()
+    work: list[tuple[Path, bool]] = []
+
+    def _add(path: Path, is_explicit: bool) -> None:
+        resolved = str(path.expanduser().resolve())
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        work.append((path, is_explicit))
+
+    if discover:
+        discover_dir = user_dir if user_dir is not None else _GLOBAL_EXTENSIONS_DIR
+        for p in _discover_extension_paths(discover_dir):
+            _add(p, False)
+
+    for raw in explicit_paths or []:
+        _add(Path(raw), True)
+
+    for path, is_explicit in work:
         try:
-            exts.append(_make_ext_factory(str(py_file)))
+            loaded = await _load_one_extension(path, api_factory)
         except Exception as exc:
-            # A broken extension is surfaced loudly but does not abort the
-            # agent — the remaining extensions still load (decided 2026-06-22).
-            # Fail-Early: we no longer silently swallow load failures.
-            print(f"[τ] failed to load extension {py_file}: {exc}", file=sys.stderr)
+            if is_explicit:
+                # Fail-Early: the user named this path — surfacing it silently
+                # is the anti-pattern, so re-raise.
+                raise
+            # Discovered: collect + stderr, keep loading the rest.
+            print(f"[τ] failed to load extension {path}: {exc}", file=sys.stderr)
+            result.errors.append(ExtensionLoadError(path=str(path), error=str(exc)))
+            continue
+        result.extensions.append(loaded)
+
+    return result
 
 
 def _build_system_prompt(
@@ -316,7 +456,7 @@ def create_agent_session(
     This is the main SDK entry point. It handles:
     - Model resolution (string → Model object)
     - Tool discovery (string names → AgentTool objects)
-    - Extension loading (from ~/.tau/extensions/ and ./.tau/extensions/)
+    - Extension registration (inline factory callables invoked at construction)
     - System prompt building (from AGENTS.md, .tau/SYSTEM.md)
     - Settings loading (from ~/.tau/settings.json)
 
@@ -358,8 +498,11 @@ def create_agent_session(
     # 2. Discover and create tools
     tool_objs = _resolve_tools(tools)
 
-    # 3. Load extensions
-    ext_factories = _load_extensions(extensions)
+    # 3. Extensions: inline factory callables are invoked by AgentSession at
+    #    construction (pi's loadExtensionFromFactory analog). File-path discovery
+    #    + loading is handled by the single async loader (_load_extensions),
+    #    wired into the CLI/headless run path (E0/S2).
+    ext_factories = list(extensions) if extensions else []
 
     # 4. Build system prompt
     sys_prompt = system_prompt or _build_system_prompt(cwd, tool_objs)

@@ -9,16 +9,6 @@ Reference: SUBPHASE-0.0.md lines 260-340
 """
 
 import pytest
-from pathlib import Path
-
-
-# Reset ExtensionLoader state before each test to avoid cross-test contamination
-@pytest.fixture(autouse=True)
-def _reset_extension_loader():
-    """Reset ExtensionLoader state before each test."""
-    from tau_agent_core.extensions.loader import ExtensionLoader
-    ExtensionLoader.EXTENSION_DIRS = []
-    yield
 
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.session import SessionEntry
@@ -258,6 +248,7 @@ def sample_agent_event():
 def sample_model():
     """Fixture providing a sample Model for testing."""
     from tau_ai.types import Model
+
     return Model(
         id="gpt-4o",
         name="GPT-4o",
@@ -273,6 +264,7 @@ def sample_model():
 def sample_session_manager():
     """Fixture providing an in-memory SessionManager for testing."""
     from tau_agent_core.session_manager import SessionManager
+
     return SessionManager.in_memory()
 
 
@@ -285,6 +277,7 @@ def sample_agent_session(sample_model):
     """
     from tau_agent_core.agent_session import AgentSession
     from tau_agent_core.session_log import InMemorySessionLog
+
     return AgentSession(
         session_log=InMemorySessionLog(),
         model=sample_model,
@@ -323,6 +316,7 @@ def sample_tool_definition():
 def sample_settings():
     """Fixture providing a Settings instance with default values."""
     from tau_agent_core.settings import Settings
+
     return Settings()
 
 
@@ -330,6 +324,7 @@ def sample_settings():
 def sample_compaction_config(sample_model):
     """Fixture providing a CompactionConfig for testing."""
     from tau_agent_core.compaction import CompactionConfig
+
     return CompactionConfig(
         model=sample_model,
         system_prompt="You are a session compaction assistant.",
@@ -342,6 +337,7 @@ def sample_compaction_config(sample_model):
 def sample_compaction_result():
     """Fixture providing a CompactionResult for testing."""
     from tau_agent_core.compaction import CompactionResult
+
     return CompactionResult(
         summary="User discussed project architecture and decided on microservices.",
         first_kept_id="msg_050",
@@ -356,6 +352,7 @@ def sample_compaction_result():
 def sample_branch_summary():
     """Fixture providing a BranchSummary for testing."""
     from tau_agent_core.session import BranchSummary
+
     return BranchSummary(
         branch_id="branch_001",
         parent_id="session_001",
@@ -370,6 +367,7 @@ def sample_branch_summary():
 def sample_fork_result(sample_branch_summary):
     """Fixture providing a ForkResult for testing."""
     from tau_agent_core.session import ForkResult
+
     return ForkResult(
         original_session_id="session_001",
         new_session_id="session_002",
@@ -383,6 +381,7 @@ def sample_fork_result(sample_branch_summary):
 def sample_clone_result():
     """Fixture providing a CloneResult for testing."""
     from tau_agent_core.session import CloneResult
+
     return CloneResult(
         original_session_id="session_001",
         cloned_session_id="session_003",
@@ -405,6 +404,7 @@ def sample_clone_result():
 # (which made them 401 in CI). Mirrors the real call signature
 # stream_simple(model, context, options).
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def fake_llm():
@@ -458,15 +458,15 @@ def fake_llm():
 
     async def fake_stream_simple(model, context, options=None):
         text = "ok"
-        return _Stream([
-            TextDeltaEvent(delta=text, partial=_assistant(text)),
-            DoneEvent(
-                final=_assistant(text),
-                usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
-            ),
-        ])
+        return _Stream(
+            [
+                TextDeltaEvent(delta=text, partial=_assistant(text)),
+                DoneEvent(
+                    final=_assistant(text),
+                    usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
+                ),
+            ]
+        )
 
-    with patch(
-        "tau_agent_core.agent_loop.stream_simple", side_effect=fake_stream_simple
-    ):
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=fake_stream_simple):
         yield

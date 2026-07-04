@@ -4,11 +4,12 @@ Public exports:
 - ExtensionAPI: API exposed to extension modules
 - ExtensionContext: Context passed to extension handlers
 - ExtensionUI: User interaction interface
-- ExtensionLoader: Discovers and loads extensions
 - ExtensionRegistry: Registry for extension tools
-- ExtensionEvent: Events from the extension system
 
-Reference: PHASE-3-SUBPHASE-0.md
+The single extension loader lives in ``tau_agent_core.sdk`` (``_load_extensions``)
+— there is no separate ExtensionLoader class (removed in E0/S1).
+
+Reference: PHASE-3-SUBPHASE-0.md, docs/EXTENSIONS-IMPLEMENTATION.md E0.1.
 """
 
 from tau_agent_core.extension_types import (
@@ -16,13 +17,11 @@ from tau_agent_core.extension_types import (
     ExtensionContext,
     ExtensionUI,
 )
-from tau_agent_core.extensions.loader import ExtensionLoader
 from tau_agent_core.extensions.registry import ExtensionRegistry
 
 __all__ = [
     "ExtensionAPI",
     "ExtensionContext",
     "ExtensionUI",
-    "ExtensionLoader",
     "ExtensionRegistry",
 ]
