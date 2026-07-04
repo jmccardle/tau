@@ -157,6 +157,26 @@ class AgentSession:
         return ConversationTree(self._session_log.entries(), self._session_log.cursor).context_for()
 
     @property
+    def session_log(self) -> SessionLog:
+        """The persistence facade this session reads from and appends to.
+
+        Exposed as a *settable* seam so a caller that OWNS the authoritative log —
+        the TUI, whose live ``session_store.Session`` object is swapped on new-chat
+        / clear / resume — can rebind this ``AgentSession`` onto the live session
+        (``TauBackend.bind_session_log``). That makes ``AgentSession`` the SOLE
+        persister on the live path (E3-ctx / D3): the turn's messages, compactions,
+        and cursor moves all append through the one on-disk log the TUI reads back.
+        pi keeps a single session per process; τ's TUI replaces the file ``Session``
+        object, so the seam is a rebindable property rather than a
+        construction-only argument.
+        """
+        return self._session_log
+
+    @session_log.setter
+    def session_log(self, log: SessionLog) -> None:
+        self._session_log = log
+
+    @property
     def state(self) -> SessionState:
         """Read-only access to session state. Identity is the session UUID (§4.2)."""
         return SessionState(
@@ -325,13 +345,19 @@ class AgentSession:
             # duplicated and got confused about what it had already done.
             turn_messages: list[dict[str, Any]] = []
 
-            # The user message is new to the conversation only when the caller
-            # didn't already include it in the provided context (the TUI does;
-            # a bare prompt("hi") does not).
-            if not context_ends_with_user:
-                user_dict = user_msg.model_dump()
-                self._session_log.append_message(user_dict)
-                turn_messages.append(user_dict)
+            # Persist this turn's user message. AgentSession is the AUTHORITATIVE
+            # persister (E3-ctx / D3): on the live path it appends through the TUI's
+            # own file ``Session`` (bound via ``session_log``), so the user turn is
+            # recorded HERE and nowhere else — the TUI dropped its own
+            # ``append_message`` to resolve the double-write. ``context_ends_with_user``
+            # still governs the loop-threading STRIP above (so the user turn is fed to
+            # the loop exactly once), but NOT persistence: the caller echoing the turn
+            # into the context it passed does not mean the log already holds it. The
+            # message is new to the log exactly once this turn, so append it
+            # unconditionally (a bare ``prompt("hi")`` with no context lands here too).
+            user_dict = user_msg.model_dump()
+            self._session_log.append_message(user_dict)
+            turn_messages.append(user_dict)
 
             # Assistant responses and tool results produced this turn.
             for msg in final_messages:

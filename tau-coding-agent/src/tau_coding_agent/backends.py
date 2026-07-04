@@ -14,7 +14,7 @@ from tau_ai.types import Model
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.events import AgentEvent
-from tau_agent_core.session_log import InMemorySessionLog
+from tau_agent_core.session_log import InMemorySessionLog, SessionLog
 from tau_agent_core.sdk import _resolve_tools
 
 
@@ -185,20 +185,23 @@ class TauBackend(Backend):
         # (Previously this was stashed in an unused self._api_key and dropped,
         # so a real-OpenAI key from config never reached the provider.)
         #
-        # SessionLog: the caller (TUI ``app.py`` / ``headless.py``) owns the
-        # persistence-of-record — the coding-agent ``Session`` it appends each
-        # produced message to, and the ``self.messages`` it passes as context.
-        # This AgentSession therefore runs against a scratch ``InMemorySessionLog``
-        # (never flushed, never read: context arrives via ``stream_chat``'s
-        # ``messages`` argument). This retires the former throwaway ``SessionManager``
-        # (System A) whose appends went to a *second* on-disk file nobody read — so
-        # there is now a single live on-disk persistence path (§2.6, §4.5).
+        # SessionLog. The AgentSession is constructed against a scratch
+        # ``InMemorySessionLog``, but the TUI immediately rebinds it onto its LIVE
+        # ``session_store.Session`` via :meth:`bind_session_log` (E3-ctx / D3), so on
+        # the interactive path this session is the SOLE persister — the turn's user +
+        # assistant/tool messages append through the one on-disk log the TUI reads
+        # back, and the TUI no longer double-writes them itself. Callers that own a
+        # separate persistence-of-record and never rebind (headless ``run_print``,
+        # the cost/json backend tests, SDK-style use) keep the scratch log: for them
+        # ``prompt()`` persists to a log that is never flushed or read (context
+        # arrives via ``stream_chat``'s ``messages`` argument), and they append to
+        # their own ``Session`` themselves.
         #
         # Auto-compaction is disabled here: the caller's own message list — not this
-        # log — is the context sent to the model, so a post-turn auto-compaction on
-        # the scratch log would do useless work (and fire a slow summary LLM call
-        # every turn once it crossed the threshold). The TUI compacts explicitly via
-        # ``/compact`` → ``compact_messages``, which works with auto-compaction off.
+        # log — is the context sent to the model, so a post-turn auto-compaction
+        # would do useless work (and fire a slow summary LLM call every turn once it
+        # crossed the threshold). The TUI compacts explicitly via ``/compact`` →
+        # ``compact_messages``, which works with auto-compaction off.
         self.agent_session = AgentSession(
             session_log=InMemorySessionLog(),
             model=model,
@@ -208,6 +211,19 @@ class TauBackend(Backend):
             reasoning=reasoning_arg,
             compaction_settings=CompactionSettings(enabled=False),
         )
+
+    def bind_session_log(self, session_log: SessionLog) -> None:
+        """Point the AgentSession at the caller's authoritative ``SessionLog``.
+
+        The TUI owns a live ``session_store.Session`` that is swapped on new-chat /
+        clear / resume; each time it becomes current, the TUI rebinds this backend's
+        AgentSession onto it so ``prompt()`` / ``compact`` / ``navigate`` persist
+        through that one on-disk log (E3-ctx / D3 — AgentSession becomes the sole
+        persister, retiring the app-side ``append_message`` double-write). The
+        scratch ``InMemorySessionLog`` created in ``__init__`` is discarded on the
+        first bind; a backend that is never bound (headless, tests) keeps it.
+        """
+        self.agent_session.session_log = session_log
 
     def abort(self) -> None:
         """Abort the current turn by tripping the AgentSession's abort signal.

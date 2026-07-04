@@ -1140,9 +1140,12 @@ class Parley(App):
             await self.action_new_chat()
         assert self.current_session is not None  # action_new_chat sets current_session
 
-        # Add user message to the working list + persist it.
+        # Add the user turn to the working list so it is part of the context sent
+        # to the model this turn. Do NOT persist it here: the AgentSession (bound to
+        # this live Session, E3-ctx / D3) is the sole persister — it records the user
+        # turn when the loop runs. The working list is reconciled back to the
+        # authoritative log at turn-end (``self.messages = session.context``).
         self.messages.append({"role": "user", "content": message})
-        self.current_session.append_message({"role": "user", "content": message})
 
         # Display user message
         display = self.query_one(ChatDisplay)
@@ -1220,7 +1223,7 @@ class Parley(App):
         assert self.current_session is not None  # set before a turn runs
         start = time.time()
         await display.begin_exchange()
-        content, usage, new_messages, tool_calls_info = await self.current_backend.stream_chat(
+        content, usage, _new_messages, tool_calls_info = await self.current_backend.stream_chat(
             self.messages,
             lambda _delta: None,
             on_event=on_event,
@@ -1230,16 +1233,33 @@ class Parley(App):
         # Collapse the exchange to its summary and surface the final answer.
         await display.finalize_exchange(tokens=usage.get("total_tokens", 0), seconds=elapsed)
 
-        # Append the loop's new messages (assistant responses + tool results,
-        # skipping the user message already in self.messages) to both the working
-        # list and the session — append-on-message persists each as it lands.
-        for msg in new_messages:
-            if msg.get("role") != "user":
-                self.messages.append(msg)
-                self.current_session.append_message(msg)
+        # Rebuild the working list as a VIEW over the authoritative session
+        # (E3-ctx / D3, pi ``rebuildChatFromMessages``). The AgentSession — bound to
+        # this live Session — already persisted this turn's user + assistant/tool
+        # messages as the loop ran; there is one write path, so the app no longer
+        # appends them itself (that was the double-write). Reading ``session.context``
+        # back reconciles the working list (which carried a transient copy of the
+        # user turn) with what was actually recorded, applying any compaction/branch
+        # splice. This is a data rebuild only — the incremental streaming render
+        # already mounted this turn's widgets, so the display is left untouched.
+        self.messages = list(self.current_session.context)
 
         # Refresh sidebar
         self.query_one(ChatSidebar).refresh_chats()
+
+    def _bind_backend_session(self) -> None:
+        """Rebind the backend's AgentSession onto the current live ``Session``.
+
+        Called after every point that makes a ``Session`` current (new-chat, clear,
+        resume) so the AgentSession persists the turn — and any agent-driven
+        compact/navigate — through the one on-disk log the TUI reads back (E3-ctx /
+        D3, AgentSession is the sole persister). Guarded by ``getattr`` so a backend
+        without the seam (a test double, or a non-``TauBackend``) is a no-op rather
+        than an error.
+        """
+        binder = getattr(self.current_backend, "bind_session_log", None)
+        if binder is not None and self.current_session is not None:
+            binder(self.current_session)
 
     async def action_new_chat(self, model: Optional[str] = None):
         """Start a new chat."""
@@ -1272,6 +1292,7 @@ class Parley(App):
             model_config["backend"],
             system_prompt=system_prompt or None,
         )
+        self._bind_backend_session()
         self.messages = list(self.current_session.context)
 
         # Clear display
@@ -1431,6 +1452,7 @@ class Parley(App):
             self.current_session.backend,
             system_prompt=system_prompt,
         )
+        self._bind_backend_session()
         self.messages = list(self.current_session.context)
 
         # Clear display
@@ -1608,6 +1630,7 @@ class Parley(App):
 
             self.current_backend = create_backend(model_config)
             self.current_session = session
+            self._bind_backend_session()
             # Seed from the active-path context (cursor + compaction/branch splices),
             # NOT the raw linear fold — else a resumed compacted/branched session
             # would render its dropped history and hide the summary (§2.6).
