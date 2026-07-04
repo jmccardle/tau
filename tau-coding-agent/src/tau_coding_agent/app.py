@@ -1272,7 +1272,7 @@ class Parley(App):
             model_config["backend"],
             system_prompt=system_prompt or None,
         )
-        self.messages = list(self.current_session.messages)
+        self.messages = list(self.current_session.context)
 
         # Clear display
         display = self.query_one(ChatDisplay)
@@ -1431,7 +1431,7 @@ class Parley(App):
             self.current_session.backend,
             system_prompt=system_prompt,
         )
-        self.messages = list(self.current_session.messages)
+        self.messages = list(self.current_session.context)
 
         # Clear display
         display = self.query_one(ChatDisplay)
@@ -1608,7 +1608,10 @@ class Parley(App):
 
             self.current_backend = create_backend(model_config)
             self.current_session = session
-            self.messages = list(session.messages)
+            # Seed from the active-path context (cursor + compaction/branch splices),
+            # NOT the raw linear fold — else a resumed compacted/branched session
+            # would render its dropped history and hide the summary (§2.6).
+            self.messages = list(session.context)
 
             # Reload the display, reconstructing exchanges from the persisted
             # flat message list so a reloaded session looks like a freshly-streamed

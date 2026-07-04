@@ -89,3 +89,28 @@ def test_reloaded_session_resolves_cursor_to_compaction_and_splices(tmp_path) ->
     msgs = tree.context_for()
     assert msgs[0]["content"][0]["text"] == "[[Compaction summary: SUMMARY]]"
     assert msgs[1] == {"role": "user", "content": "keep me"}
+
+
+def test_context_property_is_the_spliced_fold_not_the_linear_messages(tmp_path) -> None:
+    """``Session.context`` (the pi-faithful render/model seed, §2.6) must reflect the
+    cursor + compaction splice; ``Session.messages`` (the raw linear fold) must not.
+
+    This is the property both TUI resume (app.py) and headless resume (headless.py)
+    now seed from — the fix for a compacted session rendering its dropped history.
+    """
+    session, keep_id, _ = _session_with_history(tmp_path)
+    session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100)
+
+    # The raw linear fold still contains the dropped prefix and no summary — the bug.
+    assert {"role": "user", "content": "old question"} in session.messages
+    assert {"role": "assistant", "content": "old answer"} in session.messages
+    assert all("SUMMARY" not in str(m.get("content")) for m in session.messages)
+
+    # .context is the active-path fold: summary spliced first, pre-boundary prefix
+    # dropped, "keep me" retained — and identical to the canonical ConversationTree.
+    ctx = session.context
+    assert ctx == ConversationTree(session.entries(), session._leaf_id).context_for()
+    assert ctx[0]["content"] == [{"type": "text", "text": "[[Compaction summary: SUMMARY]]"}]
+    assert {"role": "user", "content": "keep me"} in ctx
+    assert {"role": "user", "content": "old question"} not in ctx
+    assert {"role": "assistant", "content": "old answer"} not in ctx

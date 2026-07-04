@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from tau_agent_core.conversation_tree import ConversationTree
+
 # τ data dir for config and session storage (matches app.py / cli.py).
 TAU_DIR = Path.home() / ".tau"
 # pi derives this from APP_NAME (config.ts:481-482, PI_CODING_AGENT_SESSION_DIR);
@@ -210,8 +212,27 @@ class Session:
 
     @property
     def messages(self) -> list[dict[str, Any]]:
-        """Fold ``message`` entries → the flat loop list the agent consumes."""
+        """Raw linear fold: every ``message`` entry in load order.
+
+        This IGNORES the cursor and never splices compaction/``branch_summary``,
+        so it is *not* what the user sees or the model receives — use ``context``
+        for that. Kept because a few callers still want the flat entry list.
+        """
         return [e["message"] for e in self._entries if e.get("type") == "message"]
+
+    @property
+    def context(self) -> list[dict[str, Any]]:
+        """The active-path context at the current cursor — the pi-faithful render
+        and model-input source (pi ``buildSessionContext``, session-manager.ts:325).
+
+        The ``ConversationTree`` fold over this session's entries: compaction /
+        ``branch_summary`` splices applied, abandoned branches dropped via the
+        ``parentId`` walk. Unlike ``messages`` (the raw linear fold, which shows a
+        compacted session's dropped history and hides the summary), this is what
+        must seed the TUI/headless transcript and the LLM context on load, new,
+        fork, and resume. Reference: docs/SESSION-TREE-IMPLEMENTATION.md §2.6.
+        """
+        return ConversationTree(self.entries(), self.cursor).context_for()
 
     @property
     def model(self) -> str:
