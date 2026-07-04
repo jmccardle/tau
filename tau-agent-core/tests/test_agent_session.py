@@ -863,12 +863,16 @@ class TestExtensions:
 
     def test_extension_can_register_tool(self):
         """Extension can register a tool via the API."""
+        async def _exec(tool_call_id, params, signal, on_update, ctx):
+            return {"content": [{"type": "text", "text": "ok"}]}
+
         def my_ext(api):
             api.register_tool({
                 "name": "my_tool",
                 "label": "My Tool",
                 "description": "A test tool",
                 "parameters": {"type": "object", "properties": {}},
+                "execute": _exec,
             })
 
         self.create_session(extensions=[my_ext])

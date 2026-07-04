@@ -38,21 +38,29 @@ from tau_agent_core.sdk import (
 # A sync register() that registers a uniquely-named tool. Presence of the tool
 # on the loaded extension's api proves register(api) was actually invoked.
 _SYNC_EXT = """
+async def _exec(tool_call_id, params, signal, on_update, ctx):
+    return {"content": [{"type": "text", "text": "ok"}]}
+
 def register(api):
     api.register_tool({
         "name": "%s",
         "description": "sync tool",
         "parameters": {"type": "object", "properties": {}},
+        "execute": _exec,
     })
 """
 
 # An async register() — only awaiting it runs the body and registers the tool.
 _ASYNC_EXT = """
+async def _exec(tool_call_id, params, signal, on_update, ctx):
+    return {"content": [{"type": "text", "text": "ok"}]}
+
 async def register(api):
     api.register_tool({
         "name": "%s",
         "description": "async tool",
         "parameters": {"type": "object", "properties": {}},
+        "execute": _exec,
     })
 """
 

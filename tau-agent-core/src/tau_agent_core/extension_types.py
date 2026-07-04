@@ -237,14 +237,37 @@ class ExtensionAPI:
         return self._event_bus.on(event, handler)
 
     def register_tool(self, definition: dict) -> None:
-        """Register a tool callable by the LLM.
+        """Register a tool callable by the LLM (pi ``ToolDefinition`` shape).
 
-        Adds `_source: "extension"` to the definition and registers
-        with the registry.
+        Mirrors pi's ``registerTool(tool: ToolDefinition)``
+        (coding-agent/src/core/extensions/types.ts:433). The definition is a
+        plain dict — NOT a Pydantic/TypeBox model — carrying:
 
-        Args:
-            definition: Tool definition dict with name, description, parameters, etc.
+        - ``name`` (str): tool name used in LLM tool calls.
+        - ``description`` (str): description sent to the LLM.
+        - ``parameters`` (dict): JSON-schema dict for argument validation.
+        - ``execute`` (callable): ``execute(tool_call_id, params, signal,
+          on_update, ctx)`` returning an ``AgentToolResult``-shaped value
+          (may be sync or async). ``ctx`` is the bound ``ExtensionContext``.
+
+        Optional keys: ``label`` (defaults to ``name`` for UI), ``prompt_snippet``,
+        ``prompt_guidelines``, ``execution_mode`` ("sequential"/"parallel").
+
+        Adds ``_source: "extension"`` and registers with the session-owned
+        registry; the resolved tool is merged into the loop's tools next turn.
+
+        Raises:
+            ValueError: if a required key is missing.
+            TypeError: if ``parameters`` is not a dict or ``execute`` is not callable.
         """
+        for key in ("name", "description", "parameters", "execute"):
+            if key not in definition:
+                raise ValueError(f"register_tool: missing required key '{key}'")
+        if not isinstance(definition["parameters"], dict):
+            raise TypeError("register_tool: 'parameters' must be a JSON-schema dict")
+        if not callable(definition["execute"]):
+            raise TypeError("register_tool: 'execute' must be callable")
+
         definition = dict(definition)  # don't mutate caller's dict
         definition["_source"] = "extension"
         self._registry.register_tool(definition)

@@ -14,6 +14,7 @@ ConversationTree; System-A SessionManager retired), §4.2 (identity = UUID).
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Callable
 
 from tau_ai.abort import AbortSignal
@@ -38,6 +39,7 @@ from tau_agent_core.compaction import (
     should_compact,
 )
 from tau_agent_core.compaction_utils import create_file_ops, extract_file_ops_from_message
+from tau_agent_core.tools.base import AgentTool, ToolDefinition
 
 
 def _message_text(content: Any) -> str:
@@ -128,9 +130,9 @@ class AgentSession:
         # Register extensions against a SINGLE ExtensionAPI bound to this
         # session's real event bus + registry, so handlers subscribe to the
         # live loop bus and registered tools land in the session-owned registry.
-        api = self._make_extension_api()
+        self._extension_api = self._make_extension_api()
         for ext in self._extensions:
-            ext(api)
+            ext(self._extension_api)
 
     # ------------------------------------------------------------------
     # Properties
@@ -256,7 +258,7 @@ class AgentSession:
             loop = AgentLoop(
                 config=config,
                 emit=self._events.emit,
-                tools=self._tools,
+                tools=self._build_turn_tools(),
                 model=self._model,
                 abort_signal=self._abort_signal,
             )
@@ -340,7 +342,7 @@ class AgentSession:
             loop = AgentLoop(
                 config=config,
                 emit=self._events.emit,
-                tools=self._tools,
+                tools=self._build_turn_tools(),
                 model=self._model,
                 abort_signal=self._abort_signal,
             )
@@ -536,6 +538,72 @@ class AgentSession:
     # ------------------------------------------------------------------
     # Internal methods
     # ------------------------------------------------------------------
+
+    def _resolve_extension_tools(self) -> list[AgentTool]:
+        """Resolve the registry's active extension tools into ``AgentTool``s.
+
+        Reads the session-owned registry's *active* extension tool definitions
+        (pi ``ToolDefinition`` dicts registered via ``api.register_tool``) and
+        wraps each so the agent loop can call it. The loop invokes
+        ``tool.execute(tool_call_id=…, args=…, signal=…)``; the wrapper adapts
+        that to the extension's pi-shaped
+        ``execute(tool_call_id, params, signal, on_update, ctx)`` — binding the
+        live ``ExtensionContext`` as ``ctx`` (pi's ``wrapRegisteredTools`` /
+        ``wrapToolDefinition``, coding-agent/src/core/tools/tool-definition-wrapper.ts).
+
+        Because the loop is rebuilt every ``prompt()`` / ``continue_conversation``
+        (this method is called at each), a ``register_tool`` mid-session is live
+        on the next turn for free.
+        """
+        ctx = self._extension_api.context
+        resolved: list[AgentTool] = []
+        for name, defn in self._registry.get_active_tools().items():
+            ext_execute = defn["execute"]
+
+            def _make_adapter(ext_execute: Callable = ext_execute) -> Callable:
+                async def _adapter(
+                    tool_call_id: str,
+                    args: dict,
+                    signal: Any = None,
+                    on_update: Callable | None = None,
+                ) -> Any:
+                    result = ext_execute(tool_call_id, args, signal, on_update, ctx)
+                    if inspect.isawaitable(result):
+                        result = await result
+                    return result
+
+                return _adapter
+
+            resolved.append(
+                AgentTool(
+                    definition=ToolDefinition(
+                        name=name,
+                        label=defn.get("label", name),
+                        description=defn["description"],
+                        parameters=defn["parameters"],
+                        execute=_make_adapter(),
+                        prompt_snippet=defn.get("prompt_snippet"),
+                        prompt_guidelines=defn.get("prompt_guidelines"),
+                        execution_mode=defn.get("execution_mode", "parallel"),
+                    )
+                )
+            )
+        return resolved
+
+    def _build_turn_tools(self) -> list:
+        """Merge the built-in tools with the active extension tools for a turn.
+
+        Extension tools override a built-in of the same name (pi parity:
+        ``_refreshToolRegistry`` sets extension tools last, agent-session.ts:2320).
+        Returns ``self._tools`` unchanged when no extension tools are registered.
+        """
+        ext_tools = self._resolve_extension_tools()
+        if not ext_tools:
+            return self._tools
+        by_name: dict[str, Any] = {t.name: t for t in self._tools}
+        for t in ext_tools:
+            by_name[t.name] = t
+        return list(by_name.values())
 
     def _make_extension_api(self) -> ExtensionAPI:
         """Create an ExtensionAPI bound to this session's real refs.
