@@ -258,6 +258,16 @@ class TauBackend(Backend):
         an in-flight completion ends promptly instead of draining in full."""
         self.agent_session.abort()
 
+    def set_ui_delegate(self, delegate: Any) -> None:
+        """Forward a front-end UI delegate to the wrapped ``AgentSession`` (E5 §4 / S33).
+
+        The app hands in a delegate whose ``notify`` paints on the Textual screen;
+        this routes every loaded extension's ``api.ui.notify(...)`` there instead of
+        the headless stderr sink. Delegates to :meth:`AgentSession.set_ui_delegate`,
+        which sets it on the one shared :class:`ExtensionContext`.
+        """
+        self.agent_session.set_ui_delegate(delegate)
+
     async def load_extensions(
         self,
         explicit_paths: list[str] | None = None,

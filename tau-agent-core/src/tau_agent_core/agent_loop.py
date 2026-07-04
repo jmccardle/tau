@@ -634,6 +634,24 @@ class AgentLoop:
             if self._abort_signal and self._abort_signal.is_aborted():
                 break
 
+            # Emit the start for EVERY call up front (pi agent-loop.ts:406-413) —
+            # BEFORE prepareToolCall — so a call vetoed by a `tool_call` hook (or
+            # blocked by arg validation) still surfaces a RENDERED node. A veto
+            # emits only tool_execution_end(is_error=True); without a preceding
+            # start the front-end has no widget to fold the blocked result into and
+            # silently drops it (backends.py `_on_tool_result` → "no ToolBox").
+            # The blocked node is already on the active path (its toolResult is
+            # appended below); this only makes it visible (E5 §4 / S33).
+            await self._emit(
+                AgentEvent(
+                    type="tool_execution_start",
+                    timestamp=int(time.time() * 1000),
+                    tool_call_id=tc.id,
+                    tool_name=tc.name,
+                    args=tc.arguments if isinstance(tc.arguments, dict) else {},
+                )
+            )
+
             prepared = await self._prepare_tool_call(tc)
             if isinstance(prepared, BlockedCall):
                 await self._emit(
@@ -674,16 +692,6 @@ class AgentLoop:
                 )
                 continue
 
-            await self._emit(
-                AgentEvent(
-                    type="tool_execution_start",
-                    timestamp=int(time.time() * 1000),
-                    tool_call_id=prepared.id,
-                    tool_name=prepared.name,
-                    args=prepared.arguments,
-                )
-            )
-
             result = await self._execute_tool(prepared)
             result = await self._apply_after_hooks(result, prepared.arguments)
 
@@ -723,18 +731,22 @@ class AgentLoop:
             prepared = await self._prepare_tool_call(tc)
             prepared_calls.append(prepared)
 
-        # Emit start events for all (PreparedToolCalls only)
-        for pc in prepared_calls:
-            if isinstance(pc, PreparedToolCall):
-                await self._emit(
-                    AgentEvent(
-                        type="tool_execution_start",
-                        timestamp=int(time.time() * 1000),
-                        tool_call_id=pc.id,
-                        tool_name=pc.name,
-                        args=pc.arguments,
-                    )
+        # Emit start events for EVERY call (pi agent-loop.ts:459-466) — including
+        # ones a `tool_call` hook vetoed or arg-validation blocked — using the
+        # ORIGINAL tool call's id/name/args (order-aligned with prepared_calls), so
+        # a vetoed call surfaces a rendered node whose is_error result the
+        # front-end can fold in (E5 §4 / S33). Without this the blocked result had
+        # no widget and was silently dropped.
+        for tc in tool_calls:
+            await self._emit(
+                AgentEvent(
+                    type="tool_execution_start",
+                    timestamp=int(time.time() * 1000),
+                    tool_call_id=tc.id,
+                    tool_name=tc.name,
+                    args=tc.arguments if isinstance(tc.arguments, dict) else {},
                 )
+            )
 
         # Execute all in parallel
         async def _run_tool(pc):

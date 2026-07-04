@@ -19,7 +19,7 @@ import json
 import os
 import time
 import traceback
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Literal, Optional
 
 from tau_coding_agent.backends import create_backend, Backend
 from tau_coding_agent.headless import _append_system_prompt
@@ -50,6 +50,51 @@ from tau_coding_agent.chat_widgets import (
     format_duration,
     format_tokens,
 )
+
+
+class _ExtensionUIDelegate:
+    """Paints a loaded extension's ``api.notify(...)`` onto the live TUI (E5 §4 / S33).
+
+    Bound onto every extension's shared ``ExtensionContext`` via
+    ``TauBackend.set_ui_delegate`` → ``AgentSession.set_ui_delegate`` after each
+    ``create_backend``, so ``api.ui.notify(msg, level)`` reaches the Textual screen
+    instead of the headless stderr sink. Extension hooks run on the app's event
+    loop (the generation worker is async, not threaded), so ``App.notify`` is
+    called directly.
+
+    S33 wires ``notify`` only; the interactive dialogs (``confirm`` / ``select`` /
+    ``input``) RAISE rather than silently auto-approving — flipping into TUI mode
+    must not turn a `confirm` prompt into a hidden "yes" (Fail-Early). Their modals
+    are a later step; no shipped extension calls them.
+    """
+
+    #: extension notify level → Textual ``App.notify`` severity.
+    _SEVERITY: dict[str, Literal["information", "warning", "error"]] = {
+        "info": "information",
+        "warning": "warning",
+        "error": "error",
+    }
+
+    def __init__(self, app: "Parley") -> None:
+        self._app = app
+
+    def notify(self, message: str, level: str = "info") -> None:
+        self._app.notify(message, severity=self._SEVERITY.get(level, "information"))
+
+    async def confirm(self, title: str, message: str) -> bool:
+        raise NotImplementedError(
+            "extension api.ui.confirm is not wired into the TUI yet (S33 wired notify only)"
+        )
+
+    async def select(self, title: str, items: list[str]) -> str | None:
+        raise NotImplementedError(
+            "extension api.ui.select is not wired into the TUI yet (S33 wired notify only)"
+        )
+
+    async def input(self, title: str, default: str = "") -> str:
+        raise NotImplementedError(
+            "extension api.ui.input is not wired into the TUI yet (S33 wired notify only)"
+        )
 
 
 class SystemPromptEditor(ModalScreen):
@@ -1342,6 +1387,14 @@ class Parley(App):
         exit mid-session. Guarded by ``getattr`` so a backend without the seam (a
         test double, a non-``TauBackend``) is a no-op.
         """
+        # Route extension api.notify(...) to this TUI (E5 §4 / S33). Set on every
+        # backend that supports it, right after it is created, so a loaded
+        # extension's notify paints on-screen instead of the headless stderr sink.
+        # Guarded by getattr so a non-TauBackend test double is a no-op.
+        set_delegate = getattr(self.current_backend, "set_ui_delegate", None)
+        if set_delegate is not None:
+            set_delegate(_ExtensionUIDelegate(self))
+
         loader = getattr(self.current_backend, "load_extensions", None)
         if loader is None:
             return

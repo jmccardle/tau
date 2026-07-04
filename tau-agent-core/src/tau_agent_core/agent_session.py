@@ -1016,6 +1016,19 @@ class AgentSession:
             hook_handlers=hook_handlers,
         )
 
+    def set_ui_delegate(self, delegate: Any) -> None:
+        """Route extension ``api.ui`` calls to a live front-end delegate (E5 §4 / S33).
+
+        Sets the delegate on the session's ONE shared :class:`ExtensionContext` —
+        the same context every bound extension api receives (``_bind_extension_api``
+        passes ``self._extension_api.context``), so a single call flips the shared
+        :class:`ExtensionUI` into TUI mode for EVERY loaded extension at once. From
+        then on ``api.ui.notify(msg, level)`` reaches the delegate (the TUI screen)
+        instead of the headless stderr sink. Nothing calls this on the headless
+        path, so ``tau -p`` keeps the stderr behaviour.
+        """
+        self._extension_api.context.set_ui_delegate(delegate)
+
     def _bind_extension_api(self, path_label: str) -> ExtensionAPI:
         """The bucket-bound ExtensionAPI a loaded extension is handed (S24).
 
