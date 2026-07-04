@@ -46,6 +46,7 @@ from tau_ai.types import AssistantMessage, Model, ToolCall, Usage
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
+from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_log import InMemorySessionLog
 
 # ── load the example module (its filename is not a valid identifier) ─────────
@@ -121,6 +122,24 @@ def _message_text_blob(messages: list[Any]) -> str:
                 else:
                     out.append(str(getattr(block, "text", "")))
     return "\n".join(out)
+
+
+def _reloaded_warning_node(session: AgentSession, needle: str) -> dict[str, Any] | None:
+    """Rebuild the tree from the persisted entries alone, as a reload from disk would.
+
+    A *fresh* ``ConversationTree`` folded from ``session_log.entries()`` + its cursor —
+    no in-memory session state — so a durable warning must be baked into the persisted
+    nodes to survive. Returns the reloaded ``toolResult`` node carrying ``needle`` in its
+    content (proving the warning rides a real tree node, not an ephemeral copy), or None.
+    """
+    log = session._session_log
+    reloaded = ConversationTree(log.entries(), log.cursor).context_for()
+    for message in reloaded:
+        if message.get("role") != "toolResult":
+            continue
+        if needle in _message_text_blob([message]):
+            return message
+    return None
 
 
 def _make_session() -> AgentSession:
@@ -213,6 +232,12 @@ async def test_usd_budget_warns_then_aborts_through_the_loop() -> None:
     assert "Budget exceeded" not in _message_text_blob(wire_payloads[0])
     # But the warning IS a durable node on the persisted active path.
     assert "Budget exceeded" in _message_text_blob(session.messages)
+    # …and it survives a reload: a fresh tree folded from the persisted entries alone
+    # still carries the warning on a real toolResult node (the tripping result), so the
+    # edit is baked into the durable tree — not an in-memory-only patch.
+    warn_node = _reloaded_warning_node(session, "Budget exceeded")
+    assert warn_node is not None
+    assert warn_node["role"] == "toolResult"
     # The guard tripped and the live abort signal is set.
     assert guard.tripped is True
     assert session._abort_signal.is_aborted() is True
@@ -239,6 +264,11 @@ async def test_token_budget_aborts_through_the_loop() -> None:
     assert len(wire_payloads) == 1
     assert "Budget exceeded" not in _message_text_blob(wire_payloads[0])
     assert "Budget exceeded" in _message_text_blob(session.messages)
+    # Survives a reload: rebuilt from the persisted entries, the warning is still a
+    # durable block on the tripping toolResult node.
+    warn_node = _reloaded_warning_node(session, "Budget exceeded")
+    assert warn_node is not None
+    assert warn_node["role"] == "toolResult"
     assert guard.tripped is True
     assert session._abort_signal.is_aborted() is True
     assert guard.mode == "tokens"
