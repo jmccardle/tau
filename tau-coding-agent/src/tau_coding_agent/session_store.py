@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from tau_agent_core.conversation_tree import ConversationTree
+
 # τ data dir for config and session storage (matches app.py / cli.py).
 TAU_DIR = Path.home() / ".tau"
 # pi derives this from APP_NAME (config.ts:481-482, PI_CODING_AGENT_SESSION_DIR);
@@ -158,7 +160,24 @@ class Session:
         self._header = header
         self._entries = entries
         self._ids: set[str] = {e["id"] for e in entries if "id" in e}
-        self._leaf_id: str | None = entries[-1]["id"] if entries else None
+        self._leaf_id: str | None = self._resolve_cursor(entries)
+
+    @staticmethod
+    def _resolve_cursor(entries: list[dict[str, Any]]) -> str | None:
+        """Resolve the persisted cursor (leaf pointer) from the LAST entry.
+
+        Latest-wins, mirroring how ``model``/``name`` resolve (§2.2): a ``navigate``
+        entry points at its ``targetId`` (``null`` = pre-root, before the first
+        entry); any other kind points at itself. Pi-style files carry no
+        ``navigate`` entries, so the cursor is the last entry — identical to pi's
+        "fall back to last entry" on load (session-manager.ts:855-859)."""
+        if not entries:
+            return None
+        last = entries[-1]
+        if last.get("type") == "navigate":
+            target = last.get("targetId")
+            return str(target) if target is not None else None
+        return str(last["id"])
 
     # --- identity / header -------------------------------------------------
 
@@ -175,6 +194,16 @@ class Session:
         return self._header.get("parent")
 
     @property
+    def cursor(self) -> str | None:
+        """The current leaf (tip) entry id; ``None`` before the first entry.
+
+        Exposes ``_leaf_id`` under the name the ``tau_agent_core.session_log``
+        ``SessionLog`` Protocol reads, so ``Session`` satisfies that facade
+        structurally and ``AgentSession`` can build a ``ConversationTree`` view
+        over the live session (§2.6, §4.2)."""
+        return self._leaf_id
+
+    @property
     def header(self) -> dict[str, Any]:
         """The line-1 header (seam 2: export + pi-faithful json need it raw)."""
         return dict(self._header)
@@ -183,8 +212,27 @@ class Session:
 
     @property
     def messages(self) -> list[dict[str, Any]]:
-        """Fold ``message`` entries → the flat loop list the agent consumes."""
+        """Raw linear fold: every ``message`` entry in load order.
+
+        This IGNORES the cursor and never splices compaction/``branch_summary``,
+        so it is *not* what the user sees or the model receives — use ``context``
+        for that. Kept because a few callers still want the flat entry list.
+        """
         return [e["message"] for e in self._entries if e.get("type") == "message"]
+
+    @property
+    def context(self) -> list[dict[str, Any]]:
+        """The active-path context at the current cursor — the pi-faithful render
+        and model-input source (pi ``buildSessionContext``, session-manager.ts:325).
+
+        The ``ConversationTree`` fold over this session's entries: compaction /
+        ``branch_summary`` splices applied, abandoned branches dropped via the
+        ``parentId`` walk. Unlike ``messages`` (the raw linear fold, which shows a
+        compacted session's dropped history and hides the summary), this is what
+        must seed the TUI/headless transcript and the LLM context on load, new,
+        fork, and resume. Reference: docs/SESSION-TREE-IMPLEMENTATION.md §2.6.
+        """
+        return ConversationTree(self.entries(), self.cursor).context_for()
 
     @property
     def model(self) -> str:
@@ -344,6 +392,46 @@ class Session:
             firstKeptId=first_kept_id,
             tokensBefore=tokens_before,
         )
+
+    def append_navigate(self, target_id: str | None) -> str:
+        """Persist a cursor move as a first-class ``navigate`` entry (§2.2).
+
+        pi's ``leafId`` is in-memory only and evaporates on quit (branch() moves
+        the cursor without appending, session-manager.ts:1241-1246); τ diverges so
+        an agent (or the tree-browser) can move the tip *without* new content and
+        have it survive a reload. The entry's ``parentId`` is the previous leaf;
+        ``targetId`` (``None`` = before-first-entry) is where the cursor now sits,
+        and the in-memory leaf advances to it (not to the navigate entry itself).
+
+        Fail-Early: a non-``None`` target must name a real entry, mirroring pi's
+        ``branch()`` "Entry ... not found" throw (session-manager.ts:1242-1244)
+        and ``ConversationTree.navigate`` (conversation_tree.py:121-125); persisting
+        a dangling cursor would silently drop the whole conversation at read time."""
+        if target_id is not None and target_id not in self._ids:
+            raise ValueError(f"navigate target {target_id!r} not found")
+        entry_id = self._append("navigate", targetId=target_id)
+        self._leaf_id = target_id
+        return entry_id
+
+    def append_branch_summary(self, summary: str, from_id: str | None) -> str:
+        """Persist a ``branch_summary`` inline node at the branch point (§2.4, §5).
+
+        pi ``branchWithSummary`` (session-manager.ts:1262-1279) sets
+        ``this.leafId = branchFromId`` *first*, then appends — so the summary parents
+        at the branch point and the abandoned children become a **sibling branch off
+        the active path** (Decision 5, fix 1). We mirror that: move the in-memory leaf
+        to ``from_id`` before appending, so ``parentId == from_id``. The abandoned
+        branch then drops out of ``context_for`` purely via the ``parentId`` walk —
+        ``branch_summary`` is a plain inline node at read time, NOT a splice anchor
+        (Decision 5, fix 2; ``ConversationTree`` §5). The leaf then advances to this
+        entry (pi ``_appendEntry``, session-manager.ts:937-942).
+
+        Fail-Early: a non-``None`` ``from_id`` must name a real entry, mirroring pi's
+        ``branchWithSummary`` "Entry ... not found" throw (session-manager.ts:1266-1268)."""
+        if from_id is not None and from_id not in self._ids:
+            raise ValueError(f"branch_summary from {from_id!r} not found")
+        self._leaf_id = from_id  # branch point, not the current leaf (pi :1272)
+        return self._append("branch_summary", summary=summary, fromId=from_id)
 
     def shutdown(self) -> None:
         """Signal end-of-session (seam 3). Emits ``session_shutdown``; no disk

@@ -215,6 +215,35 @@ async def test_session_by_id_prefix_selects_specific(env):
     assert Session.load(a.path).messages[-2] == {"role": "user", "content": "go"}
 
 
+async def test_resume_of_compacted_session_hands_spliced_context_to_backend(env):
+    """Resuming a COMPACTED session must give the model the active-path CONTEXT
+    (summary spliced, pre-boundary prefix dropped), not the raw linear transcript.
+
+    Regression for the §2.6 seed-source fix: headless read ``session.messages``
+    (the linear fold, which keeps the dropped history and hides the summary); it
+    now reads ``session.context`` (the ConversationTree fold).
+    """
+    a = env["seed"]("local-llm", "a1")  # system + user "a1" + assistant "r"
+    keep_id = a.entries()[-1]["id"]  # the assistant "r" message
+    a.append_compaction("OLD-SUMMARY", first_kept_id=keep_id, tokens_before=100)
+
+    await run_print(
+        CLIArgs(messages=["next"], print_mode=True, session=a.id),
+        _config(),
+    )
+
+    ctx = env["backend"].messages
+    # Summary first, the kept assistant turn, then this run's user message.
+    assert ctx[0]["content"] == [{"type": "text", "text": "[[Compaction summary: OLD-SUMMARY]]"}]
+    assert {"role": "assistant", "content": [{"type": "text", "text": "r"}]} in ctx
+    assert ctx[-1] == {"role": "user", "content": "next"}
+    # The dropped prefix is absent from the model context — the actual fix …
+    assert {"role": "system", "content": "You are helpful."} not in ctx
+    assert {"role": "user", "content": "a1"} not in ctx
+    # … even though it is still on disk (the linear fold would have re-fed it).
+    assert {"role": "system", "content": "You are helpful."} in Session.load(a.path).messages
+
+
 async def test_session_by_path_selects_specific(env):
     a = env["seed"]("local-llm", "a1")
     await run_print(

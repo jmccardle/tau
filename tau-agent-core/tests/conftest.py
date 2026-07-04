@@ -277,11 +277,16 @@ def sample_session_manager():
 
 
 @pytest.fixture
-def sample_agent_session(sample_session_manager, sample_model):
-    """Fixture providing an AgentSession for testing."""
+def sample_agent_session(sample_model):
+    """Fixture providing an AgentSession for testing.
+
+    AgentSession now persists through a SessionLog (§2.6); the SDK default and
+    tests use the in-memory implementation.
+    """
     from tau_agent_core.agent_session import AgentSession
+    from tau_agent_core.session_log import InMemorySessionLog
     return AgentSession(
-        session_manager=sample_session_manager,
+        session_log=InMemorySessionLog(),
         model=sample_model,
     )
 

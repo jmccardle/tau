@@ -252,9 +252,11 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
         session = prior
         _apply_resume_metadata(session, model_name, backend_name, prior, args.name)
 
-    # This turn's user message, then hand the full transcript to the backend.
+    # This turn's user message, then hand the active-path CONTEXT to the backend
+    # (cursor + compaction/branch splices applied) — not the raw linear fold, so a
+    # resumed compacted/branched session gives the model the right history (§2.6).
     session.append_message({"role": "user", "content": prompt_text})
-    messages: list[dict] = session.messages
+    messages: list[dict] = session.context
 
     # Imported lazily: keeps `import tau_coding_agent.headless` free of the
     # backend/agent-core import chain until a run actually happens.

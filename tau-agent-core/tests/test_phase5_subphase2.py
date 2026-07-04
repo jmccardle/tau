@@ -1647,99 +1647,108 @@ class TestExtractBranchMessages:
 
 
 class TestSummarizeBranch:
-    """Test 9 (Done Criterion 7): summarize_branch() extracts messages from a branch
-    and generates an LLM summary.
+    """Test 9 (Done Criterion 7), reworked for Part 2 (§3.1): summarize_branch()
+    turns an already-extracted branch text into an LLM summary.
 
-    Per PHASE-5-SUBPHASE-2.md:
-    - summarize_branch() extracts messages from a branch and generates a summary
-    - Used when navigating back to a previous entry
+    The helper's contract changed with the tree-browser slice — it no longer reaches
+    into System-A's ``SessionManager`` to extract text (``ConversationTree.subtree_text``
+    now does that, §2.1) and no longer fabricates a summary from truncated raw text on
+    failure (Fail-Early, §3.1: it RAISES). It takes ``branch_text`` directly, threads
+    mode-3 ``custom_instructions`` into the summarizer's SYSTEM prompt, and drives
+    ``complete_simple``.
+
+    The System-A ``_extract_branch_messages`` subtree assertions (still exercised by
+    the live path's ancestor, ConversationTree.subtree_text) are kept below.
     """
 
     @staticmethod
-    def _make_mock_stream(summary_text: str):
-        """Create a mock for stream_simple that returns a summary."""
-        done_event = AsyncMock()
-        done_event.delta = None
-        done_event.text = summary_text
-        done_event.type = "done"
+    def _fake_response(text: str, stop_reason: str = "stop"):
+        """A minimal AssistantMessage stand-in for complete_simple's return."""
+        from tau_ai.types import AssistantMessage, TextContent, Usage
 
-        class MockStream:
-            def __aiter__(self):
-                return _make_async_iterator([done_event])
-        # Return an INSTANCE, not the class — async for requires an iterable object
-        return MockStream()
-
-    def _summarize_with_mock(self, mgr, branch_entry, model, summary_text: str,
-                              system_prompt: str | None = None):
-        """Helper: run summarize_branch with a mocked LLM that returns summary_text."""
-        from tau_agent_core.session_manager import summarize_branch as _sb
-
-        async def mock_stream_simple(*args, **kwargs):
-            return self._make_mock_stream(summary_text)
-
-        with patch("tau_ai.client.stream_simple", mock_stream_simple):
-            return asyncio.run(
-                _sb(mgr, branch_entry, model, system_prompt=system_prompt)
-            )
-
-    def test_summarize_branch_with_mocked_llm(self, tmp_path):
-        """summarize_branch() calls the LLM and returns a summary."""
-        from tau_agent_core.session_manager import summarize_branch
-
-        mgr = SessionManager(sessions_dir=str(tmp_path))
-        session_path = mgr.new_session()
-        mgr._active_session_path = session_path
-
-        for i in range(3):
-            mgr.append_entry({
-                "id": f"e{i}",
-                "type": "message",
-                "timestamp": 1000 + i,
-                "message": {"role": "user" if i % 2 == 0 else "assistant",
-                            "content": [{"type": "text", "text": f"msg{i}"}]},
-            })
-
-        entries = mgr._get_entries()
-        branch_entry = next(e for e in entries if e.get("id") == "e1")
-
-        # Mock model
-        mock_model = type("MockModel", (), {
-            "id": "gpt-4o",
-            "provider": "openai",
-        })()
-
-        summary = self._summarize_with_mock(
-            mgr, branch_entry, mock_model,
-            "User discussed project architecture and decided on microservices."
+        return AssistantMessage(
+            content=[TextContent(text=text)] if text else [],
+            api="openai-completions",
+            provider="openai",
+            model="gpt-4o",
+            stop_reason=stop_reason,
+            timestamp=0,
+            usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
         )
 
-        assert "microservices" in summary
-        assert isinstance(summary, str)
-        assert len(summary) > 0
-
-    def test_summarize_branch_empty_branch(self, tmp_path):
-        """summarize_branch() handles empty branches gracefully."""
+    def _summarize(self, branch_text, summary_text, *, custom_instructions=None,
+                   stop_reason="stop", capture=None):
+        """Run summarize_branch with complete_simple mocked to return summary_text."""
         from tau_agent_core.session_manager import summarize_branch
-
-        mgr = SessionManager(sessions_dir=str(tmp_path))
-        session_path = mgr.new_session()
-        mgr._active_session_path = session_path
-
-        entries = mgr._get_entries()
-        branch_entry = entries[0]  # Session entry (no messages)
 
         mock_model = type("MockModel", (), {"id": "gpt-4o", "provider": "openai"})()
 
-        summary = asyncio.run(
-            summarize_branch(mgr, branch_entry, mock_model)
+        async def mock_complete_simple(model, context, options=None):
+            if capture is not None:
+                capture["context"] = context
+                capture["options"] = options
+            return self._fake_response(summary_text, stop_reason)
+
+        with patch("tau_ai.client.complete_simple", mock_complete_simple):
+            return asyncio.run(
+                summarize_branch(
+                    branch_text, mock_model, custom_instructions=custom_instructions
+                )
+            )
+
+    def test_summarize_branch_with_mocked_llm(self):
+        """summarize_branch() calls the LLM and returns its summary text."""
+        summary = self._summarize(
+            "[user]: msg0\n[assistant]: msg1",
+            "User discussed project architecture and decided on microservices.",
         )
+        assert "microservices" in summary
+        assert isinstance(summary, str) and summary
 
-        assert "(No messages in this branch)" in summary
-
-    def test_summarize_branch_with_branch_tree(self, tmp_path):
-        """summarize_branch() correctly extracts from a branched subtree."""
+    def test_summarize_branch_empty_branch_raises(self):
+        """Fail-Early (§3.1): an empty branch RAISES — no fabricated summary."""
         from tau_agent_core.session_manager import summarize_branch
 
+        mock_model = type("MockModel", (), {"id": "gpt-4o", "provider": "openai"})()
+        with pytest.raises(ValueError, match="empty branch"):
+            asyncio.run(summarize_branch("   ", mock_model))
+
+    def test_summarize_branch_llm_error_raises(self):
+        """Fail-Early (§3.1): an error/aborted response RAISES, not a raw-text fallback."""
+        with pytest.raises(RuntimeError, match="summarization failed"):
+            self._summarize("[user]: hi", "", stop_reason="error")
+
+    def test_summarize_branch_empty_response_raises(self):
+        """Fail-Early: an empty summary from the model RAISES."""
+        with pytest.raises(RuntimeError, match="empty summary"):
+            self._summarize("[user]: hi", "")
+
+    def test_summarize_branch_custom_instructions_reach_system_prompt(self):
+        """Mode-3 custom instructions are threaded into the summarizer SYSTEM prompt."""
+        capture: dict = {}
+        summary = self._summarize(
+            "[user]: hello",
+            "System prompt test summary",
+            custom_instructions="Focus only on the database schema.",
+            capture=capture,
+        )
+        assert "System prompt test summary" in summary
+        system_msg = capture["context"]["messages"][0]
+        assert system_msg["role"] == "system"
+        assert "Focus only on the database schema." in system_msg["content"]
+
+    def test_summarize_branch_from_module_level(self):
+        """summarize_branch() is importable from tau_agent_core (public API)."""
+        from tau_agent_core import summarize_branch as sm_branch
+
+        assert callable(sm_branch)
+        summary = self._summarize("[user]: test", "Module level summary")
+        assert "Module level summary" in summary
+
+    # --- System-A subtree extraction (ConversationTree.subtree_text's ancestor) ---
+
+    def test_extract_branch_messages_from_branch_tree(self, tmp_path):
+        """_extract_branch_messages() collects a subtree, excluding sibling branches."""
         mgr = SessionManager(sessions_dir=str(tmp_path))
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
@@ -1764,104 +1773,13 @@ class TestSummarizeBranch:
         })
 
         entries = mgr._get_entries()
-        branch_entry = next(e for e in entries if e.get("id") == "c")
-
-        # Extract should include c and d, but not b
         extracted = mgr._extract_branch_messages(entries, "c")
         assert "followup" in extracted
         assert "detailed answer" in extracted
         assert "[assistant]: answer" not in extracted  # b is not in this branch
 
-        # Also test that summarize_branch returns a non-empty string
-        mock_model = type("MockModel", (), {"id": "gpt-4o", "provider": "openai"})()
-        summary = self._summarize_with_mock(mgr, branch_entry, mock_model, "Branch summary from LLM")
-        assert isinstance(summary, str)
-        assert len(summary) > 0
-
-    def test_summarize_branch_returns_string(self, tmp_path):
-        """summarize_branch() always returns a string."""
-        from tau_agent_core.session_manager import summarize_branch
-
-        mgr = SessionManager(sessions_dir=str(tmp_path))
-        session_path = mgr.new_session()
-        mgr._active_session_path = session_path
-
-        mgr.append_entry({
-            "id": "e0",
-            "type": "message",
-            "timestamp": 1000,
-            "message": {"role": "user", "content": [{"type": "text", "text": "hello"}]},
-        })
-
-        entries = mgr._get_entries()
-        branch_entry = next(e for e in entries if e.get("id") == "e0")
-        mock_model = type("MockModel", (), {"id": "gpt-4o", "provider": "openai"})()
-
-        summary = self._summarize_with_mock(mgr, branch_entry, mock_model, "Hello world summary")
-
-        assert isinstance(summary, str)
-        assert len(summary) > 0
-        assert "Hello world summary" in summary
-
-    def test_summarize_branch_from_module_level(self, tmp_path):
-        """summarize_branch() is importable from tau_agent_core."""
-        from tau_agent_core import summarize_branch as sm_branch
-
-        assert callable(sm_branch)
-
-        mgr = SessionManager(sessions_dir=str(tmp_path))
-        session_path = mgr.new_session()
-        mgr._active_session_path = session_path
-
-        mgr.append_entry({
-            "id": "e0",
-            "type": "message",
-            "timestamp": 1000,
-            "message": {"role": "user", "content": [{"type": "text", "text": "test"}]},
-        })
-
-        entries = mgr._get_entries()
-        branch_entry = next(e for e in entries if e.get("id") == "e0")
-        mock_model = type("MockModel", (), {"id": "gpt-4o", "provider": "openai"})()
-
-        summary = self._summarize_with_mock(mgr, branch_entry, mock_model, "Module level summary")
-
-        assert isinstance(summary, str)
-        assert "Module level summary" in summary
-
-    def test_summarize_branch_with_system_prompt(self, tmp_path):
-        """summarize_branch() includes system prompt in the LLM call."""
-        from tau_agent_core.session_manager import summarize_branch
-
-        mgr = SessionManager(sessions_dir=str(tmp_path))
-        session_path = mgr.new_session()
-        mgr._active_session_path = session_path
-
-        mgr.append_entry({
-            "id": "e0",
-            "type": "message",
-            "timestamp": 1000,
-            "message": {"role": "user", "content": [{"type": "text", "text": "hello"}]},
-        })
-
-        entries = mgr._get_entries()
-        branch_entry = next(e for e in entries if e.get("id") == "e0")
-
-        mock_model = type("MockModel", (), {"id": "gpt-4o", "provider": "openai"})()
-
-        # Use a custom system prompt
-        custom_prompt = "You are a very concise summarizer."
-        summary = self._summarize_with_mock(
-            mgr, branch_entry, mock_model, "System prompt test summary",
-            system_prompt=custom_prompt
-        )
-
-        assert isinstance(summary, str)
-        assert len(summary) > 0
-        assert "System prompt test summary" in summary
-
-    def test_summarize_branch_deep_branch(self, tmp_path):
-        """summarize_branch() correctly traverses a deep branch."""
+    def test_extract_branch_messages_deep_branch(self, tmp_path):
+        """_extract_branch_messages() traverses a deep branch (excludes the parent)."""
         mgr = SessionManager(sessions_dir=str(tmp_path))
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
@@ -1889,7 +1807,6 @@ class TestSummarizeBranch:
         })
 
         entries = mgr._get_entries()
-
         # Extract from 'a' — should get a, b, c, d
         extracted = mgr._extract_branch_messages(entries, "a")
         assert "[assistant]: a msg" in extracted

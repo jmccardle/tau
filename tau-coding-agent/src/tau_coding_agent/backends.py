@@ -3,6 +3,9 @@ Backend abstraction layer for tau-coding-agent.
 
 Wraps tau-agent-core's AgentSession to provide Parley-compatible
 Backend interfaces (chat, stream_chat).
+
+Reference: SESSION-TREE-IMPLEMENTATION.md §2.6 (throwaway SessionManager retired;
+AgentSession runs against a scratch InMemorySessionLog, caller owns persistence).
 """
 
 from abc import ABC, abstractmethod
@@ -10,7 +13,7 @@ from typing import Any, Callable
 from tau_ai.types import Model
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
-from tau_agent_core.session_manager import SessionManager
+from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.sdk import _resolve_tools
 
 
@@ -81,8 +84,6 @@ class TauBackend(Backend):
         reasoning_arg = thinking_level if thinking_level and thinking_level != "off" else None
         model_reasoning = bool(config.get("reasoning")) or reasoning_arg is not None
 
-        # Build the AgentSession
-        self.session_manager = SessionManager()
         model = Model(
             id=model_id,
             name=model_id,
@@ -94,6 +95,11 @@ class TauBackend(Backend):
             reasoning=model_reasoning,
             thinking_level_map=config.get("thinking_level_map"),
         )
+        # Kept for the tree-browser's summarizer (navigate_tree, §3.3): the
+        # branch-summary ``complete_simple`` call needs the model + api key directly,
+        # not via the AgentSession loop.
+        self._model = model
+        self._api_key = api_key
 
         # Discover tools from config. Defaults to all built-in tools.
         tool_names = config.get("tools", ["read", "write", "edit", "bash", "ls", "grep", "find"])
@@ -107,14 +113,23 @@ class TauBackend(Backend):
         # servers use the "not-needed" sentinel, which is passed through as-is.
         # (Previously this was stashed in an unused self._api_key and dropped,
         # so a real-OpenAI key from config never reached the provider.)
-        # Auto-compaction is disabled here: the TUI's own ``current_chat.messages``
-        # — not this session manager — is the context it sends to the model, so a
-        # post-turn auto-compaction on the session manager would do useless work
-        # (and fire a slow summary LLM call every turn once it crossed the
-        # threshold). The TUI compacts explicitly via ``/compact`` →
-        # ``compact_messages``, which still works with auto-compaction off.
+        #
+        # SessionLog: the caller (TUI ``app.py`` / ``headless.py``) owns the
+        # persistence-of-record — the coding-agent ``Session`` it appends each
+        # produced message to, and the ``self.messages`` it passes as context.
+        # This AgentSession therefore runs against a scratch ``InMemorySessionLog``
+        # (never flushed, never read: context arrives via ``stream_chat``'s
+        # ``messages`` argument). This retires the former throwaway ``SessionManager``
+        # (System A) whose appends went to a *second* on-disk file nobody read — so
+        # there is now a single live on-disk persistence path (§2.6, §4.5).
+        #
+        # Auto-compaction is disabled here: the caller's own message list — not this
+        # log — is the context sent to the model, so a post-turn auto-compaction on
+        # the scratch log would do useless work (and fire a slow summary LLM call
+        # every turn once it crossed the threshold). The TUI compacts explicitly via
+        # ``/compact`` → ``compact_messages``, which works with auto-compaction off.
         self.agent_session = AgentSession(
-            session_manager=self.session_manager,
+            session_log=InMemorySessionLog(),
             model=model,
             system_prompt=self.system_prompt,
             tools=tools,
@@ -122,9 +137,6 @@ class TauBackend(Backend):
             reasoning=reasoning_arg,
             compaction_settings=CompactionSettings(enabled=False),
         )
-
-        # Create a new session in the session manager (required before use)
-        self.session_manager.new_session()
 
     def abort(self) -> None:
         """Abort the current turn by tripping the AgentSession's abort signal.
@@ -143,6 +155,55 @@ class TauBackend(Backend):
         session-manager path. Returns None when there is nothing to compact.
         """
         return await self.agent_session.compact_messages(messages)
+
+    async def navigate_tree(
+        self,
+        session: Any,
+        target_id: str,
+        *,
+        summarize: bool = False,
+        custom_instructions: str | None = None,
+    ) -> list[dict]:
+        """Move the live session's cursor to ``target_id`` and return the new context.
+
+        Port of pi's ``AgentSession.navigateTree`` (agent-session.ts:2708). The live
+        coding-agent ``Session`` is passed in (the TUI owns it, §2.6): this method
+        operates on IT, not on the scratch ``InMemorySessionLog`` the AgentSession runs
+        against. Two modes (§3.1):
+
+        - ``summarize=False`` → append a ``navigate`` entry (zero LLM calls). The
+          abandoned branch drops out of context via the ``parentId`` walk but stays on
+          disk (append-only, still browsable).
+        - ``summarize=True`` → summarize the abandoned subtree (``ConversationTree
+          .subtree_text(target_id)`` → ``summarize_branch``, Fail-Early: raises on a
+          failed/empty summary) and append a ``branch_summary`` parented at the branch
+          point (Decision 5, fix 1). Mode-3 ``custom_instructions`` reach the summarizer
+          SYSTEM prompt.
+
+        Returns ``ConversationTree.context_for(cursor)`` — the flat message list the TUI
+        swaps into ``self.messages`` and re-renders (reusing the compaction path, §3.4).
+        """
+        from tau_agent_core.conversation_tree import ConversationTree
+        from tau_agent_core.session_manager import summarize_branch
+
+        old_leaf = session.cursor
+        if target_id == old_leaf:
+            # No-op (pi navigateTree:2716) — already at the target.
+            return ConversationTree(session.entries(), session.cursor).context_for()
+
+        if summarize:
+            branch_text = ConversationTree(session.entries(), old_leaf).subtree_text(target_id)
+            summary = await summarize_branch(
+                branch_text,
+                self._model,
+                api_key=self._api_key,
+                custom_instructions=custom_instructions,
+            )
+            session.append_branch_summary(summary, target_id)
+        else:
+            session.append_navigate(target_id)
+
+        return ConversationTree(session.entries(), session.cursor).context_for()
 
     async def _extract_last_user_message(self, messages: list[dict]) -> str:
         """Extract the last user message text from a Parley messages list."""

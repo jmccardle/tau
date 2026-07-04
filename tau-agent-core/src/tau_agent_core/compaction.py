@@ -660,7 +660,13 @@ def prepare_compaction(
     if prev_compaction_index >= 0:
         prev = path_entries[prev_compaction_index]
         previous_summary = prev.get("summary")
-        prev_first_kept = prev.get("first_kept_id")
+        # Live/SDK entries are System-B camelCase (``firstKeptId``) — the only
+        # shape every SessionLog writer emits and the sole key ConversationTree's
+        # fold reads (``conversation_tree._anchor_boundary``). No snake_case
+        # (System-A) fallback: that path is retired and reading it here would be
+        # dead, ConversationTree-inconsistent code (Fail-Early, §2.6). Absent id
+        # → prefix-start, no fabrication.
+        prev_first_kept = prev.get("firstKeptId") or prev.get("first_kept_id")
         idx = next(
             (j for j, e in enumerate(path_entries) if e.get("id") == prev_first_kept),
             -1,

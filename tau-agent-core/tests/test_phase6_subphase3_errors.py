@@ -21,7 +21,7 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.extension_types import ExtensionAPI, ExtensionContext
 from tau_agent_core.sdk import create_agent_session
-from tau_agent_core.session_manager import SessionManager
+from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.tools.base import AgentTool, AgentToolResult, ToolDefinition
 
 
@@ -44,11 +44,10 @@ def _make_model(**overrides) -> Model:
     )
 
 
-def _make_session(in_memory=None) -> AgentSession:
-    """Create an AgentSession with an in-memory session manager."""
-    mgr = in_memory or SessionManager.in_memory()
+def _make_session(session_log=None) -> AgentSession:
+    """Create an AgentSession with an in-memory session log."""
     return AgentSession(
-        session_manager=mgr,
+        session_log=session_log or InMemorySessionLog(),
         model=_make_model(),
     )
 
@@ -543,7 +542,7 @@ class TestExtensionErrorHandling:
             api.on("agent_start", bad_handler)
 
         session2 = AgentSession(
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
             model=_make_model(),
             extensions=[bad_ext],
         )
@@ -791,7 +790,7 @@ class TestExtensionErrorHandling:
             api.on("agent_start", lambda e: 1 / 0)
 
         session = AgentSession(
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
             model=_make_model(),
             extensions=[bad_ext1, bad_ext2],
         )
@@ -811,7 +810,7 @@ class TestExtensionErrorHandling:
             api.on("agent_start", on_message)
 
         session = AgentSession(
-            session_manager=SessionManager.in_memory(),
+            session_log=InMemorySessionLog(),
             model=_make_model(),
             extensions=[bad_ext],
         )

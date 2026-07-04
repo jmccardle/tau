@@ -2,6 +2,7 @@
 
 Reference: PHASE-2-SUBPHASE-4.md — Agent Session and SDK Entry Point.
 Reference: SUBPHASE-0.0.md, "7. AgentSession Interface" section.
+Reference: SESSION-TREE-IMPLEMENTATION.md §2.6 (SDK default = InMemorySessionLog).
 
 This module provides:
 - create_agent_session(): Main SDK entry point for creating fully configured sessions.
@@ -21,7 +22,7 @@ from typing import Callable
 from tau_ai.types import Model
 
 from tau_agent_core.agent_session import AgentSession
-from tau_agent_core.session_manager import SessionManager
+from tau_agent_core.session_log import InMemorySessionLog, SessionLog
 
 
 # ─── Default model definitions ───────────────────────────────────────
@@ -303,7 +304,7 @@ def create_agent_session(
     base_url: str | None = None,
     api_key: str | None = None,
     tools: list[str] | None = None,
-    session_manager: SessionManager | None = None,
+    session_log: SessionLog | None = None,
     extensions: list[Callable] | None = None,
     system_prompt: str | None = None,
     thinking_level: str = "off",
@@ -325,7 +326,8 @@ def create_agent_session(
         base_url: Optional custom API base URL.
         api_key: Optional API key.
         tools: List of tool name strings (e.g., ["read", "bash"]).
-        session_manager: Optional SessionManager instance.
+        session_log: Optional SessionLog to persist through (the coding-agent's
+            file Session on the live path). Defaults to an in-memory log.
         extensions: List of extension factory callables.
         system_prompt: Optional custom system prompt.
         thinking_level: Thinking level ("off", "minimal", "low", "medium",
@@ -362,13 +364,15 @@ def create_agent_session(
     # 4. Build system prompt
     sys_prompt = system_prompt or _build_system_prompt(cwd, tool_objs)
 
-    # 5. Create session manager
-    if session_manager is None:
-        session_manager = SessionManager(cwd=cwd)
+    # 5. Default to an in-memory session log when the caller injects none. The
+    #    live paths (TUI/headless) inject the coding-agent's file Session; the
+    #    SDK default persists in RAM only (§2.6, Decision 4 option B).
+    if session_log is None:
+        session_log = InMemorySessionLog()
 
     # 6. Create and return AgentSession
     return AgentSession(
-        session_manager=session_manager,
+        session_log=session_log,
         model=model,
         system_prompt=sys_prompt,
         tools=tool_objs,
