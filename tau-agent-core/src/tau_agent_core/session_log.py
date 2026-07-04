@@ -139,10 +139,20 @@ class InMemorySessionLog:
         return entry_id
 
     def append_branch_summary(self, summary: str, from_id: str | None) -> str:
-        """Fail-Early: a non-``None`` ``from_id`` must name a real entry (parity
-        with ``Session.append_branch_summary``)."""
+        """Move the leaf to ``from_id`` (the branch point) then append, mirroring
+        ``Session.append_branch_summary`` (session_store.py:433) and pi
+        ``branchWithSummary`` (session-manager.ts:1272): the summary parents at the
+        branch point so the abandoned children become a sibling branch that drops
+        out of ``context_for`` via the ``parentId`` walk. Without this re-parent the
+        summary would append off the *current* leaf and the abandoned branch would
+        stay on the active path — the exact divergence ``ctx.summarize_branch``
+        (E3-ctx / S19) exposed on the SDK/in-memory path.
+
+        Fail-Early: a non-``None`` ``from_id`` must name a real entry (parity with
+        ``Session.append_branch_summary``)."""
         if from_id is not None and from_id not in self._ids:
             raise ValueError(f"branch_summary from {from_id!r} not found")
+        self._leaf_id = from_id  # branch point, not the current leaf (pi :1272)
         return self._append("branch_summary", summary=summary, fromId=from_id)
 
     def _append(self, kind: str, **payload: Any) -> str:

@@ -193,6 +193,155 @@ class ExtensionContext:
         percent = (tokens / context_window) * 100
         return {"tokens": tokens, "context_window": context_window, "percent": percent}
 
+    # ------------------------------------------------------------------
+    # Session-control op surface (E3-ctx / step S19)
+    #
+    # These expose the LANDED session-tree substrate on the base handler
+    # context so agent tools can drive it (plan decision 2; the E2 gatekeeper
+    # veto is the safety). Each delegates to the one authoritative session log
+    # the bound ``AgentSession`` persists through, so the mutation is visible on
+    # both the TUI live path and headless. pi keeps fork/navigate command-only
+    # (types.ts:354-373); τ places them on the base context (decision 2 / §7
+    # E3-b). Fail-Early: an unbound session, or an op the concrete log cannot
+    # satisfy (e.g. exporting an in-memory log), RAISES rather than no-ops.
+    # ------------------------------------------------------------------
+
+    def _require_session(self) -> Any:
+        """The bound ``AgentSession``, or raise (Fail-Early, no silent no-op)."""
+        if self._session is None:
+            raise RuntimeError("session-control op: no session bound to ExtensionContext")
+        return self._session
+
+    async def compact(self, custom_instructions: str | None = None) -> Any:
+        """Compact the active conversation now (delegates to ``AgentSession.compact``).
+
+        Runs the full append-only compaction pipeline on the bound session's log
+        (``agent_session.py`` ``compact``): build the active-path entries, summarize
+        the compacted prefix via the LLM, and APPEND a compaction entry so the
+        prefix drops out of future context at read time. Returns the
+        ``CompactionResult`` (or ``None`` when there is nothing to compact).
+
+        This is the immediate variant; the turn-end-deferred variant lands in S20.
+
+        Args:
+            custom_instructions: Optional extra focus for the summary.
+        """
+        return await self._require_session().compact(custom_instructions=custom_instructions)
+
+    def entries(self) -> list[dict[str, Any]]:
+        """The bound session log's raw, append-only entries (all kinds).
+
+        Thin pass-through to ``SessionLog.entries()`` — the same entry list a
+        ``ConversationTree`` folds into context. Read-only: a copy per the log's
+        contract, so mutating the returned list does not touch the log.
+        """
+        entries: list[dict[str, Any]] = self._require_session().session_log.entries()
+        return entries
+
+    async def summarize_branch(
+        self, from_entry: str, custom_instructions: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Summarize the subtree at ``from_entry`` and splice it onto the active path.
+
+        Ports the summarize arm of ``TauBackend.navigate_tree`` (backends.py:246)
+        onto the bound session's own log: extract the branch text
+        (``ConversationTree.subtree_text(from_entry)``), summarize it via the module
+        ``summarize_branch`` (session_manager.py:705 — already raise-based on a
+        failed/empty summary, Fail-Early), then APPEND a ``branch_summary`` entry
+        parented at ``from_entry`` (``SessionLog.append_branch_summary``). The
+        abandoned children drop out of context via the ``parentId`` walk.
+
+        Returns the re-rendered active-path messages (``ConversationTree.context_for``).
+        """
+        from tau_agent_core.conversation_tree import ConversationTree
+        from tau_agent_core.session_manager import summarize_branch as _summarize_branch
+
+        session = self._require_session()
+        log = session.session_log
+        old_leaf = log.cursor
+        branch_text = ConversationTree(log.entries(), old_leaf).subtree_text(from_entry)
+        summary = await _summarize_branch(
+            branch_text,
+            session._model,
+            api_key=session._api_key,
+            custom_instructions=custom_instructions,
+        )
+        log.append_branch_summary(summary, from_entry)
+        return ConversationTree(log.entries(), log.cursor).context_for()
+
+    async def navigate(
+        self,
+        target_id: str | None,
+        summarize: bool = False,
+        custom_instructions: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Move the bound session's cursor to ``target_id`` and return the new context.
+
+        Ports ``TauBackend.navigate_tree`` (backends.py:246) onto the bound
+        session's own log. ``summarize=False`` APPENDs a ``navigate`` entry (zero
+        LLM calls); the abandoned branch drops out of context via the ``parentId``
+        walk but stays on disk. ``summarize=True`` delegates to
+        :meth:`summarize_branch` (append a ``branch_summary`` at the branch point).
+        A ``target_id`` already at the cursor is a no-op (pi ``navigateTree:2716``).
+
+        Returns the re-rendered active-path messages (``ConversationTree.context_for``).
+        """
+        from tau_agent_core.conversation_tree import ConversationTree
+
+        session = self._require_session()
+        log = session.session_log
+        if target_id == log.cursor:
+            return ConversationTree(log.entries(), log.cursor).context_for()
+        if summarize:
+            if target_id is None:
+                raise ValueError("navigate(summarize=True) requires a target_id to summarize")
+            return await self.summarize_branch(target_id, custom_instructions=custom_instructions)
+        log.append_navigate(target_id)
+        return ConversationTree(log.entries(), log.cursor).context_for()
+
+    async def fork(
+        self, entry_id: str | None = None, mode: Literal["in_place", "export"] = "in_place"
+    ) -> Any:
+        """Fork the conversation — one op, two modes (plan §7 decision E3-b).
+
+        - ``mode="in_place"`` (default): branch WITHIN the one session log by
+          APPENDing a ``navigate`` to ``entry_id`` (``entry_id=None`` → pre-root),
+          so the next turn appends a sibling branch off that point. Returns the
+          re-rendered active-path messages (``ConversationTree.context_for``). This
+          is the ``navigate+append`` in-place fork.
+        - ``mode="export"``: copy the session into a NEW file via ``Session.fork``
+          (session_store.py:347; the source log is never touched), optionally
+          positioning the new file's cursor at ``entry_id``. Returns the new
+          session file path as a string.
+
+        Fail-Early: export requires a concrete file-backed ``Session`` log — an
+        in-memory SDK log cannot be exported to a file and RAISES rather than
+        fabricating one.
+        """
+        from tau_agent_core.conversation_tree import ConversationTree
+
+        session = self._require_session()
+        log = session.session_log
+        if mode == "in_place":
+            log.append_navigate(entry_id)
+            return ConversationTree(log.entries(), log.cursor).context_for()
+        if mode == "export":
+            fork_classmethod = getattr(type(log), "fork", None)
+            if fork_classmethod is None:
+                raise RuntimeError(
+                    "fork(mode='export'): the bound session log is not file-backed and "
+                    "cannot be exported to a new file"
+                )
+            # Fork into the source's own cwd partition (pi keeps a fork in the
+            # same session dir); fall back to the context cwd for a log that does
+            # not expose one.
+            cwd = getattr(log, "cwd", None) or self._cwd
+            forked = fork_classmethod(log, cwd)
+            if entry_id is not None:
+                forked.append_navigate(entry_id)
+            return str(forked.path)
+        raise ValueError(f"fork: unknown mode {mode!r} (expected 'in_place' or 'export')")
+
     def set_ui_delegate(self, delegate: Any) -> None:
         """Set the TUI delegate for UI methods.
 
