@@ -36,7 +36,6 @@ from tau_ai.types import (
     ThinkingContent,
     ToolCall,
     ToolResultMessage,
-    UserMessage,
     Usage,
 )
 
@@ -45,6 +44,7 @@ from tau_agent_core.agent_loop_types import (
     PreparedToolCall,
 )
 from tau_agent_core.events import AgentEvent
+from tau_agent_core.messages import convert_to_llm
 from tau_agent_core.tools.base import AgentTool, AgentToolResult, ToolBatchResult
 
 if TYPE_CHECKING:
@@ -146,7 +146,7 @@ class AgentLoop:
 
     async def run(
         self,
-        prompts: list[UserMessage],
+        prompts: list[Any],
         context: list[Any] | None = None,
     ) -> list[Any]:
         """Run the full agent loop for one or more prompts.
@@ -158,7 +158,9 @@ class AgentLoop:
         4. Emits agent_end with final messages
 
         Args:
-            prompts: List of user messages to start with.
+            prompts: Messages to start with — user messages, and any
+                extension-injected ``custom`` message dicts (serialized custom→user
+                at the wire by ``_stream_response``).
             context: Existing message history.
 
         Returns:
@@ -411,10 +413,15 @@ class AgentLoop:
         if dispatcher is not None and dispatcher.has_handlers("context"):
             context = await dispatcher.emit_context(list(context))
 
+        # Serialize agent-level `custom` messages (extension-injected durable
+        # nodes, E5 §3.1 / S29) to the LLM-acceptable `user` role BEFORE the
+        # provider sees them — pi `convertToLlm` custom→user. The node stays
+        # `role: "custom"` in the tree / render; only the wire is remapped. A
+        # no-op for the zero-custom-message common case (passes each through).
+        messages = convert_to_llm(list(context))
         # Prepend system prompt as a system message if present.
         # Only add it if the context doesn't already start with a system message
         # (which it may have from the backend's conversation history).
-        messages = list(context)
         system_prompt = self.config.system_prompt
         if system_prompt:
             # Check if context already starts with a system message

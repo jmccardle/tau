@@ -205,6 +205,10 @@ ROLE_LABELS: dict[str, str] = {
     "system": "System",
     "toolCall": "Tool call",
     "toolResult": "Tool result",
+    # Extension-injected durable node (before_agent_start, E5 §3.1): rendered
+    # distinctly so it never reads as a literal user turn (role "custom" on the
+    # node, serialized custom→user only on the wire).
+    "custom": "Extension",
 }
 
 

@@ -377,6 +377,16 @@ class Session:
     def append_message(self, message: dict[str, Any]) -> str:
         return self._append("message", message=message)
 
+    def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
+        """Persist an extension-injected custom message as a ``customMessage`` node.
+
+        The on-disk counterpart of ``InMemorySessionLog.append_custom_message``
+        (E5 §3.1 / S29): the durable, reloadable form of a ``before_agent_start``
+        injection. Its own entry KIND carrying the stored ``message`` (``role:
+        "custom"``) and the top-level ``customType`` — folded onto the active path
+        by ``ConversationTree`` and remapped custom→user on the wire."""
+        return self._append("customMessage", customType=custom_type, message=message)
+
     def append_model_change(self, model: str, backend: str) -> str:
         return self._append("model_change", model=model, backend=backend)
 

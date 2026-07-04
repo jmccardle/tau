@@ -63,6 +63,8 @@ class SessionLog(Protocol):
 
     def append_message(self, message: dict[str, Any]) -> str: ...
 
+    def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str: ...
+
     def append_compaction(self, summary: str, first_kept_id: str, tokens_before: int) -> str: ...
 
     def append_navigate(self, target_id: str | None) -> str: ...
@@ -119,6 +121,18 @@ class InMemorySessionLog:
 
     def append_message(self, message: dict[str, Any]) -> str:
         return self._append("message", message=message)
+
+    def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
+        """Persist an extension-injected custom message as a ``customMessage`` node.
+
+        The durable form of a ``before_agent_start`` injection (E5 §3.1 / S29):
+        its own tree entry KIND, carrying the stored ``message`` (``role:
+        "custom"``) plus the top-level ``customType`` (the extension-origin
+        identity). ``ConversationTree`` folds it onto the active path like a
+        ``message`` entry (it is not a splice anchor) and the wire remaps
+        custom→user, so the injected content reaches the model and survives a
+        reload byte-identically."""
+        return self._append("customMessage", customType=custom_type, message=message)
 
     def append_compaction(self, summary: str, first_kept_id: str, tokens_before: int) -> str:
         return self._append(

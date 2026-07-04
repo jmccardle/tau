@@ -23,6 +23,7 @@ from tau_ai.types import Model, UserMessage
 
 from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.extension_types import ExtensionAPI
+from tau_agent_core.messages import create_custom_message
 from tau_agent_core.extensions.registry import ExtensionRegistry
 from tau_agent_core.extensions.runner import ExtensionRunner
 from tau_agent_core.session import SessionState
@@ -452,9 +453,12 @@ class AgentSession:
         #   - message(s) ACCUMULATE across handlers and are injected as custom
         #     messages after the user turn (pi pushes role:"custom" messages;
         #     on the wire they read as user messages — messages.ts custom→user).
+        #     They are DURABLE (E5 §3.1 / S29): threaded to the loop this turn AND
+        #     persisted as ``customMessage`` tree nodes below, so a reload replays
+        #     the exact path the model saw (no second history / reload fork).
         # Gated on has_handlers for the zero-extension fast path.
         turn_system_prompt = self._system_prompt
-        custom_messages: list[UserMessage] = []
+        custom_messages: list[dict[str, Any]] = []
         if self._extension_runner.has_handlers("before_agent_start"):
             before = await self._extension_runner.emit_before_agent_start(
                 prompt=text,
@@ -465,7 +469,7 @@ class AgentSession:
                 if before.get("system_prompt") is not None:
                     turn_system_prompt = before["system_prompt"]
                 for msg in before.get("messages") or []:
-                    custom_messages.append(self._custom_message_to_user(msg))
+                    custom_messages.append(self._custom_message_node(msg))
 
         # Build the agent loop config
         config = AgentLoopConfig(
@@ -522,12 +526,25 @@ class AgentSession:
         turn_messages.append(user_dict)
 
         # Persist the injected nextTurn messages too — they are genuine queued
-        # user content that joins the conversation (unlike the transient
-        # before_agent_start custom messages, which are loop-only context).
+        # user content that joins the conversation.
         for qmsg in queued:
             qdict = qmsg.model_dump()
             self._session_log.append_message(qdict)
             turn_messages.append(qdict)
+
+        # Persist the before_agent_start injected messages as durable
+        # ``customMessage`` tree nodes (E5 §3.1 / S29). They reached the model as
+        # prompts THIS turn (threaded above, in the same [user, ...nextTurn,
+        # ...custom] order pi uses); recording them as extension-origin nodes here
+        # — in that same order, AFTER the user/queued turns and BEFORE the
+        # assistant response — closes the reload fork (agent_session.py:419-421):
+        # the next load rebuilds the exact path the model saw, with each node's
+        # ``role: "custom"`` rendered as extension-injected and serialized
+        # custom→user on the wire. Each carries the node into the returned
+        # transcript too (so it is visible, not a hidden channel).
+        for cmsg in custom_messages:
+            self._session_log.append_custom_message(cmsg, custom_type=str(cmsg["customType"]))
+            turn_messages.append(cmsg)
 
         # Assistant responses and tool results produced this turn.
         for msg in final_messages:
@@ -921,30 +938,37 @@ class AgentSession:
             )
         return resolved
 
-    def _custom_message_to_user(self, message: dict[str, Any]) -> UserMessage:
-        """Convert a ``before_agent_start`` custom message into a ``UserMessage``.
+    def _custom_message_node(self, message: dict[str, Any]) -> dict[str, Any]:
+        """Build the durable ``custom`` message dict for a ``before_agent_start`` hook.
 
-        Handlers return ``{customType, content, display, details}`` (pi
-        ``BeforeAgentStartEventResult.message``); on the wire pi maps a custom
-        message to a ``user`` message carrying its content (messages.ts custom→user:
-        a string ``content`` becomes a single text block, a block list passes
-        through). τ mirrors that mapping so the injected message reaches the model.
+        Handlers return ``{customType, content, display?, details?}`` (pi
+        ``BeforeAgentStartEventResult.message``). This is turned into an
+        agent-level custom message (``role: "custom"``,
+        :func:`~tau_agent_core.messages.create_custom_message`) that is both
+        threaded to the loop this turn AND persisted as a ``customMessage`` tree
+        node (E5 §3.1 / S29). The ``role: "custom"`` marks it extension-origin for
+        the TUI / tree browser; :func:`~tau_agent_core.messages.convert_to_llm`
+        serializes it to a ``user`` message on the wire (pi messages.ts
+        custom→user), so the injected message still reaches the model.
 
         Raises:
-            ValueError: if the message has no ``content`` — a handler that returns
-                a ``message`` must say what to inject (Fail-Early, no empty block).
+            ValueError: if the message has no ``content`` (a handler returning a
+                ``message`` must say what to inject) or no ``customType`` (the
+                extension-origin identity is not fabricated) — Fail-Early.
         """
         if "content" not in message:
             raise ValueError("before_agent_start message is missing 'content' — nothing to inject")
-        content = message["content"]
-        if isinstance(content, str):
-            content = [{"type": "text", "text": content}]
-        return UserMessage.model_validate(
-            {
-                "role": "user",
-                "content": content,
-                "timestamp": self._timestamp(),
-            }
+        if "customType" not in message:
+            raise ValueError(
+                "before_agent_start message is missing 'customType' — the extension-origin "
+                "type is required (Fail-Early, no fabricated default)"
+            )
+        return create_custom_message(
+            custom_type=str(message["customType"]),
+            content=message["content"],
+            display=bool(message.get("display", True)),
+            details=message.get("details"),
+            timestamp=self._timestamp(),
         )
 
     def _build_turn_tools(self) -> list:
