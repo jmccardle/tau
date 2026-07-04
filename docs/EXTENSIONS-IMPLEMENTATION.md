@@ -274,9 +274,10 @@ handler.
 
 Each demo is a runnable extension + a smoke test. Dependency-ordered (research Part C):
 
-1. **`24_budget.py`** (E1 + cost) — accumulate `message_end`/`turn_end` usage; past a
-   USD (or token) threshold inject a warning via `context` then `ctx.abort()` (exists,
-   `extension_types.py`). *Note:* the warn-via-`context` version needs E2 — see §7 D1.
+1. **`24_budget.py`** (E2 + cost; lands **after** E2 per D1) — accumulate `message_end`/
+   `turn_end` usage, computing running `$` from tokens × the model's `cost` block; past a
+   USD (or token) threshold inject a warning via the `context` hook then `ctx.abort()`
+   (`abort` already exists, `extension_types.py`).
 2. **E-json** (Tier 9 json, pulled forward — D-delegate) then **`20_delegate.py`** (E0 flags
    + E1 + E-json) — first land pi-faithful `--mode json` (per-message `message_end` carrying
    `usage`/`model`/`stop_reason`, `type` discriminator, header line first) so children emit
@@ -322,9 +323,10 @@ order: **E-json** (pi-faithful `--mode json`, Tier 9 pulled forward per D-delega
 **between E1 and the delegate demo**; and **E3-ctx is now M/L** because it carries the
 live-Session bind + transcript_view refactor (D3). Suggested landing order, each a
 green-gated commit (ruff + mypy + pytest): **E0 → E1 (+ cost at the emit boundary) →
-24_budget → E-json (Tier-9 json) → 20_delegate → E2 → 22_gatekeeper + 21_reminders →
+E-json (Tier-9 json) → 20_delegate → E2 → 22_gatekeeper + 21_reminders + 24_budget →
 E3-ctx (live-Session bind first, then the `ctx` op surface) → 23_context_surgeon →
-walkthrough doc.**
+walkthrough doc.** (`24_budget` lands **after** E2, not before — its warn-then-abort needs
+the `context` hook, D1.) The full step-by-step is §8.
 Testing spine: E1/E2 via `fake_llm` through the full loop (registered fake tools, veto/patch
 assertions, injected-context on the wire payload); E3-ctx via the property-style entry-tree
 tests the substrate already uses; delegate smoke-tested by spawning `tau -p` against the fake
@@ -369,3 +371,121 @@ channel. `get_context_usage` adopts pi's `ContextUsage` shape. Discovery order i
   is also spawned with **`--no-extensions`** (added in E0) for true hermeticity.
 - **D-parallel — HARD CODE-GUARD** in `20_delegate.py`: parallel mode forces a read-only
   `--tools` allowlist (Fail-Early), write-tool classification a small constant list.
+
+---
+
+## 8. Directly executable step plan
+
+Each step is one landable, green-gated commit (ruff + mypy + `pytest`). "Files" names the
+primary targets; "Verify" is the test that proves it. Steps within a phase are ordered; phases
+are strictly ordered except where noted. Commit prefix `feat(ext):` unless noted. This is the
+list a builder (or the implement→review→fix workflow) executes top to bottom.
+
+### E0 — loader + flags
+- **S1 — one loader.** Delete `tau_agent_core/extensions/loader.py` (dead) and its
+  `extensions/__init__.py` re-export; rewrite `sdk._load_extensions` as the single loader:
+  verb `register(api)`, file-path importlib, `await` async factories, discovery = global
+  `~/.tau/extensions` + explicit paths only, dedup by resolved path. Return
+  `LoadExtensionsResult{extensions, errors:[{path,error}]}`. Explicit-`-e` load failure
+  **raises**; discovered failure → `errors[]` + stderr, continue. Files: `sdk.py`,
+  `extensions/__init__.py`, new `extensions/loader.py` (canonical) or fold into `sdk.py`.
+  *Verify:* `test_extension_loader.py` — discovered vs explicit, `-ne`, broken-discovered
+  collected, broken-explicit raises, async `register` awaited.
+- **S2 — CLI flags.** Add `-e/--extension` (append), `-ne/--no-extensions`, `-xt/--exclude-tools`,
+  `-nbt/--no-builtin-tools`, `--no-session`, `--append-system-prompt` to `cli.py build_parser`
+  + `CLIArgs`; thread into `headless.py`. `-nbt` degenerates to `--no-tools` (doc note).
+  Use `parse_known_args` to preserve unknown `--flags` for future `registerFlag` (or defer,
+  noting it). Files: `cli.py`, `headless.py`. *Verify:* flags parse + reach the run config;
+  `--no-extensions` keeps `-e`.
+
+### E1 — connect the API (+ cost)
+- **S3 — bind the API.** `_make_extension_api()` → one `ExtensionAPI(session=self,
+  event_bus=self._events, registry=<session-owned>)`; drop legacy mirrors
+  (`_handlers`/`_active_tools`/`_commands`/`_session_name`) and update dependent tests.
+  Files: `agent_session.py:533-540`, `extension_types.py`. *Verify:* `api.on('tool_execution_end')`
+  receives a live event over a `fake_llm` turn.
+- **S4 — registered tools reach the loop.** Resolve the registry's active extension tools →
+  `AgentTool` and merge into the per-turn `tools` (`agent_session.py:249-255,333-339`); port
+  `register_tool` to pi's `ToolDefinition` shape (dict params). Files: `agent_session.py`,
+  `extensions/registry.py`, `extension_types.py`. *Verify:* a registered fake tool executes;
+  a mid-session registration is live next turn.
+- **S5 — return-collecting dispatcher.** New `ExtensionRunner`-equivalent beside the notify
+  `EventBus`: typed hook events, load-order/registration-order chaining, `has_handlers`.
+  Files: new `extensions/runner.py` (or `events.py` sibling). *Verify:* unit — collect + chain
+  + short-circuit; no-handler fast path.
+- **S6 — real usage + de-fictionalize injection.** `get_context_usage()` → pi `ContextUsage`
+  `{tokens, context_window, percent}` via `estimate_context_tokens`; `send_user_message`
+  default → `followUp`, validate `∈{followUp,nextTurn}`, **raise** (not silent no-op) until the
+  E3-ctx queue exists. Files: `extension_types.py`. *Verify:* real non-zero usage; bad
+  `deliver_as` raises.
+- **S7 — cost at the emit boundary.** Optional per-model `cost:{input,output,cache_read,
+  cache_write}` (USD/M) in `config.json`; compute `cost_usd` in `backends.py` (`usage_totals`,
+  `:520-531`) + `headless.py` `done` (`:279`) from `model_config`; **emit only when present**
+  (absent ≠ `$0`). Files: `backends.py`, `headless.py`, config docs. *Verify:* cost present with
+  config, absent without; free `cost:{…:0}` ≠ absent.
+
+### E-json — pi-faithful `--mode json` (Tier 9, pulled forward; before the delegate)
+- **S8 — pi-faithful json schema.** Add a `tau_event → pi AgentSessionEvent` serializer sourced
+  from the `AgentEvent` bus: `type` discriminator (not `kind`), per-message `message_end`
+  carrying `usage`/`model`/`stop_reason`, session header line first. Behind `--mode json`
+  (gate the old `kind` schema behind a flag or replace — decide at build time; a demo adapter
+  reads whichever ships). Files: `backends.py`, `headless.py`. *Verify:* json stream carries
+  `message_end` with usage/model/stop_reason; header first.
+
+### E-demo-1 — delegate (needs E0 + E1 + E-json)
+- **S9 — `examples/20_delegate.py`.** `delegate` tool spawning `tau -p --mode json --no-session
+  --no-extensions --model … --tools … --append-system-prompt <tmp> "Task: …"`; single /
+  parallel-N (≤8, 4-concurrent, 50 KB/task) / chain (`{previous}`); per-child `max_usd`/
+  `max_seconds`/`max_turns`/stuck-detection + stop_reason taxonomy reading E-json signals;
+  usage → `details`; **parallel forces read-only `--tools`**. *Verify:* smoke test spawning
+  `tau -p` against the fake provider (single + parallel + a forced-read-only assertion).
+
+### E2 — mutating hooks (inject dispatcher into AgentLoop)
+- **S10 — thread the dispatcher.** `AgentSession` injects the hook-dispatcher into
+  `AgentLoop.__init__`; `has_handlers` fast path. Files: `agent_session.py`, `agent_loop.py`.
+- **S11 — `tool_call`** veto/patch at `_prepare_tool_call` (`agent_loop.py:804`): `{block,reason}`
+  → `BlockedCall`; in-place `input` patch; **exception = block**; no re-validation. *Verify:*
+  veto blocks + error text = reason; patch reaches tool; throwing handler blocks.
+- **S12 — `tool_result`** patch at `_apply_after_hooks` (`agent_loop.py:888`): `{content?,
+  details?,is_error?}` chained. *Verify:* patch replaces content/is_error.
+- **S13 — `before_agent_start`** in `prompt()` before `loop.run()`: `system_prompt` chains,
+  `message`s accumulate. *Verify:* two handlers chain + accumulate.
+- **S14 — `context`** in `_stream_response` (`agent_loop.py:376`) on a deep copy, before every
+  LLM call: `{messages?}` replaces. *Verify:* injected `<system-reminder>` on the wire payload.
+
+### E-demo-2 — E2 demos (any order; after E2)
+- **S15 — `examples/22_gatekeeper.py`** — `tool_call` veto: deny writes outside `.tau/scope.txt`
+  prefixes; deny reads/bash touching `tests_heldout/`. *Verify:* out-of-scope write blocked;
+  held-out read blocked.
+- **S16 — `examples/21_reminders.py`** — the four-rule bank (tests-readonly / root-cause-after-2 /
+  scope-guard / no-new-deps) with cooldowns 3/4/2/1, state via `tool_call`/`tool_result`,
+  inject via `context`; read `event.input.*`. *Verify:* each rule fires once then cools down.
+- **S17 — `examples/24_budget.py`** — accumulate usage → running `$` (tokens × config cost);
+  past threshold inject warning via `context` then `ctx.abort()`. *Verify:* aborts past
+  threshold; warning injected.
+
+### E3-ctx — session-control surface (bind live first)
+- **S18 — bind the live Session (D3 refactor).** TUI `AgentSession` takes the live `Session` as
+  its `SessionLog` (retire the scratch `InMemorySessionLog`); remove `app.py`'s own
+  `append_message` writes (`:1145,1239`) → AgentSession sole persister; TUI transcript becomes a
+  `ConversationTree`/`session.context` view rebuilt at structural points. Files: `backends.py`,
+  `app.py`, `agent_session.py`. *Verify:* one write path (no double-persist); TUI resume/render
+  unchanged; existing suite green.
+- **S19 — `ctx` op surface.** Add `compact`/`entries`/`summarize_branch`/`navigate`/`fork` to
+  `ExtensionContext`, delegating to the landed methods (§E3c.1). *Verify:* each op mutates the
+  one session + re-renders `context_for`.
+- **S20 — deferral + injection queue.** Turn-end drain at the `_maybe_auto_compact` site
+  (`agent_session.py:301`); `_queue_message` with `followUp`(end-of-prompt) / `nextTurn`(next
+  prompt). *Verify:* deferred `compact_now` applies once at end-of-prompt; followUp/nextTurn land.
+- **S21 — seam-3 onto the bus.** Route `subscribe_session_events` dicts onto a separate
+  `EventBus` channel. *Verify:* `api.on('session_before_compact')` fires.
+
+### E-demo-3 + capstone
+- **S22 — `examples/23_context_surgeon.py`** — `compact_now` (deferred), `summarize_history`,
+  `fork_session` (+ optional delegate spawn). *Verify:* headless smoke test of each tool.
+- **S23 — walkthrough doc** — `docs/` composed run (gatekeeper + reminders + budget wrapping a
+  delegate-driven plan→implement→evaluate). No code; ties the demos together.
+
+**Fast path for a builder:** S1–S2 (E0) · S3–S7 (E1+cost) · S8 (E-json) · S9 (delegate) ·
+S10–S14 (E2) · S15–S17 (demos) · S18–S21 (E3-ctx) · S22–S23. Each block is independently
+green-gatable; S3 is the keystone (nothing observable until the API is bound).

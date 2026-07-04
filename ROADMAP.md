@@ -408,8 +408,22 @@ remaining milestones (M3-UI/M4/M5) keep the order above.
 half is DONE (and the `summarize_branch` follow-up with it). The remaining
 beeline is the strictly-ordered extension track we parallelized past:
 **E0 (loader + flags) → E1 (connect the API) → E2 (mutating hooks) → E3's
-ExtensionContext surface** (needs E1) **→ E4 (demo extensions)**. **Next
-concrete step: E0** — reconcile the two loaders to `register(api)` (importlib +
-entry points, Fail-Early on load errors), surface `--extension/-e` +
-`--no-extensions`, and land `--exclude-tools` (Tier 6) + `--no-session`
-(Tier 7). Sized **S**.
+ExtensionContext surface** (needs E1) **→ E4 (demo extensions)**.
+
+**Planned 2026-07-03 — `docs/EXTENSIONS-IMPLEMENTATION.md`** (the directly
+executable E0–E4 spec, 23 steps S1–S23, from a 6-probe research pass; §8 is the
+build checklist). Open decisions RESOLVED (§7). Two scope shifts from that plan:
+- **Tier 9's json half is pulled forward** as **E-json** (S8) — pi-faithful
+  `--mode json` (per-message `message_end` with usage/model/stop_reason) lands
+  *before* the delegate demo so child limits/stuck-detection have real signals.
+  Tier 9's `--export` + doc-finalize remain in place.
+- **E3's ExtensionContext phase now carries the deferred TUI view refactor**
+  (`self.messages → ConversationTree` view; retire the E3-1d scratch
+  `InMemorySessionLog`; `AgentSession` becomes sole persister) — S18, the §4.5
+  endgame, because agent-callable session tools must mutate one authoritative
+  session on both paths. Session-sprint Phases B/C keep their order.
+
+**Next concrete step: E0 (S1–S2)** — one `register(api)` loader (delete the dead
+second loader; file-path importlib; `LoadExtensionsResult` with collected
+errors; explicit-`-e` failure fatal), then the flags `-e`/`-ne`/`-xt`/`-nbt`/
+`--no-session`/`--append-system-prompt`. Sized **S**.
