@@ -298,13 +298,22 @@ def _launch_tui(args: CLIArgs, config: dict) -> int:
     if args.system_prompt is not None:
         overrides["system_prompt"] = args.system_prompt
 
-    # Run-level extension flags apply to EVERY backend the TUI creates, so they
-    # ride separately from the per-model ``overrides`` (a model switch must not
-    # drop them): explicit ``-e`` paths + the ``-ne`` discovery toggle. Passed
-    # even when empty so the app has a definite discovery policy (E5 §2.2).
+    # Run-level flags apply to EVERY backend the TUI creates, so they ride
+    # separately from the per-model ``overrides`` (a model switch must not drop
+    # them, and -xt/-nbt/--append-system-prompt don't trigger the override block
+    # above): explicit ``-e`` paths + ``-ne`` discovery, plus the tool/prompt
+    # flags (E5 §2.2-2.3). Passed even when empty so the app has a definite policy.
+    exclude_tools = (
+        [t.strip() for t in args.exclude_tools.split(",") if t.strip()]
+        if args.exclude_tools
+        else []
+    )
     run_config = {
         "extensions": list(args.extensions or []),
         "no_extensions": args.no_extensions,
+        "exclude_tools": exclude_tools,
+        "no_builtin_tools": args.no_builtin_tools,
+        "append_system_prompt": list(args.append_system_prompt or []),
     }
 
     from tau_coding_agent.app import Parley

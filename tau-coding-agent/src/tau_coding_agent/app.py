@@ -22,6 +22,7 @@ import traceback
 from typing import Any, Callable, Optional
 
 from tau_coding_agent.backends import create_backend, Backend
+from tau_coding_agent.headless import _append_system_prompt
 
 # Session persistence lives in a Textual-free module so `tau -p` can save
 # sessions without importing the TUI. Sessions are append-only JSONL transcripts
@@ -1045,6 +1046,11 @@ class Parley(App):
         run_config = cli_run_config or {}
         self._extension_paths: list[str] = list(run_config.get("extensions", []))
         self._discover_extensions: bool = not run_config.get("no_extensions", False)
+        # Run-level tool/prompt flags (S28), applied at each create_backend /
+        # new-chat so a model switch keeps them. Defaults are inert (a bare tau).
+        self._exclude_tools: list[str] = list(run_config.get("exclude_tools", []))
+        self._no_builtin_tools: bool = bool(run_config.get("no_builtin_tools", False))
+        self._append_system_prompt: list[str] = list(run_config.get("append_system_prompt", []))
         self.load_config()
         if cli_overrides:
             self._apply_cli_overrides(cli_overrides)
@@ -1295,6 +1301,26 @@ class Parley(App):
         if agent_session is not None:
             self._session_event_unsub = subscribe_session_events(agent_session.route_session_event)
 
+    def _apply_run_config(self, model_config: dict) -> dict:
+        """Inject run-level tool flags into a model_config before create_backend (S28).
+
+        ``--no-builtin-tools`` drops the built-in tool set (``tools=[]``);
+        extension-registered tools survive because they merge in later
+        (``AgentSession._build_turn_tools``). ``--exclude-tools`` rides as an
+        ``exclude_tools`` denylist that ``TauBackend`` applies to the resolved
+        built-ins. Returns the config unchanged when neither flag is set, so a bare
+        ``tau`` is untouched; otherwise a shallow copy (never mutate the shared
+        ``config["models"]`` entry).
+        """
+        if not (self._exclude_tools or self._no_builtin_tools):
+            return model_config
+        mc = dict(model_config)
+        if self._no_builtin_tools:
+            mc["tools"] = []
+        if self._exclude_tools:
+            mc["exclude_tools"] = self._exclude_tools
+        return mc
+
     async def _load_backend_extensions(self) -> None:
         """Load file-path extensions into the current backend's live session (E5 §2.2).
 
@@ -1342,7 +1368,7 @@ class Parley(App):
 
         # Create backend
         try:
-            self.current_backend = create_backend(model_config)
+            self.current_backend = create_backend(self._apply_run_config(model_config))
             self.log(f"Created backend: {model_config.get('backend')} for model {model}")
         except Exception as e:
             self.notify(f"Failed to create backend: {str(e)}", severity="error")
@@ -1350,7 +1376,12 @@ class Parley(App):
             return
 
         # Create new session (writes the header + system message; append-only).
-        system_prompt = self.config.get("system_prompt", "You are a helpful assistant.")
+        # --append-system-prompt sections augment the base prompt on a NEW session
+        # (S28); a resumed session keeps its own stored prompt, so no append there.
+        system_prompt = _append_system_prompt(
+            self.config.get("system_prompt", "You are a helpful assistant."),
+            self._append_system_prompt,
+        )
         self.current_session = Session.create(
             os.getcwd(),
             model,
@@ -1694,7 +1725,7 @@ class Parley(App):
                 self.notify(f"Model {session.model} not found in config", severity="error")
                 return
 
-            self.current_backend = create_backend(model_config)
+            self.current_backend = create_backend(self._apply_run_config(model_config))
             self.current_session = session
             self._bind_backend_session()
             await self._load_backend_extensions()

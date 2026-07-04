@@ -191,6 +191,14 @@ class TauBackend(Backend):
 
         # Discover tools from config. Defaults to all built-in tools.
         tool_names = config.get("tools", ["read", "write", "edit", "bash", "ls", "grep", "find"])
+        # --exclude-tools denylist (pi excludeTools): drop the named built-ins from
+        # the resolved set (E5 §2.3 / S28). Applied here so BOTH run paths honour it
+        # (they build the session through this one seam). Extension-registered tools
+        # are merged later in AgentSession._build_turn_tools and are NOT subject to
+        # this built-in denylist — pi's excludeTools targets the built-in registry.
+        exclude = set(config.get("exclude_tools") or [])
+        if exclude:
+            tool_names = [t for t in tool_names if t not in exclude]
         if tool_names:
             tools = _resolve_tools(tool_names)
         else:

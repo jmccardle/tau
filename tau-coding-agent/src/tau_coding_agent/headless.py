@@ -103,11 +103,12 @@ def resolve_model_config(
     # Per-invocation overrides (CLI > config).
     if args.provider:
         model_config["backend"] = args.provider
-    # Tool selection. --no-tools disables everything; --no-builtin-tools DEGENERATES
-    # to the same until E1 lands registered (extension) tools in the loop — pi keeps
-    # them distinct (noTools "all" vs "builtin", args.ts:104-142; main.ts:423-427),
-    # but with no non-builtin tools yet, "disable builtins" == "disable all". Documented
-    # in docs/EXTENSIONS-IMPLEMENTATION.md §E0.2 / §8 S2.
+    # Tool selection. --no-tools disables everything; --no-builtin-tools drops the
+    # built-in set (``tools=[]``) but extension-registered tools survive, because
+    # they merge in later (AgentSession._build_turn_tools) independent of this key —
+    # so the two now read distinctly once extensions load (E5 S28), matching pi's
+    # noTools "all" vs "builtin" (args.ts:104-142). ``tools=[]`` here means
+    # "no built-ins"; a bare-model run with an extension tool still exposes it.
     if args.no_tools or args.no_builtin_tools:
         model_config["tools"] = []
     elif args.tools:
@@ -117,7 +118,7 @@ def resolve_model_config(
         model_config["tools"] = names
 
     # --exclude-tools denylist (pi excludeTools, args.ts:143-153). Carried on the run
-    # config; the filter is applied at tool resolution in E1 (§8 S3+).
+    # config; TauBackend applies it to the resolved built-ins at construction (S28).
     if args.exclude_tools is not None:
         excluded = [t.strip() for t in args.exclude_tools.split(",") if t.strip()]
         if not excluded:
@@ -125,19 +126,33 @@ def resolve_model_config(
         model_config["exclude_tools"] = excluded
 
     # Extensions: explicit --extension paths + the discovery toggle (pi args.ts:150-153).
-    # Loaded/bound to the live session in E1 (§8 S3+); staged on the run config here.
+    # ``run_print`` loads them into the live session after create_backend (E5 S27).
     if args.extensions:
         model_config["extensions"] = list(args.extensions)
     if args.no_extensions:
         model_config["no_extensions"] = True
 
     # Appended system-prompt sections (pi appendSystemPrompt, system-prompt.ts:48).
-    # Combined with the base coding prompt by the E1 system-prompt builder (§8 S3+);
-    # kept off the base ``system_prompt`` so it augments rather than replaces it.
+    # ``run_print`` folds them into the stored session prompt via _append_system_prompt
+    # (S28); kept off the base ``system_prompt`` so they augment rather than replace it.
     if args.append_system_prompt:
         model_config["append_system_prompt"] = list(args.append_system_prompt)
 
     return spec, model_config
+
+
+def _append_system_prompt(base: str, sections: list[str] | None) -> str:
+    """Append ``--append-system-prompt`` sections to a base system prompt.
+
+    Sections augment rather than replace the base (pi ``appendSystemPrompt``,
+    system-prompt.ts:48), joined by blank lines. An empty/absent list returns the
+    base unchanged; an empty base with sections yields just the sections. Shared by
+    the headless and TUI paths (E5 §2.3 / S28).
+    """
+    if not sections:
+        return base
+    parts = [base, *sections] if base else list(sections)
+    return "\n\n".join(parts)
 
 
 def assemble_prompt(messages: list[str]) -> str:
@@ -278,6 +293,14 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
             args.system_prompt
             if args.system_prompt is not None
             else config.get("system_prompt", "")
+        )
+        # --append-system-prompt sections augment (not replace) the base prompt
+        # (pi appendSystemPrompt) — E5 §2.3 / S28. Appended to the STORED session
+        # prompt (the first message), which is what the model actually sees on this
+        # path; the backend's own system_prompt stays empty. Only on a fresh run —
+        # a resumed session already carries its (possibly-augmented) prompt.
+        system_prompt = _append_system_prompt(
+            system_prompt, model_config.get("append_system_prompt")
         )
         # --no-session → ephemeral (path=None, appends never touch disk); the
         # create_in_memory seam is the one-API alternative to create (§E0.2).

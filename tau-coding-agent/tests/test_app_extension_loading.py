@@ -111,6 +111,41 @@ async def test_discovered_failure_surfaces_notice(app, monkeypatch):
     assert any("broken.py" in msg and sev == "warning" for msg, sev in notices)
 
 
+def test_apply_run_config_no_builtin_tools_drops_builtins(app):
+    """--no-builtin-tools sets tools=[] (extension tools survive the later merge)."""
+    app._no_builtin_tools = True
+    mc = app._apply_run_config({"backend": "openai", "model": "m", "tools": ["read"]})
+    assert mc["tools"] == []
+
+
+def test_apply_run_config_exclude_tools_rides_as_denylist(app):
+    """--exclude-tools rides as an exclude_tools denylist TauBackend applies."""
+    app._exclude_tools = ["bash"]
+    mc = app._apply_run_config({"backend": "openai", "model": "m", "tools": ["read", "bash"]})
+    assert mc["exclude_tools"] == ["bash"]
+
+
+def test_apply_run_config_no_flags_returns_unchanged(app):
+    """A bare tau (no run flags) leaves the model_config object untouched."""
+    original = {"backend": "openai", "model": "m", "tools": ["read"]}
+    assert app._apply_run_config(original) is original
+
+
+async def test_new_chat_appends_system_prompt(app, tmp_path):
+    """--append-system-prompt augments the base prompt on a NEW session (S28)."""
+    app._append_system_prompt = ["EXTRA RULE"]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+
+        sys_msg = app.messages[0]
+        assert sys_msg["role"] == "system"
+        assert "sys" in sys_msg["content"]  # base prompt from the fixture config
+        assert "EXTRA RULE" in sys_msg["content"]
+
+
 async def test_explicit_failure_surfaces_error_notice(app, monkeypatch):
     """An explicit ``-e`` failure (loader RAISES) is caught into an error notice."""
 
