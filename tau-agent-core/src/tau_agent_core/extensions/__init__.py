@@ -18,10 +18,18 @@ from tau_agent_core.extension_types import (
     ExtensionUI,
 )
 from tau_agent_core.extensions.registry import ExtensionRegistry
+from tau_agent_core.extensions.runner import (
+    ExtensionError,
+    ExtensionHandlers,
+    ExtensionRunner,
+)
 
 __all__ = [
     "ExtensionAPI",
     "ExtensionContext",
     "ExtensionUI",
     "ExtensionRegistry",
+    "ExtensionRunner",
+    "ExtensionHandlers",
+    "ExtensionError",
 ]
