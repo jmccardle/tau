@@ -172,7 +172,10 @@ async def test_rules_fire_once_then_cool_down_through_the_loop(tmp_path, monkeyp
         return _Stream([DoneEvent(final=final, usage=Usage())])
 
     session = _make_session()
-    reminders.reminders_extension(session._extension_runner.register_extension("mem:reminders"))
+    # Load the demo through its PUBLIC register(api) surface (S24): the example's
+    # ``reminders_extension`` wires all three handlers via ``api.on(…)`` on a
+    # bucket-bound api, so this drives the real api.on → ExtensionRunner bridge.
+    reminders.reminders_extension(session._bind_extension_api("examples/21_reminders.py"))
 
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=fake):
         await session.prompt("edit the test until it passes")

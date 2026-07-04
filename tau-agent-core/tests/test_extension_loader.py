@@ -112,10 +112,12 @@ class TestRegisterInvoked:
         ext_a = _write(tmp_path / "a.py", "tool_a")
         ext_b = _write(tmp_path / "b.py", "tool_b")
         made: list[ExtensionAPI] = []
+        paths: list[str] = []
 
-        def factory() -> ExtensionAPI:
+        def factory(path: str) -> ExtensionAPI:
             api = ExtensionAPI()
             made.append(api)
+            paths.append(path)
             return api
 
         result = await _load_extensions(
@@ -125,6 +127,8 @@ class TestRegisterInvoked:
         assert len(result.extensions) == 2
         assert len(made) == 2
         assert made[0] is not made[1]
+        # The factory is path-aware (S24): each api is keyed by its file path.
+        assert paths == [str(ext_a), str(ext_b)]
 
 
 # ---------------------------------------------------------------------------

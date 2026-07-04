@@ -140,10 +140,17 @@ def _make_session() -> AgentSession:
 
 
 def _wire_guard(session: AgentSession, guard: Any) -> None:
-    """Register the guard's handlers on the real notify bus + hook runner."""
-    session._events.on("message_end", guard.on_message_end)
-    group = session._extension_runner.register_extension("mem:budget")
-    group.on("context", guard.on_context)
+    """Register the guard's handlers through the PUBLIC api.on surface (S24).
+
+    Uses a bucket-bound ExtensionAPI (the surface a loaded extension is handed) so
+    the routing itself is under test: ``message_end`` (a notify event) must reach
+    the ``EventBus``, while ``context`` (a mutating hook) must reach this
+    extension's ``ExtensionRunner`` bucket. The guard is built externally so the
+    assertions can read its running totals / tripped flag.
+    """
+    api = session._bind_extension_api("examples/24_budget.py")
+    api.on("message_end", guard.on_message_end)  # notify event → EventBus
+    api.on("context", guard.on_context)  # mutating hook → runner bucket
 
 
 def _run_until_abort_fake(wire_payloads: list[list[Any]], per_completion: Usage):

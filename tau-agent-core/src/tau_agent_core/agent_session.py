@@ -73,6 +73,23 @@ def _ends_with_user_text(messages: list[Any], text: str) -> bool:
     return _message_text(last.get("content", "")).strip() == text.strip()
 
 
+def _extension_factory_label(ext: Callable) -> str:
+    """A stable, identifiable path label for an inline extension factory.
+
+    Extensions loaded from a file get their real path; an inline factory callable
+    has none, so derive one from ``__module__`` + ``__qualname__`` (falling back to
+    ``repr``) purely so the runner's per-extension buckets are distinguishable in
+    load order and in error reporting — the label is not load-bearing.
+    """
+    module = getattr(ext, "__module__", None)
+    qualname = getattr(ext, "__qualname__", None)
+    if module and qualname:
+        return f"{module}:{qualname}"
+    if qualname:
+        return str(qualname)
+    return repr(ext)
+
+
 class AgentSession:
     """High-level session API. Combines agent loop, a session log, and events.
 
@@ -146,9 +163,10 @@ class AgentSession:
         # may be GC'd mid-flight); each task discards itself on done.
         self._session_event_tasks: set[asyncio.Task[None]] = set()
 
-        # Register extensions against a SINGLE ExtensionAPI bound to this
-        # session's real event bus + registry, so handlers subscribe to the
-        # live loop bus and registered tools land in the session-owned registry.
+        # The session-shared ExtensionAPI: bound to this session's real event bus
+        # + registry + live ExtensionContext. Kept for internal consumers (the ctx
+        # the deferred-op drain and tool wrapper reach through). It has NO hook
+        # bucket — the per-extension apis below are the surface factories receive.
         self._extension_api = self._make_extension_api()
         # The return-collecting hook dispatcher (E2). One per session, bound to
         # the live ExtensionContext so the mutating-hook handlers receive the
@@ -157,8 +175,13 @@ class AgentSession:
         # it; empty until extensions register mutating hooks, so has_handlers()
         # gives every call-site the zero-extension fast path.
         self._extension_runner = ExtensionRunner(context=self._extension_api.context)
+        # Register each extension against its OWN api, bound to its OWN runner
+        # bucket (load order preserved) but SHARING the session registry, event
+        # bus, and live context. This is the S24 bridge: api.on("tool_call"/…)
+        # now lands in a per-extension ExtensionHandlers bucket the runner
+        # dispatches, instead of silently no-op'ing on the notify bus.
         for ext in self._extensions:
-            ext(self._extension_api)
+            ext(self._bind_extension_api(_extension_factory_label(ext)))
 
     # ------------------------------------------------------------------
     # Properties
@@ -892,13 +915,24 @@ class AgentSession:
             by_name[t.name] = t
         return list(by_name.values())
 
-    def _make_extension_api(self) -> ExtensionAPI:
+    def _make_extension_api(
+        self,
+        hook_handlers: Any = None,
+        context: Any = None,
+    ) -> ExtensionAPI:
         """Create an ExtensionAPI bound to this session's real refs.
 
         Binds the live loop event bus (``self._events``) and the session-owned
         registry so ``api.on(event, handler)`` subscribes to the same bus the
         agent loop emits on, and registered tools/commands land where the
         session can read them (E1.1 / step S3).
+
+        ``hook_handlers`` is this extension's own :class:`ExtensionHandlers` bucket
+        in the runner: ``api.on`` routes the four mutating hooks there (S24).
+        ``context`` shares the live :class:`ExtensionContext` — passed for the
+        per-extension apis so every handler sees the one context the session binds
+        the abort signal / live session onto; ``None`` lets ``ExtensionAPI`` make a
+        fresh context (used only for the session-shared api built at construction).
 
         Returns:
             An ExtensionAPI bound to this session, its event bus, and registry.
@@ -907,6 +941,24 @@ class AgentSession:
             session=self,
             event_bus=self._events,
             registry=self._registry,
+            context=context,
+            hook_handlers=hook_handlers,
+        )
+
+    def _bind_extension_api(self, path_label: str) -> ExtensionAPI:
+        """The bucket-bound ExtensionAPI a loaded extension is handed (S24).
+
+        Appends a fresh :class:`ExtensionHandlers` bucket for ``path_label`` to the
+        session's :class:`ExtensionRunner` (load order preserved) and returns an
+        ``ExtensionAPI`` bound to it, sharing the session's registry, event bus, and
+        live :class:`ExtensionContext`. ``api.on("tool_call"/…)`` on the returned
+        api lands in this bucket — the dispatch surface the loop's hook call-sites
+        actually read.
+        """
+        bucket = self._extension_runner.register_extension(path_label)
+        return self._make_extension_api(
+            hook_handlers=bucket,
+            context=self._extension_api.context,
         )
 
     @staticmethod

@@ -456,11 +456,14 @@ async def test_gatekeeper_veto_composes_with_surgeon_tools(tmp_path, monkeypatch
         extensions=[surgeon.context_surgeon_extension],
         compaction_settings=CompactionSettings(enabled=False),
     )
-    # Wire the demo-22 veto onto the session's mutating-hook runner alongside the
-    # surgeon tools (the documented E2 dispatch surface).
-    session._extension_runner.register_extension("mem:surgeon-gatekeeper").on(
-        "tool_call", surgeon.context_surgeon_gatekeeper
-    )
+    # Wire the demo-22 veto through the PUBLIC api.on surface (S24): a small
+    # extension factory calls ``api.on("tool_call", …)`` on a bucket-bound api, so
+    # the veto reaches the runner via the real api.on → ExtensionRunner bridge —
+    # the same path a session uses to load an extension.
+    def _veto_extension(api: object) -> None:
+        api.on("tool_call", surgeon.context_surgeon_gatekeeper)  # type: ignore[attr-defined]
+
+    _veto_extension(session._bind_extension_api("examples/22_gatekeeper.py"))
     # The surgeon tools remain registered.
     assert set(session._registry.get_active_tools()) == {
         "compact_now",

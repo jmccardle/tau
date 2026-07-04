@@ -20,6 +20,7 @@ from tau_agent_core.compaction import estimate_context_tokens
 if TYPE_CHECKING:
     from tau_agent_core.events import EventBus
     from tau_agent_core.extensions.registry import ExtensionRegistry
+    from tau_agent_core.extensions.runner import ExtensionHandlers
 
 
 class ExtensionUI:
@@ -402,6 +403,7 @@ class ExtensionAPI:
         event_bus: EventBus | None = None,
         context: ExtensionContext | None = None,
         session: Any = None,
+        hook_handlers: ExtensionHandlers | None = None,
     ) -> None:
         """Initialize ExtensionAPI.
 
@@ -410,6 +412,13 @@ class ExtensionAPI:
             event_bus: EventBus for event subscription.
             context: ExtensionContext with session state.
             session: AgentSession for messaging.
+            hook_handlers: This extension's OWN ``ExtensionHandlers`` bucket in the
+                session ``ExtensionRunner`` (load order preserved). ``api.on()``
+                routes the four MUTATING hooks (``tool_call`` / ``tool_result`` /
+                ``before_agent_start`` / ``context``) here — the dispatch surface
+                the loop's hook call-sites gate on. Left ``None`` for an api that is
+                not bound to a runner bucket; registering a hook on such an api then
+                RAISES (Fail-Early) rather than silently no-op'ing (S24).
         """
         # Lazy initialization for backward compatibility
         if registry is None:
@@ -427,21 +436,61 @@ class ExtensionAPI:
         self._event_bus = event_bus
         self._context = context
         self._session = session
+        # This extension's own hook-handler bucket in the session's
+        # ExtensionRunner (None when the api is not bound to a runner).
+        self._hook_handlers = hook_handlers
         # Bind the live session onto the context so ctx.get_context_usage()
         # (delegated to the session in pi) reads real messages + model window.
         self._context._session = session
         self._flags: dict[str, dict[str, Any]] = {}
 
     def on(self, event: str, handler: Callable) -> Callable[[], None]:
-        """Subscribe to an event on the live session event bus.
+        """Subscribe to an event — routed by KIND (S24 bridge).
+
+        The four MUTATING hooks (``ExtensionRunner.HOOK_EVENTS``: ``tool_call`` /
+        ``tool_result`` / ``before_agent_start`` / ``context``) are dispatched by
+        the session's separate return-collecting ``ExtensionRunner``, whose
+        call-sites gate on ``has_handlers(event)``. Those registrations must land in
+        THIS extension's runner bucket (``self._hook_handlers``), not on the notify
+        ``EventBus`` — otherwise they are a silent no-op in a real session (the bug
+        S24 closes). Every other (notify) event keeps going to the ``EventBus``.
 
         Args:
-            event: Event type (e.g., 'agent_start', 'all').
-            handler: Callable that receives an AgentEvent.
+            event: Event type (e.g., 'agent_start', 'tool_call', 'all').
+            handler: Callable that receives the event (an ``AgentEvent`` for notify
+                events; a ``(event_dict, ctx)`` pair for hook events).
 
         Returns:
             An unsubscribe function.
+
+        Raises:
+            RuntimeError: registering a mutating hook on an api that was never bound
+                to a runner bucket (``hook_handlers is None``). Fail-Early — a hook
+                with nowhere to dispatch is a construction bug, not a no-op.
         """
+        from tau_agent_core.extensions.runner import ExtensionRunner
+
+        if event in ExtensionRunner.HOOK_EVENTS:
+            if self._hook_handlers is None:
+                raise RuntimeError(
+                    f"api.on({event!r}): this ExtensionAPI is not bound to an "
+                    "ExtensionRunner bucket, so the mutating hook could never fire. "
+                    "Obtain the api from AgentSession's extension load path "
+                    "(each factory is handed a bucket-bound api)."
+                )
+            hook_bucket = self._hook_handlers
+            hook_bucket.on(event, handler)
+
+            def unsubscribe_hook() -> None:
+                handlers = hook_bucket.handlers.get(event)
+                if handlers is not None:
+                    try:
+                        handlers.remove(handler)
+                    except ValueError:
+                        pass
+
+            return unsubscribe_hook
+
         return self._event_bus.on(event, handler)
 
     def register_tool(self, definition: dict) -> None:

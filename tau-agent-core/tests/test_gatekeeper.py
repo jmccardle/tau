@@ -185,10 +185,12 @@ def project(tmp_path, monkeypatch):
 
 
 def _session_with_gatekeeper() -> AgentSession:
+    # Load the demo through its PUBLIC register(api) surface (S24): the example's
+    # ``gatekeeper_extension`` calls ``api.on("tool_call", …)`` on a bucket-bound
+    # api, so this exercises the real api.on → ExtensionRunner bridge — the path a
+    # session actually uses — not the low-level runner.register_extension seam.
     session = _make_session()
-    session._extension_runner.register_extension("mem:gatekeeper").on(
-        "tool_call", gatekeeper.gatekeeper_tool_call
-    )
+    gatekeeper.gatekeeper_extension(session._bind_extension_api("examples/22_gatekeeper.py"))
     return session
 
 
