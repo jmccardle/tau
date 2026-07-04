@@ -4,23 +4,34 @@ Living schedule of open work. Each item cites the evidence (file:line, doc, or
 test) it came from so it can be audited against the source of truth (pi) and the
 "Fail Early" rule.
 
-**State (2026-07-04, latest):** the **E0–E4 chain + S24** are LANDED on
-`feat/extensions-e0-e4`, and now **E5.1 — the wiring spine (S25–S28) is LANDED**
-(`docs/EXTENSIONS-E5-WIRING.md`): extensions **actually load into a running
-process on BOTH paths** (`tau -p -e` and the TUI), proven end-to-end (a file
-extension's `tool_result` hook fires in the loop and its edit persists to the
-on-disk session). `AgentSession.load_extensions` binds each file extension to the
-live runner (bucket labelled by path; async `register` awaited) — a documented
-deviation from D-E5-7 that preserves async `register`; the loader's stderr print
-was removed (returned in `errors[]`, safe under Textual). S28 wired `-xt`
-(exclude-tools filter), `-nbt` (now distinct from `--no-tools`), and
-`--append-system-prompt` on both paths. Commits `6ce7fda` (headless spine),
-`6383fa0` (TUI), `18e98d5` (S28). Suite **1625 passed / 0 failed**; ruff/
-ruff-format clean, mypy 0 across 50 files — Tier-5 gate green. **Next: E5.2–E5.5
-(S29–S37)** — the durable-hook rework (**persist `before_agent_start` messages**,
-**eliminate the `context` hook**, rework the reminders/budget demos onto durable
-edits), `api.notify` visibility, and the `/extensions` palette. Branch not merged
-to `master` yet.
+**State (2026-07-04, latest):** the **E0–E4 chain + S24** and now the **entire E5
+milestone (S25–S37) are LANDED** on `feat/extensions-e0-e4`
+(`docs/EXTENSIONS-E5-WIRING.md`). E5.1 (spine, S25–S28) loads extensions into a
+running process on BOTH paths (`tau -p -e` and the TUI); **E5.2–E5.5 (S29–S37)**
+completed the **durable-hook invariant** — a mutating hook's output is now a
+durable tree node on the active path (persisted == rendered == sent, no ephemeral
+copy):
+- **S29** (`dbacc98`): `before_agent_start` messages persist as a new
+  `customMessage` extension-origin node; the wire remaps `custom`→`user` (pi
+  `messages.ts` parity) and the node survives reload byte-identical.
+- **S30** (`f2d326f`): the ephemeral `context` hook is **eliminated** —
+  `api.on("context")` now raises (Fail-Early); `test_context_hook.py` retired and
+  replaced by `test_context_hook_removed.py` asserting the negative.
+- **S31/S32** (`c7dc4e5`, `82d215b`): the reminders + budget demos rework onto
+  durable edits (in-place `tool_result` edit / `before_agent_start`; a durable
+  warning node before `ctx.abort()`).
+- **S33** (`2d68d75`): `AgentSession.set_ui_delegate` routes `api.notify` into the
+  TUI; vetoed/blocked calls now emit `tool_execution_start` for EVERY call so a
+  blocked `is_error` node renders instead of being dropped.
+- **S34/S35** (`b39ed96`, `e913a41`): `/extensions` lists the loaded registry +
+  load errors (`summarize_extensions`); `register_command` entries appear in the
+  palette and dispatch.
+- **S36/S37** (`37cacca`, `ef07b2a`): the automated floor
+  (`test_e5_integration_floor.py`: headless smoke + Textual `Pilot` +
+  reload-invariant) and the live-procedures doc (`docs/EXTENSIONS-LIVE-PROCEDURES.md`).
+
+Suite **1652 passed / 0 failed**; ruff/ruff-format clean, mypy 0 — Tier-5 gate
+green. **Next:** merge `feat/extensions-e0-e4` to `master` (still not merged).
 
 **Prior (2026-07-03):** the **`feat/session-tree`** branch (9 commits,
 `b9303b1`→`4f80d51`) was **merged to `master`** (`--no-ff`, merge `0a839f8`) —

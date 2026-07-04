@@ -1,16 +1,19 @@
 # E5 — extension wiring, the durable-hook invariant, and the live surface
 
-> **Status: E5.1 (the wiring spine, S25–S28) LANDED 2026-07-04; E5.2–E5.5
-> (durable-hook rework + visibility + palette + tests, S29–S37) still PLAN.**
-> Extensions now *actually reach a running process* on BOTH paths (`tau -p -e`
-> and the TUI) — proven end-to-end (a file extension's `tool_result` hook fires
-> in the loop and its edit is persisted to the on-disk session). The durable-hook
-> rework (§3), visibility (§4), and the palette (§5) are the remaining milestones.
-> This is the buildable spec for the milestone that makes extensions reach a
-> running process (CLI + TUI) and reworks the mutating-hook model onto τ's
-> tree-as-truth architecture. It builds directly on the landed E0–E4 chain
-> (`docs/EXTENSIONS-IMPLEMENTATION.md`, commits S1–S23) and the post-run **S24**
-> bridge (`api.on` → `ExtensionRunner`).
+> **Status: E5 COMPLETE — E5.1 (wiring spine, S25–S28) LANDED 2026-07-04, and
+> E5.2–E5.5 (durable-hook rework + visibility + palette + tests, S29–S37) LANDED
+> 2026-07-04.** Extensions *actually reach a running process* on BOTH paths
+> (`tau -p -e` and the TUI); a mutating hook's output is now a **durable tree
+> node** on the active path (the single artifact — persisted == rendered == sent),
+> the ephemeral `context` hook is **eliminated**, `api.notify`/vetoes are visible
+> in the TUI, and `/extensions` lists the loaded registry. The durable-hook rework
+> (§3, `dbacc98`/`f2d326f`/`c7dc4e5`/`82d215b`), visibility (§4, `2d68d75`), the
+> palette (§5, `b39ed96`/`e913a41`), and the tests (§6, `37cacca`/`ef07b2a`) are
+> all in — see the §8 step list for per-step commit refs. This is the buildable
+> spec that made extensions reach a running process (CLI + TUI) and reworked the
+> mutating-hook model onto τ's tree-as-truth architecture. It builds directly on
+> the landed E0–E4 chain (`docs/EXTENSIONS-IMPLEMENTATION.md`, commits S1–S23) and
+> the post-run **S24** bridge (`api.on` → `ExtensionRunner`).
 >
 > **S25–S28 landed differently from D-E5-7 (documented deviation):** rather than
 > the loader returning *uninvoked* `register` callables for a sync `__init__`
@@ -297,42 +300,74 @@ landed). Each step is one green-gated commit (ruff + ruff-format + mypy + `pytes
   `cli.py`. *Verified:* `test_backend_tool_filter.py`, `test_app_extension_loading.py`,
   `test_cli.py` (headless append + TUI run_config).
 
-### E5.2 — durable-hook rework
-- **S29 — `before_agent_start` messages durable.** Persist as extension-origin tree
-  nodes; TUI renders distinctly; wire serializes to an accepted role. Files:
-  `agent_session.py`, node/type defs, `session_store.py`, render in `backends.py`/
-  `app.py`. *Verify:* injected message in tree + transcript + survives reload; wire
-  role accepted.
-- **S30 — eliminate `context`.** Remove the call-site (`agent_loop.py:412`), drop
-  `"context"` from `HOOK_EVENTS` + `emit_context`, make `api.on("context")` raise,
-  retire `test_context_hook.py`. Files: `agent_loop.py`, `extensions/runner.py`,
-  `extension_types.py`, tests. *Verify:* no context dispatch remains; unknown-hook
-  raises.
-- **S31 — reminders demo → durable.** Inject via `tool_result` content edit +
-  `before_agent_start`; keep cooldowns. Files: `examples/21_reminders.py` + test.
-  *Verify:* reminder is durable content on the triggering node, in tree+transcript.
-- **S32 — budget demo → durable.** Durable warning node/edit before `ctx.abort()`.
-  Files: `examples/24_budget.py` + test. *Verify:* warning durable + abort.
+### E5.2 — durable-hook rework ✅ LANDED (S29–S32)
+- **S29 — `before_agent_start` messages durable ✅** (`dbacc98`). Injected messages
+  are appended to the active path as a new **`customMessage`** extension-origin node
+  (added to `messages.py`) instead of the old out-of-band inject; the persisted path
+  is the single artifact sent to the model. The wire remaps `custom`→`user`
+  (`convert_to_llm`, pi `messages.ts` parity) so the LLM accepts it while the TUI can
+  render it distinctly; the node round-trips through the tree/log/compaction and
+  survives reload. Landed wider than the planned file set (the new node type rippled
+  into `conversation_tree.py`, `session_log.py`, `compaction.py`, `session_store.py`).
+  Files: `agent_session.py`, `agent_loop.py`, `messages.py`, `conversation_tree.py`,
+  `session_log.py`, `compaction.py`, `app.py`, `session_store.py`. *Verified:*
+  `test_before_agent_start_durable.py` — injected message in tree + transcript +
+  survives reload byte-identical; wire role remapped `custom`→`user`.
+- **S30 — eliminate `context` ✅** (`f2d326f`). Removed the `_stream_response`
+  call-site, dropped `"context"` from `HOOK_EVENTS` + deleted `emit_context`
+  (`extensions/runner.py`), and made `api.on("context", …)` an unknown-hook **raise**
+  (`extension_types.py`, Fail-Early). Deviation from plan: `test_context_hook.py` was
+  retired AND replaced by a new **`test_context_hook_removed.py`** asserting the
+  negative (no dispatch remains, `api.on("context")` raises) rather than merely
+  deleting the old suite. Files: `agent_loop.py`, `extensions/runner.py`,
+  `extension_types.py`, tests. *Verified:* `test_context_hook_removed.py`,
+  updated `test_api_on_hook_bridge.py` / `test_extension_runner.py`.
+- **S31 — reminders demo → durable ✅** (`c7dc4e5`). `21_reminders.py` injects the
+  `<system-reminder>` by editing the triggering `tool_result` content in place +
+  a `before_agent_start` durable node for the pre-first-call rule; in-memory cooldown
+  state kept (resets on reload, already-injected reminders persist in the nodes).
+  Files: `examples/21_reminders.py` + `test_reminders.py`. *Verified:* reminder is
+  durable content on the triggering node, present in tree + transcript.
+- **S32 — budget demo → durable ✅** (`82d215b`). `24_budget.py` appends a durable
+  warning node to the active path before `ctx.abort()`, so the abort reason persists
+  on the tree (abort itself unchanged). Files: `examples/24_budget.py` +
+  `test_budget.py`. *Verified:* warning node durable + abort fires.
 
-### E5.3 — visibility
-- **S33 — `api.notify` + veto render.** Wire `ExtensionUI._tui_delegate`; headless
-  notify → stderr/json; distinct veto line. Files: `extension_types.py`,
-  `backends.py`, `app.py`, `headless.py`. *Verify:* notify shows in TUI; headless
-  notify surfaces.
+### E5.3 — visibility ✅ LANDED (S33)
+- **S33 — `api.notify` + veto render ✅** (`2d68d75`). `AgentSession.set_ui_delegate`
+  flips the ONE shared `ExtensionContext`'s `ExtensionUI` into TUI mode (the delegate
+  reaches every loaded extension's `api.ui`); the TUI (`app.py`/`backends.py`) sets it,
+  the headless path leaves it on the default stderr sink. The distinct **veto render**
+  landed as a loop fix rather than pure cosmetics: `tool_execution_start` is now
+  emitted for EVERY tool call *before* prepare (pi `agent-loop.ts:406-413/459-466`
+  parity, both sequential + parallel paths), so a `tool_call`-vetoed / arg-blocked
+  call surfaces a rendered `is_error` node the front-end can fold in instead of
+  silently dropping it. Files: `agent_loop.py`, `agent_session.py`, `app.py`,
+  `backends.py`. *Verified:* `test_ui_delegate.py`, `test_extension_notify_and_veto.py`.
 
-### E5.4 — palette
-- **S34 — `/extensions` listing.** Command + palette entries from the registry +
-  `LoadExtensionsResult` (name/path/tools/commands/hooks/errors). Files: `app.py`,
-  a small extensions-info accessor. *Verify:* lists loaded + errors.
-- **S35 — surface `register_command`.** Extension commands appear in
-  `get_system_commands` and dispatch. Files: `app.py`, registry access. *Verify:* an
-  extension-registered command runs from the palette.
+### E5.4 — palette ✅ LANDED (S34–S35)
+- **S34 — `/extensions` listing ✅** (`b39ed96`). `summarize_extensions` (`sdk.py`,
+  reading the runner registry + `LoadExtensionsResult`) exposes each extension's
+  name/path/tools/commands/hooks + load errors; the `/extensions` command renders it
+  in the TUI palette. Files: `sdk.py`, `extensions/runner.py`, `extension_types.py`,
+  `app.py`. *Verified:* `test_extensions_summary.py`, `test_app_extension_loading.py`
+  — lists loaded extensions + surfaces errors.
+- **S35 — surface `register_command` ✅** (`e913a41`). Extension-registered commands
+  from `register_command()` now appear in `get_system_commands` and dispatch to their
+  handlers; `AgentSession` exposes the entries (`extensions/registry.py`), the backend
+  forwards them, `app.py` wires listing + execution. Files: `agent_session.py`,
+  `extensions/registry.py`, `app.py`, `backends.py`. *Verified:*
+  `test_app_extension_commands.py` — an extension command runs from the palette.
 
-### E5.5 — tests / procedures (deferred execution)
-- **S36 — automated floor.** headless subprocess smoke + Textual `Pilot` +
-  reload-invariant check. *(Write later.)*
-- **S37 — live-procedures doc.** Per-demo manual checklist. *(Write later.)*
+### E5.5 — tests / procedures ✅ LANDED (S36–S37)
+- **S36 — automated floor ✅** (`37cacca`). `test_e5_integration_floor.py`: headless
+  smoke run, a Textual `Pilot` drive of the TUI, and a reload-invariant asserting the
+  persisted active path round-trips unchanged.
+- **S37 — live-procedures doc ✅** (`ef07b2a`). `docs/EXTENSIONS-LIVE-PROCEDURES.md`
+  — a runnable per-demo manual checklist (delegate/reminders/gatekeeper/budget +
+  reload check) with matching header comments in examples 20–24 and a doc-parity test
+  (`test_live_procedures_doc.py`).
 
-**Fast path:** S25–S28 (spine) · S29–S32 (durable hooks) · S33 (visibility) ·
-S34–S35 (palette) · S36–S37 (tests, deferred). S26 is the keystone — nothing loads
-into a live process until the session binds file-path extensions.
+**Fast path (all landed):** S25–S28 (spine) · S29–S32 (durable hooks) · S33
+(visibility) · S34–S35 (palette) · S36–S37 (tests). S26 was the keystone — nothing
+loaded into a live process until the session bound file-path extensions.
