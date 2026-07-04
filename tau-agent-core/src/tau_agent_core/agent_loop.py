@@ -836,10 +836,56 @@ class AgentLoop:
                 tool = self._tools[call_name]
                 validate_tool_arguments(tool, call_args)
 
+            # The args dict the tool will execute with. The tool_call hook may
+            # mutate it IN PLACE to patch args; because this is the SAME object
+            # threaded into PreparedToolCall.arguments below, the patch reaches
+            # the tool without any re-validation (pi parity, §7 decision E2-a).
+            input_args = call_args if isinstance(call_args, dict) else {}
+
+            # S11 — the `tool_call` mutating hook (E2). Gated on has_handlers for
+            # the zero-extension fast path. pi wires this at agent-session's
+            # beforeToolCall (agent-session.ts:405-424), consumed in agent-loop's
+            # prepareToolCall (agent-loop.ts:581-602): a `block: true` result
+            # short-circuits into an error tool result whose text is `reason`.
+            dispatcher = self._hook_dispatcher
+            if dispatcher is not None and dispatcher.has_handlers("tool_call"):
+                event: dict[str, Any] = {
+                    "type": "tool_call",
+                    "tool_call_id": tool_call.id,
+                    "tool_name": call_name,
+                    "input": input_args,
+                }
+                try:
+                    hook_result = await dispatcher.emit_tool_call(event)
+                except Exception as hook_err:
+                    # Fail-CLOSED (pi agent-session.ts:419-424): a throwing
+                    # tool_call handler blocks execution rather than letting the
+                    # tool run unguarded.
+                    return BlockedCall(
+                        call=PreparedToolCall(
+                            id=tool_call.id,
+                            name=call_name,
+                            arguments={},
+                        ),
+                        error=f"Extension failed, blocking execution: {hook_err}",
+                    )
+                if hook_result and hook_result.get("block"):
+                    return BlockedCall(
+                        call=PreparedToolCall(
+                            id=tool_call.id,
+                            name=call_name,
+                            arguments={},
+                        ),
+                        error=hook_result.get("reason") or "Tool execution was blocked",
+                    )
+                # No re-validation after mutation (pi parity): event["input"] is
+                # the possibly-patched args object the tool executes with.
+                input_args = event["input"]
+
             return PreparedToolCall(
                 id=tool_call.id,
                 name=call_name,
-                arguments=call_args if isinstance(call_args, dict) else {},
+                arguments=input_args,
             )
         except ValueError as e:
             return BlockedCall(
