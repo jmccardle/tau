@@ -182,3 +182,12 @@ def gatekeeper_tool_call(event: dict[str, Any], ctx: Any) -> dict[str, Any] | No
 def gatekeeper_extension(api: Any) -> None:
     """Extension entry point: register the gatekeeper ``tool_call`` veto."""
     api.on("tool_call", gatekeeper_tool_call)
+
+
+#: The module-level ``register`` the file-path loader looks up (``tau -e
+#: examples/22_gatekeeper.py`` → ``sdk._load_one_extension`` → ``getattr(module,
+#: "register")``). It IS :func:`gatekeeper_extension`; the alias makes the demo
+#: loadable through the public ``-e`` surface used by the live procedures
+#: (EXTENSIONS-LIVE-PROCEDURES.md; EXTENSIONS-E5-WIRING.md §6 / S37), not only via
+#: the direct ``gatekeeper_extension(api)`` call the unit tests use.
+register = gatekeeper_extension

@@ -398,3 +398,11 @@ def reminders_extension(api: Any) -> None:
     api.on("before_agent_start", bank.on_before_agent_start)
     api.on("tool_call", bank.on_tool_call)
     api.on("tool_result", bank.on_tool_result)
+
+
+#: The module-level ``register`` the file-path loader looks up (``tau -e
+#: examples/21_reminders.py`` → ``getattr(module, "register")``). It IS
+#: :func:`reminders_extension` (one fresh :class:`ReminderBank` per load); the alias
+#: makes the demo loadable through the public ``-e`` surface used by the live
+#: procedures (EXTENSIONS-LIVE-PROCEDURES.md; EXTENSIONS-E5-WIRING.md §6 / S37).
+register = reminders_extension

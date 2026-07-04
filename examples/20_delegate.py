@@ -720,3 +720,11 @@ DELEGATE_TOOL = {
 def delegate_extension(api: Any) -> None:
     """Extension that registers the ``delegate`` tool."""
     api.register_tool(DELEGATE_TOOL)
+
+
+#: The module-level ``register`` the file-path loader looks up (``tau -e
+#: examples/20_delegate.py`` → ``getattr(module, "register")``). It IS
+#: :func:`delegate_extension`; the alias makes the demo loadable through the public
+#: ``-e`` surface used by the live procedures (EXTENSIONS-LIVE-PROCEDURES.md;
+#: EXTENSIONS-E5-WIRING.md §6 / S37).
+register = delegate_extension

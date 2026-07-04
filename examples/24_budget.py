@@ -329,3 +329,11 @@ def make_budget_extension(
 #: block, so no dollar figure is fabricated. Swap in ``make_budget_extension`` with
 #: your model's price block + ``max_usd`` to threshold on real spend.
 budget_extension = make_budget_extension(max_tokens=DEFAULT_MAX_TOKENS)
+
+
+#: The module-level ``register`` the file-path loader looks up (``tau -e
+#: examples/24_budget.py`` → ``getattr(module, "register")``). It IS the deployable
+#: token-mode :data:`budget_extension` default; the alias makes the demo loadable
+#: through the public ``-e`` surface used by the live procedures
+#: (EXTENSIONS-LIVE-PROCEDURES.md; EXTENSIONS-E5-WIRING.md §6 / S37).
+register = budget_extension
