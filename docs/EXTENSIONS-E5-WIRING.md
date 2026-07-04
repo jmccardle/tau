@@ -1,11 +1,26 @@
 # E5 — extension wiring, the durable-hook invariant, and the live surface
 
-> **Status: PLAN (2026-07-04). Design only — implementation and test-procedure
-> execution deferred by the maintainer.** This is the buildable spec for the
-> milestone that makes extensions *actually reach a running process* (CLI + TUI)
-> and reworks the mutating-hook model onto τ's tree-as-truth architecture. It
-> builds directly on the landed E0–E4 chain (`docs/EXTENSIONS-IMPLEMENTATION.md`,
-> commits S1–S23) and the post-run **S24** bridge (`api.on` → `ExtensionRunner`).
+> **Status: E5.1 (the wiring spine, S25–S28) LANDED 2026-07-04; E5.2–E5.5
+> (durable-hook rework + visibility + palette + tests, S29–S37) still PLAN.**
+> Extensions now *actually reach a running process* on BOTH paths (`tau -p -e`
+> and the TUI) — proven end-to-end (a file extension's `tool_result` hook fires
+> in the loop and its edit is persisted to the on-disk session). The durable-hook
+> rework (§3), visibility (§4), and the palette (§5) are the remaining milestones.
+> This is the buildable spec for the milestone that makes extensions reach a
+> running process (CLI + TUI) and reworks the mutating-hook model onto τ's
+> tree-as-truth architecture. It builds directly on the landed E0–E4 chain
+> (`docs/EXTENSIONS-IMPLEMENTATION.md`, commits S1–S23) and the post-run **S24**
+> bridge (`api.on` → `ExtensionRunner`).
+>
+> **S25–S28 landed differently from D-E5-7 (documented deviation):** rather than
+> the loader returning *uninvoked* `register` callables for a sync `__init__`
+> bucket loop to invoke (which cannot `await` an async `register`), the session's
+> async `load_extensions` runs the existing loader with
+> `api_factory=self._bind_extension_api` — binding each file extension straight to
+> the live runner bucket (labelled by path) after construction. Same end (hooks
+> land in the live runner, load-vs-bind ordering resolved), async `register`
+> preserved, no rewrite of the proven loader suite. Commits `6ce7fda` (headless
+> spine), `6383fa0` (TUI), `18e98d5` (S28 tool/prompt flags).
 > pi (`~/Development/pi`) is the source of truth for API *shape*; **E5 makes one
 > deliberate, documented divergence from pi** — it removes pi's per-call `context`
 > transform in favour of durable node edits (§1), justified by τ's tree-centric
@@ -252,26 +267,35 @@ landed). Each step is one green-gated commit (ruff + ruff-format + mypy + `pytes
 "Files" names the primary targets; "Verify" is the proving test. **Do not build yet
 — this is the approved map for a later implement→review→fix pass.**
 
-### E5.1 — wiring spine
-- **S25 — loader returns uninvoked `register` callables.** Refactor
-  `_load_extensions` to import + validate `register` + collect *import* errors, and
-  return `[(path, register)]` + `errors` **without invoking**. Explicit-`-e` import
-  failure raises; discovered → `errors[]`. Files: `sdk.py`. *Verify:* callables
-  returned un-invoked; error policy per origin.
-- **S26 — session binds file-path extensions.** Thread `(path, register)` into
-  `AgentSession` so the S24 bucket loop invokes them, bucket-labelled by file path;
-  invoke-error origin handling. Files: `agent_session.py`, `sdk.py`. *Verify:* a
-  file-path extension's hook fires through a real fake-provider loop; bucket labelled
-  by path.
-- **S27 — wire both run paths + surface errors.** headless + TUI (`TauBackend`,
-  `app`, `cli`) load from CLI flags (`-e`, discovery, `-ne`) and pass to the session;
-  print/annunciate `LoadExtensionsResult.errors`. Files: `sdk.py`, `headless.py`,
-  `backends.py`, `app.py`, `cli.py`. *Verify:* `tau -p -e demo.py` fires the demo's
-  hook; TUI loads a discovered extension; `-ne` suppresses discovery, keeps `-e`.
-- **S28 — consume threaded tool/prompt flags.** `-xt` exclude-tools filter, `-nbt`,
-  `--append-system-prompt`, verify `--no-session` both paths. Files: `headless.py`,
-  `backends.py`/`app.py`, `sdk.py`. *Verify:* excluded tool absent; appended prompt
-  present; no-session writes no file.
+### E5.1 — wiring spine ✅ LANDED (S25–S28)
+- **S25/S26 — session binds file-path extensions ✅** (`6ce7fda`). Landed as
+  `AgentSession.load_extensions` (async, post-construction) running the loader with
+  `api_factory=self._bind_extension_api` — each file extension invoked against a
+  live-runner bucket labelled by path; async `register` awaited. Deviates from
+  D-E5-7's "uninvoked callables + sync bucket loop" (which can't await async
+  `register`); same end. The loader's discovered-error stderr print was removed
+  (returned in `errors[]` instead) so it's safe under a live Textual screen. Files:
+  `agent_session.py`, `sdk.py`. *Verified:* `test_load_extensions_wiring.py` — a
+  file extension's `tool_result` hook fires through the real fake-provider loop;
+  bucket path-labelled; async `register` awaited; explicit-raises/discovered-collects.
+- **S27 — wire both run paths + surface errors ✅** (`6ce7fda` headless, `6383fa0`
+  TUI). `Backend`/`TauBackend.load_extensions` seam; headless `run_print` loads from
+  `model_config` (`-e`/`-ne`) and prints `errors` to stderr; TUI `Parley` carries
+  run-level `-e`/`-ne` in `cli_run_config` and runs `_load_backend_extensions` after
+  every `create_backend` (new-chat + resume, not clear), surfacing errors as notices
+  (never stderr). Files: `headless.py`, `backends.py`, `app.py`, `cli.py`. *Verified:*
+  end-to-end `run_print -e demo.py` persists the hook's durable edit;
+  `test_app_extension_loading.py` binds a `-e` hook to the TUI backend + surfaces
+  discovered/explicit failures.
+- **S28 — consume threaded tool/prompt flags ✅** (`18e98d5`). `-xt` filters the
+  resolved built-ins in `TauBackend` (both paths); `-nbt` → `tools=[]` now DISTINCT
+  from `--no-tools` (extension tools survive the `_build_turn_tools` merge);
+  `--append-system-prompt` folds into the stored session prompt via the shared
+  `_append_system_prompt` (fresh runs, both paths); `--no-session` stays
+  headless-only (`create_in_memory`). TUI threads these via `cli_run_config` +
+  `Parley._apply_run_config`. Files: `backends.py`, `headless.py`, `app.py`,
+  `cli.py`. *Verified:* `test_backend_tool_filter.py`, `test_app_extension_loading.py`,
+  `test_cli.py` (headless append + TUI run_config).
 
 ### E5.2 — durable-hook rework
 - **S29 — `before_agent_start` messages durable.** Persist as extension-origin tree

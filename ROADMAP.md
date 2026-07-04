@@ -4,17 +4,23 @@ Living schedule of open work. Each item cites the evidence (file:line, doc, or
 test) it came from so it can be audited against the source of truth (pi) and the
 "Fail Early" rule.
 
-**State (2026-07-04, latest):** the **E0–E4 chain is LANDED** on
-`feat/extensions-e0-e4` (S1–S23 via workflow, each a green-gated commit) **plus
-S24** (the `api.on`→`ExtensionRunner` bridge — a plan-gap fix found in post-run
-verification: the four mutating hooks were unreachable from the public API).
-Suite **1607 passed / 0 failed**; ruff/ruff-format clean, mypy 0 across 50 files —
-Tier-5 gate green. **Next: E5** — `docs/EXTENSIONS-E5-WIRING.md`: wire
-loader→session→runner into the live CLI/TUI (both paths), adopt the **durable-hook
-invariant** (model input = system prompt + exact tree path; **eliminate the
-`context` hook**, **persist `before_agent_start` messages**), add the `/extensions`
-palette + `api.notify` visibility. **Design documented (S25–S37); implementation +
-test procedures deferred by the maintainer.** Branch not merged to `master` yet.
+**State (2026-07-04, latest):** the **E0–E4 chain + S24** are LANDED on
+`feat/extensions-e0-e4`, and now **E5.1 — the wiring spine (S25–S28) is LANDED**
+(`docs/EXTENSIONS-E5-WIRING.md`): extensions **actually load into a running
+process on BOTH paths** (`tau -p -e` and the TUI), proven end-to-end (a file
+extension's `tool_result` hook fires in the loop and its edit persists to the
+on-disk session). `AgentSession.load_extensions` binds each file extension to the
+live runner (bucket labelled by path; async `register` awaited) — a documented
+deviation from D-E5-7 that preserves async `register`; the loader's stderr print
+was removed (returned in `errors[]`, safe under Textual). S28 wired `-xt`
+(exclude-tools filter), `-nbt` (now distinct from `--no-tools`), and
+`--append-system-prompt` on both paths. Commits `6ce7fda` (headless spine),
+`6383fa0` (TUI), `18e98d5` (S28). Suite **1625 passed / 0 failed**; ruff/
+ruff-format clean, mypy 0 across 50 files — Tier-5 gate green. **Next: E5.2–E5.5
+(S29–S37)** — the durable-hook rework (**persist `before_agent_start` messages**,
+**eliminate the `context` hook**, rework the reminders/budget demos onto durable
+edits), `api.notify` visibility, and the `/extensions` palette. Branch not merged
+to `master` yet.
 
 **Prior (2026-07-03):** the **`feat/session-tree`** branch (9 commits,
 `b9303b1`→`4f80d51`) was **merged to `master`** (`--no-ff`, merge `0a839f8`) —
