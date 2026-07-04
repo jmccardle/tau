@@ -669,7 +669,7 @@ class AgentLoop:
             )
 
             result = await self._execute_tool(prepared)
-            result = await self._apply_after_hooks(result)
+            result = await self._apply_after_hooks(result, prepared.arguments)
 
             await self._emit(
                 AgentEvent(
@@ -726,7 +726,7 @@ class AgentLoop:
                 return AgentToolResult.from_error(pc.call.name, pc.error, pc.call.id)
             # pc is a PreparedToolCall
             result = await self._execute_tool(pc)
-            result = await self._apply_after_hooks(result)
+            result = await self._apply_after_hooks(result, pc.arguments)
             return result
 
         tasks = [_run_tool(pc) for pc in prepared_calls]
@@ -966,17 +966,62 @@ class AgentLoop:
         except Exception as e:
             return AgentToolResult.from_error(call.name, str(e), call.id)
 
-    async def _apply_after_hooks(self, result: AgentToolResult) -> AgentToolResult:
-        """Apply after-tool-call hooks (extensions).
+    async def _apply_after_hooks(
+        self,
+        result: AgentToolResult,
+        input_args: dict[str, Any] | None = None,
+    ) -> AgentToolResult:
+        """Apply the ``tool_result`` mutating hook (E2 / step S12) to ``result``.
 
-        Currently a no-op — extensions will use this in Phase 3.
+        pi wires this at agent-session's ``afterToolCall`` (agent-session.ts:427-452),
+        applied in agent-loop's ``finalizeExecutedToolCall`` (agent-loop.ts:682-707).
+        Gated on ``has_handlers`` for the zero-extension fast path.
+
+        The dispatcher clones the event once and lets each handler field-patch
+        ``content`` / ``details`` / ``is_error`` (whole-value replace, later handler
+        sees the earlier handler's patch); it returns those fields only when
+        something changed, else ``None`` (pass the result through unchanged). Each
+        handler's exception is swallowed-and-continued but surfaced via the runner's
+        ``emit_error`` (never silently dropped, pi runner.ts:754-763).
+
+        Only ``content`` and ``is_error`` map back onto the result — τ's
+        ``AgentToolResult`` has no ``details`` field (a genuine model divergence
+        from pi, not a swallowed value). ``details`` still rides the event so a
+        handler can read it and chain a patch to a later handler.
+
+        Applied pi-faithfully with ``?? existing`` semantics (agent-loop.ts:697-701):
+        a patched-to-``None`` field falls back to the original value.
 
         Args:
             result: The tool execution result.
+            input_args: The args the tool executed with (the ``input`` the event
+                carries so handlers can correlate the result to its call).
 
         Returns:
-            The (possibly modified) result.
+            The (possibly patched) result.
         """
+        dispatcher = self._hook_dispatcher
+        if dispatcher is None or not dispatcher.has_handlers("tool_result"):
+            return result
+
+        event: dict[str, Any] = {
+            "type": "tool_result",
+            "tool_name": result.tool_name,
+            "tool_call_id": result.tool_call_id,
+            "input": input_args if input_args is not None else {},
+            "content": result.content,
+            "details": None,
+            "is_error": result.is_error,
+        }
+        patch = await dispatcher.emit_tool_result(event)
+        if patch is not None:
+            # pi `afterResult.content ?? result.content`: only a non-None patch
+            # replaces; a handler that patched a field to None falls back to the
+            # original.
+            if patch.get("content") is not None:
+                result.content = patch["content"]
+            if patch.get("is_error") is not None:
+                result.is_error = patch["is_error"]
         return result
 
     def _to_llm_tool(self, tool: AgentTool) -> dict:
