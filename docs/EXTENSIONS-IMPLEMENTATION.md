@@ -222,13 +222,28 @@ pi keeps fork/navigate command-only (`types.ts:339-373`); τ exposes them on the
 (handler) context so agent **tools** can call them (decision 2). The gatekeeper veto (E2) is
 the safety that makes this acceptable.
 
-### E3c.2 The store-authority seam (the one real architectural knot — §7 decision E3-a)
-`AgentSession.compact` mutates the session's **own** `_session_log`; on the **TUI live path**
-that is a throwaway `InMemorySessionLog` (the scratch log from the E3 1d landing), while the
-live `Session` is owned by the TUI and mutated by `TauBackend.navigate_tree` directly. So an
-agent-tool `ctx.compact/fork/navigate` would mutate the **scratch** log, not the live session
-— wrong on the TUI path. In **headless**, `AgentSession` owns the real session, so it is
-correct there. Resolution options are a genuine decision (§7).
+### E3c.2 The store-authority seam — RESOLVED: bind the live Session now (D3)
+`AgentSession.compact` mutates the session's own `_session_log`; on the **TUI live path** that
+is a throwaway `InMemorySessionLog` (the E3-1d scratch log), while the live `Session` is owned
+by the TUI. E3-ctx **retires that split** by pulling the deferred `self.messages →
+transcript_view` refactor forward (plan §4.5 endgame):
+
+1. The TUI's `AgentSession` is constructed with the **live `Session`** as its `SessionLog`
+   (drop the scratch `InMemorySessionLog`, `backends.py` E3-1d wiring).
+2. `AgentSession` becomes the **sole persister** — remove `app.py`'s own `append_message`
+   writes (`app.py:1145,1239`), resolving the E3-1d double-write tension that forced the
+   scratch log in the first place.
+3. The TUI transcript render becomes a **view over `ConversationTree`** — `self.messages`
+   rebuilt from `session.context` at structural points (the `Session.context` seam already
+   landed, `session_store.py`), matching pi's `rebuildChatFromMessages` (`interactive-mode.ts`).
+   Incremental streaming render is unchanged; full rebuild only on turn-end / compact / navigate.
+
+Then agent-tool `ctx.compact/fork/navigate` mutate the **one authoritative session** on both
+the TUI and headless paths — identical semantics everywhere. This is the load-bearing reason
+D3 chose "bind now": it is the only way the agent-callable session tools are correct in the
+TUI, and it lands the view-discipline refactor that was E3's last deferred piece. **Sequence
+this sub-step first within E3-ctx** (it is a refactor of landed code; the `ctx` op surface in
+E3c.1 sits on top of it).
 
 ### E3c.3 Turn-end deferral + the injection queue
 - **Deferral (decision 3):** a tool requesting compact/fork records intent and returns a
@@ -262,14 +277,16 @@ Each demo is a runnable extension + a smoke test. Dependency-ordered (research P
 1. **`24_budget.py`** (E1 + cost) — accumulate `message_end`/`turn_end` usage; past a
    USD (or token) threshold inject a warning via `context` then `ctx.abort()` (exists,
    `extension_types.py`). *Note:* the warn-via-`context` version needs E2 — see §7 D1.
-2. **`20_delegate.py`** (E0 flags + E1) — a `delegate` tool spawning
-   `tau -p --mode json --no-session [--no-extensions] --model … --tools …
+2. **E-json** (Tier 9 json, pulled forward — D-delegate) then **`20_delegate.py`** (E0 flags
+   + E1 + E-json) — first land pi-faithful `--mode json` (per-message `message_end` carrying
+   `usage`/`model`/`stop_reason`, `type` discriminator, header line first) so children emit
+   real limit/failure signals. Then the `delegate` tool spawns
+   `tau -p --mode json --no-session --no-extensions --model … --tools …
    --append-system-prompt <tmp> "Task: …"` children (pi `subagent/index.ts:288-324`);
-   single / parallel-N (≤8, 4-concurrent, 50 KB/task cap) / chain (`{previous}`);
-   per-child limits (`max_usd`/`max_seconds`/`max_turns`/stuck-detection) and stop_reason
-   taxonomy from `pi_orchestration_patterns.md §2`. Parses **τ's** `kind`-schema JSONL
-   (`headless.py:279`) behind one adapter fn (Tier-9 swap point). **Parallel children must
-   be read-only-scoped** (§7 D-delegate). Rolls usage into `details`.
+   single / parallel-N (≤8, 4-concurrent, 50 KB/task cap) / chain (`{previous}`); per-child
+   limits (`max_usd`/`max_seconds`/`max_turns`/stuck-detection) + stop_reason taxonomy from
+   `pi_orchestration_patterns.md §2`, now reading real child signals. **Parallel children
+   forced read-only** (hard guard, D-parallel). Rolls usage into `details`.
 3. **`22_gatekeeper.py`** (E2) — `tool_call` veto: deny writes outside `.tau/scope.txt`
    prefixes; deny reads/bash touching `tests_heldout/`. The enforcement that makes the
    agent-callable mutation tools safe.
@@ -289,8 +306,10 @@ Compute `cost_usd` from the optional per-model `cost:{input, output, cache_read,
 `sum(price[k]/1e6 * usage[k])`. **Emit `cost_usd` only when the block is present** — an
 absent block yields tokens-only, never a fabricated `$0` (a real free model `cost:{…:0}` and
 *unknown* cost must read differently — the one subtle Fail-Early trap). `cache_write_tokens`
-is inert against today's provider (never populated) — real 0, comment it. Compute home is a
-decision (§7 D2).
+is inert against today's provider (never populated) — real 0, comment it. **Compute at the
+emit boundary** (backend/headless, where `model_config` is in scope; final `done`/`agent_end`
+only) — D2 resolved; the frozen `Usage` is untouched and `24_budget` computes its own running
+`$` from per-message tokens × config prices.
 
 ---
 
@@ -298,9 +317,14 @@ decision (§7 D2).
 
 Strict: **E0 → E1 → E2**; E3-ctx needs E1 + the (landed) substrate; E4 items land
 incrementally. **E2 is the tallest pole** — 3 of 5 demos need it, and decision 2 makes it
-the prerequisite for the agent-callable mutation tools. Suggested landing order, each a
-green-gated commit (ruff + mypy + pytest): **E0 → E1 (+ cost) → 24_budget + 20_delegate →
-E2 → 22_gatekeeper + 21_reminders → E3-ctx → 23_context_surgeon → walkthrough doc.**
+the prerequisite for the agent-callable mutation tools. Two resolved decisions reshape the
+order: **E-json** (pi-faithful `--mode json`, Tier 9 pulled forward per D-delegate) slots
+**between E1 and the delegate demo**; and **E3-ctx is now M/L** because it carries the
+live-Session bind + transcript_view refactor (D3). Suggested landing order, each a
+green-gated commit (ruff + mypy + pytest): **E0 → E1 (+ cost at the emit boundary) →
+24_budget → E-json (Tier-9 json) → 20_delegate → E2 → 22_gatekeeper + 21_reminders →
+E3-ctx (live-Session bind first, then the `ctx` op surface) → 23_context_surgeon →
+walkthrough doc.**
 Testing spine: E1/E2 via `fake_llm` through the full loop (registered fake tools, veto/patch
 assertions, injected-context on the wire payload); E3-ctx via the property-style entry-tree
 tests the substrate already uses; delegate smoke-tested by spawning `tau -p` against the fake
@@ -321,34 +345,27 @@ E3-b `fork` is one op with an in-place-vs-export mode. E3-c seam-3 events ride a
 channel. `get_context_usage` adopts pi's `ContextUsage` shape. Discovery order is moot in E0
 (no project dir until Tier 8).
 
-**Genuinely yours — surfaced by the research, recommendation given:**
+**Genuinely yours — RESOLVED 2026-07-03:**
 
-- **D1 — Budget demo dependency.** The plan says "E1 only," but the warn-then-abort behavior
-  injects via the `context` hook (**E2**). *Recommend:* land `24_budget` **after E2** (full
-  warn-then-abort); a minimal abort-only guard is possible in E1 if you want an early demo.
-- **D2 — Where `cost_usd` computes.** (a) *Provider-home* — thread prices into the provider,
-  fill the already-present frozen `Usage.cost`, giving **per-message** cost (pi-faithful; the
-  budget guard can then abort mid-run on dollars) but re-plumbs the provider + frozen `Usage`.
-  (b) *Emit-boundary* — compute in the backend/headless where `model_config` is in scope,
-  **final-`done` only**, no provider changes, but the budget guard can only threshold on
-  tokens mid-run. *Recommend (a)* if the budget demo should guard on dollars mid-run; else (b).
-- **D3 — E3-ctx store authority on the TUI path.** An agent-tool `ctx.compact/fork` mutates
-  `AgentSession`'s log, which on the TUI is the scratch `InMemorySessionLog` (headless is
-  fine). Options: **(a)** bind `AgentSession` to the live `Session` now — i.e. do the deferred
-  `self.messages → transcript_view` injection as part of E3-ctx (bigger, unifies the TUI);
-  **(b)** ship agent-callable session-control for **headless first**, scope it out of the TUI
-  until the transcript_view refactor. *Recommend (b)* — smaller, and the TUI refactor was
-  already staged as a separate follow-up; E3-ctx's demo (`23_context_surgeon`) can be
-  smoke-tested headless.
-- **D-delegate — Tier-9 coupling + hermeticity.** τ's `--mode json` child emits a `kind`-schema
-  with **no `stop_reason`/`model`/per-turn usage**, so the delegate's failure-detection
-  degrades to exit-code + stderr, and its stuck/limit logic loses real signals. Also pi's own
-  subagent omits `--no-extensions`. *Two sub-calls:* (i) accept degraded delegate failure
-  signals for E4, or **pull pi-faithful `--mode json` (Tier 9) forward** as a delegate
-  prerequisite? *Recommend:* accept degraded for E4 behind the one-adapter seam (Tier-9 swap
-  touches one place). (ii) pass `--no-extensions` to children for true hermeticity?
-  *Recommend:* yes (add the flag in E0, pass it) — τ wants the isolation guarantee.
-- **D-parallel — read-only enforcement.** pi leaves "never parallelize writers" to author
-  discipline. *Recommend:* **hard code-guard** in `20_delegate.py` — parallel mode forces a
-  read-only `--tools` allowlist (Fail-Early; cheap; safety-relevant), with the write-tool
-  classification a small constant list.
+- **D1 — Budget demo dependency → land `24_budget` AFTER E2** (full warn-then-abort via the
+  `context` hook). A minimal abort-only guard in E1 is optional and not planned.
+- **D2 — Cost home → EMIT-BOUNDARY, final-only.** Compute `cost_usd` in the backend/headless
+  where `model_config` (prices) is in scope; attach it to the `done`/`agent_end` event only.
+  No provider re-plumbing; the frozen `Usage` is untouched. The `24_budget` demo computes its
+  own running `$` from per-message tokens × config prices, so it still thresholds mid-run.
+- **D3 — E3-ctx store authority → BIND THE LIVE SESSION NOW.** E3-ctx **pulls the deferred
+  `self.messages → transcript_view` TUI refactor forward**: retire the scratch
+  `InMemorySessionLog` on the TUI live path, give the TUI's `AgentSession` the live `Session`
+  as its `SessionLog`, and drop `app.py`'s own `append_message` writes (AgentSession becomes
+  the sole persister — resolving the E3-1d double-write tension). Agent-tool `ctx.compact/fork/
+  navigate` then mutate the one authoritative session on **both** paths. This makes E3-ctx
+  **M/L, not S/M** (see revised E3c.2). Consequence: the TUI transcript render becomes a view
+  over `ConversationTree` (pi's `rebuildChatFromMessages` pattern), landing the §4.5 endgame.
+- **D-delegate — PULL TIER 9 (pi-faithful `--mode json`) FORWARD** as a delegate prerequisite.
+  Before `20_delegate`, implement the pi-faithful JSON event schema (per-message `message_end`
+  carrying `usage`/`model`/`stop_reason`, `type` discriminator, header line first — plan
+  Tier 9 json half) so the delegate's stuck-detection and per-child limits have real child
+  signals. This inserts an **E-json** step between E1 and the delegate demo (see §6). The child
+  is also spawned with **`--no-extensions`** (added in E0) for true hermeticity.
+- **D-parallel — HARD CODE-GUARD** in `20_delegate.py`: parallel mode forces a read-only
+  `--tools` allowlist (Fail-Early), write-tool classification a small constant list.
