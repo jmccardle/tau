@@ -4,14 +4,22 @@ Living schedule of open work. Each item cites the evidence (file:line, doc, or
 test) it came from so it can be audited against the source of truth (pi) and the
 "Fail Early" rule.
 
-**State (2026-07-03, latest):** the **`feat/session-tree`** branch (9 commits,
-`b9303b1`→`4f80d51`) is **merged to `master`** (`--no-ff`, merge `0a839f8`) —
-**E3's tree-as-truth substrate half is DONE** (see Tier 11 below). Suite **1471
-passed / 0 failed** (2 pre-existing "event loop is closed" ResourceWarnings);
-ruff/ruff-format clean, mypy 0 across 50 files — Tier-5 gate green. Verified by
+**State (2026-07-04, latest):** the **E0–E4 chain is LANDED** on
+`feat/extensions-e0-e4` (S1–S23 via workflow, each a green-gated commit) **plus
+S24** (the `api.on`→`ExtensionRunner` bridge — a plan-gap fix found in post-run
+verification: the four mutating hooks were unreachable from the public API).
+Suite **1607 passed / 0 failed**; ruff/ruff-format clean, mypy 0 across 50 files —
+Tier-5 gate green. **Next: E5** — `docs/EXTENSIONS-E5-WIRING.md`: wire
+loader→session→runner into the live CLI/TUI (both paths), adopt the **durable-hook
+invariant** (model input = system prompt + exact tree path; **eliminate the
+`context` hook**, **persist `before_agent_start` messages**), add the `/extensions`
+palette + `api.notify` visibility. **Design documented (S25–S37); implementation +
+test procedures deferred by the maintainer.** Branch not merged to `master` yet.
+
+**Prior (2026-07-03):** the **`feat/session-tree`** branch (9 commits,
+`b9303b1`→`4f80d51`) was **merged to `master`** (`--no-ff`, merge `0a839f8`) —
+**E3's tree-as-truth substrate half is DONE** (see Tier 11 below). Verified by
 eyeball in the TUI: summarizing + jumping around the tree "close to perfect."
-Next on the beeline: **E0** (extension loader + flags), the strictly-ordered
-E0→E1→E2 track we parallelized past while building the E3 substrate.
 
 **Prior (2026-06-26):** the **`feat/streaming-ux`** branch
 (4 commits, `ea89735`→`5ed3892`) is **merged** — `master` fast-forwarded to
