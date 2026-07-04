@@ -285,6 +285,23 @@ class TauBackend(Backend):
             explicit_paths, discover=discover, user_dir=user_dir
         )
 
+    def get_extension_commands(self) -> list[tuple[str, str]]:
+        """List extension-registered slash commands as ``(name, description)`` (S35).
+
+        Delegates to :meth:`AgentSession.get_extension_commands` — the app's
+        command palette reads this to surface extension commands alongside its
+        built-ins.
+        """
+        return self.agent_session.get_extension_commands()
+
+    async def run_extension_command(self, name: str, args: str = "") -> bool:
+        """Run an extension-registered slash command (S35).
+
+        Delegates to :meth:`AgentSession.run_extension_command`; returns ``True``
+        iff the command existed and ran (``False`` lets the caller fall through).
+        """
+        return await self.agent_session.run_extension_command(name, args)
+
     async def compact_messages(self, messages: list[dict]) -> list[dict] | None:
         """Compact the conversation the TUI sends, returning the shortened list.
 

@@ -1226,6 +1226,21 @@ class Parley(App):
             self.action_show_extensions()
             return
 
+        # Extension-registered slash commands (E5 §5 / S35): dispatch BEFORE the
+        # text reaches the model. A leading "/" whose name matches a registered
+        # command runs its handler (pi ``_tryExecuteExtensionCommand``, splitting
+        # ``/name args`` on the first space); an UNKNOWN "/…" returns False here and
+        # falls through to be sent as an ordinary prompt.
+        if message.startswith("/"):
+            runner = getattr(self.current_backend, "run_extension_command", None)
+            if runner is not None:
+                stripped = message[1:]
+                space = stripped.find(" ")
+                cmd_name = stripped if space == -1 else stripped[:space]
+                cmd_args = "" if space == -1 else stripped[space + 1 :]
+                if await runner(cmd_name, cmd_args):
+                    return
+
         # Create new session if needed
         if self.current_session is None:
             await self.action_new_chat()
@@ -1512,6 +1527,24 @@ class Parley(App):
         listing = self._format_extensions_listing(self._extension_load_result)
         self.query_one(ChatDisplay).add_message("system", listing)
 
+    async def _dispatch_extension_command(self, name: str) -> None:
+        """Run an extension-registered command from the palette (E5 §5 / S35).
+
+        The command-palette entry (:meth:`get_system_commands`) invokes this;
+        it forwards to the live backend's :meth:`run_extension_command` with no
+        args (the palette has no argument line). A handler exception is surfaced
+        as an error notice (pi's ``_tryExecuteExtensionCommand`` likewise reports
+        rather than crashing the screen), never swallowed silently.
+        """
+        runner = getattr(self.current_backend, "run_extension_command", None)
+        if runner is None:
+            return
+        try:
+            await runner(name)
+        except Exception as e:
+            self.notify(f"Command /{name} failed: {e}", severity="error")
+            self.log.error(f"Extension command /{name} failed: {e}", exc_info=True)
+
     @staticmethod
     def _format_extensions_listing(result: LoadExtensionsResult) -> str:
         """Render a ``LoadExtensionsResult`` as the ``/extensions`` listing text (S34).
@@ -1650,6 +1683,19 @@ class Parley(App):
             "List loaded extensions (name/path/tools/commands/hooks) and load errors",
             self.action_show_extensions,
         )
+
+        # Extension-registered slash commands (E5 §5 / S35): list each so it is BOTH
+        # visible here and runnable (dispatch mirrors this in on_input_submitted).
+        # Read from the live backend's session registry; getattr-guarded so a
+        # non-TauBackend test double is a no-op, matching set_ui_delegate/load_extensions.
+        get_commands = getattr(self.current_backend, "get_extension_commands", None)
+        if get_commands is not None:
+            for cmd_name, cmd_desc in get_commands():
+                yield SystemCommand(
+                    f"/{cmd_name}",
+                    cmd_desc or f"Run extension command /{cmd_name}",
+                    lambda n=cmd_name: self._dispatch_extension_command(n),
+                )
 
     async def action_clear_chat(self):
         """Clear the current conversation, starting a fresh session.

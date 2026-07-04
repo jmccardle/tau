@@ -1029,6 +1029,48 @@ class AgentSession:
         """
         self._extension_api.context.set_ui_delegate(delegate)
 
+    def get_extension_commands(self) -> list[tuple[str, str]]:
+        """List extension-registered slash commands (E5 §5 / S35).
+
+        Returns ``(name, description)`` for every command an extension registered
+        via ``api.register_command`` — the palette (:meth:`Parley.get_system_commands`)
+        reads this to LIST them. Description falls back to the empty string when a
+        command omitted one (listing is best-effort chrome, not a durable node).
+        """
+        return [
+            (name, str(command.get("description", "")))
+            for name, command in self._registry.get_commands().items()
+        ]
+
+    async def run_extension_command(self, name: str, args: str = "") -> bool:
+        """Run an extension-registered slash command (E5 §5 / S35).
+
+        Port of pi's ``_tryExecuteExtensionCommand`` (agent-session.ts:1143). Looks
+        up ``name`` in the session registry and, if found, invokes its ``handler``
+        with ``(args, ctx)`` where ``ctx`` is the session's ONE live
+        :class:`ExtensionContext` (the same object hook handlers and ``api.ui``
+        reach through, so a command's ``ctx.ui.notify`` paints in the same TUI).
+        Returns ``True`` iff the command existed and ran; ``False`` for an unknown
+        command so the caller can fall through (e.g. treat the text as a prompt).
+
+        Fail-Early: a command registered without a callable ``handler`` cannot run,
+        so an attempt to invoke one RAISES rather than silently no-op'ing — a
+        registered-but-inert command is a construction bug, not a runnable command.
+        """
+        command = self._registry.get_command(name)
+        if command is None:
+            return False
+        handler = command.get("handler")
+        if not callable(handler):
+            raise RuntimeError(
+                f"extension command {name!r} has no callable 'handler'; it was "
+                "registered but cannot run (register_command requires a handler)."
+            )
+        result = handler(args, self._extension_api.context)
+        if inspect.isawaitable(result):
+            await result
+        return True
+
     def _bind_extension_api(self, path_label: str) -> ExtensionAPI:
         """The bucket-bound ExtensionAPI a loaded extension is handed (S24).
 
