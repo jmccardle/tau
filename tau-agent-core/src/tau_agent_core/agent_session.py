@@ -23,6 +23,7 @@ from tau_ai.types import Model, UserMessage
 from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.extensions.registry import ExtensionRegistry
+from tau_agent_core.extensions.runner import ExtensionRunner
 from tau_agent_core.session import SessionState
 from tau_agent_core.session_log import SessionLog
 from tau_agent_core.conversation_tree import ConversationTree
@@ -131,6 +132,13 @@ class AgentSession:
         # session's real event bus + registry, so handlers subscribe to the
         # live loop bus and registered tools land in the session-owned registry.
         self._extension_api = self._make_extension_api()
+        # The return-collecting hook dispatcher (E2). One per session, bound to
+        # the live ExtensionContext so the mutating-hook handlers receive the
+        # real ctx. Injected into every AgentLoop this session builds
+        # (`hook_dispatcher=`) so the four hook call-sites (S11-S14) can reach
+        # it; empty until extensions register mutating hooks, so has_handlers()
+        # gives every call-site the zero-extension fast path.
+        self._extension_runner = ExtensionRunner(context=self._extension_api.context)
         for ext in self._extensions:
             ext(self._extension_api)
 
@@ -261,6 +269,7 @@ class AgentSession:
                 tools=self._build_turn_tools(),
                 model=self._model,
                 abort_signal=self._abort_signal,
+                hook_dispatcher=self._extension_runner,
             )
 
             # Run the loop — handles LLM call, tool execution, re-tries
@@ -345,6 +354,7 @@ class AgentSession:
                 tools=self._build_turn_tools(),
                 model=self._model,
                 abort_signal=self._abort_signal,
+                hook_dispatcher=self._extension_runner,
             )
 
             # Run the loop — handles LLM call, tool execution, re-tries

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from tau_ai.abort import AbortSignal
 from tau_ai.client import stream_simple
@@ -46,6 +46,9 @@ from tau_agent_core.agent_loop_types import (
 )
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.tools.base import AgentTool, AgentToolResult, ToolBatchResult
+
+if TYPE_CHECKING:
+    from tau_agent_core.extensions.runner import ExtensionRunner
 
 
 class BlockedCall:
@@ -79,9 +82,15 @@ class AgentLoop:
 
     Attributes:
         config: Agent loop configuration.
-        emit: Callback to emit AgentEvents.
+        emit: Callback to emit AgentEvents (fire-and-forget; returns None).
         _turn_index: Current turn counter.
         _tools: Mapping of tool names to AgentTool instances.
+        _hook_dispatcher: The return-collecting extension hook dispatcher
+            (an :class:`~tau_agent_core.extensions.runner.ExtensionRunner`),
+            injected by :class:`~tau_agent_core.agent_session.AgentSession`.
+            Unlike ``emit`` (fire-and-forget), its ``emit_*`` methods return
+            results that the mutating-hook call-sites thread forward. ``None``
+            when the loop runs standalone (no session / no extensions).
     """
 
     def __init__(
@@ -91,6 +100,7 @@ class AgentLoop:
         tools: list[AgentTool] | None = None,
         model: Any = None,
         abort_signal: AbortSignal | None = None,
+        hook_dispatcher: ExtensionRunner | None = None,
     ) -> None:
         self.config = config
         self._emit = emit or (lambda e: asyncio.create_task(self._noop_emit(e)))
@@ -100,6 +110,12 @@ class AgentLoop:
             self._tools[t.name] = t
         self._model = model
         self._abort_signal: AbortSignal | None = abort_signal
+        # The mutating-hook dispatcher (E2). Held here so the four hook
+        # call-sites (S11-S14: tool_call / tool_result / context, plus
+        # before_agent_start above the loop) can reach it. S10 only threads it
+        # in; the call-sites gate on has_hook_handlers() for the zero-extension
+        # fast path.
+        self._hook_dispatcher: ExtensionRunner | None = hook_dispatcher
 
     @staticmethod
     async def _noop_emit(event: AgentEvent) -> None:
@@ -113,6 +129,16 @@ class AgentLoop:
             tool: The AgentTool to register.
         """
         self._tools[tool.name] = tool
+
+    def has_hook_handlers(self, event: str) -> bool:
+        """Whether any extension has a handler for the mutating hook ``event``.
+
+        The zero-extension fast path (pi ``agent-session.ts:407-411``): the four
+        hook call-sites (S11-S14) call this before dispatching so a session with
+        no extensions — or a standalone loop with no injected dispatcher — does
+        no hook work at all. Returns ``False`` when no dispatcher was injected.
+        """
+        return self._hook_dispatcher is not None and self._hook_dispatcher.has_handlers(event)
 
     # ------------------------------------------------------------------
     # Public API
