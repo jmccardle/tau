@@ -381,8 +381,11 @@ async def _load_extensions(
                 # Fail-Early: the user named this path — surfacing it silently
                 # is the anti-pattern, so re-raise.
                 raise
-            # Discovered: collect + stderr, keep loading the rest.
-            print(f"[τ] failed to load extension {path}: {exc}", file=sys.stderr)
+            # Discovered: collect and keep loading the rest. The error is RETURNED
+            # (never swallowed) for the caller to surface — headless prints it to
+            # stderr, the TUI shows a notice. The loader deliberately does NOT
+            # print here: a stderr write during a live Textual render corrupts the
+            # screen, and structured errors[] is the honest channel anyway (E5 §2.1).
             result.errors.append(ExtensionLoadError(path=str(path), error=str(exc)))
             continue
         result.extensions.append(loaded)

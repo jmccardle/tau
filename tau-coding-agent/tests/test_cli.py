@@ -343,6 +343,12 @@ class _FakeBackend:
     def __init__(self, config):
         self.config = config
 
+    async def load_extensions(self, explicit_paths=None, *, discover=True, user_dir=None):
+        from tau_agent_core.sdk import LoadExtensionsResult
+
+        self.loaded_extensions = (explicit_paths, discover)  # capture for wiring assertions
+        return LoadExtensionsResult()
+
     async def stream_chat(self, messages, callback, on_event=None, on_pi_event=None):
         self.messages = messages
         deltas = ["Hello ", "world"]

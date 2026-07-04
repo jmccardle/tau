@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from tau_ai.abort import AbortSignal
 from tau_ai.types import Model, UserMessage
@@ -42,6 +42,9 @@ from tau_agent_core.compaction import (
 )
 from tau_agent_core.compaction_utils import create_file_ops, extract_file_ops_from_message
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
+
+if TYPE_CHECKING:
+    from tau_agent_core.sdk import LoadExtensionsResult
 
 
 def _message_text(content: Any) -> str:
@@ -278,6 +281,50 @@ class AgentSession:
         task = loop.create_task(self._events.emit_channel(str(event["type"]), event))
         self._session_event_tasks.add(task)
         task.add_done_callback(self._session_event_tasks.discard)
+
+    async def load_extensions(
+        self,
+        explicit_paths: list[str] | None = None,
+        *,
+        discover: bool = True,
+        user_dir: str | None = None,
+    ) -> LoadExtensionsResult:
+        """Load file-path extensions into THIS live session (E5 §2, S26/S27).
+
+        Discovers + imports each extension and invokes its ``register(api)``
+        against an :class:`ExtensionAPI` bound to this session's live
+        :class:`ExtensionRunner` bucket — so the four mutating hooks a file
+        extension registers actually FIRE in this session's loop. This is the
+        seam the E0–E4 loader left disconnected from any live process (E5 §0):
+        ``_load_extensions`` was called only by tests, never against a running
+        session's runner.
+
+        Binding reuses :meth:`_bind_extension_api` as the loader's per-extension
+        ``api_factory``: each extension gets its OWN bucket appended in load
+        order and labelled by its **file path**, sharing this session's registry,
+        event bus, and live :class:`ExtensionContext`. An async ``register`` is
+        awaited by the loader. This runs once per run, AFTER construction (the
+        runner already exists), which is exactly what resolves the load-vs-bind
+        ordering (E5 D-E5-7): build the session, then bind file extensions to its
+        runner here — rather than needing the runner before the session exists.
+
+        Error policy is the loader's (Fail-Early): an explicit ``-e`` failure
+        RAISES (the user named it); a *discovered* failure is collected into the
+        returned :class:`LoadExtensionsResult` ``errors`` and skipped. The caller
+        surfaces ``errors`` (headless → stderr, TUI → a notice); the loader no
+        longer prints them itself, so this is safe to call under a live Textual
+        screen.
+        """
+        # Lazy import: sdk imports agent_session at module load, so a top-level
+        # import here would be circular.
+        from tau_agent_core.sdk import _load_extensions
+
+        return await _load_extensions(
+            explicit_paths,
+            discover=discover,
+            user_dir=user_dir,
+            api_factory=self._bind_extension_api,
+        )
 
     async def prompt(
         self,

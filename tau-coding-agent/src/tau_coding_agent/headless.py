@@ -304,6 +304,21 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
 
     backend = create_backend(model_config)
 
+    # Load file-path extensions into the live session (E5 §2.2). Explicit ``-e``
+    # paths come from ``--extension``; the ``~/.tau/extensions`` global dir is
+    # discovered unless ``-ne`` (``no_extensions``) was passed. A discovered load
+    # failure is collected and surfaced to stderr here; an explicit ``-e`` failure
+    # raises out of ``load_extensions`` (Fail-Early — the user named it), which
+    # ``main()`` renders as a clean CLI error.
+    explicit_extensions = model_config.get("extensions") or None
+    discover_extensions = not model_config.get("no_extensions", False)
+    ext_result = await backend.load_extensions(explicit_extensions, discover=discover_extensions)
+    for ext_error in ext_result.errors:
+        print(
+            f"[τ] failed to load extension {ext_error.path}: {ext_error.error}",
+            file=sys.stderr,
+        )
+
     if args.mode == "json":
         # pi-faithful ``--mode json`` (E-json / step S8, D-delegate). Emit the
         # session HEADER line FIRST (pi ``print-mode.ts:113-116``), then every bus

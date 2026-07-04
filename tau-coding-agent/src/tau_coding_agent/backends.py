@@ -15,7 +15,7 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.session_log import InMemorySessionLog, SessionLog
-from tau_agent_core.sdk import _resolve_tools
+from tau_agent_core.sdk import LoadExtensionsResult, _resolve_tools
 
 
 def tau_event_to_pi_event(event: AgentEvent) -> dict[str, Any] | None:
@@ -115,6 +115,23 @@ class Backend(ABC):
         Safe to call when nothing is running. The TUI binds this to Esc so a
         long response can be cancelled mid-stream; the active ``stream_chat``
         returns with whatever streamed so far."""
+
+    @abstractmethod
+    async def load_extensions(
+        self,
+        explicit_paths: list[str] | None = None,
+        *,
+        discover: bool = True,
+        user_dir: str | None = None,
+    ) -> LoadExtensionsResult:
+        """Load file-path extensions into this backend's live session (E5 §2.2).
+
+        Both run paths (headless ``run_print`` and the TUI ``Parley``) load
+        extensions through this seam after building the backend, so a file
+        extension's hooks fire in the same ``AgentSession`` the loop runs on.
+        Returns the :class:`LoadExtensionsResult`; the caller surfaces its
+        ``errors`` (an explicit ``-e`` failure raises out of here instead —
+        Fail-Early)."""
 
 
 class TauBackend(Backend):
@@ -232,6 +249,23 @@ class TauBackend(Backend):
         ``stream_simple``), which polls it per SSE line and stops the stream — so
         an in-flight completion ends promptly instead of draining in full."""
         self.agent_session.abort()
+
+    async def load_extensions(
+        self,
+        explicit_paths: list[str] | None = None,
+        *,
+        discover: bool = True,
+        user_dir: str | None = None,
+    ) -> LoadExtensionsResult:
+        """Load file-path extensions into the wrapped ``AgentSession`` (E5 §2.2).
+
+        Delegates to :meth:`AgentSession.load_extensions`, which binds each
+        extension to this session's live :class:`ExtensionRunner` so its mutating
+        hooks fire in the loop this backend drives.
+        """
+        return await self.agent_session.load_extensions(
+            explicit_paths, discover=discover, user_dir=user_dir
+        )
 
     async def compact_messages(self, messages: list[dict]) -> list[dict] | None:
         """Compact the conversation the TUI sends, returning the shortened list.
