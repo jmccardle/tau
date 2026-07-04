@@ -52,6 +52,14 @@ class CLIArgs:
     provider: str | None = None
     tools: str | None = None  # comma-separated allowlist
     no_tools: bool = False
+    # Extensions + tool-filtering flags (E0/S2; pi args.ts:104-153). Threaded into
+    # the headless run config; the loader/registry consumers land in E1 (S3+).
+    extensions: list[str] = field(default_factory=list)  # --extension/-e (repeatable path)
+    no_extensions: bool = False  # -ne → suppress DISCOVERY only; explicit -e still load
+    exclude_tools: str | None = None  # -xt → comma-separated tool denylist
+    no_builtin_tools: bool = False  # -nbt → (degenerates to --no-tools until E1)
+    no_session: bool = False  # --no-session → ephemeral, unpersisted run
+    append_system_prompt: list[str] = field(default_factory=list)  # repeatable
     system_prompt: str | None = None
     thinking: str | None = None  # off|minimal|low|medium|high|xhigh
     # Session continuation (headless): resume/fork a persisted ~/.tau/chats
@@ -135,6 +143,52 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="disable all tools (read-only agent)",
     )
+    # Extensions + tool-filtering + ephemeral-session flags (pi args.ts:104-153).
+    parser.add_argument(
+        "--extension",
+        "-e",
+        dest="extensions",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="load an extension from PATH (repeatable)",
+    )
+    parser.add_argument(
+        "--no-extensions",
+        "-ne",
+        dest="no_extensions",
+        action="store_true",
+        help="disable extension DISCOVERY (explicit --extension paths still load)",
+    )
+    parser.add_argument(
+        "--exclude-tools",
+        "-xt",
+        dest="exclude_tools",
+        default=None,
+        metavar="LIST",
+        help="comma-separated tool denylist (e.g. bash,write)",
+    )
+    parser.add_argument(
+        "--no-builtin-tools",
+        "-nbt",
+        dest="no_builtin_tools",
+        action="store_true",
+        help="disable built-in tools (currently degenerates to --no-tools; see docs)",
+    )
+    parser.add_argument(
+        "--no-session",
+        dest="no_session",
+        action="store_true",
+        help="run ephemerally without persisting a session to disk",
+    )
+    parser.add_argument(
+        "--append-system-prompt",
+        dest="append_system_prompt",
+        action="append",
+        default=None,
+        metavar="TEXT",
+        help="append TEXT to the system prompt (repeatable)",
+    )
     parser.add_argument(
         "--system-prompt",
         dest="system_prompt",
@@ -202,6 +256,13 @@ def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
         provider=ns.provider,
         tools=ns.tools,
         no_tools=ns.no_tools,
+        # action="append" yields None when the flag is absent → normalize to [].
+        extensions=list(ns.extensions or []),
+        no_extensions=ns.no_extensions,
+        exclude_tools=ns.exclude_tools,
+        no_builtin_tools=ns.no_builtin_tools,
+        no_session=ns.no_session,
+        append_system_prompt=list(ns.append_system_prompt or []),
         system_prompt=ns.system_prompt,
         thinking=ns.thinking,
         continue_session=ns.continue_session,

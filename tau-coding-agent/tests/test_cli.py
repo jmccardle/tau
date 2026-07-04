@@ -81,6 +81,53 @@ def test_no_tools_flag():
     assert parse_cli_args(["--no-tools", "-p", "x"]).no_tools is True
 
 
+# ── extension / tool-filter / session flags (E0/S2, pi args.ts:104-153) ──────
+
+def test_extension_flag_is_repeatable_path():
+    # -e / --extension append; None-default normalizes to [].
+    assert parse_cli_args(["-p", "x"]).extensions == []
+    args = parse_cli_args(["-e", "a.py", "--extension", "b.py", "-p", "x"])
+    assert args.extensions == ["a.py", "b.py"]
+
+
+def test_no_extensions_flag_aliases():
+    assert parse_cli_args(["-ne", "-p", "x"]).no_extensions is True
+    assert parse_cli_args(["--no-extensions", "-p", "x"]).no_extensions is True
+    assert parse_cli_args(["-p", "x"]).no_extensions is False
+
+
+def test_no_extensions_keeps_explicit_extension():
+    # -ne disables DISCOVERY only; an explicit -e must survive alongside it.
+    args = parse_cli_args(["-e", "keep.py", "-ne", "-p", "x"])
+    assert args.extensions == ["keep.py"]
+    assert args.no_extensions is True
+
+
+def test_exclude_tools_flag_aliases():
+    assert parse_cli_args(["-xt", "bash,write", "-p", "x"]).exclude_tools == "bash,write"
+    assert parse_cli_args(["--exclude-tools", "read", "-p", "x"]).exclude_tools == "read"
+    assert parse_cli_args(["-p", "x"]).exclude_tools is None
+
+
+def test_no_builtin_tools_flag_aliases():
+    assert parse_cli_args(["-nbt", "-p", "x"]).no_builtin_tools is True
+    assert parse_cli_args(["--no-builtin-tools", "-p", "x"]).no_builtin_tools is True
+    assert parse_cli_args(["-p", "x"]).no_builtin_tools is False
+
+
+def test_no_session_flag():
+    assert parse_cli_args(["--no-session", "-p", "x"]).no_session is True
+    assert parse_cli_args(["-p", "x"]).no_session is False
+
+
+def test_append_system_prompt_is_repeatable():
+    assert parse_cli_args(["-p", "x"]).append_system_prompt == []
+    args = parse_cli_args(
+        ["--append-system-prompt", "one", "--append-system-prompt", "two", "-p", "x"]
+    )
+    assert args.append_system_prompt == ["one", "two"]
+
+
 def test_mode_choices_validated():
     # argparse rejects an invalid --mode with SystemExit(2)
     with pytest.raises(SystemExit):
@@ -118,6 +165,52 @@ def test_resolve_tools_allowlist():
         _config(), CLIArgs(model="gpt-4o", tools="read, bash")
     )
     assert mc["tools"] == ["read", "bash"]
+
+
+def test_resolve_no_builtin_tools_degenerates_to_empty():
+    # S2 degeneracy: --no-builtin-tools == --no-tools until E1 lands ext tools.
+    _name, mc = resolve_model_config(
+        _config(), CLIArgs(model="gpt-4o", no_builtin_tools=True)
+    )
+    assert mc["tools"] == []
+
+
+def test_resolve_exclude_tools_reaches_run_config():
+    _name, mc = resolve_model_config(
+        _config(), CLIArgs(model="gpt-4o", exclude_tools="bash, write")
+    )
+    assert mc["exclude_tools"] == ["bash", "write"]
+
+
+def test_resolve_exclude_tools_empty_raises():
+    with pytest.raises(CLIError, match="no tool names parsed"):
+        resolve_model_config(_config(), CLIArgs(model="gpt-4o", exclude_tools=" , "))
+
+
+def test_resolve_extensions_reach_run_config():
+    _name, mc = resolve_model_config(
+        _config(), CLIArgs(model="gpt-4o", extensions=["a.py", "b.py"])
+    )
+    assert mc["extensions"] == ["a.py", "b.py"]
+    # No discovery toggle unless asked.
+    assert "no_extensions" not in mc
+
+
+def test_resolve_no_extensions_keeps_explicit_extension_in_run_config():
+    # -ne suppresses discovery (no_extensions flag reaches the config) while an
+    # explicit -e path still lands in the run config for the loader to honor.
+    _name, mc = resolve_model_config(
+        _config(), CLIArgs(model="gpt-4o", extensions=["keep.py"], no_extensions=True)
+    )
+    assert mc["extensions"] == ["keep.py"]
+    assert mc["no_extensions"] is True
+
+
+def test_resolve_append_system_prompt_reaches_run_config():
+    _name, mc = resolve_model_config(
+        _config(), CLIArgs(model="gpt-4o", append_system_prompt=["extra rule"])
+    )
+    assert mc["append_system_prompt"] == ["extra rule"]
 
 
 def test_resolve_provider_override():
@@ -358,6 +451,25 @@ async def test_run_print_persists_in_json_mode_too(fake_backend, capsys):
     )
     assert rc == 0
     assert len(_session_files(fake_backend["tau_dir"])) == 1
+
+
+async def test_run_print_no_session_is_ephemeral(fake_backend, capsys):
+    # --no-session runs against an in-memory session (path=None): the turn still
+    # streams, but nothing is written to the sandboxed sessions dir.
+    rc = await run_print(
+        CLIArgs(messages=["hi"], print_mode=True, no_session=True), _config()
+    )
+    assert rc == 0
+    assert capsys.readouterr().out == "Hello world\n"
+    assert _session_files(fake_backend["tau_dir"]) == []
+
+
+async def test_run_print_no_session_rejects_continue(fake_backend):
+    with pytest.raises(CLIError, match="--no-session can't be combined"):
+        await run_print(
+            CLIArgs(messages=["hi"], print_mode=True, no_session=True, continue_session=True),
+            _config(),
+        )
 
 
 async def test_run_print_save_failure_propagates(fake_backend, monkeypatch):

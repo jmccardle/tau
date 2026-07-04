@@ -103,13 +103,39 @@ def resolve_model_config(
     # Per-invocation overrides (CLI > config).
     if args.provider:
         model_config["backend"] = args.provider
-    if args.no_tools:
+    # Tool selection. --no-tools disables everything; --no-builtin-tools DEGENERATES
+    # to the same until E1 lands registered (extension) tools in the loop — pi keeps
+    # them distinct (noTools "all" vs "builtin", args.ts:104-142; main.ts:423-427),
+    # but with no non-builtin tools yet, "disable builtins" == "disable all". Documented
+    # in docs/EXTENSIONS-IMPLEMENTATION.md §E0.2 / §8 S2.
+    if args.no_tools or args.no_builtin_tools:
         model_config["tools"] = []
     elif args.tools:
         names = [t.strip() for t in args.tools.split(",") if t.strip()]
         if not names:
             raise CLIError("--tools given but no tool names parsed")
         model_config["tools"] = names
+
+    # --exclude-tools denylist (pi excludeTools, args.ts:143-153). Carried on the run
+    # config; the filter is applied at tool resolution in E1 (§8 S3+).
+    if args.exclude_tools is not None:
+        excluded = [t.strip() for t in args.exclude_tools.split(",") if t.strip()]
+        if not excluded:
+            raise CLIError("--exclude-tools given but no tool names parsed")
+        model_config["exclude_tools"] = excluded
+
+    # Extensions: explicit --extension paths + the discovery toggle (pi args.ts:150-153).
+    # Loaded/bound to the live session in E1 (§8 S3+); staged on the run config here.
+    if args.extensions:
+        model_config["extensions"] = list(args.extensions)
+    if args.no_extensions:
+        model_config["no_extensions"] = True
+
+    # Appended system-prompt sections (pi appendSystemPrompt, system-prompt.ts:48).
+    # Combined with the base coding prompt by the E1 system-prompt builder (§8 S3+);
+    # kept off the base ``system_prompt`` so it augments rather than replaces it.
+    if args.append_system_prompt:
+        model_config["append_system_prompt"] = list(args.append_system_prompt)
 
     return spec, model_config
 
@@ -216,6 +242,16 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
             'tau -p "summarize @README.md"'
         )
 
+    # --no-session runs ephemerally (no on-disk file), so resuming/forking a
+    # persisted session is contradictory — reject it rather than silently ignore
+    # either flag (Fail-Early). The continuation flags are mutually exclusive at
+    # the argparse layer, so at most one is set here.
+    if args.no_session and (args.continue_session or args.session or args.fork):
+        raise CLIError(
+            "--no-session can't be combined with --continue/--session/--fork "
+            "(those resume or fork a persisted session)"
+        )
+
     # Resolve a source session to continue/fork (None for a fresh run).
     prior = _select_session(args)
 
@@ -242,7 +278,10 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
             if args.system_prompt is not None
             else config.get("system_prompt", "")
         )
-        session = Session.create(
+        # --no-session → ephemeral (path=None, appends never touch disk); the
+        # create_in_memory seam is the one-API alternative to create (§E0.2).
+        create = Session.create_in_memory if args.no_session else Session.create
+        session = create(
             cwd, model_name, backend_name, system_prompt=system_prompt or None, name=args.name
         )
     elif args.fork is not None:
