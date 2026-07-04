@@ -4,7 +4,16 @@ Living schedule of open work. Each item cites the evidence (file:line, doc, or
 test) it came from so it can be audited against the source of truth (pi) and the
 "Fail Early" rule.
 
-**State (2026-06-26, updated 2026-07-03):** the **`feat/streaming-ux`** branch
+**State (2026-07-03, latest):** the **`feat/session-tree`** branch (9 commits,
+`b9303b1`→`4f80d51`) is **merged to `master`** (`--no-ff`, merge `0a839f8`) —
+**E3's tree-as-truth substrate half is DONE** (see Tier 11 below). Suite **1471
+passed / 0 failed** (2 pre-existing "event loop is closed" ResourceWarnings);
+ruff/ruff-format clean, mypy 0 across 50 files — Tier-5 gate green. Verified by
+eyeball in the TUI: summarizing + jumping around the tree "close to perfect."
+Next on the beeline: **E0** (extension loader + flags), the strictly-ordered
+E0→E1→E2 track we parallelized past while building the E3 substrate.
+
+**Prior (2026-06-26):** the **`feat/streaming-ux`** branch
 (4 commits, `ea89735`→`5ed3892`) is **merged** — `master` fast-forwarded to
 `ffd1167`. New (2026-07-03): **`docs/EXTENSIONS-ORCHESTRATION-PLAN.md`** — an
 approved-in-shape plan to beeline Tier 11 (phases E0–E4) so the
@@ -173,10 +182,12 @@ dependency; Fail-Early (requires the in-repo venv tools, no PATH fallback).
   `compact_session`, `build_compaction_prompt`, …) and rewrote
   `test_phase5_subphase1.py` against the new engine. **Tier 5 is now fully
   closed.**
-- **Follow-up (separate concern, NOT compaction):** `session_manager.summarize_branch`
-  still falls back to truncated raw text on an LLM error (lines ~730-734) — the
-  same anti-pattern compaction just shed. It should be refactored onto
-  `complete_simple` + raise. Tracked here so it isn't forgotten.
+- **Follow-up (separate concern, NOT compaction) — DONE (E3, 2026-07-03).**
+  `session_manager.summarize_branch` no longer falls back to truncated raw text
+  on an LLM error: it drives `complete_simple`, threads optional custom
+  instructions into the summarizer system prompt, and **raises** on empty/failed/
+  aborted summaries (Fail-Early). Landed with E3 Part 2 (it is the engine the
+  tree-browser's "summarize branch" modes call). Merge `0a839f8`.
 
 ### Tier 6 — CLI parity quick-wins + json doc-fix — *pre/parallel to the session sprint*
 
@@ -308,6 +319,45 @@ from pi's `showTreeSelector`), and the documented external-store seam
 (swap file persistence for a DB by UUID, no DB built) — is spec'd
 step-by-step in `docs/SESSION-TREE-IMPLEMENTATION.md`.
 
+**E3 substrate — DONE (merged `0a839f8`, 2026-07-03).** The whole substrate +
+UI half of E3 landed (9 commits on `feat/session-tree`), gate green throughout,
+suite 1471/0:
+- **`ConversationTree`** (`tau_agent_core/conversation_tree.py`) — pure, I/O-free
+  fold over `Session.entries()`: leaf→root `parentId` walk + read-time splice
+  (anchor on the last **compaction** only), `tree()`, `subtree_text()`,
+  `navigate()`. Parity battery freezes the old System-A fold as a differential
+  oracle.
+- **`navigate` + `branch_summary` entry kinds** and a **persisted cursor**
+  (`Session.append_navigate/append_branch_summary`, `Session.cursor`); a dangling
+  cursor raises (Fail-Early). **Append-only compaction** — the Tier-5
+  `apply_compaction` file-rewrite is gone (`_persist_entries` "w" deleted);
+  byte-prefix test proves append-only.
+- **`SessionLog` Protocol + `InMemorySessionLog`** in `tau_agent_core`
+  (Decision 4 opt B): the persistence facade `AgentSession` builds context
+  through; coding-agent's file `Session` satisfies it structurally. **System-A
+  persistence retired from the live path**; identity is the UUID (§4.2).
+  `SessionManager` the class is kept (no live caller; its suite stays green) —
+  physical removal is an optional follow-up.
+- **TUI tree-browser** — `SessionTreeModal` + three-mode subtree compaction
+  ("no summary" / "summarize" / "summarize with custom instructions"),
+  `TauBackend.navigate_tree` on the live session, `ctrl+g` / `/tree` / `/fork` /
+  palette. **Decision 5 fixed** (verified vs pi): `branch_summary` parents at the
+  branch point and is an **inline** node, not a splice anchor (only `compaction`
+  drops a prefix); `[A,B,S]` + mixed-path topology tests lock it.
+- **DB-by-UUID seam** documented, not built (§4; Fail-Early). **TUI + headless
+  now seed render/model context from `ConversationTree` (`Session.context`)**, not
+  the linear fold — fixes a compacted/branched session resuming to the wrong
+  history (`4f80d51`).
+
+**E3 remaining (the ExtensionContext half — needs E1):** expose
+`compact`/`fork`/`entries`/`summarize_branch` on `ExtensionContext`, turn-boundary
+deferral, the `send_user_message` queue, and route the seam-3 lifecycle events
+onto the extension bus (§7 dep: "E3's `ExtensionContext` surface needs both E1 and
+the substrate"). Blocked on E1. **Optional substrate follow-ups (non-blocking):**
+`TreeModeModal`/`TreeCustomInstructionsModal` Pilot coverage + an end-to-end
+browse→navigate chain test; the deferred `self.messages` pure-view retirement
+(intentionally not done — pi keeps a materialized list, §2.6).
+
 ### Tier 12 — RPC mode — *deferred, narrow audience*
 
 `--mode rpc` (pi `args.ts:80`; pi's `modes/rpc/`: 28 command verbs, LF-only JSONL,
@@ -353,3 +403,13 @@ items (`--exclude-tools`, `--no-session`) jump the queue per
 `docs/EXTENSIONS-ORCHESTRATION-PLAN.md` §7; the `summarize_branch` follow-up
 is absorbed into E3. Tiers 8/9/10, session-sprint Phases B/C, and Tier 11's
 remaining milestones (M3-UI/M4/M5) keep the order above.
+
+**Progress 2026-07-03 (E3 substrate merged, `0a839f8`):** E3's substrate + UI
+half is DONE (and the `summarize_branch` follow-up with it). The remaining
+beeline is the strictly-ordered extension track we parallelized past:
+**E0 (loader + flags) → E1 (connect the API) → E2 (mutating hooks) → E3's
+ExtensionContext surface** (needs E1) **→ E4 (demo extensions)**. **Next
+concrete step: E0** — reconcile the two loaders to `register(api)` (importlib +
+entry points, Fail-Early on load errors), surface `--extension/-e` +
+`--no-extensions`, and land `--exclude-tools` (Tier 6) + `--no-session`
+(Tier 7). Sized **S**.
