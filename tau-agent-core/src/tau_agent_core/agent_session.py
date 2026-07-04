@@ -128,6 +128,17 @@ class AgentSession:
         # post-turn check in prompt(). Defaults to the harness defaults.
         self._compaction_settings = compaction_settings or DEFAULT_COMPACTION_SETTINGS
 
+        # Injection queues + deferred-op ledger (S20 / decision 3 + 5). A tool
+        # running mid-turn cannot mutate the conversation under the live loop, so
+        # requests are RECORDED here and DRAINED at the tail of prompt() — the
+        # same site as _maybe_auto_compact(), never per-inner-turn:
+        #   _deferred_ops           — deferred compact/fork intents (applied once)
+        #   _pending_follow_up_messages — followUp: re-enter the loop THIS prompt()
+        #   _pending_next_turn_messages — nextTurn: injected on the NEXT prompt()
+        self._deferred_ops: list[dict[str, Any]] = []
+        self._pending_follow_up_messages: list[str] = []
+        self._pending_next_turn_messages: list[str] = []
+
         # Register extensions against a SINGLE ExtensionAPI bound to this
         # session's real event bus + registry, so handlers subscribe to the
         # live loop bus and registered tools land in the session-owned registry.
@@ -246,142 +257,212 @@ class AgentSession:
         self._extension_api.context._signal = self._abort_signal
 
         try:
-            # Create UserMessage for tau-ai
-            content: list[dict[str, Any]] = [{"type": "text", "text": text}]
-            if images:
-                content.extend(images)
-            # content holds raw block dicts; model_validate lets pydantic coerce
-            # them into the TextContent | ImageContent union UserMessage declares.
-            user_msg = UserMessage.model_validate(
-                {
-                    "role": "user",
-                    "content": content,
-                    "timestamp": self._timestamp(),
-                }
-            )
+            # Drain any pending "nextTurn" messages into THIS prompt's first turn
+            # (S20): a message queued last prompt with ``deliver_as="nextTurn"`` is
+            # injected alongside the user turn, exactly as pi pushes
+            # ``_pendingNextTurnMessages`` after the user message (agent-session.ts:
+            # 1096-1099). Snapshot-and-clear so the injection happens exactly once
+            # and does NOT recur on the followUp re-entry below.
+            next_turn = self._pending_next_turn_messages
+            self._pending_next_turn_messages = []
+            queued = [self._queued_content_to_user(c) for c in next_turn]
 
-            # Get context: use provided context or fall back to session messages.
-            if context is not None:
-                context_messages = list(context)  # copy to avoid mutation
-                # Did the caller already include this user turn as the final
-                # context message? The TUI passes the full history (which ends
-                # with the latest user turn); a bare prompt("hi") does not. This
-                # flag also drives the persist/return logic below.
-                context_ends_with_user = _ends_with_user_text(context_messages, text)
-            else:
-                context_messages = self.messages
-                context_ends_with_user = False
+            turn_messages = await self._run_one_turn(text, images, context, queued=queued)
 
-            # Thread the user message to the loop exactly once — via
-            # prompts=[user_msg] passed to loop.run() below. The context must
-            # therefore NOT also carry a trailing copy, so drop the duplicate the
-            # caller supplied. (pi parity: runAgentLoop concatenates context +
-            # prompts with no dedup, agent-loop.ts:103-106; the old loop-level
-            # strip-compare dedup is removed.)
-            if context_ends_with_user:
-                context_messages = context_messages[:-1]
-
-            # Fire the before_agent_start hook just before the loop runs (E2,
-            # step S13; pi agent-session.ts:1101-1125). Two return channels:
-            #   - system_prompt CHAINS (last handler wins; each handler sees the
-            #     running value, threaded inside the dispatcher) and replaces the
-            #     base prompt for THIS turn only — the config is rebuilt every
-            #     prompt(), so next turn resets to the base (pi resets to
-            #     _baseSystemPrompt when no handler modifies it);
-            #   - message(s) ACCUMULATE across handlers and are injected as custom
-            #     messages after the user turn (pi pushes role:"custom" messages;
-            #     on the wire they read as user messages — messages.ts custom→user).
-            # Gated on has_handlers for the zero-extension fast path.
-            turn_system_prompt = self._system_prompt
-            custom_messages: list[UserMessage] = []
-            if self._extension_runner.has_handlers("before_agent_start"):
-                before = await self._extension_runner.emit_before_agent_start(
-                    prompt=text,
-                    images=images,
-                    system_prompt=self._system_prompt,
-                )
-                if before is not None:
-                    if before.get("system_prompt") is not None:
-                        turn_system_prompt = before["system_prompt"]
-                    for msg in before.get("messages") or []:
-                        custom_messages.append(self._custom_message_to_user(msg))
-
-            # Build the agent loop config
-            config = AgentLoopConfig(
-                system_prompt=turn_system_prompt,
-                temperature=getattr(self._model, "temperature", 0.7),
-                api_key=self._api_key,
-                reasoning=self._reasoning,
-            )
-
-            # Create and run the agent loop
-            loop = AgentLoop(
-                config=config,
-                emit=self._events.emit,
-                tools=self._build_turn_tools(),
-                model=self._model,
-                abort_signal=self._abort_signal,
-                hook_dispatcher=self._extension_runner,
-            )
-
-            # Run the loop — handles LLM call, tool execution, re-tries. The
-            # accumulated custom messages follow the user turn (pi order:
-            # [user, ...custom]); the loop concatenates context + prompts.
-            final_messages = await loop.run(
-                prompts=[user_msg, *custom_messages],
-                context=context_messages,
-            )
-
-            # Persist this turn's messages AND collect them to return. The
-            # return value is THIS turn's new messages only — the user message
-            # (when it wasn't already supplied in the context) plus the
-            # assistant/tool messages the loop produced — NOT the full
-            # accumulated session history.
-            #
-            # Returning the whole history here was a compounding bug: the TUI
-            # appends prompt()'s return to its own message store (which already
-            # holds every prior turn), so each turn re-appended all earlier
-            # assistant/tool messages. The model then saw earlier exchanges
-            # duplicated and got confused about what it had already done.
-            turn_messages: list[dict[str, Any]] = []
-
-            # Persist this turn's user message. AgentSession is the AUTHORITATIVE
-            # persister (E3-ctx / D3): on the live path it appends through the TUI's
-            # own file ``Session`` (bound via ``session_log``), so the user turn is
-            # recorded HERE and nowhere else — the TUI dropped its own
-            # ``append_message`` to resolve the double-write. ``context_ends_with_user``
-            # still governs the loop-threading STRIP above (so the user turn is fed to
-            # the loop exactly once), but NOT persistence: the caller echoing the turn
-            # into the context it passed does not mean the log already holds it. The
-            # message is new to the log exactly once this turn, so append it
-            # unconditionally (a bare ``prompt("hi")`` with no context lands here too).
-            user_dict = user_msg.model_dump()
-            self._session_log.append_message(user_dict)
-            turn_messages.append(user_dict)
-
-            # Assistant responses and tool results produced this turn.
-            for msg in final_messages:
-                if hasattr(msg, "model_dump"):
-                    msg_dict = msg.model_dump()
-                elif isinstance(msg, dict):
-                    msg_dict = msg
-                else:
-                    continue
-
-                self._session_log.append_message(msg_dict)
-                turn_messages.append(msg_dict)
-
-            # Auto-compaction: now that this turn is persisted, compact in place
-            # if the conversation is approaching the model's context window, so
-            # the NEXT turn starts within budget (pi checks shouldCompact after
-            # each turn). A failure here propagates — Fail-Early, no silent skip —
-            # but this turn's messages are already saved and returned-to-be.
-            await self._maybe_auto_compact()
+            # End-of-prompt drain (S20 / decision 3): auto-compaction, then the
+            # deferred compact/fork intents (applied exactly ONCE here, never
+            # mid-turn — no loop reentrancy), then followUp messages re-enter the
+            # loop WITHIN this same prompt() call. All three share this single
+            # tail site (the _maybe_auto_compact() site).
+            await self._end_of_prompt_drain(turn_messages)
 
             return turn_messages
 
         finally:
             self._is_streaming = False
+
+    async def _run_one_turn(
+        self,
+        text: str,
+        images: list[dict] | None,
+        context: list[dict] | None,
+        queued: list[UserMessage] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Run one agent-loop turn: build the user message, run the loop, persist.
+
+        Extracted from ``prompt()`` so the end-of-prompt followUp drain (S20) can
+        re-enter it within the same ``prompt()`` call. ``queued`` are pending
+        ``nextTurn`` messages threaded (and persisted) after the user turn on the
+        first turn of a prompt; empty on a followUp re-entry.
+
+        Returns THIS turn's new messages only — the user message, any ``queued``
+        messages, then the assistant/tool messages the loop produced.
+        """
+        queued = queued or []
+
+        # Create UserMessage for tau-ai
+        content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+        if images:
+            content.extend(images)
+        # content holds raw block dicts; model_validate lets pydantic coerce
+        # them into the TextContent | ImageContent union UserMessage declares.
+        user_msg = UserMessage.model_validate(
+            {
+                "role": "user",
+                "content": content,
+                "timestamp": self._timestamp(),
+            }
+        )
+
+        # Get context: use provided context or fall back to session messages.
+        if context is not None:
+            context_messages = list(context)  # copy to avoid mutation
+            # Did the caller already include this user turn as the final
+            # context message? The TUI passes the full history (which ends
+            # with the latest user turn); a bare prompt("hi") does not. This
+            # flag also drives the persist/return logic below.
+            context_ends_with_user = _ends_with_user_text(context_messages, text)
+        else:
+            context_messages = self.messages
+            context_ends_with_user = False
+
+        # Thread the user message to the loop exactly once — via
+        # prompts=[user_msg] passed to loop.run() below. The context must
+        # therefore NOT also carry a trailing copy, so drop the duplicate the
+        # caller supplied. (pi parity: runAgentLoop concatenates context +
+        # prompts with no dedup, agent-loop.ts:103-106; the old loop-level
+        # strip-compare dedup is removed.)
+        if context_ends_with_user:
+            context_messages = context_messages[:-1]
+
+        # Fire the before_agent_start hook just before the loop runs (E2,
+        # step S13; pi agent-session.ts:1101-1125). Two return channels:
+        #   - system_prompt CHAINS (last handler wins; each handler sees the
+        #     running value, threaded inside the dispatcher) and replaces the
+        #     base prompt for THIS turn only — the config is rebuilt every
+        #     prompt(), so next turn resets to the base (pi resets to
+        #     _baseSystemPrompt when no handler modifies it);
+        #   - message(s) ACCUMULATE across handlers and are injected as custom
+        #     messages after the user turn (pi pushes role:"custom" messages;
+        #     on the wire they read as user messages — messages.ts custom→user).
+        # Gated on has_handlers for the zero-extension fast path.
+        turn_system_prompt = self._system_prompt
+        custom_messages: list[UserMessage] = []
+        if self._extension_runner.has_handlers("before_agent_start"):
+            before = await self._extension_runner.emit_before_agent_start(
+                prompt=text,
+                images=images,
+                system_prompt=self._system_prompt,
+            )
+            if before is not None:
+                if before.get("system_prompt") is not None:
+                    turn_system_prompt = before["system_prompt"]
+                for msg in before.get("messages") or []:
+                    custom_messages.append(self._custom_message_to_user(msg))
+
+        # Build the agent loop config
+        config = AgentLoopConfig(
+            system_prompt=turn_system_prompt,
+            temperature=getattr(self._model, "temperature", 0.7),
+            api_key=self._api_key,
+            reasoning=self._reasoning,
+        )
+
+        # Create and run the agent loop
+        loop = AgentLoop(
+            config=config,
+            emit=self._events.emit,
+            tools=self._build_turn_tools(),
+            model=self._model,
+            abort_signal=self._abort_signal,
+            hook_dispatcher=self._extension_runner,
+        )
+
+        # Run the loop — handles LLM call, tool execution, re-tries. The pending
+        # nextTurn messages and then the accumulated before_agent_start custom
+        # messages follow the user turn (pi order: [user, ...nextTurn, ...custom]);
+        # the loop concatenates context + prompts.
+        final_messages = await loop.run(
+            prompts=[user_msg, *queued, *custom_messages],
+            context=context_messages,
+        )
+
+        # Persist this turn's messages AND collect them to return. The
+        # return value is THIS turn's new messages only — the user message
+        # (when it wasn't already supplied in the context) plus the
+        # assistant/tool messages the loop produced — NOT the full
+        # accumulated session history.
+        #
+        # Returning the whole history here was a compounding bug: the TUI
+        # appends prompt()'s return to its own message store (which already
+        # holds every prior turn), so each turn re-appended all earlier
+        # assistant/tool messages. The model then saw earlier exchanges
+        # duplicated and got confused about what it had already done.
+        turn_messages: list[dict[str, Any]] = []
+
+        # Persist this turn's user message. AgentSession is the AUTHORITATIVE
+        # persister (E3-ctx / D3): on the live path it appends through the TUI's
+        # own file ``Session`` (bound via ``session_log``), so the user turn is
+        # recorded HERE and nowhere else — the TUI dropped its own
+        # ``append_message`` to resolve the double-write. ``context_ends_with_user``
+        # still governs the loop-threading STRIP above (so the user turn is fed to
+        # the loop exactly once), but NOT persistence: the caller echoing the turn
+        # into the context it passed does not mean the log already holds it. The
+        # message is new to the log exactly once this turn, so append it
+        # unconditionally (a bare ``prompt("hi")`` with no context lands here too).
+        user_dict = user_msg.model_dump()
+        self._session_log.append_message(user_dict)
+        turn_messages.append(user_dict)
+
+        # Persist the injected nextTurn messages too — they are genuine queued
+        # user content that joins the conversation (unlike the transient
+        # before_agent_start custom messages, which are loop-only context).
+        for qmsg in queued:
+            qdict = qmsg.model_dump()
+            self._session_log.append_message(qdict)
+            turn_messages.append(qdict)
+
+        # Assistant responses and tool results produced this turn.
+        for msg in final_messages:
+            if hasattr(msg, "model_dump"):
+                msg_dict = msg.model_dump()
+            elif isinstance(msg, dict):
+                msg_dict = msg
+            else:
+                continue
+
+            self._session_log.append_message(msg_dict)
+            turn_messages.append(msg_dict)
+
+        return turn_messages
+
+    async def _end_of_prompt_drain(self, turn_messages: list[dict[str, Any]]) -> None:
+        """Drain the auto-compaction + deferred + followUp work at prompt()'s tail.
+
+        Called once at the end of ``prompt()`` (and again after each followUp
+        re-entry). Runs, in order:
+
+        1. **Auto-compaction** — compact in place if the conversation is
+           approaching the model's context window so the NEXT turn starts within
+           budget (pi checks ``shouldCompact`` after each turn). A failure here
+           propagates — Fail-Early, no silent skip — but this turn's messages are
+           already saved.
+        2. **Deferred compact/fork** — the intents a mid-turn tool recorded
+           (``ctx.compact(defer=True)`` / ``ctx.fork(defer=True)``) are applied
+           EXACTLY ONCE here, never mid-turn (decision 3). No loop reentrancy.
+        3. **followUp** — messages queued ``deliver_as="followUp"`` re-enter the
+           agent loop WITHIN this same ``prompt()`` call; each new turn's messages
+           are appended to ``turn_messages`` and itself drains at its tail.
+        """
+        await self._maybe_auto_compact()
+        await self._drain_deferred_ops()
+
+        while self._pending_follow_up_messages:
+            follow_up = self._pending_follow_up_messages.pop(0)
+            follow_up_messages = await self._run_one_turn(follow_up, None, None)
+            turn_messages.extend(follow_up_messages)
+            await self._maybe_auto_compact()
+            await self._drain_deferred_ops()
 
     async def continue_conversation(self) -> list[dict[str, Any]]:
         """Run another agent turn without adding new messages.
@@ -603,6 +684,75 @@ class AgentSession:
             await self._perform_compaction()
         finally:
             await self._events.emit(AgentEvent(type="agent_end", timestamp=self._timestamp()))
+
+    # ------------------------------------------------------------------
+    # Injection queue + deferred ops (S20 / decision 3 + 5)
+    # ------------------------------------------------------------------
+
+    def _queue_message(self, content: str, deliver_as: str = "followUp") -> None:
+        """Queue a user message for injection (the seam ``send_user_message`` calls).
+
+        ``deliver_as`` selects WHEN the queued content re-enters the conversation
+        (the API validates the same set before reaching here; this method is the
+        session-side seam and validates too — Fail-Early, no silent misroute):
+
+        - ``"followUp"``: drains at the end of the CURRENT ``prompt()`` and
+          re-enters the agent loop within that same call.
+        - ``"nextTurn"``: queued for the NEXT ``prompt()``, injected alongside its
+          user turn.
+
+        The delivery mode stays a plain string so a future ``steer`` mode can be
+        added additively (decision 5).
+        """
+        if deliver_as == "followUp":
+            self._pending_follow_up_messages.append(content)
+        elif deliver_as == "nextTurn":
+            self._pending_next_turn_messages.append(content)
+        else:
+            raise ValueError(
+                f"_queue_message: deliver_as must be 'followUp' or 'nextTurn', got {deliver_as!r}"
+            )
+
+    def _defer_compact(self, custom_instructions: str | None = None) -> None:
+        """Record a deferred compaction intent (drained at prompt()'s tail, S20)."""
+        self._deferred_ops.append({"kind": "compact", "custom_instructions": custom_instructions})
+
+    def _defer_fork(self, entry_id: str | None = None, mode: str = "in_place") -> None:
+        """Record a deferred fork intent (drained at prompt()'s tail, S20)."""
+        self._deferred_ops.append({"kind": "fork", "entry_id": entry_id, "mode": mode})
+
+    async def _drain_deferred_ops(self) -> None:
+        """Apply the recorded deferred compact/fork intents exactly once.
+
+        Snapshots and clears the ledger first, then dispatches each intent, so an
+        op recorded WHILE draining waits for the next drain rather than looping
+        here — "applies exactly once at end-of-prompt" (decision 3). Delegates to
+        the immediate paths (``compact`` / ``ctx.fork``); Fail-Early on an unknown
+        kind rather than silently dropping it.
+        """
+        if not self._deferred_ops:
+            return
+        ops = self._deferred_ops
+        self._deferred_ops = []
+        ctx = self._extension_api.context
+        for op in ops:
+            kind = op["kind"]
+            if kind == "compact":
+                await self.compact(custom_instructions=op["custom_instructions"])
+            elif kind == "fork":
+                await ctx.fork(entry_id=op["entry_id"], mode=op["mode"])
+            else:
+                raise ValueError(f"_drain_deferred_ops: unknown deferred op kind {kind!r}")
+
+    def _queued_content_to_user(self, content: str) -> UserMessage:
+        """Wrap queued ``send_user_message`` content as a ``UserMessage`` text turn."""
+        return UserMessage.model_validate(
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": content}],
+                "timestamp": self._timestamp(),
+            }
+        )
 
     def abort(self) -> None:
         """Abort the current agent turn."""

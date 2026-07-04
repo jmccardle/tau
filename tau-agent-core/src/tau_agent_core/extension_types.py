@@ -212,8 +212,8 @@ class ExtensionContext:
             raise RuntimeError("session-control op: no session bound to ExtensionContext")
         return self._session
 
-    async def compact(self, custom_instructions: str | None = None) -> Any:
-        """Compact the active conversation now (delegates to ``AgentSession.compact``).
+    async def compact(self, custom_instructions: str | None = None, defer: bool = False) -> Any:
+        """Compact the active conversation (delegates to ``AgentSession.compact``).
 
         Runs the full append-only compaction pipeline on the bound session's log
         (``agent_session.py`` ``compact``): build the active-path entries, summarize
@@ -221,12 +221,26 @@ class ExtensionContext:
         prefix drops out of future context at read time. Returns the
         ``CompactionResult`` (or ``None`` when there is nothing to compact).
 
-        This is the immediate variant; the turn-end-deferred variant lands in S20.
+        Two variants (S20 / decision 3):
+
+        - ``defer=False`` (default): the IMMEDIATE variant — compacts now and
+          returns the ``CompactionResult``.
+        - ``defer=True``: the TURN-END-DEFERRED variant — a tool calling this
+          mid-turn cannot compact under the live agent loop, so the intent is
+          RECORDED and applied exactly once at the tail of ``prompt()`` (the same
+          site as auto-compaction). Returns ``None`` immediately; the tool then
+          returns its own normal result.
 
         Args:
             custom_instructions: Optional extra focus for the summary.
+            defer: When True, record the intent for the end-of-prompt drain
+                instead of compacting now.
         """
-        return await self._require_session().compact(custom_instructions=custom_instructions)
+        session = self._require_session()
+        if defer:
+            session._defer_compact(custom_instructions=custom_instructions)
+            return None
+        return await session.compact(custom_instructions=custom_instructions)
 
     def entries(self) -> list[dict[str, Any]]:
         """The bound session log's raw, append-only entries (all kinds).
@@ -300,7 +314,10 @@ class ExtensionContext:
         return ConversationTree(log.entries(), log.cursor).context_for()
 
     async def fork(
-        self, entry_id: str | None = None, mode: Literal["in_place", "export"] = "in_place"
+        self,
+        entry_id: str | None = None,
+        mode: Literal["in_place", "export"] = "in_place",
+        defer: bool = False,
     ) -> Any:
         """Fork the conversation — one op, two modes (plan §7 decision E3-b).
 
@@ -314,6 +331,11 @@ class ExtensionContext:
           positioning the new file's cursor at ``entry_id``. Returns the new
           session file path as a string.
 
+        ``defer=True`` (S20 / decision 3): a tool calling this mid-turn cannot
+        re-parent the log under the live agent loop, so the intent is RECORDED and
+        applied exactly once at the tail of ``prompt()``. Returns ``None``
+        immediately; the tool then returns its own normal result.
+
         Fail-Early: export requires a concrete file-backed ``Session`` log — an
         in-memory SDK log cannot be exported to a file and RAISES rather than
         fabricating one.
@@ -321,6 +343,9 @@ class ExtensionContext:
         from tau_agent_core.conversation_tree import ConversationTree
 
         session = self._require_session()
+        if defer:
+            session._defer_fork(entry_id=entry_id, mode=mode)
+            return None
         log = session.session_log
         if mode == "in_place":
             log.append_navigate(entry_id)
@@ -493,8 +518,8 @@ class ExtensionAPI:
 
         Raises:
             ValueError: if ``deliver_as`` is not ``"followUp"`` or ``"nextTurn"``.
-            RuntimeError: if the session has no message queue yet — the real
-                ``_queue_message`` lands in E3-ctx. Fail-Early: raise rather than
+            RuntimeError: if no session with a message queue is bound (e.g. a bare
+                ``ExtensionAPI()`` with no session). Fail-Early: raise rather than
                 silently drop the message (the old ``hasattr`` no-op).
         """
         if deliver_as not in ("followUp", "nextTurn"):
@@ -503,10 +528,7 @@ class ExtensionAPI:
                 f"got {deliver_as!r}"
             )
         if not hasattr(self._session, "_queue_message"):
-            raise RuntimeError(
-                "send_user_message: session message queue not available yet "
-                "(the queue lands in E3-ctx)"
-            )
+            raise RuntimeError("send_user_message: no session with a message queue is bound")
         self._session._queue_message(content, deliver_as=deliver_as)
 
     def send_message(self, message: dict, options: dict) -> None:
