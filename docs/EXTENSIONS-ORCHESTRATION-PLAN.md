@@ -318,10 +318,25 @@ integration check. Gate (ruff/mypy/pre-commit) green per commit, as usual.
    `SessionManager` persistence retires; compaction goes append-only (§4.2);
    the cursor is persisted via a `navigate` entry kind (§4.3, deliberate
    pi divergence); new-file fork demoted to path export (§4.4).
-2. **Agent-triggered fork/compact/delegate** (§2 divergence) — this plan
-   assumes yes (it is the stated intent); recording it here makes it auditable.
-3. **Turn-boundary deferral** for mid-turn self-ops (compact/fork requested by
-   a tool apply at `turn_end`) — recommended over loop reentrancy. *(Open.)*
-4. **Optional per-model `cost` config** (§6) — tokens-only otherwise. *(Open.)*
-5. **Steering scope** — ship `followUp`/`nextTurn` only; defer mid-stream
-   `steer` until a demo actually needs it. *(Open.)*
+2. **Agent-triggered fork/compact/delegate** (§2 divergence) — **RESOLVED
+   2026-07-03: YES, agent-callable.** Extensions may expose fork/compact/
+   navigate/delegate as model-callable tools; the safety story is the veto hook +
+   budget guard + process boundary, not "the model can't." **Consequence:** E2's
+   `tool_call` veto/patch is a **hard prerequisite** for the agent-facing
+   mutation tools (the context-surgeon demo, §5.4) — E2 must land before those
+   ship, and the gatekeeper demo (§5.3) is the enforcement that makes
+   agent-triggered mutation safe.
+3. **Turn-boundary deferral** for mid-turn self-ops — **RESOLVED 2026-07-03:
+   DEFER to `turn_end`.** A tool requesting compact/fork records intent and
+   returns a normal result; `AgentSession` applies it at `turn_end` (mirrors the
+   existing post-turn auto-compaction path). No loop reentrancy / half-state.
+4. **Optional per-model `cost` config** (§6) — **RESOLVED 2026-07-03: SHIP the
+   optional config.** Per-model `cost:{input,output,cache_read,cache_write}`
+   USD/M in `~/.tau/config.json`; emit `cost_usd` when present, tokens-only when
+   absent; no bundled price registry (Fail-Early).
+5. **Steering scope** — **RESOLVED 2026-07-03: `followUp`/`nextTurn` only NOW,
+   but keep the API forward-compatible.** Mid-stream `steer` is deferred, *not*
+   designed out: `send_user_message`'s delivery mode must stay an extensible
+   parameter (not a frozen two-value enum) so a future `steer` mode is an
+   additive change, never an API break. Maintainer: "future steering messages
+   are an important feature to not block off."
