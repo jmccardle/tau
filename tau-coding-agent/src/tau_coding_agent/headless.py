@@ -315,6 +315,11 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
         text, usage, new_messages, _tcs = await backend.stream_chat(
             messages, noop, on_event=on_event
         )
+        # The final ``done`` is the emit boundary for the headless json path. Cost
+        # was priced in the backend from ``model_config``'s optional per-model
+        # ``cost`` block (E4.cost / step S7) and rides inside ``usage`` as
+        # ``cost_usd`` — present only when the block is configured (an absent block
+        # stays tokens-only; never a fabricated ``$0``). Final event only.
         sys.stdout.write(json.dumps({"kind": "done", "text": text, "usage": usage}) + "\n")
         sys.stdout.flush()
     else:  # text

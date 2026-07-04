@@ -17,6 +17,42 @@ from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.sdk import _resolve_tools
 
 
+def compute_cost_usd(
+    cost: dict[str, Any] | None,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+) -> float | None:
+    """Dollar cost of one completed exchange, or ``None`` when the price is unknown.
+
+    Port of pi ``calculateCost`` (``models.ts:39-48``), collapsed to a single
+    total: τ stores no per-key ``cost`` breakdown on the frozen ``Usage`` (the
+    E4.cost decision D2 leaves ``Usage`` untouched and prices at the emit
+    boundary), so this is just ``sum(price[k] / 1e6 * tokens[k])`` over the
+    priced buckets.
+
+    ``cost`` is the optional per-model ``{input, output, cache_read,
+    cache_write}`` block (USD per 1M tokens) declared on a ``~/.tau/config.json``
+    model entry. Fail-Early — an **absent** block returns ``None`` (the caller
+    emits tokens only, never a fabricated ``$0``); a **present** block whose
+    prices are all ``0`` (a genuinely free/local model) returns ``0.0``. The two
+    read differently on the wire (``cost_usd`` absent vs ``cost_usd: 0.0``),
+    which is the whole point of the option.
+    """
+    if cost is None:
+        return None
+    return float(
+        float(cost.get("input", 0.0)) / 1_000_000 * input_tokens
+        + float(cost.get("output", 0.0)) / 1_000_000 * output_tokens
+        + float(cost.get("cache_read", 0.0)) / 1_000_000 * cache_read_tokens
+        # cache_write is inert against today's provider: cache_write_tokens is
+        # never populated (a real 0), so its price term is always 0. Left
+        # commented until a provider reports cache-write tokens.
+        # + float(cost.get("cache_write", 0.0)) / 1_000_000 * cache_write_tokens
+    )
+
+
 class Backend(ABC):
     """Abstract base class for LLM backends."""
 
@@ -517,15 +553,31 @@ class TauBackend(Backend):
         # keeps the prompt/completion/total key names the TUI + headless paths
         # already read, mapped from τ's input/output/total fields. No fabricated
         # fallback — if a provider reports nothing, the count is a true 0.
+        usage_out: dict[str, Any] = {
+            "prompt_tokens": usage_totals["input_tokens"],
+            "completion_tokens": usage_totals["output_tokens"],
+            "total_tokens": usage_totals["total_tokens"],
+            "cache_read_tokens": usage_totals["cache_read_tokens"],
+            "cache_write_tokens": usage_totals["cache_write_tokens"],
+        }
+        # Cost at the emit boundary (E4.cost / step S7). ``self.config`` IS the
+        # resolved model_config, so its optional per-model ``cost`` block prices
+        # this exchange here — the one final total, on the same usage dict the TUI
+        # finalizer and headless ``done`` both read. Emit ``cost_usd`` ONLY when a
+        # cost block is configured: an absent block yields tokens-only (unknown
+        # price), never a fabricated ``$0`` — a real free model ``cost:{…:0}``
+        # yields ``0.0`` and reads differently. The frozen ``Usage`` is untouched.
+        cost_usd = compute_cost_usd(
+            self.config.get("cost"),
+            input_tokens=usage_totals["input_tokens"],
+            output_tokens=usage_totals["output_tokens"],
+            cache_read_tokens=usage_totals["cache_read_tokens"],
+        )
+        if cost_usd is not None:
+            usage_out["cost_usd"] = cost_usd
         return (
             full_content,
-            {
-                "prompt_tokens": usage_totals["input_tokens"],
-                "completion_tokens": usage_totals["output_tokens"],
-                "total_tokens": usage_totals["total_tokens"],
-                "cache_read_tokens": usage_totals["cache_read_tokens"],
-                "cache_write_tokens": usage_totals["cache_write_tokens"],
-            },
+            usage_out,
             new_messages,
             tool_calls_info,
         )
