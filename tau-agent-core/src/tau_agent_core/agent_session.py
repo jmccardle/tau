@@ -254,9 +254,34 @@ class AgentSession:
             if context_ends_with_user:
                 context_messages = context_messages[:-1]
 
+            # Fire the before_agent_start hook just before the loop runs (E2,
+            # step S13; pi agent-session.ts:1101-1125). Two return channels:
+            #   - system_prompt CHAINS (last handler wins; each handler sees the
+            #     running value, threaded inside the dispatcher) and replaces the
+            #     base prompt for THIS turn only — the config is rebuilt every
+            #     prompt(), so next turn resets to the base (pi resets to
+            #     _baseSystemPrompt when no handler modifies it);
+            #   - message(s) ACCUMULATE across handlers and are injected as custom
+            #     messages after the user turn (pi pushes role:"custom" messages;
+            #     on the wire they read as user messages — messages.ts custom→user).
+            # Gated on has_handlers for the zero-extension fast path.
+            turn_system_prompt = self._system_prompt
+            custom_messages: list[UserMessage] = []
+            if self._extension_runner.has_handlers("before_agent_start"):
+                before = await self._extension_runner.emit_before_agent_start(
+                    prompt=text,
+                    images=images,
+                    system_prompt=self._system_prompt,
+                )
+                if before is not None:
+                    if before.get("system_prompt") is not None:
+                        turn_system_prompt = before["system_prompt"]
+                    for msg in before.get("messages") or []:
+                        custom_messages.append(self._custom_message_to_user(msg))
+
             # Build the agent loop config
             config = AgentLoopConfig(
-                system_prompt=self._system_prompt,
+                system_prompt=turn_system_prompt,
                 temperature=getattr(self._model, "temperature", 0.7),
                 api_key=self._api_key,
                 reasoning=self._reasoning,
@@ -272,9 +297,11 @@ class AgentSession:
                 hook_dispatcher=self._extension_runner,
             )
 
-            # Run the loop — handles LLM call, tool execution, re-tries
+            # Run the loop — handles LLM call, tool execution, re-tries. The
+            # accumulated custom messages follow the user turn (pi order:
+            # [user, ...custom]); the loop concatenates context + prompts.
             final_messages = await loop.run(
-                prompts=[user_msg],
+                prompts=[user_msg, *custom_messages],
                 context=context_messages,
             )
 
@@ -599,6 +626,32 @@ class AgentSession:
                 )
             )
         return resolved
+
+    def _custom_message_to_user(self, message: dict[str, Any]) -> UserMessage:
+        """Convert a ``before_agent_start`` custom message into a ``UserMessage``.
+
+        Handlers return ``{customType, content, display, details}`` (pi
+        ``BeforeAgentStartEventResult.message``); on the wire pi maps a custom
+        message to a ``user`` message carrying its content (messages.ts custom→user:
+        a string ``content`` becomes a single text block, a block list passes
+        through). τ mirrors that mapping so the injected message reaches the model.
+
+        Raises:
+            ValueError: if the message has no ``content`` — a handler that returns
+                a ``message`` must say what to inject (Fail-Early, no empty block).
+        """
+        if "content" not in message:
+            raise ValueError("before_agent_start message is missing 'content' — nothing to inject")
+        content = message["content"]
+        if isinstance(content, str):
+            content = [{"type": "text", "text": content}]
+        return UserMessage.model_validate(
+            {
+                "role": "user",
+                "content": content,
+                "timestamp": self._timestamp(),
+            }
+        )
 
     def _build_turn_tools(self) -> list:
         """Merge the built-in tools with the active extension tools for a turn.
