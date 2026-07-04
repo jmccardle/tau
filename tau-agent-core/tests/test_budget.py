@@ -4,23 +4,31 @@ Two layers, mirroring ``test_gatekeeper.py`` / ``test_reminders.py``:
 
 * **full-loop** tests — only the network boundary (``stream_simple``) is faked, and
   the fake emits real tool calls whose ``message_end`` carries real token usage, so
-  the ``message_end`` accumulation → ``context`` warn-then-abort chain runs through
-  the genuine loop. They assert the Verify clause directly: past the ceiling the
-  guard injects its ``<system-reminder>`` on the *current* turn's wire payload
-  (warning injected **before** abort) and then aborts, so the loop stops early
-  instead of running to ``max_turns``. Covered in both USD mode (a priced ``cost``
-  block + ``max_usd``) and token mode (no price block + ``max_tokens``);
+  the ``message_end`` accumulation → ``tool_result`` durable-warn-then-abort chain
+  runs through the genuine loop. They assert the reworked Verify clause: past the
+  ceiling the guard APPENDS its ``<system-reminder>`` as a durable edit to the
+  triggering ``tool_result`` node (persisted on the active path) and then aborts, so
+  the loop stops at that turn instead of running to ``max_turns``. Covered in both
+  USD mode (a priced ``cost`` block + ``max_usd``) and token mode (no price block +
+  ``max_tokens``);
 * **pure-unit** checks of the cost/token accounting, the one-shot trip, the
   Fail-Early threshold validation, and that ``make_budget_extension`` wires both
   hooks.
 
 The ``message_end`` handler is registered on the session's notify ``EventBus`` (a
-notify event, not a mutating hook); the ``context`` handler is registered on the
+notify event, not a mutating hook); the ``tool_result`` handler is registered on the
 session-owned ``ExtensionRunner`` — the wired mutating-hook dispatch surface (same
 pattern as the other E2 demo tests). ``ctx.abort()`` reaches the live per-prompt
 abort signal the session binds onto the ExtensionContext at the top of ``prompt()``.
 
-Reference: EXTENSIONS-IMPLEMENTATION.md §E4 (item 1), §E4.cost, §8 S17.
+Under the durable-hook invariant (E5 §3.2 / S32) the ``context`` hook is retired:
+the warning is a durable node on the tripping ``tool_result``, and ``ctx.abort()``
+halts the loop before the next LLM round-trip — so the tripping turn's wire payload
+does NOT carry the warning (it is appended *after* that turn's completion), but the
+persisted transcript does.
+
+Reference: EXTENSIONS-IMPLEMENTATION.md §E4 (item 1), §E4.cost, §8 S17;
+EXTENSIONS-E5-WIRING.md §3.3 / S32.
 """
 
 from __future__ import annotations
@@ -144,13 +152,13 @@ def _wire_guard(session: AgentSession, guard: Any) -> None:
 
     Uses a bucket-bound ExtensionAPI (the surface a loaded extension is handed) so
     the routing itself is under test: ``message_end`` (a notify event) must reach
-    the ``EventBus``, while ``context`` (a mutating hook) must reach this
+    the ``EventBus``, while ``tool_result`` (a mutating hook) must reach this
     extension's ``ExtensionRunner`` bucket. The guard is built externally so the
     assertions can read its running totals / tripped flag.
     """
     api = session._bind_extension_api("examples/24_budget.py")
     api.on("message_end", guard.on_message_end)  # notify event → EventBus
-    api.on("context", guard.on_context)  # mutating hook → runner bucket
+    api.on("tool_result", guard.on_tool_result)  # mutating hook → runner bucket
 
 
 def _run_until_abort_fake(wire_payloads: list[list[Any]], per_completion: Usage):
@@ -169,17 +177,20 @@ def _run_until_abort_fake(wire_payloads: list[list[Any]], per_completion: Usage)
 
 
 async def test_usd_budget_warns_then_aborts_through_the_loop() -> None:
-    """A priced run trips after one completion: warn on turn 2's wire, then abort.
+    """A priced run trips after one completion: durable warn on that result, then abort.
 
     Each completion costs input 100k @ $3/M + output 100k @ $15/M = $1.80; the
     ceiling is $1.00. So:
 
-    * turn 0's ``context`` call sees $0.00 → no warning; its completion adds $1.80;
-    * turn 1's ``context`` call sees $1.80 ≥ $1.00 → injects the warning into
-      *that* turn's payload and calls ``ctx.abort()``;
-    * the loop's per-turn abort check then breaks before turn 2.
+    * turn 0's LLM call sees $0.00 on the wire (no warning); its completion's
+      ``message_end`` accumulates $1.80;
+    * turn 0's ``tool_result`` (the unregistered-``write`` error) fires with $1.80 ≥
+      $1.00 → APPENDS the durable warning to that result and calls ``ctx.abort()``;
+    * the loop's per-turn abort check then breaks before turn 1.
 
-    The warning is therefore on the wire (turn 1) *before* the abort halts the run.
+    So the run stops after exactly ONE LLM call (the warning is appended *after* that
+    call's completion, so it never rides a wire) and the warning is a DURABLE node on
+    the persisted active path — the honest tree-as-truth record of why the run ended.
     """
     wire_payloads: list[list[Any]] = []
     usage = Usage(input_tokens=100_000, output_tokens=100_000)
@@ -196,13 +207,12 @@ async def test_usd_budget_warns_then_aborts_through_the_loop() -> None:
     ):
         await session.prompt("do a lot of expensive work")
 
-    blobs = [_message_text_blob(p) for p in wire_payloads]
-
-    # The abort stopped the loop after exactly two turns (not max_turns).
-    assert len(wire_payloads) == 2
-    # Warning injected on the tripping turn's payload, and NOT before.
-    assert "Budget exceeded" not in blobs[0]
-    assert "Budget exceeded" in blobs[1]
+    # The abort stopped the loop after exactly one LLM call (not max_turns).
+    assert len(wire_payloads) == 1
+    # That one wire never carried the warning (it is appended post-completion).
+    assert "Budget exceeded" not in _message_text_blob(wire_payloads[0])
+    # But the warning IS a durable node on the persisted active path.
+    assert "Budget exceeded" in _message_text_blob(session.messages)
     # The guard tripped and the live abort signal is set.
     assert guard.tripped is True
     assert session._abort_signal.is_aborted() is True
@@ -212,7 +222,7 @@ async def test_usd_budget_warns_then_aborts_through_the_loop() -> None:
 
 
 async def test_token_budget_aborts_through_the_loop() -> None:
-    """Token mode (no price block): trips on cumulative tokens, warns, aborts."""
+    """Token mode (no price block): trips on cumulative tokens, durable-warns, aborts."""
     wire_payloads: list[list[Any]] = []
     usage = Usage(input_tokens=100_000, output_tokens=100_000)  # 200k tokens/turn
 
@@ -226,11 +236,9 @@ async def test_token_budget_aborts_through_the_loop() -> None:
     ):
         await session.prompt("do a lot of work")
 
-    blobs = [_message_text_blob(p) for p in wire_payloads]
-
-    assert len(wire_payloads) == 2
-    assert "Budget exceeded" not in blobs[0]
-    assert "Budget exceeded" in blobs[1]
+    assert len(wire_payloads) == 1
+    assert "Budget exceeded" not in _message_text_blob(wire_payloads[0])
+    assert "Budget exceeded" in _message_text_blob(session.messages)
     assert guard.tripped is True
     assert session._abort_signal.is_aborted() is True
     assert guard.mode == "tokens"
@@ -292,12 +300,22 @@ def _usage_message(**buckets: int) -> _Event:
     return _Event({"role": "assistant", "content": [], "usage": dict(buckets)})
 
 
+def _tool_result_event(*blocks: dict[str, Any]) -> dict[str, Any]:
+    """A ``tool_result`` event dict carrying ``content`` blocks (the durable node)."""
+    return {
+        "type": "tool_result",
+        "tool_name": "write",
+        "is_error": True,
+        "content": list(blocks),
+    }
+
+
 def test_usd_guard_accumulates_and_trips_once() -> None:
     guard = budget.BudgetGuard(cost={"input": 3.0, "output": 15.0}, max_usd=1.0)
     ctx = _RecordingCtx()
 
-    # $0.00 so far — the context call does nothing.
-    assert guard.on_context({"type": "context", "messages": []}, ctx) is None
+    # $0.00 so far — the tool_result hook does nothing (under the ceiling).
+    assert guard.on_tool_result(_tool_result_event(), ctx) is None
     assert ctx.aborted == 0
 
     # One completion: input 100k @ $3/M + output 100k @ $15/M = $1.80 ≥ $1.00.
@@ -305,15 +323,17 @@ def test_usd_guard_accumulates_and_trips_once() -> None:
     assert guard.running_usd == pytest.approx(1.8)
     assert guard.is_over() is True
 
-    messages: list[Any] = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
-    result = guard.on_context({"type": "context", "messages": messages}, ctx)
+    original = {"type": "text", "text": "Unknown tool: write"}
+    result = guard.on_tool_result(_tool_result_event(original), ctx)
     assert result is not None
-    assert any("Budget exceeded" in str(m) for m in result["messages"])
+    # The durable edit APPENDS the warning below the tool's own output.
+    assert result["content"][0] == original
+    assert any("Budget exceeded" in str(block) for block in result["content"])
     assert ctx.aborted == 1
     assert guard.tripped is True
 
-    # A same-turn re-entry neither re-injects nor re-aborts.
-    assert guard.on_context({"type": "context", "messages": []}, ctx) is None
+    # A same-turn re-entry neither re-appends nor re-aborts.
+    assert guard.on_tool_result(_tool_result_event(), ctx) is None
     assert ctx.aborted == 1
 
 
@@ -326,8 +346,9 @@ def test_token_guard_accumulates_and_trips() -> None:
     assert guard.running_usd == 0.0
     assert guard.is_over() is True
 
-    result = guard.on_context({"type": "context", "messages": []}, ctx)
+    result = guard.on_tool_result(_tool_result_event(), ctx)
     assert result is not None
+    assert any("Budget exceeded" in str(block) for block in result["content"])
     assert ctx.aborted == 1
 
 
@@ -375,7 +396,7 @@ def test_make_budget_extension_registers_both_hooks() -> None:
 
     ext = budget.make_budget_extension(max_tokens=1000)
     ext(_RecordingApi())
-    assert registered == ["message_end", "context"]
+    assert registered == ["message_end", "tool_result"]
 
 
 def test_default_budget_extension_is_token_mode() -> None:
@@ -387,4 +408,4 @@ def test_default_budget_extension_is_token_mode() -> None:
             registered.append(event)
 
     budget.budget_extension(_RecordingApi())
-    assert registered == ["message_end", "context"]
+    assert registered == ["message_end", "tool_result"]

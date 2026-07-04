@@ -1,12 +1,24 @@
 """Example 21: Reminders — a four-rule discipline bank driven by the hooks (E2).
 
 A stateful extension that watches what the agent *does* (via the ``tool_call`` and
-``tool_result`` hooks) and, when a rule trips, injects an ephemeral
-``<system-reminder>`` into the next LLM payload (via the ``context`` hook). This is
-the pi "planning / implementing / evaluating" reminder bank (``pi_planning_\
-implementing_evaluating.md §2``): four coding-discipline rules, each with its own
-cooldown so a tripped rule nags **once** and then falls silent for a while instead
-of screaming on every single turn.
+``tool_result`` hooks) and, when a rule trips, injects a ``<system-reminder>`` by
+editing the **triggering ``tool_result`` node in place** — a DURABLE edit (E5 §3.3
+/ S31). This is the pi "planning / implementing / evaluating" reminder bank
+(``pi_planning_implementing_evaluating.md §2``): four coding-discipline rules, each
+with its own cooldown so a tripped rule nags **once** and then falls silent for a
+while instead of screaming on every single turn.
+
+## Why a durable ``tool_result`` edit (E5 §3.2), not the retired ``context`` hook
+
+E5 eliminated the per-call ``context`` transform: under the durable-hook invariant
+the model's input for any LLM call is exactly the system prompt + the linear active
+path, so an ephemeral per-send message-list mutation is a hidden divergence. Every
+LLM round-trip past the first is preceded by a **real node** — the tool results of
+the previous round — so the reminder rides *that* node instead. Draining the
+pending rules in the ``tool_result`` hook and appending the ``<system-reminder>`` to
+the result's ``content`` makes the nag a durable, reloadable part of the transcript:
+the tree node, the on-disk node, and the wire bytes are the same object. The
+following LLM call sees the edited node exactly as the interface shows it.
 
 ## The four rules
 
@@ -28,14 +40,19 @@ of screaming on every single turn.
 
 State advances on the hooks that carry it:
 
-* ``tool_call`` / ``tool_result`` **trigger** rules — a triggered rule becomes
-  *pending*.
-* ``context`` fires before every LLM call: it **drains** the pending set into a
-  ``<system-reminder>`` message, and each drained rule then enters a cooldown of
-  ``COOLDOWNS[rule]`` context calls during which it cannot fire again (even if it
-  keeps being triggered). ``N`` = the number of context calls a rule stays silent
-  after firing; on the ``N``-th following call the cooldown reaches zero and the
-  rule may fire once more.
+* ``tool_call`` **triggers** rules — a triggered rule becomes *pending* — and never
+  patches (observe, don't block; blocking is the gatekeeper's job, example 22).
+* ``tool_result`` fires once per landed result. It first updates failure state
+  (a two-in-a-row error trips ``root-cause-after-2-failures``), then **drains** the
+  pending set into a ``<system-reminder>`` appended to *this* result's ``content``
+  (the durable edit). Each drained rule then enters a cooldown of ``COOLDOWNS[rule]``
+  tool-result events during which it cannot fire again (even if it keeps being
+  triggered). ``N`` = the number of results a rule stays silent after firing; on the
+  ``N``-th following result the cooldown reaches zero and the rule may fire once more.
+
+Because every LLM round-trip after the first is preceded by the previous round's
+tool results, "drain on the tool_result that precedes the next call" is the durable
+equivalent of the retired "drain before the next call".
 
 ## Field contract
 
@@ -57,11 +74,14 @@ session = create_agent_session(
 )
 ```
 
-The reminder handlers **never veto** a call (``tool_call`` returns ``None``) and
-**never patch** a result (``tool_result`` returns ``None``); they only accumulate
-state. The nagging is delivered exclusively through the ``context`` seam.
+The ``tool_call`` handler **never vetoes** a call (returns ``None``); it only
+accumulates state. The ``tool_result`` handler patches the result's ``content`` only
+when a rule fires — appending a durable ``<system-reminder>`` — and otherwise returns
+``None`` (result passes through untouched). The nagging is delivered exclusively by
+that durable edit.
 
-Reference: EXTENSIONS-IMPLEMENTATION.md §E-demo-2, §8 S16.
+Reference: EXTENSIONS-IMPLEMENTATION.md §E-demo-2, §8 S16; EXTENSIONS-E5-WIRING.md
+§3.2–§3.3 / S31 (durable-hook rework — the ``context`` hook is retired).
 """
 
 from __future__ import annotations
@@ -191,9 +211,11 @@ def is_outside_scope(path: str, cwd: str) -> bool:
 class ReminderBank:
     """Tracks rule state across hook calls and drains it into reminders.
 
-    One instance per loaded extension (state is per-session). The three bound
-    methods (:meth:`on_tool_call`, :meth:`on_tool_result`, :meth:`on_context`) are
-    the hook handlers registered by :func:`reminders_extension`.
+    One instance per loaded extension (state is per-session). The two bound methods
+    (:meth:`on_tool_call`, :meth:`on_tool_result`) are the hook handlers registered
+    by :func:`reminders_extension`. :meth:`on_tool_result` both advances failure
+    state and drains pending rules into a durable ``<system-reminder>`` appended to
+    the result's ``content``.
     """
 
     def __init__(self) -> None:
@@ -213,10 +235,11 @@ class ReminderBank:
         self._pending.add(rule)
 
     def _drain(self) -> list[str]:
-        """Advance cooldowns and return the rules that fire on this context call.
+        """Advance cooldowns and return the rules that fire on this drain.
 
         A rule fires when it is pending AND off cooldown; firing arms its cooldown.
-        A rule on cooldown decrements and stays silent this call even if pending.
+        A rule on cooldown decrements and stays silent this drain even if pending.
+        One drain happens per ``tool_result`` event (the durable injection point).
         """
         fired: list[str] = []
         for rule in RULE_ORDER:
@@ -258,49 +281,53 @@ class ReminderBank:
                 self.trigger("scope-guard")
         return None
 
-    def on_tool_result(self, event: dict[str, Any], ctx: Any) -> None:
-        """``tool_result`` handler: count consecutive failures, never patch.
+    def on_tool_result(self, event: dict[str, Any], ctx: Any) -> dict[str, Any] | None:
+        """``tool_result`` handler: count failures, then drain into a durable edit.
 
-        Returns ``None`` — no field patch. A tool's error streak reaching
-        :data:`FAILURE_THRESHOLD` trips ``root-cause-after-2-failures``; a success
-        resets that tool's streak.
+        Two phases on each landed result:
+
+        1. **Failure accounting** — a tool's error streak reaching
+           :data:`FAILURE_THRESHOLD` trips ``root-cause-after-2-failures``; a
+           success resets that tool's streak.
+        2. **Durable injection** — drain the pending rules (:meth:`_drain`) and, when
+           at least one fires, APPEND a ``<system-reminder>`` text block to *this*
+           result's ``content`` and return the patched ``{"content": …}``. The
+           patched content is what the loop persists as the tree node and sends on
+           the next LLM call — one artifact, no ephemeral copy (E5 §3.3 / S31).
+
+        Returns ``None`` when nothing fires (result passes through untouched).
         """
         tool_name = event.get("tool_name")
-        if not tool_name:
-            return None
-        if event.get("is_error"):
-            streak = self._failures.get(tool_name, 0) + 1
-            self._failures[tool_name] = streak
-            if streak >= FAILURE_THRESHOLD:
-                self.trigger("root-cause-after-2-failures")
-        else:
-            self._failures[tool_name] = 0
-        return None
+        if tool_name:
+            if event.get("is_error"):
+                streak = self._failures.get(tool_name, 0) + 1
+                self._failures[tool_name] = streak
+                if streak >= FAILURE_THRESHOLD:
+                    self.trigger("root-cause-after-2-failures")
+            else:
+                self._failures[tool_name] = 0
 
-    def on_context(self, event: dict[str, Any], ctx: Any) -> dict[str, Any] | None:
-        """``context`` handler: drain pending rules into a ``<system-reminder>``.
-
-        Fires before every LLM call. Returns ``{"messages": ...}`` with an appended
-        reminder message when at least one rule fires, else ``None`` (leaving the
-        payload untouched — no wasted injection).
-        """
         fired = self._drain()
         if not fired:
             return None
-        messages = event["messages"]
-        messages.append(reminder_message(fired))
-        return {"messages": messages}
+        # Append (never replace) so the tool's own output survives beneath the nag.
+        content = list(event.get("content") or [])
+        content.append({"type": "text", "text": reminder_body(fired)})
+        return {"content": content}
 
 
-def reminder_message(rules: list[str]) -> dict[str, Any]:
-    """Build the injected user message carrying one ``<system-reminder>`` per rule."""
-    body = "\n".join(f"<system-reminder>{REMINDER_TEXT[rule]}</system-reminder>" for rule in rules)
-    return {"role": "user", "content": [{"type": "text", "text": body}]}
+def reminder_body(rules: list[str]) -> str:
+    """Join one ``<system-reminder>`` line per fired rule (the durable edit's text)."""
+    return "\n".join(f"<system-reminder>{REMINDER_TEXT[rule]}</system-reminder>" for rule in rules)
 
 
 def reminders_extension(api: Any) -> None:
-    """Extension entry point: register the reminder bank's three hook handlers."""
+    """Extension entry point: register the reminder bank's two hook handlers.
+
+    ``tool_call`` accumulates rule triggers; ``tool_result`` accounts failures and
+    performs the durable ``<system-reminder>`` edit. The retired ``context`` hook is
+    gone (E5 §3.2 / S31) — there is no per-call message-list transform.
+    """
     bank = ReminderBank()
     api.on("tool_call", bank.on_tool_call)
     api.on("tool_result", bank.on_tool_result)
-    api.on("context", bank.on_context)

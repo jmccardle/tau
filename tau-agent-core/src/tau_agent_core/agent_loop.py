@@ -398,20 +398,14 @@ class AgentLoop:
         Returns:
             The final AssistantMessage.
         """
-        # S14 — the `context` mutating hook (E2). Fires BEFORE EVERY LLM call
-        # (not per-turn): a single turn that runs tools re-enters `_stream_response`
-        # for each provider round-trip, so the hook sees the freshly-appended tool
-        # results too. pi parity: `transformContext` runs on the conversation
-        # messages before `convertToLlm` and before the system prompt is attached
-        # separately (agent-loop.ts:283-285) — so the hook operates on the
-        # conversation here, NOT on the injected system message, and a handler that
-        # replaces the whole list cannot clobber the system prompt (prepended
-        # below). The runner deep-copies (structuredClone-equivalent) before
-        # threading it through handlers; a returned `{messages}` replaces the list.
-        # Gated on `has_handlers` for the zero-extension fast path.
-        dispatcher = self._hook_dispatcher
-        if dispatcher is not None and dispatcher.has_handlers("context"):
-            context = await dispatcher.emit_context(list(context))
+        # E5 §3.2 / S30 — the `context` mutating hook is ELIMINATED (not
+        # redefined). Under the durable-hook invariant (§1) the model's input for
+        # every LLM call is exactly the system prompt (attached below) + the linear
+        # active path — there is no ephemeral per-send transform. What `context`
+        # used to do folds into durable nodes: reminders edit the triggering
+        # `tool_result` in place (already durable), and pre-first-call injection
+        # rides `before_agent_start` (S29). So `context` here is passed straight to
+        # `convert_to_llm` with no interception; the on-disk path IS the wire.
 
         # Serialize agent-level `custom` messages (extension-injected durable
         # nodes, E5 §3.1 / S29) to the LLM-acceptable `user` role BEFORE the

@@ -22,6 +22,11 @@ if TYPE_CHECKING:
     from tau_agent_core.extensions.registry import ExtensionRegistry
     from tau_agent_core.extensions.runner import ExtensionHandlers
 
+#: Hook names that existed through E2 but were removed. ``api.on`` rejects them
+#: with a Fail-Early raise (E5 §3.2 / S30) rather than binding them silently to the
+#: notify ``EventBus`` (a dead no-op, since nothing emits these channels).
+_RETIRED_HOOKS: frozenset[str] = frozenset({"context"})
+
 
 class ExtensionUI:
     """User interaction methods (TUI only, no-op in headless mode).
@@ -447,13 +452,19 @@ class ExtensionAPI:
     def on(self, event: str, handler: Callable) -> Callable[[], None]:
         """Subscribe to an event — routed by KIND (S24 bridge).
 
-        The four MUTATING hooks (``ExtensionRunner.HOOK_EVENTS``: ``tool_call`` /
-        ``tool_result`` / ``before_agent_start`` / ``context``) are dispatched by
-        the session's separate return-collecting ``ExtensionRunner``, whose
-        call-sites gate on ``has_handlers(event)``. Those registrations must land in
-        THIS extension's runner bucket (``self._hook_handlers``), not on the notify
-        ``EventBus`` — otherwise they are a silent no-op in a real session (the bug
-        S24 closes). Every other (notify) event keeps going to the ``EventBus``.
+        The three MUTATING hooks (``ExtensionRunner.HOOK_EVENTS``: ``tool_call`` /
+        ``tool_result`` / ``before_agent_start``) are dispatched by the session's
+        separate return-collecting ``ExtensionRunner``, whose call-sites gate on
+        ``has_handlers(event)``. Those registrations must land in THIS extension's
+        runner bucket (``self._hook_handlers``), not on the notify ``EventBus`` —
+        otherwise they are a silent no-op in a real session (the bug S24 closes).
+        Every other (notify) event keeps going to the ``EventBus``.
+
+        The retired ``context`` hook (E5 §3.2 / S30) is rejected UP FRONT: it was
+        removed from ``HOOK_EVENTS``, so left unguarded it would fall through to the
+        notify ``EventBus`` and bind silently to a channel nothing ever emits — a
+        dead no-op. Fail-Early: raise an unknown-hook error naming the durable
+        replacement instead.
 
         Args:
             event: Event type (e.g., 'agent_start', 'tool_call', 'all').
@@ -464,11 +475,23 @@ class ExtensionAPI:
             An unsubscribe function.
 
         Raises:
-            RuntimeError: registering a mutating hook on an api that was never bound
-                to a runner bucket (``hook_handlers is None``). Fail-Early — a hook
-                with nowhere to dispatch is a construction bug, not a no-op.
+            RuntimeError: registering the retired ``context`` hook (removed in E5
+                §3.2 / S30), or registering a mutating hook on an api that was never
+                bound to a runner bucket (``hook_handlers is None``). Fail-Early — a
+                hook with nowhere to dispatch is a construction bug, not a no-op.
         """
         from tau_agent_core.extensions.runner import ExtensionRunner
+
+        if event in _RETIRED_HOOKS:
+            raise RuntimeError(
+                f"api.on({event!r}): the {event!r} hook was removed in E5 §3.2 / S30. "
+                "Under the durable-hook invariant the model's input is exactly the "
+                "system prompt + the linear active path — there is no per-call "
+                "message-list transform. Achieve the same effect with a durable node "
+                "edit: patch the triggering `tool_result` via api.on('tool_result', …) "
+                "and/or inject a pre-first-call message via "
+                "api.on('before_agent_start', …)."
+            )
 
         if event in ExtensionRunner.HOOK_EVENTS:
             if self._hook_handlers is None:

@@ -42,11 +42,6 @@ async def test_no_handler_fast_path_returns_identity() -> None:
     assert await runner.emit_tool_result({"type": "tool_result"}) is None
     assert await runner.emit_before_agent_start("hi", None, "SYS") is None
 
-    messages = [{"role": "user", "content": "hi"}]
-    out = await runner.emit_context(messages)
-    assert out == messages
-    assert out is not messages  # deep-copied, original untouched
-
 
 async def test_has_handlers_true_only_for_registered_event() -> None:
     runner = ExtensionRunner()
@@ -226,50 +221,12 @@ async def test_before_agent_start_only_messages_leaves_system_prompt_none() -> N
 
 
 # ----------------------------------------------------------------------
-# context — deep copy + replace, chained
-# ----------------------------------------------------------------------
-
-
-async def test_context_replace_is_chained_and_original_untouched() -> None:
-    runner = ExtensionRunner()
-
-    def a_handler(event: dict, ctx: object) -> dict:
-        return {"messages": event["messages"] + [{"role": "system", "content": "A"}]}
-
-    def b_handler(event: dict, ctx: object) -> dict:
-        return {"messages": event["messages"] + [{"role": "system", "content": "B"}]}
-
-    a = runner.register_extension("/ext/a.py")
-    a.on("context", a_handler)
-    b = runner.register_extension("/ext/b.py")
-    b.on("context", b_handler)
-
-    original = [{"role": "user", "content": "hi"}]
-    out = await runner.emit_context(original)
-
-    assert out == [
-        {"role": "user", "content": "hi"},
-        {"role": "system", "content": "A"},
-        {"role": "system", "content": "B"},
-    ]
-    assert original == [{"role": "user", "content": "hi"}]  # deep-copied, untouched
-
-
-async def test_context_no_result_passes_through_deep_copy() -> None:
-    runner = ExtensionRunner()
-    ext = runner.register_extension("/ext/a.py")
-    ext.on("context", lambda event, ctx: None)
-
-    original = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
-    out = await runner.emit_context(original)
-
-    assert out == original
-    assert out is not original
-    assert out[0]["content"] is not original[0]["content"]  # deep copy
-
-
-# ----------------------------------------------------------------------
-# Ordering + async + context threading
+# Ordering + async + ctx threading
+#
+# (These exercise generic dispatcher behaviour — load/registration order,
+# async-await, and the bound ``ExtensionContext`` handed to every handler.
+# They used to ride the ``context`` hook, removed in E5 §3.2 / S30; re-pointed
+# at the surviving ``tool_result`` hook so the coverage is preserved.)
 # ----------------------------------------------------------------------
 
 
@@ -278,12 +235,12 @@ async def test_load_and_registration_order_preserved() -> None:
     order: list[str] = []
 
     a = runner.register_extension("/ext/a.py")
-    a.on("context", lambda event, ctx: order.append("a1") or {"messages": event["messages"]})
-    a.on("context", lambda event, ctx: order.append("a2") or {"messages": event["messages"]})
+    a.on("tool_result", lambda event, ctx: order.append("a1") or None)
+    a.on("tool_result", lambda event, ctx: order.append("a2") or None)
     b = runner.register_extension("/ext/b.py")
-    b.on("context", lambda event, ctx: order.append("b1") or {"messages": event["messages"]})
+    b.on("tool_result", lambda event, ctx: order.append("b1") or None)
 
-    await runner.emit_context([])
+    await runner.emit_tool_result({"type": "tool_result", "content": "x"})
     assert order == ["a1", "a2", "b1"]
 
 
@@ -306,9 +263,9 @@ async def test_bound_context_is_passed_to_handlers() -> None:
     received: list[object] = []
 
     ext = runner.register_extension("/ext/a.py")
-    ext.on("context", lambda event, c: received.append(c) or {"messages": event["messages"]})
+    ext.on("tool_result", lambda event, c: received.append(c) or None)
 
-    await runner.emit_context([])
+    await runner.emit_tool_result({"type": "tool_result", "content": "x"})
     assert received == [ctx]
 
 
@@ -319,9 +276,9 @@ async def test_set_context_rebinds() -> None:
     received: list[object] = []
 
     ext = runner.register_extension("/ext/a.py")
-    ext.on("context", lambda event, c: received.append(c) or {"messages": event["messages"]})
+    ext.on("tool_result", lambda event, c: received.append(c) or None)
 
-    await runner.emit_context([])
+    await runner.emit_tool_result({"type": "tool_result", "content": "x"})
     assert received == [ctx]
 
 

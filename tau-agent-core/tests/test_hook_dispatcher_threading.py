@@ -32,7 +32,7 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.extensions.runner import ExtensionRunner
 from tau_agent_core.session_log import InMemorySessionLog
 
-HOOK_EVENTS = ("tool_call", "tool_result", "before_agent_start", "context")
+HOOK_EVENTS = ("tool_call", "tool_result", "before_agent_start")
 
 
 class _Stream:
@@ -151,9 +151,8 @@ async def test_has_hook_handlers_flips_true_when_runner_has_handler() -> None:
     loop = captured["loop"]
     assert loop._hook_dispatcher is session._extension_runner
     assert loop.has_hook_handlers("tool_call") is True
-    # Only the registered event is hot; the other three stay on the fast path.
+    # Only the registered event is hot; the others stay on the fast path.
     assert loop.has_hook_handlers("tool_result") is False
-    assert loop.has_hook_handlers("context") is False
     assert loop.has_hook_handlers("before_agent_start") is False
 
 

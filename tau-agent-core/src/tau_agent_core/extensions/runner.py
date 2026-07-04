@@ -10,9 +10,10 @@ point is that handler return values are collected and threaded forward.
 
 pi keeps the two apart (``types.ts:1347``) and so does τ (§7 decision E1-a): the
 hooks are a **parallel typed dispatch**, *not* an extension of the ``AgentEvent``
-Literal. E1/S5 lands this dispatcher; E2 lands the four hook **call-sites** in the
+Literal. E1/S5 lands this dispatcher; E2 lands the hook **call-sites** in the
 loop / session that actually invoke ``emit_tool_call`` / ``emit_tool_result`` /
-``emit_before_agent_start`` / ``emit_context``.
+``emit_before_agent_start``. (The ``context`` hook + its ``emit_context`` were
+removed in E5 §3.2 / S30 — see the ``HOOK_EVENTS`` note below.)
 
 Ordering contract (pi parity): extensions are iterated in **load order** (the
 order of ``ExtensionHandlers`` in the runner) and, within an extension, handlers
@@ -22,7 +23,6 @@ pi's nested ``for ext … for handler …`` walk (``runner.ts:740-768``).
 
 from __future__ import annotations
 
-import copy
 import inspect
 import sys
 from dataclasses import dataclass, field
@@ -72,7 +72,7 @@ ErrorListener = Callable[[ExtensionError], None]
 
 
 class ExtensionRunner:
-    """Return-collecting dispatcher for the four mutating hook events.
+    """Return-collecting dispatcher for the three mutating hook events.
 
     The dispatched events (§8, E2 wires the call-sites):
 
@@ -82,8 +82,13 @@ class ExtensionRunner:
                                see earlier patches).
     - ``before_agent_start`` — ``system_prompt`` chains (last wins, live to later
                                handlers); ``message`` values accumulate.
-    - ``context``            — replace the (deep-copied) message list before an LLM
-                               call.
+
+    (A fourth hook, ``context`` — per-call replace of the message list — existed
+    through E2 but was ELIMINATED in E5 §3.2 / S30. Under the durable-hook
+    invariant the model's input is exactly the system prompt + the linear active
+    path, so a per-send transform is a hidden divergence; its cases fold into
+    durable ``tool_result`` edits + ``before_agent_start``. ``context`` is
+    therefore no longer a hook event and ``api.on("context", …)`` raises.)
 
     ``has_handlers(event)`` gives call-sites the zero-extension fast path
     (pi ``agent-session.ts:405-411``): when it returns ``False`` the caller skips
@@ -92,7 +97,7 @@ class ExtensionRunner:
     """
 
     #: The mutating hook events this dispatcher owns (E2 supplies the call-sites).
-    HOOK_EVENTS = ("tool_call", "tool_result", "before_agent_start", "context")
+    HOOK_EVENTS = ("tool_call", "tool_result", "before_agent_start")
 
     def __init__(
         self,
@@ -294,27 +299,3 @@ class ExtensionRunner:
                 "system_prompt": current_system_prompt if system_prompt_modified else None,
             }
         return None
-
-    async def emit_context(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Dispatch ``context``; each handler may replace the message list.
-
-        pi ``runner.ts:914-944``. Deep-copies ``messages`` first (pi's
-        ``structuredClone``), then threads the current list through each handler;
-        a handler returning ``{"messages": …}`` replaces it. Returns the final
-        list (the deep copy when nothing changed).
-        """
-        current = copy.deepcopy(messages)
-        for ext in self._extensions:
-            handlers = ext.handlers.get("context")
-            if not handlers:
-                continue
-            for handler in handlers:
-                event = {"type": "context", "messages": current}
-                try:
-                    result = await self._call(handler, event)
-                except Exception as err:  # noqa: BLE001 — surfaced, not dropped
-                    self._emit_error(ExtensionError(ext.path, "context", str(err)))
-                    continue
-                if result and result.get("messages") is not None:
-                    current = result["messages"]
-        return current

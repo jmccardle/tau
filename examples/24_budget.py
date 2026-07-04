@@ -2,10 +2,24 @@
 
 A stateful extension that watches token usage as it *lands* (via the notify
 ``message_end`` event) and, once the run's cumulative spend crosses a configured
-ceiling, injects a one-shot ``<system-reminder>`` warning into the next LLM
-payload (via the ``context`` hook) and then calls ``ctx.abort()`` — stopping the
-agent loop at the next turn boundary. It is the pi "budget guard" (plan D1): the
-warn-then-abort needs the ``context`` hook, so it lands **after** E2.
+ceiling, appends a one-shot ``<system-reminder>`` warning as a DURABLE edit to the
+triggering ``tool_result`` node (via the ``tool_result`` hook) and then calls
+``ctx.abort()`` — stopping the agent loop at the next turn boundary. It is the pi
+"budget guard" (plan D1), reworked onto τ's durable-hook model (E5 §3.2–§3.3 / S32).
+
+## Why a durable ``tool_result`` edit, not the retired ``context`` hook
+
+E5 eliminated the per-call ``context`` transform: under the durable-hook invariant
+the model's input for any LLM call is exactly the system prompt + the linear active
+path, so an ephemeral per-send injection is a hidden divergence (§1). The warning is
+therefore appended to a **real node** — the ``tool_result`` that follows the
+completion whose usage tripped the ceiling — making it a durable, reloadable part of
+the transcript rather than a message that exists only on one wire. ``ctx.abort()``
+is unchanged: the loop's per-turn abort check then breaks before the next turn, so
+the warning is the run's last durable node. (Because the abort halts the loop before
+another LLM round-trip, the durable warning records *why the run ended* in the
+transcript rather than being re-sent to the model — the honest tree-as-truth
+tradeoff for the retired ephemeral injection.)
 
 ## Two threshold modes (Fail-Early — never a fabricated ``$0``)
 
@@ -35,14 +49,14 @@ never populated), so it is left out of the sum — a real 0, not an omission.
 ## Accumulation vs. the threshold check — the timing
 
 Usage lands *after* a completion (the per-completion ``message_end`` in
-``_stream_response`` carries ``message["usage"]``), while the ``context`` hook
-fires *before* every LLM call. So the guard accumulates on ``message_end`` and, on
-the **next** ``context`` call, sees the freshly-added spend and can trip. When it
-trips it injects the warning into *that* turn's payload (so the model is told why
-it is being cut off) and aborts; the loop's per-turn ``is_aborted()`` check then
-breaks before the following turn — the warning is delivered on the wire *before*
-the abort takes hold. The trip is one-shot (``_tripped``) so a same-turn re-entry
-neither double-injects nor double-aborts.
+``_stream_response`` carries ``message["usage"]``, emitted before the turn's tools
+run), while the ``tool_result`` hook fires *after* the turn's tools. So the guard
+accumulates on ``message_end`` and, on that same turn's ``tool_result``, sees the
+freshly-added spend and can trip. When it trips it APPENDS the warning to that
+result's ``content`` (a durable edit) and aborts; the loop's per-turn
+``is_aborted()`` check then breaks before the following turn. The trip is one-shot
+(``_tripped``) so a second ``tool_result`` in the same turn neither double-appends
+nor double-aborts.
 
 ## Field contract
 
@@ -51,8 +65,9 @@ the per-completion usage is ``event.message["usage"]`` — a plain dict with
 ``input_tokens`` / ``output_tokens`` / ``cache_read_tokens`` /
 ``cache_write_tokens``. The duplicate tool-turn ``message_end`` that ``run()``
 emits has no ``usage`` key and so contributes nothing (no double-counting). The
-``context`` handler receives ``(event, ctx)`` and aborts via ``ctx.abort()`` — the
-live per-prompt abort signal the session binds onto the context.
+``tool_result`` handler receives ``(event, ctx)``, edits the result via a returned
+``{"content": …}`` patch, and aborts via ``ctx.abort()`` — the live per-prompt abort
+signal the session binds onto the context.
 
 ## Usage
 
@@ -77,7 +92,8 @@ with a documented :data:`DEFAULT_MAX_TOKENS` ceiling (no ``cost`` block, so no
 dollar figure is invented). Swap in ``make_budget_extension`` with your model's
 price block and a ``max_usd`` ceiling to threshold on real spend.
 
-Reference: EXTENSIONS-IMPLEMENTATION.md §E4 (item 1), §E4.cost, §8 S17.
+Reference: EXTENSIONS-IMPLEMENTATION.md §E4 (item 1), §E4.cost, §8 S17;
+EXTENSIONS-E5-WIRING.md §3.2–§3.3 / S32 (durable-hook rework — ``context`` retired).
 """
 
 from __future__ import annotations
@@ -137,14 +153,18 @@ def completion_tokens(usage: dict[str, Any]) -> int:
 # ── the warning injected on the trip ─────────────────────────────────────────
 
 
-def budget_warning_message(detail: str) -> dict[str, Any]:
-    """Build the one-shot ``<system-reminder>`` user message announcing the cutoff."""
+def budget_warning_block(detail: str) -> dict[str, Any]:
+    """Build the one-shot ``<system-reminder>`` content block announcing the cutoff.
+
+    A ``tool_result`` content block (not a standalone message): it is APPENDED to the
+    triggering result's ``content``, so the warning is a durable part of that node.
+    """
     body = (
         "<system-reminder>Budget exceeded: "
         f"{detail}. The run is being stopped now; wrap up rather than starting new "
         "work.</system-reminder>"
     )
-    return {"role": "user", "content": [{"type": "text", "text": body}]}
+    return {"type": "text", "text": body}
 
 
 # ── the stateful budget guard ────────────────────────────────────────────────
@@ -155,7 +175,7 @@ class BudgetGuard:
 
     One instance per loaded extension (spend is per-session). Two bound methods
     are the handlers: :meth:`on_message_end` (notify ``message_end``, accumulate)
-    and :meth:`on_context` (mutating ``context`` hook, warn + abort).
+    and :meth:`on_tool_result` (mutating ``tool_result`` hook, durable warn + abort).
 
     Exactly one threshold governs, chosen by whether a ``cost`` block is known:
 
@@ -260,22 +280,24 @@ class BudgetGuard:
             self._running_usd += completion_cost_usd(usage, self._cost)
         return None
 
-    def on_context(self, event: dict[str, Any], ctx: Any) -> dict[str, Any] | None:
-        """``context`` handler: past the ceiling, warn once then ``ctx.abort()``.
+    def on_tool_result(self, event: dict[str, Any], ctx: Any) -> dict[str, Any] | None:
+        """``tool_result`` handler: past the ceiling, warn once (durable) then abort.
 
-        Fires before every LLM call. When the running total is over the ceiling
-        and the guard has not already tripped, it appends the warning to *this*
-        turn's payload (so the model is told why the run is ending) and aborts —
-        the loop's per-turn abort check then stops the following turn. Returns the
-        patched ``{"messages": …}`` on the trip, else ``None`` (payload untouched).
+        Fires after each landed tool result — which, for the tripping turn, follows
+        the ``message_end`` that accumulated the over-ceiling spend. When the running
+        total is over the ceiling and the guard has not already tripped, it APPENDS
+        the warning to *this* result's ``content`` (a durable edit recording why the
+        run is ending) and calls ``ctx.abort()`` — the loop's per-turn abort check
+        then stops before the following turn. Returns the patched ``{"content": …}``
+        on the trip, else ``None`` (result untouched). One-shot via ``_tripped``.
         """
         if self._tripped or not self.is_over():
             return None
         self._tripped = True
-        messages = event["messages"]
-        messages.append(budget_warning_message(self._trip_detail()))
+        content = list(event.get("content") or [])
+        content.append(budget_warning_block(self._trip_detail()))
         ctx.abort()
-        return {"messages": messages}
+        return {"content": content}
 
 
 # ── entry points ─────────────────────────────────────────────────────────────
@@ -291,14 +313,14 @@ def make_budget_extension(
 
     Returns a ``register(api)`` callable that constructs a per-session
     :class:`BudgetGuard` and wires its two handlers: ``message_end`` (accumulate)
-    and ``context`` (warn + abort). The threshold arguments are validated by
-    :class:`BudgetGuard` (Fail-Early).
+    and ``tool_result`` (durable warn + abort). The threshold arguments are validated
+    by :class:`BudgetGuard` (Fail-Early).
     """
 
     def budget_extension(api: Any) -> None:
         guard = BudgetGuard(cost=cost, max_usd=max_usd, max_tokens=max_tokens)
         api.on("message_end", guard.on_message_end)
-        api.on("context", guard.on_context)
+        api.on("tool_result", guard.on_tool_result)
 
     return budget_extension
 

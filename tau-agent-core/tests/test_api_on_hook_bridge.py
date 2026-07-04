@@ -202,43 +202,29 @@ async def test_public_api_on_tool_call_veto_blocks_execution() -> None:
     assert _tool_result_text(messages, "guarded") == "denied by policy"
 
 
-async def test_public_api_on_context_injection_reaches_the_wire() -> None:
-    """``api.on("context", …)`` on a loaded extension's api reaches the wire payload."""
-    reminder = "<system-reminder>injected via public api.on</system-reminder>"
-    wire_payloads: list[list[Any]] = []
+def test_public_api_on_context_is_a_retired_hook_and_raises() -> None:
+    """``api.on("context", …)`` RAISES — the hook was removed in E5 §3.2 / S30.
 
-    async def fake(model, context, options=None):
-        wire_payloads.append(list(context.get("messages", [])))
-        final = _text_assistant("ok")
-        return _Stream(
-            [
-                TextDeltaEvent(delta="ok", partial=final),
-                DoneEvent(final=final, usage=Usage()),
-            ]
-        )
+    Even on a fully bound extension api (the surface a loaded extension is handed),
+    registering the retired ``context`` hook is a Fail-Early error, not a silent
+    bind to the notify ``EventBus`` (a dead no-op channel). The error names the
+    durable replacements so demo authors are pointed at ``tool_result`` /
+    ``before_agent_start``.
+    """
+    session = _make_session()
+    api = session._bind_extension_api("mem:retired")
 
-    def inject(event: dict[str, Any], ctx: Any) -> dict[str, Any]:
-        messages = event["messages"]
-        messages.append({"role": "user", "content": [{"type": "text", "text": reminder}]})
-        return {"messages": messages}
+    with pytest.raises(RuntimeError, match="removed in E5"):
+        api.on("context", lambda event, ctx: None)
 
-    def ext(api: ExtensionAPI) -> None:
-        api.on("context", inject)
-
-    session = _make_session(ext)
-    assert session._extension_runner.has_handlers("context") is True
-
-    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=fake):
-        await session.prompt("do the thing")
-
-    assert len(wire_payloads) == 1
-    assert reminder in _message_text_blob(wire_payloads[0])
+    # It did NOT leak onto the notify EventBus either.
+    assert session._extension_runner.has_handlers("context") is False
 
 
 # ── Fail-Early: a hook on an api with no runner bucket RAISES ─────────────────
 
 
-@pytest.mark.parametrize("hook", ["tool_call", "tool_result", "before_agent_start", "context"])
+@pytest.mark.parametrize("hook", ["tool_call", "tool_result", "before_agent_start"])
 def test_hook_on_unbound_api_raises(hook: str) -> None:
     """Registering a mutating hook on an api with no bucket RAISES (no silent no-op)."""
     api = ExtensionAPI()  # bare — hook_handlers is None

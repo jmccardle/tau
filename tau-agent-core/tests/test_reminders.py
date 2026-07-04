@@ -3,21 +3,23 @@
 Two layers, mirroring ``test_gatekeeper.py``:
 
 * a **full-loop** test — only the network boundary (``stream_simple``) is faked, and
-  the fake emits real ``write`` tool calls so the ``tool_call`` → ``tool_result`` →
-  ``context`` hook chain runs through the genuine loop. It asserts that
-  ``tests-readonly`` injects its ``<system-reminder>`` on the follow-up wire payload,
-  goes silent on the next call (cooldown), and that ``root-cause-after-2-failures``
-  fires once the same tool has errored twice;
+  the fake emits real ``write`` tool calls so the ``tool_call`` → ``tool_result``
+  hook chain runs through the genuine loop. It asserts that ``tests-readonly`` edits
+  its ``<system-reminder>`` into the triggering ``tool_result`` (which the follow-up
+  wire payload then carries), goes silent on the next result (cooldown), and that
+  ``root-cause-after-2-failures`` fires once the same tool has errored twice;
 * **pure-unit** checks of :class:`ReminderBank` — each of the four rules fires once
   then cools down for exactly its ``COOLDOWNS`` window (3 / 4 / 2 / 1), the rules
-  trip off the right ``event["input"]`` field, and ``reminders_extension`` wires all
-  three hooks.
+  trip off the right ``event["input"]`` field, and ``reminders_extension`` wires
+  both hooks.
 
 The bank's handlers are registered on the session-owned ``ExtensionRunner`` — the
-wired mutating-hook dispatch surface (same pattern as ``test_context_hook.py`` /
-``test_gatekeeper.py``).
+wired mutating-hook dispatch surface (same pattern as ``test_gatekeeper.py``). The
+retired ``context`` hook is gone (E5 §3.2 / S31): the reminder is a DURABLE edit to
+the triggering ``tool_result`` node, not an ephemeral per-call message injection.
 
-Reference: EXTENSIONS-IMPLEMENTATION.md §E-demo-2, §8 S16.
+Reference: EXTENSIONS-IMPLEMENTATION.md §E-demo-2, §8 S16; EXTENSIONS-E5-WIRING.md
+§3.3 / S31.
 """
 
 from __future__ import annotations
@@ -145,14 +147,25 @@ async def test_rules_fire_once_then_cool_down_through_the_loop(tmp_path, monkeyp
     """Drive write-to-a-test-file calls through the loop and watch the reminders.
 
     The fake emits ``write("tests/test_x.py")`` twice (each producing an *error*
-    tool result, since ``write`` is unregistered), then stops with text. Across the
-    three resulting LLM calls:
+    tool result, since ``write`` is unregistered), then stops with text. Each write
+    is unknown but still runs through ``_apply_after_hooks`` (an unregistered tool
+    yields an error *result*, not a prepare-time error), so the ``tool_result`` hook
+    fires each turn and edits that result's content.
 
-    * call 1 payload has NO reminder (nothing triggered yet);
-    * call 2 payload carries the ``tests-readonly`` reminder (tripped by call 1's
-      write) — it fires ONCE;
-    * call 3 payload has NO ``tests-readonly`` reminder (it is cooling down) but
-      carries the ``root-cause-after-2-failures`` reminder (two write errors).
+    Under the durable-hook invariant the edit is PERMANENT: once ``tests-readonly``
+    is appended to call 1's ``tool_result`` it stays on the active path, so every
+    later wire payload carries it (this is the honesty property — no ephemeral
+    injection that vanishes). "Fires once" therefore means the reminder is *appended
+    exactly once* (to call 1's result), NOT that it disappears from later payloads.
+    Across the three resulting LLM calls:
+
+    * call 1 payload has NO reminder (nothing has been edited yet);
+    * call 2 payload carries the ``tests-readonly`` reminder — durably appended to
+      call 1's ``tool_result`` (tripped by call 1's write) — appearing exactly once;
+    * call 3 payload still carries that one ``tests-readonly`` reminder (it is durable
+      on call 1's result) but the rule did NOT fire again on call 2's result (it was
+      cooling down), so the count stays 1; call 2's result instead carries the
+      ``root-cause-after-2-failures`` reminder (two write errors).
     """
     monkeypatch.chdir(tmp_path)
     wire_payloads: list[list[Any]] = []
@@ -173,7 +186,7 @@ async def test_rules_fire_once_then_cool_down_through_the_loop(tmp_path, monkeyp
 
     session = _make_session()
     # Load the demo through its PUBLIC register(api) surface (S24): the example's
-    # ``reminders_extension`` wires all three handlers via ``api.on(…)`` on a
+    # ``reminders_extension`` wires both handlers via ``api.on(…)`` on a
     # bucket-bound api, so this drives the real api.on → ExtensionRunner bridge.
     reminders.reminders_extension(session._bind_extension_api("examples/21_reminders.py"))
 
@@ -186,12 +199,13 @@ async def test_rules_fire_once_then_cool_down_through_the_loop(tmp_path, monkeyp
     tests_ro = reminders.REMINDER_TEXT["tests-readonly"]
     root_cause = reminders.REMINDER_TEXT["root-cause-after-2-failures"]
 
-    # call 1: nothing tripped yet.
+    # call 1: nothing edited yet.
     assert tests_ro not in blobs[0]
-    # call 2: tests-readonly fires exactly once.
-    assert tests_ro in blobs[1]
-    # call 3: tests-readonly is cooling down (silent); root-cause now fires.
-    assert tests_ro not in blobs[2]
+    # call 2: tests-readonly is now durable on call 1's result — appended once.
+    assert blobs[1].count(tests_ro) == 1
+    # call 3: the reminder is DURABLE so it is still present (count stays 1); it was
+    # NOT re-appended to call 2's result (cooling down). root-cause now fires there.
+    assert blobs[2].count(tests_ro) == 1
     assert root_cause in blobs[2]
     # and root-cause did not appear before the second failure.
     assert root_cause not in blobs[0]
@@ -318,27 +332,67 @@ def test_write_to_manifest_trips_no_new_deps() -> None:
     assert bank._drain() == ["no-new-deps"]
 
 
+def _err_result(tool_name: str = "bash") -> dict[str, Any]:
+    """A ``tool_result`` event dict for a failed tool with a content block."""
+    return {
+        "type": "tool_result",
+        "tool_name": tool_name,
+        "is_error": True,
+        "content": [{"type": "text", "text": f"{tool_name} failed"}],
+    }
+
+
+def _reminder_text_in(patch: dict[str, Any] | None, rule: str) -> bool:
+    """True if a ``tool_result`` patch appended ``rule``'s ``<system-reminder>``."""
+    if patch is None:
+        return False
+    return any(reminders.REMINDER_TEXT[rule] in str(block) for block in patch["content"])
+
+
 def test_two_same_tool_errors_trip_root_cause() -> None:
+    # on_tool_result now BOTH counts failures AND drains into the durable edit.
     bank = reminders.ReminderBank()
-    err = {"type": "tool_result", "tool_name": "bash", "is_error": True}
-    bank.on_tool_result(err, _Ctx())
-    assert bank._drain() == []  # one failure is not enough
-    bank.on_tool_result(err, _Ctx())
-    assert bank._drain() == ["root-cause-after-2-failures"]
+    # One failure is not enough — nothing drains, so the result passes through.
+    assert bank.on_tool_result(_err_result(), _Ctx()) is None
+    # The second consecutive failure trips root-cause, which drains on this same
+    # result: the returned patch appends the reminder to the result's content.
+    patch = bank.on_tool_result(_err_result(), _Ctx())
+    assert _reminder_text_in(patch, "root-cause-after-2-failures")
 
 
 def test_success_resets_the_failure_streak() -> None:
     bank = reminders.ReminderBank()
-    err = {"type": "tool_result", "tool_name": "bash", "is_error": True}
-    ok = {"type": "tool_result", "tool_name": "bash", "is_error": False}
-    bank.on_tool_result(err, _Ctx())
-    bank.on_tool_result(ok, _Ctx())  # streak reset
-    bank.on_tool_result(err, _Ctx())
-    assert bank._drain() == []  # only one error since the reset
+    ok = {
+        "type": "tool_result",
+        "tool_name": "bash",
+        "is_error": False,
+        "content": [{"type": "text", "text": "ok"}],
+    }
+    assert bank.on_tool_result(_err_result(), _Ctx()) is None  # streak 1
+    assert bank.on_tool_result(ok, _Ctx()) is None  # streak reset
+    # Only one error since the reset → root-cause does not fire.
+    assert bank.on_tool_result(_err_result(), _Ctx()) is None
 
 
-def test_hooks_never_veto_or_patch() -> None:
-    # tool_call must not block; tool_result must not patch.
+def test_reminder_is_appended_below_the_tool_output() -> None:
+    # The durable edit APPENDS — the tool's own output block survives beneath the nag.
+    bank = reminders.ReminderBank()
+    bank.on_tool_call(
+        {"type": "tool_call", "tool_name": "write", "input": {"path": "tests/test_a.py"}},
+        _Ctx(),
+    )
+    original = {"type": "text", "text": "Unknown tool: write"}
+    patch = bank.on_tool_result(
+        {"type": "tool_result", "tool_name": "write", "is_error": True, "content": [original]},
+        _Ctx(),
+    )
+    assert patch is not None
+    assert patch["content"][0] == original  # original output preserved
+    assert _reminder_text_in(patch, "tests-readonly")  # reminder appended after it
+
+
+def test_tool_call_never_vetoes() -> None:
+    # tool_call observes; it must never return a block/patch, even when it triggers.
     bank = reminders.ReminderBank()
     assert (
         bank.on_tool_call(
@@ -347,18 +401,19 @@ def test_hooks_never_veto_or_patch() -> None:
         )
         is None
     )
-    assert (
-        bank.on_tool_result(
-            {"type": "tool_result", "tool_name": "bash", "is_error": True}, _Ctx()
-        )
-        is None
-    )
 
 
-# ── pure-unit: the extension entry point wires all three hooks ───────────────
+def test_a_quiet_result_is_untouched() -> None:
+    # A fresh bank: a single error (streak 1) trips no rule and nothing is pending,
+    # so the tool_result passes through unpatched.
+    bank = reminders.ReminderBank()
+    assert bank.on_tool_result(_err_result(), _Ctx()) is None
 
 
-def test_extension_registers_the_three_hooks() -> None:
+# ── pure-unit: the extension entry point wires both hooks ────────────────────
+
+
+def test_extension_registers_both_hooks() -> None:
     registered: list[str] = []
 
     class _RecordingApi:
@@ -366,4 +421,4 @@ def test_extension_registers_the_three_hooks() -> None:
             registered.append(event)
 
     reminders.reminders_extension(_RecordingApi())
-    assert registered == ["tool_call", "tool_result", "context"]
+    assert registered == ["tool_call", "tool_result"]
