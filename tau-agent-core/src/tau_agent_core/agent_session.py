@@ -217,6 +217,13 @@ class AgentSession:
         """
         self._is_streaming = True
         self._abort_signal = AbortSignal()
+        # Bind the fresh per-prompt abort signal onto the live ExtensionContext so
+        # a hook's ``ctx.abort()`` (e.g. the budget guard, example 24 / step S17)
+        # aborts the signal THIS loop actually polls. pi's ctx reads the live agent
+        # signal (agent-session.ts:2254-2261); the signal is recreated each
+        # prompt(), so rebind here — a signal captured once at construction is
+        # stale by the next turn.
+        self._extension_api.context._signal = self._abort_signal
 
         try:
             # Create UserMessage for tau-ai
@@ -361,6 +368,10 @@ class AgentSession:
         """
         self._is_streaming = True
         self._abort_signal = AbortSignal()
+        # Rebind the fresh abort signal onto the live ExtensionContext (see
+        # prompt(); pi agent-session.ts:2254-2261) so a hook's ctx.abort() reaches
+        # the signal this continuation polls.
+        self._extension_api.context._signal = self._abort_signal
 
         try:
             # Get existing messages from session for context
