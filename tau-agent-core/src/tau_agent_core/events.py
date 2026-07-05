@@ -46,6 +46,11 @@ class AgentEvent(BaseModel):
         args: Tool execution arguments (tool_execution_start)
         result: Tool execution result (tool_execution_*)
         is_error: Whether this event represents an error
+        blocked: Whether a ``tool_execution_end`` is an extension VETO (S50) —
+            distinct from a generic errored result, so a front-end can render
+            "⛔ blocked by <ext>: <reason>" rather than a plain error box.
+        blocked_by: The extension that vetoed the call (its runner path label),
+            paired with ``blocked`` on a ``tool_execution_end``; ``None`` otherwise.
         tool_results: List of tool result messages (turn_end)
         messages: List of messages produced (agent_end)
     """
@@ -73,6 +78,12 @@ class AgentEvent(BaseModel):
     args: dict[str, Any] | None = None
     result: Any | None = None
     is_error: bool = False
+    # S50 (roadmap §3, anchor G11): a vetoed tool call is a DISTINCT presentation
+    # from a generic errored result. ``blocked`` marks a ``tool_execution_end`` that
+    # a `tool_call` extension hook vetoed; ``blocked_by`` names the extension. The
+    # ``type`` Literal stays closed (S49) — these are data fields, like ``is_error``.
+    blocked: bool = False
+    blocked_by: str | None = None
     tool_results: list[dict[str, Any]] | None = None
     messages: list[dict[str, Any]] | None = None
 

@@ -105,6 +105,7 @@ Screen {
 .box-toolCall { border: solid #fab387; }   /* orange (legacy standalone tool box) */
 .box-toolResult { border: solid #a6e3a1; margin: 1 0 1 2; }  /* green, indented */
 .box-error { border: solid #f38ba8; }      /* red */
+.box-blocked { border: solid #f9e2af; }    /* amber — an extension veto (S50), not a tool failure */
 
 /* === Reasoning / thinking regions (collapsible, dim+italic like pi) === */
 .reasoning-region {
@@ -132,6 +133,10 @@ Screen {
 
 .tool-box.box-error > CollapsibleTitle {
     color: #f38ba8;  /* soft red on error */
+}
+
+.tool-box.box-blocked > CollapsibleTitle {
+    color: #f9e2af;  /* amber — a `tool_call` extension veto (S50), read as a policy block */
 }
 
 /* === Exchange grouping (one user→answer span; summary line title) === */

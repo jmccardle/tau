@@ -718,6 +718,10 @@ class TauBackend(Backend):
             elif event.type == "tool_execution_end":
                 tool_call_id = getattr(event, "tool_call_id", "") or ""
                 is_error = getattr(event, "is_error", False)
+                # A `tool_call` extension VETO (S50, anchor G11) renders distinctly
+                # from a generic error — carry the marker + attribution through.
+                blocked = bool(getattr(event, "blocked", False))
+                blocked_by = getattr(event, "blocked_by", None)
                 result = getattr(event, "result", "")
                 if isinstance(result, list):
                     result = " ".join(
@@ -737,6 +741,8 @@ class TauBackend(Backend):
                         "name": getattr(event, "tool_name", "") or "",
                         "result": result_str,
                         "is_error": is_error,
+                        "blocked": blocked,
+                        "blocked_by": blocked_by,
                     }
                 )
 

@@ -68,7 +68,10 @@ async def test_tool_call_block_short_circuits() -> None:
 
     result = await runner.emit_tool_call({"type": "tool_call", "input": {}})
 
-    assert result == {"block": True, "reason": "nope"}
+    # The block result carries the handler's fields PLUS the S50 attribution:
+    # the runner names the extension that vetoed (its bucket path) so the call-site
+    # can render "⛔ blocked by <ext>" + emit the JSON veto record.
+    assert result == {"block": True, "reason": "nope", "extension": "/ext/a.py"}
     assert seen == ["a"]  # second handler never ran (short-circuit)
 
 

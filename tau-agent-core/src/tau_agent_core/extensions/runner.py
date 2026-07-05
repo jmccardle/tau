@@ -249,7 +249,15 @@ class ExtensionRunner:
                 if handler_result:
                     result = handler_result
                     if result.get("block"):
-                        return result
+                        # Attribute the veto to THIS extension (S50, anchor G11).
+                        # The runner is the one place that knows WHICH bucket
+                        # blocked; the call-site threads this onto the blocked
+                        # render + the JSON veto record. Copy so the handler's own
+                        # dict is never mutated; ``setdefault`` lets a handler that
+                        # deliberately names a different origin keep it.
+                        blocked = dict(result)
+                        blocked.setdefault("extension", ext.path)
+                        return blocked
         return result
 
     async def emit_tool_result(self, event: dict[str, Any]) -> dict[str, Any] | None:
@@ -454,6 +462,19 @@ class ExtensionRunner:
                 if result.get("message") is not None:
                     injected.append(result["message"])
         return injected
+
+    def emit_veto_record(self, *, tool_name: str, reason: str, extension: str | None) -> None:
+        """Emit a JSON-stream veto record for a blocked tool call (S50 — anchor G11).
+
+        Delegates to the bound :class:`ExtensionContext`, which routes to the shared
+        :class:`ExtensionUI`'s headless record sink — the parallel record family the
+        ``--mode json`` frontend writes alongside the closed ``AgentEvent`` set (S49).
+        The record carries ``blocked: true`` so an orchestrator reading a child
+        ``tau -p --mode json`` stream can tell a veto from a generic tool error. With
+        no sink installed (the TUI / ``--mode text``) this is a no-op — the veto still
+        surfaces on the ``tool_execution_end`` AgentEvent's ``blocked`` field there.
+        """
+        self._context.emit_veto_record(extension=extension, tool=tool_name, reason=reason)
 
     # ------------------------------------------------------------------
     # Session-lifecycle dispatch — notify-grade, error-surfaced (S41)

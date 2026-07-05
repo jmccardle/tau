@@ -247,6 +247,32 @@ class ExtensionUI:
 
         print(f"[τ] {level}: {message}", file=sys.stderr)
 
+    def emit_veto(self, *, extension: str | None, tool: str, reason: str) -> None:
+        """Emit a blocked-tool VETO record on the headless JSON stream (E7 §3 / S50).
+
+        Routes ONLY to the record sink — the ``--mode json`` record family (S49) —
+        emitting ``{"type": "extension", "kind": "veto", "extension": <path|null>,
+        "tool": <name>, "reason": <reason>, "blocked": true}`` so a parent
+        orchestrating a child ``tau -p --mode json`` can tell a `tool_call` veto
+        (anchor G11) from a generic errored tool result. Deliberately does NOT touch
+        the TUI delegate or stderr: in the TUI the veto is rendered off the
+        ``tool_execution_end`` AgentEvent's ``blocked`` field, and in ``--mode text``
+        it already surfaces as the persisted errored tool-result node — a stderr line
+        here would be a duplicate. With no sink installed this is a no-op (not a
+        fabricated channel — the JSON record family only exists on that one path).
+        """
+        if self._record_sink is not None:
+            self._record_sink(
+                {
+                    "type": "extension",
+                    "kind": "veto",
+                    "extension": extension,
+                    "tool": tool,
+                    "reason": reason,
+                    "blocked": True,
+                }
+            )
+
 
 class ExtensionContext:
     """Context passed to extension event handlers and tools.
@@ -590,6 +616,18 @@ class ExtensionContext:
         JSON stream instead of a stderr line (anchor G10).
         """
         self._ui.set_record_sink(sink)
+
+    def emit_veto_record(self, *, extension: str | None, tool: str, reason: str) -> None:
+        """Emit a blocked-tool VETO record via the shared UI's record sink (E7 §3 / S50).
+
+        Thin pass-through to :meth:`ExtensionUI.emit_veto`. The agent loop reaches this
+        through the bound :class:`ExtensionRunner` (``emit_veto_record``) when a
+        `tool_call` hook vetoes a call, so the JSON stream carries a
+        ``kind: "veto"`` / ``blocked: true`` record (anchor G11) alongside the closed
+        ``AgentEvent`` set. A no-op unless the headless ``--mode json`` path installed a
+        sink.
+        """
+        self._ui.emit_veto(extension=extension, tool=tool, reason=reason)
 
     def set_headless_ui_defaults(self, policy: dict[str, str]) -> None:
         """Set the headless dialog-answer policy on the shared UI (E7 §3 / S48).

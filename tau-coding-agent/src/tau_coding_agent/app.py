@@ -550,13 +550,24 @@ class MessageBox(Static):
         await self._tools_slot.mount(box)
         return box
 
-    def set_tool_result(self, tool_call_id: str, result_text: str, is_error: bool = False) -> bool:
+    def set_tool_result(
+        self,
+        tool_call_id: str,
+        result_text: str,
+        is_error: bool = False,
+        *,
+        blocked: bool = False,
+        blocked_by: str | None = None,
+    ) -> bool:
         """Fold a tool result into its matching ToolBox. Returns ``False`` if no
-        box matches the id — the caller decides what to do, nothing is fabricated."""
+        box matches the id — the caller decides what to do, nothing is fabricated.
+
+        ``blocked``/``blocked_by`` mark an extension VETO (S50) so the ToolBox
+        renders "⛔ blocked by <ext>" instead of a generic error."""
         box = self._tool_boxes.get(tool_call_id)
         if box is None:
             return False
-        box.set_result(result_text, is_error)
+        box.set_result(result_text, is_error, blocked=blocked, blocked_by=blocked_by)
         return True
 
     @property
@@ -922,8 +933,12 @@ class ChatDisplay(VerticalScroll):
         tc_id = event.get("id", "") or ""
         result_text = str(event.get("result", ""))
         is_error = bool(event.get("is_error", False))
+        blocked = bool(event.get("blocked", False))
+        blocked_by = event.get("blocked_by")
         box = self._tool_routes.get(tc_id)
-        if box is not None and box.set_tool_result(tc_id, result_text, is_error):
+        if box is not None and box.set_tool_result(
+            tc_id, result_text, is_error, blocked=blocked, blocked_by=blocked_by
+        ):
             self.scroll_end(animate=False)
             return
         # No matching tool box: the call always precedes its result in the live

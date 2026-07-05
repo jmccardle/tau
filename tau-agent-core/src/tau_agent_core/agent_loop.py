@@ -52,11 +52,20 @@ if TYPE_CHECKING:
 
 
 class BlockedCall:
-    """A tool call that was blocked (e.g., argument validation failed)."""
+    """A tool call that was blocked (e.g., argument validation failed).
 
-    def __init__(self, call: PreparedToolCall, error: str) -> None:
+    ``blocked_by_extension`` names the extension that VETOED the call via a
+    ``tool_call`` hook (S50, anchor G11); it is ``None`` for a block that is NOT an
+    extension veto (argument-validation failure, fail-closed handler throw) — those
+    stay a generic errored result rather than the "⛔ blocked by <ext>" render.
+    """
+
+    def __init__(
+        self, call: PreparedToolCall, error: str, blocked_by_extension: str | None = None
+    ) -> None:
         self.call = call
         self.error = error
+        self.blocked_by_extension = blocked_by_extension
 
 
 class ErrorCall:
@@ -737,6 +746,19 @@ class AgentLoop:
         else:
             return await self._execute_sequential(assistant, tool_calls)
 
+    def _emit_veto_record(self, tool_name: str, reason: str, extension: str | None) -> None:
+        """Emit the JSON-stream veto record for an extension-blocked call (S50).
+
+        Routed through the hook dispatcher (which owns the shared ``ExtensionUI``
+        record sink). A no-op when the loop runs standalone (no dispatcher) or off the
+        ``--mode json`` path (no sink) — the veto still surfaces on the
+        ``tool_execution_end`` AgentEvent's ``blocked`` field there.
+        """
+        dispatcher = self._hook_dispatcher
+        if dispatcher is None:
+            return
+        dispatcher.emit_veto_record(tool_name=tool_name, reason=reason, extension=extension)
+
     async def _execute_sequential(
         self,
         assistant: AssistantMessage,
@@ -782,6 +804,13 @@ class AgentLoop:
 
             prepared = await self._prepare_tool_call(tc)
             if isinstance(prepared, BlockedCall):
+                # An extension VETO (S50, anchor G11) is a distinct presentation from
+                # a generic error: mark the end event ``blocked`` + emit the JSON veto
+                # record. A non-veto block (arg validation) has no attribution and
+                # stays a plain errored result.
+                blocked_by = prepared.blocked_by_extension
+                if blocked_by is not None:
+                    self._emit_veto_record(prepared.call.name, prepared.error, blocked_by)
                 await self._emit(
                     AgentEvent(
                         type="tool_execution_end",
@@ -790,6 +819,8 @@ class AgentLoop:
                         tool_name=prepared.call.name,
                         result=prepared.error,
                         is_error=True,
+                        blocked=blocked_by is not None,
+                        blocked_by=blocked_by,
                     )
                 )
                 all_results.append(
@@ -916,6 +947,13 @@ class AgentLoop:
             else:
                 # Normal result (including from_error for BlockedCall/ ErrorCall)
                 all_results.append(res)
+                # An extension VETO (S50) surfaces distinctly: the blocked marker
+                # rides the end event and a JSON veto record is emitted. Recovered
+                # from the aligned prepared call (``from_error`` drops the attribution).
+                blocked_by: str | None = None
+                if isinstance(pc, BlockedCall) and pc.blocked_by_extension is not None:
+                    blocked_by = pc.blocked_by_extension
+                    self._emit_veto_record(res.tool_name, pc.error, blocked_by)
                 await self._emit(
                     AgentEvent(
                         type="tool_execution_end",
@@ -924,6 +962,8 @@ class AgentLoop:
                         tool_name=res.tool_name,
                         result=res.content,
                         is_error=res.is_error,
+                        blocked=blocked_by is not None,
+                        blocked_by=blocked_by,
                     )
                 )
 
@@ -1033,6 +1073,10 @@ class AgentLoop:
                             arguments={},
                         ),
                         error=hook_result.get("reason") or "Tool execution was blocked",
+                        # The runner attributed the veto to the blocking extension
+                        # (S50); thread it so the call-site renders "⛔ blocked by
+                        # <ext>" + emits the JSON veto record.
+                        blocked_by_extension=hook_result.get("extension"),
                     )
                 # No re-validation after mutation (pi parity): event["input"] is
                 # the possibly-patched args object the tool executes with.
