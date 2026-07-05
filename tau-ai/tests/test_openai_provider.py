@@ -1317,6 +1317,111 @@ class TestConvertMessagesDict:
         assert msg["content"] == "old reasoning"  # thinking-only fallback, unchanged
 
 
+class TestReasoningReplayScope:
+    """Model.reasoning_replay scopes how much historical chain-of-thought is
+    replayed to the model (the τ divergence from pi's replay-everything).
+
+    ``all`` = every turn's reasoning; ``turn`` = only the in-progress turn
+    (assistant messages after the last user message); ``off`` = none. The knob
+    exists because a tool-driven session accretes stale, self-referential
+    reasoning that can dominate the payload (72% of one real transcript)."""
+
+    def setup_method(self):
+        self.provider = OpenAICompletionsProvider(api_key="sk-test")
+
+    def _two_turn_conversation(self):
+        """A prior completed turn (reasoning + tool call) then the current turn.
+
+        Indices: 0 user, 1 assistant(prior turn), 2 toolResult, 3 user,
+        4 assistant(current turn). Under ``turn`` only index 4 replays reasoning."""
+        return [
+            {"role": "user", "content": "first request"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "PRIOR reasoning",
+                     "thinking_signature": "reasoning_content"},
+                    {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {}},
+                ],
+            },
+            {"role": "toolResult", "tool_call_id": "c1",
+             "content": [{"type": "text", "text": "file.txt"}]},
+            {"role": "user", "content": "second request"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "CURRENT reasoning",
+                     "thinking_signature": "reasoning_content"},
+                    {"type": "toolCall", "id": "c2", "name": "cat", "arguments": {}},
+                ],
+            },
+        ]
+
+    def test_all_replays_every_turns_reasoning(self):
+        """``all`` (pi-faithful) replays both the prior and current turn's reasoning."""
+        out = self.provider._convert_messages_to_openai(
+            self._two_turn_conversation(), "all"
+        )
+        assert out[1]["reasoning_content"] == "PRIOR reasoning"
+        assert out[4]["reasoning_content"] == "CURRENT reasoning"
+
+    def test_turn_replays_only_current_turn(self):
+        """``turn`` (τ default) drops the prior turn's reasoning but keeps the
+        current turn's — so within-turn chain-of-thought across tool calls
+        survives while the cross-turn accretion is gone."""
+        out = self.provider._convert_messages_to_openai(
+            self._two_turn_conversation(), "turn"
+        )
+        assert "reasoning_content" not in out[1]  # prior turn dropped
+        assert out[4]["reasoning_content"] == "CURRENT reasoning"  # current kept
+        # The prior turn's message is intact otherwise (tool call still carries it).
+        assert out[1]["tool_calls"][0]["function"]["name"] == "ls"
+        assert out[1]["content"] == ""
+
+    def test_off_replays_no_reasoning(self):
+        """``off`` never replays reasoning, current turn included."""
+        out = self.provider._convert_messages_to_openai(
+            self._two_turn_conversation(), "off"
+        )
+        assert "reasoning_content" not in out[1]
+        assert "reasoning_content" not in out[4]
+        # Messages themselves are untouched.
+        assert out[4]["tool_calls"][0]["function"]["name"] == "cat"
+
+    def test_default_scope_is_turn(self):
+        """Calling without an explicit scope uses ``turn`` (the τ default)."""
+        default_out = self.provider._convert_messages_to_openai(
+            self._two_turn_conversation()
+        )
+        turn_out = self.provider._convert_messages_to_openai(
+            self._two_turn_conversation(), "turn"
+        )
+        assert default_out == turn_out
+
+    def test_turn_keeps_multi_step_reasoning_within_the_current_turn(self):
+        """Within one user turn, several assistant steps each keep their reasoning
+        under ``turn`` — the scope boundary is the last user message, not the last
+        assistant message, so a multi-tool-call turn is not truncated."""
+        messages = [
+            {"role": "user", "content": "do it"},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "step one",
+                 "thinking_signature": "reasoning_content"},
+                {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {}},
+            ]},
+            {"role": "toolResult", "tool_call_id": "c1",
+             "content": [{"type": "text", "text": "ok"}]},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "step two",
+                 "thinking_signature": "reasoning_content"},
+                {"type": "toolCall", "id": "c2", "name": "cat", "arguments": {}},
+            ]},
+        ]
+        out = self.provider._convert_messages_to_openai(messages, "turn")
+        assert out[1]["reasoning_content"] == "step one"
+        assert out[3]["reasoning_content"] == "step two"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Additional: Provider instantiation and configuration
 # ═══════════════════════════════════════════════════════════════════════════

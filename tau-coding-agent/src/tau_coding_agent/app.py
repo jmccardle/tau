@@ -2020,13 +2020,21 @@ class Parley(App):
         ``tau`` is untouched; otherwise a shallow copy (never mutate the shared
         ``config["models"]`` entry).
         """
-        if not (self._exclude_tools or self._no_builtin_tools):
+        # Fold the top-level ``reasoning_replay`` default into this entry when the
+        # entry doesn't set its own (per-model wins; else the global default; else
+        # build_model_from_config's "turn"). Done here so both create_backend sites
+        # (new-chat, resume) inherit it.
+        global_replay = self.config.get("reasoning_replay")
+        inject_replay = global_replay is not None and "reasoning_replay" not in model_config
+        if not (self._exclude_tools or self._no_builtin_tools or inject_replay):
             return model_config
         mc = dict(model_config)
         if self._no_builtin_tools:
             mc["tools"] = []
         if self._exclude_tools:
             mc["exclude_tools"] = self._exclude_tools
+        if inject_replay:
+            mc["reasoning_replay"] = global_replay
         return mc
 
     async def _load_backend_extensions(self) -> None:

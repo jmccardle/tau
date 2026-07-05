@@ -40,6 +40,26 @@ def test_build_model_from_config_maps_fields():
     assert model.base_url == "https://api.openai.com/v1"
 
 
+def test_build_model_reasoning_replay_defaults_to_turn():
+    """No ``reasoning_replay`` in the entry → the τ default scope ``turn``."""
+    model = build_model_from_config(_models()["cloud"])
+    assert model.reasoning_replay == "turn"
+
+
+def test_build_model_reasoning_replay_per_model_value_respected():
+    """A per-model ``reasoning_replay`` entry is carried onto the Model verbatim."""
+    for scope in ("all", "turn", "off"):
+        entry = {**_models()["cloud"], "reasoning_replay": scope}
+        assert build_model_from_config(entry).reasoning_replay == scope
+
+
+def test_build_model_reasoning_replay_invalid_raises():
+    """An unknown scope is a config error, not a silent fallback (Fail-Early)."""
+    entry = {**_models()["cloud"], "reasoning_replay": "sometimes"}
+    with pytest.raises(ValueError, match="reasoning_replay must be one of"):
+        build_model_from_config(entry)
+
+
 def test_make_model_resolver_resolves_known_name():
     resolve = make_model_resolver(_models())
     model = resolve("local-llm")

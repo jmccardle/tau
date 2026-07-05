@@ -140,6 +140,12 @@ def resolve_model_config(
     if args.append_system_prompt:
         model_config["append_system_prompt"] = list(args.append_system_prompt)
 
+    # Fold the top-level ``reasoning_replay`` default into the entry when it sets
+    # none of its own (per-model wins; else global; else build_model_from_config's
+    # "turn"), so headless and the TUI resolve the scope identically.
+    if "reasoning_replay" not in model_config and config.get("reasoning_replay") is not None:
+        model_config["reasoning_replay"] = config["reasoning_replay"]
+
     return spec, model_config
 
 

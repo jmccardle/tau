@@ -150,6 +150,22 @@ class Model(BaseModel):
     # available at all. pi: `Model.thinkingLevelMap` (types.ts:589). None = no
     # remapping.
     thinking_level_map: dict[str, str | None] | None = None
+    # How much historical chain-of-thought to replay to the model. A reasoning
+    # model streams its thinking on a signature field (e.g. Qwen3's
+    # ``reasoning_content``); τ can replay prior thinking blocks back on follow-up
+    # turns under that field so the model keeps its chain-of-thought. Replaying
+    # ALL of it (pi's behaviour, openai-completions.ts:880) bloats the context
+    # with stale, self-referential reasoning — on a tool-driven session it can
+    # dominate the payload and degrade comprehension. This knob scopes the replay:
+    #   "all"  — replay every historical thinking block (pi-faithful).
+    #   "turn" — replay thinking only for the in-progress turn (assistant
+    #            messages after the last user message), keeping within-turn
+    #            chain-of-thought across tool calls while dropping the cross-turn
+    #            accretion. τ default — a deliberate, configurable divergence.
+    #   "off"  — never replay historical thinking.
+    # Set per-model in ~/.tau/config.json (``models.<name>.reasoning_replay``)
+    # over a top-level default; "turn" when unset.
+    reasoning_replay: Literal["all", "turn", "off"] = "turn"
 
     def to_openai_format(self) -> dict[str, Any]:
         """Serialize to OpenAI-compatible format.

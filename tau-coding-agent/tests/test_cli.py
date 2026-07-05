@@ -174,6 +174,30 @@ def test_resolve_no_tools_empties_tools():
     assert mc["tools"] == []
 
 
+def test_resolve_folds_top_level_reasoning_replay_default():
+    """A top-level ``reasoning_replay`` in config is folded into the entry when the
+    entry sets none of its own (per-model wins; else this global default)."""
+    cfg = {**_config(), "reasoning_replay": "off"}
+    _name, mc = resolve_model_config(cfg, CLIArgs(model="gpt-4o"))
+    assert mc["reasoning_replay"] == "off"
+
+
+def test_resolve_per_model_reasoning_replay_beats_global():
+    """A per-model ``reasoning_replay`` is NOT overwritten by the global default."""
+    cfg = _config()
+    cfg["models"]["gpt-4o"]["reasoning_replay"] = "all"
+    cfg["reasoning_replay"] = "off"
+    _name, mc = resolve_model_config(cfg, CLIArgs(model="gpt-4o"))
+    assert mc["reasoning_replay"] == "all"
+
+
+def test_resolve_no_reasoning_replay_leaves_key_absent():
+    """With neither a per-model nor a global value, the key is absent — so
+    build_model_from_config applies its own ``turn`` default (not staged here)."""
+    _name, mc = resolve_model_config(_config(), CLIArgs(model="gpt-4o"))
+    assert "reasoning_replay" not in mc
+
+
 def test_resolve_tools_allowlist():
     _name, mc = resolve_model_config(_config(), CLIArgs(model="gpt-4o", tools="read, bash"))
     assert mc["tools"] == ["read", "bash"]

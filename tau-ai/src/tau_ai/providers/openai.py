@@ -250,7 +250,9 @@ class OpenAICompletionsProvider(Provider):
     # Conversion: τ → OpenAI
     # ──────────────────────────────────────────────────────────────────
 
-    def _convert_messages_to_openai(self, messages: list) -> list[dict]:
+    def _convert_messages_to_openai(
+        self, messages: list, reasoning_replay: str = "turn"
+    ) -> list[dict]:
         """Convert τ messages to OpenAI API message format.
 
         Conversion rules:
@@ -273,22 +275,44 @@ class OpenAICompletionsProvider(Provider):
         """
         openai_messages: list[dict] = []
 
-        for msg in messages:
+        # Reasoning-replay scope (Model.reasoning_replay). "turn" replays a
+        # message's chain-of-thought only when it belongs to the in-progress turn
+        # — i.e. sits AFTER the last user message — so within-turn reasoning
+        # survives across tool calls while stale cross-turn reasoning is dropped.
+        # "all" replays every message's reasoning (pi-faithful); "off" replays
+        # none. The boundary is computed once here since a per-message converter
+        # can't see the whole list.
+        last_user_idx = -1
+        for i, msg in enumerate(messages):
+            if isinstance(msg, UserMessage) or (
+                isinstance(msg, dict) and msg.get("role") == "user"
+            ):
+                last_user_idx = i
+
+        def _replay_for(index: int) -> bool:
+            if reasoning_replay == "all":
+                return True
+            if reasoning_replay == "off":
+                return False
+            return index > last_user_idx  # "turn"
+
+        for i, msg in enumerate(messages):
+            include_reasoning = _replay_for(i)
             if isinstance(msg, UserMessage):
                 openai_messages.append(self._convert_user_message(msg))
             elif isinstance(msg, AssistantMessage):
-                openai_messages.append(self._convert_assistant_message(msg))
+                openai_messages.append(self._convert_assistant_message(msg, include_reasoning))
             elif isinstance(msg, ToolResultMessage):
                 openai_messages.append(self._convert_tool_result(msg))
             elif isinstance(msg, dict):
                 # Convert via _convert_message_dict to handle toolResult → tool,
                 # content list → string, etc.
-                openai_messages.append(self._convert_message_dict(msg))
+                openai_messages.append(self._convert_message_dict(msg, include_reasoning))
             else:
                 # Try to convert via model_dump
                 if hasattr(msg, "model_dump"):
                     d = msg.model_dump()
-                    openai_messages.append(self._convert_message_dict(d))
+                    openai_messages.append(self._convert_message_dict(d, include_reasoning))
                 else:
                     openai_messages.append({"role": "user", "content": str(msg)})
 
@@ -330,7 +354,7 @@ class OpenAICompletionsProvider(Provider):
         # Return the data as-is (assumed to be base64-encoded)
         return img.data
 
-    def _assistant_content_to_openai(self, blocks: list) -> dict:
+    def _assistant_content_to_openai(self, blocks: list, include_reasoning: bool = True) -> dict:
         """Convert an assistant message's content blocks to OpenAI format.
 
         Accepts either τ pydantic blocks (``TextContent``/``ThinkingContent``/
@@ -404,9 +428,11 @@ class OpenAICompletionsProvider(Provider):
             # The tool call carries the turn — reasoning goes in its own field
             # (below), never as content.
             result["content"] = ""
-        elif thinking and not thinking_signature:
-            # Thinking-only turn with no signature to replay under: keep it as
-            # content so the turn isn't dropped (Fail-Early; legacy chats).
+        elif thinking and (not thinking_signature or not include_reasoning):
+            # Thinking-only turn we won't (or can't) replay under a signature
+            # field — keep it as content so the turn isn't dropped to an empty
+            # message (Fail-Early; also the legacy no-signature case). ``off``/
+            # out-of-turn scope only *suppresses the replay*, never the message.
             result["content"] = thinking
         else:
             result["content"] = ""
@@ -417,15 +443,25 @@ class OpenAICompletionsProvider(Provider):
         # Replay reasoning to the SAME model under the exact field it streamed on
         # (the captured signature), so a multi-step turn keeps its chain-of-thought
         # — the chat template renders it into the per-turn <think> slot instead of
-        # an empty block. Only when we actually captured the field; never guessed
-        # (Fail-Early). Mirrors pi convertMessages (openai-completions.ts:874).
-        if thinking and thinking_signature:
+        # an empty block. Only when we actually captured the field (never guessed,
+        # Fail-Early) AND the reasoning-replay scope allows it for this message
+        # (Model.reasoning_replay; ``include_reasoning`` False drops the stale
+        # cross-turn trace). Mirrors pi convertMessages (openai-completions.ts:874),
+        # scoped by the τ knob.
+        if thinking and thinking_signature and include_reasoning:
             result[thinking_signature] = thinking
         return result
 
-    def _convert_assistant_message(self, msg: AssistantMessage) -> dict:
-        """Convert a pydantic AssistantMessage to OpenAI format (text + tool_calls)."""
-        return self._assistant_content_to_openai(list(msg.content))
+    def _convert_assistant_message(
+        self, msg: AssistantMessage, include_reasoning: bool = True
+    ) -> dict:
+        """Convert a pydantic AssistantMessage to OpenAI format (text + tool_calls).
+
+        ``include_reasoning`` carries the per-message reasoning-replay scope
+        (:meth:`_convert_messages_to_openai`); False drops this message's replayed
+        chain-of-thought.
+        """
+        return self._assistant_content_to_openai(list(msg.content), include_reasoning)
 
     def _convert_tool_result(self, msg: ToolResultMessage) -> dict:
         """Convert ToolResultMessage to OpenAI tool role format."""
@@ -445,11 +481,13 @@ class OpenAICompletionsProvider(Provider):
 
         return result
 
-    def _convert_message_dict(self, d: dict) -> dict:
+    def _convert_message_dict(self, d: dict, include_reasoning: bool = True) -> dict:
         """Convert a generic dict message to OpenAI format.
 
         Handles toolResult → tool role conversion, extracts tool_call_id,
-        and converts list-type content to a string.
+        and converts list-type content to a string. ``include_reasoning`` carries
+        the per-message reasoning-replay scope (this is the persisted/reload path,
+        so it is the one that actually accretes stale reasoning on follow-up turns).
         """
         role = d.get("role", "")
         content = d.get("content", "")
@@ -460,7 +498,7 @@ class OpenAICompletionsProvider(Provider):
             # raw blocks the API rejects (HTTP 400 unsupported content[].type); a
             # plain-string body (older chats) passes straight through.
             if isinstance(content, list):
-                return self._assistant_content_to_openai(content)
+                return self._assistant_content_to_openai(content, include_reasoning)
             return {"role": "assistant", "content": content}
         elif role == "user":
             return {"role": "user", "content": content}
@@ -762,7 +800,7 @@ class OpenAICompletionsProvider(Provider):
         self.api_key = api_key
 
         # Convert τ messages to OpenAI format
-        openai_messages = self._convert_messages_to_openai(messages)
+        openai_messages = self._convert_messages_to_openai(messages, model.reasoning_replay)
 
         # Convert tools to OpenAI format
         openai_tools = None

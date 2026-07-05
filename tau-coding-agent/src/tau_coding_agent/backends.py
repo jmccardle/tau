@@ -9,7 +9,7 @@ AgentSession runs against a scratch InMemorySessionLog, caller owns persistence)
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Callable
+from typing import Any, Callable, Literal, cast
 from tau_ai.types import Model
 from tau_agent_core.agent_session import (
     AgentSession,
@@ -107,6 +107,18 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     reasoning_arg = thinking_level if thinking_level and thinking_level != "off" else None
     model_reasoning = bool(config.get("reasoning")) or reasoning_arg is not None
 
+    # Reasoning-replay scope (Model.reasoning_replay). The per-model entry wins;
+    # the frontends fold a top-level ``reasoning_replay`` default into the entry
+    # before this seam, so a missing key means "no default configured" → "turn"
+    # (the τ code default). Fail-Early on an unknown value rather than silently
+    # falling back to a scope the user didn't ask for.
+    reasoning_replay = config.get("reasoning_replay") or "turn"
+    if reasoning_replay not in ("all", "turn", "off"):
+        raise ValueError(
+            f"reasoning_replay must be one of 'all', 'turn', 'off'; got {reasoning_replay!r}"
+        )
+    reasoning_replay = cast(Literal["all", "turn", "off"], reasoning_replay)
+
     return Model(
         id=model_id,
         name=model_id,
@@ -117,6 +129,7 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
         max_tokens=4096,
         reasoning=model_reasoning,
         thinking_level_map=config.get("thinking_level_map"),
+        reasoning_replay=reasoning_replay,
     )
 
 
