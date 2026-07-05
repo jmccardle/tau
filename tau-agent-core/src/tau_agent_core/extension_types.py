@@ -13,6 +13,7 @@ The ui property is a no-op in headless mode (RPC, SDK).
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from tau_agent_core.compaction import estimate_context_tokens
@@ -26,6 +27,26 @@ if TYPE_CHECKING:
 #: with a Fail-Early raise (E5 §3.2 / S30) rather than binding them silently to the
 #: notify ``EventBus`` (a dead no-op, since nothing emits these channels).
 _RETIRED_HOOKS: frozenset[str] = frozenset({"context"})
+
+#: Prefix reserving the custom inter-extension pub/sub channels (E7 §3 / S52) away
+#: from the closed ``AgentEvent`` type set the same notify ``EventBus`` also carries.
+#: A custom channel is always ``ext:<name>:<topic>`` — see :func:`ext_channel`.
+EXT_CHANNEL_PREFIX = "ext:"
+
+
+def ext_channel(name: str, topic: str) -> str:
+    """The namespaced ``EventBus`` channel for an extension pub/sub topic (E7 §3 / S52).
+
+    Returns ``ext:<name>:<topic>``. The ``ext:`` prefix keeps custom
+    inter-extension channels disjoint from the closed ``AgentEvent`` type set the
+    notify bus also carries, and ``<name>`` (the emitting extension's file stem —
+    the same stem that keys ``api.config``) makes the channel's origin unforgeable:
+    :meth:`ExtensionAPI.emit` derives ``name`` from the caller's own bucket, so an
+    extension can only publish under its own namespace. A subscriber passes the full
+    result string to ``api.on(...)`` to receive it.
+    """
+    return f"{EXT_CHANNEL_PREFIX}{name}:{topic}"
+
 
 #: Headless dialog policy (E7 §3 / S48 — anchor G9, decision D-E6-2).
 #:
@@ -742,6 +763,12 @@ class ExtensionAPI:
         dead no-op. Fail-Early: raise an unknown-hook error naming the durable
         replacement instead.
 
+        A custom **inter-extension channel** ``ext:<name>:<topic>`` (E7 §3 / S52) is
+        neither a hook nor a retired name, so it takes the same ``EventBus`` fallthrough
+        as a notify event: ``api.on("ext:pub:ping", handler)`` receives whatever the
+        ``pub`` extension broadcasts via :meth:`emit`. These channels are in-RAM,
+        fire-and-forget, and never model-visible — explicitly NOT a backplane.
+
         Args:
             event: Event type (e.g., 'agent_start', 'tool_call', 'all').
             handler: Callable that receives the event (an ``AgentEvent`` for notify
@@ -791,6 +818,57 @@ class ExtensionAPI:
             return unsubscribe_hook
 
         return self._event_bus.on(event, handler)
+
+    def _emitting_extension_name(self) -> str:
+        """This extension's namespace stem for its custom channels (E7 §3 / S52).
+
+        Derived from THIS api's runner bucket path (``Path(bucket.path).stem`` — the
+        same stem that keys :attr:`config`), so :meth:`emit` can only publish under
+        the caller's own name. Fail-Early: a bare :class:`ExtensionAPI` bound to no
+        runner bucket has no extension identity, so raise rather than emit on an
+        anonymous ``ext::<topic>`` channel.
+        """
+        if self._hook_handlers is None:
+            raise RuntimeError(
+                "api.emit: this ExtensionAPI is not bound to an ExtensionRunner "
+                "bucket, so it has no extension identity to namespace a custom "
+                "channel under. Obtain the api from AgentSession's extension load "
+                "path (each factory is handed a bucket-bound api)."
+            )
+        return Path(self._hook_handlers.path).stem
+
+    async def emit(self, topic: str, payload: Any) -> None:
+        """Publish ``payload`` on this extension's channel ``ext:<name>:<topic>`` (S52).
+
+        Inter-extension pub/sub — a faithful port of pi's ``pi.events.emit``
+        (``event-bus.ts``), adapted to τ's single notify
+        :class:`~tau_agent_core.events.EventBus`. Fire-and-forget, in-RAM broadcast to
+        every handler another (or the same) extension subscribed with
+        ``api.on("ext:<name>:<topic>", handler)``. The channel is ALWAYS namespaced
+        under this emitting extension's own name (:meth:`_emitting_extension_name`), so
+        an extension can only publish under its own namespace and a subscriber gets
+        unforgeable provenance — τ's discipline over pi's free-form channel strings.
+
+        This is deliberately **NOT a backplane**: it touches neither the session tree,
+        the session log, nor ``convert_to_llm``, so a custom-channel payload is **NEVER
+        model-visible** (the tree is the only durable, model-visible channel — E5 §1).
+        It is process-local and evaporates on restart; use :meth:`append_entry` /
+        :meth:`send_message` for anything durable or model-facing.
+
+        Dispatch is synchronous per the ``EventBus`` contract (subscribed handlers run
+        when this coroutine is awaited); a handler that raises is SURFACED through the
+        bus on_error path (S44), never swallowed.
+
+        Raises:
+            ValueError: if ``topic`` is not a non-empty string.
+            RuntimeError: if this api is not bound to a runner bucket (no extension
+                identity to namespace under) — Fail-Early, via
+                :meth:`_emitting_extension_name`.
+        """
+        if not isinstance(topic, str) or not topic.strip():
+            raise ValueError("api.emit: topic must be a non-empty string")
+        channel = ext_channel(self._emitting_extension_name(), topic)
+        await self._event_bus.emit_channel(channel, payload)
 
     def register_tool(self, definition: dict) -> None:
         """Register a tool callable by the LLM (pi ``ToolDefinition`` shape).
