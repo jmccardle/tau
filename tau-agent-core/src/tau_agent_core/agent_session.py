@@ -422,6 +422,27 @@ class AgentSession:
         self._extension_api.context._signal = self._abort_signal
 
         try:
+            # S42 — the ``input`` mutating hook fires BEFORE the user node exists
+            # (roadmap §2, anchor G2; pi agent-session.ts:1007-1024). It transforms
+            # the prompt/images PRE-NODE — the transformed text is the SINGLE copy
+            # persisted+rendered+sent, exactly the legality that made
+            # ``before_agent_start`` sound — or it CONSUMES the input (``handled``:
+            # a command-like extension already ran its own effect / shown its own
+            # feedback), in which case no turn starts and prompt() returns no
+            # messages. Gated on has_handlers for the zero-extension fast path.
+            # Fires ONCE per prompt(): the followUp/nextTurn re-entries go through
+            # _run_one_turn directly and never re-emit input, matching pi (which
+            # emits input once in prompt(), not on queued re-entry). ``original_text``
+            # is kept so the caller's echoed user turn (the TUI passes the full
+            # history) is still detected+stripped against the PRE-transform text.
+            original_text = text
+            if self._extension_runner.has_handlers("input"):
+                input_result = await self._extension_runner.emit_input(text, images)
+                if input_result["handled"]:
+                    return []
+                text = input_result["prompt"]
+                images = input_result["images"]
+
             # Drain any pending "nextTurn" messages into THIS prompt's first turn
             # (S20): a message queued last prompt with ``deliver_as="nextTurn"`` is
             # injected alongside the user turn, exactly as pi pushes
@@ -432,7 +453,9 @@ class AgentSession:
             self._pending_next_turn_messages = []
             queued = [self._queued_content_to_user(c) for c in next_turn]
 
-            turn_messages = await self._run_one_turn(text, images, context, queued=queued)
+            turn_messages = await self._run_one_turn(
+                text, images, context, queued=queued, strip_ref_text=original_text
+            )
 
             # End-of-prompt drain (S20 / decision 3): auto-compaction, then the
             # deferred compact/fork intents (applied exactly ONCE here, never
@@ -452,6 +475,7 @@ class AgentSession:
         images: list[dict] | None,
         context: list[dict] | None,
         queued: list[UserMessage] | None = None,
+        strip_ref_text: str | None = None,
     ) -> list[dict[str, Any]]:
         """Run one agent-loop turn: build the user message, run the loop, persist.
 
@@ -459,6 +483,15 @@ class AgentSession:
         re-enter it within the same ``prompt()`` call. ``queued`` are pending
         ``nextTurn`` messages threaded (and persisted) after the user turn on the
         first turn of a prompt; empty on a followUp re-entry.
+
+        ``strip_ref_text`` is the text used to detect the caller's echoed user
+        turn (the TUI passes the full history, ending with this turn). It exists
+        because the S42 ``input`` hook may have transformed ``text`` upstream in
+        ``prompt()`` while the caller's echo still holds the PRE-transform text —
+        so the strip must compare against the original, not the transformed value,
+        or the loop would see both the echo AND the transformed user_msg. ``None``
+        (the followUp re-entry, where ``context`` is ``None`` anyway) falls back to
+        ``text``.
 
         Returns THIS turn's new messages only — the user message, any ``queued``
         messages, then the assistant/tool messages the loop produced.
@@ -485,8 +518,12 @@ class AgentSession:
             # Did the caller already include this user turn as the final
             # context message? The TUI passes the full history (which ends
             # with the latest user turn); a bare prompt("hi") does not. This
-            # flag also drives the persist/return logic below.
-            context_ends_with_user = _ends_with_user_text(context_messages, text)
+            # flag also drives the persist/return logic below. Compare against
+            # ``strip_ref_text`` (the PRE-``input``-transform text) so a hook that
+            # rewrote ``text`` upstream does not defeat the echo detection — see
+            # the ``strip_ref_text`` note in the docstring.
+            strip_ref = strip_ref_text if strip_ref_text is not None else text
+            context_ends_with_user = _ends_with_user_text(context_messages, strip_ref)
         else:
             context_messages = self.messages
             context_ends_with_user = False

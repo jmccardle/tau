@@ -81,7 +81,7 @@ ErrorListener = Callable[[ExtensionError], None]
 
 
 class ExtensionRunner:
-    """Return-collecting dispatcher for the three mutating hook events.
+    """Return-collecting dispatcher for the mutating hook events.
 
     The dispatched events (§8, E2 wires the call-sites):
 
@@ -91,6 +91,10 @@ class ExtensionRunner:
                                see earlier patches).
     - ``before_agent_start`` — ``system_prompt`` chains (last wins, live to later
                                handlers); ``message`` values accumulate.
+    - ``input``              — transform the user prompt BEFORE the user node
+                               exists (``prompt``/``images`` chain, later handlers
+                               see the running value); ``handled: True`` consumes
+                               the input without starting a turn (S42).
 
     (A fourth hook, ``context`` — per-call replace of the message list — existed
     through E2 but was ELIMINATED in E5 §3.2 / S30. Under the durable-hook
@@ -116,8 +120,9 @@ class ExtensionRunner:
     identity result without doing any work.
     """
 
-    #: The mutating hook events this dispatcher owns (E2 supplies the call-sites).
-    HOOK_EVENTS = ("tool_call", "tool_result", "before_agent_start")
+    #: The mutating hook events this dispatcher owns (E2 supplies the call-sites;
+    #: S42 adds ``input``, fired pre-node at the top of ``AgentSession.prompt``).
+    HOOK_EVENTS = ("tool_call", "tool_result", "before_agent_start", "input")
 
     #: The notify-grade session-lifecycle hooks (S41): no return effect, but
     #: error-surfaced through :meth:`on_error` rather than swallowed. Routed to a
@@ -325,6 +330,70 @@ class ExtensionRunner:
                 "system_prompt": current_system_prompt if system_prompt_modified else None,
             }
         return None
+
+    async def emit_input(
+        self,
+        prompt: str,
+        images: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        """Dispatch ``input``; transforms chain, ``handled`` short-circuits.
+
+        S42 / roadmap §2 (anchor G2). pi ``runner.ts:1095-1133`` (``emitInput``),
+        flattened to τ's ``{prompt, images} -> {prompt?, handled?}`` contract.
+
+        Fires BEFORE the user node exists (the call-site is at the top of
+        :meth:`AgentSession.prompt`), so a transformed prompt is the SINGLE copy
+        that gets persisted, rendered, and sent — no invariant violation, exactly
+        the reasoning that made ``before_agent_start`` legal.
+
+        Each handler receives ``{"type": "input", "prompt": <running text>,
+        "images": <running images>}`` and may return:
+
+        - ``{"handled": True}`` — consume the input WITHOUT starting a turn (a
+          command-like extension that showed its own feedback); dispatch stops
+          immediately and the call-site returns without a turn.
+        - ``{"prompt": <text>}`` and/or ``{"images": [...]}`` — replace the
+          running prompt/images; later handlers see the replacement (chaining,
+          like ``before_agent_start``'s ``system_prompt``).
+        - ``None`` / ``{}`` — pass through unchanged.
+
+        Returns ``{"handled": bool, "prompt": str, "images": ...}`` — the running
+        values (on ``handled`` the call-site discards them with the turn).
+
+        Handler exceptions are SURFACED via :meth:`on_error` (the S44 regime) and
+        dispatch continues to the next handler — pi's ``emitInput`` wraps each
+        handler in try/catch and continues likewise.
+        """
+        current_prompt = prompt
+        current_images = images
+        for ext in self._extensions:
+            handlers = ext.handlers.get("input")
+            if not handlers:
+                continue
+            for handler in handlers:
+                event = {
+                    "type": "input",
+                    "prompt": current_prompt,
+                    "images": current_images,
+                }
+                try:
+                    result = await self._call(handler, event)
+                except Exception as err:  # noqa: BLE001 — surfaced, not dropped
+                    self._emit_error(ExtensionError(ext.path, "input", str(err)))
+                    continue
+                if not result:
+                    continue
+                if result.get("handled"):
+                    return {
+                        "handled": True,
+                        "prompt": current_prompt,
+                        "images": current_images,
+                    }
+                if result.get("prompt") is not None:
+                    current_prompt = result["prompt"]
+                if result.get("images") is not None:
+                    current_images = result["images"]
+        return {"handled": False, "prompt": current_prompt, "images": current_images}
 
     # ------------------------------------------------------------------
     # Session-lifecycle dispatch — notify-grade, error-surfaced (S41)

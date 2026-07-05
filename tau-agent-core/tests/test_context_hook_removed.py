@@ -65,10 +65,13 @@ def _make_session() -> AgentSession:
 
 def test_context_is_not_a_hook_event() -> None:
     assert "context" not in ExtensionRunner.HOOK_EVENTS
+    # The exact live membership (``input`` was added in S42, roadmap §2) — the
+    # point of this pin is that the retired ``context`` name never reappears here.
     assert ExtensionRunner.HOOK_EVENTS == (
         "tool_call",
         "tool_result",
         "before_agent_start",
+        "input",
     )
 
 

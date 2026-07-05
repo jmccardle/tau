@@ -463,8 +463,8 @@ class ExtensionAPI:
     def on(self, event: str, handler: Callable) -> Callable[[], None]:
         """Subscribe to an event — routed by KIND (S24 bridge).
 
-        The three MUTATING hooks (``ExtensionRunner.HOOK_EVENTS``: ``tool_call`` /
-        ``tool_result`` / ``before_agent_start``) AND the two notify-grade
+        The four MUTATING hooks (``ExtensionRunner.HOOK_EVENTS``: ``tool_call`` /
+        ``tool_result`` / ``before_agent_start`` / ``input``) AND the two notify-grade
         session-lifecycle hooks (``ExtensionRunner.LIFECYCLE_EVENTS``:
         ``session_start`` / ``session_shutdown``, S41) are dispatched by the
         session's separate ``ExtensionRunner``, whose call-sites gate on
