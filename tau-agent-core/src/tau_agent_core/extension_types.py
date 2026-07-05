@@ -15,9 +15,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
+from tau_agent_core.compaction import estimate_context_tokens
+
 if TYPE_CHECKING:
     from tau_agent_core.events import EventBus
     from tau_agent_core.extensions.registry import ExtensionRegistry
+    from tau_agent_core.extensions.runner import ExtensionHandlers
+
+#: Hook names that existed through E2 but were removed. ``api.on`` rejects them
+#: with a Fail-Early raise (E5 §3.2 / S30) rather than binding them silently to the
+#: notify ``EventBus`` (a dead no-op, since nothing emits these channels).
+_RETIRED_HOOKS: frozenset[str] = frozenset({"context"})
 
 
 class ExtensionUI:
@@ -127,6 +135,9 @@ class ExtensionContext:
         self._signal = signal
         self._is_idle = is_idle
         self._ui = ExtensionUI(mode="headless")
+        # The live AgentSession, bound by ExtensionAPI so get_context_usage() can
+        # read real messages + model.context_window. None until bound.
+        self._session: Any | None = None
 
     @property
     def cwd(self) -> str:
@@ -158,9 +169,209 @@ class ExtensionContext:
         if self._session_manager is not None and hasattr(self._session_manager, "shutdown"):
             self._session_manager.shutdown()
 
-    def get_context_usage(self) -> dict:
-        """Get context usage information."""
-        return {"total_tokens": 0}
+    def get_context_usage(self) -> dict[str, Any] | None:
+        """Return context usage for the active model (pi ``ContextUsage`` shape).
+
+        Faithful port of pi's ``getContextUsage`` (agent-session.ts:2975 →
+        ``ContextUsage`` at types.ts:281-287): returns
+        ``{tokens, context_window, percent}`` where ``tokens`` is the estimated
+        context-token count from ``estimate_context_tokens`` — the SAME estimate
+        that drives auto-compaction (agent_session.py:523) — and ``percent`` is
+        ``tokens / context_window * 100``.
+
+        Returns ``None`` when the model has no positive ``context_window`` (pi
+        returns ``undefined``); that is a genuine "unknown", not a fabricated
+        zero.
+
+        Raises:
+            RuntimeError: if no session is bound — there is nothing to measure.
+                Replaces the old fictional ``{"total_tokens": 0}`` stub
+                (Fail-Early: raise rather than fabricate).
+        """
+        session = self._session
+        if session is None:
+            raise RuntimeError("get_context_usage: no session bound to ExtensionContext")
+        model = getattr(session, "_model", None)
+        context_window = int(getattr(model, "context_window", 0) or 0)
+        if context_window <= 0:
+            return None
+        tokens = estimate_context_tokens(session.messages).tokens
+        percent = (tokens / context_window) * 100
+        return {"tokens": tokens, "context_window": context_window, "percent": percent}
+
+    # ------------------------------------------------------------------
+    # Session-control op surface (E3-ctx / step S19)
+    #
+    # These expose the LANDED session-tree substrate on the base handler
+    # context so agent tools can drive it (plan decision 2; the E2 gatekeeper
+    # veto is the safety). Each delegates to the one authoritative session log
+    # the bound ``AgentSession`` persists through, so the mutation is visible on
+    # both the TUI live path and headless. pi keeps fork/navigate command-only
+    # (types.ts:354-373); τ places them on the base context (decision 2 / §7
+    # E3-b). Fail-Early: an unbound session, or an op the concrete log cannot
+    # satisfy (e.g. exporting an in-memory log), RAISES rather than no-ops.
+    # ------------------------------------------------------------------
+
+    def _require_session(self) -> Any:
+        """The bound ``AgentSession``, or raise (Fail-Early, no silent no-op)."""
+        if self._session is None:
+            raise RuntimeError("session-control op: no session bound to ExtensionContext")
+        return self._session
+
+    async def compact(self, custom_instructions: str | None = None, defer: bool = False) -> Any:
+        """Compact the active conversation (delegates to ``AgentSession.compact``).
+
+        Runs the full append-only compaction pipeline on the bound session's log
+        (``agent_session.py`` ``compact``): build the active-path entries, summarize
+        the compacted prefix via the LLM, and APPEND a compaction entry so the
+        prefix drops out of future context at read time. Returns the
+        ``CompactionResult`` (or ``None`` when there is nothing to compact).
+
+        Two variants (S20 / decision 3):
+
+        - ``defer=False`` (default): the IMMEDIATE variant — compacts now and
+          returns the ``CompactionResult``.
+        - ``defer=True``: the TURN-END-DEFERRED variant — a tool calling this
+          mid-turn cannot compact under the live agent loop, so the intent is
+          RECORDED and applied exactly once at the tail of ``prompt()`` (the same
+          site as auto-compaction). Returns ``None`` immediately; the tool then
+          returns its own normal result.
+
+        Args:
+            custom_instructions: Optional extra focus for the summary.
+            defer: When True, record the intent for the end-of-prompt drain
+                instead of compacting now.
+        """
+        session = self._require_session()
+        if defer:
+            session._defer_compact(custom_instructions=custom_instructions)
+            return None
+        return await session.compact(custom_instructions=custom_instructions)
+
+    def entries(self) -> list[dict[str, Any]]:
+        """The bound session log's raw, append-only entries (all kinds).
+
+        Thin pass-through to ``SessionLog.entries()`` — the same entry list a
+        ``ConversationTree`` folds into context. Read-only: a copy per the log's
+        contract, so mutating the returned list does not touch the log.
+        """
+        entries: list[dict[str, Any]] = self._require_session().session_log.entries()
+        return entries
+
+    async def summarize_branch(
+        self, from_entry: str, custom_instructions: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Summarize the subtree at ``from_entry`` and splice it onto the active path.
+
+        Ports the summarize arm of ``TauBackend.navigate_tree`` (backends.py:246)
+        onto the bound session's own log: extract the branch text
+        (``ConversationTree.subtree_text(from_entry)``), summarize it via the module
+        ``summarize_branch`` (session_manager.py:705 — already raise-based on a
+        failed/empty summary, Fail-Early), then APPEND a ``branch_summary`` entry
+        parented at ``from_entry`` (``SessionLog.append_branch_summary``). The
+        abandoned children drop out of context via the ``parentId`` walk.
+
+        Returns the re-rendered active-path messages (``ConversationTree.context_for``).
+        """
+        from tau_agent_core.conversation_tree import ConversationTree
+        from tau_agent_core.session_manager import summarize_branch as _summarize_branch
+
+        session = self._require_session()
+        log = session.session_log
+        old_leaf = log.cursor
+        branch_text = ConversationTree(log.entries(), old_leaf).subtree_text(from_entry)
+        summary = await _summarize_branch(
+            branch_text,
+            session._model,
+            api_key=session._api_key,
+            custom_instructions=custom_instructions,
+        )
+        log.append_branch_summary(summary, from_entry)
+        return ConversationTree(log.entries(), log.cursor).context_for()
+
+    async def navigate(
+        self,
+        target_id: str | None,
+        summarize: bool = False,
+        custom_instructions: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Move the bound session's cursor to ``target_id`` and return the new context.
+
+        Ports ``TauBackend.navigate_tree`` (backends.py:246) onto the bound
+        session's own log. ``summarize=False`` APPENDs a ``navigate`` entry (zero
+        LLM calls); the abandoned branch drops out of context via the ``parentId``
+        walk but stays on disk. ``summarize=True`` delegates to
+        :meth:`summarize_branch` (append a ``branch_summary`` at the branch point).
+        A ``target_id`` already at the cursor is a no-op (pi ``navigateTree:2716``).
+
+        Returns the re-rendered active-path messages (``ConversationTree.context_for``).
+        """
+        from tau_agent_core.conversation_tree import ConversationTree
+
+        session = self._require_session()
+        log = session.session_log
+        if target_id == log.cursor:
+            return ConversationTree(log.entries(), log.cursor).context_for()
+        if summarize:
+            if target_id is None:
+                raise ValueError("navigate(summarize=True) requires a target_id to summarize")
+            return await self.summarize_branch(target_id, custom_instructions=custom_instructions)
+        log.append_navigate(target_id)
+        return ConversationTree(log.entries(), log.cursor).context_for()
+
+    async def fork(
+        self,
+        entry_id: str | None = None,
+        mode: Literal["in_place", "export"] = "in_place",
+        defer: bool = False,
+    ) -> Any:
+        """Fork the conversation — one op, two modes (plan §7 decision E3-b).
+
+        - ``mode="in_place"`` (default): branch WITHIN the one session log by
+          APPENDing a ``navigate`` to ``entry_id`` (``entry_id=None`` → pre-root),
+          so the next turn appends a sibling branch off that point. Returns the
+          re-rendered active-path messages (``ConversationTree.context_for``). This
+          is the ``navigate+append`` in-place fork.
+        - ``mode="export"``: copy the session into a NEW file via ``Session.fork``
+          (session_store.py:347; the source log is never touched), optionally
+          positioning the new file's cursor at ``entry_id``. Returns the new
+          session file path as a string.
+
+        ``defer=True`` (S20 / decision 3): a tool calling this mid-turn cannot
+        re-parent the log under the live agent loop, so the intent is RECORDED and
+        applied exactly once at the tail of ``prompt()``. Returns ``None``
+        immediately; the tool then returns its own normal result.
+
+        Fail-Early: export requires a concrete file-backed ``Session`` log — an
+        in-memory SDK log cannot be exported to a file and RAISES rather than
+        fabricating one.
+        """
+        from tau_agent_core.conversation_tree import ConversationTree
+
+        session = self._require_session()
+        if defer:
+            session._defer_fork(entry_id=entry_id, mode=mode)
+            return None
+        log = session.session_log
+        if mode == "in_place":
+            log.append_navigate(entry_id)
+            return ConversationTree(log.entries(), log.cursor).context_for()
+        if mode == "export":
+            fork_classmethod = getattr(type(log), "fork", None)
+            if fork_classmethod is None:
+                raise RuntimeError(
+                    "fork(mode='export'): the bound session log is not file-backed and "
+                    "cannot be exported to a new file"
+                )
+            # Fork into the source's own cwd partition (pi keeps a fork in the
+            # same session dir); fall back to the context cwd for a log that does
+            # not expose one.
+            cwd = getattr(log, "cwd", None) or self._cwd
+            forked = fork_classmethod(log, cwd)
+            if entry_id is not None:
+                forked.append_navigate(entry_id)
+            return str(forked.path)
+        raise ValueError(f"fork: unknown mode {mode!r} (expected 'in_place' or 'export')")
 
     def set_ui_delegate(self, delegate: Any) -> None:
         """Set the TUI delegate for UI methods.
@@ -197,6 +408,7 @@ class ExtensionAPI:
         event_bus: EventBus | None = None,
         context: ExtensionContext | None = None,
         session: Any = None,
+        hook_handlers: ExtensionHandlers | None = None,
     ) -> None:
         """Initialize ExtensionAPI.
 
@@ -205,6 +417,13 @@ class ExtensionAPI:
             event_bus: EventBus for event subscription.
             context: ExtensionContext with session state.
             session: AgentSession for messaging.
+            hook_handlers: This extension's OWN ``ExtensionHandlers`` bucket in the
+                session ``ExtensionRunner`` (load order preserved). ``api.on()``
+                routes the four MUTATING hooks (``tool_call`` / ``tool_result`` /
+                ``before_agent_start`` / ``context``) here — the dispatch surface
+                the loop's hook call-sites gate on. Left ``None`` for an api that is
+                not bound to a runner bucket; registering a hook on such an api then
+                RAISES (Fail-Early) rather than silently no-op'ing (S24).
         """
         # Lazy initialization for backward compatibility
         if registry is None:
@@ -222,47 +441,121 @@ class ExtensionAPI:
         self._event_bus = event_bus
         self._context = context
         self._session = session
+        # This extension's own hook-handler bucket in the session's
+        # ExtensionRunner (None when the api is not bound to a runner).
+        self._hook_handlers = hook_handlers
+        # Bind the live session onto the context so ctx.get_context_usage()
+        # (delegated to the session in pi) reads real messages + model window.
+        self._context._session = session
         self._flags: dict[str, dict[str, Any]] = {}
-        # Backward-compatible internal attributes (used by legacy tests)
-        self._handlers: dict[str, list[Callable]] = {}  # event -> [handlers]
-        self._active_tools: list[str] = []  # active tool names
-        self._commands: dict[str, dict] = {}  # name -> command
-        self._session_name: str = ""  # session display name
 
     def on(self, event: str, handler: Callable) -> Callable[[], None]:
-        """Subscribe to an event via the event bus.
+        """Subscribe to an event — routed by KIND (S24 bridge).
 
-        Also stores a copy in _handlers for backward compatibility.
+        The three MUTATING hooks (``ExtensionRunner.HOOK_EVENTS``: ``tool_call`` /
+        ``tool_result`` / ``before_agent_start``) are dispatched by the session's
+        separate return-collecting ``ExtensionRunner``, whose call-sites gate on
+        ``has_handlers(event)``. Those registrations must land in THIS extension's
+        runner bucket (``self._hook_handlers``), not on the notify ``EventBus`` —
+        otherwise they are a silent no-op in a real session (the bug S24 closes).
+        Every other (notify) event keeps going to the ``EventBus``.
+
+        The retired ``context`` hook (E5 §3.2 / S30) is rejected UP FRONT: it was
+        removed from ``HOOK_EVENTS``, so left unguarded it would fall through to the
+        notify ``EventBus`` and bind silently to a channel nothing ever emits — a
+        dead no-op. Fail-Early: raise an unknown-hook error naming the durable
+        replacement instead.
 
         Args:
-            event: Event type (e.g., 'agent_start', 'all').
-            handler: Callable that receives an AgentEvent.
+            event: Event type (e.g., 'agent_start', 'tool_call', 'all').
+            handler: Callable that receives the event (an ``AgentEvent`` for notify
+                events; a ``(event_dict, ctx)`` pair for hook events).
 
         Returns:
             An unsubscribe function.
+
+        Raises:
+            RuntimeError: registering the retired ``context`` hook (removed in E5
+                §3.2 / S30), or registering a mutating hook on an api that was never
+                bound to a runner bucket (``hook_handlers is None``). Fail-Early — a
+                hook with nowhere to dispatch is a construction bug, not a no-op.
         """
-        if event == "all":
-            unsub = self._event_bus.on("all", handler)
-        else:
-            unsub = self._event_bus.on(event, handler)
-        # Backward compat: also store in _handlers
-        if event not in self._handlers:
-            self._handlers[event] = []
-        self._handlers[event].append(handler)
-        return unsub
+        from tau_agent_core.extensions.runner import ExtensionRunner
+
+        if event in _RETIRED_HOOKS:
+            raise RuntimeError(
+                f"api.on({event!r}): the {event!r} hook was removed in E5 §3.2 / S30. "
+                "Under the durable-hook invariant the model's input is exactly the "
+                "system prompt + the linear active path — there is no per-call "
+                "message-list transform. Achieve the same effect with a durable node "
+                "edit: patch the triggering `tool_result` via api.on('tool_result', …) "
+                "and/or inject a pre-first-call message via "
+                "api.on('before_agent_start', …)."
+            )
+
+        if event in ExtensionRunner.HOOK_EVENTS:
+            if self._hook_handlers is None:
+                raise RuntimeError(
+                    f"api.on({event!r}): this ExtensionAPI is not bound to an "
+                    "ExtensionRunner bucket, so the mutating hook could never fire. "
+                    "Obtain the api from AgentSession's extension load path "
+                    "(each factory is handed a bucket-bound api)."
+                )
+            hook_bucket = self._hook_handlers
+            hook_bucket.on(event, handler)
+
+            def unsubscribe_hook() -> None:
+                handlers = hook_bucket.handlers.get(event)
+                if handlers is not None:
+                    try:
+                        handlers.remove(handler)
+                    except ValueError:
+                        pass
+
+            return unsubscribe_hook
+
+        return self._event_bus.on(event, handler)
 
     def register_tool(self, definition: dict) -> None:
-        """Register a tool callable by the LLM.
+        """Register a tool callable by the LLM (pi ``ToolDefinition`` shape).
 
-        Adds `_source: "extension"` to the definition and registers
-        with the registry.
+        Mirrors pi's ``registerTool(tool: ToolDefinition)``
+        (coding-agent/src/core/extensions/types.ts:433). The definition is a
+        plain dict — NOT a Pydantic/TypeBox model — carrying:
 
-        Args:
-            definition: Tool definition dict with name, description, parameters, etc.
+        - ``name`` (str): tool name used in LLM tool calls.
+        - ``description`` (str): description sent to the LLM.
+        - ``parameters`` (dict): JSON-schema dict for argument validation.
+        - ``execute`` (callable): ``execute(tool_call_id, params, signal,
+          on_update, ctx)`` returning an ``AgentToolResult``-shaped value
+          (may be sync or async). ``ctx`` is the bound ``ExtensionContext``.
+
+        Optional keys: ``label`` (defaults to ``name`` for UI), ``prompt_snippet``,
+        ``prompt_guidelines``, ``execution_mode`` ("sequential"/"parallel").
+
+        Adds ``_source: "extension"`` and registers with the session-owned
+        registry; the resolved tool is merged into the loop's tools next turn.
+
+        Raises:
+            ValueError: if a required key is missing.
+            TypeError: if ``parameters`` is not a dict or ``execute`` is not callable.
         """
+        for key in ("name", "description", "parameters", "execute"):
+            if key not in definition:
+                raise ValueError(f"register_tool: missing required key '{key}'")
+        if not isinstance(definition["parameters"], dict):
+            raise TypeError("register_tool: 'parameters' must be a JSON-schema dict")
+        if not callable(definition["execute"]):
+            raise TypeError("register_tool: 'execute' must be callable")
+
         definition = dict(definition)  # don't mutate caller's dict
         definition["_source"] = "extension"
         self._registry.register_tool(definition)
+        # Attribute the tool to THIS extension for the /extensions surface (E5 §5 /
+        # S34). The registry stores tools globally (by name); the per-extension
+        # runner bucket is the only place that records which extension owns it.
+        if self._hook_handlers is not None:
+            self._hook_handlers.tools.append(definition["name"])
 
     def get_all_tools(self) -> list[Any]:
         """Get all registered tools.
@@ -273,39 +566,52 @@ class ExtensionAPI:
         return self._registry.get_all_tools()
 
     def set_active_tools(self, names: list[str]) -> None:
-        """Enable/disable tools by name.
-
-        Also stores active tool names in _active_tools for backward
-        compatibility.
-        """
+        """Enable/disable tools by name (forwards to the registry)."""
         self._registry.set_active_tools(names)
-        self._active_tools = names
 
     def register_command(self, name: str, command: dict) -> None:
-        """Register a slash command.
-
-        Also stores in _commands for backward compatibility.
-        """
+        """Register a slash command (forwards to the registry)."""
         self._registry.register_command(name, command)
-        self._commands[name] = command
+        # Attribute the command to THIS extension for the /extensions surface (E5
+        # §5 / S34); the registry stores commands globally, with no per-extension
+        # source (see register_tool).
+        if self._hook_handlers is not None:
+            self._hook_handlers.commands.append(name)
 
     def append_entry(self, custom_type: str, data: dict) -> None:
         """Persist extension state through the registry."""
         self._registry.append_entry(custom_type, data)
 
     def set_session_name(self, name: str) -> None:
-        """Set the session display name.
-
-        Also stores in _session_name for backward compatibility.
-        """
-        self._session_name = name
+        """Set the session display name on the bound session."""
         if hasattr(self._session, "_session_name"):
             self._session._session_name = name
 
-    def send_user_message(self, content: str, deliver_as: str = "steer") -> None:
-        """Send a user message to the agent."""
-        if hasattr(self._session, "_queue_message"):
-            self._session._queue_message(content, deliver_as=deliver_as)
+    def send_user_message(self, content: str, deliver_as: str = "followUp") -> None:
+        """Queue a user message for the agent (pi ``sendUserMessage``).
+
+        ``deliver_as`` selects the delivery mode. The parameter stays a plain
+        ``str`` so future modes stay extensible (decision 5), but the two modes
+        the queue supports are validated here:
+
+        - ``"followUp"`` (default): drains at the end of the current ``prompt()``
+          and re-enters within the same call.
+        - ``"nextTurn"``: queued for the next ``prompt()``.
+
+        Raises:
+            ValueError: if ``deliver_as`` is not ``"followUp"`` or ``"nextTurn"``.
+            RuntimeError: if no session with a message queue is bound (e.g. a bare
+                ``ExtensionAPI()`` with no session). Fail-Early: raise rather than
+                silently drop the message (the old ``hasattr`` no-op).
+        """
+        if deliver_as not in ("followUp", "nextTurn"):
+            raise ValueError(
+                "send_user_message: deliver_as must be 'followUp' or 'nextTurn', "
+                f"got {deliver_as!r}"
+            )
+        if not hasattr(self._session, "_queue_message"):
+            raise RuntimeError("send_user_message: no session with a message queue is bound")
+        self._session._queue_message(content, deliver_as=deliver_as)
 
     def send_message(self, message: dict, options: dict) -> None:
         """Send a custom message into the session."""

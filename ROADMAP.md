@@ -4,14 +4,39 @@ Living schedule of open work. Each item cites the evidence (file:line, doc, or
 test) it came from so it can be audited against the source of truth (pi) and the
 "Fail Early" rule.
 
-**State (2026-07-03, latest):** the **`feat/session-tree`** branch (9 commits,
-`b9303b1`→`4f80d51`) is **merged to `master`** (`--no-ff`, merge `0a839f8`) —
-**E3's tree-as-truth substrate half is DONE** (see Tier 11 below). Suite **1471
-passed / 0 failed** (2 pre-existing "event loop is closed" ResourceWarnings);
-ruff/ruff-format clean, mypy 0 across 50 files — Tier-5 gate green. Verified by
+**State (2026-07-04, latest):** the **E0–E4 chain + S24** and now the **entire E5
+milestone (S25–S37) are LANDED** on `feat/extensions-e0-e4`
+(`docs/EXTENSIONS-E5-WIRING.md`). E5.1 (spine, S25–S28) loads extensions into a
+running process on BOTH paths (`tau -p -e` and the TUI); **E5.2–E5.5 (S29–S37)**
+completed the **durable-hook invariant** — a mutating hook's output is now a
+durable tree node on the active path (persisted == rendered == sent, no ephemeral
+copy):
+- **S29** (`dbacc98`): `before_agent_start` messages persist as a new
+  `customMessage` extension-origin node; the wire remaps `custom`→`user` (pi
+  `messages.ts` parity) and the node survives reload byte-identical.
+- **S30** (`f2d326f`): the ephemeral `context` hook is **eliminated** —
+  `api.on("context")` now raises (Fail-Early); `test_context_hook.py` retired and
+  replaced by `test_context_hook_removed.py` asserting the negative.
+- **S31/S32** (`c7dc4e5`, `82d215b`): the reminders + budget demos rework onto
+  durable edits (in-place `tool_result` edit / `before_agent_start`; a durable
+  warning node before `ctx.abort()`).
+- **S33** (`2d68d75`): `AgentSession.set_ui_delegate` routes `api.notify` into the
+  TUI; vetoed/blocked calls now emit `tool_execution_start` for EVERY call so a
+  blocked `is_error` node renders instead of being dropped.
+- **S34/S35** (`b39ed96`, `e913a41`): `/extensions` lists the loaded registry +
+  load errors (`summarize_extensions`); `register_command` entries appear in the
+  palette and dispatch.
+- **S36/S37** (`37cacca`, `ef07b2a`): the automated floor
+  (`test_e5_integration_floor.py`: headless smoke + Textual `Pilot` +
+  reload-invariant) and the live-procedures doc (`docs/EXTENSIONS-LIVE-PROCEDURES.md`).
+
+Suite **1652 passed / 0 failed**; ruff/ruff-format clean, mypy 0 — Tier-5 gate
+green. **Next:** merge `feat/extensions-e0-e4` to `master` (still not merged).
+
+**Prior (2026-07-03):** the **`feat/session-tree`** branch (9 commits,
+`b9303b1`→`4f80d51`) was **merged to `master`** (`--no-ff`, merge `0a839f8`) —
+**E3's tree-as-truth substrate half is DONE** (see Tier 11 below). Verified by
 eyeball in the TUI: summarizing + jumping around the tree "close to perfect."
-Next on the beeline: **E0** (extension loader + flags), the strictly-ordered
-E0→E1→E2 track we parallelized past while building the E3 substrate.
 
 **Prior (2026-06-26):** the **`feat/streaming-ux`** branch
 (4 commits, `ea89735`→`5ed3892`) is **merged** — `master` fast-forwarded to

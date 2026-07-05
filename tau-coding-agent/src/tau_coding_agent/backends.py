@@ -13,8 +13,72 @@ from typing import Any, Callable
 from tau_ai.types import Model
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
-from tau_agent_core.session_log import InMemorySessionLog
-from tau_agent_core.sdk import _resolve_tools
+from tau_agent_core.events import AgentEvent
+from tau_agent_core.session_log import InMemorySessionLog, SessionLog
+from tau_agent_core.sdk import LoadExtensionsResult, _resolve_tools
+
+
+def tau_event_to_pi_event(event: AgentEvent) -> dict[str, Any] | None:
+    """Serialize one τ :class:`AgentEvent` into a pi-faithful ``AgentSessionEvent``.
+
+    pi's ``--mode json`` writes every session-subscribe event straight to stdout
+    as a ``type``-discriminated JSON line (``print-mode.ts:104-108``). τ's
+    ``AgentEvent`` already carries a ``type`` discriminator and τ-snake field
+    names, so the wire shape is the event's own ``model_dump(exclude_none=True)``
+    — there is no legacy ``kind`` remap here (that schema is the TUI widget
+    channel; this is the pi-faithful channel the delegate reads, step S8 /
+    D-delegate).
+
+    One faithfulness adjustment — dedup ``message_end``. The agent loop emits
+    ``message_end`` **twice** for a tool-bearing turn: once per-completion
+    (carrying ``usage``/``model``/``stop_reason``, ``agent_loop.py:485``) and once
+    from ``run()``/``run_continue`` (content only). pi emits exactly **one**
+    ``message_end`` per assistant message, so keep the usage-bearing one and drop
+    the content-only duplicate (``None`` → the caller skips it). Every emitted
+    ``message_end`` therefore carries usage/model/stop_reason, which is what the
+    delegate's per-child limit / stop_reason taxonomy reads.
+    """
+    if event.type == "message_end":
+        message = event.message or {}
+        if "usage" not in message:
+            return None
+    return event.model_dump(exclude_none=True)
+
+
+def compute_cost_usd(
+    cost: dict[str, Any] | None,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+) -> float | None:
+    """Dollar cost of one completed exchange, or ``None`` when the price is unknown.
+
+    Port of pi ``calculateCost`` (``models.ts:39-48``), collapsed to a single
+    total: τ stores no per-key ``cost`` breakdown on the frozen ``Usage`` (the
+    E4.cost decision D2 leaves ``Usage`` untouched and prices at the emit
+    boundary), so this is just ``sum(price[k] / 1e6 * tokens[k])`` over the
+    priced buckets.
+
+    ``cost`` is the optional per-model ``{input, output, cache_read,
+    cache_write}`` block (USD per 1M tokens) declared on a ``~/.tau/config.json``
+    model entry. Fail-Early — an **absent** block returns ``None`` (the caller
+    emits tokens only, never a fabricated ``$0``); a **present** block whose
+    prices are all ``0`` (a genuinely free/local model) returns ``0.0``. The two
+    read differently on the wire (``cost_usd`` absent vs ``cost_usd: 0.0``),
+    which is the whole point of the option.
+    """
+    if cost is None:
+        return None
+    return float(
+        float(cost.get("input", 0.0)) / 1_000_000 * input_tokens
+        + float(cost.get("output", 0.0)) / 1_000_000 * output_tokens
+        + float(cost.get("cache_read", 0.0)) / 1_000_000 * cache_read_tokens
+        # cache_write is inert against today's provider: cache_write_tokens is
+        # never populated (a real 0), so its price term is always 0. Left
+        # commented until a provider reports cache-write tokens.
+        # + float(cost.get("cache_write", 0.0)) / 1_000_000 * cache_write_tokens
+    )
 
 
 class Backend(ABC):
@@ -34,8 +98,15 @@ class Backend(ABC):
         messages: list[dict],
         callback: Callable[[str], None],
         on_event: Callable[[dict], None] | None = None,
+        on_pi_event: Callable[[dict], None] | None = None,
     ) -> tuple[str, dict, list[dict], list[dict]]:
-        """Return (assistant_text, usage, new_messages, tool_calls)."""
+        """Return (assistant_text, usage, new_messages, tool_calls).
+
+        ``on_pi_event`` (optional) is the pi-faithful ``--mode json`` sink:
+        every bus event serialized via :func:`tau_event_to_pi_event` (``type``
+        discriminator, deduped ``message_end`` carrying usage/model/stop_reason).
+        Distinct from ``on_event`` (the legacy ``kind`` widget-lifecycle channel).
+        """
 
     @abstractmethod
     def abort(self) -> None:
@@ -44,6 +115,23 @@ class Backend(ABC):
         Safe to call when nothing is running. The TUI binds this to Esc so a
         long response can be cancelled mid-stream; the active ``stream_chat``
         returns with whatever streamed so far."""
+
+    @abstractmethod
+    async def load_extensions(
+        self,
+        explicit_paths: list[str] | None = None,
+        *,
+        discover: bool = True,
+        user_dir: str | None = None,
+    ) -> LoadExtensionsResult:
+        """Load file-path extensions into this backend's live session (E5 §2.2).
+
+        Both run paths (headless ``run_print`` and the TUI ``Parley``) load
+        extensions through this seam after building the backend, so a file
+        extension's hooks fire in the same ``AgentSession`` the loop runs on.
+        Returns the :class:`LoadExtensionsResult`; the caller surfaces its
+        ``errors`` (an explicit ``-e`` failure raises out of here instead —
+        Fail-Early)."""
 
 
 class TauBackend(Backend):
@@ -103,6 +191,14 @@ class TauBackend(Backend):
 
         # Discover tools from config. Defaults to all built-in tools.
         tool_names = config.get("tools", ["read", "write", "edit", "bash", "ls", "grep", "find"])
+        # --exclude-tools denylist (pi excludeTools): drop the named built-ins from
+        # the resolved set (E5 §2.3 / S28). Applied here so BOTH run paths honour it
+        # (they build the session through this one seam). Extension-registered tools
+        # are merged later in AgentSession._build_turn_tools and are NOT subject to
+        # this built-in denylist — pi's excludeTools targets the built-in registry.
+        exclude = set(config.get("exclude_tools") or [])
+        if exclude:
+            tool_names = [t for t in tool_names if t not in exclude]
         if tool_names:
             tools = _resolve_tools(tool_names)
         else:
@@ -114,20 +210,23 @@ class TauBackend(Backend):
         # (Previously this was stashed in an unused self._api_key and dropped,
         # so a real-OpenAI key from config never reached the provider.)
         #
-        # SessionLog: the caller (TUI ``app.py`` / ``headless.py``) owns the
-        # persistence-of-record — the coding-agent ``Session`` it appends each
-        # produced message to, and the ``self.messages`` it passes as context.
-        # This AgentSession therefore runs against a scratch ``InMemorySessionLog``
-        # (never flushed, never read: context arrives via ``stream_chat``'s
-        # ``messages`` argument). This retires the former throwaway ``SessionManager``
-        # (System A) whose appends went to a *second* on-disk file nobody read — so
-        # there is now a single live on-disk persistence path (§2.6, §4.5).
+        # SessionLog. The AgentSession is constructed against a scratch
+        # ``InMemorySessionLog``, but the TUI immediately rebinds it onto its LIVE
+        # ``session_store.Session`` via :meth:`bind_session_log` (E3-ctx / D3), so on
+        # the interactive path this session is the SOLE persister — the turn's user +
+        # assistant/tool messages append through the one on-disk log the TUI reads
+        # back, and the TUI no longer double-writes them itself. Callers that own a
+        # separate persistence-of-record and never rebind (headless ``run_print``,
+        # the cost/json backend tests, SDK-style use) keep the scratch log: for them
+        # ``prompt()`` persists to a log that is never flushed or read (context
+        # arrives via ``stream_chat``'s ``messages`` argument), and they append to
+        # their own ``Session`` themselves.
         #
         # Auto-compaction is disabled here: the caller's own message list — not this
-        # log — is the context sent to the model, so a post-turn auto-compaction on
-        # the scratch log would do useless work (and fire a slow summary LLM call
-        # every turn once it crossed the threshold). The TUI compacts explicitly via
-        # ``/compact`` → ``compact_messages``, which works with auto-compaction off.
+        # log — is the context sent to the model, so a post-turn auto-compaction
+        # would do useless work (and fire a slow summary LLM call every turn once it
+        # crossed the threshold). The TUI compacts explicitly via ``/compact`` →
+        # ``compact_messages``, which works with auto-compaction off.
         self.agent_session = AgentSession(
             session_log=InMemorySessionLog(),
             model=model,
@@ -138,6 +237,19 @@ class TauBackend(Backend):
             compaction_settings=CompactionSettings(enabled=False),
         )
 
+    def bind_session_log(self, session_log: SessionLog) -> None:
+        """Point the AgentSession at the caller's authoritative ``SessionLog``.
+
+        The TUI owns a live ``session_store.Session`` that is swapped on new-chat /
+        clear / resume; each time it becomes current, the TUI rebinds this backend's
+        AgentSession onto it so ``prompt()`` / ``compact`` / ``navigate`` persist
+        through that one on-disk log (E3-ctx / D3 — AgentSession becomes the sole
+        persister, retiring the app-side ``append_message`` double-write). The
+        scratch ``InMemorySessionLog`` created in ``__init__`` is discarded on the
+        first bind; a backend that is never bound (headless, tests) keeps it.
+        """
+        self.agent_session.session_log = session_log
+
     def abort(self) -> None:
         """Abort the current turn by tripping the AgentSession's abort signal.
 
@@ -145,6 +257,50 @@ class TauBackend(Backend):
         ``stream_simple``), which polls it per SSE line and stops the stream — so
         an in-flight completion ends promptly instead of draining in full."""
         self.agent_session.abort()
+
+    def set_ui_delegate(self, delegate: Any) -> None:
+        """Forward a front-end UI delegate to the wrapped ``AgentSession`` (E5 §4 / S33).
+
+        The app hands in a delegate whose ``notify`` paints on the Textual screen;
+        this routes every loaded extension's ``api.ui.notify(...)`` there instead of
+        the headless stderr sink. Delegates to :meth:`AgentSession.set_ui_delegate`,
+        which sets it on the one shared :class:`ExtensionContext`.
+        """
+        self.agent_session.set_ui_delegate(delegate)
+
+    async def load_extensions(
+        self,
+        explicit_paths: list[str] | None = None,
+        *,
+        discover: bool = True,
+        user_dir: str | None = None,
+    ) -> LoadExtensionsResult:
+        """Load file-path extensions into the wrapped ``AgentSession`` (E5 §2.2).
+
+        Delegates to :meth:`AgentSession.load_extensions`, which binds each
+        extension to this session's live :class:`ExtensionRunner` so its mutating
+        hooks fire in the loop this backend drives.
+        """
+        return await self.agent_session.load_extensions(
+            explicit_paths, discover=discover, user_dir=user_dir
+        )
+
+    def get_extension_commands(self) -> list[tuple[str, str]]:
+        """List extension-registered slash commands as ``(name, description)`` (S35).
+
+        Delegates to :meth:`AgentSession.get_extension_commands` — the app's
+        command palette reads this to surface extension commands alongside its
+        built-ins.
+        """
+        return self.agent_session.get_extension_commands()
+
+    async def run_extension_command(self, name: str, args: str = "") -> bool:
+        """Run an extension-registered slash command (S35).
+
+        Delegates to :meth:`AgentSession.run_extension_command`; returns ``True``
+        iff the command existed and ran (``False`` lets the caller fall through).
+        """
+        return await self.agent_session.run_extension_command(name, args)
 
     async def compact_messages(self, messages: list[dict]) -> list[dict] | None:
         """Compact the conversation the TUI sends, returning the shortened list.
@@ -287,6 +443,7 @@ class TauBackend(Backend):
         messages: list[dict],
         callback: Callable[[str], None],
         on_event: Callable[[dict], None] | None = None,
+        on_pi_event: Callable[[dict], None] | None = None,
     ) -> tuple[str, dict, list[dict], list[dict]]:
         """Stream a chat completion via tau-agent-core's AgentSession.
 
@@ -498,9 +655,27 @@ class TauBackend(Backend):
                     }
                 )
 
+        def pi_capture(event: AgentEvent) -> None:
+            """Forward each bus event to the pi-faithful ``--mode json`` sink.
+
+            Sourced directly from the AgentEvent bus (not the ``kind`` widget
+            channel above): :func:`tau_event_to_pi_event` maps each event to its
+            ``type``-discriminated pi shape, deduping the double ``message_end`` so
+            each assistant message yields one message_end with usage/model/
+            stop_reason (step S8). ``None`` = the content-only duplicate; skip it.
+            """
+            if on_pi_event is None:
+                return
+            pi_event = tau_event_to_pi_event(event)
+            if pi_event is not None:
+                on_pi_event(pi_event)
+
         # Subscribe to events before running the prompt
         # This captures ALL events during the full agent loop (LLM calls + tool execution)
         unsubscribe = self.agent_session.subscribe(capture_event)
+        unsubscribe_pi = (
+            self.agent_session.subscribe(pi_capture) if on_pi_event is not None else None
+        )
 
         # Send through the agent loop with full conversation context
         # The loop handles LLM calls, tool execution, and re-calls the LLM
@@ -509,6 +684,8 @@ class TauBackend(Backend):
 
         # Unsubscribe
         unsubscribe()
+        if unsubscribe_pi is not None:
+            unsubscribe_pi()
 
         # Combine all streaming chunks
         full_content = "".join(streaming_chunks)
@@ -517,15 +694,31 @@ class TauBackend(Backend):
         # keeps the prompt/completion/total key names the TUI + headless paths
         # already read, mapped from τ's input/output/total fields. No fabricated
         # fallback — if a provider reports nothing, the count is a true 0.
+        usage_out: dict[str, Any] = {
+            "prompt_tokens": usage_totals["input_tokens"],
+            "completion_tokens": usage_totals["output_tokens"],
+            "total_tokens": usage_totals["total_tokens"],
+            "cache_read_tokens": usage_totals["cache_read_tokens"],
+            "cache_write_tokens": usage_totals["cache_write_tokens"],
+        }
+        # Cost at the emit boundary (E4.cost / step S7). ``self.config`` IS the
+        # resolved model_config, so its optional per-model ``cost`` block prices
+        # this exchange here — the one final total, on the same usage dict the TUI
+        # finalizer and headless ``done`` both read. Emit ``cost_usd`` ONLY when a
+        # cost block is configured: an absent block yields tokens-only (unknown
+        # price), never a fabricated ``$0`` — a real free model ``cost:{…:0}``
+        # yields ``0.0`` and reads differently. The frozen ``Usage`` is untouched.
+        cost_usd = compute_cost_usd(
+            self.config.get("cost"),
+            input_tokens=usage_totals["input_tokens"],
+            output_tokens=usage_totals["output_tokens"],
+            cache_read_tokens=usage_totals["cache_read_tokens"],
+        )
+        if cost_usd is not None:
+            usage_out["cost_usd"] = cost_usd
         return (
             full_content,
-            {
-                "prompt_tokens": usage_totals["input_tokens"],
-                "completion_tokens": usage_totals["output_tokens"],
-                "total_tokens": usage_totals["total_tokens"],
-                "cache_read_tokens": usage_totals["cache_read_tokens"],
-                "cache_write_tokens": usage_totals["cache_write_tokens"],
-            },
+            usage_out,
             new_messages,
             tool_calls_info,
         )

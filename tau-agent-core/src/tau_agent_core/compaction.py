@@ -602,7 +602,10 @@ def _build_messages_from_entries(entries: list[dict[str, Any]]) -> list[dict[str
     messages: list[dict[str, Any]] = []
     for entry in entries:
         etype = entry.get("type")
-        if etype == "message":
+        if etype in ("message", "customMessage"):
+            # ``customMessage`` (extension-injected node, E5 §3.1) is sent to the
+            # model too (remapped custom→user at the wire), so it counts toward the
+            # context budget here just like a plain message.
             msg = entry.get("message")
             if isinstance(msg, dict):
                 messages.append(msg)

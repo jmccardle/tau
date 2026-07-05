@@ -234,6 +234,19 @@ Replace the hand-rolled `parse_cli_args()` with **`argparse`** (stdlib, no new d
 ### Relationship to `~/.tau/config.json`
 Config (`~/.tau/config.json`: `models` map, `default_model: "local-llm"`, `system_prompt`) is the **baseline**; CLI flags **override per-invocation**. Precedence: CLI flag > config.json > built-in default. Concretely: `--model` selects/!overrides a key in the `models` map (and `provider/id:thinking` shorthand may bypass the map entirely, like pi's `resolveCliModel`); `--system-prompt`/`--append-system-prompt` override/extend `config.json.system_prompt`; `--tools` overrides `TauBackend`'s default 7-tool list (`backends.py:76`). For env-var overrides, if tau adds any, name them `TAU_CODING_AGENT_DIR` / `TAU_CODING_AGENT_SESSION_DIR` to mirror pi's `PI_CODING_AGENT_*` derivation (`config.ts:481-482`) — **not** the ad-hoc `TAU_MODEL`/`TAU_THINKING`/… set in the current doc, which has no pi analog.
 
+#### Optional per-model `cost` block (E4.cost / step S7)
+A model entry in the `models` map may carry an **optional** `cost` block giving prices in **USD per 1 000 000 tokens**, ported from pi's per-model `cost` (`models.ts`):
+
+```json
+"gpt-4o": {
+  "backend": "openai",
+  "model": "gpt-4o",
+  "cost": { "input": 2.5, "output": 10.0, "cache_read": 1.25, "cache_write": 0.0 }
+}
+```
+
+When the block is present, the final `done` / `agent_end` emit carries a `cost_usd` total inside its `usage` dict, priced at the emit boundary (`backends.py` `compute_cost_usd`) as `sum(price[k] / 1e6 * tokens[k])` over `input`/`output`/`cache_read`. **`cost_usd` is emitted only when the block is present** — an absent block yields tokens-only (**Fail-Early: never a fabricated `$0`**), so an *unknown* price (`cost_usd` absent) reads differently from a genuinely free/local model (`"cost": {…: 0}` → `cost_usd: 0.0`). `cache_write` is accepted but currently inert — today's provider never reports cache-write tokens, so its price term is always 0. The frozen `Usage` object is untouched; `24_budget` computes its own running `$` from per-message tokens × these same prices.
+
 ### Open questions (Fail Early — do not invent)
 - **`SessionManager.fork()` existence** in tau-agent-core is unverified here; confirm before committing `--fork`. The tau doc asserts "All session operations already exist" — that claim is unverified.
 - **`--resume` picker**: pi opens a TUI selector (`cli/session-picker.ts`). tau's equivalent picker UI is unbuilt; scope the UI work before promising the flag.

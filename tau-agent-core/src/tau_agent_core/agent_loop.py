@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from tau_ai.abort import AbortSignal
 from tau_ai.client import stream_simple
@@ -36,7 +36,6 @@ from tau_ai.types import (
     ThinkingContent,
     ToolCall,
     ToolResultMessage,
-    UserMessage,
     Usage,
 )
 
@@ -45,7 +44,11 @@ from tau_agent_core.agent_loop_types import (
     PreparedToolCall,
 )
 from tau_agent_core.events import AgentEvent
+from tau_agent_core.messages import convert_to_llm
 from tau_agent_core.tools.base import AgentTool, AgentToolResult, ToolBatchResult
+
+if TYPE_CHECKING:
+    from tau_agent_core.extensions.runner import ExtensionRunner
 
 
 class BlockedCall:
@@ -79,9 +82,15 @@ class AgentLoop:
 
     Attributes:
         config: Agent loop configuration.
-        emit: Callback to emit AgentEvents.
+        emit: Callback to emit AgentEvents (fire-and-forget; returns None).
         _turn_index: Current turn counter.
         _tools: Mapping of tool names to AgentTool instances.
+        _hook_dispatcher: The return-collecting extension hook dispatcher
+            (an :class:`~tau_agent_core.extensions.runner.ExtensionRunner`),
+            injected by :class:`~tau_agent_core.agent_session.AgentSession`.
+            Unlike ``emit`` (fire-and-forget), its ``emit_*`` methods return
+            results that the mutating-hook call-sites thread forward. ``None``
+            when the loop runs standalone (no session / no extensions).
     """
 
     def __init__(
@@ -91,6 +100,7 @@ class AgentLoop:
         tools: list[AgentTool] | None = None,
         model: Any = None,
         abort_signal: AbortSignal | None = None,
+        hook_dispatcher: ExtensionRunner | None = None,
     ) -> None:
         self.config = config
         self._emit = emit or (lambda e: asyncio.create_task(self._noop_emit(e)))
@@ -100,6 +110,12 @@ class AgentLoop:
             self._tools[t.name] = t
         self._model = model
         self._abort_signal: AbortSignal | None = abort_signal
+        # The mutating-hook dispatcher (E2). Held here so the four hook
+        # call-sites (S11-S14: tool_call / tool_result / context, plus
+        # before_agent_start above the loop) can reach it. S10 only threads it
+        # in; the call-sites gate on has_hook_handlers() for the zero-extension
+        # fast path.
+        self._hook_dispatcher: ExtensionRunner | None = hook_dispatcher
 
     @staticmethod
     async def _noop_emit(event: AgentEvent) -> None:
@@ -114,13 +130,23 @@ class AgentLoop:
         """
         self._tools[tool.name] = tool
 
+    def has_hook_handlers(self, event: str) -> bool:
+        """Whether any extension has a handler for the mutating hook ``event``.
+
+        The zero-extension fast path (pi ``agent-session.ts:407-411``): the four
+        hook call-sites (S11-S14) call this before dispatching so a session with
+        no extensions — or a standalone loop with no injected dispatcher — does
+        no hook work at all. Returns ``False`` when no dispatcher was injected.
+        """
+        return self._hook_dispatcher is not None and self._hook_dispatcher.has_handlers(event)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     async def run(
         self,
-        prompts: list[UserMessage],
+        prompts: list[Any],
         context: list[Any] | None = None,
     ) -> list[Any]:
         """Run the full agent loop for one or more prompts.
@@ -132,7 +158,9 @@ class AgentLoop:
         4. Emits agent_end with final messages
 
         Args:
-            prompts: List of user messages to start with.
+            prompts: Messages to start with — user messages, and any
+                extension-injected ``custom`` message dicts (serialized custom→user
+                at the wire by ``_stream_response``).
             context: Existing message history.
 
         Returns:
@@ -370,10 +398,24 @@ class AgentLoop:
         Returns:
             The final AssistantMessage.
         """
+        # E5 §3.2 / S30 — the `context` mutating hook is ELIMINATED (not
+        # redefined). Under the durable-hook invariant (§1) the model's input for
+        # every LLM call is exactly the system prompt (attached below) + the linear
+        # active path — there is no ephemeral per-send transform. What `context`
+        # used to do folds into durable nodes: reminders edit the triggering
+        # `tool_result` in place (already durable), and pre-first-call injection
+        # rides `before_agent_start` (S29). So `context` here is passed straight to
+        # `convert_to_llm` with no interception; the on-disk path IS the wire.
+
+        # Serialize agent-level `custom` messages (extension-injected durable
+        # nodes, E5 §3.1 / S29) to the LLM-acceptable `user` role BEFORE the
+        # provider sees them — pi `convertToLlm` custom→user. The node stays
+        # `role: "custom"` in the tree / render; only the wire is remapped. A
+        # no-op for the zero-custom-message common case (passes each through).
+        messages = convert_to_llm(list(context))
         # Prepend system prompt as a system message if present.
         # Only add it if the context doesn't already start with a system message
         # (which it may have from the backend's conversation history).
-        messages = list(context)
         system_prompt = self.config.system_prompt
         if system_prompt:
             # Check if context already starts with a system message
@@ -499,6 +541,15 @@ class AgentLoop:
                             # stream's terminal usage chunk (Fail-Early: a real 0 is
                             # surfaced as 0, never approximated).
                             "usage": final_msg.usage.model_dump(),
+                            # model + stop_reason ride the SAME per-completion
+                            # message_end so the pi-faithful ``--mode json`` serializer
+                            # (E-json / step S8) can surface a message_end carrying
+                            # usage/model/stop_reason — matching pi, where the full
+                            # assistant message is emitted on message_end
+                            # (agent-session.ts:639-644). Additive: existing consumers
+                            # read ``.get("usage")``/content and ignore these keys.
+                            "model": final_msg.model,
+                            "stop_reason": final_msg.stop_reason,
                         },
                     )
                 )
@@ -583,6 +634,24 @@ class AgentLoop:
             if self._abort_signal and self._abort_signal.is_aborted():
                 break
 
+            # Emit the start for EVERY call up front (pi agent-loop.ts:406-413) —
+            # BEFORE prepareToolCall — so a call vetoed by a `tool_call` hook (or
+            # blocked by arg validation) still surfaces a RENDERED node. A veto
+            # emits only tool_execution_end(is_error=True); without a preceding
+            # start the front-end has no widget to fold the blocked result into and
+            # silently drops it (backends.py `_on_tool_result` → "no ToolBox").
+            # The blocked node is already on the active path (its toolResult is
+            # appended below); this only makes it visible (E5 §4 / S33).
+            await self._emit(
+                AgentEvent(
+                    type="tool_execution_start",
+                    timestamp=int(time.time() * 1000),
+                    tool_call_id=tc.id,
+                    tool_name=tc.name,
+                    args=tc.arguments if isinstance(tc.arguments, dict) else {},
+                )
+            )
+
             prepared = await self._prepare_tool_call(tc)
             if isinstance(prepared, BlockedCall):
                 await self._emit(
@@ -623,18 +692,8 @@ class AgentLoop:
                 )
                 continue
 
-            await self._emit(
-                AgentEvent(
-                    type="tool_execution_start",
-                    timestamp=int(time.time() * 1000),
-                    tool_call_id=prepared.id,
-                    tool_name=prepared.name,
-                    args=prepared.arguments,
-                )
-            )
-
             result = await self._execute_tool(prepared)
-            result = await self._apply_after_hooks(result)
+            result = await self._apply_after_hooks(result, prepared.arguments)
 
             await self._emit(
                 AgentEvent(
@@ -672,18 +731,22 @@ class AgentLoop:
             prepared = await self._prepare_tool_call(tc)
             prepared_calls.append(prepared)
 
-        # Emit start events for all (PreparedToolCalls only)
-        for pc in prepared_calls:
-            if isinstance(pc, PreparedToolCall):
-                await self._emit(
-                    AgentEvent(
-                        type="tool_execution_start",
-                        timestamp=int(time.time() * 1000),
-                        tool_call_id=pc.id,
-                        tool_name=pc.name,
-                        args=pc.arguments,
-                    )
+        # Emit start events for EVERY call (pi agent-loop.ts:459-466) — including
+        # ones a `tool_call` hook vetoed or arg-validation blocked — using the
+        # ORIGINAL tool call's id/name/args (order-aligned with prepared_calls), so
+        # a vetoed call surfaces a rendered node whose is_error result the
+        # front-end can fold in (E5 §4 / S33). Without this the blocked result had
+        # no widget and was silently dropped.
+        for tc in tool_calls:
+            await self._emit(
+                AgentEvent(
+                    type="tool_execution_start",
+                    timestamp=int(time.time() * 1000),
+                    tool_call_id=tc.id,
+                    tool_name=tc.name,
+                    args=tc.arguments if isinstance(tc.arguments, dict) else {},
                 )
+            )
 
         # Execute all in parallel
         async def _run_tool(pc):
@@ -691,7 +754,7 @@ class AgentLoop:
                 return AgentToolResult.from_error(pc.call.name, pc.error, pc.call.id)
             # pc is a PreparedToolCall
             result = await self._execute_tool(pc)
-            result = await self._apply_after_hooks(result)
+            result = await self._apply_after_hooks(result, pc.arguments)
             return result
 
         tasks = [_run_tool(pc) for pc in prepared_calls]
@@ -801,10 +864,56 @@ class AgentLoop:
                 tool = self._tools[call_name]
                 validate_tool_arguments(tool, call_args)
 
+            # The args dict the tool will execute with. The tool_call hook may
+            # mutate it IN PLACE to patch args; because this is the SAME object
+            # threaded into PreparedToolCall.arguments below, the patch reaches
+            # the tool without any re-validation (pi parity, §7 decision E2-a).
+            input_args = call_args if isinstance(call_args, dict) else {}
+
+            # S11 — the `tool_call` mutating hook (E2). Gated on has_handlers for
+            # the zero-extension fast path. pi wires this at agent-session's
+            # beforeToolCall (agent-session.ts:405-424), consumed in agent-loop's
+            # prepareToolCall (agent-loop.ts:581-602): a `block: true` result
+            # short-circuits into an error tool result whose text is `reason`.
+            dispatcher = self._hook_dispatcher
+            if dispatcher is not None and dispatcher.has_handlers("tool_call"):
+                event: dict[str, Any] = {
+                    "type": "tool_call",
+                    "tool_call_id": tool_call.id,
+                    "tool_name": call_name,
+                    "input": input_args,
+                }
+                try:
+                    hook_result = await dispatcher.emit_tool_call(event)
+                except Exception as hook_err:
+                    # Fail-CLOSED (pi agent-session.ts:419-424): a throwing
+                    # tool_call handler blocks execution rather than letting the
+                    # tool run unguarded.
+                    return BlockedCall(
+                        call=PreparedToolCall(
+                            id=tool_call.id,
+                            name=call_name,
+                            arguments={},
+                        ),
+                        error=f"Extension failed, blocking execution: {hook_err}",
+                    )
+                if hook_result and hook_result.get("block"):
+                    return BlockedCall(
+                        call=PreparedToolCall(
+                            id=tool_call.id,
+                            name=call_name,
+                            arguments={},
+                        ),
+                        error=hook_result.get("reason") or "Tool execution was blocked",
+                    )
+                # No re-validation after mutation (pi parity): event["input"] is
+                # the possibly-patched args object the tool executes with.
+                input_args = event["input"]
+
             return PreparedToolCall(
                 id=tool_call.id,
                 name=call_name,
-                arguments=call_args if isinstance(call_args, dict) else {},
+                arguments=input_args,
             )
         except ValueError as e:
             return BlockedCall(
@@ -885,17 +994,62 @@ class AgentLoop:
         except Exception as e:
             return AgentToolResult.from_error(call.name, str(e), call.id)
 
-    async def _apply_after_hooks(self, result: AgentToolResult) -> AgentToolResult:
-        """Apply after-tool-call hooks (extensions).
+    async def _apply_after_hooks(
+        self,
+        result: AgentToolResult,
+        input_args: dict[str, Any] | None = None,
+    ) -> AgentToolResult:
+        """Apply the ``tool_result`` mutating hook (E2 / step S12) to ``result``.
 
-        Currently a no-op — extensions will use this in Phase 3.
+        pi wires this at agent-session's ``afterToolCall`` (agent-session.ts:427-452),
+        applied in agent-loop's ``finalizeExecutedToolCall`` (agent-loop.ts:682-707).
+        Gated on ``has_handlers`` for the zero-extension fast path.
+
+        The dispatcher clones the event once and lets each handler field-patch
+        ``content`` / ``details`` / ``is_error`` (whole-value replace, later handler
+        sees the earlier handler's patch); it returns those fields only when
+        something changed, else ``None`` (pass the result through unchanged). Each
+        handler's exception is swallowed-and-continued but surfaced via the runner's
+        ``emit_error`` (never silently dropped, pi runner.ts:754-763).
+
+        Only ``content`` and ``is_error`` map back onto the result — τ's
+        ``AgentToolResult`` has no ``details`` field (a genuine model divergence
+        from pi, not a swallowed value). ``details`` still rides the event so a
+        handler can read it and chain a patch to a later handler.
+
+        Applied pi-faithfully with ``?? existing`` semantics (agent-loop.ts:697-701):
+        a patched-to-``None`` field falls back to the original value.
 
         Args:
             result: The tool execution result.
+            input_args: The args the tool executed with (the ``input`` the event
+                carries so handlers can correlate the result to its call).
 
         Returns:
-            The (possibly modified) result.
+            The (possibly patched) result.
         """
+        dispatcher = self._hook_dispatcher
+        if dispatcher is None or not dispatcher.has_handlers("tool_result"):
+            return result
+
+        event: dict[str, Any] = {
+            "type": "tool_result",
+            "tool_name": result.tool_name,
+            "tool_call_id": result.tool_call_id,
+            "input": input_args if input_args is not None else {},
+            "content": result.content,
+            "details": None,
+            "is_error": result.is_error,
+        }
+        patch = await dispatcher.emit_tool_result(event)
+        if patch is not None:
+            # pi `afterResult.content ?? result.content`: only a non-None patch
+            # replaces; a handler that patched a field to None falls back to the
+            # original.
+            if patch.get("content") is not None:
+                result.content = patch["content"]
+            if patch.get("is_error") is not None:
+                result.is_error = patch["is_error"]
         return result
 
     def _to_llm_tool(self, tool: AgentTool) -> dict:

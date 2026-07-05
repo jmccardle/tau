@@ -581,7 +581,8 @@ class TestExtensionErrorHandling:
 
         unsub = api.on("agent_start", handler)
         assert callable(unsub)
-        assert "agent_start" in api._handlers
+        # on() subscribes directly on the (live) event bus.
+        assert handler in api._event_bus._listeners.get("agent_start", [])
 
     def test_extension_api_unsubscribe(self):
         """ExtensionAPI unsubscribe removes the handler from the event bus."""
@@ -593,8 +594,7 @@ class TestExtensionErrorHandling:
 
         unsub = api.on("agent_start", handler)
         unsub()
-        # Unsub removes from the event bus, not from _handlers copy
-        # (the _handlers dict is a backward-compatible copy)
+        # Unsub removes the handler from the event bus.
         assert handler not in api._event_bus._listeners.get("agent_start", [])
 
     def test_extension_context_has_all_properties(self):
@@ -663,12 +663,15 @@ class TestExtensionErrorHandling:
         # Should not raise
         context.shutdown()
 
-    def test_extension_context_get_context_usage(self):
-        """ExtensionContext.get_context_usage() returns a dict."""
+    def test_extension_context_get_context_usage_raises_without_session(self):
+        """ExtensionContext.get_context_usage() raises when no session is bound.
+
+        Fail-Early: the old ``{"total_tokens": 0}`` fabrication is gone; with
+        nothing to measure the call raises rather than inventing a zero.
+        """
         context = ExtensionContext()
-        usage = context.get_context_usage()
-        assert isinstance(usage, dict)
-        assert "total_tokens" in usage
+        with pytest.raises(RuntimeError):
+            context.get_context_usage()
 
     def test_extension_ui_headless_confirm(self):
         """ExtensionUI.confirm() returns True in headless mode."""
@@ -721,11 +724,14 @@ class TestExtensionErrorHandling:
         assert "test message" in output
 
     def test_extension_api_can_send_user_message(self):
-        """ExtensionAPI.send_user_message() works."""
+        """ExtensionAPI.send_user_message() queues on a session with a queue."""
         session_mock = MagicMock()
         api = ExtensionAPI(session=session_mock)
-        # Should not raise
-        api.send_user_message("test message", deliver_as="steer")
+        # Should not raise: valid deliver_as + MagicMock exposes _queue_message.
+        api.send_user_message("test message", deliver_as="followUp")
+        session_mock._queue_message.assert_called_once_with(
+            "test message", deliver_as="followUp"
+        )
 
     def test_extension_api_can_send_message(self):
         """ExtensionAPI.send_message() works."""
@@ -758,10 +764,12 @@ class TestExtensionErrorHandling:
         api.append_entry("custom_type", {"key": "value"})
 
     def test_extension_api_set_session_name(self):
-        """ExtensionAPI.set_session_name() sets the session name."""
-        api = ExtensionAPI()
+        """ExtensionAPI.set_session_name() forwards to the bound session."""
+        session = MagicMock()
+        session._session_name = "old"
+        api = ExtensionAPI(session=session)
         api.set_session_name("my-session")
-        assert api._session_name == "my-session"
+        assert session._session_name == "my-session"
 
     def test_extension_api_get_all_tools_empty(self):
         """ExtensionAPI.get_all_tools() returns list."""
@@ -773,13 +781,13 @@ class TestExtensionErrorHandling:
         """ExtensionAPI.set_active_tools() sets active tools."""
         api = ExtensionAPI()
         api.set_active_tools(["read", "write"])
-        assert api._active_tools == ["read", "write"]
+        assert api._registry._active_tools == {"read", "write"}
 
     def test_extension_api_register_command(self):
         """ExtensionAPI.register_command() registers a command."""
         api = ExtensionAPI()
         api.register_command("mycmd", {"description": "Test command"})
-        assert "mycmd" in api._commands
+        assert "mycmd" in api._registry._commands
 
     def test_multiple_extension_errors_dont_crash(self):
         """Multiple extension errors don't crash the system."""

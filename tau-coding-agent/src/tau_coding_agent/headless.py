@@ -103,7 +103,13 @@ def resolve_model_config(
     # Per-invocation overrides (CLI > config).
     if args.provider:
         model_config["backend"] = args.provider
-    if args.no_tools:
+    # Tool selection. --no-tools disables everything; --no-builtin-tools drops the
+    # built-in set (``tools=[]``) but extension-registered tools survive, because
+    # they merge in later (AgentSession._build_turn_tools) independent of this key —
+    # so the two now read distinctly once extensions load (E5 S28), matching pi's
+    # noTools "all" vs "builtin" (args.ts:104-142). ``tools=[]`` here means
+    # "no built-ins"; a bare-model run with an extension tool still exposes it.
+    if args.no_tools or args.no_builtin_tools:
         model_config["tools"] = []
     elif args.tools:
         names = [t.strip() for t in args.tools.split(",") if t.strip()]
@@ -111,7 +117,42 @@ def resolve_model_config(
             raise CLIError("--tools given but no tool names parsed")
         model_config["tools"] = names
 
+    # --exclude-tools denylist (pi excludeTools, args.ts:143-153). Carried on the run
+    # config; TauBackend applies it to the resolved built-ins at construction (S28).
+    if args.exclude_tools is not None:
+        excluded = [t.strip() for t in args.exclude_tools.split(",") if t.strip()]
+        if not excluded:
+            raise CLIError("--exclude-tools given but no tool names parsed")
+        model_config["exclude_tools"] = excluded
+
+    # Extensions: explicit --extension paths + the discovery toggle (pi args.ts:150-153).
+    # ``run_print`` loads them into the live session after create_backend (E5 S27).
+    if args.extensions:
+        model_config["extensions"] = list(args.extensions)
+    if args.no_extensions:
+        model_config["no_extensions"] = True
+
+    # Appended system-prompt sections (pi appendSystemPrompt, system-prompt.ts:48).
+    # ``run_print`` folds them into the stored session prompt via _append_system_prompt
+    # (S28); kept off the base ``system_prompt`` so they augment rather than replace it.
+    if args.append_system_prompt:
+        model_config["append_system_prompt"] = list(args.append_system_prompt)
+
     return spec, model_config
+
+
+def _append_system_prompt(base: str, sections: list[str] | None) -> str:
+    """Append ``--append-system-prompt`` sections to a base system prompt.
+
+    Sections augment rather than replace the base (pi ``appendSystemPrompt``,
+    system-prompt.ts:48), joined by blank lines. An empty/absent list returns the
+    base unchanged; an empty base with sections yields just the sections. Shared by
+    the headless and TUI paths (E5 §2.3 / S28).
+    """
+    if not sections:
+        return base
+    parts = [base, *sections] if base else list(sections)
+    return "\n\n".join(parts)
 
 
 def assemble_prompt(messages: list[str]) -> str:
@@ -200,9 +241,10 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
     """Run one headless turn and render to stdout. Returns a process exit code.
 
     ``--mode text`` streams raw assistant text deltas (a plain transcript).
-    ``--mode json`` emits one JSON object per line: the backend's normalized
-    lifecycle events (``turn_start``/``text_delta``/``tool_call``/``tool_result``)
-    followed by a final ``{"kind": "done", ...}`` record with usage.
+    ``--mode json`` is pi-faithful (E-json / step S8): the session header line
+    FIRST, then one JSON object per line — each a ``type``-discriminated
+    ``AgentSessionEvent`` from the agent bus (``message_end`` carries
+    usage/model/stop_reason). No legacy ``kind`` schema, no synthetic ``done``.
 
     The run is persisted as an append-only JSONL session under the current cwd's
     ``~/.tau/sessions`` dir — each produced message is appended as it is known
@@ -214,6 +256,16 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
         raise CLIError(
             "--print requires a message (positional text or @file), e.g. "
             'tau -p "summarize @README.md"'
+        )
+
+    # --no-session runs ephemerally (no on-disk file), so resuming/forking a
+    # persisted session is contradictory — reject it rather than silently ignore
+    # either flag (Fail-Early). The continuation flags are mutually exclusive at
+    # the argparse layer, so at most one is set here.
+    if args.no_session and (args.continue_session or args.session or args.fork):
+        raise CLIError(
+            "--no-session can't be combined with --continue/--session/--fork "
+            "(those resume or fork a persisted session)"
         )
 
     # Resolve a source session to continue/fork (None for a fresh run).
@@ -242,7 +294,18 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
             if args.system_prompt is not None
             else config.get("system_prompt", "")
         )
-        session = Session.create(
+        # --append-system-prompt sections augment (not replace) the base prompt
+        # (pi appendSystemPrompt) — E5 §2.3 / S28. Appended to the STORED session
+        # prompt (the first message), which is what the model actually sees on this
+        # path; the backend's own system_prompt stays empty. Only on a fresh run —
+        # a resumed session already carries its (possibly-augmented) prompt.
+        system_prompt = _append_system_prompt(
+            system_prompt, model_config.get("append_system_prompt")
+        )
+        # --no-session → ephemeral (path=None, appends never touch disk); the
+        # create_in_memory seam is the one-API alternative to create (§E0.2).
+        create = Session.create_in_memory if args.no_session else Session.create
+        session = create(
             cwd, model_name, backend_name, system_prompt=system_prompt or None, name=args.name
         )
     elif args.fork is not None:
@@ -264,20 +327,43 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
 
     backend = create_backend(model_config)
 
-    if args.mode == "json":
+    # Load file-path extensions into the live session (E5 §2.2). Explicit ``-e``
+    # paths come from ``--extension``; the ``~/.tau/extensions`` global dir is
+    # discovered unless ``-ne`` (``no_extensions``) was passed. A discovered load
+    # failure is collected and surfaced to stderr here; an explicit ``-e`` failure
+    # raises out of ``load_extensions`` (Fail-Early — the user named it), which
+    # ``main()`` renders as a clean CLI error.
+    explicit_extensions = model_config.get("extensions") or None
+    discover_extensions = not model_config.get("no_extensions", False)
+    ext_result = await backend.load_extensions(explicit_extensions, discover=discover_extensions)
+    for ext_error in ext_result.errors:
+        print(
+            f"[τ] failed to load extension {ext_error.path}: {ext_error.error}",
+            file=sys.stderr,
+        )
 
-        def on_event(event: dict) -> None:
+    if args.mode == "json":
+        # pi-faithful ``--mode json`` (E-json / step S8, D-delegate). Emit the
+        # session HEADER line FIRST (pi ``print-mode.ts:113-116``), then every bus
+        # event serialized to its ``type``-discriminated pi ``AgentSessionEvent``
+        # shape (NOT the legacy ``kind`` schema, and no synthetic ``done`` line):
+        # each ``message_end`` carries usage/model/stop_reason, which is the real
+        # per-child limit / failure signal the delegate (step S9) consumes. The
+        # delegate prices its own budget from those per-message tokens × config
+        # ``cost`` (E4.cost), so no ``cost_usd`` rides the json stream.
+        sys.stdout.write(json.dumps(session.header) + "\n")
+        sys.stdout.flush()
+
+        def on_pi_event(event: dict) -> None:
             sys.stdout.write(json.dumps(event) + "\n")
             sys.stdout.flush()
 
         def noop(_delta: str) -> None:
             pass
 
-        text, usage, new_messages, _tcs = await backend.stream_chat(
-            messages, noop, on_event=on_event
+        _text, _usage, new_messages, _tcs = await backend.stream_chat(
+            messages, noop, on_pi_event=on_pi_event
         )
-        sys.stdout.write(json.dumps({"kind": "done", "text": text, "usage": usage}) + "\n")
-        sys.stdout.flush()
     else:  # text
 
         def emit(delta: str) -> None:

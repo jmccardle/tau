@@ -24,16 +24,29 @@ from tau_coding_agent.chat_widgets import ReasoningRegion, ToolBox
 # used to exercise the global fold toggles and the conversation rollup.
 _RELOAD = [
     {"role": "user", "content": "q"},
-    {"role": "assistant", "usage": {"total_tokens": 30}, "content": [
-        {"type": "thinking", "thinking": "let me look"},
-        {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {}},
-    ]},
-    {"role": "toolResult", "tool_call_id": "c1", "tool_name": "ls",
-     "is_error": False, "content": [{"type": "text", "text": "a.py"}]},
-    {"role": "assistant", "usage": {"total_tokens": 12}, "content": [
-        {"type": "thinking", "thinking": "done"},
-        {"type": "text", "text": "one file"},
-    ]},
+    {
+        "role": "assistant",
+        "usage": {"total_tokens": 30},
+        "content": [
+            {"type": "thinking", "thinking": "let me look"},
+            {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {}},
+        ],
+    },
+    {
+        "role": "toolResult",
+        "tool_call_id": "c1",
+        "tool_name": "ls",
+        "is_error": False,
+        "content": [{"type": "text", "text": "a.py"}],
+    },
+    {
+        "role": "assistant",
+        "usage": {"total_tokens": 12},
+        "content": [
+            {"type": "thinking", "thinking": "done"},
+            {"type": "text", "text": "one file"},
+        ],
+    },
 ]
 
 
@@ -139,10 +152,14 @@ def test_aggregate_label_rolls_up_tools_and_tokens():
     assert Parley._aggregate_label(_RELOAD) == "1 tool · 42 tok"
     # Plural tools and the k-formatting share the widget helpers.
     many = [
-        {"role": "assistant", "usage": {"total_tokens": 2500}, "content": [
-            {"type": "toolCall", "id": "a", "name": "ls", "arguments": {}},
-            {"type": "toolCall", "id": "b", "name": "cat", "arguments": {}},
-        ]},
+        {
+            "role": "assistant",
+            "usage": {"total_tokens": 2500},
+            "content": [
+                {"type": "toolCall", "id": "a", "name": "ls", "arguments": {}},
+                {"type": "toolCall", "id": "b", "name": "cat", "arguments": {}},
+            ],
+        },
     ]
     assert Parley._aggregate_label(many) == "2 tools · 2.5k tok"
     # Nothing to roll up yet -> empty (subtitle then shows just the model).
@@ -172,11 +189,20 @@ class _BlockingBackend:
     Lets a test observe the in-flight state (worker running, UI responsive) and
     the cooperative cancel: ``abort()`` both records the call and unblocks the
     stream, mimicking the real provider stopping at the next streamed delta.
+
+    Like the real ``TauBackend`` it persists the turn's assistant message through
+    the bound live ``Session`` (E3-ctx / D3 — the AgentSession is the sole
+    persister), so the app's turn-end rebuild of ``self.messages`` from
+    ``session.context`` surfaces the partial answer.
     """
 
     def __init__(self) -> None:
         self.aborted = False
         self._released = asyncio.Event()
+        self._log = None
+
+    def bind_session_log(self, session_log) -> None:
+        self._log = session_log
 
     def abort(self) -> None:
         self.aborted = True
@@ -184,8 +210,11 @@ class _BlockingBackend:
 
     async def stream_chat(self, messages, callback, on_event=None):
         await self._released.wait()
-        new_messages = [{"role": "assistant", "content": [{"type": "text", "text": "partial"}]}]
-        return "partial", {"total_tokens": 0}, new_messages, []
+        partial = {"role": "assistant", "content": [{"type": "text", "text": "partial"}]}
+        # Sole-persister contract: record the produced message through the bound log
+        # (the real backend does this inside AgentSession.prompt).
+        self._log.append_message(partial)
+        return "partial", {"total_tokens": 0}, [partial], []
 
 
 @pytest.fixture
@@ -254,8 +283,13 @@ def test_taubackend_abort_delegates_to_session():
     from unittest.mock import MagicMock
 
     backend = TauBackend(
-        {"backend": "openai", "model": "m", "base_url": "http://x/v1",
-         "api_key": "not-needed", "tools": []}
+        {
+            "backend": "openai",
+            "model": "m",
+            "base_url": "http://x/v1",
+            "api_key": "not-needed",
+            "tools": [],
+        }
     )
     backend.agent_session = MagicMock()
     backend.abort()

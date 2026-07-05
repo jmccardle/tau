@@ -52,6 +52,14 @@ class CLIArgs:
     provider: str | None = None
     tools: str | None = None  # comma-separated allowlist
     no_tools: bool = False
+    # Extensions + tool-filtering flags (E0/S2; pi args.ts:104-153). Threaded into
+    # the headless run config; the loader/registry consumers land in E1 (S3+).
+    extensions: list[str] = field(default_factory=list)  # --extension/-e (repeatable path)
+    no_extensions: bool = False  # -ne → suppress DISCOVERY only; explicit -e still load
+    exclude_tools: str | None = None  # -xt → comma-separated tool denylist
+    no_builtin_tools: bool = False  # -nbt → (degenerates to --no-tools until E1)
+    no_session: bool = False  # --no-session → ephemeral, unpersisted run
+    append_system_prompt: list[str] = field(default_factory=list)  # repeatable
     system_prompt: str | None = None
     thinking: str | None = None  # off|minimal|low|medium|high|xhigh
     # Session continuation (headless): resume/fork a persisted ~/.tau/chats
@@ -135,6 +143,52 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="disable all tools (read-only agent)",
     )
+    # Extensions + tool-filtering + ephemeral-session flags (pi args.ts:104-153).
+    parser.add_argument(
+        "--extension",
+        "-e",
+        dest="extensions",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="load an extension from PATH (repeatable)",
+    )
+    parser.add_argument(
+        "--no-extensions",
+        "-ne",
+        dest="no_extensions",
+        action="store_true",
+        help="disable extension DISCOVERY (explicit --extension paths still load)",
+    )
+    parser.add_argument(
+        "--exclude-tools",
+        "-xt",
+        dest="exclude_tools",
+        default=None,
+        metavar="LIST",
+        help="comma-separated tool denylist (e.g. bash,write)",
+    )
+    parser.add_argument(
+        "--no-builtin-tools",
+        "-nbt",
+        dest="no_builtin_tools",
+        action="store_true",
+        help="disable built-in tools (currently degenerates to --no-tools; see docs)",
+    )
+    parser.add_argument(
+        "--no-session",
+        dest="no_session",
+        action="store_true",
+        help="run ephemerally without persisting a session to disk",
+    )
+    parser.add_argument(
+        "--append-system-prompt",
+        dest="append_system_prompt",
+        action="append",
+        default=None,
+        metavar="TEXT",
+        help="append TEXT to the system prompt (repeatable)",
+    )
     parser.add_argument(
         "--system-prompt",
         dest="system_prompt",
@@ -202,6 +256,13 @@ def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
         provider=ns.provider,
         tools=ns.tools,
         no_tools=ns.no_tools,
+        # action="append" yields None when the flag is absent → normalize to [].
+        extensions=list(ns.extensions or []),
+        no_extensions=ns.no_extensions,
+        exclude_tools=ns.exclude_tools,
+        no_builtin_tools=ns.no_builtin_tools,
+        no_session=ns.no_session,
+        append_system_prompt=list(ns.append_system_prompt or []),
         system_prompt=ns.system_prompt,
         thinking=ns.thinking,
         continue_session=ns.continue_session,
@@ -237,9 +298,27 @@ def _launch_tui(args: CLIArgs, config: dict) -> int:
     if args.system_prompt is not None:
         overrides["system_prompt"] = args.system_prompt
 
+    # Run-level flags apply to EVERY backend the TUI creates, so they ride
+    # separately from the per-model ``overrides`` (a model switch must not drop
+    # them, and -xt/-nbt/--append-system-prompt don't trigger the override block
+    # above): explicit ``-e`` paths + ``-ne`` discovery, plus the tool/prompt
+    # flags (E5 §2.2-2.3). Passed even when empty so the app has a definite policy.
+    exclude_tools = (
+        [t.strip() for t in args.exclude_tools.split(",") if t.strip()]
+        if args.exclude_tools
+        else []
+    )
+    run_config = {
+        "extensions": list(args.extensions or []),
+        "no_extensions": args.no_extensions,
+        "exclude_tools": exclude_tools,
+        "no_builtin_tools": args.no_builtin_tools,
+        "append_system_prompt": list(args.append_system_prompt or []),
+    }
+
     from tau_coding_agent.app import Parley
 
-    app = Parley(cli_overrides=overrides or None)
+    app = Parley(cli_overrides=overrides or None, cli_run_config=run_config)
     app.run()
     return 0
 

@@ -159,6 +159,12 @@ class ConversationTree:
             kind = entry.get("type")
             if kind == "message":
                 messages.append(entry.get("message", {}))
+            elif kind == "customMessage":
+                # Extension-injected durable node (E5 §3.1 / S29): the stored
+                # message carries ``role: "custom"`` (rendered as extension-origin);
+                # it folds onto the path like a plain message (NOT a splice anchor)
+                # and is remapped custom→user at the wire (agent_loop convert_to_llm).
+                messages.append(entry.get("message", {}))
             elif kind == "compaction":
                 messages.append(_compaction_message(str(entry.get("summary", ""))))
             elif kind == "branch_summary":
@@ -286,14 +292,17 @@ class ConversationTree:
         return entry.get("timestamp", 0)
 
     def _role_of(self, entry: dict[str, Any]) -> str | None:
-        if entry.get("type") != "message":
+        # A ``customMessage`` (extension-injected node, §3.1) carries its role in
+        # the stored message too, so the tree browser tags it ``custom`` (not a
+        # literal ``user`` turn).
+        if entry.get("type") not in ("message", "customMessage"):
             return None
         role = entry.get("message", {}).get("role")
         return str(role) if role is not None else None
 
     def _preview_of(self, entry: dict[str, Any]) -> str:
         kind = entry.get("type")
-        if kind == "message":
+        if kind in ("message", "customMessage"):
             text = _message_text(entry.get("message", {}))
         elif kind in _SUMMARY_KINDS:
             text = str(entry.get("summary", ""))
@@ -327,7 +336,7 @@ class ConversationTree:
                 continue
 
             kind = entry.get("type")
-            if kind == "message":
+            if kind in ("message", "customMessage"):
                 message = entry.get("message", {})
                 role = message.get("role", "unknown")
                 content = message.get("content", [])

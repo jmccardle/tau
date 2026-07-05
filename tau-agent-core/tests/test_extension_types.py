@@ -124,13 +124,23 @@ class TestExtensionAPIEvents:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+async def _noop_exec(tool_call_id, params, signal, on_update, ctx):
+    """A pi-shaped no-op execute for register_tool() tests."""
+    return {"content": [{"type": "text", "text": "ok"}]}
+
+
 class TestExtensionAPITools:
     """Tests for ExtensionAPI tool methods via registry."""
 
     def test_register_tool(self):
         """ExtensionAPI.register_tool() stores tool with _source='extension'."""
         api = ExtensionAPI()
-        tool_def = {"name": "ls", "description": "List files", "parameters": {}}
+        tool_def = {
+            "name": "ls",
+            "description": "List files",
+            "parameters": {},
+            "execute": _noop_exec,
+        }
         api.register_tool(tool_def)
         tools = api._registry.get_all_tools()
         assert len(tools) == 1
@@ -139,16 +149,32 @@ class TestExtensionAPITools:
     def test_register_tool_sets_source(self):
         """ExtensionAPI.register_tool() sets _source='extension' on the tool."""
         api = ExtensionAPI()
-        api.register_tool({"name": "my_tool", "description": "desc", "parameters": {}})
+        api.register_tool(
+            {"name": "my_tool", "description": "desc", "parameters": {}, "execute": _noop_exec}
+        )
         tools = api._registry.get_all_tools()
         assert tools[0].source == "extension"
 
     def test_register_tool_does_not_mutate_original(self):
         """ExtensionAPI.register_tool() does not mutate the caller's dict."""
         api = ExtensionAPI()
-        tool_def = {"name": "tool", "description": "desc", "parameters": {}}
+        tool_def = {"name": "tool", "description": "desc", "parameters": {}, "execute": _noop_exec}
         api.register_tool(tool_def)
         assert "_source" not in tool_def
+
+    def test_register_tool_missing_execute_raises(self):
+        """register_tool() raises when a required pi ToolDefinition key is missing."""
+        api = ExtensionAPI()
+        with pytest.raises(ValueError, match="missing required key 'execute'"):
+            api.register_tool({"name": "x", "description": "d", "parameters": {}})
+
+    def test_register_tool_non_dict_parameters_raises(self):
+        """register_tool() raises when 'parameters' is not a JSON-schema dict."""
+        api = ExtensionAPI()
+        with pytest.raises(TypeError, match="'parameters' must be a JSON-schema dict"):
+            api.register_tool(
+                {"name": "x", "description": "d", "parameters": "nope", "execute": _noop_exec}
+            )
 
     def test_get_all_tools_empty(self):
         """ExtensionAPI.get_all_tools() returns empty list initially."""
@@ -158,8 +184,12 @@ class TestExtensionAPITools:
     def test_get_all_tools_after_register(self):
         """ExtensionAPI.get_all_tools() returns registered tools."""
         api = ExtensionAPI()
-        api.register_tool({"name": "ls", "description": "List", "parameters": {}})
-        api.register_tool({"name": "grep", "description": "Search", "parameters": {}})
+        api.register_tool(
+            {"name": "ls", "description": "List", "parameters": {}, "execute": _noop_exec}
+        )
+        api.register_tool(
+            {"name": "grep", "description": "Search", "parameters": {}, "execute": _noop_exec}
+        )
         tools = api.get_all_tools()
         assert len(tools) == 2
         names = [t.name for t in tools]
@@ -169,8 +199,12 @@ class TestExtensionAPITools:
     def test_set_active_tools(self):
         """ExtensionAPI.set_active_tools() forwards to registry."""
         api = ExtensionAPI()
-        api.register_tool({"name": "ls", "description": "List", "parameters": {}})
-        api.register_tool({"name": "grep", "description": "Search", "parameters": {}})
+        api.register_tool(
+            {"name": "ls", "description": "List", "parameters": {}, "execute": _noop_exec}
+        )
+        api.register_tool(
+            {"name": "grep", "description": "Search", "parameters": {}, "execute": _noop_exec}
+        )
         api.set_active_tools(["ls", "grep"])
         active = api._registry.get_active_tools()
         assert set(active.keys()) == {"ls", "grep"}
@@ -179,7 +213,14 @@ class TestExtensionAPITools:
         """ExtensionAPI.register_tool() can register multiple tools."""
         api = ExtensionAPI()
         for i in range(5):
-            api.register_tool({"name": f"tool_{i}", "description": f"tool {i}", "parameters": {}})
+            api.register_tool(
+                {
+                    "name": f"tool_{i}",
+                    "description": f"tool {i}",
+                    "parameters": {},
+                    "execute": _noop_exec,
+                }
+            )
         assert len(api.get_all_tools()) == 5
 
 
@@ -303,18 +344,40 @@ class TestExtensionAPISession:
         api.set_session_name("new_name")
         assert mock_session._session_name == "new_name"
 
-    def test_send_user_message_noop_without_session(self):
-        """ExtensionAPI.send_user_message() is a no-op without session."""
+    def test_send_user_message_raises_without_queue(self):
+        """send_user_message() raises (not silent) until the E3-ctx queue exists.
+
+        ``ExtensionAPI()`` has no session, so there is no ``_queue_message``;
+        Fail-Early requires a raise rather than dropping the message silently.
+        """
         api = ExtensionAPI()
-        api.send_user_message("Hello")  # should not raise
+        with pytest.raises(RuntimeError):
+            api.send_user_message("Hello")
+
+    def test_send_user_message_defaults_to_follow_up(self):
+        """send_user_message() defaults deliver_as to 'followUp' (not 'steer')."""
+        mock_session = MagicMock()
+        mock_session._queue_message = MagicMock()
+        api = ExtensionAPI(session=mock_session)
+        api.send_user_message("Hello")
+        mock_session._queue_message.assert_called_once_with("Hello", deliver_as="followUp")
 
     def test_send_user_message_with_session(self):
         """ExtensionAPI.send_user_message() queues message on session."""
         mock_session = MagicMock()
         mock_session._queue_message = MagicMock()
         api = ExtensionAPI(session=mock_session)
-        api.send_user_message("Hello", deliver_as="steer")
-        mock_session._queue_message.assert_called_once_with("Hello", deliver_as="steer")
+        api.send_user_message("Hello", deliver_as="nextTurn")
+        mock_session._queue_message.assert_called_once_with("Hello", deliver_as="nextTurn")
+
+    def test_send_user_message_rejects_bad_deliver_as(self):
+        """send_user_message() validates deliver_as against {followUp, nextTurn}."""
+        mock_session = MagicMock()
+        mock_session._queue_message = MagicMock()
+        api = ExtensionAPI(session=mock_session)
+        with pytest.raises(ValueError):
+            api.send_user_message("Hello", deliver_as="steer")
+        mock_session._queue_message.assert_not_called()
 
     def test_send_message_noop_without_session(self):
         """ExtensionAPI.send_message() is a no-op without session."""
@@ -453,11 +516,11 @@ class TestExtensionContext:
         ctx.shutdown()
         mock_manager.shutdown.assert_called_once()
 
-    def test_context_get_context_usage(self):
-        """ExtensionContext.get_context_usage() returns dict."""
+    def test_context_get_context_usage_raises_without_session(self):
+        """get_context_usage() raises when no session is bound (Fail-Early)."""
         ctx = ExtensionContext()
-        usage = ctx.get_context_usage()
-        assert isinstance(usage, dict)
+        with pytest.raises(RuntimeError):
+            ctx.get_context_usage()
 
     def test_context_set_ui_delegate(self):
         """ExtensionContext.set_ui_delegate() sets the TUI delegate."""

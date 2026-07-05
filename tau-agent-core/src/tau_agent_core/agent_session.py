@@ -14,13 +14,18 @@ ConversationTree; System-A SessionManager retired), §4.2 (identity = UUID).
 
 from __future__ import annotations
 
-from typing import Any, Callable
+import asyncio
+import inspect
+from typing import TYPE_CHECKING, Any, Callable
 
 from tau_ai.abort import AbortSignal
 from tau_ai.types import Model, UserMessage
 
 from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.extension_types import ExtensionAPI
+from tau_agent_core.messages import create_custom_message
+from tau_agent_core.extensions.registry import ExtensionRegistry
+from tau_agent_core.extensions.runner import ExtensionRunner
 from tau_agent_core.session import SessionState
 from tau_agent_core.session_log import SessionLog
 from tau_agent_core.conversation_tree import ConversationTree
@@ -37,6 +42,10 @@ from tau_agent_core.compaction import (
     should_compact,
 )
 from tau_agent_core.compaction_utils import create_file_ops, extract_file_ops_from_message
+from tau_agent_core.tools.base import AgentTool, ToolDefinition
+
+if TYPE_CHECKING:
+    from tau_agent_core.sdk import LoadExtensionsResult
 
 
 def _message_text(content: Any) -> str:
@@ -66,6 +75,23 @@ def _ends_with_user_text(messages: list[Any], text: str) -> bool:
     if not isinstance(last, dict) or last.get("role") != "user":
         return False
     return _message_text(last.get("content", "")).strip() == text.strip()
+
+
+def _extension_factory_label(ext: Callable) -> str:
+    """A stable, identifiable path label for an inline extension factory.
+
+    Extensions loaded from a file get their real path; an inline factory callable
+    has none, so derive one from ``__module__`` + ``__qualname__`` (falling back to
+    ``repr``) purely so the runner's per-extension buckets are distinguishable in
+    load order and in error reporting — the label is not load-bearing.
+    """
+    module = getattr(ext, "__module__", None)
+    qualname = getattr(ext, "__qualname__", None)
+    if module and qualname:
+        return f"{module}:{qualname}"
+    if qualname:
+        return str(qualname)
+    return repr(ext)
 
 
 class AgentSession:
@@ -107,6 +133,9 @@ class AgentSession:
         self._system_prompt = system_prompt
         self._tools = tools or []
         self._events = EventBus()
+        # Session-owned registry for extension-registered tools/commands/flags.
+        # Bound into the one ExtensionAPI below; read by the loop in a later step.
+        self._registry = ExtensionRegistry()
         self._extensions = extensions or []
         self._is_streaming = False
         self._abort_signal = AbortSignal()
@@ -121,9 +150,42 @@ class AgentSession:
         # post-turn check in prompt(). Defaults to the harness defaults.
         self._compaction_settings = compaction_settings or DEFAULT_COMPACTION_SETTINGS
 
-        # Register extensions
+        # Injection queues + deferred-op ledger (S20 / decision 3 + 5). A tool
+        # running mid-turn cannot mutate the conversation under the live loop, so
+        # requests are RECORDED here and DRAINED at the tail of prompt() — the
+        # same site as _maybe_auto_compact(), never per-inner-turn:
+        #   _deferred_ops           — deferred compact/fork intents (applied once)
+        #   _pending_follow_up_messages — followUp: re-enter the loop THIS prompt()
+        #   _pending_next_turn_messages — nextTurn: injected on the NEXT prompt()
+        self._deferred_ops: list[dict[str, Any]] = []
+        self._pending_follow_up_messages: list[str] = []
+        self._pending_next_turn_messages: list[str] = []
+
+        # Seam-3 bridge (S21 / §E3c.4): strong refs to the fire-and-forget tasks
+        # that route session-lifecycle events onto the extension bus. Held so the
+        # loop keeps them alive until they complete (an un-referenced create_task
+        # may be GC'd mid-flight); each task discards itself on done.
+        self._session_event_tasks: set[asyncio.Task[None]] = set()
+
+        # The session-shared ExtensionAPI: bound to this session's real event bus
+        # + registry + live ExtensionContext. Kept for internal consumers (the ctx
+        # the deferred-op drain and tool wrapper reach through). It has NO hook
+        # bucket — the per-extension apis below are the surface factories receive.
+        self._extension_api = self._make_extension_api()
+        # The return-collecting hook dispatcher (E2). One per session, bound to
+        # the live ExtensionContext so the mutating-hook handlers receive the
+        # real ctx. Injected into every AgentLoop this session builds
+        # (`hook_dispatcher=`) so the four hook call-sites (S11-S14) can reach
+        # it; empty until extensions register mutating hooks, so has_handlers()
+        # gives every call-site the zero-extension fast path.
+        self._extension_runner = ExtensionRunner(context=self._extension_api.context)
+        # Register each extension against its OWN api, bound to its OWN runner
+        # bucket (load order preserved) but SHARING the session registry, event
+        # bus, and live context. This is the S24 bridge: api.on("tool_call"/…)
+        # now lands in a per-extension ExtensionHandlers bucket the runner
+        # dispatches, instead of silently no-op'ing on the notify bus.
         for ext in self._extensions:
-            ext(self._make_extension_api())
+            ext(self._bind_extension_api(_extension_factory_label(ext)))
 
     # ------------------------------------------------------------------
     # Properties
@@ -138,6 +200,26 @@ class AgentSession:
         compaction/branch_summary splice (§2.1, §2.6).
         """
         return ConversationTree(self._session_log.entries(), self._session_log.cursor).context_for()
+
+    @property
+    def session_log(self) -> SessionLog:
+        """The persistence facade this session reads from and appends to.
+
+        Exposed as a *settable* seam so a caller that OWNS the authoritative log —
+        the TUI, whose live ``session_store.Session`` object is swapped on new-chat
+        / clear / resume — can rebind this ``AgentSession`` onto the live session
+        (``TauBackend.bind_session_log``). That makes ``AgentSession`` the SOLE
+        persister on the live path (E3-ctx / D3): the turn's messages, compactions,
+        and cursor moves all append through the one on-disk log the TUI reads back.
+        pi keeps a single session per process; τ's TUI replaces the file ``Session``
+        object, so the seam is a rebindable property rather than a
+        construction-only argument.
+        """
+        return self._session_log
+
+    @session_log.setter
+    def session_log(self, log: SessionLog) -> None:
+        self._session_log = log
 
     @property
     def state(self) -> SessionState:
@@ -171,6 +253,80 @@ class AgentSession:
         """
         return self._events.on("all", handler)
 
+    def route_session_event(self, event: dict[str, Any]) -> None:
+        """Route a coding-agent session-lifecycle event onto the extension bus.
+
+        The seam-3 emitter (``session_store.subscribe_session_events``, coding-agent)
+        publishes raw dicts ``{"type": <name>, "session": <Session>, **extra}`` for
+        ``session_start`` / ``session_before_fork`` / ``session_before_compact`` /
+        ``session_shutdown``. This is the bridge that gives them their first
+        consumer: each dict is re-emitted onto this session's ``EventBus`` on a
+        **separate string channel** named by ``event["type"]`` (``emit_channel``),
+        so ``api.on("session_before_compact", handler)`` — a handler subscribed to
+        the same bus the loop emits on — fires. The seam is a distinct channel, NOT
+        a member of the ``AgentEvent`` Literal (which carries no session events;
+        §E3c.4, §7 decision E3-c).
+
+        Wired from the coding-agent layer (which owns both the emitter and this
+        session) — tau-agent-core never imports ``session_store``. Register it via
+        ``subscribe_session_events(agent_session.route_session_event)``.
+
+        The seam emitter is synchronous but fires from within the agent loop's
+        running event loop (e.g. ``append_compaction`` inside ``compact()``); the
+        bus dispatch is async, so the emit is scheduled as a fire-and-forget task
+        on the running loop (the ``EventBus`` contract is fire-and-forget). No
+        running loop is a misuse of the seam, surfaced loudly by ``get_running_loop``
+        (Fail-Early — no swallow, no synchronous fallback).
+        """
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(self._events.emit_channel(str(event["type"]), event))
+        self._session_event_tasks.add(task)
+        task.add_done_callback(self._session_event_tasks.discard)
+
+    async def load_extensions(
+        self,
+        explicit_paths: list[str] | None = None,
+        *,
+        discover: bool = True,
+        user_dir: str | None = None,
+    ) -> LoadExtensionsResult:
+        """Load file-path extensions into THIS live session (E5 §2, S26/S27).
+
+        Discovers + imports each extension and invokes its ``register(api)``
+        against an :class:`ExtensionAPI` bound to this session's live
+        :class:`ExtensionRunner` bucket — so the four mutating hooks a file
+        extension registers actually FIRE in this session's loop. This is the
+        seam the E0–E4 loader left disconnected from any live process (E5 §0):
+        ``_load_extensions`` was called only by tests, never against a running
+        session's runner.
+
+        Binding reuses :meth:`_bind_extension_api` as the loader's per-extension
+        ``api_factory``: each extension gets its OWN bucket appended in load
+        order and labelled by its **file path**, sharing this session's registry,
+        event bus, and live :class:`ExtensionContext`. An async ``register`` is
+        awaited by the loader. This runs once per run, AFTER construction (the
+        runner already exists), which is exactly what resolves the load-vs-bind
+        ordering (E5 D-E5-7): build the session, then bind file extensions to its
+        runner here — rather than needing the runner before the session exists.
+
+        Error policy is the loader's (Fail-Early): an explicit ``-e`` failure
+        RAISES (the user named it); a *discovered* failure is collected into the
+        returned :class:`LoadExtensionsResult` ``errors`` and skipped. The caller
+        surfaces ``errors`` (headless → stderr, TUI → a notice); the loader no
+        longer prints them itself, so this is safe to call under a live Textual
+        screen.
+        """
+        # Lazy import: sdk imports agent_session at module load, so a top-level
+        # import here would be circular.
+        from tau_agent_core.sdk import _load_extensions
+
+        return await _load_extensions(
+            explicit_paths,
+            discover=discover,
+            user_dir=user_dir,
+            api_factory=self._bind_extension_api,
+        )
+
     async def prompt(
         self,
         text: str,
@@ -200,110 +356,237 @@ class AgentSession:
         """
         self._is_streaming = True
         self._abort_signal = AbortSignal()
+        # Bind the fresh per-prompt abort signal onto the live ExtensionContext so
+        # a hook's ``ctx.abort()`` (e.g. the budget guard, example 24 / step S17)
+        # aborts the signal THIS loop actually polls. pi's ctx reads the live agent
+        # signal (agent-session.ts:2254-2261); the signal is recreated each
+        # prompt(), so rebind here — a signal captured once at construction is
+        # stale by the next turn.
+        self._extension_api.context._signal = self._abort_signal
 
         try:
-            # Create UserMessage for tau-ai
-            content: list[dict[str, Any]] = [{"type": "text", "text": text}]
-            if images:
-                content.extend(images)
-            # content holds raw block dicts; model_validate lets pydantic coerce
-            # them into the TextContent | ImageContent union UserMessage declares.
-            user_msg = UserMessage.model_validate(
-                {
-                    "role": "user",
-                    "content": content,
-                    "timestamp": self._timestamp(),
-                }
-            )
+            # Drain any pending "nextTurn" messages into THIS prompt's first turn
+            # (S20): a message queued last prompt with ``deliver_as="nextTurn"`` is
+            # injected alongside the user turn, exactly as pi pushes
+            # ``_pendingNextTurnMessages`` after the user message (agent-session.ts:
+            # 1096-1099). Snapshot-and-clear so the injection happens exactly once
+            # and does NOT recur on the followUp re-entry below.
+            next_turn = self._pending_next_turn_messages
+            self._pending_next_turn_messages = []
+            queued = [self._queued_content_to_user(c) for c in next_turn]
 
-            # Get context: use provided context or fall back to session messages.
-            if context is not None:
-                context_messages = list(context)  # copy to avoid mutation
-                # Did the caller already include this user turn as the final
-                # context message? The TUI passes the full history (which ends
-                # with the latest user turn); a bare prompt("hi") does not. This
-                # flag also drives the persist/return logic below.
-                context_ends_with_user = _ends_with_user_text(context_messages, text)
-            else:
-                context_messages = self.messages
-                context_ends_with_user = False
+            turn_messages = await self._run_one_turn(text, images, context, queued=queued)
 
-            # Thread the user message to the loop exactly once — via
-            # prompts=[user_msg] passed to loop.run() below. The context must
-            # therefore NOT also carry a trailing copy, so drop the duplicate the
-            # caller supplied. (pi parity: runAgentLoop concatenates context +
-            # prompts with no dedup, agent-loop.ts:103-106; the old loop-level
-            # strip-compare dedup is removed.)
-            if context_ends_with_user:
-                context_messages = context_messages[:-1]
-
-            # Build the agent loop config
-            config = AgentLoopConfig(
-                system_prompt=self._system_prompt,
-                temperature=getattr(self._model, "temperature", 0.7),
-                api_key=self._api_key,
-                reasoning=self._reasoning,
-            )
-
-            # Create and run the agent loop
-            loop = AgentLoop(
-                config=config,
-                emit=self._events.emit,
-                tools=self._tools,
-                model=self._model,
-                abort_signal=self._abort_signal,
-            )
-
-            # Run the loop — handles LLM call, tool execution, re-tries
-            final_messages = await loop.run(
-                prompts=[user_msg],
-                context=context_messages,
-            )
-
-            # Persist this turn's messages AND collect them to return. The
-            # return value is THIS turn's new messages only — the user message
-            # (when it wasn't already supplied in the context) plus the
-            # assistant/tool messages the loop produced — NOT the full
-            # accumulated session history.
-            #
-            # Returning the whole history here was a compounding bug: the TUI
-            # appends prompt()'s return to its own message store (which already
-            # holds every prior turn), so each turn re-appended all earlier
-            # assistant/tool messages. The model then saw earlier exchanges
-            # duplicated and got confused about what it had already done.
-            turn_messages: list[dict[str, Any]] = []
-
-            # The user message is new to the conversation only when the caller
-            # didn't already include it in the provided context (the TUI does;
-            # a bare prompt("hi") does not).
-            if not context_ends_with_user:
-                user_dict = user_msg.model_dump()
-                self._session_log.append_message(user_dict)
-                turn_messages.append(user_dict)
-
-            # Assistant responses and tool results produced this turn.
-            for msg in final_messages:
-                if hasattr(msg, "model_dump"):
-                    msg_dict = msg.model_dump()
-                elif isinstance(msg, dict):
-                    msg_dict = msg
-                else:
-                    continue
-
-                self._session_log.append_message(msg_dict)
-                turn_messages.append(msg_dict)
-
-            # Auto-compaction: now that this turn is persisted, compact in place
-            # if the conversation is approaching the model's context window, so
-            # the NEXT turn starts within budget (pi checks shouldCompact after
-            # each turn). A failure here propagates — Fail-Early, no silent skip —
-            # but this turn's messages are already saved and returned-to-be.
-            await self._maybe_auto_compact()
+            # End-of-prompt drain (S20 / decision 3): auto-compaction, then the
+            # deferred compact/fork intents (applied exactly ONCE here, never
+            # mid-turn — no loop reentrancy), then followUp messages re-enter the
+            # loop WITHIN this same prompt() call. All three share this single
+            # tail site (the _maybe_auto_compact() site).
+            await self._end_of_prompt_drain(turn_messages)
 
             return turn_messages
 
         finally:
             self._is_streaming = False
+
+    async def _run_one_turn(
+        self,
+        text: str,
+        images: list[dict] | None,
+        context: list[dict] | None,
+        queued: list[UserMessage] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Run one agent-loop turn: build the user message, run the loop, persist.
+
+        Extracted from ``prompt()`` so the end-of-prompt followUp drain (S20) can
+        re-enter it within the same ``prompt()`` call. ``queued`` are pending
+        ``nextTurn`` messages threaded (and persisted) after the user turn on the
+        first turn of a prompt; empty on a followUp re-entry.
+
+        Returns THIS turn's new messages only — the user message, any ``queued``
+        messages, then the assistant/tool messages the loop produced.
+        """
+        queued = queued or []
+
+        # Create UserMessage for tau-ai
+        content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+        if images:
+            content.extend(images)
+        # content holds raw block dicts; model_validate lets pydantic coerce
+        # them into the TextContent | ImageContent union UserMessage declares.
+        user_msg = UserMessage.model_validate(
+            {
+                "role": "user",
+                "content": content,
+                "timestamp": self._timestamp(),
+            }
+        )
+
+        # Get context: use provided context or fall back to session messages.
+        if context is not None:
+            context_messages = list(context)  # copy to avoid mutation
+            # Did the caller already include this user turn as the final
+            # context message? The TUI passes the full history (which ends
+            # with the latest user turn); a bare prompt("hi") does not. This
+            # flag also drives the persist/return logic below.
+            context_ends_with_user = _ends_with_user_text(context_messages, text)
+        else:
+            context_messages = self.messages
+            context_ends_with_user = False
+
+        # Thread the user message to the loop exactly once — via
+        # prompts=[user_msg] passed to loop.run() below. The context must
+        # therefore NOT also carry a trailing copy, so drop the duplicate the
+        # caller supplied. (pi parity: runAgentLoop concatenates context +
+        # prompts with no dedup, agent-loop.ts:103-106; the old loop-level
+        # strip-compare dedup is removed.)
+        if context_ends_with_user:
+            context_messages = context_messages[:-1]
+
+        # Fire the before_agent_start hook just before the loop runs (E2,
+        # step S13; pi agent-session.ts:1101-1125). Two return channels:
+        #   - system_prompt CHAINS (last handler wins; each handler sees the
+        #     running value, threaded inside the dispatcher) and replaces the
+        #     base prompt for THIS turn only — the config is rebuilt every
+        #     prompt(), so next turn resets to the base (pi resets to
+        #     _baseSystemPrompt when no handler modifies it);
+        #   - message(s) ACCUMULATE across handlers and are injected as custom
+        #     messages after the user turn (pi pushes role:"custom" messages;
+        #     on the wire they read as user messages — messages.ts custom→user).
+        #     They are DURABLE (E5 §3.1 / S29): threaded to the loop this turn AND
+        #     persisted as ``customMessage`` tree nodes below, so a reload replays
+        #     the exact path the model saw (no second history / reload fork).
+        # Gated on has_handlers for the zero-extension fast path.
+        turn_system_prompt = self._system_prompt
+        custom_messages: list[dict[str, Any]] = []
+        if self._extension_runner.has_handlers("before_agent_start"):
+            before = await self._extension_runner.emit_before_agent_start(
+                prompt=text,
+                images=images,
+                system_prompt=self._system_prompt,
+            )
+            if before is not None:
+                if before.get("system_prompt") is not None:
+                    turn_system_prompt = before["system_prompt"]
+                for msg in before.get("messages") or []:
+                    custom_messages.append(self._custom_message_node(msg))
+
+        # Build the agent loop config
+        config = AgentLoopConfig(
+            system_prompt=turn_system_prompt,
+            temperature=getattr(self._model, "temperature", 0.7),
+            api_key=self._api_key,
+            reasoning=self._reasoning,
+        )
+
+        # Create and run the agent loop
+        loop = AgentLoop(
+            config=config,
+            emit=self._events.emit,
+            tools=self._build_turn_tools(),
+            model=self._model,
+            abort_signal=self._abort_signal,
+            hook_dispatcher=self._extension_runner,
+        )
+
+        # Run the loop — handles LLM call, tool execution, re-tries. The pending
+        # nextTurn messages and then the accumulated before_agent_start custom
+        # messages follow the user turn (pi order: [user, ...nextTurn, ...custom]);
+        # the loop concatenates context + prompts.
+        final_messages = await loop.run(
+            prompts=[user_msg, *queued, *custom_messages],
+            context=context_messages,
+        )
+
+        # Persist this turn's messages AND collect them to return. The
+        # return value is THIS turn's new messages only — the user message
+        # (when it wasn't already supplied in the context) plus the
+        # assistant/tool messages the loop produced — NOT the full
+        # accumulated session history.
+        #
+        # Returning the whole history here was a compounding bug: the TUI
+        # appends prompt()'s return to its own message store (which already
+        # holds every prior turn), so each turn re-appended all earlier
+        # assistant/tool messages. The model then saw earlier exchanges
+        # duplicated and got confused about what it had already done.
+        turn_messages: list[dict[str, Any]] = []
+
+        # Persist this turn's user message. AgentSession is the AUTHORITATIVE
+        # persister (E3-ctx / D3): on the live path it appends through the TUI's
+        # own file ``Session`` (bound via ``session_log``), so the user turn is
+        # recorded HERE and nowhere else — the TUI dropped its own
+        # ``append_message`` to resolve the double-write. ``context_ends_with_user``
+        # still governs the loop-threading STRIP above (so the user turn is fed to
+        # the loop exactly once), but NOT persistence: the caller echoing the turn
+        # into the context it passed does not mean the log already holds it. The
+        # message is new to the log exactly once this turn, so append it
+        # unconditionally (a bare ``prompt("hi")`` with no context lands here too).
+        user_dict = user_msg.model_dump()
+        self._session_log.append_message(user_dict)
+        turn_messages.append(user_dict)
+
+        # Persist the injected nextTurn messages too — they are genuine queued
+        # user content that joins the conversation.
+        for qmsg in queued:
+            qdict = qmsg.model_dump()
+            self._session_log.append_message(qdict)
+            turn_messages.append(qdict)
+
+        # Persist the before_agent_start injected messages as durable
+        # ``customMessage`` tree nodes (E5 §3.1 / S29). They reached the model as
+        # prompts THIS turn (threaded above, in the same [user, ...nextTurn,
+        # ...custom] order pi uses); recording them as extension-origin nodes here
+        # — in that same order, AFTER the user/queued turns and BEFORE the
+        # assistant response — closes the reload fork (agent_session.py:419-421):
+        # the next load rebuilds the exact path the model saw, with each node's
+        # ``role: "custom"`` rendered as extension-injected and serialized
+        # custom→user on the wire. Each carries the node into the returned
+        # transcript too (so it is visible, not a hidden channel).
+        for cmsg in custom_messages:
+            self._session_log.append_custom_message(cmsg, custom_type=str(cmsg["customType"]))
+            turn_messages.append(cmsg)
+
+        # Assistant responses and tool results produced this turn.
+        for msg in final_messages:
+            if hasattr(msg, "model_dump"):
+                msg_dict = msg.model_dump()
+            elif isinstance(msg, dict):
+                msg_dict = msg
+            else:
+                continue
+
+            self._session_log.append_message(msg_dict)
+            turn_messages.append(msg_dict)
+
+        return turn_messages
+
+    async def _end_of_prompt_drain(self, turn_messages: list[dict[str, Any]]) -> None:
+        """Drain the auto-compaction + deferred + followUp work at prompt()'s tail.
+
+        Called once at the end of ``prompt()`` (and again after each followUp
+        re-entry). Runs, in order:
+
+        1. **Auto-compaction** — compact in place if the conversation is
+           approaching the model's context window so the NEXT turn starts within
+           budget (pi checks ``shouldCompact`` after each turn). A failure here
+           propagates — Fail-Early, no silent skip — but this turn's messages are
+           already saved.
+        2. **Deferred compact/fork** — the intents a mid-turn tool recorded
+           (``ctx.compact(defer=True)`` / ``ctx.fork(defer=True)``) are applied
+           EXACTLY ONCE here, never mid-turn (decision 3). No loop reentrancy.
+        3. **followUp** — messages queued ``deliver_as="followUp"`` re-enter the
+           agent loop WITHIN this same ``prompt()`` call; each new turn's messages
+           are appended to ``turn_messages`` and itself drains at its tail.
+        """
+        await self._maybe_auto_compact()
+        await self._drain_deferred_ops()
+
+        while self._pending_follow_up_messages:
+            follow_up = self._pending_follow_up_messages.pop(0)
+            follow_up_messages = await self._run_one_turn(follow_up, None, None)
+            turn_messages.extend(follow_up_messages)
+            await self._maybe_auto_compact()
+            await self._drain_deferred_ops()
 
     async def continue_conversation(self) -> list[dict[str, Any]]:
         """Run another agent turn without adding new messages.
@@ -316,6 +599,10 @@ class AgentSession:
         """
         self._is_streaming = True
         self._abort_signal = AbortSignal()
+        # Rebind the fresh abort signal onto the live ExtensionContext (see
+        # prompt(); pi agent-session.ts:2254-2261) so a hook's ctx.abort() reaches
+        # the signal this continuation polls.
+        self._extension_api.context._signal = self._abort_signal
 
         try:
             # Get existing messages from session for context
@@ -333,9 +620,10 @@ class AgentSession:
             loop = AgentLoop(
                 config=config,
                 emit=self._events.emit,
-                tools=self._tools,
+                tools=self._build_turn_tools(),
                 model=self._model,
                 abort_signal=self._abort_signal,
+                hook_dispatcher=self._extension_runner,
             )
 
             # Run the loop — handles LLM call, tool execution, re-tries
@@ -521,6 +809,75 @@ class AgentSession:
         finally:
             await self._events.emit(AgentEvent(type="agent_end", timestamp=self._timestamp()))
 
+    # ------------------------------------------------------------------
+    # Injection queue + deferred ops (S20 / decision 3 + 5)
+    # ------------------------------------------------------------------
+
+    def _queue_message(self, content: str, deliver_as: str = "followUp") -> None:
+        """Queue a user message for injection (the seam ``send_user_message`` calls).
+
+        ``deliver_as`` selects WHEN the queued content re-enters the conversation
+        (the API validates the same set before reaching here; this method is the
+        session-side seam and validates too — Fail-Early, no silent misroute):
+
+        - ``"followUp"``: drains at the end of the CURRENT ``prompt()`` and
+          re-enters the agent loop within that same call.
+        - ``"nextTurn"``: queued for the NEXT ``prompt()``, injected alongside its
+          user turn.
+
+        The delivery mode stays a plain string so a future ``steer`` mode can be
+        added additively (decision 5).
+        """
+        if deliver_as == "followUp":
+            self._pending_follow_up_messages.append(content)
+        elif deliver_as == "nextTurn":
+            self._pending_next_turn_messages.append(content)
+        else:
+            raise ValueError(
+                f"_queue_message: deliver_as must be 'followUp' or 'nextTurn', got {deliver_as!r}"
+            )
+
+    def _defer_compact(self, custom_instructions: str | None = None) -> None:
+        """Record a deferred compaction intent (drained at prompt()'s tail, S20)."""
+        self._deferred_ops.append({"kind": "compact", "custom_instructions": custom_instructions})
+
+    def _defer_fork(self, entry_id: str | None = None, mode: str = "in_place") -> None:
+        """Record a deferred fork intent (drained at prompt()'s tail, S20)."""
+        self._deferred_ops.append({"kind": "fork", "entry_id": entry_id, "mode": mode})
+
+    async def _drain_deferred_ops(self) -> None:
+        """Apply the recorded deferred compact/fork intents exactly once.
+
+        Snapshots and clears the ledger first, then dispatches each intent, so an
+        op recorded WHILE draining waits for the next drain rather than looping
+        here — "applies exactly once at end-of-prompt" (decision 3). Delegates to
+        the immediate paths (``compact`` / ``ctx.fork``); Fail-Early on an unknown
+        kind rather than silently dropping it.
+        """
+        if not self._deferred_ops:
+            return
+        ops = self._deferred_ops
+        self._deferred_ops = []
+        ctx = self._extension_api.context
+        for op in ops:
+            kind = op["kind"]
+            if kind == "compact":
+                await self.compact(custom_instructions=op["custom_instructions"])
+            elif kind == "fork":
+                await ctx.fork(entry_id=op["entry_id"], mode=op["mode"])
+            else:
+                raise ValueError(f"_drain_deferred_ops: unknown deferred op kind {kind!r}")
+
+    def _queued_content_to_user(self, content: str) -> UserMessage:
+        """Wrap queued ``send_user_message`` content as a ``UserMessage`` text turn."""
+        return UserMessage.model_validate(
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": content}],
+                "timestamp": self._timestamp(),
+            }
+        )
+
     def abort(self) -> None:
         """Abort the current agent turn."""
         self._is_streaming = False
@@ -530,14 +887,205 @@ class AgentSession:
     # Internal methods
     # ------------------------------------------------------------------
 
-    def _make_extension_api(self) -> ExtensionAPI:
-        """Create an ExtensionAPI bound to this session.
+    def _resolve_extension_tools(self) -> list[AgentTool]:
+        """Resolve the registry's active extension tools into ``AgentTool``s.
+
+        Reads the session-owned registry's *active* extension tool definitions
+        (pi ``ToolDefinition`` dicts registered via ``api.register_tool``) and
+        wraps each so the agent loop can call it. The loop invokes
+        ``tool.execute(tool_call_id=…, args=…, signal=…)``; the wrapper adapts
+        that to the extension's pi-shaped
+        ``execute(tool_call_id, params, signal, on_update, ctx)`` — binding the
+        live ``ExtensionContext`` as ``ctx`` (pi's ``wrapRegisteredTools`` /
+        ``wrapToolDefinition``, coding-agent/src/core/tools/tool-definition-wrapper.ts).
+
+        Because the loop is rebuilt every ``prompt()`` / ``continue_conversation``
+        (this method is called at each), a ``register_tool`` mid-session is live
+        on the next turn for free.
+        """
+        ctx = self._extension_api.context
+        resolved: list[AgentTool] = []
+        for name, defn in self._registry.get_active_tools().items():
+            ext_execute = defn["execute"]
+
+            def _make_adapter(ext_execute: Callable = ext_execute) -> Callable:
+                async def _adapter(
+                    tool_call_id: str,
+                    args: dict,
+                    signal: Any = None,
+                    on_update: Callable | None = None,
+                ) -> Any:
+                    result = ext_execute(tool_call_id, args, signal, on_update, ctx)
+                    if inspect.isawaitable(result):
+                        result = await result
+                    return result
+
+                return _adapter
+
+            resolved.append(
+                AgentTool(
+                    definition=ToolDefinition(
+                        name=name,
+                        label=defn.get("label", name),
+                        description=defn["description"],
+                        parameters=defn["parameters"],
+                        execute=_make_adapter(),
+                        prompt_snippet=defn.get("prompt_snippet"),
+                        prompt_guidelines=defn.get("prompt_guidelines"),
+                        execution_mode=defn.get("execution_mode", "parallel"),
+                    )
+                )
+            )
+        return resolved
+
+    def _custom_message_node(self, message: dict[str, Any]) -> dict[str, Any]:
+        """Build the durable ``custom`` message dict for a ``before_agent_start`` hook.
+
+        Handlers return ``{customType, content, display?, details?}`` (pi
+        ``BeforeAgentStartEventResult.message``). This is turned into an
+        agent-level custom message (``role: "custom"``,
+        :func:`~tau_agent_core.messages.create_custom_message`) that is both
+        threaded to the loop this turn AND persisted as a ``customMessage`` tree
+        node (E5 §3.1 / S29). The ``role: "custom"`` marks it extension-origin for
+        the TUI / tree browser; :func:`~tau_agent_core.messages.convert_to_llm`
+        serializes it to a ``user`` message on the wire (pi messages.ts
+        custom→user), so the injected message still reaches the model.
+
+        Raises:
+            ValueError: if the message has no ``content`` (a handler returning a
+                ``message`` must say what to inject) or no ``customType`` (the
+                extension-origin identity is not fabricated) — Fail-Early.
+        """
+        if "content" not in message:
+            raise ValueError("before_agent_start message is missing 'content' — nothing to inject")
+        if "customType" not in message:
+            raise ValueError(
+                "before_agent_start message is missing 'customType' — the extension-origin "
+                "type is required (Fail-Early, no fabricated default)"
+            )
+        return create_custom_message(
+            custom_type=str(message["customType"]),
+            content=message["content"],
+            display=bool(message.get("display", True)),
+            details=message.get("details"),
+            timestamp=self._timestamp(),
+        )
+
+    def _build_turn_tools(self) -> list:
+        """Merge the built-in tools with the active extension tools for a turn.
+
+        Extension tools override a built-in of the same name (pi parity:
+        ``_refreshToolRegistry`` sets extension tools last, agent-session.ts:2320).
+        Returns ``self._tools`` unchanged when no extension tools are registered.
+        """
+        ext_tools = self._resolve_extension_tools()
+        if not ext_tools:
+            return self._tools
+        by_name: dict[str, Any] = {t.name: t for t in self._tools}
+        for t in ext_tools:
+            by_name[t.name] = t
+        return list(by_name.values())
+
+    def _make_extension_api(
+        self,
+        hook_handlers: Any = None,
+        context: Any = None,
+    ) -> ExtensionAPI:
+        """Create an ExtensionAPI bound to this session's real refs.
+
+        Binds the live loop event bus (``self._events``) and the session-owned
+        registry so ``api.on(event, handler)`` subscribes to the same bus the
+        agent loop emits on, and registered tools/commands land where the
+        session can read them (E1.1 / step S3).
+
+        ``hook_handlers`` is this extension's own :class:`ExtensionHandlers` bucket
+        in the runner: ``api.on`` routes the four mutating hooks there (S24).
+        ``context`` shares the live :class:`ExtensionContext` — passed for the
+        per-extension apis so every handler sees the one context the session binds
+        the abort signal / live session onto; ``None`` lets ``ExtensionAPI`` make a
+        fresh context (used only for the session-shared api built at construction).
 
         Returns:
-            ExtensionAPI instance with session-bound methods.
+            An ExtensionAPI bound to this session, its event bus, and registry.
         """
-        api = ExtensionAPI()
-        return api
+        return ExtensionAPI(
+            session=self,
+            event_bus=self._events,
+            registry=self._registry,
+            context=context,
+            hook_handlers=hook_handlers,
+        )
+
+    def set_ui_delegate(self, delegate: Any) -> None:
+        """Route extension ``api.ui`` calls to a live front-end delegate (E5 §4 / S33).
+
+        Sets the delegate on the session's ONE shared :class:`ExtensionContext` —
+        the same context every bound extension api receives (``_bind_extension_api``
+        passes ``self._extension_api.context``), so a single call flips the shared
+        :class:`ExtensionUI` into TUI mode for EVERY loaded extension at once. From
+        then on ``api.ui.notify(msg, level)`` reaches the delegate (the TUI screen)
+        instead of the headless stderr sink. Nothing calls this on the headless
+        path, so ``tau -p`` keeps the stderr behaviour.
+        """
+        self._extension_api.context.set_ui_delegate(delegate)
+
+    def get_extension_commands(self) -> list[tuple[str, str]]:
+        """List extension-registered slash commands (E5 §5 / S35).
+
+        Returns ``(name, description)`` for every command an extension registered
+        via ``api.register_command`` — the palette (:meth:`Parley.get_system_commands`)
+        reads this to LIST them. Description falls back to the empty string when a
+        command omitted one (listing is best-effort chrome, not a durable node).
+        """
+        return [
+            (name, str(command.get("description", "")))
+            for name, command in self._registry.get_commands().items()
+        ]
+
+    async def run_extension_command(self, name: str, args: str = "") -> bool:
+        """Run an extension-registered slash command (E5 §5 / S35).
+
+        Port of pi's ``_tryExecuteExtensionCommand`` (agent-session.ts:1143). Looks
+        up ``name`` in the session registry and, if found, invokes its ``handler``
+        with ``(args, ctx)`` where ``ctx`` is the session's ONE live
+        :class:`ExtensionContext` (the same object hook handlers and ``api.ui``
+        reach through, so a command's ``ctx.ui.notify`` paints in the same TUI).
+        Returns ``True`` iff the command existed and ran; ``False`` for an unknown
+        command so the caller can fall through (e.g. treat the text as a prompt).
+
+        Fail-Early: a command registered without a callable ``handler`` cannot run,
+        so an attempt to invoke one RAISES rather than silently no-op'ing — a
+        registered-but-inert command is a construction bug, not a runnable command.
+        """
+        command = self._registry.get_command(name)
+        if command is None:
+            return False
+        handler = command.get("handler")
+        if not callable(handler):
+            raise RuntimeError(
+                f"extension command {name!r} has no callable 'handler'; it was "
+                "registered but cannot run (register_command requires a handler)."
+            )
+        result = handler(args, self._extension_api.context)
+        if inspect.isawaitable(result):
+            await result
+        return True
+
+    def _bind_extension_api(self, path_label: str) -> ExtensionAPI:
+        """The bucket-bound ExtensionAPI a loaded extension is handed (S24).
+
+        Appends a fresh :class:`ExtensionHandlers` bucket for ``path_label`` to the
+        session's :class:`ExtensionRunner` (load order preserved) and returns an
+        ``ExtensionAPI`` bound to it, sharing the session's registry, event bus, and
+        live :class:`ExtensionContext`. ``api.on("tool_call"/…)`` on the returned
+        api lands in this bucket — the dispatch surface the loop's hook call-sites
+        actually read.
+        """
+        bucket = self._extension_runner.register_extension(path_label)
+        return self._make_extension_api(
+            hook_handlers=bucket,
+            context=self._extension_api.context,
+        )
 
     @staticmethod
     def _timestamp() -> int:

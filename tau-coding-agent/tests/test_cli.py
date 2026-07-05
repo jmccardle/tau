@@ -25,6 +25,7 @@ from tau_coding_agent.headless import (
 
 # ── a config like ~/.tau/config.json ───────────────────────────────────────
 
+
 def _config() -> dict:
     return {
         "models": {
@@ -48,6 +49,7 @@ def _config() -> dict:
 
 # ── argument parsing ────────────────────────────────────────────────────────
 
+
 def test_defaults():
     args = parse_cli_args([])
     assert args.messages == []
@@ -65,8 +67,18 @@ def test_print_eats_message():
 
 def test_core_flags_parse():
     args = parse_cli_args(
-        ["--model", "gpt-4o", "--provider", "openai", "-t", "read,bash",
-         "-p", "--mode", "json", "do it"]
+        [
+            "--model",
+            "gpt-4o",
+            "--provider",
+            "openai",
+            "-t",
+            "read,bash",
+            "-p",
+            "--mode",
+            "json",
+            "do it",
+        ]
     )
     assert args.model == "gpt-4o"
     assert args.provider == "openai"
@@ -79,6 +91,54 @@ def test_core_flags_parse():
 def test_no_tools_flag():
     assert parse_cli_args(["-nt", "-p", "x"]).no_tools is True
     assert parse_cli_args(["--no-tools", "-p", "x"]).no_tools is True
+
+
+# ── extension / tool-filter / session flags (E0/S2, pi args.ts:104-153) ──────
+
+
+def test_extension_flag_is_repeatable_path():
+    # -e / --extension append; None-default normalizes to [].
+    assert parse_cli_args(["-p", "x"]).extensions == []
+    args = parse_cli_args(["-e", "a.py", "--extension", "b.py", "-p", "x"])
+    assert args.extensions == ["a.py", "b.py"]
+
+
+def test_no_extensions_flag_aliases():
+    assert parse_cli_args(["-ne", "-p", "x"]).no_extensions is True
+    assert parse_cli_args(["--no-extensions", "-p", "x"]).no_extensions is True
+    assert parse_cli_args(["-p", "x"]).no_extensions is False
+
+
+def test_no_extensions_keeps_explicit_extension():
+    # -ne disables DISCOVERY only; an explicit -e must survive alongside it.
+    args = parse_cli_args(["-e", "keep.py", "-ne", "-p", "x"])
+    assert args.extensions == ["keep.py"]
+    assert args.no_extensions is True
+
+
+def test_exclude_tools_flag_aliases():
+    assert parse_cli_args(["-xt", "bash,write", "-p", "x"]).exclude_tools == "bash,write"
+    assert parse_cli_args(["--exclude-tools", "read", "-p", "x"]).exclude_tools == "read"
+    assert parse_cli_args(["-p", "x"]).exclude_tools is None
+
+
+def test_no_builtin_tools_flag_aliases():
+    assert parse_cli_args(["-nbt", "-p", "x"]).no_builtin_tools is True
+    assert parse_cli_args(["--no-builtin-tools", "-p", "x"]).no_builtin_tools is True
+    assert parse_cli_args(["-p", "x"]).no_builtin_tools is False
+
+
+def test_no_session_flag():
+    assert parse_cli_args(["--no-session", "-p", "x"]).no_session is True
+    assert parse_cli_args(["-p", "x"]).no_session is False
+
+
+def test_append_system_prompt_is_repeatable():
+    assert parse_cli_args(["-p", "x"]).append_system_prompt == []
+    args = parse_cli_args(
+        ["--append-system-prompt", "one", "--append-system-prompt", "two", "-p", "x"]
+    )
+    assert args.append_system_prompt == ["one", "two"]
 
 
 def test_mode_choices_validated():
@@ -94,6 +154,7 @@ def test_version_flag_exits():
 
 
 # ── model resolution ────────────────────────────────────────────────────────
+
 
 def test_resolve_config_key():
     name, mc = resolve_model_config(_config(), CLIArgs(model="gpt-4o"))
@@ -114,23 +175,63 @@ def test_resolve_no_tools_empties_tools():
 
 
 def test_resolve_tools_allowlist():
-    _name, mc = resolve_model_config(
-        _config(), CLIArgs(model="gpt-4o", tools="read, bash")
-    )
+    _name, mc = resolve_model_config(_config(), CLIArgs(model="gpt-4o", tools="read, bash"))
     assert mc["tools"] == ["read", "bash"]
 
 
-def test_resolve_provider_override():
+def test_resolve_no_builtin_tools_empties_builtins():
+    # --no-builtin-tools drops the built-in set (tools=[]); extension tools survive
+    # the later _build_turn_tools merge, so this is now distinct from --no-tools once
+    # extensions load (E5 S28). resolve_model_config only stages the built-in side.
+    _name, mc = resolve_model_config(_config(), CLIArgs(model="gpt-4o", no_builtin_tools=True))
+    assert mc["tools"] == []
+
+
+def test_resolve_exclude_tools_reaches_run_config():
     _name, mc = resolve_model_config(
-        _config(), CLIArgs(model="gpt-4o", provider="anthropic")
+        _config(), CLIArgs(model="gpt-4o", exclude_tools="bash, write")
     )
+    assert mc["exclude_tools"] == ["bash", "write"]
+
+
+def test_resolve_exclude_tools_empty_raises():
+    with pytest.raises(CLIError, match="no tool names parsed"):
+        resolve_model_config(_config(), CLIArgs(model="gpt-4o", exclude_tools=" , "))
+
+
+def test_resolve_extensions_reach_run_config():
+    _name, mc = resolve_model_config(
+        _config(), CLIArgs(model="gpt-4o", extensions=["a.py", "b.py"])
+    )
+    assert mc["extensions"] == ["a.py", "b.py"]
+    # No discovery toggle unless asked.
+    assert "no_extensions" not in mc
+
+
+def test_resolve_no_extensions_keeps_explicit_extension_in_run_config():
+    # -ne suppresses discovery (no_extensions flag reaches the config) while an
+    # explicit -e path still lands in the run config for the loader to honor.
+    _name, mc = resolve_model_config(
+        _config(), CLIArgs(model="gpt-4o", extensions=["keep.py"], no_extensions=True)
+    )
+    assert mc["extensions"] == ["keep.py"]
+    assert mc["no_extensions"] is True
+
+
+def test_resolve_append_system_prompt_reaches_run_config():
+    _name, mc = resolve_model_config(
+        _config(), CLIArgs(model="gpt-4o", append_system_prompt=["extra rule"])
+    )
+    assert mc["append_system_prompt"] == ["extra rule"]
+
+
+def test_resolve_provider_override():
+    _name, mc = resolve_model_config(_config(), CLIArgs(model="gpt-4o", provider="anthropic"))
     assert mc["backend"] == "anthropic"
 
 
 def test_resolve_provider_slash_id_shorthand():
-    name, mc = resolve_model_config(
-        _config(), CLIArgs(model="openai/gpt-4o-mini")
-    )
+    name, mc = resolve_model_config(_config(), CLIArgs(model="openai/gpt-4o-mini"))
     assert name == "openai/gpt-4o-mini"
     assert mc == {"backend": "openai", "model": "gpt-4o-mini"}
 
@@ -150,17 +251,13 @@ def test_resolve_thinking_suffix_sets_level():
 
 def test_resolve_thinking_flag_on_config_model():
     # --thinking applies to a config-key model too.
-    _name, mc = resolve_model_config(
-        _config(), CLIArgs(model="gpt-4o", thinking="medium")
-    )
+    _name, mc = resolve_model_config(_config(), CLIArgs(model="gpt-4o", thinking="medium"))
     assert mc["thinking"] == "medium"
 
 
 def test_resolve_thinking_flag_overrides_suffix():
     # An explicit --thinking wins over a :level suffix (pi: cliThinking ?? suffix).
-    _name, mc = resolve_model_config(
-        _config(), CLIArgs(model="some-model:low", thinking="high")
-    )
+    _name, mc = resolve_model_config(_config(), CLIArgs(model="some-model:low", thinking="high"))
     assert mc["thinking"] == "high"
 
 
@@ -181,15 +278,14 @@ def test_parse_invalid_thinking_level_rejected():
 
 # ── session continuation flags ──────────────────────────────────────────────
 
+
 def test_parse_continue_flag():
     assert parse_cli_args(["-p", "-c", "go"]).continue_session is True
     assert parse_cli_args(["-p", "--continue", "go"]).continue_session is True
 
 
 def test_parse_session_fork_name():
-    args = parse_cli_args(
-        ["-p", "--session", "1718", "--name", "My chat", "go"]
-    )
+    args = parse_cli_args(["-p", "--session", "1718", "--name", "My chat", "go"])
     assert args.session == "1718"
     assert args.name == "My chat"
     assert parse_cli_args(["-p", "--fork", "1718", "go"]).fork == "1718"
@@ -229,6 +325,7 @@ def test_resolve_no_model_no_default_raises():
 
 # ── @file / prompt assembly ─────────────────────────────────────────────────
 
+
 def test_assemble_joins_parts():
     assert assemble_prompt(["hello", "world"]) == "hello\nworld"
 
@@ -246,11 +343,18 @@ def test_assemble_missing_file_raises():
 
 # ── headless run_print (fake backend) ───────────────────────────────────────
 
+
 class _FakeBackend:
     def __init__(self, config):
         self.config = config
 
-    async def stream_chat(self, messages, callback, on_event=None):
+    async def load_extensions(self, explicit_paths=None, *, discover=True, user_dir=None):
+        from tau_agent_core.sdk import LoadExtensionsResult
+
+        self.loaded_extensions = (explicit_paths, discover)  # capture for wiring assertions
+        return LoadExtensionsResult()
+
+    async def stream_chat(self, messages, callback, on_event=None, on_pi_event=None):
         self.messages = messages
         deltas = ["Hello ", "world"]
         if on_event is not None:
@@ -259,6 +363,33 @@ class _FakeBackend:
             callback(d)
             if on_event is not None:
                 on_event({"kind": "text_delta", "delta": d})
+        # pi-faithful ``--mode json`` sink (step S8): the real TauBackend feeds
+        # this from the AgentEvent bus; here a minimal but shaped stand-in proves
+        # headless writes the header FIRST and forwards these ``type``-discriminated
+        # events (no ``kind``/``done``). The message_end carries usage/model/
+        # stop_reason, the per-child limit signal the delegate reads.
+        if on_pi_event is not None:
+            on_pi_event({"type": "turn_start", "turn_index": 0})
+            on_pi_event(
+                {
+                    "type": "message_end",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Hello world"}],
+                        "usage": {"total_tokens": 3},
+                        "model": "qwen3-32b-kv4b",
+                        "stop_reason": "stop",
+                    },
+                }
+            )
+            on_pi_event(
+                {
+                    "type": "agent_end",
+                    "messages": [
+                        {"role": "assistant", "content": [{"type": "text", "text": "Hello world"}]},
+                    ],
+                }
+            )
         # A realistic (if minimal) agent-loop transcript so the persistence
         # test sees an assistant message land in the saved session.
         new_messages = [
@@ -304,15 +435,27 @@ async def test_run_print_text_mode(fake_backend, capsys):
 
 
 async def test_run_print_json_mode(fake_backend, capsys):
-    rc = await run_print(
-        CLIArgs(messages=["hi"], print_mode=True, mode="json"), _config()
-    )
+    # pi-faithful --mode json (step S8): the session HEADER line first, then
+    # ``type``-discriminated AgentSessionEvents. No legacy ``kind`` key, no
+    # synthetic ``done`` line.
+    rc = await run_print(CLIArgs(messages=["hi"], print_mode=True, mode="json"), _config())
     assert rc == 0
     lines = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
-    kinds = [e["kind"] for e in lines]
-    assert kinds == ["turn_start", "text_delta", "text_delta", "done"]
-    assert lines[-1]["text"] == "Hello world"
-    assert lines[-1]["usage"] == {"total_tokens": 3}
+
+    # Header FIRST (pi print-mode.ts:113-116): the raw session header entry.
+    assert lines[0]["type"] == "session"
+
+    # Every line is ``type``-discriminated — never the legacy ``kind`` schema.
+    assert all("kind" not in e for e in lines)
+    types = [e["type"] for e in lines]
+    assert types == ["session", "turn_start", "message_end", "agent_end"]
+
+    # The message_end carries the per-message usage/model/stop_reason the delegate
+    # (step S9) reads for per-child limits + the stop_reason taxonomy.
+    (message_end,) = [e for e in lines if e["type"] == "message_end"]
+    assert message_end["message"]["usage"] == {"total_tokens": 3}
+    assert message_end["message"]["model"] == "qwen3-32b-kv4b"
+    assert message_end["message"]["stop_reason"] == "stop"
 
 
 async def test_run_print_requires_message(fake_backend):
@@ -328,7 +471,21 @@ async def test_run_print_system_prompt_override(fake_backend, capsys):
     assert fake_backend["backend"].messages[0] == {"role": "system", "content": "ROLE"}
 
 
+async def test_run_print_appends_system_prompt(fake_backend, capsys):
+    """--append-system-prompt augments (not replaces) the base prompt (S28)."""
+    await run_print(
+        CLIArgs(messages=["hi"], print_mode=True, append_system_prompt=["EXTRA RULE"]),
+        _config(),
+    )
+    sys_msg = fake_backend["backend"].messages[0]
+    assert sys_msg["role"] == "system"
+    # Base config prompt is kept; the appended section follows it.
+    assert "You are helpful." in sys_msg["content"]
+    assert "EXTRA RULE" in sys_msg["content"]
+
+
 # ── headless persistence (sessions resumable from the TUI) ──────────────────
+
 
 async def test_run_print_persists_resumable_session(fake_backend, capsys):
     from tau_coding_agent.session_store import Session
@@ -353,11 +510,26 @@ async def test_run_print_persists_resumable_session(fake_backend, capsys):
 
 async def test_run_print_persists_in_json_mode_too(fake_backend, capsys):
     # Persistence is independent of output format — json mode saves a session too.
-    rc = await run_print(
-        CLIArgs(messages=["hi"], print_mode=True, mode="json"), _config()
-    )
+    rc = await run_print(CLIArgs(messages=["hi"], print_mode=True, mode="json"), _config())
     assert rc == 0
     assert len(_session_files(fake_backend["tau_dir"])) == 1
+
+
+async def test_run_print_no_session_is_ephemeral(fake_backend, capsys):
+    # --no-session runs against an in-memory session (path=None): the turn still
+    # streams, but nothing is written to the sandboxed sessions dir.
+    rc = await run_print(CLIArgs(messages=["hi"], print_mode=True, no_session=True), _config())
+    assert rc == 0
+    assert capsys.readouterr().out == "Hello world\n"
+    assert _session_files(fake_backend["tau_dir"]) == []
+
+
+async def test_run_print_no_session_rejects_continue(fake_backend):
+    with pytest.raises(CLIError, match="--no-session can't be combined"):
+        await run_print(
+            CLIArgs(messages=["hi"], print_mode=True, no_session=True, continue_session=True),
+            _config(),
+        )
 
 
 async def test_run_print_save_failure_propagates(fake_backend, monkeypatch):
@@ -374,6 +546,7 @@ async def test_run_print_save_failure_propagates(fake_backend, monkeypatch):
 
 
 # ── main() dispatch ─────────────────────────────────────────────────────────
+
 
 def test_main_messages_without_print_is_error(capsys):
     rc = cli.main(["hello"])
@@ -405,15 +578,35 @@ def test_main_launches_tui_with_overrides(monkeypatch):
     captured = {}
 
     class FakeParley:
-        def __init__(self, cli_overrides=None):
+        def __init__(self, cli_overrides=None, cli_run_config=None):
             captured["overrides"] = cli_overrides
+            captured["run_config"] = cli_run_config
 
         def run(self):
             captured["ran"] = True
 
     monkeypatch.setattr("tau_coding_agent.app.Parley", FakeParley)
     monkeypatch.setattr(cli, "load_config", lambda: _config())
-    rc = cli.main(["--model", "gpt-4o"])
+    rc = cli.main(
+        [
+            "--model",
+            "gpt-4o",
+            "-e",
+            "demo.py",
+            "-xt",
+            "bash, write",
+            "--append-system-prompt",
+            "RULE",
+        ]
+    )
     assert rc == 0 and captured["ran"] is True
     assert captured["overrides"]["default_model"] == "gpt-4o"
     assert "gpt-4o" in captured["overrides"]["models"]
+    # Run-level flags reach the app separately from the model overrides (S28):
+    # extensions, the parsed exclude-tools denylist, and the appended prompt.
+    rcfg = captured["run_config"]
+    assert rcfg["extensions"] == ["demo.py"]
+    assert rcfg["no_extensions"] is False
+    assert rcfg["exclude_tools"] == ["bash", "write"]
+    assert rcfg["no_builtin_tools"] is False
+    assert rcfg["append_system_prompt"] == ["RULE"]

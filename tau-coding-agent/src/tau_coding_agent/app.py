@@ -19,19 +19,30 @@ import json
 import os
 import time
 import traceback
-from typing import Any, Optional
+from typing import Any, Callable, Literal, Optional
 
 from tau_coding_agent.backends import create_backend, Backend
+from tau_coding_agent.headless import _append_system_prompt
 
 # Session persistence lives in a Textual-free module so `tau -p` can save
 # sessions without importing the TUI. Sessions are append-only JSONL transcripts
 # partitioned by cwd (docs/SESSION-UX-REDESIGN.md); the TUI keeps a live working
 # message list and funnels each produced message through Session.append_message.
-from tau_coding_agent.session_store import TAU_DIR, Session, SessionInfo, list_sessions
+from tau_coding_agent.session_store import (
+    TAU_DIR,
+    Session,
+    SessionInfo,
+    list_sessions,
+    subscribe_session_events,
+)
 
 # The pure session-tree algebra lives in tau-agent-core (the loop's package, not
 # the TUI); the tree-browser (§3) is a view over ConversationTree.tree().
 from tau_agent_core.conversation_tree import ConversationTree, TreeNode
+
+# Extension load result + the read-only per-extension summary the /extensions
+# palette listing renders (E5 §5 / S34).
+from tau_agent_core.sdk import LoadExtensionsResult, summarize_extensions
 
 # Collapsible chat components. MessageBox (below) is the universal per-message
 # host; these are the children it composes — one reasoning region and N tool
@@ -43,6 +54,51 @@ from tau_coding_agent.chat_widgets import (
     format_duration,
     format_tokens,
 )
+
+
+class _ExtensionUIDelegate:
+    """Paints a loaded extension's ``api.notify(...)`` onto the live TUI (E5 §4 / S33).
+
+    Bound onto every extension's shared ``ExtensionContext`` via
+    ``TauBackend.set_ui_delegate`` → ``AgentSession.set_ui_delegate`` after each
+    ``create_backend``, so ``api.ui.notify(msg, level)`` reaches the Textual screen
+    instead of the headless stderr sink. Extension hooks run on the app's event
+    loop (the generation worker is async, not threaded), so ``App.notify`` is
+    called directly.
+
+    S33 wires ``notify`` only; the interactive dialogs (``confirm`` / ``select`` /
+    ``input``) RAISE rather than silently auto-approving — flipping into TUI mode
+    must not turn a `confirm` prompt into a hidden "yes" (Fail-Early). Their modals
+    are a later step; no shipped extension calls them.
+    """
+
+    #: extension notify level → Textual ``App.notify`` severity.
+    _SEVERITY: dict[str, Literal["information", "warning", "error"]] = {
+        "info": "information",
+        "warning": "warning",
+        "error": "error",
+    }
+
+    def __init__(self, app: "Parley") -> None:
+        self._app = app
+
+    def notify(self, message: str, level: str = "info") -> None:
+        self._app.notify(message, severity=self._SEVERITY.get(level, "information"))
+
+    async def confirm(self, title: str, message: str) -> bool:
+        raise NotImplementedError(
+            "extension api.ui.confirm is not wired into the TUI yet (S33 wired notify only)"
+        )
+
+    async def select(self, title: str, items: list[str]) -> str | None:
+        raise NotImplementedError(
+            "extension api.ui.select is not wired into the TUI yet (S33 wired notify only)"
+        )
+
+    async def input(self, title: str, default: str = "") -> str:
+        raise NotImplementedError(
+            "extension api.ui.input is not wired into the TUI yet (S33 wired notify only)"
+        )
 
 
 class SystemPromptEditor(ModalScreen):
@@ -198,6 +254,10 @@ ROLE_LABELS: dict[str, str] = {
     "system": "System",
     "toolCall": "Tool call",
     "toolResult": "Tool result",
+    # Extension-injected durable node (before_agent_start, E5 §3.1): rendered
+    # distinctly so it never reads as a literal user turn (role "custom" on the
+    # node, serialized custom→user only on the wire).
+    "custom": "Extension",
 }
 
 
@@ -1018,11 +1078,36 @@ class Parley(App):
     # finally.
     is_generating: reactive[bool] = reactive(False)
 
-    def __init__(self, cli_overrides: Optional[dict] = None):
+    def __init__(
+        self,
+        cli_overrides: Optional[dict] = None,
+        cli_run_config: Optional[dict] = None,
+    ):
         super().__init__()
         # The live conversation context (sent to the model). Mirrors the active
         # session's messages but is mutable for clear/compact.
         self.messages: list[dict] = []
+        # Seam-3 → extension bus bridge (S21): the module-global session-lifecycle
+        # subscription for the CURRENT backend. Rebound on every _bind_backend_session
+        # (new-chat / clear / resume / model-swap) — unsub the old backend first so a
+        # replaced backend's dead bus stops receiving events (no listener leak).
+        self._session_event_unsub: Optional[Callable[[], None]] = None
+        # Run-level extension loading config (CLI ``-e`` / ``-ne``), applied to
+        # EVERY backend this app creates via ``_load_backend_extensions`` so a model
+        # switch doesn't drop extensions (E5 §2.2). Defaults match a bare ``tau``:
+        # no explicit paths, discovery ON (scan ``~/.tau/extensions``).
+        run_config = cli_run_config or {}
+        self._extension_paths: list[str] = list(run_config.get("extensions", []))
+        self._discover_extensions: bool = not run_config.get("no_extensions", False)
+        # The most recent extension load result (E5 §5 / S34) — read by the
+        # ``/extensions`` palette listing. Starts empty (nothing loaded yet); every
+        # ``_load_backend_extensions`` replaces it with the live result.
+        self._extension_load_result: LoadExtensionsResult = LoadExtensionsResult()
+        # Run-level tool/prompt flags (S28), applied at each create_backend /
+        # new-chat so a model switch keeps them. Defaults are inert (a bare tau).
+        self._exclude_tools: list[str] = list(run_config.get("exclude_tools", []))
+        self._no_builtin_tools: bool = bool(run_config.get("no_builtin_tools", False))
+        self._append_system_prompt: list[str] = list(run_config.get("append_system_prompt", []))
         self.load_config()
         if cli_overrides:
             self._apply_cli_overrides(cli_overrides)
@@ -1135,14 +1220,38 @@ class Parley(App):
             self.action_browse_tree()
             return
 
+        # /extensions lists the loaded extensions (read-only, E5 §5 / S34).
+        # Intercepted here so the text is UI chrome, never a prompt to the model.
+        if message == "/extensions":
+            self.action_show_extensions()
+            return
+
+        # Extension-registered slash commands (E5 §5 / S35): dispatch BEFORE the
+        # text reaches the model. A leading "/" whose name matches a registered
+        # command runs its handler (pi ``_tryExecuteExtensionCommand``, splitting
+        # ``/name args`` on the first space); an UNKNOWN "/…" returns False here and
+        # falls through to be sent as an ordinary prompt.
+        if message.startswith("/"):
+            runner = getattr(self.current_backend, "run_extension_command", None)
+            if runner is not None:
+                stripped = message[1:]
+                space = stripped.find(" ")
+                cmd_name = stripped if space == -1 else stripped[:space]
+                cmd_args = "" if space == -1 else stripped[space + 1 :]
+                if await runner(cmd_name, cmd_args):
+                    return
+
         # Create new session if needed
         if self.current_session is None:
             await self.action_new_chat()
         assert self.current_session is not None  # action_new_chat sets current_session
 
-        # Add user message to the working list + persist it.
+        # Add the user turn to the working list so it is part of the context sent
+        # to the model this turn. Do NOT persist it here: the AgentSession (bound to
+        # this live Session, E3-ctx / D3) is the sole persister — it records the user
+        # turn when the loop runs. The working list is reconciled back to the
+        # authoritative log at turn-end (``self.messages = session.context``).
         self.messages.append({"role": "user", "content": message})
-        self.current_session.append_message({"role": "user", "content": message})
 
         # Display user message
         display = self.query_one(ChatDisplay)
@@ -1220,7 +1329,7 @@ class Parley(App):
         assert self.current_session is not None  # set before a turn runs
         start = time.time()
         await display.begin_exchange()
-        content, usage, new_messages, tool_calls_info = await self.current_backend.stream_chat(
+        content, usage, _new_messages, tool_calls_info = await self.current_backend.stream_chat(
             self.messages,
             lambda _delta: None,
             on_event=on_event,
@@ -1230,16 +1339,110 @@ class Parley(App):
         # Collapse the exchange to its summary and surface the final answer.
         await display.finalize_exchange(tokens=usage.get("total_tokens", 0), seconds=elapsed)
 
-        # Append the loop's new messages (assistant responses + tool results,
-        # skipping the user message already in self.messages) to both the working
-        # list and the session — append-on-message persists each as it lands.
-        for msg in new_messages:
-            if msg.get("role") != "user":
-                self.messages.append(msg)
-                self.current_session.append_message(msg)
+        # Rebuild the working list as a VIEW over the authoritative session
+        # (E3-ctx / D3, pi ``rebuildChatFromMessages``). The AgentSession — bound to
+        # this live Session — already persisted this turn's user + assistant/tool
+        # messages as the loop ran; there is one write path, so the app no longer
+        # appends them itself (that was the double-write). Reading ``session.context``
+        # back reconciles the working list (which carried a transient copy of the
+        # user turn) with what was actually recorded, applying any compaction/branch
+        # splice. This is a data rebuild only — the incremental streaming render
+        # already mounted this turn's widgets, so the display is left untouched.
+        self.messages = list(self.current_session.context)
 
         # Refresh sidebar
         self.query_one(ChatSidebar).refresh_chats()
+
+    def _bind_backend_session(self) -> None:
+        """Rebind the backend's AgentSession onto the current live ``Session``.
+
+        Called after every point that makes a ``Session`` current (new-chat, clear,
+        resume) so the AgentSession persists the turn — and any agent-driven
+        compact/navigate — through the one on-disk log the TUI reads back (E3-ctx /
+        D3, AgentSession is the sole persister). Guarded by ``getattr`` so a backend
+        without the seam (a test double, or a non-``TauBackend``) is a no-op rather
+        than an error.
+        """
+        binder = getattr(self.current_backend, "bind_session_log", None)
+        if binder is not None and self.current_session is not None:
+            binder(self.current_session)
+
+        # Seam-3 → extension bus (S21 / §E3c.4): route this backend's session
+        # lifecycle events onto its AgentSession's EventBus so extension handlers
+        # (api.on("session_before_compact", …)) fire. Rebind on every current-session
+        # change, dropping the previous backend's subscription first so a swapped
+        # backend's dead bus stops receiving events (single live listener, no leak).
+        if self._session_event_unsub is not None:
+            self._session_event_unsub()
+            self._session_event_unsub = None
+        agent_session = getattr(self.current_backend, "agent_session", None)
+        if agent_session is not None:
+            self._session_event_unsub = subscribe_session_events(agent_session.route_session_event)
+
+    def _apply_run_config(self, model_config: dict) -> dict:
+        """Inject run-level tool flags into a model_config before create_backend (S28).
+
+        ``--no-builtin-tools`` drops the built-in tool set (``tools=[]``);
+        extension-registered tools survive because they merge in later
+        (``AgentSession._build_turn_tools``). ``--exclude-tools`` rides as an
+        ``exclude_tools`` denylist that ``TauBackend`` applies to the resolved
+        built-ins. Returns the config unchanged when neither flag is set, so a bare
+        ``tau`` is untouched; otherwise a shallow copy (never mutate the shared
+        ``config["models"]`` entry).
+        """
+        if not (self._exclude_tools or self._no_builtin_tools):
+            return model_config
+        mc = dict(model_config)
+        if self._no_builtin_tools:
+            mc["tools"] = []
+        if self._exclude_tools:
+            mc["exclude_tools"] = self._exclude_tools
+        return mc
+
+    async def _load_backend_extensions(self) -> None:
+        """Load file-path extensions into the current backend's live session (E5 §2.2).
+
+        Called after every ``create_backend`` (new-chat, model-swap, resume) so a
+        file extension's mutating hooks fire in the ``AgentSession`` that backend
+        drives — the TUI half of the seam the E0–E4 loader left disconnected (§0).
+        Loads the run-level explicit ``-e`` paths + ``~/.tau/extensions`` discovery
+        (unless ``-ne``).
+
+        Errors are surfaced as TUI notices, never to stderr — a stderr write during
+        a live Textual render corrupts the screen (this is why the loader stopped
+        printing, S25). A *discovered* failure shows a per-extension warning; an
+        *explicit* ``-e`` failure raises out of ``load_extensions`` (Fail-Early) and
+        is caught here into a loud error notice, since a launched TUI can't cleanly
+        exit mid-session. Guarded by ``getattr`` so a backend without the seam (a
+        test double, a non-``TauBackend``) is a no-op.
+        """
+        # Route extension api.notify(...) to this TUI (E5 §4 / S33). Set on every
+        # backend that supports it, right after it is created, so a loaded
+        # extension's notify paints on-screen instead of the headless stderr sink.
+        # Guarded by getattr so a non-TauBackend test double is a no-op.
+        set_delegate = getattr(self.current_backend, "set_ui_delegate", None)
+        if set_delegate is not None:
+            set_delegate(_ExtensionUIDelegate(self))
+
+        # Reset first so a backend swap never leaves the /extensions listing (S34)
+        # showing the previous backend's extensions if this load fails or no-ops.
+        self._extension_load_result = LoadExtensionsResult()
+
+        loader = getattr(self.current_backend, "load_extensions", None)
+        if loader is None:
+            return
+        try:
+            result = await loader(self._extension_paths or None, discover=self._discover_extensions)
+        except Exception as e:
+            self.notify(f"Extension failed to load: {e}", severity="error")
+            self.log.error(f"Extension load failed: {e}", exc_info=True)
+            return
+        # Keep the result for the /extensions palette listing (E5 §5 / S34).
+        self._extension_load_result = result
+        for err in result.errors:
+            self.notify(f"Extension error ({err.path}): {err.error}", severity="warning")
+        if result.extensions:
+            self.log(f"Loaded {len(result.extensions)} extension(s)")
 
     async def action_new_chat(self, model: Optional[str] = None):
         """Start a new chat."""
@@ -1257,7 +1460,7 @@ class Parley(App):
 
         # Create backend
         try:
-            self.current_backend = create_backend(model_config)
+            self.current_backend = create_backend(self._apply_run_config(model_config))
             self.log(f"Created backend: {model_config.get('backend')} for model {model}")
         except Exception as e:
             self.notify(f"Failed to create backend: {str(e)}", severity="error")
@@ -1265,13 +1468,20 @@ class Parley(App):
             return
 
         # Create new session (writes the header + system message; append-only).
-        system_prompt = self.config.get("system_prompt", "You are a helpful assistant.")
+        # --append-system-prompt sections augment the base prompt on a NEW session
+        # (S28); a resumed session keeps its own stored prompt, so no append there.
+        system_prompt = _append_system_prompt(
+            self.config.get("system_prompt", "You are a helpful assistant."),
+            self._append_system_prompt,
+        )
         self.current_session = Session.create(
             os.getcwd(),
             model,
             model_config["backend"],
             system_prompt=system_prompt or None,
         )
+        self._bind_backend_session()
+        await self._load_backend_extensions()
         self.messages = list(self.current_session.context)
 
         # Clear display
@@ -1303,6 +1513,65 @@ class Parley(App):
     def action_toggle_tools(self) -> None:
         """Fold/unfold every tool box (call + result) in the transcript at once."""
         self.tools_collapsed = self._fold_all(self.query(ToolBox), "Tool output")
+
+    def action_show_extensions(self) -> None:
+        """List loaded extensions + load errors in the transcript (E5 §5 / S34).
+
+        Read-only (D-E5-6: runtime enable/reload deferred). Reads the last
+        ``_load_backend_extensions`` result — the now-populated registry/runner via
+        :func:`summarize_extensions` — and renders it as a display-only ``system``
+        box. This is UI chrome, NOT a conversation node: it is neither appended to
+        the working message list nor persisted, so the durable-hook invariant (the
+        model's input = system prompt + the linear active path) is untouched.
+        """
+        listing = self._format_extensions_listing(self._extension_load_result)
+        self.query_one(ChatDisplay).add_message("system", listing)
+
+    async def _dispatch_extension_command(self, name: str) -> None:
+        """Run an extension-registered command from the palette (E5 §5 / S35).
+
+        The command-palette entry (:meth:`get_system_commands`) invokes this;
+        it forwards to the live backend's :meth:`run_extension_command` with no
+        args (the palette has no argument line). A handler exception is surfaced
+        as an error notice (pi's ``_tryExecuteExtensionCommand`` likewise reports
+        rather than crashing the screen), never swallowed silently.
+        """
+        runner = getattr(self.current_backend, "run_extension_command", None)
+        if runner is None:
+            return
+        try:
+            await runner(name)
+        except Exception as e:
+            self.notify(f"Command /{name} failed: {e}", severity="error")
+            self.log.error(f"Extension command /{name} failed: {e}", exc_info=True)
+
+    @staticmethod
+    def _format_extensions_listing(result: LoadExtensionsResult) -> str:
+        """Render a ``LoadExtensionsResult`` as the ``/extensions`` listing text (S34).
+
+        Pure (no widget access) so it is unit-testable: given the load result it
+        returns the exact markdown the listing box shows — a section per loaded
+        extension (name, path, tools/commands/hooks) plus a load-errors section.
+        """
+        infos = summarize_extensions(result)
+        if not infos and not result.errors:
+            return "No extensions loaded."
+
+        lines: list[str] = ["# Extensions"]
+        for info in infos:
+            lines.append("")
+            lines.append(f"**{info.name}** — `{info.path}`")
+            lines.append(f"- hooks: {', '.join(info.hooks) if info.hooks else '(none)'}")
+            lines.append(f"- tools: {', '.join(info.tools) if info.tools else '(none)'}")
+            lines.append(f"- commands: {', '.join(info.commands) if info.commands else '(none)'}")
+
+        if result.errors:
+            lines.append("")
+            lines.append("## Load errors")
+            for err in result.errors:
+                lines.append(f"- `{err.path}`: {err.error}")
+
+        return "\n".join(lines)
 
     def _fold_all(self, widgets, label: str) -> bool:
         """Collapse all ``widgets`` if any is currently expanded, else expand all.
@@ -1409,6 +1678,25 @@ class Parley(App):
             self.action_toggle_tools,
         )
 
+        yield SystemCommand(
+            "Extensions",
+            "List loaded extensions (name/path/tools/commands/hooks) and load errors",
+            self.action_show_extensions,
+        )
+
+        # Extension-registered slash commands (E5 §5 / S35): list each so it is BOTH
+        # visible here and runnable (dispatch mirrors this in on_input_submitted).
+        # Read from the live backend's session registry; getattr-guarded so a
+        # non-TauBackend test double is a no-op, matching set_ui_delegate/load_extensions.
+        get_commands = getattr(self.current_backend, "get_extension_commands", None)
+        if get_commands is not None:
+            for cmd_name, cmd_desc in get_commands():
+                yield SystemCommand(
+                    f"/{cmd_name}",
+                    cmd_desc or f"Run extension command /{cmd_name}",
+                    lambda n=cmd_name: self._dispatch_extension_command(n),
+                )
+
     async def action_clear_chat(self):
         """Clear the current conversation, starting a fresh session.
 
@@ -1431,6 +1719,7 @@ class Parley(App):
             self.current_session.backend,
             system_prompt=system_prompt,
         )
+        self._bind_backend_session()
         self.messages = list(self.current_session.context)
 
         # Clear display
@@ -1606,8 +1895,10 @@ class Parley(App):
                 self.notify(f"Model {session.model} not found in config", severity="error")
                 return
 
-            self.current_backend = create_backend(model_config)
+            self.current_backend = create_backend(self._apply_run_config(model_config))
             self.current_session = session
+            self._bind_backend_session()
+            await self._load_backend_extensions()
             # Seed from the active-path context (cursor + compaction/branch splices),
             # NOT the raw linear fold — else a resumed compacted/branched session
             # would render its dropped history and hide the summary (§2.6).

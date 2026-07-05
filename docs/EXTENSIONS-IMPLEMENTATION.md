@@ -1,5 +1,14 @@
 # Extensions chain E0 → E4 — implementation spec
 
+> **Update (2026-07-04): S1–S23 LANDED**, plus **S24** (the `api.on` →
+> `ExtensionRunner` bridge — a plan gap found in post-run verification: the four
+> mutating hooks were unreachable from the public API). **Follow-on work is
+> `docs/EXTENSIONS-E5-WIRING.md`** (loader→session→runner wiring + the durable-hook
+> invariant). Two items below are **superseded by E5**: the **`context` hook (S14)
+> is eliminated** (tree-as-truth: no ephemeral per-call message channel), and
+> **`before_agent_start` message injection becomes durable** (persisted tree nodes).
+> `tool_call` / `tool_result` as specified here remain correct.
+
 > **Status: PLAN (2026-07-03).** The buildable, per-phase spec for the extension
 > beeline of `docs/EXTENSIONS-ORCHESTRATION-PLAN.md` (§3 API, §5 demos, §7
 > phasing; open decisions RESOLVED in §8). pi is the source of truth for API
