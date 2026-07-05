@@ -20,8 +20,9 @@ step table. This package currently ships:
   :func:`~ext_kit.gate.revert_and_recheck`.
 * :mod:`ext_kit.state` (S56) — the *backplane*: :class:`~ext_kit.state.TreeStore`
   (typed, reload-safe records over the durable ``customEntry`` node, reconstructed
-  along the active path) and :class:`~ext_kit.state.FileStore` (atomic cross-session
-  JSON under ``~/.tau/ext-state/``).
+  along the active path), :class:`~ext_kit.state.FileStore` (atomic cross-session
+  JSON under ``~/.tau/ext-state/``), and :func:`~ext_kit.state.active_cursor` (the
+  "where am I now" leaf-id replay ``41_bookmarks`` uses to record a waypoint).
 * :mod:`ext_kit.ledger` (S57) — the *budget / ledger*: :class:`~ext_kit.ledger.Pricing`
   (``from_config`` price lookup + ``cost_of``), :class:`~ext_kit.ledger.UsageMeter`
   (folds ``message_end`` / S45 usage into token + dollar totals),
@@ -79,6 +80,7 @@ from ext_kit.state import (
     STATE_DIR_NAME,
     FileStore,
     TreeStore,
+    active_cursor,
 )
 from ext_kit.ledger import (
     CEILING_OK,
@@ -140,6 +142,7 @@ __all__ = [
     "TurnDebouncer",
     "UsageMeter",
     "WorkerPool",
+    "active_cursor",
     "build_child_args",
     "event_tool_signature",
     "iter_jsonl",

@@ -324,18 +324,40 @@ class TestExtensionAPIAppendEntry:
 class TestExtensionAPISession:
     """Tests for ExtensionAPI session methods."""
 
-    def test_set_session_name_noop_without_session(self):
-        """ExtensionAPI.set_session_name() is a no-op without a session."""
+    def test_set_session_name_raises_without_session(self):
+        """ExtensionAPI.set_session_name() Fail-Early raises without a bound
+        session (S64: the old ``_session_name``-attribute check was a silent
+        no-op on every real session; a bare API has nowhere durable to land
+        the name either, so it raises like its sibling durable-write ops)."""
         api = ExtensionAPI()
-        api.set_session_name("My Session")  # should not raise
+        with pytest.raises(RuntimeError):
+            api.set_session_name("My Session")
 
     def test_set_session_name_with_session(self):
-        """ExtensionAPI.set_session_name() sets _session_name on session."""
+        """ExtensionAPI.set_session_name() forwards to the session log's
+        append_session_info (S64)."""
         mock_session = MagicMock()
-        mock_session._session_name = "old"
         api = ExtensionAPI(session=mock_session)
         api.set_session_name("new_name")
-        assert mock_session._session_name == "new_name"
+        mock_session._session_log.append_session_info.assert_called_once_with("new_name")
+
+    def test_get_session_name_raises_without_session(self):
+        """ExtensionAPI.get_session_name() Fail-Early raises without a bound
+        session (no durable name to read)."""
+        api = ExtensionAPI()
+        with pytest.raises(RuntimeError):
+            api.get_session_name()
+
+    def test_get_session_name_reads_the_session_log(self):
+        """ExtensionAPI.get_session_name() reads the session log's ``.name``,
+        returning ``None`` for a falsy (unset) name rather than the raw value."""
+        mock_session = MagicMock()
+        mock_session._session_log.name = None
+        api = ExtensionAPI(session=mock_session)
+        assert api.get_session_name() is None
+
+        mock_session._session_log.name = "existing-name"
+        assert api.get_session_name() == "existing-name"
 
     def test_send_user_message_raises_without_queue(self):
         """send_user_message() raises (not silent) until the E3-ctx queue exists.

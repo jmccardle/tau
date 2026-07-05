@@ -30,7 +30,7 @@ abandoned branches, a silent divergence from what the session actually shows. So
 :class:`TreeStore` walks the ``parentId`` chain from the current cursor to the
 root (the same active-path notion the tree renders), keeping only the
 ``customEntry`` records on it. The cursor is derived from the log itself by
-replaying its append/navigate algebra (:func:`_active_cursor`) — no private-attr
+replaying its append/navigate algebra (:func:`active_cursor`) — no private-attr
 reach, no harness import; the store composes ``api.append_entry`` +
 ``api.context.entries()`` only.
 
@@ -91,7 +91,7 @@ class _TreeBackplane(Protocol):
 # ── active-path reconstruction (pure, over the raw entry log) ────────────────
 
 
-def _active_cursor(entries: list[dict[str, Any]]) -> str | None:
+def active_cursor(entries: list[dict[str, Any]]) -> str | None:
     """The current leaf id, replaying the log's own append/navigate algebra.
 
     Mirrors ``InMemorySessionLog._append`` / ``append_navigate`` (and the on-disk
@@ -101,6 +101,10 @@ def _active_cursor(entries: list[dict[str, Any]]) -> str | None:
     re-parenting at the branch point). Replaying this over the ordered log yields
     the same cursor the session holds — so the store finds the active path without
     reaching a private ``session_log.cursor`` or importing ``ConversationTree``.
+
+    Public (S64 / ``41_bookmarks``): "where am I right now" is exactly this same
+    question a bookmark needs answered before it can record a waypoint, so this
+    helper is shared rather than re-derived — one cursor algebra, not two.
     """
     leaf: str | None = None
     for entry in entries:
@@ -124,7 +128,7 @@ def _active_path(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_id = {e["id"]: e for e in entries if "id" in e}
     chain: list[dict[str, Any]] = []
     seen: set[str] = set()
-    node_id = _active_cursor(entries)
+    node_id = active_cursor(entries)
     while node_id is not None and node_id in by_id and node_id not in seen:
         seen.add(node_id)
         node = by_id[node_id]

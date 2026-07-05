@@ -983,9 +983,62 @@ class ExtensionAPI:
         self._session._append_custom_entry(custom_type, data)
 
     def set_session_name(self, name: str) -> None:
-        """Set the session display name on the bound session."""
-        if hasattr(self._session, "_session_name"):
-            self._session._session_name = name
+        """Set the session's durable display name (pi ``setSessionName``, E9 / S64).
+
+        Forwards to the bound session's underlying log via
+        ``append_session_info`` — the SAME entry kind the file-backed
+        ``tau_coding_agent.session_store.Session`` already exposes through its
+        ``.name`` property (and ``display_title()``'s "name, else first user
+        message" fallback), so a name set here shows up in the session
+        selector / TUI title exactly like a manually-renamed session file.
+        ``ConversationTree`` never folds a ``session_info`` entry into context
+        (the same non-message treatment as ``model_change``/``thinking_change``),
+        so this is ambient, reload-invariant metadata: persisted, but never model
+        input.
+
+        The prior implementation looked for a ``_session_name`` attribute that
+        ``AgentSession`` never defines — a silent no-op on every real session
+        (only a ``MagicMock``'s auto-vivified attributes made the old tests
+        pass). This corrects it to actually persist (Fail-Early: raise instead
+        of silently doing nothing).
+
+        Raises:
+            RuntimeError: no session is bound, or the bound session's log has no
+                ``append_session_info`` (e.g. the SDK's RAM-only
+                ``InMemorySessionLog`` — session naming needs a file-backed log).
+            ValueError: ``name`` is empty.
+        """
+        if not name:
+            raise ValueError("set_session_name: name must be a non-empty string")
+        log = getattr(self._session, "_session_log", None)
+        if log is None or not hasattr(log, "append_session_info"):
+            raise RuntimeError(
+                "set_session_name: the bound session has no append_session_info "
+                "log (e.g. an in-memory SDK session) — nowhere durable to land the name"
+            )
+        log.append_session_info(name)
+
+    def get_session_name(self) -> str | None:
+        """Read the session's current display name (pi ``getSessionName``), or
+        ``None`` if never set.
+
+        Reads the SAME ``.name`` property the file-backed ``Session`` already
+        derives from its latest ``session_info`` entry, so a fresh call always
+        reflects the persisted log rather than a cached value — correct across
+        a reload.
+
+        Raises:
+            RuntimeError: no session is bound, or the bound session's log has no
+                ``name`` (e.g. an in-memory SDK session).
+        """
+        log = getattr(self._session, "_session_log", None)
+        if log is None or not hasattr(log, "name"):
+            raise RuntimeError(
+                "get_session_name: the bound session has no durable name to read "
+                "(e.g. an in-memory SDK session)"
+            )
+        name = log.name
+        return str(name) if name else None
 
     def send_user_message(self, content: str, deliver_as: str = "followUp") -> None:
         """Queue a user message for the agent (pi ``sendUserMessage``).

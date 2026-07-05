@@ -1050,12 +1050,14 @@ class TestExtensions:
 
         session = self.create_session(extensions=[my_ext])
 
-    def test_extension_api_can_set_session_name(self):
-        """ExtensionAPI.set_session_name() forwards to the bound session."""
+    def test_extension_api_set_session_name_raises_on_in_memory_session(self):
+        """ExtensionAPI.set_session_name() Fail-Early raises when the bound
+        session's log has no durable name slot (the SDK's in-memory log, as
+        this fixture uses) — session naming needs a file-backed log (S64)."""
         def my_ext(api):
-            api.set_session_name("test-session")  # should not raise
-            # The API is bound to the real AgentSession (no orphan session).
             assert api._session is not None
+            with pytest.raises(RuntimeError):
+                api.set_session_name("test-session")
 
         self.create_session(extensions=[my_ext])
 

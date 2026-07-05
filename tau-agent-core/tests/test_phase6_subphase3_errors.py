@@ -769,12 +769,13 @@ class TestExtensionErrorHandling:
         session_mock._append_custom_entry.assert_called_once_with("custom_type", {"key": "value"})
 
     def test_extension_api_set_session_name(self):
-        """ExtensionAPI.set_session_name() forwards to the bound session."""
+        """ExtensionAPI.set_session_name() forwards to the session log's
+        append_session_info (S64) — a MagicMock's auto-vivified attribute
+        satisfies the ``hasattr`` duck-type check."""
         session = MagicMock()
-        session._session_name = "old"
         api = ExtensionAPI(session=session)
         api.set_session_name("my-session")
-        assert session._session_name == "my-session"
+        session._session_log.append_session_info.assert_called_once_with("my-session")
 
     def test_extension_api_get_all_tools_empty(self):
         """ExtensionAPI.get_all_tools() returns list."""
