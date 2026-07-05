@@ -1,0 +1,49 @@
+"""``ext_kit`` — agentic extension primitives (extension-side, NOT the harness).
+
+Reference: docs/EXTENSIONS-DEMO-ROADMAP.md §4 (E8).
+
+A small importable library shipped alongside the demo extensions. Everything here
+composes τ's **public** surface only (the ``tau`` CLI + the SDK); it is not part
+of ``tau-agent-core`` / ``tau-coding-agent``. One module per atom — see the E8
+step table. This package currently ships:
+
+* :mod:`ext_kit.spawn` (S53) — isolated-agent spawning: :func:`~ext_kit.spawn.spawn_tau`,
+  the :func:`~ext_kit.spawn.stream_tau` event iterator, usage/cost roll-up, and a
+  bounded :class:`~ext_kit.spawn.WorkerPool`.
+"""
+
+from __future__ import annotations
+
+from ext_kit.spawn import (
+    DEFAULT_STUCK_LIMIT,
+    FAILED_REASONS,
+    ChildResult,
+    ChildUsage,
+    SpawnLimits,
+    TauEvent,
+    WorkerPool,
+    build_child_args,
+    price_increment,
+    roll_message_usage,
+    spawn_all,
+    spawn_tau,
+    stream_tau,
+    tau_invocation,
+)
+
+__all__ = [
+    "DEFAULT_STUCK_LIMIT",
+    "FAILED_REASONS",
+    "ChildResult",
+    "ChildUsage",
+    "SpawnLimits",
+    "TauEvent",
+    "WorkerPool",
+    "build_child_args",
+    "price_increment",
+    "roll_message_usage",
+    "spawn_all",
+    "spawn_tau",
+    "stream_tau",
+    "tau_invocation",
+]
