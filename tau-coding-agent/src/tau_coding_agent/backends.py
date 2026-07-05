@@ -306,6 +306,17 @@ class TauBackend(Backend):
         """
         self.agent_session.set_ui_delegate(delegate)
 
+    def set_extension_record_sink(self, sink: Any) -> None:
+        """Forward a headless JSON record sink to the wrapped session (E7 §3 / S49 — G10).
+
+        The ``--mode json`` headless path hands in a writer that serializes each
+        extension record to one stdout line; this routes every loaded extension's
+        ``api.ui.notify(...)`` there instead of the headless stderr sink, so a parent
+        reading the child stream can see the child's extension activity. Delegates to
+        :meth:`AgentSession.set_extension_record_sink`.
+        """
+        self.agent_session.set_extension_record_sink(sink)
+
     def set_headless_ui_defaults(self, policy: dict[str, str]) -> None:
         """Forward the headless dialog-answer policy to the session (E7 §3 / S48).
 

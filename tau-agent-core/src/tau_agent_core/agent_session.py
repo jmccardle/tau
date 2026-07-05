@@ -1402,7 +1402,11 @@ class AgentSession:
         """
         message = f"extension error in {error.extension_path} ({error.event}): {error.error}"
         try:
-            self._extension_api.ui.notify(message, "warning")
+            # ``source`` attributes the record on the headless JSON stream (S49); it
+            # is ignored by the TUI delegate / stderr sinks. Unlike a plain
+            # ``api.ui.notify`` (shared UI, no per-call attribution), the error
+            # surface DOES know which extension failed, so it names it honestly.
+            self._extension_api.ui.notify(message, "warning", source=error.extension_path)
         except Exception as report_err:  # noqa: BLE001 — reporter must not crash the loop
             import sys
 
@@ -1439,6 +1443,19 @@ class AgentSession:
         path, so ``tau -p`` keeps the stderr behaviour.
         """
         self._extension_api.context.set_ui_delegate(delegate)
+
+    def set_extension_record_sink(self, sink: Any) -> None:
+        """Route extension activity to a headless JSON record sink (E7 §3 / S49 — G10).
+
+        Sets the sink on the session's ONE shared :class:`ExtensionUI` (via the
+        context), so every loaded extension's ``api.ui.notify(...)`` emits a
+        ``{"type": "extension", …}`` record through ``sink`` instead of the headless
+        stderr line — the parallel record family the ``--mode json`` frontend writes
+        alongside the closed ``AgentEvent`` set. Only the headless JSON path installs
+        one; the TUI sets a live delegate instead and ``--mode text`` leaves it unset
+        (stderr, unchanged). Passing ``None`` clears it.
+        """
+        self._extension_api.context.set_record_sink(sink)
 
     def set_headless_ui_defaults(self, policy: dict[str, str]) -> None:
         """Set the headless dialog-answer policy for this session (E7 §3 / S48).

@@ -105,6 +105,13 @@ class ExtensionUI:
         self._mode: Literal["tui", "headless"] = mode
         self._tui_delegate: Any | None = None
         self._headless_policy: dict[str, str] = {}
+        # Headless JSON record sink (E7 §3 / S49 — anchor G10). When set (only the
+        # ``--mode json`` headless path does so), ``notify`` emits a structured
+        # ``{"type": "extension", …}`` record through it INSTEAD of the bare stderr
+        # line, so a parent reading a child ``tau -p --mode json`` stream can see the
+        # child's extension activity (the isolated-agent atom stays orchestratable).
+        # ``None`` → the pre-S49 stderr behaviour is unchanged (text mode, SDK).
+        self._record_sink: Callable[[dict[str, Any]], None] | None = None
         if headless_policy:
             self.set_headless_defaults(headless_policy)
 
@@ -190,18 +197,55 @@ class ExtensionUI:
         self._headless_token("input", title)  # raises if no policy; only "default" is valid
         return default
 
-    def notify(self, message: str, level: str = "info") -> None:
+    def set_record_sink(self, sink: Callable[[dict[str, Any]], None] | None) -> None:
+        """Install (or clear) the headless JSON record sink (E7 §3 / S49 — G10).
+
+        The frontends call this (via :meth:`AgentSession.set_extension_record_sink`)
+        on the ``--mode json`` headless path with a writer that serializes each
+        record to one stdout line — the parallel record family alongside the closed
+        ``AgentEvent`` set (like the session header line). Passing ``None`` restores
+        the plain stderr sink. Nothing calls this in the TUI or in ``--mode text``,
+        so those paths keep the delegate / stderr behaviour.
+        """
+        self._record_sink = sink
+
+    def notify(self, message: str, level: str = "info", *, source: str | None = None) -> None:
         """Show a notification.
 
-        In TUI mode, delegates to the TUI delegate.
-        In headless mode, prints to stderr.
+        Routing (first match wins):
+
+        - **TUI mode** with a delegate → paints on the delegate (the Textual toast).
+        - **headless ``--mode json``** (a :meth:`set_record_sink` is installed) →
+          emits one ``{"type": "extension", "kind": "notify", …}`` record through the
+          sink instead of stderr, so extension activity is visible in the JSON event
+          stream (S49 — anchor G10).
+        - otherwise (headless ``--mode text`` / SDK) → prints to stderr, unchanged.
+
+        ``source`` is the originating extension's identity when the caller knows it
+        (the S44 error-surface path passes the failing extension's path). A plain
+        ``api.ui.notify(...)`` cannot supply one: every bound extension shares the
+        session's ONE :class:`ExtensionUI` (``api.ui`` is that single instance — a
+        test-enforced invariant), so the shared sink has no per-call attribution.
+        Fail-Early: the record then carries ``"extension": null`` — the honest
+        "unattributed" value — rather than a fabricated name.
         """
         if self._mode == "tui" and self._tui_delegate:
             self._tui_delegate.notify(message, level)
-        else:
-            import sys
+            return
+        if self._record_sink is not None:
+            self._record_sink(
+                {
+                    "type": "extension",
+                    "kind": "notify",
+                    "extension": source,
+                    "level": level,
+                    "message": message,
+                }
+            )
+            return
+        import sys
 
-            print(f"[τ] {level}: {message}", file=sys.stderr)
+        print(f"[τ] {level}: {message}", file=sys.stderr)
 
 
 class ExtensionContext:
@@ -536,6 +580,16 @@ class ExtensionContext:
         """
         self._ui._mode = "tui"
         self._ui._tui_delegate = delegate
+
+    def set_record_sink(self, sink: Callable[[dict[str, Any]], None] | None) -> None:
+        """Install the headless JSON record sink on the shared UI (E7 §3 / S49).
+
+        Delegates to :meth:`ExtensionUI.set_record_sink`; the headless ``--mode json``
+        path calls this (via :meth:`AgentSession.set_extension_record_sink`) so every
+        loaded extension's ``api.ui.notify(...)`` becomes a structured record on the
+        JSON stream instead of a stderr line (anchor G10).
+        """
+        self._ui.set_record_sink(sink)
 
     def set_headless_ui_defaults(self, policy: dict[str, str]) -> None:
         """Set the headless dialog-answer policy on the shared UI (E7 §3 / S48).

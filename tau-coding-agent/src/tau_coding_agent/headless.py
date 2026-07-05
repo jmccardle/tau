@@ -485,6 +485,25 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
         except ValueError as exc:
             raise CLIError(str(exc)) from exc
 
+    # Extension activity on the JSON stream (E7 §3 / S49 — anchor G10). In
+    # ``--mode json`` install a record sink so every loaded extension's
+    # ``api.ui.notify(...)`` (and the S44 error surface) emits a
+    # ``{"type": "extension", …}`` record — a parallel record family alongside the
+    # closed ``AgentEvent`` set, like the session header line — instead of the bare
+    # stderr line. Set BEFORE the load/lifecycle below so a ``register`` /
+    # ``session_start`` notify is already captured. ``--mode text`` leaves the sink
+    # unset (stderr, unchanged); a non-``TauBackend`` test double without the seam is
+    # a transparent no-op (same ``getattr`` guard as the other seams).
+    if args.mode == "json":
+        set_record_sink = getattr(backend, "set_extension_record_sink", None)
+        if set_record_sink is not None:
+
+            def _emit_extension_record(record: dict[str, Any]) -> None:
+                sys.stdout.write(json.dumps(record) + "\n")
+                sys.stdout.flush()
+
+            set_record_sink(_emit_extension_record)
+
     # Session-lifecycle hooks (E6 §2 / S41). ``session_start`` fires once
     # extensions are loaded; ``session_shutdown`` fires on headless COMPLETION and
     # on SIGINT/SIGTERM. Resolved via ``getattr`` so a non-``TauBackend`` test
