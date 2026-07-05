@@ -17,6 +17,10 @@ from textual.widgets import (
     TextArea,
     Tree,
     OptionList,
+    Checkbox,
+    RadioSet,
+    RadioButton,
+    SelectionList,
 )
 from textual.binding import Binding
 from textual.reactive import reactive
@@ -49,6 +53,10 @@ from tau_coding_agent.session_store import (
 # The pure session-tree algebra lives in tau-agent-core (the loop's package, not
 # the TUI); the tree-browser (§3) is a view over ConversationTree.tree().
 from tau_agent_core.conversation_tree import ConversationTree, TreeNode
+
+# The declarative ``ui.form`` spec validator — the single source of truth the
+# generic ``ExtensionFormScreen`` shares with ``ExtensionUI.form`` (E10 §6 / S66).
+from tau_agent_core.extension_types import validate_form_spec
 
 # The result of running an extension command (handled flag + the handler's
 # returned output) — the command output channel (E7 §3 / S46).
@@ -115,6 +123,12 @@ class _ExtensionUIDelegate:
         # (the same value the headless path returns), never a fabricated "".
         result = await self._app.push_screen_wait(ExtensionInputModal(title, default))
         return result if result is not None else default
+
+    async def form(self, spec: dict[str, Any]) -> dict[str, Any] | None:
+        # One generic screen renders every field kind (E10 §6 / S66). Submit
+        # dismisses with the ``{name: value}`` dict; Esc/Cancel dismisses with
+        # ``None`` (a cancelled form is not a fabricated answer set — Fail-Early).
+        return await self._app.push_screen_wait(ExtensionFormScreen(spec))
 
 
 class SystemPromptEditor(ModalScreen):
@@ -359,6 +373,129 @@ class ExtensionInputModal(ModalScreen[Optional[str]]):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "ext-input-ok":
             self.dismiss(self.query_one("#ext-input-field", Input).value)
+        else:
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ExtensionFormScreen(ModalScreen[Optional[dict]]):
+    """One generic declarative form for an extension's ``api.ui.form`` (E10 §6 / S66).
+
+    The τ answer to pi's ``question``/``questionnaire`` widget factory: instead of an
+    extension shipping bespoke TUI code, it hands ``ui.form`` a plain-data SPEC
+    (D-E6-4) and THIS single screen renders every field. One widget maps to each
+    :data:`~tau_agent_core.extension_types.FORM_FIELD_KINDS` kind:
+
+    - ``text`` / ``number`` → :class:`Input` (``number`` restricts to numerics);
+    - ``confirm`` → :class:`Checkbox` (its own label carries the field label);
+    - ``select`` → :class:`RadioSet` of :class:`RadioButton` (single choice);
+    - ``multiselect`` → :class:`SelectionList` (N-of-M).
+
+    ``Submit`` dismisses with the ``{name: value}`` answers dict; ``Cancel``/``Esc``
+    dismisses with ``None`` (a cancelled form is not a fabricated answer set —
+    Fail-Early). The spec is validated by the SAME
+    :func:`~tau_agent_core.extension_types.validate_form_spec` the headless path
+    uses, so the two frontends can never disagree about a field's meaning.
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(self, spec: dict[str, Any]) -> None:
+        super().__init__()
+        # Re-validate the raw spec here (idempotent with ExtensionUI.form's own
+        # check) so the screen is self-contained and never renders a malformed field.
+        self._form_title, self._fields = validate_form_spec(spec)
+
+    @staticmethod
+    def _field_widget_id(index: int) -> str:
+        return f"ext-form-field-{index}"
+
+    def compose(self) -> ComposeResult:
+        with Container(id="ext-form-dialog"):
+            yield Static(self._form_title, id="ext-form-title")
+            with VerticalScroll(id="ext-form-fields"):
+                for index, field in enumerate(self._fields):
+                    yield from self._compose_field(index, field)
+            yield Static("Submit: confirm    Esc: cancel", id="ext-form-help")
+            with Horizontal(id="ext-form-buttons"):
+                yield Button("Submit", variant="primary", id="ext-form-submit")
+                yield Button("Cancel", variant="default", id="ext-form-cancel")
+
+    def _compose_field(self, index: int, field: dict[str, Any]) -> ComposeResult:
+        wid = self._field_widget_id(index)
+        kind = field["kind"]
+        label = field["label"]
+        if kind == "confirm":
+            # The Checkbox carries its own label; no separate Static row.
+            yield Checkbox(label, value=bool(field.get("default", False)), id=wid)
+            return
+        yield Static(label, classes="ext-form-label")
+        if kind in ("text", "number"):
+            default = field.get("default", "")
+            yield Input(
+                value="" if default == "" else str(default),
+                id=wid,
+                type="number" if kind == "number" else "text",
+                classes="ext-form-input",
+            )
+        elif kind == "select":
+            options = field["options"]
+            chosen = field.get("default", options[0])
+            yield RadioSet(
+                *(RadioButton(opt, value=(opt == chosen)) for opt in options),
+                id=wid,
+            )
+        elif kind == "multiselect":
+            options = field["options"]
+            chosen_set = set(field.get("default", []) or [])
+            yield SelectionList[str](
+                *((opt, opt, opt in chosen_set) for opt in options),
+                id=wid,
+            )
+
+    def _collect(self) -> dict[str, Any]:
+        answers: dict[str, Any] = {}
+        for index, field in enumerate(self._fields):
+            wid = f"#{self._field_widget_id(index)}"
+            kind = field["kind"]
+            name = field["name"]
+            if kind == "text":
+                answers[name] = self.query_one(wid, Input).value
+            elif kind == "number":
+                answers[name] = self._parse_number(self.query_one(wid, Input).value, field)
+            elif kind == "confirm":
+                answers[name] = self.query_one(wid, Checkbox).value
+            elif kind == "select":
+                radio_set = self.query_one(wid, RadioSet)
+                idx = radio_set.pressed_index
+                options = field["options"]
+                # A RadioSet always keeps one pressed once composed with a default;
+                # -1 (nothing pressed) falls back to the declared/first option.
+                answers[name] = (
+                    options[idx] if 0 <= idx < len(options) else field.get("default", options[0])
+                )
+            elif kind == "multiselect":
+                answers[name] = list(self.query_one(wid, SelectionList).selected)
+        return answers
+
+    @staticmethod
+    def _parse_number(text: str, field: dict[str, Any]) -> Any:
+        # The Input is numeric-restricted, so ``text`` is a number or empty. An empty
+        # field resolves to the declared default (or 0) — a UI default the user left
+        # untouched, not a fabricated headless answer.
+        stripped = text.strip()
+        if not stripped:
+            return field.get("default", 0)
+        try:
+            return int(stripped)
+        except ValueError:
+            return float(stripped)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "ext-form-submit":
+            self.dismiss(self._collect())
         else:
             self.dismiss(None)
 

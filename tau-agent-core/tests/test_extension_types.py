@@ -27,6 +27,8 @@ from tau_agent_core.extension_types import (
     ExtensionContext,
     ExtensionUI,
     HeadlessDialogError,
+    form_headless_value,
+    validate_form_spec,
 )
 from tau_agent_core.extensions.registry import ExtensionRegistry
 from tau_agent_core.events import EventBus
@@ -477,6 +479,190 @@ class TestExtensionAPIProperty:
         api = ExtensionAPI()
         ctx = api.context
         assert isinstance(ctx, ExtensionContext)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ui.form — declarative form spec (E10 §6 / S66)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+_FULL_FORM_SPEC = {
+    "title": "New task",
+    "fields": [
+        {"name": "desc", "kind": "text", "label": "Description", "default": "draft"},
+        {"name": "prio", "kind": "select", "options": ["low", "high"], "default": "high"},
+        {"name": "tags", "kind": "multiselect", "options": ["a", "b", "c"], "default": ["b"]},
+        {"name": "urgent", "kind": "confirm", "default": True},
+        {"name": "points", "kind": "number", "default": 3},
+    ],
+}
+
+
+class TestValidateFormSpec:
+    """validate_form_spec normalizes a good spec and Fail-Early rejects bad ones."""
+
+    def test_normalizes_title_and_fields(self):
+        title, fields = validate_form_spec(_FULL_FORM_SPEC)
+        assert title == "New task"
+        assert [f["name"] for f in fields] == ["desc", "prio", "tags", "urgent", "points"]
+        # label defaults to name when absent (the select field declared none).
+        assert next(f for f in fields if f["name"] == "prio")["label"] == "prio"
+        # options preserved for select/multiselect.
+        assert next(f for f in fields if f["name"] == "tags")["options"] == ["a", "b", "c"]
+
+    def test_title_defaults_to_form(self):
+        title, _ = validate_form_spec({"fields": [{"name": "x", "kind": "text"}]})
+        assert title == "Form"
+
+    def test_non_dict_spec_raises(self):
+        with pytest.raises(ValueError, match="spec must be a dict"):
+            validate_form_spec(["not", "a", "dict"])
+
+    def test_empty_fields_raises(self):
+        with pytest.raises(ValueError, match="non-empty list"):
+            validate_form_spec({"fields": []})
+
+    def test_missing_fields_raises(self):
+        with pytest.raises(ValueError, match="non-empty list"):
+            validate_form_spec({"title": "x"})
+
+    def test_field_missing_name_raises(self):
+        with pytest.raises(ValueError, match="non-empty string 'name'"):
+            validate_form_spec({"fields": [{"kind": "text"}]})
+
+    def test_duplicate_name_raises(self):
+        spec = {"fields": [{"name": "x", "kind": "text"}, {"name": "x", "kind": "number"}]}
+        with pytest.raises(ValueError, match="duplicate field name"):
+            validate_form_spec(spec)
+
+    def test_unknown_kind_raises(self):
+        with pytest.raises(ValueError, match="unknown kind"):
+            validate_form_spec({"fields": [{"name": "x", "kind": "slider"}]})
+
+    def test_select_without_options_raises(self):
+        with pytest.raises(ValueError, match="needs a non-empty 'options' list"):
+            validate_form_spec({"fields": [{"name": "x", "kind": "select"}]})
+
+    def test_multiselect_non_string_options_raises(self):
+        spec = {"fields": [{"name": "x", "kind": "multiselect", "options": [1, 2]}]}
+        with pytest.raises(ValueError, match="'options' must all be strings"):
+            validate_form_spec(spec)
+
+    def test_non_string_label_raises(self):
+        spec = {"fields": [{"name": "x", "kind": "text", "label": 5}]}
+        with pytest.raises(ValueError, match="label must be a string"):
+            validate_form_spec(spec)
+
+
+class TestFormHeadlessValue:
+    """form_headless_value returns the declared default or the kind's empty value."""
+
+    def test_declared_default_wins(self):
+        _, fields = validate_form_spec(_FULL_FORM_SPEC)
+        by_name = {f["name"]: f for f in fields}
+        assert form_headless_value(by_name["desc"]) == "draft"
+        assert form_headless_value(by_name["prio"]) == "high"
+        assert form_headless_value(by_name["tags"]) == ["b"]
+        assert form_headless_value(by_name["urgent"]) is True
+        assert form_headless_value(by_name["points"]) == 3
+
+    def test_natural_empty_per_kind_without_default(self):
+        spec = {
+            "fields": [
+                {"name": "t", "kind": "text"},
+                {"name": "n", "kind": "number"},
+                {"name": "c", "kind": "confirm"},
+                {"name": "m", "kind": "multiselect", "options": ["a", "b"]},
+                {"name": "s", "kind": "select", "options": ["a", "b"]},
+            ]
+        }
+        _, fields = validate_form_spec(spec)
+        by_name = {f["name"]: f for f in fields}
+        assert form_headless_value(by_name["t"]) == ""
+        assert form_headless_value(by_name["n"]) == 0
+        assert form_headless_value(by_name["c"]) is False
+        assert form_headless_value(by_name["m"]) == []
+        # select has no empty value — falls back to its first (concrete) option.
+        assert form_headless_value(by_name["s"]) == "a"
+
+
+class TestExtensionUIForm:
+    """ExtensionUI.form headless routing: raise / policy defaults / json record."""
+
+    @pytest.mark.asyncio
+    async def test_form_raises_headless_without_policy(self):
+        # Fail-Early: no form policy → raise, NEVER silently auto-fill.
+        ui = ExtensionUI(mode="headless")
+        with pytest.raises(HeadlessDialogError):
+            await ui.form(_FULL_FORM_SPEC)
+
+    @pytest.mark.asyncio
+    async def test_form_defaults_policy_returns_declared_defaults(self):
+        ui = ExtensionUI(mode="headless")
+        ui.set_headless_defaults({"form": "defaults"})
+        answers = await ui.form(_FULL_FORM_SPEC)
+        assert answers == {
+            "desc": "draft",
+            "prio": "high",
+            "tags": ["b"],
+            "urgent": True,
+            "points": 3,
+        }
+
+    @pytest.mark.asyncio
+    async def test_form_validates_before_policy(self):
+        # A malformed spec fails up front regardless of policy (no UI shown).
+        ui = ExtensionUI(mode="headless")
+        ui.set_headless_defaults({"form": "defaults"})
+        with pytest.raises(ValueError, match="unknown kind"):
+            await ui.form({"fields": [{"name": "x", "kind": "nope"}]})
+
+    @pytest.mark.asyncio
+    async def test_form_emits_json_record_then_resolves(self):
+        ui = ExtensionUI(mode="headless")
+        ui.set_headless_defaults({"form": "defaults"})
+        records: list[dict] = []
+        ui.set_record_sink(records.append)
+        answers = await ui.form(_FULL_FORM_SPEC)
+        assert answers["prio"] == "high"
+        assert len(records) == 1
+        rec = records[0]
+        assert rec["type"] == "extension"
+        assert rec["kind"] == "form"
+        assert rec["extension"] is None
+        assert rec["title"] == "New task"
+        assert [f["name"] for f in rec["fields"]] == ["desc", "prio", "tags", "urgent", "points"]
+
+    @pytest.mark.asyncio
+    async def test_form_emits_record_even_when_it_will_raise(self):
+        # The request is visible on the stream before the Fail-Early raise.
+        ui = ExtensionUI(mode="headless")
+        records: list[dict] = []
+        ui.set_record_sink(records.append)
+        with pytest.raises(HeadlessDialogError):
+            await ui.form(_FULL_FORM_SPEC)
+        assert len(records) == 1
+        assert records[0]["kind"] == "form"
+
+    @pytest.mark.asyncio
+    async def test_form_ui_defaults_rejects_bad_form_token(self):
+        # Only "defaults" is a valid form answer (validated like every method).
+        ui = ExtensionUI(mode="headless")
+        with pytest.raises(ValueError, match="form="):
+            ui.set_headless_defaults({"form": "yes"})
+
+    @pytest.mark.asyncio
+    async def test_form_delegates_in_tui_mode(self):
+        # TUI mode routes to the delegate (a human fills it); no policy needed.
+        ui = ExtensionUI(mode="tui")
+
+        class _Delegate:
+            async def form(self, spec):
+                return {"desc": "typed", "prio": "low"}
+
+        ui._tui_delegate = _Delegate()
+        answers = await ui.form(_FULL_FORM_SPEC)
+        assert answers == {"desc": "typed", "prio": "low"}
 
 
 # ──────────────────────────────────────────────────────────────────────────────

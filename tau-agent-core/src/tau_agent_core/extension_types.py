@@ -63,10 +63,111 @@ HEADLESS_DIALOG_ANSWERS: dict[str, frozenset[str]] = {
     "confirm": frozenset({"yes", "no", "true", "false"}),
     "select": frozenset({"first"}),
     "input": frozenset({"default"}),
+    # A declarative ``ui.form`` (E10 §6 / S66). The only explicit headless answer is
+    # ``defaults`` — return each field's declared default (or the kind's natural
+    # empty value). With no ``form`` policy the form RAISES like every other dialog;
+    # it NEVER silently auto-fills a form the user did not fill.
+    "form": frozenset({"defaults"}),
 }
 
 #: Confirm tokens that resolve to ``True`` (the rest of ``confirm`` → ``False``).
 _CONFIRM_TRUE_TOKENS: frozenset[str] = frozenset({"yes", "true"})
+
+#: The field kinds a ``ui.form`` spec may declare (E10 §6 / S66 — D-E6-4: a
+#: DECLARATIVE spec, not a widget factory). Each frontend renders these its own way
+#: (the TUI as one generic ``ExtensionFormScreen``); headless degrades to a JSON
+#: record + the ``form=defaults`` policy.
+FORM_FIELD_KINDS: frozenset[str] = frozenset({"text", "select", "multiselect", "confirm", "number"})
+
+#: The natural EMPTY value per field kind, used for the headless ``form=defaults``
+#: answer when a field declares no ``default`` (``select`` has no empty value — it
+#: falls back to its first option, which is always concrete).
+_FORM_EMPTY_VALUE: dict[str, Any] = {
+    "text": "",
+    "number": 0,
+    "confirm": False,
+    "multiselect": [],
+}
+
+
+def validate_form_spec(spec: Any) -> tuple[str, list[dict[str, Any]]]:
+    """Validate + normalize a ``ui.form`` spec into ``(title, fields)`` (S66).
+
+    The single source of truth for the declarative form contract, shared by
+    :meth:`ExtensionUI.form` (headless path + early-fail) and the TUI's
+    ``ExtensionFormScreen`` (which re-validates the same raw spec), so the two can
+    never disagree about what a field means.
+
+    ``spec`` is a plain dict ``{title?: str, fields: [field, ...]}``; each field is
+    ``{name: str, kind: str, label?: str, default?: Any, options?: [str, ...]}``.
+    A ``select``/``multiselect`` field MUST carry a non-empty ``options`` list of
+    strings. Returns the resolved title (defaults to ``"Form"``) and the normalized
+    field list (``label`` defaulted to ``name``; ``default``/``options`` preserved
+    when present).
+
+    Fail-Early: a non-dict spec, an empty/absent ``fields`` list, a field missing a
+    non-empty string ``name``, a duplicate name, an unknown ``kind``, or a
+    select/multiselect without a valid ``options`` list RAISES :class:`ValueError`
+    rather than silently dropping the field.
+    """
+    if not isinstance(spec, dict):
+        raise ValueError("ui.form: spec must be a dict")
+    title = spec.get("title", "Form")
+    if not isinstance(title, str):
+        raise ValueError("ui.form: spec['title'] must be a string")
+    raw_fields = spec.get("fields")
+    if not isinstance(raw_fields, list) or not raw_fields:
+        raise ValueError("ui.form: spec['fields'] must be a non-empty list")
+
+    fields: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in raw_fields:
+        if not isinstance(raw, dict):
+            raise ValueError("ui.form: each field must be a dict")
+        name = raw.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError("ui.form: each field needs a non-empty string 'name'")
+        if name in seen:
+            raise ValueError(f"ui.form: duplicate field name {name!r}")
+        seen.add(name)
+        kind = raw.get("kind")
+        if kind not in FORM_FIELD_KINDS:
+            raise ValueError(
+                f"ui.form: field {name!r} has unknown kind {kind!r} "
+                f"(expected one of {sorted(FORM_FIELD_KINDS)})"
+            )
+        label = raw.get("label", name)
+        if not isinstance(label, str):
+            raise ValueError(f"ui.form: field {name!r} label must be a string")
+        field: dict[str, Any] = {"name": name, "kind": kind, "label": label}
+        if "default" in raw:
+            field["default"] = raw["default"]
+        if kind in ("select", "multiselect"):
+            options = raw.get("options")
+            if not isinstance(options, list) or not options:
+                raise ValueError(f"ui.form: {kind} field {name!r} needs a non-empty 'options' list")
+            if not all(isinstance(o, str) for o in options):
+                raise ValueError(f"ui.form: field {name!r} 'options' must all be strings")
+            field["options"] = list(options)
+        fields.append(field)
+    return title, fields
+
+
+def form_headless_value(field: dict[str, Any]) -> Any:
+    """The ``form=defaults`` headless answer for one validated field (S66).
+
+    Returns the field's declared ``default`` when present (the extension author's
+    explicit value, trusted like ``input``'s default); otherwise the kind's natural
+    empty value (``select`` → its first option, which is always concrete). This is
+    only reached once the user opts in via ``--ui-defaults form=defaults`` — with no
+    policy the form raises instead of fabricating an answer.
+    """
+    if "default" in field:
+        return field["default"]
+    kind = field["kind"]
+    if kind == "select":
+        return field["options"][0]
+    return _FORM_EMPTY_VALUE[kind]
 
 
 class HeadlessDialogError(RuntimeError):
@@ -217,6 +318,52 @@ class ExtensionUI:
             return entered
         self._headless_token("input", title)  # raises if no policy; only "default" is valid
         return default
+
+    async def form(self, spec: dict[str, Any]) -> dict[str, Any] | None:
+        """Show a DECLARATIVE form and return ``{field_name: value}`` (E10 §6 / S66).
+
+        The τ answer to pi's ``question``/``questionnaire`` — but a plain-data SPEC,
+        not a widget factory (D-E6-4): ``spec = {title?, fields: [{name, kind,
+        label?, default?, options?}, ...]}`` with ``kind`` one of
+        :data:`FORM_FIELD_KINDS` (``text``/``select``/``multiselect``/``confirm``/
+        ``number``). The spec is validated by :func:`validate_form_spec` up front so
+        a malformed form fails BEFORE any UI is shown, in every mode.
+
+        Routing (mirrors the other blocking dialogs, S48):
+
+        - **TUI mode** with a delegate → delegates to the frontend's single generic
+          ``ExtensionFormScreen``; a real human fills it. Returns the ``{name:
+          value}`` dict on submit, or ``None`` on cancel/Esc (a cancelled form is
+          NOT a fabricated set of answers — Fail-Early, same as :meth:`select`).
+        - **headless ``--mode json``** (a record sink is installed) → first emits one
+          ``{"type": "extension", "kind": "form", …}`` record describing the request
+          (visibility on the stream, like :meth:`notify`), THEN resolves via policy.
+        - **headless policy** → with ``--ui-defaults form=defaults`` returns each
+          field's declared default (:func:`form_headless_value`); with NO ``form``
+          policy RAISES :class:`HeadlessDialogError`. It NEVER silently auto-fills a
+          form the user did not fill.
+
+        Returns:
+            ``dict[str, Any]`` mapping each field name to its answer, or ``None``
+            when a TUI user cancels. The headless ``defaults`` answer is always a
+            dict (the user opted in — there is nothing to cancel).
+        """
+        title, fields = validate_form_spec(spec)
+        if self._mode == "tui" and self._tui_delegate:
+            answers: dict[str, Any] | None = await self._tui_delegate.form(spec)
+            return answers
+        if self._record_sink is not None:
+            self._record_sink(
+                {
+                    "type": "extension",
+                    "kind": "form",
+                    "extension": None,
+                    "title": title,
+                    "fields": fields,
+                }
+            )
+        self._headless_token("form", title)  # raises if no policy; only "defaults" is valid
+        return {field["name"]: form_headless_value(field) for field in fields}
 
     def set_record_sink(self, sink: Callable[[dict[str, Any]], None] | None) -> None:
         """Install (or clear) the headless JSON record sink (E7 §3 / S49 — G10).

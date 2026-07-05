@@ -343,6 +343,66 @@ Screen {
     border: solid #cba6f7;
 }
 
+/* === Extension form (declarative fields) — E10 §6 / S66 === */
+#ext-form-dialog {
+    width: 70;
+    height: auto;
+    max-height: 90%;
+    background: #181825;
+    border: thick #45475a;
+    padding: 1;
+}
+
+#ext-form-title {
+    text-align: center;
+    text-style: bold;
+    color: #cba6f7;
+    margin-bottom: 1;
+}
+
+#ext-form-fields {
+    height: auto;
+    max-height: 24;
+}
+
+.ext-form-label {
+    color: #a6adc8;
+    margin-top: 1;
+}
+
+.ext-form-input {
+    background: #1e1e2e;
+    border: solid #45475a;
+    color: #cdd6f4;
+}
+
+.ext-form-input:focus {
+    border: solid #cba6f7;
+}
+
+#ext-form-help {
+    text-align: center;
+    color: #6c7086;
+    margin-top: 1;
+}
+
+#ext-form-buttons {
+    height: auto;
+    align: center middle;
+    margin-top: 1;
+}
+
+#ext-form-buttons Button {
+    margin: 0 1;
+    background: #313244;
+    border: solid #45475a;
+    color: #cdd6f4;
+}
+
+#ext-form-buttons Button:hover {
+    background: #45475a;
+}
+
 /* === Code blocks in markdown === */
 Markdown CodeBlock {
     background: #11111b;
