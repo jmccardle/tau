@@ -217,14 +217,16 @@ class ExtensionInfo:
     """Read-only summary of one loaded extension for the ``/extensions`` surface.
 
     Reference: EXTENSIONS-E5-WIRING.md §5 (E5.4 / S34). Carries an extension's
-    display ``name``, source ``path``, and the ``tools`` / ``commands`` / ``hooks``
-    it registered — everything the palette listing shows for a loaded extension.
+    display ``name``, source ``path``, and the ``tools`` / ``commands`` /
+    ``shortcuts`` / ``hooks`` it registered — everything the palette listing shows
+    for a loaded extension (shortcuts E10 §6 / S69).
     """
 
     name: str
     path: str
     tools: list[str]
     commands: list[str]
+    shortcuts: list[str]
     hooks: list[str]
 
 
@@ -257,6 +259,7 @@ def summarize_extensions(result: LoadExtensionsResult) -> list[ExtensionInfo]:
                 path=ext.path,
                 tools=list(bucket.tools),
                 commands=list(bucket.commands),
+                shortcuts=list(bucket.shortcuts),
                 hooks=sorted(bucket.handlers.keys()),
             )
         )

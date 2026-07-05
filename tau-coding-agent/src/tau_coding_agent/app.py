@@ -582,6 +582,53 @@ class ExtensionInputModal(ModalScreen[Optional[str]]):
         self.dismiss(None)
 
 
+class ExtensionChordScreen(ModalScreen[Optional[tuple[str, str]]]):
+    """Which-key popup for the ``ctrl+e`` extension shortcut chord (E10 §6 / S69).
+
+    The second half of an extension key binding: after the ``ctrl+e`` leader (the
+    guarded namespace), this modal lists every registered shortcut as
+    ``ctrl+e <key> → /command`` and captures the NEXT key. A matching key dismisses
+    with ``(command, args)`` — dispatched by :meth:`Parley.action_extension_chord`
+    through the SAME ``run_extension_command`` path a typed ``/name args`` uses;
+    ``escape`` (or any unbound key) dismisses ``None``.
+
+    Rendered as a menu (not a silent capture) so the guarded namespace is
+    DISCOVERABLE — the user sees what ``ctrl+e`` offers, the same shortcuts the
+    command palette also lists. Only ``Static`` children (none focusable), so the
+    screen itself receives the key event — no inner widget swallows the tail key.
+    """
+
+    def __init__(self, shortcuts: list[tuple[str, str, str, str]]) -> None:
+        super().__init__()
+        self._shortcuts = shortcuts
+        # tail key -> (command, args) for O(1) capture; the list drives display order.
+        self._by_key: dict[str, tuple[str, str]] = {
+            key: (command, args) for key, command, args, _desc in shortcuts
+        }
+
+    def compose(self) -> ComposeResult:
+        with Container(id="ext-chord-dialog"):
+            yield Static("Extension shortcuts — ctrl+e then…", id="ext-chord-title")
+            for key, command, args, desc in self._shortcuts:
+                label = f"  [b]{key}[/b]  →  /{command}"
+                if args:
+                    label += f" {args}"
+                if desc:
+                    label += f"   — {desc}"
+                yield Static(label, classes="ext-chord-entry")
+
+    def on_key(self, event: events.Key) -> None:
+        # The chord tail: a registered key dispatches its command, anything else
+        # (including escape) cancels. Stop + prevent-default either way so the
+        # captured key never leaks to the app underneath.
+        event.stop()
+        event.prevent_default()
+        if event.key == "escape":
+            self.dismiss(None)
+            return
+        self.dismiss(self._by_key.get(event.key))
+
+
 class ExtensionFormScreen(ModalScreen[Optional[dict]]):
     """One generic declarative form for an extension's ``api.ui.form`` (E10 §6 / S66).
 
@@ -1525,7 +1572,7 @@ class Parley(App):
     BINDINGS = [
         Binding("ctrl+b", "toggle_sidebar", "Sidebar"),
         Binding("ctrl+n", "new_chat", "New Chat"),
-        Binding("ctrl+e", "edit_system_prompt", "Edit Prompt"),
+        Binding("ctrl+e", "extension_chord", "Extensions"),
         Binding("ctrl+g", "browse_tree", "Tree"),
         Binding("ctrl+r", "toggle_reasoning", "Reasoning", priority=True),
         Binding("ctrl+t", "toggle_tools", "Tools", priority=True),
@@ -2198,6 +2245,8 @@ class Parley(App):
             lines.append(f"- hooks: {', '.join(info.hooks) if info.hooks else '(none)'}")
             lines.append(f"- tools: {', '.join(info.tools) if info.tools else '(none)'}")
             lines.append(f"- commands: {', '.join(info.commands) if info.commands else '(none)'}")
+            shortcuts_disp = ", ".join(f"ctrl+e {k}" for k in info.shortcuts) or "(none)"
+            lines.append(f"- shortcuts: {shortcuts_disp}")
 
         if result.errors:
             lines.append("")
@@ -2343,6 +2392,20 @@ class Parley(App):
                         help_text,
                         lambda n=cmd_name: self._dispatch_extension_command(n),
                     )
+
+        # Extension-registered key shortcuts (E10 §6 / S69): list each chord so it is
+        # palette-DISCOVERABLE (the guard's second discovery path alongside the ctrl+e
+        # menu) and runnable — the palette entry dispatches the shortcut's command
+        # through the SAME path as the chord and a typed /command.
+        get_shortcuts = getattr(self.current_backend, "get_extension_shortcuts", None)
+        if get_shortcuts is not None:
+            for key, command, args, desc in get_shortcuts():
+                help_text = desc or f"Run extension command /{command}"
+                yield SystemCommand(
+                    f"ctrl+e {key}  →  /{command}",
+                    help_text,
+                    lambda c=command, a=args: self._dispatch_extension_command(c, a),
+                )
 
     async def action_clear_chat(self):
         """Clear the current conversation, starting a fresh session.
@@ -2515,6 +2578,54 @@ class Parley(App):
         self.notify(
             "Summarized and moved to selected node" if summarize else "Moved to selected node"
         )
+
+    def _extension_shortcuts(self) -> list[tuple[str, str, str, str]]:
+        """The live backend's registered key shortcuts (E10 §6 / S69).
+
+        Returns ``(key, command, args, description)`` per shortcut, or ``[]`` when the
+        backend is a non-``TauBackend`` test double / not yet built (getattr-guarded,
+        matching the other extension-surface reads like :meth:`get_system_commands`).
+        """
+        getter = getattr(self.current_backend, "get_extension_shortcuts", None)
+        if getter is None:
+            return []
+        result: list[tuple[str, str, str, str]] = getter()
+        return result
+
+    async def action_extension_chord(self) -> None:
+        """The ``ctrl+e`` extension chord leader (E10 §6 / S69).
+
+        When one or more extensions registered a shortcut, ``ctrl+e`` opens the
+        :class:`ExtensionChordScreen` which-key menu; the picked key's command is
+        dispatched through :meth:`_dispatch_extension_command` (the SAME path the
+        palette and typed ``/name`` use), so a keyboard shortcut is a pure accelerator
+        over an already-runnable command — nothing model-visible, no new headless
+        surface (the command it fires stays reachable by name and via ``ctrl+p``).
+
+        When NO extension registered a shortcut, ``ctrl+e`` keeps its legacy meaning
+        and edits the system prompt — zero regression for the common case where the
+        chord namespace is empty.
+
+        Kept non-priority (matching the binding it replaced), so while the message
+        input is focused ``ctrl+e`` still moves to line-end (the ``TextArea`` default);
+        the chord fires when focus is off the input, and the palette (S69 listing) is
+        the always-reachable dispatch path. The menu is pushed with a result CALLBACK
+        (not ``push_screen_wait``, which requires a worker the binding action is not),
+        and the async command dispatch is scheduled from that callback via
+        ``run_worker``.
+        """
+        shortcuts = self._extension_shortcuts()
+        if not shortcuts:
+            await self.action_edit_system_prompt()
+            return
+
+        def _dispatch_chosen(chosen: Optional[tuple[str, str]]) -> None:
+            if chosen is None:
+                return
+            command, args = chosen
+            self.run_worker(self._dispatch_extension_command(command, args))
+
+        await self.push_screen(ExtensionChordScreen(shortcuts), _dispatch_chosen)
 
     async def action_edit_system_prompt(self):
         """Edit the system prompt."""

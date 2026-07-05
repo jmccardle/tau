@@ -59,11 +59,12 @@ class ExtensionHandlers:
     (``types.ts:1581``). One instance per loaded extension; the runner holds them
     in load order. Handlers for a given event are stored in registration order.
 
-    ``tools`` / ``commands`` are the names this extension contributed via
-    ``api.register_tool`` / ``api.register_command``. The registry itself stores
-    tools/commands globally (by name), with no per-extension attribution, so this
-    bucket is the one place that records *which* extension registered *what* —
-    exactly what the ``/extensions`` surface reads (E5 §5 / S34). Recorded in
+    ``tools`` / ``commands`` / ``shortcuts`` are the names/keys this extension
+    contributed via ``api.register_tool`` / ``api.register_command`` /
+    ``api.register_shortcut``. The registry itself stores them globally (by
+    name/key), with no per-extension attribution, so this bucket is the one place
+    that records *which* extension registered *what* — exactly what the
+    ``/extensions`` surface reads (E5 §5 / S34; shortcuts E10 §6 / S69). Recorded in
     registration order.
     """
 
@@ -71,6 +72,7 @@ class ExtensionHandlers:
     handlers: dict[str, list[HookHandler]] = field(default_factory=dict)
     tools: list[str] = field(default_factory=list)
     commands: list[str] = field(default_factory=list)
+    shortcuts: list[str] = field(default_factory=list)
 
     def on(self, event: str, handler: HookHandler) -> None:
         """Register ``handler`` for ``event`` (appended in registration order)."""

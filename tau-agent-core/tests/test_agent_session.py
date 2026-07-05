@@ -1186,6 +1186,37 @@ class TestExtensions:
         with pytest.raises(TypeError, match="non-string 'args'"):
             session.get_extension_command_args("bad")
 
+    # -- Key shortcuts (E10 §6 / S69) -----------------------------------------
+
+    def test_get_extension_shortcuts_lists_registered(self):
+        """Registered shortcuts are exposed as (key, command, args, description)."""
+        def my_ext(api):
+            api.register_shortcut("g", "fleet_status", description="Fleet status")
+            api.register_shortcut("1", "abort_child", args="c-1")
+
+        session = self.create_session(extensions=[my_ext])
+        assert session.get_extension_shortcuts() == [
+            ("g", "fleet_status", "", "Fleet status"),
+            ("1", "abort_child", "c-1", ""),
+        ]
+
+    def test_get_extension_shortcuts_description_falls_back_to_command(self):
+        """An undescribed shortcut inherits its target command's description."""
+        def my_ext(api):
+            api.register_command(
+                "fleet_status", {"description": "Show the fleet", "handler": lambda a, c: None}
+            )
+            api.register_shortcut("g", "fleet_status")
+
+        session = self.create_session(extensions=[my_ext])
+        assert session.get_extension_shortcuts() == [
+            ("g", "fleet_status", "", "Show the fleet"),
+        ]
+
+    def test_get_extension_shortcuts_empty_when_none_registered(self):
+        session = self.create_session()
+        assert session.get_extension_shortcuts() == []
+
 
 # =============================================================================
 # Test 8: In-memory session is isolated

@@ -50,6 +50,7 @@ def register(api):
         "execute": _exec,
     })
     api.register_command("hello", {"description": "say hi"})
+    api.register_shortcut("g", "hello")
     api.on("tool_result", lambda event, ctx: None)
     api.on("tool_call", lambda event, ctx: None)
 """
@@ -81,6 +82,7 @@ async def test_summarize_reports_name_path_tools_commands_hooks(tmp_path):
     assert info.path == str(ext)
     assert info.tools == ["probe"]
     assert info.commands == ["hello"]
+    assert info.shortcuts == ["g"]
     # Hooks are sorted for a stable listing.
     assert info.hooks == ["tool_call", "tool_result"]
 
@@ -98,6 +100,7 @@ async def test_summarize_attributes_per_extension(tmp_path):
     # The hook-only extension contributed nothing else — no bleed from full_ext.
     assert infos["hook_ext"].tools == []
     assert infos["hook_ext"].commands == []
+    assert infos["hook_ext"].shortcuts == []
     assert infos["hook_ext"].hooks == ["before_agent_start"]
     # And full_ext keeps its own registrations.
     assert infos["full_ext"].tools == ["probe"]

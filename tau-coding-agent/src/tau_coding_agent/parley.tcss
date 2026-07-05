@@ -343,6 +343,27 @@ Screen {
     border: solid #cba6f7;
 }
 
+/* === Extension shortcut chord (which-key menu) — E10 §6 / S69 === */
+#ext-chord-dialog {
+    width: 70;
+    height: auto;
+    max-height: 90%;
+    background: #181825;
+    border: thick #45475a;
+    padding: 1;
+}
+
+#ext-chord-title {
+    text-align: center;
+    text-style: bold;
+    color: #cba6f7;
+    margin-bottom: 1;
+}
+
+.ext-chord-entry {
+    color: #cdd6f4;
+}
+
 /* === Extension form (declarative fields) — E10 §6 / S66 === */
 #ext-form-dialog {
     width: 70;

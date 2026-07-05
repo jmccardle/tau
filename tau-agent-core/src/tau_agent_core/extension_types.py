@@ -1326,6 +1326,73 @@ class ExtensionAPI:
         if self._hook_handlers is not None:
             self._hook_handlers.commands.append(name)
 
+    def register_shortcut(
+        self,
+        key: str,
+        command: str,
+        *,
+        args: str = "",
+        description: str | None = None,
+    ) -> None:
+        """Bind a key to a command in the guarded extension chord namespace (E10 §6 / S69).
+
+        Mirrors pi's ``registerShortcut(shortcut, options)`` (types.ts:1182), adapted
+        to τ's dispatch model: instead of a raw handler callable, a shortcut names a
+        ``command`` an extension registered via :meth:`register_command`, dispatched
+        exactly like a panel action (S68) or a typed ``/name args``. Keeping the
+        binding a command name (not an opaque callable) means the SAME verb is
+        reachable three ways — chord, palette, and ``/command`` — and stays runnable
+        headless (a keyboard shortcut has no headless surface, but the command it
+        fires does).
+
+        ``key`` is the chord TAIL — the second key pressed after the ``ctrl+e``
+        extension leader. This is the "guarded namespace": the TUI only ever binds
+        extension shortcuts under that leader, never as bare global keys, so an
+        extension physically cannot clobber a core binding (``ctrl+c``/``ctrl+n``/…).
+        Registering ``key="g"`` for ``command="fleet_status"`` makes ``ctrl+e`` then
+        ``g`` dispatch ``/fleet_status``.
+
+        Args:
+            key: The chord-tail key (e.g. ``"g"``, ``"1"``). A non-empty token with
+                no whitespace.
+            command: The name of the command to dispatch (a ``register_command``
+                name). Not required to exist yet at registration time — an unknown
+                command surfaces at dispatch (``handled=False``), like a panel action.
+            args: Argument string passed to the command's handler (default ``""``),
+                the same slot a typed ``/name args`` fills.
+            description: Optional label for the chord menu / palette entry; falls back
+                to the command's own registered description when omitted.
+
+        Raises:
+            ValueError: ``key`` or ``command`` is not a non-empty string, or ``key``
+                contains whitespace (a chord tail is a single key token — Fail-Early
+                rather than silently binding an unreachable key).
+            TypeError: ``args`` is not a string, or ``description`` is neither a
+                string nor ``None``.
+        """
+        if not isinstance(key, str) or not key:
+            raise ValueError("register_shortcut: 'key' must be a non-empty string")
+        if any(c.isspace() for c in key):
+            raise ValueError(
+                f"register_shortcut: 'key' {key!r} must be a single key token "
+                "(no whitespace); it is the chord tail after the ctrl+e leader"
+            )
+        if not isinstance(command, str) or not command:
+            raise ValueError("register_shortcut: 'command' must be a non-empty string")
+        if not isinstance(args, str):
+            raise TypeError("register_shortcut: 'args' must be a string")
+        if description is not None and not isinstance(description, str):
+            raise TypeError("register_shortcut: 'description' must be a string or None")
+
+        self._registry.register_shortcut(
+            key, {"command": command, "args": args, "description": description}
+        )
+        # Attribute the shortcut to THIS extension for the /extensions surface (E5 §5
+        # / S34; shortcuts S69); the registry stores shortcuts globally by tail key,
+        # with no per-extension source (see register_tool / register_command).
+        if self._hook_handlers is not None:
+            self._hook_handlers.shortcuts.append(key)
+
     def append_entry(self, custom_type: str, data: dict) -> None:
         """Persist durable, NON-message extension state onto the session tree (E6 §2 / S39).
 

@@ -1489,6 +1489,28 @@ class AgentSession:
             for name, command in self._registry.get_commands().items()
         ]
 
+    def get_extension_shortcuts(self) -> list[tuple[str, str, str, str]]:
+        """List extension-registered key shortcuts (E10 §6 / S69).
+
+        Returns ``(key, command, args, description)`` for every shortcut an extension
+        registered via ``api.register_shortcut`` — the TUI's ``ctrl+e`` chord menu and
+        the command palette read this to LIST + dispatch them. ``key`` is the chord
+        tail (bound under the ``ctrl+e`` leader); ``command``/``args`` are dispatched
+        through the SAME :meth:`run_extension_command` path as a typed ``/name args``.
+        ``description`` falls back to the target command's registered description, then
+        to the empty string (listing is best-effort chrome, not a durable node).
+        """
+        out: list[tuple[str, str, str, str]] = []
+        for key, shortcut in self._registry.get_shortcuts().items():
+            command = str(shortcut.get("command", ""))
+            args = str(shortcut.get("args", ""))
+            description = shortcut.get("description")
+            if not description:
+                cmd = self._registry.get_command(command)
+                description = str(cmd.get("description", "")) if cmd else ""
+            out.append((key, command, args, str(description)))
+        return out
+
     def get_extension_command_args(self, name: str) -> str | None:
         """The declared argument placeholder for command ``name`` (E7 §3 / S51).
 

@@ -255,6 +255,75 @@ class TestExtensionAPICommands:
         assert api._registry._commands["help"]["action"] == "new"
 
 
+class TestExtensionAPIShortcuts:
+    """ExtensionAPI.register_shortcut() — the guarded ctrl+e chord namespace (S69)."""
+
+    def test_register_shortcut_stores_in_registry(self):
+        """A shortcut lands in the registry keyed by its chord-tail key."""
+        api = ExtensionAPI()
+        api.register_shortcut("g", "fleet_status")
+        assert api._registry.get_shortcut("g") == {
+            "command": "fleet_status",
+            "args": "",
+            "description": None,
+        }
+        assert api._registry.get_shortcuts() == {
+            "g": {"command": "fleet_status", "args": "", "description": None}
+        }
+
+    def test_register_shortcut_carries_args_and_description(self):
+        """Optional args/description ride along for dispatch + palette display."""
+        api = ExtensionAPI()
+        api.register_shortcut("1", "abort_child", args="c-1", description="Abort child 1")
+        assert api._registry.get_shortcut("1") == {
+            "command": "abort_child",
+            "args": "c-1",
+            "description": "Abort child 1",
+        }
+
+    def test_register_shortcut_last_wins_on_duplicate_key(self):
+        """Two shortcuts on the same tail key: last wins (namespace collision)."""
+        api = ExtensionAPI()
+        api.register_shortcut("g", "first")
+        api.register_shortcut("g", "second")
+        assert api._registry.get_shortcut("g")["command"] == "second"
+
+    def test_register_shortcut_attributes_to_hook_bucket(self):
+        """The tail key is recorded on THIS extension's bucket for /extensions (S34)."""
+        from tau_agent_core.extensions.runner import ExtensionHandlers
+
+        bucket = ExtensionHandlers(path="ext.py")
+        api = ExtensionAPI(hook_handlers=bucket)
+        api.register_shortcut("g", "fleet_status")
+        assert bucket.shortcuts == ["g"]
+
+    def test_register_shortcut_empty_key_raises(self):
+        api = ExtensionAPI()
+        with pytest.raises(ValueError, match="'key' must be a non-empty string"):
+            api.register_shortcut("", "cmd")
+
+    def test_register_shortcut_whitespace_key_raises(self):
+        """A chord tail is a single key token — whitespace is a construction bug."""
+        api = ExtensionAPI()
+        with pytest.raises(ValueError, match="single key token"):
+            api.register_shortcut("ctrl e", "cmd")
+
+    def test_register_shortcut_empty_command_raises(self):
+        api = ExtensionAPI()
+        with pytest.raises(ValueError, match="'command' must be a non-empty string"):
+            api.register_shortcut("g", "")
+
+    def test_register_shortcut_non_string_args_raises(self):
+        api = ExtensionAPI()
+        with pytest.raises(TypeError, match="'args' must be a string"):
+            api.register_shortcut("g", "cmd", args=1)  # type: ignore[arg-type]
+
+    def test_register_shortcut_non_string_description_raises(self):
+        api = ExtensionAPI()
+        with pytest.raises(TypeError, match="'description' must be a string or None"):
+            api.register_shortcut("g", "cmd", description=1)  # type: ignore[arg-type]
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # register_flag / get_flag deleted (E6 §2 / S38)
 # ──────────────────────────────────────────────────────────────────────────────

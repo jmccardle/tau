@@ -386,6 +386,15 @@ class TauBackend(Backend):
         """
         return self.agent_session.get_extension_command_args(name)
 
+    def get_extension_shortcuts(self) -> list[tuple[str, str, str, str]]:
+        """List extension-registered key shortcuts as ``(key, command, args, desc)`` (S69).
+
+        Delegates to :meth:`AgentSession.get_extension_shortcuts`. The app's ``ctrl+e``
+        chord menu and command palette read this to surface extension shortcuts and
+        dispatch each one's command through :meth:`run_extension_command`.
+        """
+        return self.agent_session.get_extension_shortcuts()
+
     async def run_extension_command(self, name: str, args: str = "") -> ExtensionCommandResult:
         """Run an extension-registered slash command (S35; output channel S46).
 

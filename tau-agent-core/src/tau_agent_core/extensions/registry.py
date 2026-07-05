@@ -18,6 +18,9 @@ Contract:
         def register_command(self, name: str, command: dict) -> None: ...
         def get_command(self, name: str) -> dict | None: ...
         def get_commands(self) -> dict[str, dict]: ...
+        def register_shortcut(self, key: str, shortcut: dict) -> None: ...
+        def get_shortcut(self, key: str) -> dict | None: ...
+        def get_shortcuts(self) -> dict[str, dict]: ...
 
 Note: ``append_entry`` is NO LONGER a registry method. Durable extension state is
 persisted onto the session tree as a ``customEntry`` node via
@@ -60,6 +63,7 @@ class ExtensionRegistry:
         """Initialize the registry with empty collections."""
         self._tools: dict[str, dict] = {}  # name -> definition
         self._commands: dict[str, dict] = {}  # name -> command def
+        self._shortcuts: dict[str, dict] = {}  # chord-tail key -> shortcut def
         self._active_tools: set[str] | None = None  # None = all active
 
     def register_tool(self, definition: dict) -> None:
@@ -106,3 +110,29 @@ class ExtensionRegistry:
     def get_commands(self) -> dict[str, dict]:
         """Get all registered slash commands (name -> command def)."""
         return dict(self._commands)
+
+    def register_shortcut(self, key: str, shortcut: dict) -> None:
+        """Register an extension key binding (E10 §6 / S69).
+
+        ``key`` is the chord-tail key (the second key after the ``ctrl+e``
+        extension leader — the guarded namespace the TUI binds these under, so an
+        extension can never clobber a core global binding). ``shortcut`` carries
+        the ``command`` name to dispatch (plus optional ``args``/``description``).
+
+        Last-wins on a duplicate tail key (two extensions binding the same chord),
+        mirroring :meth:`register_tool`'s warn-and-overwrite — a namespace collision
+        is an environment fact, not one extension's construction bug.
+        """
+        if key in self._shortcuts:
+            import logging
+
+            logging.warning(f"Shortcut 'ctrl+e {key}' already registered, overwriting")
+        self._shortcuts[key] = shortcut
+
+    def get_shortcut(self, key: str) -> dict | None:
+        """Look up a registered shortcut by its chord-tail key (``None`` if unknown)."""
+        return self._shortcuts.get(key)
+
+    def get_shortcuts(self) -> dict[str, dict]:
+        """Get all registered shortcuts (chord-tail key -> shortcut def)."""
+        return dict(self._shortcuts)
