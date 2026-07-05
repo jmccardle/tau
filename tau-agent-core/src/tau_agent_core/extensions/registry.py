@@ -99,9 +99,23 @@ class ExtensionRegistry:
             return self._tools
         return {n: d for n, d in self._tools.items() if n in self._active_tools}
 
+    def unregister_tool(self, name: str) -> None:
+        """Remove a registered tool by name (E10 §6 / S70 — runtime disable/reload).
+
+        Idempotent: a name that is not present is a no-op (the caller — the session's
+        disable/reload path — drives this from a bucket's recorded tool names, so a
+        double-disable or a name a later extension overwrote is not an error). This is
+        removal of a real prior registration, NOT fabricating absent data.
+        """
+        self._tools.pop(name, None)
+
     def register_command(self, name: str, command: dict) -> None:
         """Register a slash command."""
         self._commands[name] = command
+
+    def unregister_command(self, name: str) -> None:
+        """Remove a registered slash command by name (E10 §6 / S70). Idempotent."""
+        self._commands.pop(name, None)
 
     def get_command(self, name: str) -> dict | None:
         """Look up a registered slash command by name (``None`` if unknown)."""
@@ -128,6 +142,10 @@ class ExtensionRegistry:
 
             logging.warning(f"Shortcut 'ctrl+e {key}' already registered, overwriting")
         self._shortcuts[key] = shortcut
+
+    def unregister_shortcut(self, key: str) -> None:
+        """Remove a registered shortcut by its chord-tail key (E10 §6 / S70). Idempotent."""
+        self._shortcuts.pop(key, None)
 
     def get_shortcut(self, key: str) -> dict | None:
         """Look up a registered shortcut by its chord-tail key (``None`` if unknown)."""

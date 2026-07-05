@@ -176,6 +176,34 @@ class ExtensionRunner:
         self._extensions.append(group)
         return group
 
+    def get_extension(self, path: str) -> ExtensionHandlers | None:
+        """The active bucket registered under ``path`` (``None`` if none/removed).
+
+        Used by the runtime-management path (E10 §6 / S70) to find an extension's
+        bucket for a targeted lifecycle emit + removal. Only ACTIVE buckets are held
+        in ``_extensions``; a disabled extension's bucket has been removed, so this
+        returns ``None`` for it — exactly the "hooks stop firing" signal.
+        """
+        for ext in self._extensions:
+            if ext.path == path:
+                return ext
+        return None
+
+    def remove_extension(self, path: str) -> ExtensionHandlers | None:
+        """Detach and return the bucket for ``path`` so its hooks stop firing (S70).
+
+        Removes the bucket from the load-order list every ``emit_*`` walks, so after
+        this call the extension's handlers are no longer dispatched. Returns the
+        removed bucket (or ``None`` if not present) — the caller has already fired the
+        extension's ``session_shutdown`` teardown against it. Registry-level
+        tools/commands/shortcuts are unwound separately by the session (this class
+        owns only the hook buckets).
+        """
+        for i, ext in enumerate(self._extensions):
+            if ext.path == path:
+                return self._extensions.pop(i)
+        return None
+
     def set_context(self, context: ExtensionContext) -> None:
         """Bind the live :class:`ExtensionContext` handed to hook handlers."""
         self._context = context
@@ -498,14 +526,27 @@ class ExtensionRunner:
         result to gate on).
         """
         for ext in self._extensions:
-            handlers = ext.handlers.get(event_name)
-            if not handlers:
-                continue
-            for handler in handlers:
-                try:
-                    await self._call(handler, event)
-                except Exception as err:  # noqa: BLE001 — surfaced, not dropped
-                    self._emit_error(ExtensionError(ext.path, event_name, str(err)))
+            await self._emit_lifecycle_one(ext, event_name, event)
+
+    async def _emit_lifecycle_one(
+        self, ext: ExtensionHandlers, event_name: str, event: dict[str, Any]
+    ) -> None:
+        """Dispatch a notify-grade lifecycle hook to a SINGLE extension bucket (S70).
+
+        The per-bucket unit of :meth:`_emit_lifecycle`, split out so runtime
+        management (enable/disable/reload) can fire ``session_start`` /
+        ``session_shutdown`` for just the affected extension — e.g. a clean teardown
+        on disable without touching its peers. Same error-surfacing (S44) and
+        registration-order walk as the whole-runner variant.
+        """
+        handlers = ext.handlers.get(event_name)
+        if not handlers:
+            return
+        for handler in handlers:
+            try:
+                await self._call(handler, event)
+            except Exception as err:  # noqa: BLE001 — surfaced, not dropped
+                self._emit_error(ExtensionError(ext.path, event_name, str(err)))
 
     async def emit_session_start(self, event: dict[str, Any]) -> None:
         """Dispatch ``session_start`` (notify-grade; return discarded, errors surfaced)."""
@@ -514,3 +555,13 @@ class ExtensionRunner:
     async def emit_session_shutdown(self, event: dict[str, Any]) -> None:
         """Dispatch ``session_shutdown`` (notify-grade; return discarded, errors surfaced)."""
         await self._emit_lifecycle("session_shutdown", event)
+
+    async def emit_session_start_for(self, ext: ExtensionHandlers, event: dict[str, Any]) -> None:
+        """Fire ``session_start`` for a single bucket (S70 enable/reload bring-up)."""
+        await self._emit_lifecycle_one(ext, "session_start", event)
+
+    async def emit_session_shutdown_for(
+        self, ext: ExtensionHandlers, event: dict[str, Any]
+    ) -> None:
+        """Fire ``session_shutdown`` for a single bucket (S70 disable/reload teardown)."""
+        await self._emit_lifecycle_one(ext, "session_shutdown", event)

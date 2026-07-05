@@ -11,7 +11,11 @@ AgentSession runs against a scratch InMemorySessionLog, caller owns persistence)
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 from tau_ai.types import Model
-from tau_agent_core.agent_session import AgentSession, ExtensionCommandResult
+from tau_agent_core.agent_session import (
+    AgentSession,
+    ExtensionActionResult,
+    ExtensionCommandResult,
+)
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.session_log import InMemorySessionLog, SessionLog
@@ -367,6 +371,39 @@ class TauBackend(Backend):
             user_dir=user_dir,
             extensions_config=extensions_config,
         )
+
+    def list_managed_extensions(self) -> list[tuple[str, bool]]:
+        """Every managed file extension as ``(path, enabled)`` (E10 §6 / S70).
+
+        Delegates to :meth:`AgentSession.list_managed_extensions`; the ``/extensions``
+        listing reads this so a runtime-disabled extension is shown as disabled.
+        """
+        return self.agent_session.list_managed_extensions()
+
+    async def disable_extension(self, path: str) -> ExtensionActionResult:
+        """Runtime-disable a loaded extension (E10 §6 / S70).
+
+        Delegates to :meth:`AgentSession.disable_extension`, which fires the
+        extension's ``session_shutdown`` teardown, then detaches its hooks + registry
+        entries. Returns the reportable :class:`ExtensionActionResult`.
+        """
+        return await self.agent_session.disable_extension(path)
+
+    async def enable_extension(self, path: str) -> ExtensionActionResult:
+        """Runtime-enable a disabled extension (E10 §6 / S70).
+
+        Delegates to :meth:`AgentSession.enable_extension` (re-invoke ``register`` +
+        ``session_start``).
+        """
+        return await self.agent_session.enable_extension(path)
+
+    async def reload_extension(self, path: str) -> ExtensionActionResult:
+        """Runtime-reload an extension from disk (E10 §6 / S70).
+
+        Delegates to :meth:`AgentSession.reload_extension` (teardown → re-import →
+        re-register → ``session_start``). A broken file raises, per Fail-Early.
+        """
+        return await self.agent_session.reload_extension(path)
 
     def get_extension_commands(self) -> list[tuple[str, str]]:
         """List extension-registered slash commands as ``(name, description)`` (S35).

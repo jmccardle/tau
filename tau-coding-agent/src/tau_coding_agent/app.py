@@ -1833,10 +1833,19 @@ class Parley(App):
             self.action_browse_tree()
             return
 
-        # /extensions lists the loaded extensions (read-only, E5 §5 / S34).
-        # Intercepted here so the text is UI chrome, never a prompt to the model.
+        # /extensions lists the loaded extensions (E5 §5 / S34); with a verb it
+        # runs a runtime management action (E10 §6 / S70): ``/extensions disable
+        # <name>`` / ``enable`` / ``reload``. Intercepted here so the text is UI
+        # chrome, never a prompt to the model.
         if message == "/extensions":
             self.action_show_extensions()
+            return
+        if message.startswith("/extensions "):
+            rest = message[len("/extensions ") :].strip()
+            parts = rest.split(None, 1)
+            verb = parts[0] if parts else ""
+            target = parts[1].strip() if len(parts) > 1 else ""
+            await self.action_manage_extensions(verb, target)
             return
 
         # Extension-registered slash commands (E5 §5 / S35): dispatch BEFORE the
@@ -2156,15 +2165,65 @@ class Parley(App):
     def action_show_extensions(self) -> None:
         """List loaded extensions + load errors in the transcript (E5 §5 / S34).
 
-        Read-only (D-E5-6: runtime enable/reload deferred). Reads the last
-        ``_load_backend_extensions`` result — the now-populated registry/runner via
-        :func:`summarize_extensions` — and renders it as a display-only ``system``
-        box. This is UI chrome, NOT a conversation node: it is neither appended to
-        the working message list nor persisted, so the durable-hook invariant (the
-        model's input = system prompt + the linear active path) is untouched.
+        Reads the last ``_load_backend_extensions`` result — the now-populated
+        registry/runner via :func:`summarize_extensions` — annotated with each
+        extension's live enabled/disabled state (E10 §6 / S70), and renders it as a
+        display-only ``system`` box. This is UI chrome, NOT a conversation node: it is
+        neither appended to the working message list nor persisted, so the durable-hook
+        invariant (the model's input = system prompt + the linear active path) is
+        untouched — runtime management lifts the D-E5-6 read-only stance without
+        touching that invariant (the actions run on the runner, not the tree).
         """
-        listing = self._format_extensions_listing(self._extension_load_result)
+        listing = self._format_extensions_listing(
+            self._extension_load_result, self._disabled_extension_paths()
+        )
         self.query_one(ChatDisplay).add_message("system", listing)
+
+    def _disabled_extension_paths(self) -> set[str]:
+        """The set of currently runtime-disabled extension paths (E10 §6 / S70).
+
+        Read from the live backend's managed-extension state; ``getattr``-guarded so a
+        non-``TauBackend`` test double (no seam) reports none disabled.
+        """
+        lister = getattr(self.current_backend, "list_managed_extensions", None)
+        if lister is None:
+            return set()
+        return {path for path, enabled in lister() if not enabled}
+
+    async def action_manage_extensions(self, verb: str, target: str) -> None:
+        """Run a runtime ``/extensions`` action (enable/disable/reload) — E10 §6 / S70.
+
+        Lifts the D-E5-6 read-only stance: dispatches to the live backend's
+        ``disable_extension`` / ``enable_extension`` / ``reload_extension`` (each fires
+        the S41 ``session_shutdown`` / ``session_start`` lifecycle hooks for clean
+        teardown/bring-up), then re-renders the listing so the outcome is visible. All
+        output is display-only chrome — never a conversation node, so the tree-as-truth
+        invariant holds. A bad verb, an empty target, or a broken reload is surfaced as
+        an error notice (Fail-Early: reported, never swallowed or faked).
+        """
+        actions = {"enable", "disable", "reload"}
+        if verb not in actions:
+            self.notify(
+                f"Unknown /extensions action {verb!r} (use: enable | disable | reload)",
+                severity="error",
+            )
+            return
+        if not target:
+            self.notify(f"/extensions {verb} needs an extension name", severity="error")
+            return
+        action = getattr(self.current_backend, f"{verb}_extension", None)
+        if action is None:
+            self.notify("Runtime extension management is unavailable here", severity="warning")
+            return
+        try:
+            result = await action(target)
+        except Exception as e:
+            self.notify(f"/extensions {verb} {target} failed: {e}", severity="error")
+            self.log.error(f"/extensions {verb} {target} failed: {e}", exc_info=True)
+            return
+        self.notify(result.message, severity="information" if result.ok else "warning")
+        # Re-render the listing so the enabled/disabled column reflects the action.
+        self.action_show_extensions()
 
     async def _dispatch_extension_command(self, name: str, args: str = "") -> None:
         """Run an extension-registered command from the palette (E5 §5 / S35).
@@ -2227,13 +2286,18 @@ class Parley(App):
         self.query_one(ChatDisplay).add_message("system", text)
 
     @staticmethod
-    def _format_extensions_listing(result: LoadExtensionsResult) -> str:
+    def _format_extensions_listing(
+        result: LoadExtensionsResult, disabled: set[str] | None = None
+    ) -> str:
         """Render a ``LoadExtensionsResult`` as the ``/extensions`` listing text (S34).
 
         Pure (no widget access) so it is unit-testable: given the load result it
         returns the exact markdown the listing box shows — a section per loaded
         extension (name, path, tools/commands/hooks) plus a load-errors section.
+        ``disabled`` is the set of runtime-disabled extension paths (E10 §6 / S70); a
+        disabled extension is tagged in its heading so the listing reflects live state.
         """
+        disabled = disabled or set()
         infos = summarize_extensions(result)
         if not infos and not result.errors:
             return "No extensions loaded."
@@ -2241,7 +2305,8 @@ class Parley(App):
         lines: list[str] = ["# Extensions"]
         for info in infos:
             lines.append("")
-            lines.append(f"**{info.name}** — `{info.path}`")
+            status = " _(disabled)_" if info.path in disabled else ""
+            lines.append(f"**{info.name}**{status} — `{info.path}`")
             lines.append(f"- hooks: {', '.join(info.hooks) if info.hooks else '(none)'}")
             lines.append(f"- tools: {', '.join(info.tools) if info.tools else '(none)'}")
             lines.append(f"- commands: {', '.join(info.commands) if info.commands else '(none)'}")

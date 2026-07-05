@@ -47,7 +47,26 @@ from tau_agent_core.compaction_utils import create_file_ops, extract_file_ops_fr
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
 
 if TYPE_CHECKING:
-    from tau_agent_core.sdk import LoadExtensionsResult
+    from tau_agent_core.sdk import LoadedExtension, LoadExtensionsResult
+
+
+@dataclass(frozen=True)
+class ExtensionActionResult:
+    """Outcome of a runtime ``/extensions`` action (E10 §6 / S70).
+
+    Runtime enable/disable/reload (lifting the D-E5-6 read-only stance) return this
+    so the frontend can report what happened as **display-only** chrome — it is never
+    appended to the active path, so the tree-as-truth invariant is untouched. ``ok``
+    distinguishes a completed action from a legitimate no-op / bad target (e.g. a name
+    that is not loaded); ``message`` is the human-readable line the listing box shows.
+    A hard failure (a broken file on reload) still raises out of the action —
+    ``ok=False`` is reserved for reportable, non-exceptional outcomes (Fail-Early).
+    """
+
+    action: str
+    path: str
+    ok: bool
+    message: str
 
 
 @dataclass(frozen=True)
@@ -186,6 +205,15 @@ class AgentSession:
         # NOT persisted onto the session tree — it is run-scoped runtime config,
         # re-sourced each run (deliberately excluded from the tree-as-truth path).
         self._extensions_config: dict[str, dict[str, Any]] = extensions_config or {}
+        # Runtime-management bookkeeping (E10 §6 / S70). ``_loaded_extensions`` records
+        # every FILE extension bound via :meth:`load_extensions`, keyed by the path it
+        # was loaded under (== its runner-bucket label), so enable/reload can re-invoke
+        # its ``register`` / re-import its file. ``_disabled_paths`` is the set of those
+        # currently disabled (bucket removed from the runner). Inline-factory extensions
+        # (constructor ``extensions=``) are NOT tracked here — they have no file to
+        # re-import, so runtime management is scoped to file extensions.
+        self._loaded_extensions: dict[str, LoadedExtension] = {}
+        self._disabled_paths: set[str] = set()
         self._is_streaming = False
         self._abort_signal = AbortSignal()
         # Forwarded to the agent loop -> provider. Kept off the Model so it is
@@ -558,12 +586,158 @@ class AgentSession:
         # import here would be circular.
         from tau_agent_core.sdk import _load_extensions
 
-        return await _load_extensions(
+        result = await _load_extensions(
             explicit_paths,
             discover=discover,
             user_dir=user_dir,
             api_factory=self._bind_extension_api,
         )
+        # Record each loaded file extension for runtime management (E10 §6 / S70):
+        # enable re-invokes the stored ``register`` on a fresh bucket, reload re-imports
+        # the file. Keyed by the path each was loaded under (== its bucket label).
+        for loaded in result.extensions:
+            self._loaded_extensions[loaded.path] = loaded
+            self._disabled_paths.discard(loaded.path)
+        return result
+
+    # ------------------------------------------------------------------
+    # Runtime extension management (E10 §6 / S70) — lifts D-E5-6 read-only
+    # ------------------------------------------------------------------
+
+    def list_managed_extensions(self) -> list[tuple[str, bool]]:
+        """Every file extension under management as ``(path, enabled)`` in load order.
+
+        The authoritative runtime state the ``/extensions`` listing reads so a
+        disabled extension shows as such: ``enabled`` is ``False`` exactly when the
+        path is in ``_disabled_paths`` (its bucket removed from the runner). Pure
+        read — no path effect, display-only.
+        """
+        return [(path, path not in self._disabled_paths) for path in self._loaded_extensions]
+
+    def resolve_extension_target(self, token: str) -> str | None:
+        """Resolve a user token (full path or file stem) to a managed path.
+
+        The ``/extensions <verb> <token>`` frontend passes what the user typed; the
+        listing shows stems (``Path(path).stem``), so ``disable 21_reminders`` must
+        map to the loaded path. Matches an exact path first, then a unique stem.
+        Returns ``None`` when nothing matches or a stem is ambiguous (the caller
+        reports it — no guessing, Fail-Early).
+        """
+        if token in self._loaded_extensions:
+            return token
+        matches = [p for p in self._loaded_extensions if Path(p).stem == token]
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    def _unregister_bucket(self, bucket: Any) -> None:
+        """Unwind a bucket's registry contributions (tools/commands/shortcuts) — S70.
+
+        The runner bucket is the only per-extension record of WHICH names an
+        extension registered (the registry is a flat, unattributed map, D-E5-5). On
+        disable/reload we remove exactly those names so a disabled extension's tools
+        and slash-commands stop being offered. Idempotent at the registry (a name a
+        later extension overwrote is simply absent).
+        """
+        for name in bucket.tools:
+            self._registry.unregister_tool(name)
+        for name in bucket.commands:
+            self._registry.unregister_command(name)
+        for key in bucket.shortcuts:
+            self._registry.unregister_shortcut(key)
+
+    async def disable_extension(self, path: str) -> ExtensionActionResult:
+        """Tear down and detach a loaded extension so its hooks stop firing (S70).
+
+        Fires the extension's own ``session_shutdown`` (reason ``"disable"``) FIRST —
+        the S41 teardown seam, so a watcher/exit-commit runs cleanly — then removes its
+        runner bucket (hooks stop) and unwinds its registry tools/commands/shortcuts.
+        The ``LoadedExtension`` record is KEPT so :meth:`enable_extension` can bring it
+        back. A no-op (unknown / already disabled) returns ``ok=False``, not an error.
+        """
+        target = self.resolve_extension_target(path)
+        if target is None:
+            return ExtensionActionResult("disable", path, False, f"no loaded extension {path!r}")
+        bucket = self._extension_runner.get_extension(target)
+        if bucket is None:
+            return ExtensionActionResult(
+                "disable", target, False, f"{Path(target).stem} is already disabled"
+            )
+        await self._extension_runner.emit_session_shutdown_for(
+            bucket, {"type": "session_shutdown", "reason": "disable"}
+        )
+        self._extension_runner.remove_extension(target)
+        self._unregister_bucket(bucket)
+        self._disabled_paths.add(target)
+        return ExtensionActionResult("disable", target, True, f"disabled {Path(target).stem}")
+
+    async def enable_extension(self, path: str) -> ExtensionActionResult:
+        """Re-bind a disabled extension by re-invoking its ``register`` (S70).
+
+        Binds a FRESH runner bucket (its tools/commands/shortcuts re-enter the
+        registry) and re-invokes the stored ``register(api)`` — the same entry point
+        the loader called — then fires ``session_start`` (reason ``"enable"``) so a
+        watcher re-installs. A no-op (unknown / already enabled) returns ``ok=False``.
+        """
+        target = self.resolve_extension_target(path)
+        if target is None:
+            return ExtensionActionResult("enable", path, False, f"no loaded extension {path!r}")
+        if self._extension_runner.get_extension(target) is not None:
+            return ExtensionActionResult(
+                "enable", target, False, f"{Path(target).stem} is already enabled"
+            )
+        loaded = self._loaded_extensions[target]
+        api = self._bind_extension_api(target)
+        outcome = loaded.register(api)
+        if inspect.isawaitable(outcome):
+            await outcome
+        from tau_agent_core.sdk import LoadedExtension
+
+        self._loaded_extensions[target] = LoadedExtension(
+            path=target, register=loaded.register, api=api
+        )
+        self._disabled_paths.discard(target)
+        bucket = self._extension_runner.get_extension(target)
+        if bucket is not None:
+            await self._extension_runner.emit_session_start_for(
+                bucket, {"type": "session_start", "reason": "enable"}
+            )
+        return ExtensionActionResult("enable", target, True, f"enabled {Path(target).stem}")
+
+    async def reload_extension(self, path: str) -> ExtensionActionResult:
+        """Tear down, re-import from disk, and re-register an extension (S70).
+
+        Fires ``session_shutdown`` (reason ``"reload"``) for the current instance (if
+        enabled), removes its bucket + registry entries, then RE-IMPORTS the file fresh
+        (a new module object — code edits on disk take effect) and re-invokes
+        ``register`` against a fresh bucket, finally firing ``session_start`` (reason
+        ``"reload"``). A broken file RAISES out of here (Fail-Early — the extension is
+        left torn down; the frontend surfaces the error), which is why reload does not
+        return an ``ok=False`` for an import failure.
+        """
+        target = self.resolve_extension_target(path)
+        if target is None:
+            return ExtensionActionResult("reload", path, False, f"no loaded extension {path!r}")
+        bucket = self._extension_runner.get_extension(target)
+        if bucket is not None:
+            await self._extension_runner.emit_session_shutdown_for(
+                bucket, {"type": "session_shutdown", "reason": "reload"}
+            )
+            self._extension_runner.remove_extension(target)
+            self._unregister_bucket(bucket)
+        # Re-import the file fresh (new module) so on-disk edits take effect. An import
+        # / register failure propagates (Fail-Early); the extension stays torn down.
+        from tau_agent_core.sdk import _load_one_extension
+
+        new_loaded = await _load_one_extension(Path(target), self._bind_extension_api)
+        self._loaded_extensions[target] = new_loaded
+        self._disabled_paths.discard(target)
+        new_bucket = self._extension_runner.get_extension(target)
+        if new_bucket is not None:
+            await self._extension_runner.emit_session_start_for(
+                new_bucket, {"type": "session_start", "reason": "reload"}
+            )
+        return ExtensionActionResult("reload", target, True, f"reloaded {Path(target).stem}")
 
     async def prompt(
         self,
