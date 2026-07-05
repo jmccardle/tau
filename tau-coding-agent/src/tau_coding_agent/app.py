@@ -21,7 +21,7 @@ import time
 import traceback
 from typing import Any, Callable, Literal, Optional
 
-from tau_coding_agent.backends import create_backend, Backend
+from tau_coding_agent.backends import create_backend, make_model_resolver, Backend
 from tau_coding_agent.headless import _append_system_prompt, resolve_extensions_config
 
 # Session persistence lives in a Textual-free module so `tau -p` can save
@@ -1403,6 +1403,12 @@ class Parley(App):
         agent_session = getattr(self.current_backend, "agent_session", None)
         if agent_session is not None:
             self._session_event_unsub = subscribe_session_events(agent_session.route_session_event)
+            # Bind the model-name resolver (S45) so an extension's ctx.set_model(name)
+            # resolves NAME through the same config "models" map --model uses. Guarded
+            # by getattr so a non-TauBackend / test double is a no-op, not an error.
+            binder = getattr(agent_session, "set_model_resolver", None)
+            if binder is not None:
+                binder(make_model_resolver(self.config.get("models", {})))
 
     def _apply_run_config(self, model_config: dict) -> dict:
         """Inject run-level tool flags into a model_config before create_backend (S28).

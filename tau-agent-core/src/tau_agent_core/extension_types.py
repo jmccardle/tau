@@ -200,6 +200,56 @@ class ExtensionContext:
         return {"tokens": tokens, "context_window": context_window, "percent": percent}
 
     # ------------------------------------------------------------------
+    # Model + usage access (E6 §2 / S45 — anchor G14)
+    #
+    # Public accessors so extensions stop reaching the private ``_session._model``
+    # or hand-parsing ``event.message`` for usage. Each delegates to the bound
+    # ``AgentSession`` (the authoritative holder of the live model + last usage) and
+    # Fail-Early raises when no session is bound — there is nothing to read/switch.
+    # ------------------------------------------------------------------
+
+    def get_model(self) -> dict[str, Any]:
+        """The active model as ``{id, provider, context_window}`` (S45).
+
+        Delegates to :meth:`AgentSession.get_model`. Mirrors pi's ``ctx.model``
+        (types.ts:311) but as the three-field projection an extension needs, so it
+        never has to reach the private ``ctx._session._model``.
+
+        Raises:
+            RuntimeError: if no session is bound (Fail-Early — no model to read).
+        """
+        model: dict[str, Any] = self._require_session().get_model()
+        return model
+
+    def set_model(self, name: str) -> dict[str, Any]:
+        """Switch the active model by NAME, effective next turn (S45).
+
+        Delegates to :meth:`AgentSession.set_model` (pi ``setModel`` parity, adapted
+        to τ's name-based resolver). Returns the new :meth:`get_model` projection.
+
+        Raises:
+            RuntimeError: if no session is bound, or the session has no model
+                resolver bound (both Fail-Early — no registry to resolve ``name``).
+            Whatever the resolver raises for an unknown ``name`` propagates unchanged.
+        """
+        model: dict[str, Any] = self._require_session().set_model(name)
+        return model
+
+    def get_usage(self) -> dict[str, Any] | None:
+        """The most recent completion's token usage, or ``None`` (S45).
+
+        The public per-completion usage accessor (anchor G14): delegates to
+        :meth:`AgentSession.get_usage`. Returns a copy of the last completion's
+        ``usage`` dict, or ``None`` when no completion has landed yet. Read this from
+        a ``message_end`` handler instead of pulling ``event.message["usage"]``.
+
+        Raises:
+            RuntimeError: if no session is bound (Fail-Early — nothing to measure).
+        """
+        usage: dict[str, Any] | None = self._require_session().get_usage()
+        return usage
+
+    # ------------------------------------------------------------------
     # Session-control op surface (E3-ctx / step S19)
     #
     # These expose the LANDED session-tree substrate on the base handler

@@ -81,6 +81,61 @@ def compute_cost_usd(
     )
 
 
+def build_model_from_config(config: dict[str, Any]) -> Model:
+    """Build a tau-agent-core ``Model`` from a Parley/``~/.tau/config.json`` entry.
+
+    The single seam that turns a config ``models`` entry (or a ``--model`` ad-hoc
+    dict) into a ``Model`` — extracted from ``TauBackend.__init__`` so
+    :func:`make_model_resolver` (S45) reproduces exactly the same construction a
+    fresh backend would. Maps the ``backend`` provider field, derives the reasoning
+    flag from a non-``off`` ``thinking`` level (or an explicit ``reasoning: true``),
+    and carries the optional ``thinking_level_map``.
+    """
+    model_id = config.get("model", "gpt-4")
+    base_url = config.get("base_url", "https://api.openai.com/v1")
+    backend_type = config.get("backend", "openai").lower()
+
+    # Map provider name (Parley's "backend" field) to tau-agent-core provider.
+    provider_map = {"openai": "openai", "anthropic": "anthropic", "gemini": "gemini"}
+    provider = provider_map.get(backend_type, backend_type)
+
+    thinking_level = config.get("thinking")
+    reasoning_arg = thinking_level if thinking_level and thinking_level != "off" else None
+    model_reasoning = bool(config.get("reasoning")) or reasoning_arg is not None
+
+    return Model(
+        id=model_id,
+        name=model_id,
+        api="openai-completions",
+        provider=provider,
+        base_url=base_url,
+        context_window=128000,
+        max_tokens=4096,
+        reasoning=model_reasoning,
+        thinking_level_map=config.get("thinking_level_map"),
+    )
+
+
+def make_model_resolver(models: dict[str, Any]) -> Callable[[str], Model]:
+    """A ``name -> Model`` resolver closed over a config ``models`` map (S45).
+
+    Bound onto a live ``AgentSession`` (``set_model_resolver``) so an extension's
+    ``ctx.set_model(name)`` resolves the NAME through the SAME ``config["models"]``
+    map ``--model`` resolution uses, via :func:`build_model_from_config`. Fail-Early:
+    an unknown name raises ``KeyError`` (naming the known models) rather than
+    fabricating a model — the raise propagates out of ``set_model`` unchanged.
+    """
+
+    def resolve(name: str) -> Model:
+        entry = models.get(name)
+        if entry is None:
+            known = ", ".join(sorted(models)) or "(none configured)"
+            raise KeyError(f"unknown model {name!r}; configured models: {known}")
+        return build_model_from_config(entry)
+
+    return resolve
+
+
 class Backend(ABC):
     """Abstract base class for LLM backends."""
 
@@ -146,19 +201,11 @@ class TauBackend(Backend):
     def __init__(self, config: dict[str, Any]):
         super().__init__(config)
 
-        # Build a tau-agent-core model config from the Parley config
+        # Build a tau-agent-core model config from the Parley config. The Model
+        # construction is shared with make_model_resolver (S45) via
+        # build_model_from_config so ctx.set_model rebuilds a Model identically.
         model_id = config.get("model", "gpt-4")
-        base_url = config.get("base_url", "https://api.openai.com/v1")
         api_key = config.get("api_key", "not-needed")
-        backend_type = config.get("backend", "openai").lower()
-
-        # Map provider name (Parley's "backend" field) to tau-agent-core provider
-        provider_map = {
-            "openai": "openai",
-            "anthropic": "anthropic",
-            "gemini": "gemini",
-        }
-        provider = provider_map.get(backend_type, backend_type)
 
         self.model_name = model_id
         self.system_prompt = config.get("system_prompt", "")
@@ -172,19 +219,8 @@ class TauBackend(Backend):
         # reasoning requested.
         thinking_level = config.get("thinking")
         reasoning_arg = thinking_level if thinking_level and thinking_level != "off" else None
-        model_reasoning = bool(config.get("reasoning")) or reasoning_arg is not None
 
-        model = Model(
-            id=model_id,
-            name=model_id,
-            api="openai-completions",
-            provider=provider,
-            base_url=base_url,
-            context_window=128000,
-            max_tokens=4096,
-            reasoning=model_reasoning,
-            thinking_level_map=config.get("thinking_level_map"),
-        )
+        model = build_model_from_config(config)
         # Kept for the tree-browser's summarizer (navigate_tree, §3.3): the
         # branch-summary ``complete_simple`` call needs the model + api key directly,
         # not via the AgentSession loop.

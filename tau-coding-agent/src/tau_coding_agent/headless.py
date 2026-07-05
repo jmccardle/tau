@@ -398,9 +398,16 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
 
     # Imported lazily: keeps `import tau_coding_agent.headless` free of the
     # backend/agent-core import chain until a run actually happens.
-    from tau_coding_agent.backends import create_backend
+    from tau_coding_agent.backends import create_backend, make_model_resolver
 
     backend = create_backend(model_config)
+
+    # Bind the model-name resolver (S45) so an extension's ctx.set_model(name)
+    # resolves NAME through the same config "models" map --model uses. Guarded via
+    # getattr so a non-``TauBackend`` test double is a transparent no-op.
+    agent_session = getattr(backend, "agent_session", None)
+    if agent_session is not None and hasattr(agent_session, "set_model_resolver"):
+        agent_session.set_model_resolver(make_model_resolver(config.get("models", {})))
 
     # Session-lifecycle hooks (E6 §2 / S41). ``session_start`` fires once
     # extensions are loaded; ``session_shutdown`` fires on headless COMPLETION and

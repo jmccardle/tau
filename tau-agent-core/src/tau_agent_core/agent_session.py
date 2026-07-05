@@ -129,6 +129,7 @@ class AgentSession:
         reasoning: str | None = None,
         compaction_settings: CompactionSettings | None = None,
         extensions_config: dict[str, dict[str, Any]] | None = None,
+        model_resolver: Callable[[str], Model] | None = None,
     ) -> None:
         self._session_log = session_log
         self._model = model
@@ -159,6 +160,22 @@ class AgentSession:
         # Compaction thresholds; drives both manual compact() and the automatic
         # post-turn check in prompt(). Defaults to the harness defaults.
         self._compaction_settings = compaction_settings or DEFAULT_COMPACTION_SETTINGS
+        # Model-name resolver for ctx.set_model (E6 §2 / S45). Maps a config model
+        # NAME to a concrete ``Model`` (the frontend binds a closure over its
+        # ``~/.tau/config.json`` ``models`` map; see backends.make_model_resolver).
+        # None until bound: set_model then RAISES (Fail-Early — a name with no
+        # registry to resolve against is a construction gap, not a silent no-op),
+        # exactly like fork(mode="export") on a non-file log.
+        self._model_resolver = model_resolver
+        # The most recent completion's token usage (E6 §2 / S45). Recorded from the
+        # per-completion ``message_end`` on this session's own bus so extensions read
+        # it through ctx.get_usage() instead of digging into ``event.message`` or the
+        # private ``ctx._session._model``. None until the first completion lands — an
+        # honest "no completion yet", never a fabricated zero (Fail-Early). NOT model
+        # input and NOT persisted: it is runtime observation state (usage already
+        # lives durably on the assistant tree nodes), so it does not touch the
+        # tree-as-truth path.
+        self._last_usage: dict[str, Any] | None = None
 
         # Injection queues + deferred-op ledger (S20 / decision 3 + 5). A tool
         # running mid-turn cannot mutate the conversation under the live loop, so
@@ -202,6 +219,13 @@ class AgentSession:
         # mutating hook. Fail-Early: a hook error is never silent.
         self._extension_runner.on_error(self._surface_extension_error)
         self._events.on_error(self._surface_notify_error)
+        # Record the last completion's usage off ``message_end`` (S45). Subscribed
+        # HERE — before the extension-bind loop below and before any post-construction
+        # ``load_extensions`` — so the recorder runs FIRST for each ``message_end`` (the
+        # bus dispatches specific-type handlers in registration order). A budget/ledger
+        # extension's own ``message_end`` handler therefore sees ``ctx.get_usage()``
+        # already updated to this completion's usage.
+        self._events.on("message_end", self._record_completion_usage)
         # Register each extension against its OWN api, bound to its OWN runner
         # bucket (load order preserved) but SHARING the session registry, event
         # bus, and live context. This is the S24 bridge: api.on("tool_call"/…)
@@ -256,6 +280,112 @@ class AgentSession:
     def is_streaming(self) -> bool:
         """Whether the agent loop is currently streaming."""
         return self._is_streaming
+
+    # ------------------------------------------------------------------
+    # Model + usage access (E6 §2 / S45 — anchor G14)
+    #
+    # The public surface ctx.get_model()/set_model()/get_usage() delegate to, so
+    # extensions stop reaching the private ``_model`` / hand-parsing event dicts.
+    # ------------------------------------------------------------------
+
+    def get_model(self) -> dict[str, Any]:
+        """The active model as ``{id, provider, context_window}`` (S45).
+
+        A small, stable projection of the loop's ``Model`` (pi returns the whole
+        ``Model``; τ exposes only the three fields an extension needs to route,
+        price, or gauge a context window — keeping the extension API decoupled from
+        the full model schema). Read at call time, so it reflects a prior
+        :meth:`set_model`.
+        """
+        model = self._model
+        return {
+            "id": model.id,
+            "provider": model.provider,
+            "context_window": model.context_window,
+        }
+
+    def set_model_resolver(self, resolver: Callable[[str], Model]) -> None:
+        """Bind the model-name resolver used by :meth:`set_model` (S45).
+
+        A frontend calls this after building the session so ``ctx.set_model(name)``
+        can turn a config model NAME into a concrete ``Model`` (see
+        ``backends.make_model_resolver``, a closure over ``config["models"]``). The
+        harness core deliberately does not read ``~/.tau/config.json`` itself
+        (layering) — the resolver is the seam.
+        """
+        self._model_resolver = resolver
+
+    def set_model(self, name: str) -> dict[str, Any]:
+        """Switch the active model by NAME, effective on the NEXT turn (S45).
+
+        Mirrors pi's ``setModel`` (agent-session.ts:1444), adapted to τ: pi takes a
+        resolved ``Model`` object; τ takes a config model NAME and resolves it
+        through the bound resolver (:meth:`set_model_resolver`). The new ``Model`` is
+        stored on ``self._model``; because every turn rebuilds its ``AgentLoop`` with
+        ``model=self._model`` (see :meth:`_run_one_turn`), the switch takes effect on
+        the next completion — never mid-stream.
+
+        Scope boundary (documented, not a silent fallback): this switches the
+        ``Model`` (id / provider / base_url / context_window) only. The session's API
+        key (``self._api_key``) is unchanged, so a switch between models that share a
+        provider/key — the preset and router cases this unblocks — is correct; a
+        cross-provider switch to a model needing a *different* key will surface a
+        loud provider auth error, not silently wrong output. It is a RUNTIME switch:
+        it is not written back to the session header, so a reload resumes on the
+        session's originally stored model.
+
+        Returns:
+            The new :meth:`get_model` projection.
+
+        Raises:
+            RuntimeError: no resolver is bound (Fail-Early — nothing to resolve
+                ``name`` against).
+            Whatever the resolver raises for an unknown ``name`` (e.g. ``KeyError`` /
+                ``ValueError``) propagates unchanged — never swallowed.
+        """
+        if self._model_resolver is None:
+            raise RuntimeError(
+                f"set_model({name!r}): no model resolver is bound to this AgentSession. "
+                "The frontend must call set_model_resolver(...) (a closure over the "
+                "config 'models' map) before an extension can switch models by name."
+            )
+        model = self._model_resolver(name)
+        if not isinstance(model, Model):
+            raise TypeError(
+                f"set_model({name!r}): resolver returned {type(model).__name__}, "
+                "expected a tau_ai.types.Model"
+            )
+        self._model = model
+        return self.get_model()
+
+    def get_usage(self) -> dict[str, Any] | None:
+        """The most recent completion's token usage, or ``None`` (S45).
+
+        The public per-completion usage accessor (anchor G14): a copy of the
+        ``usage`` dict the provider filled on the last completion's ``message_end``
+        (keys ``input_tokens`` / ``output_tokens`` / ``cache_read_tokens`` /
+        ``cache_write_tokens`` / ``total_tokens`` / ``cost``). Extensions read this
+        instead of pulling ``event.message["usage"]`` out of a notify event or
+        reaching the private ``_model``. ``None`` means no completion has landed yet
+        — an honest absence, never a fabricated zero (Fail-Early). A copy, so a
+        caller cannot mutate the session's record.
+        """
+        return dict(self._last_usage) if self._last_usage is not None else None
+
+    def _record_completion_usage(self, event: AgentEvent) -> None:
+        """Capture this completion's usage from a ``message_end`` event (S45).
+
+        Only the per-completion ``message_end`` carries a ``usage`` dict (the
+        duplicate tool-turn ``message_end`` ``run()`` also emits has none, so it is
+        skipped — no stale overwrite). Runs before extension handlers (registered
+        first at construction), so ``get_usage()`` is current when they fire.
+        """
+        message = event.message
+        if not isinstance(message, dict):
+            return
+        usage = message.get("usage")
+        if isinstance(usage, dict):
+            self._last_usage = dict(usage)
 
     # ------------------------------------------------------------------
     # Public API
