@@ -742,10 +742,12 @@ class TestExtensionErrorHandling:
         session_mock._append_custom_message.assert_called_once()
 
     def test_extension_api_append_entry(self):
-        """ExtensionAPI.append_entry() works."""
-        api = ExtensionAPI()
-        # Should not raise
+        """ExtensionAPI.append_entry() appends a durable customEntry (S39)."""
+        session_mock = MagicMock()
+        api = ExtensionAPI(session=session_mock)
+        # Delegates to the bound session's durable log (no RAM store — G4).
         api.append_entry("custom_type", {"key": "value"})
+        session_mock._append_custom_entry.assert_called_once_with("custom_type", {"key": "value"})
 
     def test_extension_api_set_session_name(self):
         """ExtensionAPI.set_session_name() forwards to the bound session."""

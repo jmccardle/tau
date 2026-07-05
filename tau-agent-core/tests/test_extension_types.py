@@ -280,29 +280,39 @@ class TestFlagsRemoved:
 
 
 class TestExtensionAPIAppendEntry:
-    """Tests for ExtensionAPI.append_entry()."""
+    """Tests for ExtensionAPI.append_entry() — now DURABLE (E6 §2 / S39).
+
+    Persists onto the session tree as a ``customEntry`` node instead of the old
+    RAM-only registry ``_entry_store`` (removed with G4). The full durable /
+    reload-invariant / off-the-wire proof lives in ``test_append_entry_durable.py``;
+    these tests cover the API-surface contract (delegation + Fail-Early raise).
+    """
 
     def test_append_entry_exists(self):
         """ExtensionAPI has append_entry method."""
         api = ExtensionAPI()
         assert hasattr(api, "append_entry")
 
-    def test_append_entry_callable(self):
-        """ExtensionAPI.append_entry() persists through registry."""
+    def test_append_entry_raises_without_session(self):
+        """Fail-Early: no session bound → raise, not a silent RAM store (G4)."""
         api = ExtensionAPI()
-        api.append_entry("notification", {"text": "test"})
-        entries = api._registry.get_entries()
-        assert len(entries) == 1
-        assert entries[0]["custom_type"] == "notification"
-        assert entries[0]["data"]["text"] == "test"
+        with pytest.raises(RuntimeError):
+            api.append_entry("notification", {"text": "test"})
 
-    def test_append_multiple_entries(self):
-        """ExtensionAPI.append_entry() can append multiple entries."""
-        api = ExtensionAPI()
+    def test_append_entry_delegates_to_session(self):
+        """append_entry() forwards {custom_type, data} to _append_custom_entry."""
+        mock_session = MagicMock()
+        api = ExtensionAPI(session=mock_session)
+        api.append_entry("notification", {"text": "test"})
+        mock_session._append_custom_entry.assert_called_once_with("notification", {"text": "test"})
+
+    def test_append_multiple_entries_delegate(self):
+        """Each append_entry() call is a separate durable append."""
+        mock_session = MagicMock()
+        api = ExtensionAPI(session=mock_session)
         api.append_entry("counter", {"value": 1})
         api.append_entry("counter", {"value": 2})
-        entries = api._registry.get_entries()
-        assert len(entries) == 2
+        assert mock_session._append_custom_entry.call_count == 2
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -781,9 +791,12 @@ class TestExtensionAPIIntegration:
         assert len(tools) == 1
         assert tools[0].source == "extension"
 
-        # Append entry
-        api.append_entry("counter", {"value": 42})
-        assert len(api._registry.get_entries()) == 1
+        # Append entry — now DURABLE (S39): delegates to the bound session, not a
+        # RAM registry store (removed with G4).
+        mock_session = MagicMock()
+        session_api = ExtensionAPI(session=mock_session)
+        session_api.append_entry("counter", {"value": 42})
+        mock_session._append_custom_entry.assert_called_once_with("counter", {"value": 42})
 
     def test_ui_property_reflects_context_ui(self):
         """ExtensionAPI.ui returns the context's ExtensionUI."""

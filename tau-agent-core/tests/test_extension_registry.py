@@ -246,75 +246,23 @@ class TestActiveToolFiltering:
         assert active == {}
 
 
-class TestExtensionEntryPersistence:
-    """Test 8: Extension entry persistence.
+class TestEntryStoreRemoved:
+    """The RAM-only ``_entry_store`` was removed in E6 §2 / S39 (G4).
 
-    Reference: PHASE-3-SUBPHASE-2.md, Test 8
-    > ExtensionRegistry.append_entry() persists extension state
-    > ExtensionRegistry.get_entries() returns persisted entries
+    ``append_entry`` no longer lives on the registry — durable extension state is
+    persisted onto the session tree as a ``customEntry`` node via
+    ``AgentSession._append_custom_entry`` / ``ExtensionAPI.append_entry`` (was
+    lost on restart before). See ``test_append_entry_durable.py``.
     """
 
-    def test_append_entry(self):
-        """ExtensionRegistry.append_entry() persists an extension entry."""
-        reg = ExtensionRegistry()
-        reg.append_entry("counter", {"value": 42})
-        entries = reg.get_entries()
-        assert len(entries) == 1
-        assert entries[0]["custom_type"] == "counter"
-        assert entries[0]["data"]["value"] == 42
+    def test_registry_has_no_append_entry(self):
+        assert not hasattr(ExtensionRegistry(), "append_entry")
 
-    def test_append_multiple_entries(self):
-        """ExtensionRegistry.append_entry() can append multiple entries."""
-        reg = ExtensionRegistry()
-        reg.append_entry("counter", {"value": 42})
-        reg.append_entry("counter", {"value": 43})
-        entries = reg.get_entries()
-        assert len(entries) == 2
-        assert entries[0]["custom_type"] == "counter"
-        assert entries[0]["data"]["value"] == 42
-        assert entries[1]["custom_type"] == "counter"
-        assert entries[1]["data"]["value"] == 43
+    def test_registry_has_no_get_entries(self):
+        assert not hasattr(ExtensionRegistry(), "get_entries")
 
-    def test_get_entries_initially_empty(self):
-        """ExtensionRegistry.get_entries() returns empty list initially."""
-        reg = ExtensionRegistry()
-        assert reg.get_entries() == []
-
-    def test_get_entries_returns_copy(self):
-        """ExtensionRegistry.get_entries() returns a copy, not the internal list."""
-        reg = ExtensionRegistry()
-        reg.append_entry("counter", {"value": 42})
-        entries1 = reg.get_entries()
-        entries2 = reg.get_entries()
-        entries1.append({"custom_type": "injected"})
-        assert len(reg.get_entries()) == 1
-
-    def test_append_entry_different_types(self):
-        """ExtensionRegistry.append_entry() handles different custom types."""
-        reg = ExtensionRegistry()
-        reg.append_entry("counter", {"value": 42})
-        reg.append_entry("metrics", {"requests": 100})
-        reg.append_entry("state", {"status": "running"})
-        entries = reg.get_entries()
-        assert len(entries) == 3
-        types = [e["custom_type"] for e in entries]
-        assert "counter" in types
-        assert "metrics" in types
-        assert "state" in types
-
-    def test_append_entry_preserves_data(self):
-        """ExtensionRegistry.append_entry() preserves the full data dict."""
-        reg = ExtensionRegistry()
-        complex_data = {
-            "nested": {"key": "value"},
-            "list": [1, 2, 3],
-            "flag": True,
-        }
-        reg.append_entry("complex", complex_data)
-        entries = reg.get_entries()
-        assert entries[0]["data"]["nested"]["key"] == "value"
-        assert entries[0]["data"]["list"] == [1, 2, 3]
-        assert entries[0]["data"]["flag"] is True
+    def test_registry_has_no_entry_store(self):
+        assert not hasattr(ExtensionRegistry(), "_entry_store")
 
 
 class TestRegisterCommand:
@@ -363,7 +311,7 @@ class TestFlagsRemoved:
 class TestExtensionRegistryIntegration:
     """Integration tests for ExtensionRegistry combining multiple features."""
 
-    def test_tools_and_commands_and_entries(self):
+    def test_tools_and_commands(self):
         """All registry features work together."""
         reg = ExtensionRegistry()
 
@@ -377,21 +325,15 @@ class TestExtensionRegistryIntegration:
         reg.register_command("help", {"action": "help"})
         assert "help" in reg._commands
 
-        # Entries
-        reg.append_entry("counter", {"value": 1})
-        assert len(reg.get_entries()) == 1
-
     def test_tool_filtering_with_other_features(self):
-        """Tool filtering doesn't affect commands or entries."""
+        """Tool filtering doesn't affect commands."""
         reg = ExtensionRegistry()
         reg.register_tool({"name": "a", "description": "a", "parameters": {}})
         reg.register_tool({"name": "b", "description": "b", "parameters": {}})
         reg.register_command("help", {})
-        reg.append_entry("state", {})
 
         reg.set_active_tools(["a"])
 
         assert len(reg.get_all_tools()) == 2
         assert set(reg.get_active_tools().keys()) == {"a"}
         assert "help" in reg._commands
-        assert len(reg.get_entries()) == 1

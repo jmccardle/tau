@@ -18,8 +18,11 @@ Contract:
         def register_command(self, name: str, command: dict) -> None: ...
         def get_command(self, name: str) -> dict | None: ...
         def get_commands(self) -> dict[str, dict]: ...
-        def append_entry(self, custom_type: str, data: dict) -> None: ...
-        def get_entries(self) -> list[dict]: ...
+
+Note: ``append_entry`` is NO LONGER a registry method. Durable extension state is
+persisted onto the session tree as a ``customEntry`` node via
+``AgentSession._append_custom_entry`` (E6 §2 / S39), replacing the former RAM-only
+``_entry_store`` that was lost on restart (G4). See ``ExtensionAPI.append_entry``.
 """
 
 from __future__ import annotations
@@ -58,7 +61,6 @@ class ExtensionRegistry:
         self._tools: dict[str, dict] = {}  # name -> definition
         self._commands: dict[str, dict] = {}  # name -> command def
         self._active_tools: set[str] | None = None  # None = all active
-        self._entry_store: list[dict] = []  # extension-persisted entries
 
     def register_tool(self, definition: dict) -> None:
         """Register a tool definition."""
@@ -104,15 +106,3 @@ class ExtensionRegistry:
     def get_commands(self) -> dict[str, dict]:
         """Get all registered slash commands (name -> command def)."""
         return dict(self._commands)
-
-    def append_entry(self, custom_type: str, data: dict) -> None:
-        """Persist extension state (does not appear in LLM context)."""
-        entry = {
-            "custom_type": custom_type,
-            "data": data,
-        }
-        self._entry_store.append(entry)
-
-    def get_entries(self) -> list[dict]:
-        """Get all persisted extension entries."""
-        return list(self._entry_store)

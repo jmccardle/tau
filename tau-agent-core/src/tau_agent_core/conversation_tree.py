@@ -170,6 +170,10 @@ class ConversationTree:
             elif kind == "branch_summary":
                 # Inline node, not a splice (Decision 5, §5): rendered in place.
                 messages.append(_branch_summary_message(str(entry.get("summary", ""))))
+            # ``customEntry`` (durable extension backplane state, E6 §2 / S39) is
+            # deliberately NOT rendered here: it is a non-message node on the path,
+            # so it emits no loop message and thus never reaches ``convert_to_llm``
+            # / the model. It stays readable through ``ctx.entries()`` and the tree.
         return messages
 
     def context_entries(self, leaf: str | None = None) -> list[dict[str, Any]]:
@@ -306,6 +310,9 @@ class ConversationTree:
             text = _message_text(entry.get("message", {}))
         elif kind in _SUMMARY_KINDS:
             text = str(entry.get("summary", ""))
+        elif kind == "customEntry":
+            # Backplane state (E6 §2 / S39): label the browser row by its customType.
+            text = f"customEntry: {entry.get('customType', '')}"
         else:
             text = ""
         stripped = text.strip()

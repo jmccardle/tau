@@ -387,6 +387,19 @@ class Session:
         by ``ConversationTree`` and remapped custom→user on the wire."""
         return self._append("customMessage", customType=custom_type, message=message)
 
+    def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
+        """Persist a durable, NON-message ``customEntry`` node (E6 §2 / S39).
+
+        The on-disk counterpart of ``InMemorySessionLog.append_custom_entry``: the
+        reloadable backing for ``api.append_entry`` (was the RAM-only registry
+        ``_entry_store``, lost on restart — G4). Its own entry KIND carrying the
+        extension's ``{customType, data}`` — flushed to the ``.jsonl`` on append and
+        reconstructed by ``load`` like every other entry, so it round-trips a
+        reload. It is NOT a ``message``/``customMessage`` node, so ``ConversationTree``
+        never folds it into context and ``convert_to_llm`` never sees it (tree-as-
+        backplane state: on the durable path, excluded from model input)."""
+        return self._append("customEntry", customType=custom_type, data=data)
+
     def append_model_change(self, model: str, backend: str) -> str:
         return self._append("model_change", model=model, backend=backend)
 

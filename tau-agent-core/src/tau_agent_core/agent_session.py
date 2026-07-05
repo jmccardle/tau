@@ -1014,6 +1014,33 @@ class AgentSession:
         )
         return self._session_log.append_custom_message(node, custom_type=str(message["customType"]))
 
+    def _append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
+        """Append a durable, NON-message ``customEntry`` node (``api.append_entry``).
+
+        The backend for ``ExtensionAPI.append_entry`` (E6 §2 / S39). Persists the
+        extension's ``{customType, data}`` into the authoritative session log as its
+        own tree entry KIND, replacing the old RAM-only registry ``_entry_store``
+        that was lost on restart (G4). Unlike ``_append_custom_message`` this is NOT
+        a model-facing message: ``ConversationTree`` never folds a ``customEntry``
+        into the loop context and ``convert_to_llm`` never sees it, so it is durable
+        tree-as-backplane state — persisted, reload-invariant, readable through
+        ``ctx.entries()`` — but explicitly excluded from model input.
+
+        Returns the appended entry id.
+
+        Raises:
+            ValueError: if ``custom_type`` is empty (the extension-origin identity is
+                not fabricated) or ``data`` is not a dict — Fail-Early, no silent
+                default.
+        """
+        if not custom_type:
+            raise ValueError(
+                "append_entry: custom_type is required (Fail-Early, no fabricated default)"
+            )
+        if not isinstance(data, dict):
+            raise ValueError(f"append_entry: data must be a dict, got {type(data).__name__}")
+        return self._session_log.append_custom_entry(custom_type, data)
+
     def _build_turn_tools(self) -> list:
         """Merge the built-in tools with the active extension tools for a turn.
 

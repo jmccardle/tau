@@ -577,8 +577,34 @@ class ExtensionAPI:
             self._hook_handlers.commands.append(name)
 
     def append_entry(self, custom_type: str, data: dict) -> None:
-        """Persist extension state through the registry."""
-        self._registry.append_entry(custom_type, data)
+        """Persist durable, NON-message extension state onto the session tree (E6 §2 / S39).
+
+        Appends a ``{customType, data}`` node of its own tree entry KIND
+        (``customEntry``) to the authoritative session log via
+        ``AgentSession._append_custom_entry``. This REPLACES the former RAM-only
+        registry ``_entry_store``, which was lost on restart (G4): the entry now
+        persists, survives a reload, and is readable back through ``ctx.entries()``
+        (the reconstruction path S56's ``TreeStore`` builds on).
+
+        It is deliberately NOT a message: ``ConversationTree`` never folds a
+        ``customEntry`` into the loop context and ``convert_to_llm`` never sees it,
+        so this is tree-as-backplane state — on the durable path, excluded from
+        model input. To inject a node the model reads, use ``send_message``
+        (``visible_to_model``) or ``send_user_message`` instead.
+
+        Raises:
+            RuntimeError: if no session with ``_append_custom_entry`` is bound (e.g.
+                a bare ``ExtensionAPI()``). Fail-Early: raise rather than silently
+                drop the entry into a RAM store that evaporates on restart.
+            ValueError: propagated from ``_append_custom_entry`` when ``custom_type``
+                is empty or ``data`` is not a dict.
+        """
+        if not hasattr(self._session, "_append_custom_entry"):
+            raise RuntimeError(
+                "append_entry: no session with a custom-entry log is bound "
+                "(the entry would have nowhere durable to land)"
+            )
+        self._session._append_custom_entry(custom_type, data)
 
     def set_session_name(self, name: str) -> None:
         """Set the session display name on the bound session."""
