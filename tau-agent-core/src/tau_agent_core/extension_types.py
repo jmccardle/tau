@@ -352,6 +352,26 @@ class ExtensionContext:
         """Whether the agent is idle."""
         return self._is_idle
 
+    @property
+    def ui(self) -> ExtensionUI:
+        """UI methods (TUI-only, no-ops/headless-policy elsewhere) — E9 / S60.
+
+        The SAME shared ``ExtensionUI`` instance :attr:`ExtensionAPI.ui` exposes
+        (both read ``self._ui`` off this one ``ExtensionContext``), so a hook
+        handler's ``ctx.ui.notify(...)`` / ``await ctx.ui.confirm(...)`` paints on
+        the identical delegate an extension's top-level ``api.ui`` would. Every
+        mutating-hook handler and every ``register_command`` handler is called as
+        ``handler(event_or_args, ctx)`` with THIS ``ExtensionContext`` (never the
+        ``ExtensionAPI``), so without this property a hook-scoped ``ctx.ui`` call
+        (pi's own idiom — ``permission-gate.ts``, ``protected-paths.ts``,
+        ``claude-rules.ts`` all call ``ctx.ui.*`` from inside a
+        ``pi.on(...)``/command handler) had no surface to reach the delegate
+        through; ``run_extension_command``'s own docstring already promised "the
+        same ``ctx.ui`` every hook reaches" — this property makes that true rather
+        than aspirational.
+        """
+        return self._ui
+
     def abort(self) -> None:
         """Abort the current operation by calling signal.abort() if available."""
         if self._signal:
