@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -47,6 +48,43 @@ from tau_agent_core.tools.base import AgentTool, ToolDefinition
 
 if TYPE_CHECKING:
     from tau_agent_core.sdk import LoadExtensionsResult
+
+
+@dataclass(frozen=True)
+class ExtensionCommandResult:
+    """Outcome of :meth:`AgentSession.run_extension_command` (E7 §3 / S46).
+
+    ``run_extension_command`` used to return a bare ``bool`` (handled / unknown)
+    and DISCARD the handler's return value, so an extension command could only
+    toast (G7). This carries both:
+
+    - ``handled`` — ``True`` iff a command by that name existed and ran (``False``
+      lets the caller fall through, e.g. treat the text as a prompt). This is the
+      old bool, now a named field.
+    - ``output`` — the value the handler RETURNED (a string, a renderable, or
+      ``None``). The frontends render it as a **display-only** system box (TUI) /
+      printed-or-emitted text (headless); it is chrome, never model input — it is
+      NOT appended to the active path, so the E5 §1 tree-as-truth invariant holds
+      (a command that wants a durable node uses ``ctx`` explicitly).
+
+    Unknown command → ``ExtensionCommandResult(handled=False)`` (no output).
+    """
+
+    handled: bool
+    output: object | None = None
+
+    def output_text(self) -> str | None:
+        """Coerce ``output`` to display text, or ``None`` when there is nothing to show.
+
+        A handler that returned ``None`` (or an empty string) has no output box.
+        Any other value is rendered as its string form — report commands return
+        markdown strings; a non-``str`` value is stringified so the text/JSON
+        channels stay honest rather than fabricating a shape. Display-only.
+        """
+        if self.output is None:
+            return None
+        text = self.output if isinstance(self.output, str) else str(self.output)
+        return text or None
 
 
 def _message_text(content: Any) -> str:
@@ -1415,16 +1453,21 @@ class AgentSession:
             for name, command in self._registry.get_commands().items()
         ]
 
-    async def run_extension_command(self, name: str, args: str = "") -> bool:
-        """Run an extension-registered slash command (E5 §5 / S35).
+    async def run_extension_command(self, name: str, args: str = "") -> ExtensionCommandResult:
+        """Run an extension-registered slash command (E5 §5 / S35; output channel S46).
 
         Port of pi's ``_tryExecuteExtensionCommand`` (agent-session.ts:1143). Looks
         up ``name`` in the session registry and, if found, invokes its ``handler``
         with ``(args, ctx)`` where ``ctx`` is the session's ONE live
         :class:`ExtensionContext` (the same object hook handlers and ``api.ui``
         reach through, so a command's ``ctx.ui.notify`` paints in the same TUI).
-        Returns ``True`` iff the command existed and ran; ``False`` for an unknown
-        command so the caller can fall through (e.g. treat the text as a prompt).
+
+        Returns an :class:`ExtensionCommandResult`: ``handled`` is ``True`` iff the
+        command existed and ran (``False`` for an unknown command so the caller can
+        fall through and treat the text as a prompt), and ``output`` carries the
+        value the handler RETURNED (E7 §3 / S46 — previously discarded, G7). The
+        frontends render ``output`` as display-only chrome; it is never appended to
+        the active path (the tree-as-truth invariant is untouched).
 
         Fail-Early: a command registered without a callable ``handler`` cannot run,
         so an attempt to invoke one RAISES rather than silently no-op'ing — a
@@ -1432,7 +1475,7 @@ class AgentSession:
         """
         command = self._registry.get_command(name)
         if command is None:
-            return False
+            return ExtensionCommandResult(handled=False)
         handler = command.get("handler")
         if not callable(handler):
             raise RuntimeError(
@@ -1441,8 +1484,8 @@ class AgentSession:
             )
         result = handler(args, self._extension_api.context)
         if inspect.isawaitable(result):
-            await result
-        return True
+            result = await result
+        return ExtensionCommandResult(handled=True, output=result)
 
     def _bind_extension_api(self, path_label: str) -> ExtensionAPI:
         """The bucket-bound ExtensionAPI a loaded extension is handed (S24).

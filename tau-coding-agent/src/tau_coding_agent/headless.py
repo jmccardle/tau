@@ -312,6 +312,26 @@ def _apply_resume_metadata(
         session.append_session_info(title)
 
 
+def _emit_command_output(mode: str, command: str, text: str | None) -> None:
+    """Render an extension command's output on the headless channel (E7 §3 / S46).
+
+    ``--mode text`` prints the output text to stdout (nothing when the command
+    produced no output). ``--mode json`` emits ONE ``command_output`` record — a
+    separate record family alongside the closed ``AgentEvent`` set (the same
+    pattern as the session header line), carrying ``output: null`` when the
+    command ran without a returned value, so an orchestrator reading the stream
+    still sees that the command ran. Display-only: never persisted onto the path.
+    """
+    if mode == "json":
+        record = {"type": "command_output", "command": command, "output": text}
+        sys.stdout.write(json.dumps(record) + "\n")
+        sys.stdout.flush()
+        return
+    if text is not None:
+        sys.stdout.write(text + "\n")
+        sys.stdout.flush()
+
+
 async def run_print(args: "CLIArgs", config: dict) -> int:
     """Run one headless turn and render to stdout. Returns a process exit code.
 
@@ -390,12 +410,6 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
         session = prior
         _apply_resume_metadata(session, model_name, backend_name, prior, args.name)
 
-    # This turn's user message, then hand the active-path CONTEXT to the backend
-    # (cursor + compaction/branch splices applied) — not the raw linear fold, so a
-    # resumed compacted/branched session gives the model the right history (§2.6).
-    session.append_message({"role": "user", "content": prompt_text})
-    messages: list[dict] = session.context
-
     # Imported lazily: keeps `import tau_coding_agent.headless` free of the
     # backend/agent-core import chain until a run actually happens.
     from tau_coding_agent.backends import create_backend, make_model_resolver
@@ -472,6 +486,34 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
         # reconstruction / watcher setup runs with its registration in place (S41).
         if emit_session_start is not None:
             await emit_session_start("startup")
+
+        # Command output channel (E7 §3 / S46): a prompt that is entirely a
+        # registered extension slash-command (``/name args``) RUNS the command
+        # instead of a model turn — mirroring the TUI's pre-model dispatch
+        # (``app.on_input_submitted``). The handler's returned value is printed
+        # (text) / emitted as a ``command_output`` record (json). No user turn is
+        # appended and the model is never called, so the report stays display-only
+        # chrome and never enters the persisted path (tree-as-truth, E5 §1). An
+        # unknown ``/…`` is NOT a command — it falls through to the model path
+        # below (the text is a legitimate prompt).
+        run_cmd = getattr(backend, "run_extension_command", None)
+        if run_cmd is not None and prompt_text.startswith("/"):
+            stripped = prompt_text[1:]
+            space = stripped.find(" ")
+            cmd_name = stripped if space == -1 else stripped[:space]
+            cmd_args = "" if space == -1 else stripped[space + 1 :]
+            cmd_result = await run_cmd(cmd_name, cmd_args)
+            if cmd_result.handled:
+                _emit_command_output(args.mode, cmd_name, cmd_result.output_text())
+                return 0
+
+        # This turn's user message, then hand the active-path CONTEXT to the backend
+        # (cursor + compaction/branch splices applied) — not the raw linear fold, so
+        # a resumed compacted/branched session gives the model the right history
+        # (§2.6). Appended here (after the command check) so a command run never
+        # persists a user turn.
+        session.append_message({"role": "user", "content": prompt_text})
+        messages: list[dict] = session.context
 
         if args.mode == "json":
             # pi-faithful ``--mode json`` (E-json / step S8, D-delegate). Emit the

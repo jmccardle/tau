@@ -1067,6 +1067,86 @@ class TestExtensions:
 
         self.create_session(extensions=[my_ext])
 
+    # -- Command output channel (E7 §3 / S46) ---------------------------------
+
+    def test_run_command_returns_handlers_output(self):
+        """A handled command carries the handler's returned value (S46, was G7).
+
+        The value used to be discarded — ``run_extension_command`` could only
+        report ``handled``. Now it returns an ``ExtensionCommandResult`` whose
+        ``output`` is exactly what the handler returned.
+        """
+        def my_ext(api):
+            def _report(args, ctx):
+                return f"report for {args!r}"
+
+            api.register_command("report", {"description": "r", "handler": _report})
+
+        session = self.create_session(extensions=[my_ext])
+        result = asyncio.run(session.run_extension_command("report", "todos"))
+        assert result.handled is True
+        assert result.output == "report for 'todos'"
+        assert result.output_text() == "report for 'todos'"
+
+    def test_run_command_awaits_async_handler_output(self):
+        """An async handler's awaited return value is captured, not the coroutine."""
+        def my_ext(api):
+            async def _areport(args, ctx):
+                return "async output"
+
+            api.register_command("areport", {"description": "r", "handler": _areport})
+
+        session = self.create_session(extensions=[my_ext])
+        result = asyncio.run(session.run_extension_command("areport"))
+        assert result.handled is True
+        assert result.output == "async output"
+
+    def test_run_command_none_output_has_no_text(self):
+        """A handler returning None is handled but shows no output box."""
+        def my_ext(api):
+            def _silent(args, ctx):
+                return None
+
+            api.register_command("silent", {"description": "s", "handler": _silent})
+
+        session = self.create_session(extensions=[my_ext])
+        result = asyncio.run(session.run_extension_command("silent"))
+        assert result.handled is True
+        assert result.output is None
+        assert result.output_text() is None
+
+    def test_run_command_empty_string_output_has_no_text(self):
+        """An empty-string return yields no output box (nothing to show)."""
+        def my_ext(api):
+            api.register_command(
+                "blank", {"description": "b", "handler": lambda args, ctx: ""}
+            )
+
+        session = self.create_session(extensions=[my_ext])
+        result = asyncio.run(session.run_extension_command("blank"))
+        assert result.handled is True
+        assert result.output_text() is None
+
+    def test_run_command_non_str_output_is_stringified(self):
+        """A non-str return is coerced to text for the display channels (honest, not dropped)."""
+        def my_ext(api):
+            api.register_command(
+                "num", {"description": "n", "handler": lambda args, ctx: [1, 2, 3]}
+            )
+
+        session = self.create_session(extensions=[my_ext])
+        result = asyncio.run(session.run_extension_command("num"))
+        assert result.output == [1, 2, 3]
+        assert result.output_text() == "[1, 2, 3]"
+
+    def test_run_unknown_command_is_not_handled(self):
+        """An unknown command → handled=False (caller falls through), no output."""
+        session = self.create_session()
+        result = asyncio.run(session.run_extension_command("nope"))
+        assert result.handled is False
+        assert result.output is None
+        assert result.output_text() is None
+
 
 # =============================================================================
 # Test 8: In-memory session is isolated

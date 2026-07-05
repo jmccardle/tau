@@ -40,6 +40,10 @@ from tau_coding_agent.session_store import (
 # the TUI); the tree-browser (§3) is a view over ConversationTree.tree().
 from tau_agent_core.conversation_tree import ConversationTree, TreeNode
 
+# The result of running an extension command (handled flag + the handler's
+# returned output) — the command output channel (E7 §3 / S46).
+from tau_agent_core.agent_session import ExtensionCommandResult
+
 # Extension load result + the read-only per-extension summary the /extensions
 # palette listing renders (E5 §5 / S34).
 from tau_agent_core.sdk import LoadExtensionsResult, summarize_extensions
@@ -1263,7 +1267,9 @@ class Parley(App):
                 space = stripped.find(" ")
                 cmd_name = stripped if space == -1 else stripped[:space]
                 cmd_args = "" if space == -1 else stripped[space + 1 :]
-                if await runner(cmd_name, cmd_args):
+                result = await runner(cmd_name, cmd_args)
+                if result.handled:
+                    self._render_command_output(result)
                     return
 
         # Create new session if needed
@@ -1589,10 +1595,27 @@ class Parley(App):
         if runner is None:
             return
         try:
-            await runner(name)
+            result = await runner(name)
         except Exception as e:
             self.notify(f"Command /{name} failed: {e}", severity="error")
             self.log.error(f"Extension command /{name} failed: {e}", exc_info=True)
+            return
+        self._render_command_output(result)
+
+    def _render_command_output(self, result: ExtensionCommandResult) -> None:
+        """Render a command's returned value as a display-only ``system`` box (S46).
+
+        Same chrome as ``/extensions`` (:meth:`action_show_extensions`) — a
+        ``system`` ``MessageBox`` mounted into the transcript view. It is
+        deliberately NOT added to ``self.messages`` (the working list that becomes
+        the model's context), so a command's report cannot leak into model input,
+        preserving the E5 §1 tree-as-truth invariant. A command that returned
+        nothing (``output_text() is None``) shows no box.
+        """
+        text = result.output_text()
+        if text is None:
+            return
+        self.query_one(ChatDisplay).add_message("system", text)
 
     @staticmethod
     def _format_extensions_listing(result: LoadExtensionsResult) -> str:

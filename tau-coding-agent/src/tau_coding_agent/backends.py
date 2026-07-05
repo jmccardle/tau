@@ -11,7 +11,7 @@ AgentSession runs against a scratch InMemorySessionLog, caller owns persistence)
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 from tau_ai.types import Model
-from tau_agent_core.agent_session import AgentSession
+from tau_agent_core.agent_session import AgentSession, ExtensionCommandResult
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.session_log import InMemorySessionLog, SessionLog
@@ -355,11 +355,13 @@ class TauBackend(Backend):
         """
         return self.agent_session.get_extension_commands()
 
-    async def run_extension_command(self, name: str, args: str = "") -> bool:
-        """Run an extension-registered slash command (S35).
+    async def run_extension_command(self, name: str, args: str = "") -> ExtensionCommandResult:
+        """Run an extension-registered slash command (S35; output channel S46).
 
-        Delegates to :meth:`AgentSession.run_extension_command`; returns ``True``
-        iff the command existed and ran (``False`` lets the caller fall through).
+        Delegates to :meth:`AgentSession.run_extension_command`, forwarding the
+        :class:`ExtensionCommandResult` (``handled`` + the handler's ``output``) so
+        the caller can both fall through on an unknown command and render a handled
+        command's returned value as display-only chrome.
         """
         return await self.agent_session.run_extension_command(name, args)
 
