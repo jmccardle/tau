@@ -99,6 +99,17 @@ class ExtensionRunner:
     durable ``tool_result`` edits + ``before_agent_start``. ``context`` is
     therefore no longer a hook event and ``api.on("context", …)`` raises.)
 
+    Alongside the mutating hooks the runner also owns the two **notify-grade
+    session-lifecycle hooks** (E6 §2 / S41): ``session_start`` and
+    ``session_shutdown``. These collect **no** return value — they exist for
+    setup/teardown side effects (watchers, state reconstruction from
+    ``ctx.entries()``, exit commits) — but their handler exceptions are still
+    SURFACED via :meth:`on_error` (the S44 regime), *not* swallowed like the
+    fire-and-forget notify ``EventBus`` path. Routing them through the runner (not
+    the bus) is exactly what buys the error surfacing. The frontends drive the
+    lifecycle moments: ``session_start`` after extensions load; ``session_shutdown``
+    on TUI quit, headless completion, and SIGINT/SIGTERM.
+
     ``has_handlers(event)`` gives call-sites the zero-extension fast path
     (pi ``agent-session.ts:405-411``): when it returns ``False`` the caller skips
     the dispatch entirely and the emit methods themselves also short-circuit to the
@@ -107,6 +118,12 @@ class ExtensionRunner:
 
     #: The mutating hook events this dispatcher owns (E2 supplies the call-sites).
     HOOK_EVENTS = ("tool_call", "tool_result", "before_agent_start")
+
+    #: The notify-grade session-lifecycle hooks (S41): no return effect, but
+    #: error-surfaced through :meth:`on_error` rather than swallowed. Routed to a
+    #: runner bucket (like ``HOOK_EVENTS``) so ``api.on(...)`` reaches the same
+    #: error-surfacing dispatcher — see :meth:`ExtensionAPI.on`.
+    LIFECYCLE_EVENTS = ("session_start", "session_shutdown")
 
     def __init__(
         self,
@@ -308,3 +325,40 @@ class ExtensionRunner:
                 "system_prompt": current_system_prompt if system_prompt_modified else None,
             }
         return None
+
+    # ------------------------------------------------------------------
+    # Session-lifecycle dispatch — notify-grade, error-surfaced (S41)
+    # ------------------------------------------------------------------
+
+    async def _emit_lifecycle(self, event_name: str, event: dict[str, Any]) -> None:
+        """Dispatch a notify-grade session-lifecycle hook (S41).
+
+        Iterates extensions in load order and handlers in registration order (the
+        same walk as the mutating hooks), calling each ``handler(event, ctx)`` and
+        awaiting an async handler. Unlike the mutating hooks, the return value is
+        **discarded** — these hooks have no path effect; they run for their side
+        effects (watchers, ``ctx.entries()`` reconstruction, exit commits).
+
+        Handler exceptions are SURFACED via :meth:`_emit_error` (the S44 regime)
+        and dispatch continues to the next handler — one extension's failing
+        teardown must neither abort another's nor be swallowed (Fail-Early: no
+        silent drop, but also no fail-closed here, since a lifecycle hook has no
+        result to gate on).
+        """
+        for ext in self._extensions:
+            handlers = ext.handlers.get(event_name)
+            if not handlers:
+                continue
+            for handler in handlers:
+                try:
+                    await self._call(handler, event)
+                except Exception as err:  # noqa: BLE001 — surfaced, not dropped
+                    self._emit_error(ExtensionError(ext.path, event_name, str(err)))
+
+    async def emit_session_start(self, event: dict[str, Any]) -> None:
+        """Dispatch ``session_start`` (notify-grade; return discarded, errors surfaced)."""
+        await self._emit_lifecycle("session_start", event)
+
+    async def emit_session_shutdown(self, event: dict[str, Any]) -> None:
+        """Dispatch ``session_shutdown`` (notify-grade; return discarded, errors surfaced)."""
+        await self._emit_lifecycle("session_shutdown", event)

@@ -464,11 +464,15 @@ class ExtensionAPI:
         """Subscribe to an event — routed by KIND (S24 bridge).
 
         The three MUTATING hooks (``ExtensionRunner.HOOK_EVENTS``: ``tool_call`` /
-        ``tool_result`` / ``before_agent_start``) are dispatched by the session's
-        separate return-collecting ``ExtensionRunner``, whose call-sites gate on
+        ``tool_result`` / ``before_agent_start``) AND the two notify-grade
+        session-lifecycle hooks (``ExtensionRunner.LIFECYCLE_EVENTS``:
+        ``session_start`` / ``session_shutdown``, S41) are dispatched by the
+        session's separate ``ExtensionRunner``, whose call-sites gate on
         ``has_handlers(event)``. Those registrations must land in THIS extension's
         runner bucket (``self._hook_handlers``), not on the notify ``EventBus`` —
-        otherwise they are a silent no-op in a real session (the bug S24 closes).
+        otherwise they are a silent no-op in a real session (the bug S24 closes),
+        and the lifecycle hooks in particular route through the runner precisely so
+        their handler errors are SURFACED (S44) instead of swallowed like the bus.
         Every other (notify) event keeps going to the ``EventBus``.
 
         The retired ``context`` hook (E5 §3.2 / S30) is rejected UP FRONT: it was
@@ -504,11 +508,11 @@ class ExtensionAPI:
                 "api.on('before_agent_start', …)."
             )
 
-        if event in ExtensionRunner.HOOK_EVENTS:
+        if event in ExtensionRunner.HOOK_EVENTS or event in ExtensionRunner.LIFECYCLE_EVENTS:
             if self._hook_handlers is None:
                 raise RuntimeError(
                     f"api.on({event!r}): this ExtensionAPI is not bound to an "
-                    "ExtensionRunner bucket, so the mutating hook could never fire. "
+                    "ExtensionRunner bucket, so the hook could never fire. "
                     "Obtain the api from AgentSession's extension load path "
                     "(each factory is handed a bucket-bound api)."
                 )

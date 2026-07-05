@@ -293,6 +293,43 @@ class AgentSession:
         self._session_event_tasks.add(task)
         task.add_done_callback(self._session_event_tasks.discard)
 
+    async def emit_session_start(self, reason: str = "startup") -> None:
+        """Fire the notify-grade ``session_start`` lifecycle hook (S41).
+
+        Dispatched through the session's :class:`ExtensionRunner` (not the notify
+        ``EventBus``) so a handler's exception is SURFACED (S44), not swallowed.
+        Called by the frontends *after* extensions are loaded — so a
+        ``session_start`` handler can reconstruct state from ``ctx.entries()`` /
+        install watchers with its registration already in place. Returns nothing:
+        the hook has no path effect. Gated on ``has_handlers`` for the
+        zero-extension fast path (no event dict built when nobody listens).
+
+        ``reason`` mirrors pi's ``SessionStartEvent.reason``
+        (``"startup" | "reload" | "new" | "resume" | "fork"``); the frontend that
+        knows why the session began passes the right one.
+        """
+        if not self._extension_runner.has_handlers("session_start"):
+            return
+        await self._extension_runner.emit_session_start({"type": "session_start", "reason": reason})
+
+    async def emit_session_shutdown(self, reason: str = "quit") -> None:
+        """Fire the notify-grade ``session_shutdown`` lifecycle hook (S41).
+
+        The teardown counterpart to :meth:`emit_session_start`, dispatched through
+        the runner (error-surfaced, not swallowed). The frontends fire it on the
+        genuine end-of-runtime moments — TUI quit, headless completion, and
+        SIGINT/SIGTERM — so an extension can commit exit state / stop watchers.
+        Returns nothing; gated on ``has_handlers`` for the zero-extension fast path.
+
+        ``reason`` mirrors pi's ``SessionShutdownEvent.reason``
+        (``"quit" | "reload" | "new" | "resume" | "fork"``).
+        """
+        if not self._extension_runner.has_handlers("session_shutdown"):
+            return
+        await self._extension_runner.emit_session_shutdown(
+            {"type": "session_shutdown", "reason": reason}
+        )
+
     async def load_extensions(
         self,
         explicit_paths: list[str] | None = None,

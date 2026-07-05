@@ -1200,6 +1200,23 @@ class Parley(App):
         # Focus input
         self.query_one("#chat-input", ChatInput).focus()
 
+    async def on_unmount(self) -> None:
+        """Fire the notify-grade ``session_shutdown`` lifecycle hook on TUI quit (S41).
+
+        This is the teardown counterpart to the ``session_start`` fired from
+        :meth:`_load_backend_extensions`; it runs while the event loop is still
+        alive (Textual awaits the app's unmount handler during shutdown), covering
+        both an explicit quit and a Ctrl-C — Textual routes SIGINT through its own
+        shutdown, which unmounts the app. getattr-guarded so a non-``TauBackend``
+        test double (or a run that never built a backend) is a no-op. An extension's
+        teardown exception is surfaced by the runner (never swallowed), not
+        re-raised here — a failing shutdown hook must not wedge app teardown.
+        """
+        backend = getattr(self, "current_backend", None)
+        emit_shutdown = getattr(backend, "emit_session_shutdown", None)
+        if emit_shutdown is not None:
+            await emit_shutdown("quit")
+
     async def on_input_submitted(self, event: Input.Submitted):
         """Handle message submission."""
         # ChatInput is the app's only Input.Submitted source (it posts
@@ -1459,6 +1476,16 @@ class Parley(App):
             self.notify(f"Extension error ({err.path}): {err.error}", severity="warning")
         if result.extensions:
             self.log(f"Loaded {len(result.extensions)} extension(s)")
+
+        # Fire the notify-grade ``session_start`` lifecycle hook (E6 §2 / S41) now
+        # that the just-loaded extensions' handlers are registered — so a
+        # ``session_start`` handler can reconstruct state from ``ctx.entries()`` /
+        # install watchers. getattr-guarded so a non-``TauBackend`` test double is a
+        # no-op (same pattern as ``set_ui_delegate``/``load_extensions``). The
+        # teardown counterpart fires from :meth:`on_unmount` on TUI quit.
+        emit_start = getattr(self.current_backend, "emit_session_start", None)
+        if emit_start is not None:
+            await emit_start("startup")
 
     async def action_new_chat(self, model: Optional[str] = None):
         """Start a new chat."""

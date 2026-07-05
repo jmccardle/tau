@@ -16,8 +16,10 @@ Reference: docs/CLI-PLAN.md (Core flag set).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import signal
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -400,67 +402,115 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
 
     backend = create_backend(model_config)
 
-    # Load file-path extensions into the live session (E5 §2.2). Explicit ``-e``
-    # paths come from ``--extension``; the ``~/.tau/extensions`` global dir is
-    # discovered unless ``-ne`` (``no_extensions``) was passed. A discovered load
-    # failure is collected and surfaced to stderr here; an explicit ``-e`` failure
-    # raises out of ``load_extensions`` (Fail-Early — the user named it), which
-    # ``main()`` renders as a clean CLI error.
-    explicit_extensions = model_config.get("extensions") or None
-    discover_extensions = not model_config.get("no_extensions", False)
-    # Per-extension config (E6 §2 / S40): config.json ``"extensions"`` slices +
-    # per-run ``--ext-config NAME.KEY=VALUE`` overrides (CLI > config.json). Sliced
-    # per extension by file stem inside the session and handed to ``api.config``.
-    extensions_config = resolve_extensions_config(
-        config, parse_ext_config_overrides(args.ext_config)
-    )
-    ext_result = await backend.load_extensions(
-        explicit_extensions,
-        discover=discover_extensions,
-        extensions_config=extensions_config,
-    )
-    for ext_error in ext_result.errors:
-        print(
-            f"[τ] failed to load extension {ext_error.path}: {ext_error.error}",
-            file=sys.stderr,
+    # Session-lifecycle hooks (E6 §2 / S41). ``session_start`` fires once
+    # extensions are loaded; ``session_shutdown`` fires on headless COMPLETION and
+    # on SIGINT/SIGTERM. Resolved via ``getattr`` so a non-``TauBackend`` test
+    # double without the seam is a transparent no-op (same guard as the TUI's
+    # ``set_ui_delegate``). Signal handlers are installed only when the backend
+    # exposes the shutdown seam, so the existing fake-backend tests keep the plain
+    # KeyboardInterrupt disposition unchanged.
+    emit_session_start = getattr(backend, "emit_session_start", None)
+    emit_session_shutdown = getattr(backend, "emit_session_shutdown", None)
+    abort = getattr(backend, "abort", None)
+    installed_signals: list[signal.Signals] = []
+    if emit_session_shutdown is not None:
+        loop = asyncio.get_running_loop()
+
+        def _on_terminate() -> None:
+            # Trip the in-flight abort so the loop unwinds to the ``finally``
+            # below, which fires ``session_shutdown`` exactly once. Not fired from
+            # here directly: a signal callback is sync and cannot await the async
+            # dispatch. ``abort`` is safe to call when nothing is running.
+            if abort is not None:
+                abort()
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, _on_terminate)
+                installed_signals.append(sig)
+            except NotImplementedError:
+                # Signal handlers are unavailable on this event loop / platform
+                # (e.g. Windows ProactorEventLoop). Nothing to fabricate — the
+                # completion path still fires ``session_shutdown``.
+                pass
+
+    try:
+        # Load file-path extensions into the live session (E5 §2.2). Explicit
+        # ``-e`` paths come from ``--extension``; the ``~/.tau/extensions`` global
+        # dir is discovered unless ``-ne`` (``no_extensions``) was passed. A
+        # discovered load failure is collected and surfaced to stderr here; an
+        # explicit ``-e`` failure raises out of ``load_extensions`` (Fail-Early —
+        # the user named it), which ``main()`` renders as a clean CLI error.
+        explicit_extensions = model_config.get("extensions") or None
+        discover_extensions = not model_config.get("no_extensions", False)
+        # Per-extension config (E6 §2 / S40): config.json ``"extensions"`` slices +
+        # per-run ``--ext-config NAME.KEY=VALUE`` overrides (CLI > config.json).
+        # Sliced per extension by file stem inside the session, handed to
+        # ``api.config``.
+        extensions_config = resolve_extensions_config(
+            config, parse_ext_config_overrides(args.ext_config)
         )
+        ext_result = await backend.load_extensions(
+            explicit_extensions,
+            discover=discover_extensions,
+            extensions_config=extensions_config,
+        )
+        for ext_error in ext_result.errors:
+            print(
+                f"[τ] failed to load extension {ext_error.path}: {ext_error.error}",
+                file=sys.stderr,
+            )
 
-    if args.mode == "json":
-        # pi-faithful ``--mode json`` (E-json / step S8, D-delegate). Emit the
-        # session HEADER line FIRST (pi ``print-mode.ts:113-116``), then every bus
-        # event serialized to its ``type``-discriminated pi ``AgentSessionEvent``
-        # shape (NOT the legacy ``kind`` schema, and no synthetic ``done`` line):
-        # each ``message_end`` carries usage/model/stop_reason, which is the real
-        # per-child limit / failure signal the delegate (step S9) consumes. The
-        # delegate prices its own budget from those per-message tokens × config
-        # ``cost`` (E4.cost), so no ``cost_usd`` rides the json stream.
-        sys.stdout.write(json.dumps(session.header) + "\n")
-        sys.stdout.flush()
+        # ``session_start`` after the load, so a handler's ``ctx.entries()``
+        # reconstruction / watcher setup runs with its registration in place (S41).
+        if emit_session_start is not None:
+            await emit_session_start("startup")
 
-        def on_pi_event(event: dict) -> None:
-            sys.stdout.write(json.dumps(event) + "\n")
+        if args.mode == "json":
+            # pi-faithful ``--mode json`` (E-json / step S8, D-delegate). Emit the
+            # session HEADER line FIRST (pi ``print-mode.ts:113-116``), then every
+            # bus event serialized to its ``type``-discriminated pi
+            # ``AgentSessionEvent`` shape (NOT the legacy ``kind`` schema, and no
+            # synthetic ``done`` line): each ``message_end`` carries
+            # usage/model/stop_reason, which is the real per-child limit / failure
+            # signal the delegate (step S9) consumes. The delegate prices its own
+            # budget from those per-message tokens × config ``cost`` (E4.cost), so
+            # no ``cost_usd`` rides the json stream.
+            sys.stdout.write(json.dumps(session.header) + "\n")
             sys.stdout.flush()
 
-        def noop(_delta: str) -> None:
-            pass
+            def on_pi_event(event: dict) -> None:
+                sys.stdout.write(json.dumps(event) + "\n")
+                sys.stdout.flush()
 
-        _text, _usage, new_messages, _tcs = await backend.stream_chat(
-            messages, noop, on_pi_event=on_pi_event
-        )
-    else:  # text
+            def noop(_delta: str) -> None:
+                pass
 
-        def emit(delta: str) -> None:
-            sys.stdout.write(delta)
+            _text, _usage, new_messages, _tcs = await backend.stream_chat(
+                messages, noop, on_pi_event=on_pi_event
+            )
+        else:  # text
+
+            def emit(delta: str) -> None:
+                sys.stdout.write(delta)
+                sys.stdout.flush()
+
+            _text, _usage, new_messages, _tcs = await backend.stream_chat(messages, emit)
+            sys.stdout.write("\n")
             sys.stdout.flush()
 
-        _text, _usage, new_messages, _tcs = await backend.stream_chat(messages, emit)
-        sys.stdout.write("\n")
-        sys.stdout.flush()
+        # Append the loop's non-user output (assistant + toolResult); the user turn
+        # was already appended above, so skip any echoed user message.
+        for message in new_messages:
+            if message.get("role") != "user":
+                session.append_message(message)
 
-    # Append the loop's non-user output (assistant + toolResult); the user turn
-    # was already appended above, so skip any echoed user message.
-    for message in new_messages:
-        if message.get("role") != "user":
-            session.append_message(message)
-
-    return 0
+        return 0
+    finally:
+        # Uninstall the lifecycle signal handlers (never leak them onto the loop a
+        # subsequent run — or the test harness — shares) and fire ``session_shutdown``
+        # exactly once, whether the run completed normally or a signal tripped abort.
+        for sig in installed_signals:
+            loop.remove_signal_handler(sig)
+        if emit_session_shutdown is not None:
+            await emit_session_shutdown("quit")

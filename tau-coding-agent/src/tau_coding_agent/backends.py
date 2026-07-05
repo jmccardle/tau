@@ -270,6 +270,24 @@ class TauBackend(Backend):
         """
         self.agent_session.set_ui_delegate(delegate)
 
+    async def emit_session_start(self, reason: str = "startup") -> None:
+        """Fire the ``session_start`` lifecycle hook on the wrapped session (S41).
+
+        Delegates to :meth:`AgentSession.emit_session_start`; the frontends call
+        this after :meth:`load_extensions` so a loaded extension's ``session_start``
+        handler runs with its registration in place (state reconstruction, watchers).
+        """
+        await self.agent_session.emit_session_start(reason)
+
+    async def emit_session_shutdown(self, reason: str = "quit") -> None:
+        """Fire the ``session_shutdown`` lifecycle hook on the wrapped session (S41).
+
+        Delegates to :meth:`AgentSession.emit_session_shutdown`; the frontends call
+        this on end-of-runtime (TUI quit, headless completion, SIGINT/SIGTERM) so an
+        extension can run teardown side effects (exit commits, stopping watchers).
+        """
+        await self.agent_session.emit_session_shutdown(reason)
+
     async def load_extensions(
         self,
         explicit_paths: list[str] | None = None,
