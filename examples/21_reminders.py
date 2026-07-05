@@ -88,15 +88,41 @@ when a rule fires — appending a durable ``<system-reminder>`` — and otherwis
 ``None`` (result passes through untouched). The nagging is delivered exclusively by
 that durable edit.
 
+## S59 — refactored onto ``ext_kit.steer``
+
+The threshold/cooldown state machine this demo once hand-rolled (a pending set,
+per-rule cooldowns, a stable drain order, the ``<system-reminder>`` append) is
+exactly what S58 distilled into :class:`ext_kit.steer.ReminderBank`
+(``docs/EXTENSIONS-DEMO-ROADMAP.md §4``: "the generalized ``21_reminders``"). S59
+refactors the demo's :class:`ReminderBank` to CONSUME that kit — its four rules
+become :class:`ext_kit.steer.Rule` data (each with its ``COOLDOWNS`` cooldown), and
+:meth:`ReminderBank._drain` / :meth:`ReminderBank.on_tool_result` delegate to the
+kit bank's ``drain`` / ``patch_result``. The demo keeps only what is genuinely
+its own: the four predicates, the failure-streak accounting, and the one-time
+``before_agent_start`` discipline preamble. Behavior is preserved.
+
 Reference: EXTENSIONS-IMPLEMENTATION.md §E-demo-2, §8 S16; EXTENSIONS-E5-WIRING.md
-§3.2–§3.3 / S31 (durable-hook rework — the ``context`` hook is retired).
+§3.2–§3.3 / S31 (durable-hook rework — the ``context`` hook is retired);
+docs/EXTENSIONS-DEMO-ROADMAP.md §4 S58 / §7 S59 (refactored onto ``ext_kit.steer``).
 """
 
 from __future__ import annotations
 
 import os
 import re
+import sys
 from typing import Any
+
+# ── import the kit (it lives alongside the demos in examples/) ───────────────
+# The file-path extension loader (``tau -e examples/21_reminders.py``) does not add
+# the extension's own directory to ``sys.path``, and the test harness loads this
+# file by path too — so bootstrap ``examples/`` onto the path before importing the
+# kit, whether run directly, imported, or loaded via ``-e`` (D-E6-3).
+_EXAMPLES_DIR = os.path.dirname(os.path.abspath(__file__))
+if _EXAMPLES_DIR not in sys.path:
+    sys.path.insert(0, _EXAMPLES_DIR)
+
+from ext_kit import steer  # noqa: E402  (path insertion must precede the import)
 
 # ── rule identifiers, order, and per-rule cooldowns ──────────────────────────
 # RULE_ORDER fixes a deterministic drain order (pi iterates rules in a stable
@@ -246,13 +272,23 @@ class ReminderBank:
     :meth:`on_before_agent_start` seeds the one-time discipline preamble as a durable
     custom node; :meth:`on_tool_result` both advances failure state and drains pending
     rules into a durable ``<system-reminder>`` appended to the result's ``content``.
+
+    S59: the threshold/cooldown/drain state machine is now an
+    :class:`ext_kit.steer.ReminderBank` (S58) — the four rules are registered as kit
+    :class:`ext_kit.steer.Rule` data in :data:`RULE_ORDER` order (each carrying its
+    :data:`COOLDOWNS` cooldown and :data:`REMINDER_TEXT` body), so :meth:`_drain` and
+    the ``tool_result`` edit delegate to the kit. Only the demo-specific state —
+    the per-tool failure streak and the one-shot preamble flag — lives here.
     """
 
     def __init__(self) -> None:
-        # Rules triggered but not yet injected.
-        self._pending: set[str] = set()
-        # rule -> context calls remaining before it may fire again (0 == ready).
-        self._cooldown: dict[str, int] = {}
+        # The generalized state machine (S58): register the four rules as data, in
+        # RULE_ORDER (which fixes the deterministic drain order the kit preserves).
+        # Each rule uses the default threshold=1, so ``trigger`` (bypassing the
+        # threshold) marks it pending exactly as the demo's old ``trigger`` did.
+        self._bank = steer.ReminderBank()
+        for rule in RULE_ORDER:
+            self._bank.add(rule, REMINDER_TEXT[rule], cooldown=COOLDOWNS[rule])
         # tool name -> consecutive error count (reset on a success).
         self._failures: dict[str, int] = {}
         # Whether the pre-first-call discipline preamble has been seeded yet. In
@@ -263,29 +299,25 @@ class ReminderBank:
     # -- state transitions ----------------------------------------------------
 
     def trigger(self, rule: str) -> None:
-        """Mark ``rule`` pending. Raises on an unknown rule (Fail-Early)."""
+        """Mark ``rule`` pending. Raises on an unknown rule (Fail-Early).
+
+        Validates against the demo's own rule set (so the message names a
+        *reminder* rule) before delegating the pending trip to the kit bank.
+        """
         if rule not in COOLDOWNS:
             raise ValueError(f"unknown reminder rule: {rule!r}")
-        self._pending.add(rule)
+        self._bank.trigger(rule)
 
     def _drain(self) -> list[str]:
         """Advance cooldowns and return the rules that fire on this drain.
 
-        A rule fires when it is pending AND off cooldown; firing arms its cooldown.
-        A rule on cooldown decrements and stays silent this drain even if pending.
-        One drain happens per ``tool_result`` event (the durable injection point).
+        Delegates to :meth:`ext_kit.steer.ReminderBank.drain`: a rule fires when it
+        is pending AND off cooldown (firing arms its cooldown); a rule on cooldown
+        decrements and stays silent this drain even if pending. One drain happens
+        per ``tool_result`` event (the durable injection point), and fired names come
+        back in the registration (``RULE_ORDER``) order.
         """
-        fired: list[str] = []
-        for rule in RULE_ORDER:
-            remaining = self._cooldown.get(rule, 0)
-            if remaining > 0:
-                self._cooldown[rule] = remaining - 1
-                continue
-            if rule in self._pending:
-                fired.append(rule)
-                self._pending.discard(rule)
-                self._cooldown[rule] = COOLDOWNS[rule]
-        return fired
+        return self._bank.drain()
 
     # -- hook handlers --------------------------------------------------------
 
@@ -369,17 +401,21 @@ class ReminderBank:
             else:
                 self._failures[tool_name] = 0
 
-        fired = self._drain()
-        if not fired:
-            return None
-        # Append (never replace) so the tool's own output survives beneath the nag.
-        content = list(event.get("content") or [])
-        content.append({"type": "text", "text": reminder_body(fired)})
-        return {"content": content}
+        # Delegate the drain + durable append to the kit bank: it drains the pending
+        # rules and, when any fire, returns the ``{"content": [...original..., nag]}``
+        # patch (appending — never replacing — so the tool's own output survives
+        # beneath the nag), else ``None`` for an untouched result. The kit renders
+        # the same ``<system-reminder>`` bodies (the rules carry REMINDER_TEXT).
+        return self._bank.patch_result(event)
 
 
 def reminder_body(rules: list[str]) -> str:
-    """Join one ``<system-reminder>`` line per fired rule (the durable edit's text)."""
+    """Join one ``<system-reminder>`` line per fired rule (the durable edit's text).
+
+    Kept as the demo's documented render helper; it mirrors what
+    :meth:`ext_kit.steer.ReminderBank.patch_result` appends (one wrapped line per
+    fired rule, in fired order).
+    """
     return "\n".join(f"<system-reminder>{REMINDER_TEXT[rule]}</system-reminder>" for rule in rules)
 
 
