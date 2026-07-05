@@ -546,6 +546,7 @@ class AgentSession:
         discover: bool = True,
         user_dir: str | None = None,
         extensions_config: dict[str, dict[str, Any]] | None = None,
+        collect_explicit_errors: bool = False,
     ) -> LoadExtensionsResult:
         """Load file-path extensions into THIS live session (E5 §2, S26/S27).
 
@@ -568,7 +569,10 @@ class AgentSession:
 
         Error policy is the loader's (Fail-Early): an explicit ``-e`` failure
         RAISES (the user named it); a *discovered* failure is collected into the
-        returned :class:`LoadExtensionsResult` ``errors`` and skipped. The caller
+        returned :class:`LoadExtensionsResult` ``errors`` and skipped.
+        ``collect_explicit_errors=True`` demotes an explicit failure to a collected
+        error too (the TUI passes this — it can't abort mid-load; headless leaves it
+        False to keep the raise). The caller
         surfaces ``errors`` (headless → stderr, TUI → a notice); the loader no
         longer prints them itself, so this is safe to call under a live Textual
         screen.
@@ -591,6 +595,7 @@ class AgentSession:
             discover=discover,
             user_dir=user_dir,
             api_factory=self._bind_extension_api,
+            collect_explicit_errors=collect_explicit_errors,
         )
         # Record each loaded file extension for runtime management (E10 §6 / S70):
         # enable re-invokes the stored ``register`` on a fresh bucket, reload re-imports

@@ -250,6 +250,37 @@ class TestErrorPolicy:
         with pytest.raises(FileNotFoundError):
             await _load_extensions([str(tmp_path / "nope.py")], discover=False)
 
+    # collect_explicit_errors: the TUI can't abort mid-load, so an explicit failure
+    # is demoted to a collected error (same as a discovered one) and the good ones
+    # stay loaded — closing the /extensions split-brain (docs/EXTENSIONS-DEMO-ROADMAP.md).
+    async def test_broken_explicit_collected_when_opted_in(self, tmp_path):
+        """collect_explicit_errors: a broken -e -> errors[]; the good -e still loads."""
+        good = _write(tmp_path / "good.py", "good_tool")
+        broken = tmp_path / "broken.py"
+        broken.write_text(_BROKEN_EXT)
+
+        result = await _load_extensions(
+            [str(good), str(broken)], discover=False, collect_explicit_errors=True
+        )
+
+        assert {t for loaded in result.extensions for t in _tool_names(loaded)} == {"good_tool"}
+        assert len(result.errors) == 1
+        assert result.errors[0].path.endswith("broken.py")
+        assert "boom" in result.errors[0].error
+
+    async def test_explicit_without_register_collected_when_opted_in(self, tmp_path):
+        """collect_explicit_errors also demotes a missing-register() explicit failure."""
+        noreg = tmp_path / "noreg.py"
+        noreg.write_text(_NO_REGISTER_EXT)
+
+        result = await _load_extensions(
+            [str(noreg)], discover=False, collect_explicit_errors=True
+        )
+
+        assert result.extensions == []
+        assert len(result.errors) == 1
+        assert result.errors[0].path.endswith("noreg.py")
+
 
 # ---------------------------------------------------------------------------
 # Dedup by resolved path, first-wins

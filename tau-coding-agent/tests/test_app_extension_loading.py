@@ -93,7 +93,13 @@ async def test_discovered_failure_surfaces_notice(app, monkeypatch):
 
     class _ErroringBackend:
         async def load_extensions(
-            self, explicit_paths=None, *, discover=True, user_dir=None, extensions_config=None
+            self,
+            explicit_paths=None,
+            *,
+            discover=True,
+            user_dir=None,
+            extensions_config=None,
+            collect_explicit_errors=False,
         ):
             return LoadExtensionsResult(
                 errors=[ExtensionLoadError(path="/x/broken.py", error="boom")]
@@ -149,11 +155,22 @@ async def test_new_chat_appends_system_prompt(app, tmp_path):
 
 
 async def test_explicit_failure_surfaces_error_notice(app, monkeypatch):
-    """An explicit ``-e`` failure (loader RAISES) is caught into an error notice."""
+    """A non-per-extension load failure (loader RAISES) hits the outer-except backstop.
+
+    Per-extension explicit ``-e`` failures are now collected (see
+    ``test_partial_load_keeps_good_and_lists_errors``); the outer ``except`` remains
+    a backstop for a load that raises wholesale (e.g. config resolution).
+    """
 
     class _RaisingBackend:
         async def load_extensions(
-            self, explicit_paths=None, *, discover=True, user_dir=None, extensions_config=None
+            self,
+            explicit_paths=None,
+            *,
+            discover=True,
+            user_dir=None,
+            extensions_config=None,
+            collect_explicit_errors=False,
         ):
             raise RuntimeError("boom during import")
 
@@ -226,6 +243,51 @@ async def test_extensions_command_lists_loaded_extension(app, tmp_path):
         assert not any(m.get("content") == listing for m in app.messages)
         # And the ChatDisplay is where it lives.
         assert app.query_one(ChatDisplay) is not None
+
+
+async def test_partial_load_keeps_good_and_lists_errors(app, tmp_path):
+    """A broken explicit ``-e`` alongside a good one no longer empties /extensions.
+
+    Reproduces + closes the split-brain (docs/EXTENSIONS-DEMO-ROADMAP.md): the loader
+    used to RAISE past the partial result on an explicit failure, leaving
+    ``_extension_load_result`` empty while the good extension's tools/commands stayed
+    bound to the live registry. The TUI now passes ``collect_explicit_errors=True``,
+    so the good extension is kept in ``result.extensions`` AND the failure lands in
+    ``result.errors`` — and the /extensions listing shows both.
+    """
+    from tau_coding_agent.app import MessageBox
+
+    good = tmp_path / "full_ext.py"
+    good.write_text(_FULL_EXT)
+    broken = tmp_path / "broken_ext.py"
+    broken.write_text("def register(api):\n    raise RuntimeError('boom during register')\n")
+    app._extension_paths = [str(good), str(broken)]
+    app._discover_extensions = False
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+
+        # Result carries the good extension AND the failure (no longer split-brained).
+        loaded_paths = [e.path for e in app._extension_load_result.extensions]
+        assert loaded_paths == [str(good)]
+        error_paths = [e.path for e in app._extension_load_result.errors]
+        assert str(broken) in error_paths[0]
+        # The good extension's command really is bound to the live registry.
+        commands = dict(app.current_backend.get_extension_commands())
+        assert "hello" in commands
+
+        # The /extensions listing shows the good extension AND a Load errors section.
+        app.action_show_extensions()
+        await pilot.pause()
+        boxes = [b for b in app.query(MessageBox) if b.role == "system"]
+        listing = boxes[-1]._content
+        assert "full_ext" in listing
+        assert "hello" in listing  # bound command
+        assert "Load errors" in listing
+        assert "broken_ext" in listing
+        assert "boom during register" in listing
 
 
 def test_format_extensions_listing_surfaces_load_errors(tmp_path):

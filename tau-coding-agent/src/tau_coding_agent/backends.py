@@ -357,6 +357,7 @@ class TauBackend(Backend):
         discover: bool = True,
         user_dir: str | None = None,
         extensions_config: dict[str, dict[str, Any]] | None = None,
+        collect_explicit_errors: bool = False,
     ) -> LoadExtensionsResult:
         """Load file-path extensions into the wrapped ``AgentSession`` (E5 §2.2).
 
@@ -364,12 +365,17 @@ class TauBackend(Backend):
         extension to this session's live :class:`ExtensionRunner` so its mutating
         hooks fire in the loop this backend drives. ``extensions_config`` (S40) is
         forwarded so each extension's ``api.config`` receives its config slice.
+        ``collect_explicit_errors=True`` (passed by the TUI) demotes an explicit
+        ``-e`` failure to a collected ``result.errors`` entry instead of raising, so
+        a partial load still returns the extensions that DID load (headless leaves
+        it False to keep the Fail-Early abort).
         """
         return await self.agent_session.load_extensions(
             explicit_paths,
             discover=discover,
             user_dir=user_dir,
             extensions_config=extensions_config,
+            collect_explicit_errors=collect_explicit_errors,
         )
 
     def list_managed_extensions(self) -> list[tuple[str, bool]]:

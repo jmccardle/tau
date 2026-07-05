@@ -2040,11 +2040,16 @@ class Parley(App):
 
         Errors are surfaced as TUI notices, never to stderr — a stderr write during
         a live Textual render corrupts the screen (this is why the loader stopped
-        printing, S25). A *discovered* failure shows a per-extension warning; an
-        *explicit* ``-e`` failure raises out of ``load_extensions`` (Fail-Early) and
-        is caught here into a loud error notice, since a launched TUI can't cleanly
-        exit mid-session. Guarded by ``getattr`` so a backend without the seam (a
-        test double, a non-``TauBackend``) is a no-op.
+        printing, S25). Both *discovered* AND *explicit* ``-e`` failures are collected
+        into ``result.errors`` (``collect_explicit_errors=True``) and shown as
+        per-extension warnings, so the extensions that DID load stay bound and the
+        ``/extensions`` listing shows them plus a "Load errors" section — a launched
+        TUI can't cleanly abort mid-load, and raising past the partial result left
+        the listing empty while the good extensions' tools kept working (split-brain
+        fix, docs/EXTENSIONS-DEMO-ROADMAP.md). The outer ``except`` remains a
+        backstop for a non-per-extension failure (e.g. config resolution). Guarded by
+        ``getattr`` so a backend without the seam (a test double, a non-``TauBackend``)
+        is a no-op.
         """
         # Route extension api.notify(...) to this TUI (E5 §4 / S33). Set on every
         # backend that supports it, right after it is created, so a loaded
@@ -2070,6 +2075,14 @@ class Parley(App):
                 self._extension_paths or None,
                 discover=self._discover_extensions,
                 extensions_config=extensions_config,
+                # collect_explicit_errors: a launched TUI can't cleanly abort
+                # mid-load, so an explicit ``-e`` failure is demoted to a collected
+                # error (same as a discovered one) instead of raising. This keeps the
+                # extensions that DID load bound AND returned — without it the loader
+                # raised past the partial result and left the /extensions listing
+                # empty while the good extensions' tools/commands kept working
+                # (split-brain fix, docs/EXTENSIONS-DEMO-ROADMAP.md).
+                collect_explicit_errors=True,
             )
         except Exception as e:
             self.notify(f"Extension failed to load: {e}", severity="error")

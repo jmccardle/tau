@@ -384,6 +384,7 @@ async def _load_extensions(
     discover: bool = True,
     user_dir: str | None = None,
     api_factory: Callable[[str], ExtensionAPI] | None = None,
+    collect_explicit_errors: bool = False,
 ) -> LoadExtensionsResult:
     """Discover, import, and invoke ``register(api)`` for every extension.
 
@@ -406,14 +407,24 @@ async def _load_extensions(
             :func:`_standalone_api_factory` (see its note on the standalone status);
             a session-bound factory can instead bind each api to a live runner
             bucket keyed by that path (S24).
+        collect_explicit_errors: When ``False`` (default) an explicit ``-e`` failure
+            RAISES (Fail-Early — the user named it), which headless relies on to
+            abort the run. When ``True`` an explicit failure is instead collected
+            into ``result.errors`` — exactly like a discovered failure — and the
+            loop keeps loading the rest, so the extensions that DID load stay bound
+            and are returned. The TUI passes ``True`` (E5-loading split-brain fix,
+            docs/EXTENSIONS-DEMO-ROADMAP.md): a launched Textual session can't
+            cleanly abort mid-load, and dropping the partial result left
+            ``/extensions`` empty while the good extensions' tools kept working.
 
     Returns:
-        ``LoadExtensionsResult`` with the loaded extensions and any discovered
-        load errors.
+        ``LoadExtensionsResult`` with the loaded extensions and any load errors
+        (discovered failures always; explicit failures too when
+        ``collect_explicit_errors``).
 
     Raises:
-        Exception: propagated from an explicit ``-e`` extension that fails to
-            load (Fail-Early — the user named it).
+        Exception: propagated from an explicit ``-e`` extension that fails to load
+            (Fail-Early — the user named it), UNLESS ``collect_explicit_errors``.
     """
     if api_factory is None:
         api_factory = _standalone_api_factory
@@ -443,12 +454,16 @@ async def _load_extensions(
         try:
             loaded = await _load_one_extension(path, api_factory)
         except Exception as exc:
-            if is_explicit:
+            if is_explicit and not collect_explicit_errors:
                 # Fail-Early: the user named this path — surfacing it silently
-                # is the anti-pattern, so re-raise.
+                # is the anti-pattern, so re-raise. The TUI opts out via
+                # collect_explicit_errors (it can't abort mid-load); headless
+                # keeps this raise so an explicit failure aborts the run.
                 raise
-            # Discovered: collect and keep loading the rest. The error is RETURNED
-            # (never swallowed) for the caller to surface — headless prints it to
+            # Discovered (or explicit under collect_explicit_errors): collect and
+            # keep loading the rest. The error is RETURNED (never swallowed, and the
+            # extensions that already loaded stay bound) for the caller to surface —
+            # headless prints discovered errors to
             # stderr, the TUI shows a notice. The loader deliberately does NOT
             # print here: a stderr write during a live Textual render corrupts the
             # screen, and structured errors[] is the honest channel anyway (E5 §2.1).
