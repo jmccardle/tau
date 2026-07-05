@@ -665,6 +665,69 @@ class TestExtensionUIForm:
         assert answers == {"desc": "typed", "prio": "low"}
 
 
+class TestExtensionUISetStatus:
+    """ExtensionUI.set_status routing: delegate / json record / stderr; slot semantics."""
+
+    def test_delegates_in_tui_mode(self):
+        # TUI mode routes to the delegate's status strip (key + text passed through).
+        ui = ExtensionUI(mode="tui")
+        calls: list[tuple[str, str | None]] = []
+
+        class _Delegate:
+            def set_status(self, key, text):
+                calls.append((key, text))
+
+        ui._tui_delegate = _Delegate()
+        ui.set_status("budget", "$1.42/2.00")
+        ui.set_status("budget", None)  # clear
+        assert calls == [("budget", "$1.42/2.00"), ("budget", None)]
+
+    def test_emits_json_record(self):
+        # Headless --mode json: a set + a re-call + a clear each emit a status record.
+        ui = ExtensionUI(mode="headless")
+        records: list[dict] = []
+        ui.set_record_sink(records.append)
+        ui.set_status("budget", "$1.42/2.00")
+        ui.set_status("budget", "$1.90/2.00")  # same key updates the slot
+        ui.set_status("budget", None)  # clear rides the same record, text=None
+        assert [r["kind"] for r in records] == ["status", "status", "status"]
+        assert all(r["type"] == "extension" for r in records)
+        assert all(r["extension"] is None for r in records)
+        assert [(r["key"], r["text"]) for r in records] == [
+            ("budget", "$1.42/2.00"),
+            ("budget", "$1.90/2.00"),
+            ("budget", None),
+        ]
+
+    def test_record_carries_source_when_known(self):
+        ui = ExtensionUI(mode="headless")
+        records: list[dict] = []
+        ui.set_record_sink(records.append)
+        ui.set_status("m", "gpt", source="model-status.py")
+        assert records[0]["extension"] == "model-status.py"
+
+    def test_prints_to_stderr_without_sink(self):
+        # --mode text / SDK: no delegate, no record sink → honest stderr line.
+        ui = ExtensionUI(mode="headless")
+        with patch("sys.stderr", new=io.StringIO()) as mock_stderr:
+            ui.set_status("turn", "Turn 3...")
+            assert "[τ] status turn: Turn 3..." in mock_stderr.getvalue()
+
+    def test_clear_stderr_shows_cleared(self):
+        ui = ExtensionUI(mode="headless")
+        with patch("sys.stderr", new=io.StringIO()) as mock_stderr:
+            ui.set_status("turn", None)
+            assert "[τ] status turn: (cleared)" in mock_stderr.getvalue()
+
+    def test_empty_key_raises(self):
+        # Fail-Early: a slot with no key has nothing to update or clear.
+        ui = ExtensionUI(mode="headless")
+        with pytest.raises(ValueError, match="non-empty string"):
+            ui.set_status("", "x")
+        with pytest.raises(ValueError, match="non-empty string"):
+            ui.set_status(None, "x")  # type: ignore[arg-type]
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # ExtensionContext — constructor and properties
 # ──────────────────────────────────────────────────────────────────────────────

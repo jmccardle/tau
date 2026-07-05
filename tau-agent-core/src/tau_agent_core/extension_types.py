@@ -415,6 +415,57 @@ class ExtensionUI:
 
         print(f"[τ] {level}: {message}", file=sys.stderr)
 
+    def set_status(self, key: str, text: str | None, *, source: str | None = None) -> None:
+        """Set (or clear) a keyed slot in the extension status strip (E10 §6 / S67).
+
+        Ports pi's ``ctx.ui.setStatus(key, text)`` (types.ts:141): ambient, live
+        state painted in a one-line footer strip. ``key`` identifies a SLOT —
+        re-calling the same key UPDATES that slot in place (e.g. budget proximity
+        ticking each turn), never appending a new one. ``text=None`` CLEARS the slot
+        (pi's "pass undefined to clear"). Unlike :meth:`confirm`/:meth:`form` this is
+        non-blocking display, so it needs no headless answer policy — it routes
+        exactly like :meth:`notify`:
+
+        - **TUI mode** with a delegate → paints on the delegate's status strip.
+        - **headless ``--mode json``** (a :meth:`set_record_sink` is installed) →
+          emits one ``{"type": "extension", "kind": "status", …}`` record through the
+          sink so a parent reading a child ``tau -p --mode json`` stream sees the
+          ambient state change (S49 — anchor G10). A cleared slot rides the same
+          record with ``"text": null``.
+        - otherwise (headless ``--mode text`` / SDK) → prints to stderr, unchanged
+          from :meth:`notify`'s fallback (honest, never a silent no-op).
+
+        ``source`` is the originating extension's identity when the caller knows it;
+        a plain ``api.ui.set_status(...)`` cannot supply one (every bound extension
+        shares the session's ONE :class:`ExtensionUI`), so the record then carries
+        ``"extension": null`` rather than a fabricated name — same contract as
+        :meth:`notify`.
+
+        Raises:
+            ValueError: if ``key`` is not a non-empty string (Fail-Early: a status
+                slot with no key has nothing to update or clear).
+        """
+        if not isinstance(key, str) or not key:
+            raise ValueError("ui.set_status: key must be a non-empty string")
+        if self._mode == "tui" and self._tui_delegate:
+            self._tui_delegate.set_status(key, text)
+            return
+        if self._record_sink is not None:
+            self._record_sink(
+                {
+                    "type": "extension",
+                    "kind": "status",
+                    "extension": source,
+                    "key": key,
+                    "text": text,
+                }
+            )
+            return
+        import sys
+
+        shown = "(cleared)" if text is None else text
+        print(f"[τ] status {key}: {shown}", file=sys.stderr)
+
     def emit_veto(self, *, extension: str | None, tool: str, reason: str) -> None:
         """Emit a blocked-tool VETO record on the headless JSON stream (E7 §3 / S50).
 

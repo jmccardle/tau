@@ -130,6 +130,55 @@ class _ExtensionUIDelegate:
         # ``None`` (a cancelled form is not a fabricated answer set — Fail-Early).
         return await self._app.push_screen_wait(ExtensionFormScreen(spec))
 
+    def set_status(self, key: str, text: str | None) -> None:
+        # Ambient keyed slot in the footer status strip (E10 §6 / S67). Non-blocking
+        # (no dialog to await): forwards to the app, which updates the single
+        # ``ExtensionStatusBar`` slot in place; ``text=None`` clears it. Extension
+        # hooks run on the app's event loop, so the widget mutation is direct.
+        self._app.set_extension_status(key, text)
+
+
+class ExtensionStatusBar(Static):
+    """One-line footer strip of keyed extension status slots (E10 §6 / S67).
+
+    The TUI surface behind ``ctx.ui.set_status(key, text)`` (pi's ``setStatus``,
+    types.ts:141): ambient, live state — e.g. budget proximity ticking each turn.
+    Each ``key`` names a SLOT; :meth:`set_slot` UPDATES that slot in place on a
+    re-call (never appends a duplicate) and REMOVES it when ``text is None`` (pi's
+    "pass undefined to clear"). Slots render in first-seen order (an insertion-
+    ordered dict) joined by a thin separator, so the strip reads left-to-right in a
+    stable order across updates.
+
+    When no slots remain the strip hides itself (``display = False``) so it costs
+    zero rows — it only occupies its one line while at least one extension has
+    something live to show. It sits just above the built-in ``Footer`` in the app's
+    vertical flow (not docked), so the two stack cleanly.
+    """
+
+    _SEPARATOR = "  │  "
+
+    def __init__(self) -> None:
+        super().__init__("", id="ext-status-bar")
+        # Insertion-ordered slots: {key: text}. A dict preserves first-seen order,
+        # so an in-place update of an existing key keeps its position.
+        self._slots: dict[str, str] = {}
+        self.display = False
+
+    def set_slot(self, key: str, text: str | None) -> None:
+        """Set, update, or clear one keyed slot, then re-render the strip."""
+        if text is None:
+            self._slots.pop(key, None)
+        else:
+            self._slots[key] = text
+        if self._slots:
+            self.display = True
+            self.update(self._SEPARATOR.join(self._slots.values()))
+        else:
+            # Nothing live to show — collapse the strip to zero rows rather than
+            # leave an empty bar.
+            self.display = False
+            self.update("")
+
 
 class SystemPromptEditor(ModalScreen):
     """Modal screen for editing the system prompt."""
@@ -1464,6 +1513,9 @@ class Parley(App):
                 yield ChatDisplay()
                 yield ChatInput(id="chat-input")
 
+        # The extension status strip (E10 §6 / S67) sits in the vertical flow just
+        # above the docked Footer; it hides itself until an extension sets a slot.
+        yield ExtensionStatusBar()
         yield Footer()
 
     def on_mount(self):
@@ -1473,6 +1525,18 @@ class Parley(App):
 
         # Focus input
         self.query_one("#chat-input", ChatInput).focus()
+
+    def set_extension_status(self, key: str, text: str | None) -> None:
+        """Update one keyed slot in the extension status strip (E10 §6 / S67).
+
+        The app-side landing for ``ctx.ui.set_status(key, text)`` — reached through
+        ``_ExtensionUIDelegate.set_status``. Forwards to the single
+        :class:`ExtensionStatusBar` in the layout, which updates the slot in place
+        (or clears it when ``text is None``) and re-renders. The bar is composed
+        unconditionally, so it is present for the whole app lifetime; the delegate is
+        only bound after mount, so no pre-mount call can reach here.
+        """
+        self.query_one(ExtensionStatusBar).set_slot(key, text)
 
     async def on_unmount(self) -> None:
         """Fire the notify-grade ``session_shutdown`` lifecycle hook on TUI quit (S41).

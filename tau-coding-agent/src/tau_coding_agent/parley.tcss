@@ -403,6 +403,18 @@ Screen {
     background: #45475a;
 }
 
+/* === Extension status strip (E10 §6 / S67) === */
+/* One-line keyed status slots from ctx.ui.set_status(), just above the Footer.
+   Hidden (display:none, set in code) until an extension writes a slot. */
+#ext-status-bar {
+    height: 1;
+    width: 100%;
+    padding: 0 1;
+    background: #181825;
+    color: #a6adc8;
+    text-style: dim;
+}
+
 /* === Code blocks in markdown === */
 Markdown CodeBlock {
     background: #11111b;
