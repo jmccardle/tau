@@ -27,6 +27,11 @@ step table. This package currently ships:
   (folds ``message_end`` / S45 usage into token + dollar totals),
   :class:`~ext_kit.ledger.CostLedger` (append-only JSONL with ``$/outcome`` queries),
   and the bang-bang :class:`~ext_kit.ledger.Ceiling` controller.
+* :mod:`ext_kit.steer` (S58) — *in-loop steering*: :class:`~ext_kit.steer.ReminderBank`
+  (the generalized ``21_reminders`` — threshold/cooldown rules drained into a durable
+  ``<system-reminder>`` edit), :class:`~ext_kit.steer.TurnDebouncer` (turn-cadence rate
+  limiter), and :func:`~ext_kit.steer.wrap_tool` (the pi *tool-override* pattern — shadow
+  a built-in tool with ``before`` / ``after`` hooks).
 """
 
 from __future__ import annotations
@@ -88,6 +93,14 @@ from ext_kit.ledger import (
     UsageMeter,
     usage_tokens,
 )
+from ext_kit.steer import (
+    REMINDER_CLOSE,
+    REMINDER_OPEN,
+    ReminderBank,
+    Rule,
+    TurnDebouncer,
+    wrap_tool,
+)
 
 __all__ = [
     "CEILING_OK",
@@ -99,6 +112,8 @@ __all__ = [
     "DEFAULT_WARN_RATIO",
     "FAILED_REASONS",
     "FLAGS",
+    "REMINDER_CLOSE",
+    "REMINDER_OPEN",
     "STATE_DIR_NAME",
     "VERDICT_FAIL",
     "VERDICT_PASS",
@@ -114,12 +129,15 @@ __all__ = [
     "Pricing",
     "ProgressWatchdog",
     "RecheckResult",
+    "ReminderBank",
+    "Rule",
     "SpawnLimits",
     "StreamCounters",
     "StreamMonitor",
     "StuckDetector",
     "TauEvent",
     "TreeStore",
+    "TurnDebouncer",
     "UsageMeter",
     "WorkerPool",
     "build_child_args",
@@ -137,4 +155,5 @@ __all__ = [
     "tau_invocation",
     "usage_tokens",
     "verdict_node",
+    "wrap_tool",
 ]
