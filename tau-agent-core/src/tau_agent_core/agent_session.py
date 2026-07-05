@@ -26,7 +26,7 @@ from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.messages import CUSTOM_ROLE, create_custom_message
 from tau_agent_core.extensions.registry import ExtensionRegistry
-from tau_agent_core.extensions.runner import ExtensionRunner
+from tau_agent_core.extensions.runner import ExtensionError, ExtensionRunner
 from tau_agent_core.session import SessionState
 from tau_agent_core.session_log import SessionLog
 from tau_agent_core.conversation_tree import ConversationTree
@@ -189,6 +189,19 @@ class AgentSession:
         # it; empty until extensions register mutating hooks, so has_handlers()
         # gives every call-site the zero-extension fast path.
         self._extension_runner = ExtensionRunner(context=self._extension_api.context)
+        # S44 (roadmap §2, anchors G3 + G12): wire the error-visibility surface.
+        # The ExtensionRunner already builds an ``ExtensionError`` for every hook /
+        # lifecycle handler that raises but, until now, had NO listener — the error
+        # fell through to a bare stderr print. Bind one listener that routes it to
+        # ``ctx.ui.notify`` at warning level: a TUI warning notice when a delegate
+        # is set (:meth:`set_ui_delegate`), a structured ``[τ] warning: …`` stderr
+        # line headless. The SAME surface catches notify-``EventBus`` handler
+        # exceptions, which used to be swallowed silently (``events.py`` "Fail
+        # silently"); the bus now reports ``(exc, channel)`` here, converted to an
+        # ``ExtensionError`` so an exploding observer is as visible as a failing
+        # mutating hook. Fail-Early: a hook error is never silent.
+        self._extension_runner.on_error(self._surface_extension_error)
+        self._events.on_error(self._surface_notify_error)
         # Register each extension against its OWN api, bound to its OWN runner
         # bucket (load order preserved) but SHARING the session registry, event
         # bus, and live context. This is the S24 bridge: api.on("tool_call"/…)
@@ -1201,6 +1214,49 @@ class AgentSession:
             context=context,
             hook_handlers=hook_handlers,
             config=config,
+        )
+
+    def _surface_extension_error(self, error: ExtensionError) -> None:
+        """Route a hook / notify handler failure to the live UI surface (S44).
+
+        The single on_error sink for BOTH the mutating-hook / lifecycle dispatcher
+        (:class:`ExtensionRunner`) and the notify ``EventBus`` (via
+        :meth:`_surface_notify_error`). Paints through the session's ONE shared
+        :class:`ExtensionUI` at ``warning`` level: a TUI warning notice once a
+        delegate is set (:meth:`set_ui_delegate`), else the headless
+        ``[τ] warning: …`` stderr line. Read at call time, so whichever delegate is
+        current when the error fires is used.
+
+        The reporter must not itself crash the dispatch it is reporting from (a
+        raising ``notify`` would propagate out of the hook call-site and, worse,
+        mask the original error), so a failure of the surface falls back to stderr —
+        still visible, never swallowed (Fail-Early).
+        """
+        message = f"extension error in {error.extension_path} ({error.event}): {error.error}"
+        try:
+            self._extension_api.ui.notify(message, "warning")
+        except Exception as report_err:  # noqa: BLE001 — reporter must not crash the loop
+            import sys
+
+            print(f"[τ] {message} (surface failed: {report_err})", file=sys.stderr)
+
+    def _surface_notify_error(self, error: BaseException, channel: str) -> None:
+        """Adapt a notify-``EventBus`` handler failure onto the on_error surface (S44).
+
+        The bus is anonymous — it cannot attribute a failing subscriber to a
+        specific extension file (unlike the runner, whose buckets are path-labelled),
+        so the origin is reported honestly as the notify channel rather than
+        fabricating an extension name (Fail-Early: no invented attribution). Wraps
+        the raw ``(exc, channel)`` into an :class:`ExtensionError` and routes it
+        through the shared :meth:`_surface_extension_error` sink so a raising
+        observer surfaces exactly like a raising mutating hook.
+        """
+        self._surface_extension_error(
+            ExtensionError(
+                extension_path="notify handler",
+                event=channel,
+                error=str(error),
+            )
         )
 
     def set_ui_delegate(self, delegate: Any) -> None:
