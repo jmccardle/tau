@@ -348,10 +348,13 @@ class _FakeBackend:
     def __init__(self, config):
         self.config = config
 
-    async def load_extensions(self, explicit_paths=None, *, discover=True, user_dir=None):
+    async def load_extensions(
+        self, explicit_paths=None, *, discover=True, user_dir=None, extensions_config=None
+    ):
         from tau_agent_core.sdk import LoadExtensionsResult
 
         self.loaded_extensions = (explicit_paths, discover)  # capture for wiring assertions
+        self.loaded_ext_config = extensions_config  # S40: capture the resolved config map
         return LoadExtensionsResult()
 
     async def stream_chat(self, messages, callback, on_event=None, on_pi_event=None):
@@ -482,6 +485,23 @@ async def test_run_print_appends_system_prompt(fake_backend, capsys):
     # Base config prompt is kept; the appended section follows it.
     assert "You are helpful." in sys_msg["content"]
     assert "EXTRA RULE" in sys_msg["content"]
+
+
+async def test_run_print_plumbs_ext_config(fake_backend, capsys):
+    """--ext-config merges over config.json "extensions" and reaches the backend (S40)."""
+    config = {**_config(), "extensions": {"budget": {"ceiling": 1.0, "warn": 0.5}}}
+    await run_print(
+        CLIArgs(messages=["hi"], print_mode=True, ext_config=["budget.ceiling=9.0"]),
+        config,
+    )
+    # CLI override wins on ceiling; config.json warn survives.
+    assert fake_backend["backend"].loaded_ext_config == {"budget": {"ceiling": 9.0, "warn": 0.5}}
+
+
+async def test_run_print_ext_config_empty_by_default(fake_backend, capsys):
+    """No config.json "extensions" and no --ext-config → an empty map (S40)."""
+    await run_print(CLIArgs(messages=["hi"], print_mode=True), _config())
+    assert fake_backend["backend"].loaded_ext_config == {}
 
 
 # ── headless persistence (sessions resumable from the TUI) ──────────────────

@@ -408,6 +408,7 @@ class ExtensionAPI:
         context: ExtensionContext | None = None,
         session: Any = None,
         hook_handlers: ExtensionHandlers | None = None,
+        config: dict[str, Any] | None = None,
     ) -> None:
         """Initialize ExtensionAPI.
 
@@ -423,6 +424,14 @@ class ExtensionAPI:
                 the loop's hook call-sites gate on. Left ``None`` for an api that is
                 not bound to a runner bucket; registering a hook on such an api then
                 RAISES (Fail-Early) rather than silently no-op'ing (S24).
+            config: This extension's OWN per-extension config slice (E6 §2 / S40).
+                Sourced from ``~/.tau/config.json`` ``"extensions": {"<name>": {…}}``
+                keyed by the extension's file stem, with per-run
+                ``--ext-config <name>.<key>=<value>`` overrides applied on top. The
+                session slices the right entry per extension in
+                ``AgentSession._bind_extension_api`` and passes it here; ``None`` →
+                an empty dict (an unconfigured extension reads ``{}``, never a
+                fabricated value — Fail-Early leaves defaulting to the extension).
         """
         # Lazy initialization for backward compatibility
         if registry is None:
@@ -443,6 +452,10 @@ class ExtensionAPI:
         # This extension's own hook-handler bucket in the session's
         # ExtensionRunner (None when the api is not bound to a runner).
         self._hook_handlers = hook_handlers
+        # This extension's own per-extension config slice (S40). Copied so a later
+        # mutation of the source map (or another extension's slice) can't bleed in;
+        # nested values are shared by reference (config is read-only by contract).
+        self._config: dict[str, Any] = dict(config or {})
         # Bind the live session onto the context so ctx.get_context_usage()
         # (delegated to the session in pi) reads real messages + model window.
         self._context._session = session
@@ -675,6 +688,22 @@ class ExtensionAPI:
             The ExtensionUI instance from the context.
         """
         return self._context._ui
+
+    @property
+    def config(self) -> dict[str, Any]:
+        """This extension's per-run config slice (E6 §2 / S40).
+
+        The dict sourced from ``~/.tau/config.json`` under
+        ``"extensions": {"<name>": {…}}`` (keyed by this extension's file stem),
+        with per-run ``--ext-config <name>.<key>=<value>`` overrides applied on
+        top (CLI > config.json). An unconfigured extension reads ``{}`` — the
+        extension supplies its own defaults (Fail-Early: the harness never
+        fabricates a value it wasn't given). Values from config.json keep their
+        JSON types; a ``--ext-config`` override is JSON-decoded when it parses
+        (so ``ceiling=5.0`` → ``float``, ``paths=["a","b"]`` → ``list``) and kept
+        as a plain string otherwise.
+        """
+        return self._config
 
     @property
     def context(self) -> ExtensionContext:

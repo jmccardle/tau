@@ -20,7 +20,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 # Persistence is the Textual-free session_store module, so a headless run can
 # write a picker-visible, resumable session without importing the TUI. Sessions
@@ -139,6 +139,79 @@ def resolve_model_config(
         model_config["append_system_prompt"] = list(args.append_system_prompt)
 
     return spec, model_config
+
+
+def _decode_ext_config_value(raw: str) -> Any:
+    """Decode a ``--ext-config`` value (S40).
+
+    JSON-decode when it parses — so ``ceiling=5.0`` → ``float``,
+    ``enabled=true`` → ``bool``, ``paths=["a","b"]`` → ``list`` — matching the
+    typed values a config.json entry carries; keep it as a plain ``str`` otherwise
+    (a bare unquoted word like ``mode=strict`` stays ``"strict"``). This is a
+    deliberate, predictable coercion rule, NOT a fallback that papers over a
+    subproblem — an override's type is exactly what its JSON says, or a string.
+    """
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return raw
+
+
+def parse_ext_config_overrides(items: list[str]) -> dict[str, dict[str, Any]]:
+    """Parse ``--ext-config <name>.<key>=<value>`` items into ``{name: {key: value}}`` (S40).
+
+    Each item is split on the FIRST ``=`` (so a value may contain ``=``) into
+    ``NAME.KEY`` and the value; the left side is split on the FIRST ``.`` into the
+    extension ``NAME`` (its file stem) and the ``KEY``. The value is decoded by
+    :func:`_decode_ext_config_value`. Fail-Early: a malformed item (no ``=``, no
+    ``.`` in the key part, or an empty name/key) RAISES :class:`CLIError` rather
+    than being silently dropped.
+    """
+    overrides: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if "=" not in item:
+            raise CLIError(f"--ext-config must be NAME.KEY=VALUE, got {item!r} (missing '=')")
+        lhs, _, raw_value = item.partition("=")
+        if "." not in lhs:
+            raise CLIError(
+                f"--ext-config must be NAME.KEY=VALUE, got {item!r} (the NAME.KEY part has no '.')"
+            )
+        name, _, key = lhs.partition(".")
+        name, key = name.strip(), key.strip()
+        if not name or not key:
+            raise CLIError(f"--ext-config NAME and KEY must both be non-empty, got {item!r}")
+        overrides.setdefault(name, {})[key] = _decode_ext_config_value(raw_value)
+    return overrides
+
+
+def resolve_extensions_config(
+    config: dict, overrides: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """Merge the config.json per-extension config with ``--ext-config`` overrides (S40).
+
+    Base slices come from ``~/.tau/config.json`` ``"extensions": {"<name>": {…}}``
+    (keyed by extension file stem); ``overrides`` (from
+    :func:`parse_ext_config_overrides`) apply on top per key, so CLI beats
+    config.json. Returns ``{name: {…}}`` handed to
+    ``AgentSession.load_extensions(extensions_config=…)``; an extension with no
+    entry reads ``{}``. Fail-Early: a non-object ``"extensions"`` block (or a
+    non-object entry within it) RAISES :class:`CLIError` — a malformed config is a
+    real error, not a thing to silently coerce.
+    """
+    base = config.get("extensions", {})
+    if not isinstance(base, dict):
+        raise CLIError(
+            '~/.tau/config.json "extensions" must be a JSON object mapping '
+            "extension name -> config object"
+        )
+    merged: dict[str, dict[str, Any]] = {}
+    for name, ext_conf in base.items():
+        if not isinstance(ext_conf, dict):
+            raise CLIError(f'~/.tau/config.json "extensions.{name}" must be a JSON object')
+        merged[name] = dict(ext_conf)
+    for name, kv in overrides.items():
+        merged.setdefault(name, {}).update(kv)
+    return merged
 
 
 def _append_system_prompt(base: str, sections: list[str] | None) -> str:
@@ -335,7 +408,17 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
     # ``main()`` renders as a clean CLI error.
     explicit_extensions = model_config.get("extensions") or None
     discover_extensions = not model_config.get("no_extensions", False)
-    ext_result = await backend.load_extensions(explicit_extensions, discover=discover_extensions)
+    # Per-extension config (E6 §2 / S40): config.json ``"extensions"`` slices +
+    # per-run ``--ext-config NAME.KEY=VALUE`` overrides (CLI > config.json). Sliced
+    # per extension by file stem inside the session and handed to ``api.config``.
+    extensions_config = resolve_extensions_config(
+        config, parse_ext_config_overrides(args.ext_config)
+    )
+    ext_result = await backend.load_extensions(
+        explicit_extensions,
+        discover=discover_extensions,
+        extensions_config=extensions_config,
+    )
     for ext_error in ext_result.errors:
         print(
             f"[τ] failed to load extension {ext_error.path}: {ext_error.error}",

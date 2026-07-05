@@ -22,7 +22,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from tau_ai.models import EXTENDED_THINKING_LEVELS
-from tau_coding_agent.headless import CLIError, resolve_model_config, run_print
+from tau_coding_agent.headless import (
+    CLIError,
+    parse_ext_config_overrides,
+    resolve_model_config,
+    run_print,
+)
 
 # τ data dir / config (matches app.py's TAU_DIR).
 TAU_DIR = Path.home() / ".tau"
@@ -59,6 +64,9 @@ class CLIArgs:
     exclude_tools: str | None = None  # -xt → comma-separated tool denylist
     no_builtin_tools: bool = False  # -nbt → (degenerates to --no-tools until E1)
     no_session: bool = False  # --no-session → ephemeral, unpersisted run
+    # Per-extension config overrides (S40): repeatable --ext-config NAME.KEY=VALUE.
+    # Applied over ~/.tau/config.json "extensions" per key (CLI > config.json).
+    ext_config: list[str] = field(default_factory=list)
     append_system_prompt: list[str] = field(default_factory=list)  # repeatable
     system_prompt: str | None = None
     thinking: str | None = None  # off|minimal|low|medium|high|xhigh
@@ -182,6 +190,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="run ephemerally without persisting a session to disk",
     )
     parser.add_argument(
+        "--ext-config",
+        dest="ext_config",
+        action="append",
+        default=None,
+        metavar="NAME.KEY=VALUE",
+        help="override a per-extension config value (repeatable; CLI > config.json). "
+        "VALUE is JSON-decoded when it parses (e.g. budget.ceiling=5.0), else a string",
+    )
+    parser.add_argument(
         "--append-system-prompt",
         dest="append_system_prompt",
         action="append",
@@ -262,6 +279,7 @@ def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
         exclude_tools=ns.exclude_tools,
         no_builtin_tools=ns.no_builtin_tools,
         no_session=ns.no_session,
+        ext_config=list(ns.ext_config or []),
         append_system_prompt=list(ns.append_system_prompt or []),
         system_prompt=ns.system_prompt,
         thinking=ns.thinking,
@@ -308,12 +326,17 @@ def _launch_tui(args: CLIArgs, config: dict) -> int:
         if args.exclude_tools
         else []
     )
+    # Per-extension config overrides (S40): parse ``--ext-config`` here so a
+    # malformed item surfaces as a clean CLI error BEFORE the TUI launches; the app
+    # merges them over config.json's ``"extensions"`` at each backend load.
+    ext_config_overrides = parse_ext_config_overrides(list(args.ext_config or []))
     run_config = {
         "extensions": list(args.extensions or []),
         "no_extensions": args.no_extensions,
         "exclude_tools": exclude_tools,
         "no_builtin_tools": args.no_builtin_tools,
         "append_system_prompt": list(args.append_system_prompt or []),
+        "ext_config": ext_config_overrides,
     }
 
     from tau_coding_agent.app import Parley

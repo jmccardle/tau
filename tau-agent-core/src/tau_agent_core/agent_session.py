@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from tau_ai.abort import AbortSignal
@@ -127,6 +128,7 @@ class AgentSession:
         api_key: str | None = None,
         reasoning: str | None = None,
         compaction_settings: CompactionSettings | None = None,
+        extensions_config: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._session_log = session_log
         self._model = model
@@ -137,6 +139,14 @@ class AgentSession:
         # Bound into the one ExtensionAPI below; read by the loop in a later step.
         self._registry = ExtensionRegistry()
         self._extensions = extensions or []
+        # Per-extension config map (E6 §2 / S40): ``{"<file-stem>": {…}}``, sourced
+        # from ``~/.tau/config.json`` ``"extensions"`` + per-run ``--ext-config``
+        # overrides. ``_bind_extension_api`` slices the right entry by file stem and
+        # hands it to each extension's ``api.config``. Set BEFORE the inline-factory
+        # bind loop below so constructor-passed extensions see their slice too.
+        # NOT persisted onto the session tree — it is run-scoped runtime config,
+        # re-sourced each run (deliberately excluded from the tree-as-truth path).
+        self._extensions_config: dict[str, dict[str, Any]] = extensions_config or {}
         self._is_streaming = False
         self._abort_signal = AbortSignal()
         # Forwarded to the agent loop -> provider. Kept off the Model so it is
@@ -289,6 +299,7 @@ class AgentSession:
         *,
         discover: bool = True,
         user_dir: str | None = None,
+        extensions_config: dict[str, dict[str, Any]] | None = None,
     ) -> LoadExtensionsResult:
         """Load file-path extensions into THIS live session (E5 §2, S26/S27).
 
@@ -315,7 +326,16 @@ class AgentSession:
         surfaces ``errors`` (headless → stderr, TUI → a notice); the loader no
         longer prints them itself, so this is safe to call under a live Textual
         screen.
+
+        ``extensions_config`` (S40) is the per-extension config map
+        (``{"<file-stem>": {…}}``) this run resolved from ``~/.tau/config.json`` +
+        ``--ext-config`` overrides. It is stored on the session BEFORE binding so
+        :meth:`_bind_extension_api` can slice each extension's ``api.config`` by
+        file stem. ``None`` leaves the constructor-supplied map (default ``{}``).
         """
+        if extensions_config is not None:
+            self._extensions_config = extensions_config
+
         # Lazy import: sdk imports agent_session at module load, so a top-level
         # import here would be circular.
         from tau_agent_core.sdk import _load_extensions
@@ -1060,6 +1080,7 @@ class AgentSession:
         self,
         hook_handlers: Any = None,
         context: Any = None,
+        config: dict[str, Any] | None = None,
     ) -> ExtensionAPI:
         """Create an ExtensionAPI bound to this session's real refs.
 
@@ -1074,6 +1095,8 @@ class AgentSession:
         per-extension apis so every handler sees the one context the session binds
         the abort signal / live session onto; ``None`` lets ``ExtensionAPI`` make a
         fresh context (used only for the session-shared api built at construction).
+        ``config`` is this extension's per-extension config slice (S40); ``None``
+        for the session-shared api (which no extension file receives).
 
         Returns:
             An ExtensionAPI bound to this session, its event bus, and registry.
@@ -1084,6 +1107,7 @@ class AgentSession:
             registry=self._registry,
             context=context,
             hook_handlers=hook_handlers,
+            config=config,
         )
 
     def set_ui_delegate(self, delegate: Any) -> None:
@@ -1150,11 +1174,21 @@ class AgentSession:
         live :class:`ExtensionContext`. ``api.on("tool_call"/…)`` on the returned
         api lands in this bucket — the dispatch surface the loop's hook call-sites
         actually read.
+
+        The per-extension config slice (S40) is selected here by the extension's
+        **file stem** — ``Path(path_label).stem`` — from ``self._extensions_config``
+        (``~/.tau/config.json`` ``"extensions"`` + ``--ext-config`` overrides), so
+        ``~/.tau/extensions/24_budget.py`` reads the ``"24_budget"`` entry. An
+        unconfigured extension gets ``{}`` (never fabricated). Inline factory
+        extensions carry a ``module:qualname`` label rather than a file path, so
+        their stem simply won't match a config key unless one is named for it.
         """
         bucket = self._extension_runner.register_extension(path_label)
+        config = self._extensions_config.get(Path(path_label).stem, {})
         return self._make_extension_api(
             hook_handlers=bucket,
             context=self._extension_api.context,
+            config=config,
         )
 
     @staticmethod

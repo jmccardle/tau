@@ -123,15 +123,17 @@ class Backend(ABC):
         *,
         discover: bool = True,
         user_dir: str | None = None,
+        extensions_config: dict[str, dict[str, Any]] | None = None,
     ) -> LoadExtensionsResult:
         """Load file-path extensions into this backend's live session (E5 §2.2).
 
         Both run paths (headless ``run_print`` and the TUI ``Parley``) load
         extensions through this seam after building the backend, so a file
         extension's hooks fire in the same ``AgentSession`` the loop runs on.
-        Returns the :class:`LoadExtensionsResult`; the caller surfaces its
-        ``errors`` (an explicit ``-e`` failure raises out of here instead —
-        Fail-Early)."""
+        ``extensions_config`` (S40) is the per-extension config map handed to each
+        extension's ``api.config``, keyed by file stem. Returns the
+        :class:`LoadExtensionsResult`; the caller surfaces its ``errors`` (an
+        explicit ``-e`` failure raises out of here instead — Fail-Early)."""
 
 
 class TauBackend(Backend):
@@ -274,15 +276,20 @@ class TauBackend(Backend):
         *,
         discover: bool = True,
         user_dir: str | None = None,
+        extensions_config: dict[str, dict[str, Any]] | None = None,
     ) -> LoadExtensionsResult:
         """Load file-path extensions into the wrapped ``AgentSession`` (E5 §2.2).
 
         Delegates to :meth:`AgentSession.load_extensions`, which binds each
         extension to this session's live :class:`ExtensionRunner` so its mutating
-        hooks fire in the loop this backend drives.
+        hooks fire in the loop this backend drives. ``extensions_config`` (S40) is
+        forwarded so each extension's ``api.config`` receives its config slice.
         """
         return await self.agent_session.load_extensions(
-            explicit_paths, discover=discover, user_dir=user_dir
+            explicit_paths,
+            discover=discover,
+            user_dir=user_dir,
+            extensions_config=extensions_config,
         )
 
     def get_extension_commands(self) -> list[tuple[str, str]]:

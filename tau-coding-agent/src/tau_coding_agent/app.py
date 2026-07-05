@@ -22,7 +22,7 @@ import traceback
 from typing import Any, Callable, Literal, Optional
 
 from tau_coding_agent.backends import create_backend, Backend
-from tau_coding_agent.headless import _append_system_prompt
+from tau_coding_agent.headless import _append_system_prompt, resolve_extensions_config
 
 # Session persistence lives in a Textual-free module so `tau -p` can save
 # sessions without importing the TUI. Sessions are append-only JSONL transcripts
@@ -1108,6 +1108,14 @@ class Parley(App):
         self._exclude_tools: list[str] = list(run_config.get("exclude_tools", []))
         self._no_builtin_tools: bool = bool(run_config.get("no_builtin_tools", False))
         self._append_system_prompt: list[str] = list(run_config.get("append_system_prompt", []))
+        # Per-extension config overrides (S40): the parsed ``--ext-config`` map
+        # ({name: {key: value}}). Merged over config.json's ``"extensions"`` block at
+        # each backend load (``_load_backend_extensions``) so each extension's
+        # ``api.config`` gets its slice. Resolved lazily against ``self.config``
+        # (loaded just below), not here, so a config reload is reflected.
+        self._ext_config_overrides: dict[str, dict[str, Any]] = dict(
+            run_config.get("ext_config", {})
+        )
         self.load_config()
         if cli_overrides:
             self._apply_cli_overrides(cli_overrides)
@@ -1431,8 +1439,16 @@ class Parley(App):
         loader = getattr(self.current_backend, "load_extensions", None)
         if loader is None:
             return
+        # Resolve per-extension config (S40): config.json ``"extensions"`` slices +
+        # the parsed ``--ext-config`` overrides (CLI > config.json), sliced per
+        # extension by file stem inside the session and handed to ``api.config``.
+        extensions_config = resolve_extensions_config(self.config, self._ext_config_overrides)
         try:
-            result = await loader(self._extension_paths or None, discover=self._discover_extensions)
+            result = await loader(
+                self._extension_paths or None,
+                discover=self._discover_extensions,
+                extensions_config=extensions_config,
+            )
         except Exception as e:
             self.notify(f"Extension failed to load: {e}", severity="error")
             self.log.error(f"Extension load failed: {e}", exc_info=True)
