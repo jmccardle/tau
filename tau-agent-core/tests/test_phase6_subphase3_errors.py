@@ -673,33 +673,52 @@ class TestExtensionErrorHandling:
         with pytest.raises(RuntimeError):
             context.get_context_usage()
 
-    def test_extension_ui_headless_confirm(self):
-        """ExtensionUI.confirm() returns True in headless mode."""
-        from tau_agent_core.extension_types import ExtensionUI
+    def test_extension_ui_headless_confirm_raises_without_policy(self):
+        """ExtensionUI.confirm() RAISES in headless mode with no policy (S48)."""
+        from tau_agent_core.extension_types import ExtensionUI, HeadlessDialogError
         ui = ExtensionUI(mode="headless")
-        result = asyncio.run(ui.confirm("title", "message"))
-        assert result is True
+        with pytest.raises(HeadlessDialogError):
+            asyncio.run(ui.confirm("title", "message"))
 
-    def test_extension_ui_headless_select(self):
-        """ExtensionUI.select() returns first item in headless mode."""
+    def test_extension_ui_headless_confirm_policy(self):
+        """ExtensionUI.confirm() honors an explicit headless policy (S48)."""
         from tau_agent_core.extension_types import ExtensionUI
-        ui = ExtensionUI(mode="headless")
-        result = asyncio.run(ui.select("title", ["option1", "option2"]))
-        assert result == "option1"
+        ui = ExtensionUI(mode="headless", headless_policy={"confirm": "yes"})
+        assert asyncio.run(ui.confirm("title", "message")) is True
+        ui.set_headless_defaults({"confirm": "no"})
+        assert asyncio.run(ui.confirm("title", "message")) is False
 
-    def test_extension_ui_headless_select_empty(self):
-        """ExtensionUI.select() returns None for empty list in headless mode."""
-        from tau_agent_core.extension_types import ExtensionUI
+    def test_extension_ui_headless_select_raises_without_policy(self):
+        """ExtensionUI.select() RAISES in headless mode with no policy (S48)."""
+        from tau_agent_core.extension_types import ExtensionUI, HeadlessDialogError
         ui = ExtensionUI(mode="headless")
-        result = asyncio.run(ui.select("title", []))
-        assert result is None
+        with pytest.raises(HeadlessDialogError):
+            asyncio.run(ui.select("title", ["option1", "option2"]))
 
-    def test_extension_ui_headless_input(self):
-        """ExtensionUI.input() returns default in headless mode."""
+    def test_extension_ui_headless_select_policy(self):
+        """ExtensionUI.select() returns first item with select=first (S48)."""
         from tau_agent_core.extension_types import ExtensionUI
+        ui = ExtensionUI(mode="headless", headless_policy={"select": "first"})
+        assert asyncio.run(ui.select("title", ["option1", "option2"])) == "option1"
+
+    def test_extension_ui_headless_select_empty_policy(self):
+        """ExtensionUI.select() returns None for an empty list with select=first (S48)."""
+        from tau_agent_core.extension_types import ExtensionUI
+        ui = ExtensionUI(mode="headless", headless_policy={"select": "first"})
+        assert asyncio.run(ui.select("title", [])) is None
+
+    def test_extension_ui_headless_input_raises_without_policy(self):
+        """ExtensionUI.input() RAISES in headless mode with no policy (S48)."""
+        from tau_agent_core.extension_types import ExtensionUI, HeadlessDialogError
         ui = ExtensionUI(mode="headless")
-        result = asyncio.run(ui.input("title", "default_value"))
-        assert result == "default_value"
+        with pytest.raises(HeadlessDialogError):
+            asyncio.run(ui.input("title", "default_value"))
+
+    def test_extension_ui_headless_input_policy(self):
+        """ExtensionUI.input() returns default with input=default (S48)."""
+        from tau_agent_core.extension_types import ExtensionUI
+        ui = ExtensionUI(mode="headless", headless_policy={"input": "default"})
+        assert asyncio.run(ui.input("title", "default_value")) == "default_value"
 
     def test_extension_ui_notify_to_stderr(self):
         """ExtensionUI.notify() prints to stderr in headless mode."""

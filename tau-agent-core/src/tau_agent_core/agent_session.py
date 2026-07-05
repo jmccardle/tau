@@ -1440,6 +1440,25 @@ class AgentSession:
         """
         self._extension_api.context.set_ui_delegate(delegate)
 
+    def set_headless_ui_defaults(self, policy: dict[str, str]) -> None:
+        """Set the headless dialog-answer policy for this session (E7 §3 / S48).
+
+        Threads the resolved ``--ui-defaults`` / config ``"ui_defaults"`` map onto
+        the session's ONE shared :class:`ExtensionUI` (via the context), so a
+        headless dialog opened by any loaded extension auto-answers only for the
+        methods the user explicitly opted into — every other headless dialog
+        raises :class:`HeadlessDialogError` (Fail-Early, D-E6-2). This is run-scoped
+        runtime config: it is NOT persisted onto the session tree (the policy is
+        re-sourced each run, like ``--ext-config``). The TUI path never calls this —
+        it sets a live delegate instead, so a human answers.
+
+        Raises:
+            ValueError: an unknown method or answer token (propagated from
+                :meth:`ExtensionUI.set_headless_defaults`); the frontend renders it
+                as a clean CLI error.
+        """
+        self._extension_api.context.set_headless_ui_defaults(policy)
+
     def get_extension_commands(self) -> list[tuple[str, str]]:
         """List extension-registered slash commands (E5 §5 / S35).
 

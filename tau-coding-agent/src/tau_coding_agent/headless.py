@@ -216,6 +216,54 @@ def resolve_extensions_config(
     return merged
 
 
+def parse_ui_defaults(raw: str | None) -> dict[str, str]:
+    """Parse ``--ui-defaults METHOD=ANSWER,…`` into ``{method: token}`` (E7 §3 / S48).
+
+    Splits a comma-separated string (e.g. ``"confirm=yes,select=first"``) on
+    commas, then each item on the FIRST ``=``. Fail-Early: an item missing ``=`` or
+    with an empty method/answer RAISES :class:`CLIError`. The method/token pairs
+    are NOT validated against the allowed set here — that is
+    :meth:`ExtensionUI.set_headless_defaults`'s job (a single source of truth,
+    surfaced as a clean CLI error where the policy is applied). ``None``/empty →
+    ``{}`` (no policy → headless dialogs raise).
+    """
+    policy: dict[str, str] = {}
+    if not raw:
+        return policy
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise CLIError(f"--ui-defaults must be METHOD=ANSWER, got {item!r} (missing '=')")
+        method, _, token = item.partition("=")
+        method, token = method.strip(), token.strip()
+        if not method or not token:
+            raise CLIError(f"--ui-defaults METHOD and ANSWER must both be non-empty, got {item!r}")
+        policy[method] = token
+    return policy
+
+
+def resolve_ui_defaults(config: dict, overrides: dict[str, str]) -> dict[str, str]:
+    """Merge config.json ``"ui_defaults"`` with ``--ui-defaults`` overrides (S48).
+
+    The base policy comes from ``~/.tau/config.json`` ``"ui_defaults": {method:
+    answer}``; ``overrides`` (from :func:`parse_ui_defaults`) apply on top per
+    method, so CLI beats config.json (same precedence as ``--ext-config``).
+    Fail-Early: a non-object ``"ui_defaults"`` block RAISES :class:`CLIError`.
+    Answer values are stringified so a JSON ``true`` in config reads as a token the
+    policy validator recognises.
+    """
+    base = config.get("ui_defaults", {})
+    if not isinstance(base, dict):
+        raise CLIError(
+            '~/.tau/config.json "ui_defaults" must be a JSON object mapping dialog method -> answer'
+        )
+    merged: dict[str, str] = {str(k): str(v) for k, v in base.items()}
+    merged.update(overrides)
+    return merged
+
+
 def _append_system_prompt(base: str, sections: list[str] | None) -> str:
     """Append ``--append-system-prompt`` sections to a base system prompt.
 
@@ -422,6 +470,20 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
     agent_session = getattr(backend, "agent_session", None)
     if agent_session is not None and hasattr(agent_session, "set_model_resolver"):
         agent_session.set_model_resolver(make_model_resolver(config.get("models", {})))
+
+    # Headless dialog policy (E7 §3 / S48 — anchor G9, D-E6-2). With no policy a
+    # dialog opened by a loaded extension RAISES rather than silently auto-answering
+    # a gate; ``--ui-defaults confirm=yes,select=first`` (over config.json
+    # "ui_defaults", CLI wins) opts back into the explicit auto-answer. Applied
+    # BEFORE the load/lifecycle below so an extension's ``register`` / ``session_start``
+    # dialog is already governed. Validation errors surface as a clean CLI error.
+    set_ui_defaults = getattr(backend, "set_headless_ui_defaults", None)
+    if set_ui_defaults is not None:
+        ui_defaults = resolve_ui_defaults(config, parse_ui_defaults(args.ui_defaults))
+        try:
+            set_ui_defaults(ui_defaults)
+        except ValueError as exc:
+            raise CLIError(str(exc)) from exc
 
     # Session-lifecycle hooks (E6 §2 / S41). ``session_start`` fires once
     # extensions are loaded; ``session_shutdown`` fires on headless COMPLETION and

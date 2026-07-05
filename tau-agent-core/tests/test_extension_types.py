@@ -26,6 +26,7 @@ from tau_agent_core.extension_types import (
     ExtensionAPI,
     ExtensionContext,
     ExtensionUI,
+    HeadlessDialogError,
 )
 from tau_agent_core.extensions.registry import ExtensionRegistry
 from tau_agent_core.events import EventBus
@@ -417,12 +418,29 @@ class TestExtensionAPIProperty:
         assert isinstance(ui, ExtensionUI)
 
     @pytest.mark.asyncio
-    async def test_ui_is_noop_in_headless(self):
-        """ExtensionAPI.ui returns no-op UI by default (headless mode)."""
+    async def test_ui_raises_in_headless_without_policy(self):
+        """ExtensionAPI.ui dialogs RAISE headless with no policy (S48, Fail-Early)."""
+        from tau_agent_core.extension_types import HeadlessDialogError
+
         api = ExtensionAPI()
         ui = api.ui
+        with pytest.raises(HeadlessDialogError):
+            await ui.confirm("title", "msg")
+        with pytest.raises(HeadlessDialogError):
+            await ui.select("title", ["a"])
+        with pytest.raises(HeadlessDialogError):
+            await ui.input("title", default="default")
+
+    @pytest.mark.asyncio
+    async def test_ui_honors_headless_policy(self):
+        """ExtensionAPI.ui dialogs auto-answer once a headless policy is set (S48)."""
+        api = ExtensionAPI()
+        api.context.set_headless_ui_defaults(
+            {"confirm": "yes", "select": "first", "input": "default"}
+        )
+        ui = api.ui
         assert await ui.confirm("title", "msg") is True
-        assert await ui.select("title", ["a"]) == "a"
+        assert await ui.select("title", ["a", "b"]) == "a"
         assert await ui.input("title", default="default") == "default"
 
     def test_ui_returns_same_instance(self):
@@ -544,54 +562,83 @@ class TestExtensionContext:
 
 
 class TestExtensionUI:
-    """Tests for ExtensionUI (headless/no-op mode).
+    """Tests for ExtensionUI (headless dialog policy).
 
-    Reference: SUBPHASE-0.0.md, "8. Extension API Surface":
-    > In headless mode (RPC, SDK), all methods are no-ops.
-    > The TUI implements the real UI methods.
+    Reference: SUBPHASE-0.0.md, "8. Extension API Surface"; E7 §3 / S48. In
+    headless mode a blocking dialog raises by default (no human to ask) and
+    auto-answers only under an explicit ``--ui-defaults`` policy.
     """
 
     @pytest.mark.asyncio
-    async def test_confirm_returns_true(self):
-        """ExtensionUI.confirm() returns True by default (headless)."""
+    async def test_confirm_raises_without_policy(self):
+        """ExtensionUI.confirm() raises headless with no policy (S48)."""
         ui = ExtensionUI()
-        result = await ui.confirm("Title", "Message")
-        assert result is True
+        with pytest.raises(HeadlessDialogError):
+            await ui.confirm("Title", "Message")
 
     @pytest.mark.asyncio
-    async def test_confirm_with_params(self):
-        """ExtensionUI.confirm() accepts title and message."""
-        ui = ExtensionUI()
-        result = await ui.confirm("Confirm?", "Are you sure?")
-        assert result is True
+    async def test_confirm_yes_and_no(self):
+        """ExtensionUI.confirm() maps yes/true→True, no/false→False (S48)."""
+        assert await ExtensionUI(headless_policy={"confirm": "yes"}).confirm("t", "m") is True
+        assert await ExtensionUI(headless_policy={"confirm": "true"}).confirm("t", "m") is True
+        assert await ExtensionUI(headless_policy={"confirm": "no"}).confirm("t", "m") is False
+        assert await ExtensionUI(headless_policy={"confirm": "false"}).confirm("t", "m") is False
 
     @pytest.mark.asyncio
-    async def test_select_returns_first_item(self):
-        """ExtensionUI.select() returns first item by default (headless)."""
+    async def test_select_raises_without_policy(self):
+        """ExtensionUI.select() raises headless with no policy (S48)."""
         ui = ExtensionUI()
+        with pytest.raises(HeadlessDialogError):
+            await ui.select("Title", ["Option 1", "Option 2"])
+
+    @pytest.mark.asyncio
+    async def test_select_returns_first_item_with_policy(self):
+        """ExtensionUI.select() returns first item under select=first (S48)."""
+        ui = ExtensionUI(headless_policy={"select": "first"})
         result = await ui.select("Title", ["Option 1", "Option 2"])
         assert result == "Option 1"
 
     @pytest.mark.asyncio
-    async def test_select_returns_none_for_empty_list(self):
-        """ExtensionUI.select() returns None for empty list."""
-        ui = ExtensionUI()
+    async def test_select_returns_none_for_empty_list_with_policy(self):
+        """ExtensionUI.select() returns None for empty list under select=first (S48)."""
+        ui = ExtensionUI(headless_policy={"select": "first"})
         result = await ui.select("Title", [])
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_input_returns_default(self):
-        """ExtensionUI.input() returns default value (headless)."""
+    async def test_input_raises_without_policy(self):
+        """ExtensionUI.input() raises headless with no policy (S48)."""
         ui = ExtensionUI()
+        with pytest.raises(HeadlessDialogError):
+            await ui.input("Title", default="default_value")
+
+    @pytest.mark.asyncio
+    async def test_input_returns_default_with_policy(self):
+        """ExtensionUI.input() returns default value under input=default (S48)."""
+        ui = ExtensionUI(headless_policy={"input": "default"})
         result = await ui.input("Title", default="default_value")
         assert result == "default_value"
 
     @pytest.mark.asyncio
     async def test_input_returns_empty_string_without_default(self):
-        """ExtensionUI.input() returns empty string when no default."""
-        ui = ExtensionUI()
+        """ExtensionUI.input() returns empty string when no default (input=default)."""
+        ui = ExtensionUI(headless_policy={"input": "default"})
         result = await ui.input("Title")
         assert result == ""
+
+    def test_set_headless_defaults_rejects_unknown_method(self):
+        """set_headless_defaults raises on an unknown dialog method (Fail-Early)."""
+        ui = ExtensionUI()
+        with pytest.raises(ValueError):
+            ui.set_headless_defaults({"bogus": "yes"})
+
+    def test_set_headless_defaults_rejects_unknown_token(self):
+        """set_headless_defaults raises on an invalid answer token (Fail-Early)."""
+        ui = ExtensionUI()
+        with pytest.raises(ValueError):
+            ui.set_headless_defaults({"confirm": "maybe"})
+        with pytest.raises(ValueError):
+            ui.set_headless_defaults({"select": "last"})
 
     def test_notify_noop(self):
         """ExtensionUI.notify() is a no-op in headless mode (prints to stderr)."""
@@ -627,24 +674,24 @@ class TestExtensionUI:
 
     @pytest.mark.asyncio
     async def test_confirm_returns_async_bool(self):
-        """ExtensionUI.confirm() is async and returns bool."""
-        ui = ExtensionUI()
+        """ExtensionUI.confirm() is async and returns bool (under a policy)."""
+        ui = ExtensionUI(headless_policy={"confirm": "yes"})
         result = await ui.confirm("Title", "Message")
         assert isinstance(result, bool)
         assert result is True
 
     @pytest.mark.asyncio
     async def test_select_returns_async_str_or_none(self):
-        """ExtensionUI.select() is async and returns str or None."""
-        ui = ExtensionUI()
+        """ExtensionUI.select() is async and returns str or None (under a policy)."""
+        ui = ExtensionUI(headless_policy={"select": "first"})
         result = await ui.select("Title", ["a", "b"])
         assert isinstance(result, str)
         assert result == "a"
 
     @pytest.mark.asyncio
     async def test_input_returns_async_str(self):
-        """ExtensionUI.input() is async and returns str."""
-        ui = ExtensionUI()
+        """ExtensionUI.input() is async and returns str (under a policy)."""
+        ui = ExtensionUI(headless_policy={"input": "default"})
         result = await ui.input("Title", default="def")
         assert isinstance(result, str)
         assert result == "def"
@@ -726,15 +773,18 @@ class TestExtensionUITUI:
         assert delegate.last_notify == ("Hello", "warning")
 
     @pytest.mark.asyncio
-    async def test_tui_mode_without_delegate_uses_defaults(self):
-        """ExtensionUI in TUI mode without delegate uses headless defaults."""
+    async def test_tui_mode_without_delegate_uses_headless_policy(self):
+        """TUI mode without a delegate falls through to the headless policy (S48)."""
         ui = ExtensionUI(mode="tui")
-        # No delegate set — should fall through to headless behavior
+        # No delegate set — falls through to headless behavior.
         assert ui._mode == "tui"
         assert ui._tui_delegate is None
-        # confirm still returns True (no delegate to call)
-        result = await ui.confirm("T", "M")
-        assert result is True
+        # With no policy the fall-through raises (Fail-Early, no silent auto-answer).
+        with pytest.raises(HeadlessDialogError):
+            await ui.confirm("T", "M")
+        # With a policy it honors it.
+        ui.set_headless_defaults({"confirm": "yes"})
+        assert await ui.confirm("T", "M") is True
 
     def test_set_ui_delegate_enables_tui_mode(self):
         """ExtensionUI.set_ui_delegate() sets mode to TUI and delegate."""

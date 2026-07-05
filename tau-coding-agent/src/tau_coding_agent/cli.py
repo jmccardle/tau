@@ -67,6 +67,10 @@ class CLIArgs:
     # Per-extension config overrides (S40): repeatable --ext-config NAME.KEY=VALUE.
     # Applied over ~/.tau/config.json "extensions" per key (CLI > config.json).
     ext_config: list[str] = field(default_factory=list)
+    # Headless dialog policy (S48): --ui-defaults METHOD=ANSWER[,METHOD=ANSWER].
+    # With no policy a headless extension dialog RAISES; this opts back into an
+    # explicit auto-answer (over config.json "ui_defaults", CLI wins). Headless-only.
+    ui_defaults: str | None = None
     append_system_prompt: list[str] = field(default_factory=list)  # repeatable
     system_prompt: str | None = None
     thinking: str | None = None  # off|minimal|low|medium|high|xhigh
@@ -199,6 +203,15 @@ def build_parser() -> argparse.ArgumentParser:
         "VALUE is JSON-decoded when it parses (e.g. budget.ceiling=5.0), else a string",
     )
     parser.add_argument(
+        "--ui-defaults",
+        dest="ui_defaults",
+        default=None,
+        metavar="METHOD=ANSWER,...",
+        help="headless dialog auto-answers, else a headless dialog raises "
+        "(e.g. confirm=yes,select=first,input=default); over config.json "
+        '"ui_defaults". Headless (--print) only',
+    )
+    parser.add_argument(
         "--append-system-prompt",
         dest="append_system_prompt",
         action="append",
@@ -280,6 +293,7 @@ def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
         no_builtin_tools=ns.no_builtin_tools,
         no_session=ns.no_session,
         ext_config=list(ns.ext_config or []),
+        ui_defaults=ns.ui_defaults,
         append_system_prompt=list(ns.append_system_prompt or []),
         system_prompt=ns.system_prompt,
         thinking=ns.thinking,

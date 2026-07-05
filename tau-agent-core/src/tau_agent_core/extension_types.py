@@ -27,66 +27,168 @@ if TYPE_CHECKING:
 #: notify ``EventBus`` (a dead no-op, since nothing emits these channels).
 _RETIRED_HOOKS: frozenset[str] = frozenset({"context"})
 
+#: Headless dialog policy (E7 §3 / S48 — anchor G9, decision D-E6-2).
+#:
+#: Maps each BLOCKING dialog method (``confirm``/``select``/``input``) to the set
+#: of answer tokens that EXPLICITLY restore an auto-answer when it fires headless
+#: (no TUI delegate). With no policy entry for a method the dialog RAISES
+#: (:class:`HeadlessDialogError`) instead of silently auto-resolving — the old
+#: silent ``confirm→True`` / ``select→first`` was a fallback that could
+#: auto-approve a permission gate, exactly the anti-pattern the standing rule
+#: forbids. A user opts back into the auto-answer per method via
+#: ``--ui-defaults confirm=yes,select=first`` or a config.json ``"ui_defaults"``
+#: block. Tokens are lower-cased before matching.
+HEADLESS_DIALOG_ANSWERS: dict[str, frozenset[str]] = {
+    "confirm": frozenset({"yes", "no", "true", "false"}),
+    "select": frozenset({"first"}),
+    "input": frozenset({"default"}),
+}
+
+#: Confirm tokens that resolve to ``True`` (the rest of ``confirm`` → ``False``).
+_CONFIRM_TRUE_TOKENS: frozenset[str] = frozenset({"yes", "true"})
+
+
+class HeadlessDialogError(RuntimeError):
+    """A UI dialog opened in headless mode with no explicit ``--ui-defaults`` policy.
+
+    Raised by :meth:`ExtensionUI.confirm` / :meth:`ExtensionUI.select` /
+    :meth:`ExtensionUI.input` when there is no TUI delegate AND the corresponding
+    method has no headless-answer policy (E7 §3 / S48). A headless run cannot ask
+    a human, and silently auto-answering would fabricate consent for a gate — so
+    Fail-Early: raise, naming the ``--ui-defaults`` opt-in that restores an
+    explicit auto-answer.
+    """
+
 
 class ExtensionUI:
-    """User interaction methods (TUI only, no-op in headless mode).
+    """User interaction methods (TUI delegate, or a headless policy).
 
-    Reference: SUBPHASE-0.0.md, "8. Extension API Surface" section.
+    Reference: SUBPHASE-0.0.md, "8. Extension API Surface"; E7 §3 / S48.
 
-    In headless mode (RPC, SDK), all methods are no-ops:
-    - confirm() returns True (auto-approve)
-    - select() returns the first item (or None if empty)
-    - input() returns the default value
-    - notify() prints to stderr
+    In TUI mode the blocking dialogs (``confirm``/``select``/``input``) delegate
+    to a TUI delegate that asks a real human. In headless mode there is no human,
+    so each blocking dialog obeys the headless-answer POLICY set via
+    :meth:`set_headless_defaults` (from ``--ui-defaults`` / config.json):
 
-    In TUI mode, methods delegate to a TUI delegate.
+    - a method WITH a policy entry returns the explicitly-configured answer
+      (``confirm`` → ``True``/``False``; ``select`` → first item; ``input`` →
+      default);
+    - a method WITHOUT one RAISES :class:`HeadlessDialogError` (S48 / D-E6-2).
+
+    The pre-S48 behaviour auto-answered every headless dialog (``confirm→True``,
+    ``select→first``, ``input→default``) with no way to opt out — a silent
+    auto-approve of whatever the dialog was gating. Raising by default makes the
+    auto-answer an EXPLICIT choice instead of a hidden fallback.
+
+    ``notify`` is non-blocking (no answer to fabricate): it prints to stderr
+    headless and paints on the delegate in TUI mode — unchanged.
 
     Attributes:
         _mode: "tui" or "headless"
         _tui_delegate: TUI delegate object (set via set_ui_delegate())
+        _headless_policy: validated ``{method: token}`` headless-answer map
     """
 
-    def __init__(self, mode: Literal["tui", "headless"] = "headless") -> None:
+    def __init__(
+        self,
+        mode: Literal["tui", "headless"] = "headless",
+        headless_policy: dict[str, str] | None = None,
+    ) -> None:
         """Initialize ExtensionUI.
 
         Args:
             mode: Either 'tui' or 'headless'. Defaults to 'headless'.
+            headless_policy: Optional ``{method: token}`` headless-answer map
+                (validated via :meth:`set_headless_defaults`). Defaults to no
+                policy → headless dialogs raise (S48).
         """
         self._mode: Literal["tui", "headless"] = mode
         self._tui_delegate: Any | None = None
+        self._headless_policy: dict[str, str] = {}
+        if headless_policy:
+            self.set_headless_defaults(headless_policy)
+
+    def set_headless_defaults(self, policy: dict[str, str]) -> None:
+        """Set (replace) the headless-answer policy, validating every entry (S48).
+
+        ``policy`` maps a dialog method to its answer token; keys must be in
+        :data:`HEADLESS_DIALOG_ANSWERS` and each token must be one of that method's
+        allowed answers (case-insensitive). Fail-Early: an unknown method or token
+        RAISES :class:`ValueError` rather than being silently ignored, so a
+        typo in ``--ui-defaults`` / config surfaces instead of leaving a dialog
+        unexpectedly raising at runtime.
+        """
+        validated: dict[str, str] = {}
+        for method, token in policy.items():
+            allowed = HEADLESS_DIALOG_ANSWERS.get(method)
+            if allowed is None:
+                raise ValueError(
+                    f"ui-defaults: unknown dialog {method!r} "
+                    f"(expected one of {sorted(HEADLESS_DIALOG_ANSWERS)})"
+                )
+            token_l = str(token).strip().lower()
+            if token_l not in allowed:
+                raise ValueError(
+                    f"ui-defaults: {method}={token!r} is not a valid answer "
+                    f"(expected one of {sorted(allowed)})"
+                )
+            validated[method] = token_l
+        self._headless_policy = validated
+
+    def _headless_token(self, method: str, detail: str) -> str:
+        """The configured headless answer token for ``method``, or raise (S48).
+
+        Fail-Early: with no policy entry there is no human to ask and no explicit
+        auto-answer, so raise :class:`HeadlessDialogError` naming the opt-in.
+        """
+        token = self._headless_policy.get(method)
+        if token is None:
+            raise HeadlessDialogError(
+                f"ui.{method}({detail!r}) was called in headless mode with no "
+                f"--ui-defaults policy for {method!r}. A headless run cannot ask a "
+                "human, and auto-answering would silently resolve the dialog. Pass "
+                f"--ui-defaults {method}=<answer> (allowed: "
+                f"{sorted(HEADLESS_DIALOG_ANSWERS[method])}) or set config.json "
+                '"ui_defaults", or run in the TUI.'
+            )
+        return token
 
     async def confirm(self, title: str, message: str) -> bool:
         """Show a confirmation dialog. Returns user's choice.
 
-        In TUI mode, delegates to the TUI delegate.
-        In headless mode, returns True (auto-approve).
+        In TUI mode, delegates to the TUI delegate. In headless mode, returns the
+        policy answer (``confirm=yes/true`` → ``True``, ``confirm=no/false`` →
+        ``False``) or raises :class:`HeadlessDialogError` when no policy is set.
         """
         if self._mode == "tui" and self._tui_delegate:
             confirmed: bool = await self._tui_delegate.confirm(title, message)
             return confirmed
-        return True  # headless: auto-approve
+        return self._headless_token("confirm", title) in _CONFIRM_TRUE_TOKENS
 
     async def select(self, title: str, items: list[str]) -> str | None:
         """Show a selection dialog. Returns selected item or None.
 
-        In TUI mode, delegates to the TUI delegate.
-        In headless mode, returns the first item (or None if empty).
+        In TUI mode, delegates to the TUI delegate. In headless mode, ``select=first``
+        returns the first item (or None if empty); no policy raises
+        :class:`HeadlessDialogError`.
         """
         if self._mode == "tui" and self._tui_delegate:
             selected: str | None = await self._tui_delegate.select(title, items)
             return selected
-        return items[0] if items else None  # headless: pick first
+        self._headless_token("select", title)  # raises if no policy; only "first" is valid
+        return items[0] if items else None
 
     async def input(self, title: str, default: str = "") -> str:
         """Show an input dialog. Returns user input or default.
 
-        In TUI mode, delegates to the TUI delegate.
-        In headless mode, returns the default value.
+        In TUI mode, delegates to the TUI delegate. In headless mode, ``input=default``
+        returns the default value; no policy raises :class:`HeadlessDialogError`.
         """
         if self._mode == "tui" and self._tui_delegate:
             entered: str = await self._tui_delegate.input(title, default)
             return entered
-        return default  # headless: use default
+        self._headless_token("input", title)  # raises if no policy; only "default" is valid
+        return default
 
     def notify(self, message: str, level: str = "info") -> None:
         """Show a notification.
@@ -434,6 +536,17 @@ class ExtensionContext:
         """
         self._ui._mode = "tui"
         self._ui._tui_delegate = delegate
+
+    def set_headless_ui_defaults(self, policy: dict[str, str]) -> None:
+        """Set the headless dialog-answer policy on the shared UI (E7 §3 / S48).
+
+        Delegates to :meth:`ExtensionUI.set_headless_defaults`; the frontends call
+        this (via :meth:`AgentSession.set_headless_ui_defaults`) with the resolved
+        ``--ui-defaults`` / config policy so a headless dialog auto-answers only
+        when the user opted in. Validation (unknown method/token) raises
+        ``ValueError`` — the caller surfaces it as a clean CLI error.
+        """
+        self._ui.set_headless_defaults(policy)
 
 
 class ExtensionAPI:

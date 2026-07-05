@@ -306,6 +306,17 @@ class TauBackend(Backend):
         """
         self.agent_session.set_ui_delegate(delegate)
 
+    def set_headless_ui_defaults(self, policy: dict[str, str]) -> None:
+        """Forward the headless dialog-answer policy to the session (E7 §3 / S48).
+
+        The headless run path resolves ``--ui-defaults`` / config ``"ui_defaults"``
+        and calls this so a dialog opened by a loaded extension auto-answers only
+        for the opted-in methods; every other headless dialog raises
+        (Fail-Early, D-E6-2). Delegates to
+        :meth:`AgentSession.set_headless_ui_defaults`.
+        """
+        self.agent_session.set_headless_ui_defaults(policy)
+
     async def emit_session_start(self, reason: str = "startup") -> None:
         """Fire the ``session_start`` lifecycle hook on the wrapped session (S41).
 

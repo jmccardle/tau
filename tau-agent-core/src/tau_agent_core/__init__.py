@@ -25,9 +25,11 @@ from tau_agent_core.session import (
 )
 from tau_agent_core.settings import Settings
 from tau_agent_core.extension_types import (
+    HEADLESS_DIALOG_ANSWERS,
     ExtensionAPI,
     ExtensionContext,
     ExtensionUI,
+    HeadlessDialogError,
 )
 from tau_agent_core.agent_loop_types import (
     PreparedToolCall,
@@ -90,6 +92,8 @@ __all__ = [
     "ExtensionAPI",
     "ExtensionContext",
     "ExtensionUI",
+    "HeadlessDialogError",
+    "HEADLESS_DIALOG_ANSWERS",
     "PreparedToolCall",
     "FinalizedToolCall",
     "AgentLoopConfig",
