@@ -22,6 +22,11 @@ step table. This package currently ships:
   (typed, reload-safe records over the durable ``customEntry`` node, reconstructed
   along the active path) and :class:`~ext_kit.state.FileStore` (atomic cross-session
   JSON under ``~/.tau/ext-state/``).
+* :mod:`ext_kit.ledger` (S57) — the *budget / ledger*: :class:`~ext_kit.ledger.Pricing`
+  (``from_config`` price lookup + ``cost_of``), :class:`~ext_kit.ledger.UsageMeter`
+  (folds ``message_end`` / S45 usage into token + dollar totals),
+  :class:`~ext_kit.ledger.CostLedger` (append-only JSONL with ``$/outcome`` queries),
+  and the bang-bang :class:`~ext_kit.ledger.Ceiling` controller.
 """
 
 from __future__ import annotations
@@ -70,21 +75,43 @@ from ext_kit.state import (
     FileStore,
     TreeStore,
 )
+from ext_kit.ledger import (
+    CEILING_OK,
+    CEILING_STOPPED,
+    CEILING_WARN,
+    DEFAULT_WARN_RATIO,
+    Ceiling,
+    CostLedger,
+    MeterTotals,
+    OutcomeStats,
+    Pricing,
+    UsageMeter,
+    usage_tokens,
+)
 
 __all__ = [
+    "CEILING_OK",
+    "CEILING_STOPPED",
+    "CEILING_WARN",
     "CUSTOM_ENTRY_KIND",
     "DEFAULT_STUCK_LIMIT",
     "DEFAULT_VERDICT_TYPE",
+    "DEFAULT_WARN_RATIO",
     "FAILED_REASONS",
     "FLAGS",
     "STATE_DIR_NAME",
     "VERDICT_FAIL",
     "VERDICT_PASS",
     "VERDICT_TIMEOUT",
+    "Ceiling",
     "ChildResult",
     "ChildUsage",
+    "CostLedger",
     "FileStore",
     "GateResult",
+    "MeterTotals",
+    "OutcomeStats",
+    "Pricing",
     "ProgressWatchdog",
     "RecheckResult",
     "SpawnLimits",
@@ -93,6 +120,7 @@ __all__ = [
     "StuckDetector",
     "TauEvent",
     "TreeStore",
+    "UsageMeter",
     "WorkerPool",
     "build_child_args",
     "event_tool_signature",
@@ -107,5 +135,6 @@ __all__ = [
     "spawn_tau",
     "stream_tau",
     "tau_invocation",
+    "usage_tokens",
     "verdict_node",
 ]
