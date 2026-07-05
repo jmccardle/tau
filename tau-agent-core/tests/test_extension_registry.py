@@ -347,54 +347,23 @@ class TestRegisterCommand:
         assert reg._commands["help"]["action"] == "new"
 
 
-class TestRegisterFlag:
-    """Tests for flag registration."""
+class TestFlagsRemoved:
+    """``register_flag`` / ``get_flag`` were deleted in E6 §2 / S38 (G6)."""
 
-    def test_register_flag(self):
-        """ExtensionRegistry.register_flag() stores a flag."""
-        reg = ExtensionRegistry()
-        options = {"type": "boolean", "default": False}
-        reg.register_flag("debug", options)
-        assert "debug" in reg._flags
-        assert reg._flags["debug"] == options
+    def test_registry_has_no_register_flag(self):
+        assert not hasattr(ExtensionRegistry(), "register_flag")
 
-    def test_register_multiple_flags(self):
-        """ExtensionRegistry.register_flag() can register multiple flags."""
-        reg = ExtensionRegistry()
-        reg.register_flag("debug", {"type": "boolean"})
-        reg.register_flag("verbose", {"type": "boolean"})
-        assert "debug" in reg._flags
-        assert "verbose" in reg._flags
+    def test_registry_has_no_get_flag(self):
+        assert not hasattr(ExtensionRegistry(), "get_flag")
 
-    def test_get_flag_existing(self):
-        """ExtensionRegistry.get_flag() returns existing flag value."""
-        reg = ExtensionRegistry()
-        reg.register_flag("debug", {"type": "boolean", "value": True})
-        assert reg.get_flag("debug") is True
-
-    def test_get_flag_missing(self):
-        """ExtensionRegistry.get_flag() returns None for missing flag."""
-        reg = ExtensionRegistry()
-        assert reg.get_flag("nonexistent") is None
-
-    def test_get_flag_default_value(self):
-        """ExtensionRegistry.get_flag() returns None when flag has no value set."""
-        reg = ExtensionRegistry()
-        reg.register_flag("debug", {"type": "boolean", "default": False})
-        assert reg.get_flag("debug") is None
-
-    def test_set_flag_value(self):
-        """Setting a flag value updates get_flag()."""
-        reg = ExtensionRegistry()
-        reg.register_flag("debug", {"type": "boolean"})
-        reg._flags["debug"]["value"] = True
-        assert reg.get_flag("debug") is True
+    def test_registry_has_no_flags_store(self):
+        assert not hasattr(ExtensionRegistry(), "_flags")
 
 
 class TestExtensionRegistryIntegration:
     """Integration tests for ExtensionRegistry combining multiple features."""
 
-    def test_tools_and_commands_and_flags_and_entries(self):
+    def test_tools_and_commands_and_entries(self):
         """All registry features work together."""
         reg = ExtensionRegistry()
 
@@ -408,21 +377,16 @@ class TestExtensionRegistryIntegration:
         reg.register_command("help", {"action": "help"})
         assert "help" in reg._commands
 
-        # Flags
-        reg.register_flag("debug", {"type": "boolean", "value": True})
-        assert reg.get_flag("debug") is True
-
         # Entries
         reg.append_entry("counter", {"value": 1})
         assert len(reg.get_entries()) == 1
 
     def test_tool_filtering_with_other_features(self):
-        """Tool filtering doesn't affect commands, flags, or entries."""
+        """Tool filtering doesn't affect commands or entries."""
         reg = ExtensionRegistry()
         reg.register_tool({"name": "a", "description": "a", "parameters": {}})
         reg.register_tool({"name": "b", "description": "b", "parameters": {}})
         reg.register_command("help", {})
-        reg.register_flag("debug", {})
         reg.append_entry("state", {})
 
         reg.set_active_tools(["a"])
@@ -430,5 +394,4 @@ class TestExtensionRegistryIntegration:
         assert len(reg.get_all_tools()) == 2
         assert set(reg.get_active_tools().keys()) == {"a"}
         assert "help" in reg._commands
-        assert reg.get_flag("debug") is None
         assert len(reg.get_entries()) == 1

@@ -115,8 +115,8 @@ def git_checkpoint_extension(api):
         # Create the commit
         success = _git_add_and_commit(cwd, summary)
         if success:
-            api.notify(f"Checkpoint committed: {summary}")
+            api.ui.notify(f"Checkpoint committed: {summary}")
         else:
-            api.notify("Git checkpoint: no commits created (conflict?)")
+            api.ui.notify("Git checkpoint: no commits created (conflict?)")
 
     api.on("turn_end", on_turn_end)

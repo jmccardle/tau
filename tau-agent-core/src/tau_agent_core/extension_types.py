@@ -395,11 +395,10 @@ class ExtensionAPI:
     import τ-agent-core internals.
 
     Attributes:
-        _registry: ExtensionRegistry for tool/command/flag management.
+        _registry: ExtensionRegistry for tool/command management.
         _event_bus: EventBus for event subscription.
         _context: ExtensionContext with session state.
         _session: AgentSession for messaging.
-        _flags: Dict of registered CLI flags.
     """
 
     def __init__(
@@ -447,7 +446,6 @@ class ExtensionAPI:
         # Bind the live session onto the context so ctx.get_context_usage()
         # (delegated to the session in pi) reads real messages + model window.
         self._context._session = session
-        self._flags: dict[str, dict[str, Any]] = {}
 
     def on(self, event: str, handler: Callable) -> Callable[[], None]:
         """Subscribe to an event — routed by KIND (S24 bridge).
@@ -613,33 +611,35 @@ class ExtensionAPI:
             raise RuntimeError("send_user_message: no session with a message queue is bound")
         self._session._queue_message(content, deliver_as=deliver_as)
 
-    def send_message(self, message: dict, options: dict) -> None:
-        """Send a custom message into the session."""
-        if hasattr(self._session, "_append_custom_message"):
-            self._session._append_custom_message(message, options)
+    def send_message(self, message: dict, options: dict | None = None) -> None:
+        """Append a durable custom message node onto the active path (pi ``sendMessage``).
 
-    def register_flag(self, name: str, options: dict) -> None:
-        """Register a CLI flag.
+        Persists ``{customType, content, display?, details?}`` as a ``role:
+        "custom"`` tree node via ``AgentSession._append_custom_message`` (E6 §2 /
+        S38) — it renders in the transcript / tree and survives a reload, exactly
+        like a ``before_agent_start`` injection.
 
-        Also registers the flag with the registry.
+        Per D-E6-1 the node is **display-only by default**. Pass
+        ``options={"visible_to_model": True}`` to also feed it to the model
+        (remapped custom→user on the wire); otherwise it is excluded from
+        ``convert_to_llm`` and never reaches the LLM. This is intentional: it does
+        NOT create a third model-visible default channel — ``before_agent_start``
+        and ``send_user_message`` already serve that.
 
-        Args:
-            name: Flag name.
-            options: Flag options dict (e.g., {'type': 'boolean'}).
+        Raises:
+            RuntimeError: if no session with ``_append_custom_message`` is bound
+                (e.g. a bare ``ExtensionAPI()``). Fail-Early: raise rather than
+                silently drop the message (the old inert no-op called a nonexistent
+                method and did nothing).
+            ValueError: propagated from ``_append_custom_message`` when ``message``
+                lacks ``content`` or ``customType``.
         """
-        self._flags[name] = options
-        self._registry.register_flag(name, options)
-
-    def get_flag(self, name: str) -> Any:
-        """Get the value of a CLI flag.
-
-        Args:
-            name: Flag name.
-
-        Returns:
-            The flag value, or None if not registered.
-        """
-        return self._flags.get(name, {}).get("value")
+        if not hasattr(self._session, "_append_custom_message"):
+            raise RuntimeError(
+                "send_message: no session with a custom-message log is bound "
+                "(the message would have nowhere durable to land)"
+            )
+        self._session._append_custom_message(message, options or {})
 
     @property
     def ui(self) -> ExtensionUI:

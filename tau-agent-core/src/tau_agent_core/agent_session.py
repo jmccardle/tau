@@ -971,6 +971,49 @@ class AgentSession:
             timestamp=self._timestamp(),
         )
 
+    def _append_custom_message(
+        self, message: dict[str, Any], options: dict[str, Any] | None = None
+    ) -> str:
+        """Append a durable extension ``customMessage`` node (``api.send_message``).
+
+        The backend for ``ExtensionAPI.send_message`` (E6 §2 / S38). Builds a
+        ``role: "custom"`` node from ``{customType, content, display?, details?}``
+        and APPENDs it to the authoritative session log, so it lands on the active
+        path exactly like a ``before_agent_start`` injection: persisted, rendered
+        in the transcript / tree, and reload-invariant.
+
+        Per D-E6-1 the node is **display-only by default** — ``options`` may set
+        ``visible_to_model: True`` to also feed it to the model (remapped
+        custom→user on the wire); left unset (or ``False``) the node is dropped by
+        :func:`~tau_agent_core.messages.convert_to_llm` and never reaches the LLM.
+        This deliberately does NOT create a third model-visible default channel
+        (``before_agent_start`` / ``send_user_message`` already serve that).
+
+        Returns the appended entry id.
+
+        Raises:
+            ValueError: if ``message`` has no ``content`` (nothing to append) or no
+                ``customType`` (the extension-origin identity is not fabricated) —
+                Fail-Early.
+        """
+        options = options or {}
+        if "content" not in message:
+            raise ValueError("send_message: message is missing 'content' — nothing to append")
+        if "customType" not in message:
+            raise ValueError(
+                "send_message: message is missing 'customType' — the extension-origin "
+                "type is required (Fail-Early, no fabricated default)"
+            )
+        node = create_custom_message(
+            custom_type=str(message["customType"]),
+            content=message["content"],
+            display=bool(message.get("display", True)),
+            details=message.get("details"),
+            visible_to_model=bool(options.get("visible_to_model", False)),
+            timestamp=self._timestamp(),
+        )
+        return self._session_log.append_custom_message(node, custom_type=str(message["customType"]))
+
     def _build_turn_tools(self) -> list:
         """Merge the built-in tools with the active extension tools for a turn.
 

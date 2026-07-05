@@ -734,28 +734,12 @@ class TestExtensionErrorHandling:
         )
 
     def test_extension_api_can_send_message(self):
-        """ExtensionAPI.send_message() works."""
+        """ExtensionAPI.send_message() forwards to the bound session (S38)."""
         session_mock = MagicMock()
         api = ExtensionAPI(session=session_mock)
-        # Should not raise
-        api.send_message({"role": "user", "content": []}, {})
-
-    def test_extension_api_register_flag(self):
-        """ExtensionAPI.register_flag() registers a flag."""
-        api = ExtensionAPI()
-        api.register_flag("verbose", {"type": "boolean"})
-        assert "verbose" in api._flags
-
-    def test_extension_api_get_flag(self):
-        """ExtensionAPI.get_flag() returns flag value."""
-        api = ExtensionAPI()
-        api._flags["verbose"] = {"value": True}
-        assert api.get_flag("verbose") is True
-
-    def test_extension_api_get_flag_missing(self):
-        """ExtensionAPI.get_flag() returns None for missing flag."""
-        api = ExtensionAPI()
-        assert api.get_flag("nonexistent") is None
+        # Should not raise: MagicMock exposes _append_custom_message.
+        api.send_message({"customType": "note", "content": []}, {})
+        session_mock._append_custom_message.assert_called_once()
 
     def test_extension_api_append_entry(self):
         """ExtensionAPI.append_entry() works."""

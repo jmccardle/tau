@@ -18,15 +18,11 @@ Contract:
         def register_command(self, name: str, command: dict) -> None: ...
         def get_command(self, name: str) -> dict | None: ...
         def get_commands(self) -> dict[str, dict]: ...
-        def register_flag(self, name: str, options: dict) -> None: ...
-        def get_flag(self, name: str) -> Any: ...
         def append_entry(self, custom_type: str, data: dict) -> None: ...
         def get_entries(self) -> list[dict]: ...
 """
 
 from __future__ import annotations
-
-from typing import Any
 
 
 class ToolInfo:
@@ -61,7 +57,6 @@ class ExtensionRegistry:
         """Initialize the registry with empty collections."""
         self._tools: dict[str, dict] = {}  # name -> definition
         self._commands: dict[str, dict] = {}  # name -> command def
-        self._flags: dict[str, dict] = {}  # name -> flag def
         self._active_tools: set[str] | None = None  # None = all active
         self._entry_store: list[dict] = []  # extension-persisted entries
 
@@ -109,14 +104,6 @@ class ExtensionRegistry:
     def get_commands(self) -> dict[str, dict]:
         """Get all registered slash commands (name -> command def)."""
         return dict(self._commands)
-
-    def register_flag(self, name: str, options: dict) -> None:
-        """Register a CLI flag."""
-        self._flags[name] = options
-
-    def get_flag(self, name: str) -> Any:
-        """Get the value of a CLI flag."""
-        return self._flags.get(name, {}).get("value")
 
     def append_entry(self, custom_type: str, data: dict) -> None:
         """Persist extension state (does not appear in LLM context)."""

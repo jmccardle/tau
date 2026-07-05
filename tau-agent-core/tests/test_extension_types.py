@@ -67,11 +67,6 @@ class TestExtensionAPIInit:
         api = ExtensionAPI()
         assert hasattr(api, "_context")
 
-    def test_extension_api_has_internal_flags(self):
-        """ExtensionAPI stores flags dict."""
-        api = ExtensionAPI()
-        assert hasattr(api, "_flags")
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ExtensionAPI.on() — event subscription
@@ -257,39 +252,26 @@ class TestExtensionAPICommands:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# ExtensionAPI flag methods
+# register_flag / get_flag deleted (E6 §2 / S38)
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-class TestExtensionAPIFlags:
-    """Tests for ExtensionAPI flag registration."""
+class TestFlagsRemoved:
+    """The dead ``register_flag`` / ``get_flag`` API was deleted in S38 (G6).
 
-    def test_register_flag(self):
-        """ExtensionAPI.register_flag() stores a flag locally and in registry."""
-        api = ExtensionAPI()
-        options = {"type": "boolean", "default": False}
-        api.register_flag("debug", options)
-        assert "debug" in api._flags
-        assert api._flags["debug"] == options
-        # Also registered in registry
-        assert "debug" in api._registry._flags
+    The ``value`` was never populated (superseded by S40 per-extension config), so
+    the methods and the ``_flags`` store are gone from both the API and the
+    registry surface.
+    """
 
-    def test_get_flag_existing(self):
-        """ExtensionAPI.get_flag() returns existing flag value."""
-        api = ExtensionAPI()
-        api.register_flag("debug", {"type": "boolean", "value": True})
-        assert api.get_flag("debug") is True
+    def test_extension_api_has_no_register_flag(self):
+        assert not hasattr(ExtensionAPI(), "register_flag")
 
-    def test_get_flag_missing(self):
-        """ExtensionAPI.get_flag() returns None for missing flag."""
-        api = ExtensionAPI()
-        assert api.get_flag("nonexistent") is None
+    def test_extension_api_has_no_get_flag(self):
+        assert not hasattr(ExtensionAPI(), "get_flag")
 
-    def test_get_flag_no_value_set(self):
-        """ExtensionAPI.get_flag() returns None when flag has no value."""
-        api = ExtensionAPI()
-        api.register_flag("debug", {"type": "boolean"})
-        assert api.get_flag("debug") is None
+    def test_extension_api_has_no_flags_store(self):
+        assert not hasattr(ExtensionAPI(), "_flags")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -379,19 +361,34 @@ class TestExtensionAPISession:
             api.send_user_message("Hello", deliver_as="steer")
         mock_session._queue_message.assert_not_called()
 
-    def test_send_message_noop_without_session(self):
-        """ExtensionAPI.send_message() is a no-op without session."""
+    def test_send_message_raises_without_session(self):
+        """ExtensionAPI.send_message() raises without a session (Fail-Early, S38).
+
+        The old behaviour silently no-op'd on a nonexistent method; a message with
+        nowhere durable to land is a construction bug, not a no-op.
+        """
         api = ExtensionAPI()
-        api.send_message({"text": "Hello"}, {})  # should not raise
+        with pytest.raises(RuntimeError):
+            api.send_message({"customType": "note", "content": "Hello"}, {})
 
     def test_send_message_with_session(self):
         """ExtensionAPI.send_message() appends custom message on session."""
         mock_session = MagicMock()
         mock_session._append_custom_message = MagicMock()
         api = ExtensionAPI(session=mock_session)
-        api.send_message({"text": "Hello"}, {"source": "extension"})
+        api.send_message({"customType": "note", "content": "Hello"}, {"source": "extension"})
         mock_session._append_custom_message.assert_called_once_with(
-            {"text": "Hello"}, {"source": "extension"}
+            {"customType": "note", "content": "Hello"}, {"source": "extension"}
+        )
+
+    def test_send_message_default_options_forwarded_as_empty_dict(self):
+        """Omitting options forwards ``{}`` (display-only default is applied downstream)."""
+        mock_session = MagicMock()
+        mock_session._append_custom_message = MagicMock()
+        api = ExtensionAPI(session=mock_session)
+        api.send_message({"customType": "note", "content": "Hi"})
+        mock_session._append_custom_message.assert_called_once_with(
+            {"customType": "note", "content": "Hi"}, {}
         )
 
 

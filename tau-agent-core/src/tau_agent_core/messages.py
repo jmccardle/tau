@@ -42,6 +42,7 @@ def create_custom_message(
     content: Any,
     display: bool = True,
     details: Any = None,
+    visible_to_model: bool = True,
     timestamp: int | None = None,
 ) -> dict[str, Any]:
     """Build an agent-level custom message dict (pi ``createCustomMessage``).
@@ -51,12 +52,21 @@ def create_custom_message(
     optional ``details``. It is persisted inside a ``customMessage`` tree entry
     and threaded to the loop as-is; :func:`convert_to_llm` maps it to a ``user``
     message for the provider.
+
+    ``visible_to_model`` (E6 §2 / S38, decision D-E6-1) records whether the node
+    reaches the LLM. ``True`` (the ``before_agent_start`` case) → remapped
+    custom→user on the wire; ``False`` (the ``api.send_message`` display-only
+    default) → the node still persists and renders on the path but
+    :func:`convert_to_llm` DROPS it, so the model never sees it. Stored so the
+    distinction survives a reload; an older node without the key reads back as
+    ``True`` (its historical behaviour), never fabricated.
     """
     message: dict[str, Any] = {
         "role": CUSTOM_ROLE,
         "customType": custom_type,
         "content": _content_to_blocks(content),
         "display": display,
+        "visibleToModel": visible_to_model,
     }
     if details is not None:
         message["details"] = details
@@ -75,6 +85,14 @@ def convert_to_llm(messages: list[Any]) -> list[Any]:
     rendered node keeps its extension-origin ``role``. Non-``custom`` entries
     (pydantic ``UserMessage`` / ``AssistantMessage`` / dicts) are returned
     untouched.
+
+    A ``custom`` node marked ``visibleToModel: False`` (the ``api.send_message``
+    display-only default, E6 §2 / S38 / D-E6-1) is DROPPED here rather than
+    remapped: it stays on the durable path (persisted, rendered in the transcript
+    and tree) but is explicitly excluded from what the model sees. This is the
+    sanctioned invariant exception — persisted == rendered, but NOT sent — and the
+    only place the exclusion happens (the on-disk path is otherwise the wire). A
+    node without the key is treated as visible (its historical behaviour).
     """
     converted: list[Any] = []
     for message in messages:
@@ -83,6 +101,9 @@ def convert_to_llm(messages: list[Any]) -> list[Any]:
             continue
         if message.get("role") != CUSTOM_ROLE:
             converted.append(message)
+            continue
+        if message.get("visibleToModel", True) is False:
+            # Display-only extension node: on the path, off the wire.
             continue
         user_message: dict[str, Any] = {
             "role": "user",
