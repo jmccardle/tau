@@ -14,6 +14,10 @@ step table. This package currently ships:
   :func:`~ext_kit.stream.iter_jsonl` reader, :class:`~ext_kit.stream.StreamCounters`,
   :class:`~ext_kit.stream.StuckDetector`, :class:`~ext_kit.stream.ProgressWatchdog`,
   and the :func:`~ext_kit.stream.monitor_stream` driver.
+* :mod:`ext_kit.gate` (S55) — external-check gates: :func:`~ext_kit.gate.run_gate`
+  (exit-code / regex verdict), :func:`~ext_kit.gate.verdict_node` (durable
+  ``customMessage`` verdict block), and the anti-cheat
+  :func:`~ext_kit.gate.revert_and_recheck`.
 """
 
 from __future__ import annotations
@@ -34,6 +38,17 @@ from ext_kit.spawn import (
     stream_tau,
     tau_invocation,
 )
+from ext_kit.gate import (
+    DEFAULT_VERDICT_TYPE,
+    VERDICT_FAIL,
+    VERDICT_PASS,
+    VERDICT_TIMEOUT,
+    GateResult,
+    RecheckResult,
+    revert_and_recheck,
+    run_gate,
+    verdict_node,
+)
 from ext_kit.stream import (
     FLAGS,
     ProgressWatchdog,
@@ -48,11 +63,17 @@ from ext_kit.stream import (
 
 __all__ = [
     "DEFAULT_STUCK_LIMIT",
+    "DEFAULT_VERDICT_TYPE",
     "FAILED_REASONS",
     "FLAGS",
+    "VERDICT_FAIL",
+    "VERDICT_PASS",
+    "VERDICT_TIMEOUT",
     "ChildResult",
     "ChildUsage",
+    "GateResult",
     "ProgressWatchdog",
+    "RecheckResult",
     "SpawnLimits",
     "StreamCounters",
     "StreamMonitor",
@@ -65,9 +86,12 @@ __all__ = [
     "monitor_stream",
     "price_increment",
     "read_jsonl",
+    "revert_and_recheck",
     "roll_message_usage",
+    "run_gate",
     "spawn_all",
     "spawn_tau",
     "stream_tau",
     "tau_invocation",
+    "verdict_node",
 ]
