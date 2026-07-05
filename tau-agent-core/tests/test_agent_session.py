@@ -1147,6 +1147,43 @@ class TestExtensions:
         assert result.output is None
         assert result.output_text() is None
 
+    # -- Palette arg placeholder (E7 §3 / S51) --------------------------------
+
+    def test_command_args_placeholder_declared(self):
+        """A command's declared ``"args"`` placeholder is exposed for the palette."""
+        def my_ext(api):
+            api.register_command(
+                "search",
+                {"description": "search", "args": "<query>", "handler": lambda a, c: a},
+            )
+
+        session = self.create_session(extensions=[my_ext])
+        assert session.get_extension_command_args("search") == "<query>"
+
+    def test_command_args_absent_is_none(self):
+        """A command that declares no ``"args"`` returns None (no modal on dispatch)."""
+        def my_ext(api):
+            api.register_command("plain", {"description": "p", "handler": lambda a, c: a})
+
+        session = self.create_session(extensions=[my_ext])
+        assert session.get_extension_command_args("plain") is None
+
+    def test_command_args_unknown_command_is_none(self):
+        """An unknown command name has no placeholder (None, never a fabricated value)."""
+        session = self.create_session()
+        assert session.get_extension_command_args("nope") is None
+
+    def test_command_args_non_string_raises(self):
+        """Fail-Early: a non-string ``"args"`` is a construction bug, so it raises."""
+        def my_ext(api):
+            api.register_command(
+                "bad", {"description": "b", "args": True, "handler": lambda a, c: a}
+            )
+
+        session = self.create_session(extensions=[my_ext])
+        with pytest.raises(TypeError, match="non-string 'args'"):
+            session.get_extension_command_args("bad")
+
 
 # =============================================================================
 # Test 8: In-memory session is isolated

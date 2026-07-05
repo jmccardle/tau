@@ -1489,6 +1489,33 @@ class AgentSession:
             for name, command in self._registry.get_commands().items()
         ]
 
+    def get_extension_command_args(self, name: str) -> str | None:
+        """The declared argument placeholder for command ``name`` (E7 §3 / S51).
+
+        A command may declare ``"args": "<placeholder>"`` in its ``register_command``
+        definition to signal that it expects a free-form argument string (parity with
+        typing ``/name args``). The palette (:meth:`Parley.get_system_commands`) reads
+        this to decide whether a palette entry, which has no argument line, must first
+        open the S47 input modal to collect the arg string before dispatch.
+
+        Returns the placeholder string when declared, ``None`` when the command is
+        unknown or declares no ``args``. Fail-Early: a non-string ``args`` is a
+        construction bug (the field IS the placeholder text), so it RAISES rather than
+        being coerced or silently ignored.
+        """
+        command = self._registry.get_command(name)
+        if command is None:
+            return None
+        placeholder = command.get("args")
+        if placeholder is None:
+            return None
+        if not isinstance(placeholder, str):
+            raise TypeError(
+                f"extension command {name!r} declared non-string 'args' "
+                f"({type(placeholder).__name__}); 'args' must be the placeholder string."
+            )
+        return placeholder
+
     async def run_extension_command(self, name: str, args: str = "") -> ExtensionCommandResult:
         """Run an extension-registered slash command (E5 §5 / S35; output channel S46).
 

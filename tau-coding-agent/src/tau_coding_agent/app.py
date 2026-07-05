@@ -1715,25 +1715,50 @@ class Parley(App):
         listing = self._format_extensions_listing(self._extension_load_result)
         self.query_one(ChatDisplay).add_message("system", listing)
 
-    async def _dispatch_extension_command(self, name: str) -> None:
+    async def _dispatch_extension_command(self, name: str, args: str = "") -> None:
         """Run an extension-registered command from the palette (E5 §5 / S35).
 
         The command-palette entry (:meth:`get_system_commands`) invokes this;
-        it forwards to the live backend's :meth:`run_extension_command` with no
-        args (the palette has no argument line). A handler exception is surfaced
-        as an error notice (pi's ``_tryExecuteExtensionCommand`` likewise reports
-        rather than crashing the screen), never swallowed silently.
+        it forwards to the live backend's :meth:`run_extension_command`. A palette
+        entry for a command that declares ``"args"`` first collects the arg string
+        via :meth:`_prompt_command_args` (S51) and passes it here; a command without
+        an ``args`` placeholder dispatches with the empty string (the palette has no
+        argument line). A handler exception is surfaced as an error notice (pi's
+        ``_tryExecuteExtensionCommand`` likewise reports rather than crashing the
+        screen), never swallowed silently.
         """
         runner = getattr(self.current_backend, "run_extension_command", None)
         if runner is None:
             return
         try:
-            result = await runner(name)
+            result = await runner(name, args)
         except Exception as e:
             self.notify(f"Command /{name} failed: {e}", severity="error")
             self.log.error(f"Extension command /{name} failed: {e}", exc_info=True)
             return
         self._render_command_output(result)
+
+    @work
+    async def _prompt_command_args(self, name: str, placeholder: str) -> None:
+        """Collect an arg string for an ``args``-declaring palette command (E7 §3 / S51).
+
+        A command that declares ``"args": "<placeholder>"`` expects a free-form
+        argument string, exactly as if the user had typed ``/name args``. The palette
+        entry has no argument line, so this opens the S47 :class:`ExtensionInputModal`
+        to collect it, then dispatches through :meth:`_dispatch_extension_command`
+        with the entered text. Runs as a worker because ``push_screen_wait`` requires
+        one (the same context the S47 delegate uses).
+
+        Fail-Early: a cancelled modal (Cancel → ``None``) does NOT dispatch — an
+        arg-declaring command is not run on a fabricated empty argument the user
+        never confirmed. An entered (possibly empty) value dispatches as typed.
+        """
+        collected = await self.push_screen_wait(
+            ExtensionInputModal(f"/{name} {placeholder}".rstrip())
+        )
+        if collected is None:
+            return
+        await self._dispatch_extension_command(name, collected)
 
     def _render_command_output(self, result: ExtensionCommandResult) -> None:
         """Render a command's returned value as a display-only ``system`` box (S46).
@@ -1894,13 +1919,26 @@ class Parley(App):
         # Read from the live backend's session registry; getattr-guarded so a
         # non-TauBackend test double is a no-op, matching set_ui_delegate/load_extensions.
         get_commands = getattr(self.current_backend, "get_extension_commands", None)
+        get_args = getattr(self.current_backend, "get_extension_command_args", None)
         if get_commands is not None:
             for cmd_name, cmd_desc in get_commands():
-                yield SystemCommand(
-                    f"/{cmd_name}",
-                    cmd_desc or f"Run extension command /{cmd_name}",
-                    lambda n=cmd_name: self._dispatch_extension_command(n),
-                )
+                # S51: a command declaring ``"args"`` collects that string via the
+                # S47 input modal (worker-context) before dispatch; one without args
+                # dispatches directly (the palette has no argument line).
+                help_text = cmd_desc or f"Run extension command /{cmd_name}"
+                placeholder = get_args(cmd_name) if get_args is not None else None
+                if placeholder:
+                    yield SystemCommand(
+                        f"/{cmd_name}",
+                        help_text,
+                        lambda n=cmd_name, p=placeholder: self._prompt_command_args(n, p),
+                    )
+                else:
+                    yield SystemCommand(
+                        f"/{cmd_name}",
+                        help_text,
+                        lambda n=cmd_name: self._dispatch_extension_command(n),
+                    )
 
     async def action_clear_chat(self):
         """Clear the current conversation, starting a fresh session.

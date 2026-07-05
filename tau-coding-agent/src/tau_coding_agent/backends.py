@@ -377,6 +377,15 @@ class TauBackend(Backend):
         """
         return self.agent_session.get_extension_commands()
 
+    def get_extension_command_args(self, name: str) -> str | None:
+        """The declared argument placeholder for command ``name`` (E7 §3 / S51).
+
+        Delegates to :meth:`AgentSession.get_extension_command_args`. The palette
+        reads this to decide whether a command's entry must open the S47 input modal
+        to collect an arg string before dispatch (parity with typed ``/name args``).
+        """
+        return self.agent_session.get_extension_command_args(name)
+
     async def run_extension_command(self, name: str, args: str = "") -> ExtensionCommandResult:
         """Run an extension-registered slash command (S35; output channel S46).
 
