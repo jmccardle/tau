@@ -56,6 +56,8 @@ from tau_agent_core.conversation_tree import ConversationTree, TreeNode
 
 # The declarative ``ui.form`` spec validator — the single source of truth the
 # generic ``ExtensionFormScreen`` shares with ``ExtensionUI.form`` (E10 §6 / S66).
+# ``ui.panel`` (S68) normalizes in ``ExtensionUI.panel`` before reaching the delegate,
+# so ``ExtensionPanel`` renders the already-normalized ``{title, body, actions}`` dict.
 from tau_agent_core.extension_types import validate_form_spec
 
 # The result of running an extension command (handled flag + the handler's
@@ -137,6 +139,13 @@ class _ExtensionUIDelegate:
         # hooks run on the app's event loop, so the widget mutation is direct.
         self._app.set_extension_status(key, text)
 
+    def panel(self, key: str, spec: dict[str, Any] | None) -> None:
+        # Persistent keyed panel (E10 §6 / S68). Non-blocking (not a dialog): forwards
+        # to the app, which mounts / updates / removes the keyed ``ExtensionPanel`` in
+        # the panel host; ``spec=None`` clears it. ``spec`` is already the normalized
+        # ``{title, body, actions}`` dict from ``ExtensionUI.panel``.
+        self._app.set_extension_panel(key, spec)
+
 
 class ExtensionStatusBar(Static):
     """One-line footer strip of keyed extension status slots (E10 §6 / S67).
@@ -178,6 +187,150 @@ class ExtensionStatusBar(Static):
             # leave an empty bar.
             self.display = False
             self.update("")
+
+
+def render_panel_body(body: dict[str, Any]) -> str:
+    """Render a normalized ``ui.panel`` body dict to plain display text (E10 §6 / S68).
+
+    Pure (no widget access) so it is unit-testable: given a ``{"kind": …}`` body from
+    :func:`~tau_agent_core.extension_types.validate_panel_spec` it returns the exact
+    text the panel's body :class:`Static` shows. ``text`` → the string as-is; ``list``
+    → one ``• item`` line per entry; ``table`` → a monospace grid (a header row, a rule
+    row, then the data rows) with every column padded to its widest cell.
+    """
+    kind = body["kind"]
+    if kind == "text":
+        return str(body["text"])
+    if kind == "list":
+        return "\n".join(f"• {item}" for item in body["items"])
+    # table
+    columns: list[str] = body["columns"]
+    rows: list[list[str]] = body["rows"]
+    widths = [len(col) for col in columns]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(cell))
+
+    def _fmt(cells: list[str]) -> str:
+        return "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(cells))
+
+    lines = [_fmt(columns), _fmt(["─" * w for w in widths])]
+    lines.extend(_fmt(row) for row in rows)
+    return "\n".join(lines)
+
+
+class _PanelActionButton(Button):
+    """A panel action button carrying the command it dispatches (E10 §6 / S68).
+
+    Subclasses :class:`Button` to attach the ``command``/``args`` an action declares,
+    so :meth:`ExtensionPanel.on_button_pressed` can map a press straight to a command
+    dispatch without brittle id-parsing — and so an ordinary ``Button`` elsewhere in a
+    panel (were one added) would not be mistaken for an action.
+    """
+
+    def __init__(self, label: str, command: str, args: str) -> None:
+        super().__init__(label, classes="ext-panel-action")
+        self.command = command
+        self.args = args
+
+
+class ExtensionPanel(Vertical):
+    """One persistent keyed panel from a declarative spec (E10 §6 / S68).
+
+    The TUI surface behind ``ctx.ui.panel(key, spec)`` (D-E6-4: a plain-data SPEC, not
+    a widget factory) — the fleet-dashboard primitive. Renders the normalized
+    ``{title, body, actions}`` from
+    :func:`~tau_agent_core.extension_types.validate_panel_spec`: a title
+    :class:`Static`, a body :class:`Static` (via :func:`render_panel_body` — text /
+    bullet list / table grid), and, when the spec declares ``actions``, a row of
+    :class:`_PanelActionButton`. Pressing an action posts an :class:`Action` message
+    that bubbles to the app, which DISPATCHES the action's ``command`` back into the
+    extension as a ``register_command`` call — the panel→extension loop.
+
+    Live-updatable: :meth:`update_spec` rebuilds the panel's children in place (the
+    panel widget keeps its DOM position, so a re-call for the same key updates content
+    without reordering sibling panels — the fleet table ticking each turn).
+    """
+
+    class Action(Message):
+        """A panel action was pressed → dispatch ``command`` with ``args`` (S68)."""
+
+        def __init__(self, command: str, args: str) -> None:
+            self.command = command
+            self.args = args
+            super().__init__()
+
+    def __init__(self, key: str, spec: dict[str, Any]) -> None:
+        super().__init__(classes="ext-panel")
+        self._key = key
+        self._spec = spec
+
+    def compose(self) -> ComposeResult:
+        yield from self._build_widgets()
+
+    def _build_widgets(self) -> ComposeResult:
+        yield Static(self._spec["title"], classes="ext-panel-title")
+        yield Static(render_panel_body(self._spec["body"]), classes="ext-panel-body")
+        actions = self._spec["actions"]
+        if actions:
+            yield Horizontal(
+                *(_PanelActionButton(a["label"], a["command"], a["args"]) for a in actions),
+                classes="ext-panel-actions",
+            )
+
+    async def update_spec(self, spec: dict[str, Any]) -> None:
+        """Re-render this panel in place from a new normalized spec (live update)."""
+        self._spec = spec
+        await self.remove_children()
+        await self.mount(*self._build_widgets())
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        button = event.button
+        if isinstance(button, _PanelActionButton):
+            # Consume the press here and re-emit it as a semantic Action, so the app
+            # sees "run command X" rather than a raw button event it must decode.
+            event.stop()
+            self.post_message(self.Action(button.command, button.args))
+
+
+class ExtensionPanelHost(VerticalScroll):
+    """The container of live keyed :class:`ExtensionPanel` widgets (E10 §6 / S68).
+
+    The app-side landing for ``ctx.ui.panel(key, spec)``. :meth:`set_panel` MOUNTS a
+    new panel for an unseen key, UPDATES an existing key's panel in place (identity
+    preserved, so sibling order is stable across a live re-call), and REMOVES a panel
+    when ``spec is None`` (pi's "pass undefined to clear"). When no panels remain the
+    host hides itself (``display = False``) so it costs zero space — it only occupies
+    the side column while at least one extension has a panel live. Docked to the right
+    of the main area, so the chat flow is untouched when empty.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(id="ext-panel-host")
+        # Insertion-ordered {key: panel}; a dict preserves first-seen order so an
+        # in-place update keeps a panel's column position.
+        self._panels: dict[str, ExtensionPanel] = {}
+        self.display = False
+
+    def set_panel(self, key: str, spec: dict[str, Any] | None) -> None:
+        """Mount, update in place, or remove one keyed panel (E10 §6 / S68)."""
+        if spec is None:
+            panel = self._panels.pop(key, None)
+            if panel is not None:
+                panel.remove()
+            if not self._panels:
+                self.display = False
+            return
+        self.display = True
+        existing = self._panels.get(key)
+        if existing is not None:
+            # Update the SAME widget (order-stable). update_spec is async (mount /
+            # remove children); schedule it on the loop — the delegate call is sync.
+            self.call_later(existing.update_spec, spec)
+        else:
+            panel = ExtensionPanel(key, spec)
+            self._panels[key] = panel
+            self.mount(panel)
 
 
 class SystemPromptEditor(ModalScreen):
@@ -1513,6 +1666,10 @@ class Parley(App):
                 yield ChatDisplay()
                 yield ChatInput(id="chat-input")
 
+            # The extension panel host (E10 §6 / S68) sits to the right of the main
+            # area; it hides itself until an extension opens a panel.
+            yield ExtensionPanelHost()
+
         # The extension status strip (E10 §6 / S67) sits in the vertical flow just
         # above the docked Footer; it hides itself until an extension sets a slot.
         yield ExtensionStatusBar()
@@ -1537,6 +1694,52 @@ class Parley(App):
         only bound after mount, so no pre-mount call can reach here.
         """
         self.query_one(ExtensionStatusBar).set_slot(key, text)
+
+    def set_extension_panel(self, key: str, spec: dict[str, Any] | None) -> None:
+        """Mount, update, or clear one keyed extension panel (E10 §6 / S68).
+
+        The app-side landing for ``ctx.ui.panel(key, spec)`` — reached through
+        ``_ExtensionUIDelegate.panel``. Forwards to the single
+        :class:`ExtensionPanelHost` in the layout, which mounts a new panel, updates
+        an existing key's panel in place, or removes it when ``spec is None``. The
+        host is composed unconditionally, so it is present for the whole app lifetime;
+        the delegate is only bound after mount, so no pre-mount call can reach here.
+        """
+        self.query_one(ExtensionPanelHost).set_panel(key, spec)
+
+    async def on_extension_panel_action(self, message: ExtensionPanel.Action) -> None:
+        """Dispatch a panel action's command back into the extension (E10 §6 / S68).
+
+        A :class:`ExtensionPanel.Action` bubbles here when a user presses a panel
+        action button. It runs the action's ``command`` (a name an extension
+        registered via ``api.register_command``) through the SAME
+        :meth:`run_extension_command` path the palette (S35) and typed slash commands
+        (S46) use, with the action's ``args`` — so a panel closes the loop from a live
+        surface to extension logic. The handler's returned value renders as a
+        display-only ``system`` box (:meth:`_render_command_output`), never appended to
+        the active path (the tree-as-truth invariant is untouched).
+
+        Fail-Early: an action that names an UNKNOWN command surfaces an error notice
+        (``handled is False``) rather than silently doing nothing — a mis-wired action
+        is a construction bug, not a no-op. A handler exception is likewise surfaced,
+        never swallowed.
+        """
+        runner = getattr(self.current_backend, "run_extension_command", None)
+        if runner is None:
+            return
+        try:
+            result = await runner(message.command, message.args)
+        except Exception as e:
+            self.notify(f"Panel action /{message.command} failed: {e}", severity="error")
+            self.log.error(f"Panel action /{message.command} failed: {e}", exc_info=True)
+            return
+        if not result.handled:
+            self.notify(
+                f"Panel action → unknown command /{message.command}",
+                severity="error",
+            )
+            return
+        self._render_command_output(result)
 
     async def on_unmount(self) -> None:
         """Fire the notify-grade ``session_shutdown`` lifecycle hook on TUI quit (S41).

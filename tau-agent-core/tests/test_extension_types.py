@@ -29,6 +29,7 @@ from tau_agent_core.extension_types import (
     HeadlessDialogError,
     form_headless_value,
     validate_form_spec,
+    validate_panel_spec,
 )
 from tau_agent_core.extensions.registry import ExtensionRegistry
 from tau_agent_core.events import EventBus
@@ -726,6 +727,190 @@ class TestExtensionUISetStatus:
             ui.set_status("", "x")
         with pytest.raises(ValueError, match="non-empty string"):
             ui.set_status(None, "x")  # type: ignore[arg-type]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ui.panel — declarative panel spec (E10 §6 / S68)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+_TABLE_PANEL_SPEC = {
+    "title": "Fleet",
+    "table": {
+        "columns": ["child", "status", "cost"],
+        "rows": [
+            ["c-1", "running", "$0.10"],
+            ["c-2", "done", "$0.42"],
+        ],
+    },
+    "actions": [
+        {"label": "Abort c-1", "command": "abort_child", "args": "c-1"},
+        {"label": "Refresh", "command": "refresh_fleet"},
+    ],
+}
+
+
+class TestValidatePanelSpec:
+    """validate_panel_spec normalizes a good spec and Fail-Early rejects bad ones."""
+
+    def test_normalizes_table_title_body_actions(self):
+        norm = validate_panel_spec(_TABLE_PANEL_SPEC)
+        assert norm["title"] == "Fleet"
+        assert norm["body"] == {
+            "kind": "table",
+            "columns": ["child", "status", "cost"],
+            "rows": [["c-1", "running", "$0.10"], ["c-2", "done", "$0.42"]],
+        }
+        # args defaults to "" when the action omits it.
+        assert norm["actions"] == [
+            {"label": "Abort c-1", "command": "abort_child", "args": "c-1"},
+            {"label": "Refresh", "command": "refresh_fleet", "args": ""},
+        ]
+
+    def test_text_body(self):
+        norm = validate_panel_spec({"title": "T", "text": "hello"})
+        assert norm["body"] == {"kind": "text", "text": "hello"}
+        assert norm["actions"] == []
+
+    def test_list_body(self):
+        norm = validate_panel_spec({"list": ["a", "b"]})
+        assert norm["title"] == "Panel"  # default title
+        assert norm["body"] == {"kind": "list", "items": ["a", "b"]}
+
+    def test_non_dict_spec_raises(self):
+        with pytest.raises(ValueError, match="spec must be a dict"):
+            validate_panel_spec(["nope"])
+
+    def test_non_string_title_raises(self):
+        with pytest.raises(ValueError, match="title'] must be a string"):
+            validate_panel_spec({"title": 5, "text": "x"})
+
+    def test_zero_body_keys_raises(self):
+        with pytest.raises(ValueError, match="EXACTLY ONE body"):
+            validate_panel_spec({"title": "x"})
+
+    def test_more_than_one_body_key_raises(self):
+        with pytest.raises(ValueError, match="EXACTLY ONE body"):
+            validate_panel_spec({"text": "x", "list": ["y"]})
+
+    def test_text_body_non_string_raises(self):
+        with pytest.raises(ValueError, match="'text' body must be a string"):
+            validate_panel_spec({"text": 5})
+
+    def test_list_body_non_string_items_raises(self):
+        with pytest.raises(ValueError, match="'list' body must be a list of strings"):
+            validate_panel_spec({"list": ["a", 2]})
+
+    def test_table_columns_must_be_non_empty_strings(self):
+        with pytest.raises(ValueError, match="'columns' must be a non-empty list"):
+            validate_panel_spec({"table": {"columns": [], "rows": []}})
+
+    def test_table_row_wrong_width_raises(self):
+        spec = {"table": {"columns": ["a", "b"], "rows": [["only-one"]]}}
+        with pytest.raises(ValueError, match="1 cells but there are 2 columns"):
+            validate_panel_spec(spec)
+
+    def test_table_row_non_string_cell_raises(self):
+        spec = {"table": {"columns": ["a"], "rows": [[3]]}}
+        with pytest.raises(ValueError, match="each table row must be a list of strings"):
+            validate_panel_spec(spec)
+
+    def test_action_missing_command_raises(self):
+        spec = {"text": "x", "actions": [{"label": "Go"}]}
+        with pytest.raises(ValueError, match="needs a non-empty string 'command'"):
+            validate_panel_spec(spec)
+
+    def test_action_missing_label_raises(self):
+        spec = {"text": "x", "actions": [{"command": "go"}]}
+        with pytest.raises(ValueError, match="needs a non-empty string 'label'"):
+            validate_panel_spec(spec)
+
+    def test_action_non_string_args_raises(self):
+        spec = {"text": "x", "actions": [{"label": "Go", "command": "go", "args": 5}]}
+        with pytest.raises(ValueError, match="'args' must be a string"):
+            validate_panel_spec(spec)
+
+    def test_actions_non_list_raises(self):
+        with pytest.raises(ValueError, match="'actions' must be a list"):
+            validate_panel_spec({"text": "x", "actions": "go"})
+
+
+class TestExtensionUIPanel:
+    """ExtensionUI.panel routing: delegate / json record / stderr; key + clear."""
+
+    def test_delegates_in_tui_mode(self):
+        # TUI mode routes the NORMALIZED spec (not the raw one) to the delegate.
+        ui = ExtensionUI(mode="tui")
+        calls: list[tuple[str, dict | None]] = []
+
+        class _Delegate:
+            def panel(self, key, spec):
+                calls.append((key, spec))
+
+        ui._tui_delegate = _Delegate()
+        ui.panel("fleet", _TABLE_PANEL_SPEC)
+        ui.panel("fleet", None)  # clear
+        assert calls[0][0] == "fleet"
+        assert calls[0][1]["body"]["kind"] == "table"
+        assert calls[0][1]["actions"][1]["args"] == ""  # normalized
+        assert calls[1] == ("fleet", None)
+
+    def test_emits_json_record_with_normalized_spec(self):
+        # Headless --mode json: a set + a clear each emit a panel record; the set
+        # carries the normalized spec (with its declared actions visible on the
+        # stream), the clear rides spec=None.
+        ui = ExtensionUI(mode="headless")
+        records: list[dict] = []
+        ui.set_record_sink(records.append)
+        ui.panel("fleet", _TABLE_PANEL_SPEC)
+        ui.panel("fleet", None)
+        assert [r["kind"] for r in records] == ["panel", "panel"]
+        assert all(r["type"] == "extension" for r in records)
+        assert all(r["extension"] is None for r in records)
+        assert [r["key"] for r in records] == ["fleet", "fleet"]
+        assert records[0]["spec"]["title"] == "Fleet"
+        assert [a["command"] for a in records[0]["spec"]["actions"]] == [
+            "abort_child",
+            "refresh_fleet",
+        ]
+        assert records[1]["spec"] is None
+
+    def test_record_carries_source_when_known(self):
+        ui = ExtensionUI(mode="headless")
+        records: list[dict] = []
+        ui.set_record_sink(records.append)
+        ui.panel("fleet", {"text": "hi"}, source="delegate_fleet.py")
+        assert records[0]["extension"] == "delegate_fleet.py"
+
+    def test_validates_before_routing(self):
+        # A malformed spec fails up front regardless of mode (no record, no delegate).
+        ui = ExtensionUI(mode="headless")
+        records: list[dict] = []
+        ui.set_record_sink(records.append)
+        with pytest.raises(ValueError, match="EXACTLY ONE body"):
+            ui.panel("fleet", {"title": "no body"})
+        assert records == []
+
+    def test_prints_to_stderr_without_sink(self):
+        # --mode text / SDK: no delegate, no record sink → honest stderr line.
+        ui = ExtensionUI(mode="headless")
+        with patch("sys.stderr", new=io.StringIO()) as mock_stderr:
+            ui.panel("fleet", {"title": "Fleet", "text": "2 running"})
+            assert "[τ] panel fleet: Fleet" in mock_stderr.getvalue()
+
+    def test_clear_stderr_shows_cleared(self):
+        ui = ExtensionUI(mode="headless")
+        with patch("sys.stderr", new=io.StringIO()) as mock_stderr:
+            ui.panel("fleet", None)
+            assert "[τ] panel fleet: (cleared)" in mock_stderr.getvalue()
+
+    def test_empty_key_raises(self):
+        # Fail-Early: a panel with no key has nothing to update or clear.
+        ui = ExtensionUI(mode="headless")
+        with pytest.raises(ValueError, match="non-empty string"):
+            ui.panel("", {"text": "x"})
+        with pytest.raises(ValueError, match="non-empty string"):
+            ui.panel(None, {"text": "x"})  # type: ignore[arg-type]
 
 
 # ──────────────────────────────────────────────────────────────────────────────

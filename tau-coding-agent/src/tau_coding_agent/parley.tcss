@@ -415,6 +415,50 @@ Screen {
     text-style: dim;
 }
 
+/* === Extension panel host (E10 §6 / S68) === */
+/* Persistent keyed panels from ctx.ui.panel(), docked to the right of the main
+   area. Hidden (display:none, set in code) until an extension opens a panel. */
+#ext-panel-host {
+    width: 40;
+    height: 100%;
+    padding: 0 1;
+    background: #181825;
+    border-left: solid #313244;
+}
+
+.ext-panel {
+    height: auto;
+    margin-bottom: 1;
+    padding: 0 1;
+    border: round #45475a;
+}
+
+.ext-panel-title {
+    text-style: bold;
+    color: #cba6f7;
+}
+
+.ext-panel-body {
+    color: #cdd6f4;
+    margin-top: 1;
+}
+
+.ext-panel-actions {
+    height: auto;
+    margin-top: 1;
+}
+
+.ext-panel-action {
+    margin: 0 1 0 0;
+    background: #313244;
+    border: none;
+    color: #cdd6f4;
+}
+
+.ext-panel-action:hover {
+    background: #45475a;
+}
+
 /* === Code blocks in markdown === */
 Markdown CodeBlock {
     background: #11111b;

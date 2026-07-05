@@ -170,6 +170,119 @@ def form_headless_value(field: dict[str, Any]) -> Any:
     return _FORM_EMPTY_VALUE[kind]
 
 
+#: The body kinds a ``ui.panel`` spec may declare — EXACTLY ONE per panel (E10 §6 /
+#: S68 — D-E6-4: a DECLARATIVE spec, not a widget factory). ``text`` is a paragraph,
+#: ``list`` a bullet list, ``table`` a columns/rows grid. Each frontend renders these
+#: its own way (the TUI as an ``ExtensionPanel`` widget); headless degrades to a JSON
+#: record carrying the SAME normalized body. Ordered so :func:`validate_panel_spec`
+#: reports the allowed set deterministically.
+PANEL_BODY_KINDS: tuple[str, ...] = ("table", "list", "text")
+
+
+def _validate_panel_body(kind: str, raw: Any) -> dict[str, Any]:
+    """Validate + normalize one ``ui.panel`` body of a given kind (S68).
+
+    Returns a ``{"kind": …, …}`` body dict: ``text`` → ``{"kind":"text","text":str}``;
+    ``list`` → ``{"kind":"list","items":[str]}``; ``table`` →
+    ``{"kind":"table","columns":[str],"rows":[[str, …]]}``. Cells and list items MUST
+    already be strings — the extension author formats them (``"$1.42"``, ``"3"``), so
+    the panel never guesses a display form (Fail-Early, same discipline as a form's
+    ``options``).
+    """
+    if kind == "text":
+        if not isinstance(raw, str):
+            raise ValueError("ui.panel: 'text' body must be a string")
+        return {"kind": "text", "text": raw}
+    if kind == "list":
+        if not isinstance(raw, list) or not all(isinstance(i, str) for i in raw):
+            raise ValueError("ui.panel: 'list' body must be a list of strings")
+        return {"kind": "list", "items": list(raw)}
+    # table
+    if not isinstance(raw, dict):
+        raise ValueError("ui.panel: 'table' body must be a dict {columns, rows}")
+    columns = raw.get("columns")
+    if not isinstance(columns, list) or not columns or not all(isinstance(c, str) for c in columns):
+        raise ValueError("ui.panel: table 'columns' must be a non-empty list of strings")
+    rows_raw = raw.get("rows", [])
+    if not isinstance(rows_raw, list):
+        raise ValueError("ui.panel: table 'rows' must be a list")
+    rows: list[list[str]] = []
+    for row in rows_raw:
+        if not isinstance(row, list) or not all(isinstance(c, str) for c in row):
+            raise ValueError("ui.panel: each table row must be a list of strings")
+        if len(row) != len(columns):
+            raise ValueError(
+                f"ui.panel: table row has {len(row)} cells but there are {len(columns)} columns"
+            )
+        rows.append(list(row))
+    return {"kind": "table", "columns": list(columns), "rows": rows}
+
+
+def _validate_panel_actions(raw: Any) -> list[dict[str, str]]:
+    """Validate + normalize the optional ``ui.panel`` action list (S68).
+
+    Each action is ``{label: str, command: str, args?: str}``: pressing it in the TUI
+    dispatches ``command`` (a name an extension registered via ``register_command``)
+    with ``args`` (default ``""``) — i.e. actions dispatch back into the extension as
+    COMMAND CALLS, closing the loop from a live panel to extension logic. Returns
+    ``[]`` when ``actions`` is absent. Fail-Early: a non-list, a non-dict action, or a
+    missing/empty ``label``/``command`` RAISES rather than dropping a dead button.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("ui.panel: 'actions' must be a list")
+    actions: list[dict[str, str]] = []
+    for action in raw:
+        if not isinstance(action, dict):
+            raise ValueError("ui.panel: each action must be a dict")
+        label = action.get("label")
+        if not isinstance(label, str) or not label:
+            raise ValueError("ui.panel: each action needs a non-empty string 'label'")
+        command = action.get("command")
+        if not isinstance(command, str) or not command:
+            raise ValueError(f"ui.panel: action {label!r} needs a non-empty string 'command'")
+        args = action.get("args", "")
+        if not isinstance(args, str):
+            raise ValueError(f"ui.panel: action {label!r} 'args' must be a string")
+        actions.append({"label": label, "command": command, "args": args})
+    return actions
+
+
+def validate_panel_spec(spec: Any) -> dict[str, Any]:
+    """Validate + normalize a ``ui.panel`` spec into ``{title, body, actions}`` (S68).
+
+    The single source of truth for the declarative panel contract, shared by
+    :meth:`ExtensionUI.panel` (headless record + early-fail) and the TUI's
+    ``ExtensionPanel`` widget (which re-validates the same raw spec), so the two can
+    never disagree about a panel's shape.
+
+    ``spec`` is a plain dict ``{title?: str, <body>, actions?: [...]}`` where ``<body>``
+    is EXACTLY ONE of ``table`` / ``list`` / ``text`` (see :func:`_validate_panel_body`)
+    and ``actions`` is the optional command-dispatch list (see
+    :func:`_validate_panel_actions`). Returns the normalized
+    ``{"title", "body", "actions"}`` dict (title defaults to ``"Panel"``).
+
+    Fail-Early: a non-dict spec, a non-string title, ZERO or MORE-THAN-ONE body key,
+    or any malformed body/action RAISES :class:`ValueError` rather than rendering a
+    half-formed panel.
+    """
+    if not isinstance(spec, dict):
+        raise ValueError("ui.panel: spec must be a dict")
+    title = spec.get("title", "Panel")
+    if not isinstance(title, str):
+        raise ValueError("ui.panel: spec['title'] must be a string")
+    present = [k for k in PANEL_BODY_KINDS if k in spec]
+    if len(present) != 1:
+        raise ValueError(
+            "ui.panel: spec must carry EXACTLY ONE body of "
+            f"{list(PANEL_BODY_KINDS)} (got {present or 'none'})"
+        )
+    body = _validate_panel_body(present[0], spec[present[0]])
+    actions = _validate_panel_actions(spec.get("actions"))
+    return {"title": title, "body": body, "actions": actions}
+
+
 class HeadlessDialogError(RuntimeError):
     """A UI dialog opened in headless mode with no explicit ``--ui-defaults`` policy.
 
@@ -465,6 +578,69 @@ class ExtensionUI:
 
         shown = "(cleared)" if text is None else text
         print(f"[τ] status {key}: {shown}", file=sys.stderr)
+
+    def panel(self, key: str, spec: dict[str, Any] | None, *, source: str | None = None) -> None:
+        """Show, update, or clear a persistent keyed PANEL (E10 §6 / S68).
+
+        The fleet-dashboard primitive (D-E6-4: a plain-data SPEC, not a widget
+        factory). ``key`` names a persistent panel surface; re-calling the same key
+        UPDATES that panel in place (a live delegate table ticking as children start /
+        finish / cost), and ``spec=None`` CLEARS it (the fleet is done). ``spec`` is
+        ``{title?, <body>, actions?}`` where ``<body>`` is EXACTLY ONE of
+        ``table`` / ``list`` / ``text`` and ``actions`` is a list of
+        ``{label, command, args?}`` — pressing an action DISPATCHES ``command`` back
+        into the extension as a ``register_command`` call (the panel→extension loop).
+        The spec is validated by :func:`validate_panel_spec` up front so a malformed
+        panel fails BEFORE any UI is shown, in every mode.
+
+        Like :meth:`set_status` this is NON-BLOCKING display (a panel is not a dialog
+        awaiting an answer), so it needs no headless answer policy — it routes exactly
+        like :meth:`notify`:
+
+        - **TUI mode** with a delegate → paints on the delegate's panel host, which
+          mounts / updates / removes the keyed :class:`ExtensionPanel`.
+        - **headless ``--mode json``** (a :meth:`set_record_sink` is installed) →
+          emits one ``{"type": "extension", "kind": "panel", "key": …, "spec": …}``
+          record through the sink (``spec`` is the normalized dict, or ``null`` on
+          clear) so a parent reading a child ``tau -p --mode json`` stream sees the
+          panel and its declared actions (anchor G10). This IS the non-interactive
+          headless policy (§6.3): the surface is visible on the stream, its actions
+          simply cannot be pressed without a TUI — a panel is never TUI-ONLY.
+        - otherwise (headless ``--mode text`` / SDK) → prints to stderr, unchanged
+          from :meth:`notify`'s fallback (honest, never a silent no-op).
+
+        ``source`` is the originating extension's identity when the caller knows it;
+        a plain ``api.ui.panel(...)`` cannot supply one (every bound extension shares
+        the session's ONE :class:`ExtensionUI`), so the record then carries
+        ``"extension": null`` rather than a fabricated name — same contract as
+        :meth:`notify`/:meth:`set_status`.
+
+        Raises:
+            ValueError: if ``key`` is not a non-empty string (Fail-Early: a panel with
+                no key has nothing to update or clear); or (via
+                :func:`validate_panel_spec`) if ``spec`` is malformed.
+        """
+        if not isinstance(key, str) or not key:
+            raise ValueError("ui.panel: key must be a non-empty string")
+        normalized = None if spec is None else validate_panel_spec(spec)
+        if self._mode == "tui" and self._tui_delegate:
+            self._tui_delegate.panel(key, normalized)
+            return
+        if self._record_sink is not None:
+            self._record_sink(
+                {
+                    "type": "extension",
+                    "kind": "panel",
+                    "extension": source,
+                    "key": key,
+                    "spec": normalized,
+                }
+            )
+            return
+        import sys
+
+        shown = "(cleared)" if normalized is None else normalized["title"]
+        print(f"[τ] panel {key}: {shown}", file=sys.stderr)
 
     def emit_veto(self, *, extension: str | None, tool: str, reason: str) -> None:
         """Emit a blocked-tool VETO record on the headless JSON stream (E7 §3 / S50).
