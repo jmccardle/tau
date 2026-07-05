@@ -439,3 +439,31 @@ def test_default_budget_extension_is_token_mode() -> None:
 
     budget.budget_extension(_RecordingApi())
     assert registered == ["message_end", "tool_result"]
+
+
+# ── S59: the demo now consumes ext_kit.ledger (the refactor's regression guard) ─
+
+
+def test_budget_guard_consumes_ledger_primitives() -> None:
+    # The accumulation is an ext_kit.ledger.UsageMeter and the trip an
+    # ext_kit.ledger.Ceiling — USD mode is priced, token mode is unpriced.
+    usd = budget.BudgetGuard(cost={"input": 3.0, "output": 15.0}, max_usd=1.0)
+    assert isinstance(usd._meter, budget.ledger.UsageMeter)
+    assert isinstance(usd._ceiling, budget.ledger.Ceiling)
+    assert usd._meter.pricing is not None and usd._meter.pricing.priced
+
+    tokens = budget.BudgetGuard(max_tokens=100)
+    assert isinstance(tokens._meter, budget.ledger.UsageMeter)
+    # An unpriced meter reports dollars as unknown (None), never a fabricated $0.
+    assert tokens._meter.pricing is None
+    assert tokens._meter.usd is None
+
+
+def test_completion_helpers_delegate_to_ledger() -> None:
+    # completion_cost_usd / completion_tokens are thin wrappers over the kit.
+    usage = {"input_tokens": 1_000_000, "output_tokens": 2_000_000, "cache_read_tokens": 500_000}
+    cost = {"input": 3.0, "output": 15.0, "cache_read": 0.3}
+    assert budget.completion_cost_usd(usage, cost) == budget.ledger.Pricing(
+        model=None, cost=cost
+    ).cost_of(usage)
+    assert budget.completion_tokens(usage) == budget.ledger.usage_tokens(usage)

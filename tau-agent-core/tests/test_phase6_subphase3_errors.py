@@ -673,33 +673,52 @@ class TestExtensionErrorHandling:
         with pytest.raises(RuntimeError):
             context.get_context_usage()
 
-    def test_extension_ui_headless_confirm(self):
-        """ExtensionUI.confirm() returns True in headless mode."""
-        from tau_agent_core.extension_types import ExtensionUI
+    def test_extension_ui_headless_confirm_raises_without_policy(self):
+        """ExtensionUI.confirm() RAISES in headless mode with no policy (S48)."""
+        from tau_agent_core.extension_types import ExtensionUI, HeadlessDialogError
         ui = ExtensionUI(mode="headless")
-        result = asyncio.run(ui.confirm("title", "message"))
-        assert result is True
+        with pytest.raises(HeadlessDialogError):
+            asyncio.run(ui.confirm("title", "message"))
 
-    def test_extension_ui_headless_select(self):
-        """ExtensionUI.select() returns first item in headless mode."""
+    def test_extension_ui_headless_confirm_policy(self):
+        """ExtensionUI.confirm() honors an explicit headless policy (S48)."""
         from tau_agent_core.extension_types import ExtensionUI
-        ui = ExtensionUI(mode="headless")
-        result = asyncio.run(ui.select("title", ["option1", "option2"]))
-        assert result == "option1"
+        ui = ExtensionUI(mode="headless", headless_policy={"confirm": "yes"})
+        assert asyncio.run(ui.confirm("title", "message")) is True
+        ui.set_headless_defaults({"confirm": "no"})
+        assert asyncio.run(ui.confirm("title", "message")) is False
 
-    def test_extension_ui_headless_select_empty(self):
-        """ExtensionUI.select() returns None for empty list in headless mode."""
-        from tau_agent_core.extension_types import ExtensionUI
+    def test_extension_ui_headless_select_raises_without_policy(self):
+        """ExtensionUI.select() RAISES in headless mode with no policy (S48)."""
+        from tau_agent_core.extension_types import ExtensionUI, HeadlessDialogError
         ui = ExtensionUI(mode="headless")
-        result = asyncio.run(ui.select("title", []))
-        assert result is None
+        with pytest.raises(HeadlessDialogError):
+            asyncio.run(ui.select("title", ["option1", "option2"]))
 
-    def test_extension_ui_headless_input(self):
-        """ExtensionUI.input() returns default in headless mode."""
+    def test_extension_ui_headless_select_policy(self):
+        """ExtensionUI.select() returns first item with select=first (S48)."""
         from tau_agent_core.extension_types import ExtensionUI
+        ui = ExtensionUI(mode="headless", headless_policy={"select": "first"})
+        assert asyncio.run(ui.select("title", ["option1", "option2"])) == "option1"
+
+    def test_extension_ui_headless_select_empty_policy(self):
+        """ExtensionUI.select() returns None for an empty list with select=first (S48)."""
+        from tau_agent_core.extension_types import ExtensionUI
+        ui = ExtensionUI(mode="headless", headless_policy={"select": "first"})
+        assert asyncio.run(ui.select("title", [])) is None
+
+    def test_extension_ui_headless_input_raises_without_policy(self):
+        """ExtensionUI.input() RAISES in headless mode with no policy (S48)."""
+        from tau_agent_core.extension_types import ExtensionUI, HeadlessDialogError
         ui = ExtensionUI(mode="headless")
-        result = asyncio.run(ui.input("title", "default_value"))
-        assert result == "default_value"
+        with pytest.raises(HeadlessDialogError):
+            asyncio.run(ui.input("title", "default_value"))
+
+    def test_extension_ui_headless_input_policy(self):
+        """ExtensionUI.input() returns default with input=default (S48)."""
+        from tau_agent_core.extension_types import ExtensionUI
+        ui = ExtensionUI(mode="headless", headless_policy={"input": "default"})
+        assert asyncio.run(ui.input("title", "default_value")) == "default_value"
 
     def test_extension_ui_notify_to_stderr(self):
         """ExtensionUI.notify() prints to stderr in headless mode."""
@@ -734,42 +753,29 @@ class TestExtensionErrorHandling:
         )
 
     def test_extension_api_can_send_message(self):
-        """ExtensionAPI.send_message() works."""
+        """ExtensionAPI.send_message() forwards to the bound session (S38)."""
         session_mock = MagicMock()
         api = ExtensionAPI(session=session_mock)
-        # Should not raise
-        api.send_message({"role": "user", "content": []}, {})
-
-    def test_extension_api_register_flag(self):
-        """ExtensionAPI.register_flag() registers a flag."""
-        api = ExtensionAPI()
-        api.register_flag("verbose", {"type": "boolean"})
-        assert "verbose" in api._flags
-
-    def test_extension_api_get_flag(self):
-        """ExtensionAPI.get_flag() returns flag value."""
-        api = ExtensionAPI()
-        api._flags["verbose"] = {"value": True}
-        assert api.get_flag("verbose") is True
-
-    def test_extension_api_get_flag_missing(self):
-        """ExtensionAPI.get_flag() returns None for missing flag."""
-        api = ExtensionAPI()
-        assert api.get_flag("nonexistent") is None
+        # Should not raise: MagicMock exposes _append_custom_message.
+        api.send_message({"customType": "note", "content": []}, {})
+        session_mock._append_custom_message.assert_called_once()
 
     def test_extension_api_append_entry(self):
-        """ExtensionAPI.append_entry() works."""
-        api = ExtensionAPI()
-        # Should not raise
+        """ExtensionAPI.append_entry() appends a durable customEntry (S39)."""
+        session_mock = MagicMock()
+        api = ExtensionAPI(session=session_mock)
+        # Delegates to the bound session's durable log (no RAM store — G4).
         api.append_entry("custom_type", {"key": "value"})
+        session_mock._append_custom_entry.assert_called_once_with("custom_type", {"key": "value"})
 
     def test_extension_api_set_session_name(self):
-        """ExtensionAPI.set_session_name() forwards to the bound session."""
+        """ExtensionAPI.set_session_name() forwards to the session log's
+        append_session_info (S64) — a MagicMock's auto-vivified attribute
+        satisfies the ``hasattr`` duck-type check."""
         session = MagicMock()
-        session._session_name = "old"
         api = ExtensionAPI(session=session)
         api.set_session_name("my-session")
-        assert session._session_name == "my-session"
+        session._session_log.append_session_info.assert_called_once_with("my-session")
 
     def test_extension_api_get_all_tools_empty(self):
         """ExtensionAPI.get_all_tools() returns list."""

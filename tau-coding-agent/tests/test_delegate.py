@@ -214,3 +214,29 @@ async def test_parallel_rejects_write_tool_endtoend(fake_home):
             on_update=None,
             ctx=_Ctx(str(fake_home)),
         )
+
+
+# ── S59: the demo now consumes ext_kit.spawn (the refactor's regression guard) ─
+
+
+def test_child_cli_args_delegates_to_kit_build_child_args():
+    # The demo's argv builder is now ext_kit.spawn.build_child_args + the Task:
+    # prefix (the one bit of wording the kit leaves to the caller).
+    args = delegate._child_cli_args(
+        model="m", tools=["read", "grep"], system_prompt_path=None, task="do it"
+    )
+    assert args == delegate.spawn.build_child_args(
+        prompt="Task: do it", model="m", tools=["read", "grep"], system_prompt_path=None
+    )
+    # The task is passed as the single positional, Task:-prefixed like pi.
+    assert args[-1] == "Task: do it"
+
+
+def test_make_limits_builds_spawn_limits():
+    limits = delegate._make_limits({"max_turns": 3, "max_seconds": 9.0, "stuck_limit": 5})
+    assert isinstance(limits, delegate.spawn.SpawnLimits)
+    assert limits.max_turns == 3
+    assert limits.max_seconds == 9.0
+    assert limits.stuck_limit == 5
+    # An unspecified stuck_limit falls back to the kit's documented default.
+    assert delegate._make_limits({}).stuck_limit == delegate.spawn.DEFAULT_STUCK_LIMIT

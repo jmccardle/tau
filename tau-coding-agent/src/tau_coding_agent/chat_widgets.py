@@ -20,9 +20,25 @@ These have NO dependency on the Parley app module, so they import cleanly.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from textual.widget import Widget
 from textual.widgets import Collapsible, Markdown
+
+
+def _extension_display_name(blocked_by: str | None) -> str:
+    """A short, readable name for the vetoing extension (S50).
+
+    The runner attributes a veto by its bucket LABEL — a file path for a
+    discovered/`-e` extension (``…/30_permission_gate.py``) or a ``module:qualname``
+    for an inline factory. Show the file stem when it looks like a path, else the
+    label verbatim; ``None`` (an unattributed block) reads as the honest
+    ``"extension"`` rather than a fabricated name."""
+    if not blocked_by:
+        return "extension"
+    if blocked_by.endswith(".py") or "/" in blocked_by:
+        return Path(blocked_by).stem
+    return blocked_by
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -131,7 +147,27 @@ class ToolBox(Collapsible):
     def _args_block(arguments: object) -> str:
         return "```json\n" + json.dumps(arguments, indent=2, default=str) + "\n```"
 
-    def set_result(self, result_text: str, is_error: bool = False) -> None:
+    def set_result(
+        self,
+        result_text: str,
+        is_error: bool = False,
+        *,
+        blocked: bool = False,
+        blocked_by: str | None = None,
+    ) -> None:
+        # A `tool_call` extension VETO (S50, anchor G11) is a DISTINCT presentation
+        # from a generic errored result: a ⛔ mark and a "blocked by <ext>: <reason>"
+        # body, so the user reads it as a policy block, not a tool failure.
+        if blocked:
+            who = _extension_display_name(blocked_by)
+            self.title = f"⛔ {self._summary}"
+            body = f"blocked by {who}: {result_text}"
+            body = body if len(body) <= 2000 else body[:2000] + "\n…(truncated)"
+            self._result_md.update(f"```\n{body}\n```")
+            self._result_md.display = True
+            self.has_result = True
+            self.add_class("box-blocked")
+            return
         mark = "✗" if is_error else "✓"
         self.title = f"{mark} {self._summary}"
         body = result_text if len(result_text) <= 2000 else result_text[:2000] + "\n…(truncated)"

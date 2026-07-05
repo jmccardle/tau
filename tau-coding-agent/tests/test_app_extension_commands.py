@@ -24,7 +24,7 @@ import pytest
 
 from textual.widgets import Input
 
-from tau_coding_agent.app import Parley, ChatInput
+from tau_coding_agent.app import ChatDisplay, ChatInput, MessageBox, Parley
 from tau_coding_agent.backends import create_backend
 
 # A file extension registering a slash command whose handler writes a marker file
@@ -41,6 +41,18 @@ def register(api):
         MARKER.write_text("ran:" + args)
 
     api.register_command("greet", {{"description": "greet the user", "handler": _greet}})
+'''
+
+
+# A command whose handler RETURNS a report string (the S46 output channel). The
+# returned value must render as a display-only system box and never enter the
+# model-input working list.
+_OUTPUT_EXT = '''
+def register(api):
+    def _todos(args, ctx):
+        return "# Todos\\n- one\\n- two"
+
+    api.register_command("todos", {"description": "list todos", "handler": _todos})
 '''
 
 
@@ -99,12 +111,70 @@ async def test_extension_command_listed_and_runnable(app, tmp_path):
         assert marker.read_text() == "ran:"
 
 
+async def test_command_output_renders_display_only_system_box(app, tmp_path):
+    """A command's returned value renders as a ``system`` box, NOT into model input (S46).
+
+    The report string the handler returns lands in the transcript as a display-only
+    ``system`` ``MessageBox`` (same chrome as ``/extensions``); it must NOT be
+    appended to ``app.messages`` — the working list that becomes the model's
+    context — so a command report can never leak into a prompt (E5 §1 invariant).
+    """
+    ext = tmp_path / "todos_ext.py"
+    ext.write_text(_OUTPUT_EXT)
+    app._extension_paths = [str(ext)]
+    app._discover_extensions = False
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+
+        messages_before = list(app.messages)
+
+        chat_input = app.query_one("#chat-input", ChatInput)
+        await app.on_input_submitted(Input.Submitted(chat_input, "/todos"))
+        await pilot.pause()
+
+        # (1) The returned report is shown as a display-only system MessageBox.
+        system_boxes = [
+            box
+            for box in app.query(MessageBox)
+            if box.role == "system" and box._content == "# Todos\n- one\n- two"
+        ]
+        assert len(system_boxes) == 1, "command output not rendered as a system box"
+
+        # (2) Display-only: the report did NOT enter the model-input working list.
+        assert app.messages == messages_before
+        assert all("# Todos" not in str(m.get("content", "")) for m in app.messages)
+
+
+async def test_command_via_palette_renders_output(app, tmp_path):
+    """The palette dispatch path also surfaces the returned value as a system box."""
+    ext = tmp_path / "todos_ext.py"
+    ext.write_text(_OUTPUT_EXT)
+    app._extension_paths = [str(ext)]
+    app._discover_extensions = False
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+
+        await app._dispatch_extension_command("todos")
+        await pilot.pause()
+
+        boxes = app.query(ChatDisplay).first().query(MessageBox)
+        assert any(
+            b.role == "system" and b._content == "# Todos\n- one\n- two" for b in boxes
+        )
+
+
 async def test_unknown_slash_command_falls_through(app, tmp_path):
     """An unknown ``/…`` is NOT swallowed by command dispatch (returns to prompt path).
 
-    ``run_extension_command`` returns False for an unregistered name, so the app
-    must fall through rather than silently drop the text. We stub the generation
-    worker to capture that fall-through instead of hitting the model.
+    ``run_extension_command`` returns ``handled=False`` for an unregistered name,
+    so the app must fall through rather than silently drop the text. We stub the
+    generation worker to capture that fall-through instead of hitting the model.
     """
     ext = tmp_path / "cmd_ext.py"
     ext.write_text(_COMMAND_EXT.format(marker=str(tmp_path / "unused.txt")))

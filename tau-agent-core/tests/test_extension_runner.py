@@ -68,7 +68,10 @@ async def test_tool_call_block_short_circuits() -> None:
 
     result = await runner.emit_tool_call({"type": "tool_call", "input": {}})
 
-    assert result == {"block": True, "reason": "nope"}
+    # The block result carries the handler's fields PLUS the S50 attribution:
+    # the runner names the extension that vetoed (its bucket path) so the call-site
+    # can render "⛔ blocked by <ext>" + emit the JSON veto record.
+    assert result == {"block": True, "reason": "nope", "extension": "/ext/a.py"}
     assert seen == ["a"]  # second handler never ran (short-circuit)
 
 
@@ -294,3 +297,91 @@ async def test_constructor_accepts_prebuilt_extensions_in_order() -> None:
 
     assert order == ["a", "b"]
     assert result == {"content": "b", "details": None, "is_error": None}
+
+
+# ----------------------------------------------------------------------
+# Session-lifecycle hooks — notify-grade, error-surfaced (S41)
+# ----------------------------------------------------------------------
+
+
+def test_lifecycle_events_are_owned_by_the_runner() -> None:
+    """``session_start`` / ``session_shutdown`` are the runner's lifecycle events."""
+    assert ExtensionRunner.LIFECYCLE_EVENTS == ("session_start", "session_shutdown")
+    # Disjoint from the mutating hooks — different dispatch semantics.
+    assert set(ExtensionRunner.LIFECYCLE_EVENTS).isdisjoint(ExtensionRunner.HOOK_EVENTS)
+
+
+async def test_lifecycle_no_handler_fast_path() -> None:
+    """With no handlers ``has_handlers`` is False and the emits do nothing."""
+    runner = ExtensionRunner()
+    assert runner.has_handlers("session_start") is False
+    assert runner.has_handlers("session_shutdown") is False
+    # No handlers → the emit is a silent no-op (nothing to raise on).
+    assert await runner.emit_session_start({"type": "session_start"}) is None
+    assert await runner.emit_session_shutdown({"type": "session_shutdown"}) is None
+
+
+async def test_session_start_fires_handlers_in_order() -> None:
+    runner = ExtensionRunner()
+    seen: list[str] = []
+
+    a = runner.register_extension("/ext/a.py")
+    a.on("session_start", lambda event, ctx: seen.append("a1"))
+    a.on("session_start", lambda event, ctx: seen.append("a2"))
+    b = runner.register_extension("/ext/b.py")
+    b.on("session_start", lambda event, ctx: seen.append("b1"))
+
+    assert runner.has_handlers("session_start") is True
+    await runner.emit_session_start({"type": "session_start", "reason": "startup"})
+    assert seen == ["a1", "a2", "b1"]
+
+
+async def test_session_shutdown_fires_async_handler_and_passes_event() -> None:
+    runner = ExtensionRunner()
+    received: list[dict] = []
+
+    async def handler(event: dict, ctx: object) -> None:
+        received.append(event)
+
+    ext = runner.register_extension("/ext/a.py")
+    ext.on("session_shutdown", handler)
+
+    await runner.emit_session_shutdown({"type": "session_shutdown", "reason": "quit"})
+    assert received == [{"type": "session_shutdown", "reason": "quit"}]
+
+
+async def test_lifecycle_return_value_is_discarded() -> None:
+    """Notify-grade: a handler returning a dict has NO effect (return discarded)."""
+    runner = ExtensionRunner()
+    ext = runner.register_extension("/ext/a.py")
+    ext.on("session_start", lambda event, ctx: {"message": "ignored", "block": True})
+
+    # The emit returns None regardless of what the handler returned.
+    assert await runner.emit_session_start({"type": "session_start"}) is None
+
+
+async def test_lifecycle_handler_error_is_surfaced_not_swallowed() -> None:
+    """A throwing lifecycle handler is reported via on_error, never dropped, and
+    dispatch continues to the next handler (no fail-closed — nothing to gate on)."""
+    runner = ExtensionRunner()
+    errors: list[ExtensionError] = []
+    runner.on_error(errors.append)
+    seen: list[str] = []
+
+    def boom(event: dict, ctx: object) -> None:
+        raise RuntimeError("teardown failed")
+
+    a = runner.register_extension("/ext/a.py")
+    a.on("session_shutdown", boom)
+    b = runner.register_extension("/ext/b.py")
+    b.on("session_shutdown", lambda event, ctx: seen.append("b"))
+
+    # Does NOT raise out of the dispatch (surfaced, not propagated).
+    await runner.emit_session_shutdown({"type": "session_shutdown"})
+
+    assert len(errors) == 1
+    assert errors[0].extension_path == "/ext/a.py"
+    assert errors[0].event == "session_shutdown"
+    assert "teardown failed" in errors[0].error
+    # The second extension's handler still ran despite the first one failing.
+    assert seen == ["b"]

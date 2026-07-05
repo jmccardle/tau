@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from tau_ai.abort import AbortSignal
@@ -23,9 +25,9 @@ from tau_ai.types import Model, UserMessage
 
 from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.extension_types import ExtensionAPI
-from tau_agent_core.messages import create_custom_message
+from tau_agent_core.messages import CUSTOM_ROLE, create_custom_message
 from tau_agent_core.extensions.registry import ExtensionRegistry
-from tau_agent_core.extensions.runner import ExtensionRunner
+from tau_agent_core.extensions.runner import ExtensionError, ExtensionRunner
 from tau_agent_core.session import SessionState
 from tau_agent_core.session_log import SessionLog
 from tau_agent_core.conversation_tree import ConversationTree
@@ -45,7 +47,63 @@ from tau_agent_core.compaction_utils import create_file_ops, extract_file_ops_fr
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
 
 if TYPE_CHECKING:
-    from tau_agent_core.sdk import LoadExtensionsResult
+    from tau_agent_core.sdk import LoadedExtension, LoadExtensionsResult
+
+
+@dataclass(frozen=True)
+class ExtensionActionResult:
+    """Outcome of a runtime ``/extensions`` action (E10 §6 / S70).
+
+    Runtime enable/disable/reload (lifting the D-E5-6 read-only stance) return this
+    so the frontend can report what happened as **display-only** chrome — it is never
+    appended to the active path, so the tree-as-truth invariant is untouched. ``ok``
+    distinguishes a completed action from a legitimate no-op / bad target (e.g. a name
+    that is not loaded); ``message`` is the human-readable line the listing box shows.
+    A hard failure (a broken file on reload) still raises out of the action —
+    ``ok=False`` is reserved for reportable, non-exceptional outcomes (Fail-Early).
+    """
+
+    action: str
+    path: str
+    ok: bool
+    message: str
+
+
+@dataclass(frozen=True)
+class ExtensionCommandResult:
+    """Outcome of :meth:`AgentSession.run_extension_command` (E7 §3 / S46).
+
+    ``run_extension_command`` used to return a bare ``bool`` (handled / unknown)
+    and DISCARD the handler's return value, so an extension command could only
+    toast (G7). This carries both:
+
+    - ``handled`` — ``True`` iff a command by that name existed and ran (``False``
+      lets the caller fall through, e.g. treat the text as a prompt). This is the
+      old bool, now a named field.
+    - ``output`` — the value the handler RETURNED (a string, a renderable, or
+      ``None``). The frontends render it as a **display-only** system box (TUI) /
+      printed-or-emitted text (headless); it is chrome, never model input — it is
+      NOT appended to the active path, so the E5 §1 tree-as-truth invariant holds
+      (a command that wants a durable node uses ``ctx`` explicitly).
+
+    Unknown command → ``ExtensionCommandResult(handled=False)`` (no output).
+    """
+
+    handled: bool
+    output: object | None = None
+
+    def output_text(self) -> str | None:
+        """Coerce ``output`` to display text, or ``None`` when there is nothing to show.
+
+        A handler that returned ``None`` (or an empty string) has no output box.
+        Any other value is rendered as its string form — report commands return
+        markdown strings; a non-``str`` value is stringified so the text/JSON
+        channels stay honest rather than fabricating a shape. Display-only.
+        """
+        if self.output is None:
+            return None
+        text = self.output if isinstance(self.output, str) else str(self.output)
+        return text or None
 
 
 def _message_text(content: Any) -> str:
@@ -127,6 +185,8 @@ class AgentSession:
         api_key: str | None = None,
         reasoning: str | None = None,
         compaction_settings: CompactionSettings | None = None,
+        extensions_config: dict[str, dict[str, Any]] | None = None,
+        model_resolver: Callable[[str], Model] | None = None,
     ) -> None:
         self._session_log = session_log
         self._model = model
@@ -137,6 +197,23 @@ class AgentSession:
         # Bound into the one ExtensionAPI below; read by the loop in a later step.
         self._registry = ExtensionRegistry()
         self._extensions = extensions or []
+        # Per-extension config map (E6 §2 / S40): ``{"<file-stem>": {…}}``, sourced
+        # from ``~/.tau/config.json`` ``"extensions"`` + per-run ``--ext-config``
+        # overrides. ``_bind_extension_api`` slices the right entry by file stem and
+        # hands it to each extension's ``api.config``. Set BEFORE the inline-factory
+        # bind loop below so constructor-passed extensions see their slice too.
+        # NOT persisted onto the session tree — it is run-scoped runtime config,
+        # re-sourced each run (deliberately excluded from the tree-as-truth path).
+        self._extensions_config: dict[str, dict[str, Any]] = extensions_config or {}
+        # Runtime-management bookkeeping (E10 §6 / S70). ``_loaded_extensions`` records
+        # every FILE extension bound via :meth:`load_extensions`, keyed by the path it
+        # was loaded under (== its runner-bucket label), so enable/reload can re-invoke
+        # its ``register`` / re-import its file. ``_disabled_paths`` is the set of those
+        # currently disabled (bucket removed from the runner). Inline-factory extensions
+        # (constructor ``extensions=``) are NOT tracked here — they have no file to
+        # re-import, so runtime management is scoped to file extensions.
+        self._loaded_extensions: dict[str, LoadedExtension] = {}
+        self._disabled_paths: set[str] = set()
         self._is_streaming = False
         self._abort_signal = AbortSignal()
         # Forwarded to the agent loop -> provider. Kept off the Model so it is
@@ -149,6 +226,22 @@ class AgentSession:
         # Compaction thresholds; drives both manual compact() and the automatic
         # post-turn check in prompt(). Defaults to the harness defaults.
         self._compaction_settings = compaction_settings or DEFAULT_COMPACTION_SETTINGS
+        # Model-name resolver for ctx.set_model (E6 §2 / S45). Maps a config model
+        # NAME to a concrete ``Model`` (the frontend binds a closure over its
+        # ``~/.tau/config.json`` ``models`` map; see backends.make_model_resolver).
+        # None until bound: set_model then RAISES (Fail-Early — a name with no
+        # registry to resolve against is a construction gap, not a silent no-op),
+        # exactly like fork(mode="export") on a non-file log.
+        self._model_resolver = model_resolver
+        # The most recent completion's token usage (E6 §2 / S45). Recorded from the
+        # per-completion ``message_end`` on this session's own bus so extensions read
+        # it through ctx.get_usage() instead of digging into ``event.message`` or the
+        # private ``ctx._session._model``. None until the first completion lands — an
+        # honest "no completion yet", never a fabricated zero (Fail-Early). NOT model
+        # input and NOT persisted: it is runtime observation state (usage already
+        # lives durably on the assistant tree nodes), so it does not touch the
+        # tree-as-truth path.
+        self._last_usage: dict[str, Any] | None = None
 
         # Injection queues + deferred-op ledger (S20 / decision 3 + 5). A tool
         # running mid-turn cannot mutate the conversation under the live loop, so
@@ -179,6 +272,26 @@ class AgentSession:
         # it; empty until extensions register mutating hooks, so has_handlers()
         # gives every call-site the zero-extension fast path.
         self._extension_runner = ExtensionRunner(context=self._extension_api.context)
+        # S44 (roadmap §2, anchors G3 + G12): wire the error-visibility surface.
+        # The ExtensionRunner already builds an ``ExtensionError`` for every hook /
+        # lifecycle handler that raises but, until now, had NO listener — the error
+        # fell through to a bare stderr print. Bind one listener that routes it to
+        # ``ctx.ui.notify`` at warning level: a TUI warning notice when a delegate
+        # is set (:meth:`set_ui_delegate`), a structured ``[τ] warning: …`` stderr
+        # line headless. The SAME surface catches notify-``EventBus`` handler
+        # exceptions, which used to be swallowed silently (``events.py`` "Fail
+        # silently"); the bus now reports ``(exc, channel)`` here, converted to an
+        # ``ExtensionError`` so an exploding observer is as visible as a failing
+        # mutating hook. Fail-Early: a hook error is never silent.
+        self._extension_runner.on_error(self._surface_extension_error)
+        self._events.on_error(self._surface_notify_error)
+        # Record the last completion's usage off ``message_end`` (S45). Subscribed
+        # HERE — before the extension-bind loop below and before any post-construction
+        # ``load_extensions`` — so the recorder runs FIRST for each ``message_end`` (the
+        # bus dispatches specific-type handlers in registration order). A budget/ledger
+        # extension's own ``message_end`` handler therefore sees ``ctx.get_usage()``
+        # already updated to this completion's usage.
+        self._events.on("message_end", self._record_completion_usage)
         # Register each extension against its OWN api, bound to its OWN runner
         # bucket (load order preserved) but SHARING the session registry, event
         # bus, and live context. This is the S24 bridge: api.on("tool_call"/…)
@@ -235,6 +348,112 @@ class AgentSession:
         return self._is_streaming
 
     # ------------------------------------------------------------------
+    # Model + usage access (E6 §2 / S45 — anchor G14)
+    #
+    # The public surface ctx.get_model()/set_model()/get_usage() delegate to, so
+    # extensions stop reaching the private ``_model`` / hand-parsing event dicts.
+    # ------------------------------------------------------------------
+
+    def get_model(self) -> dict[str, Any]:
+        """The active model as ``{id, provider, context_window}`` (S45).
+
+        A small, stable projection of the loop's ``Model`` (pi returns the whole
+        ``Model``; τ exposes only the three fields an extension needs to route,
+        price, or gauge a context window — keeping the extension API decoupled from
+        the full model schema). Read at call time, so it reflects a prior
+        :meth:`set_model`.
+        """
+        model = self._model
+        return {
+            "id": model.id,
+            "provider": model.provider,
+            "context_window": model.context_window,
+        }
+
+    def set_model_resolver(self, resolver: Callable[[str], Model]) -> None:
+        """Bind the model-name resolver used by :meth:`set_model` (S45).
+
+        A frontend calls this after building the session so ``ctx.set_model(name)``
+        can turn a config model NAME into a concrete ``Model`` (see
+        ``backends.make_model_resolver``, a closure over ``config["models"]``). The
+        harness core deliberately does not read ``~/.tau/config.json`` itself
+        (layering) — the resolver is the seam.
+        """
+        self._model_resolver = resolver
+
+    def set_model(self, name: str) -> dict[str, Any]:
+        """Switch the active model by NAME, effective on the NEXT turn (S45).
+
+        Mirrors pi's ``setModel`` (agent-session.ts:1444), adapted to τ: pi takes a
+        resolved ``Model`` object; τ takes a config model NAME and resolves it
+        through the bound resolver (:meth:`set_model_resolver`). The new ``Model`` is
+        stored on ``self._model``; because every turn rebuilds its ``AgentLoop`` with
+        ``model=self._model`` (see :meth:`_run_one_turn`), the switch takes effect on
+        the next completion — never mid-stream.
+
+        Scope boundary (documented, not a silent fallback): this switches the
+        ``Model`` (id / provider / base_url / context_window) only. The session's API
+        key (``self._api_key``) is unchanged, so a switch between models that share a
+        provider/key — the preset and router cases this unblocks — is correct; a
+        cross-provider switch to a model needing a *different* key will surface a
+        loud provider auth error, not silently wrong output. It is a RUNTIME switch:
+        it is not written back to the session header, so a reload resumes on the
+        session's originally stored model.
+
+        Returns:
+            The new :meth:`get_model` projection.
+
+        Raises:
+            RuntimeError: no resolver is bound (Fail-Early — nothing to resolve
+                ``name`` against).
+            Whatever the resolver raises for an unknown ``name`` (e.g. ``KeyError`` /
+                ``ValueError``) propagates unchanged — never swallowed.
+        """
+        if self._model_resolver is None:
+            raise RuntimeError(
+                f"set_model({name!r}): no model resolver is bound to this AgentSession. "
+                "The frontend must call set_model_resolver(...) (a closure over the "
+                "config 'models' map) before an extension can switch models by name."
+            )
+        model = self._model_resolver(name)
+        if not isinstance(model, Model):
+            raise TypeError(
+                f"set_model({name!r}): resolver returned {type(model).__name__}, "
+                "expected a tau_ai.types.Model"
+            )
+        self._model = model
+        return self.get_model()
+
+    def get_usage(self) -> dict[str, Any] | None:
+        """The most recent completion's token usage, or ``None`` (S45).
+
+        The public per-completion usage accessor (anchor G14): a copy of the
+        ``usage`` dict the provider filled on the last completion's ``message_end``
+        (keys ``input_tokens`` / ``output_tokens`` / ``cache_read_tokens`` /
+        ``cache_write_tokens`` / ``total_tokens`` / ``cost``). Extensions read this
+        instead of pulling ``event.message["usage"]`` out of a notify event or
+        reaching the private ``_model``. ``None`` means no completion has landed yet
+        — an honest absence, never a fabricated zero (Fail-Early). A copy, so a
+        caller cannot mutate the session's record.
+        """
+        return dict(self._last_usage) if self._last_usage is not None else None
+
+    def _record_completion_usage(self, event: AgentEvent) -> None:
+        """Capture this completion's usage from a ``message_end`` event (S45).
+
+        Only the per-completion ``message_end`` carries a ``usage`` dict (the
+        duplicate tool-turn ``message_end`` ``run()`` also emits has none, so it is
+        skipped — no stale overwrite). Runs before extension handlers (registered
+        first at construction), so ``get_usage()`` is current when they fire.
+        """
+        message = event.message
+        if not isinstance(message, dict):
+            return
+        usage = message.get("usage")
+        if isinstance(usage, dict):
+            self._last_usage = dict(usage)
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -283,12 +502,50 @@ class AgentSession:
         self._session_event_tasks.add(task)
         task.add_done_callback(self._session_event_tasks.discard)
 
+    async def emit_session_start(self, reason: str = "startup") -> None:
+        """Fire the notify-grade ``session_start`` lifecycle hook (S41).
+
+        Dispatched through the session's :class:`ExtensionRunner` (not the notify
+        ``EventBus``) so a handler's exception is SURFACED (S44), not swallowed.
+        Called by the frontends *after* extensions are loaded — so a
+        ``session_start`` handler can reconstruct state from ``ctx.entries()`` /
+        install watchers with its registration already in place. Returns nothing:
+        the hook has no path effect. Gated on ``has_handlers`` for the
+        zero-extension fast path (no event dict built when nobody listens).
+
+        ``reason`` mirrors pi's ``SessionStartEvent.reason``
+        (``"startup" | "reload" | "new" | "resume" | "fork"``); the frontend that
+        knows why the session began passes the right one.
+        """
+        if not self._extension_runner.has_handlers("session_start"):
+            return
+        await self._extension_runner.emit_session_start({"type": "session_start", "reason": reason})
+
+    async def emit_session_shutdown(self, reason: str = "quit") -> None:
+        """Fire the notify-grade ``session_shutdown`` lifecycle hook (S41).
+
+        The teardown counterpart to :meth:`emit_session_start`, dispatched through
+        the runner (error-surfaced, not swallowed). The frontends fire it on the
+        genuine end-of-runtime moments — TUI quit, headless completion, and
+        SIGINT/SIGTERM — so an extension can commit exit state / stop watchers.
+        Returns nothing; gated on ``has_handlers`` for the zero-extension fast path.
+
+        ``reason`` mirrors pi's ``SessionShutdownEvent.reason``
+        (``"quit" | "reload" | "new" | "resume" | "fork"``).
+        """
+        if not self._extension_runner.has_handlers("session_shutdown"):
+            return
+        await self._extension_runner.emit_session_shutdown(
+            {"type": "session_shutdown", "reason": reason}
+        )
+
     async def load_extensions(
         self,
         explicit_paths: list[str] | None = None,
         *,
         discover: bool = True,
         user_dir: str | None = None,
+        extensions_config: dict[str, dict[str, Any]] | None = None,
     ) -> LoadExtensionsResult:
         """Load file-path extensions into THIS live session (E5 §2, S26/S27).
 
@@ -315,17 +572,172 @@ class AgentSession:
         surfaces ``errors`` (headless → stderr, TUI → a notice); the loader no
         longer prints them itself, so this is safe to call under a live Textual
         screen.
+
+        ``extensions_config`` (S40) is the per-extension config map
+        (``{"<file-stem>": {…}}``) this run resolved from ``~/.tau/config.json`` +
+        ``--ext-config`` overrides. It is stored on the session BEFORE binding so
+        :meth:`_bind_extension_api` can slice each extension's ``api.config`` by
+        file stem. ``None`` leaves the constructor-supplied map (default ``{}``).
         """
+        if extensions_config is not None:
+            self._extensions_config = extensions_config
+
         # Lazy import: sdk imports agent_session at module load, so a top-level
         # import here would be circular.
         from tau_agent_core.sdk import _load_extensions
 
-        return await _load_extensions(
+        result = await _load_extensions(
             explicit_paths,
             discover=discover,
             user_dir=user_dir,
             api_factory=self._bind_extension_api,
         )
+        # Record each loaded file extension for runtime management (E10 §6 / S70):
+        # enable re-invokes the stored ``register`` on a fresh bucket, reload re-imports
+        # the file. Keyed by the path each was loaded under (== its bucket label).
+        for loaded in result.extensions:
+            self._loaded_extensions[loaded.path] = loaded
+            self._disabled_paths.discard(loaded.path)
+        return result
+
+    # ------------------------------------------------------------------
+    # Runtime extension management (E10 §6 / S70) — lifts D-E5-6 read-only
+    # ------------------------------------------------------------------
+
+    def list_managed_extensions(self) -> list[tuple[str, bool]]:
+        """Every file extension under management as ``(path, enabled)`` in load order.
+
+        The authoritative runtime state the ``/extensions`` listing reads so a
+        disabled extension shows as such: ``enabled`` is ``False`` exactly when the
+        path is in ``_disabled_paths`` (its bucket removed from the runner). Pure
+        read — no path effect, display-only.
+        """
+        return [(path, path not in self._disabled_paths) for path in self._loaded_extensions]
+
+    def resolve_extension_target(self, token: str) -> str | None:
+        """Resolve a user token (full path or file stem) to a managed path.
+
+        The ``/extensions <verb> <token>`` frontend passes what the user typed; the
+        listing shows stems (``Path(path).stem``), so ``disable 21_reminders`` must
+        map to the loaded path. Matches an exact path first, then a unique stem.
+        Returns ``None`` when nothing matches or a stem is ambiguous (the caller
+        reports it — no guessing, Fail-Early).
+        """
+        if token in self._loaded_extensions:
+            return token
+        matches = [p for p in self._loaded_extensions if Path(p).stem == token]
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    def _unregister_bucket(self, bucket: Any) -> None:
+        """Unwind a bucket's registry contributions (tools/commands/shortcuts) — S70.
+
+        The runner bucket is the only per-extension record of WHICH names an
+        extension registered (the registry is a flat, unattributed map, D-E5-5). On
+        disable/reload we remove exactly those names so a disabled extension's tools
+        and slash-commands stop being offered. Idempotent at the registry (a name a
+        later extension overwrote is simply absent).
+        """
+        for name in bucket.tools:
+            self._registry.unregister_tool(name)
+        for name in bucket.commands:
+            self._registry.unregister_command(name)
+        for key in bucket.shortcuts:
+            self._registry.unregister_shortcut(key)
+
+    async def disable_extension(self, path: str) -> ExtensionActionResult:
+        """Tear down and detach a loaded extension so its hooks stop firing (S70).
+
+        Fires the extension's own ``session_shutdown`` (reason ``"disable"``) FIRST —
+        the S41 teardown seam, so a watcher/exit-commit runs cleanly — then removes its
+        runner bucket (hooks stop) and unwinds its registry tools/commands/shortcuts.
+        The ``LoadedExtension`` record is KEPT so :meth:`enable_extension` can bring it
+        back. A no-op (unknown / already disabled) returns ``ok=False``, not an error.
+        """
+        target = self.resolve_extension_target(path)
+        if target is None:
+            return ExtensionActionResult("disable", path, False, f"no loaded extension {path!r}")
+        bucket = self._extension_runner.get_extension(target)
+        if bucket is None:
+            return ExtensionActionResult(
+                "disable", target, False, f"{Path(target).stem} is already disabled"
+            )
+        await self._extension_runner.emit_session_shutdown_for(
+            bucket, {"type": "session_shutdown", "reason": "disable"}
+        )
+        self._extension_runner.remove_extension(target)
+        self._unregister_bucket(bucket)
+        self._disabled_paths.add(target)
+        return ExtensionActionResult("disable", target, True, f"disabled {Path(target).stem}")
+
+    async def enable_extension(self, path: str) -> ExtensionActionResult:
+        """Re-bind a disabled extension by re-invoking its ``register`` (S70).
+
+        Binds a FRESH runner bucket (its tools/commands/shortcuts re-enter the
+        registry) and re-invokes the stored ``register(api)`` — the same entry point
+        the loader called — then fires ``session_start`` (reason ``"enable"``) so a
+        watcher re-installs. A no-op (unknown / already enabled) returns ``ok=False``.
+        """
+        target = self.resolve_extension_target(path)
+        if target is None:
+            return ExtensionActionResult("enable", path, False, f"no loaded extension {path!r}")
+        if self._extension_runner.get_extension(target) is not None:
+            return ExtensionActionResult(
+                "enable", target, False, f"{Path(target).stem} is already enabled"
+            )
+        loaded = self._loaded_extensions[target]
+        api = self._bind_extension_api(target)
+        outcome = loaded.register(api)
+        if inspect.isawaitable(outcome):
+            await outcome
+        from tau_agent_core.sdk import LoadedExtension
+
+        self._loaded_extensions[target] = LoadedExtension(
+            path=target, register=loaded.register, api=api
+        )
+        self._disabled_paths.discard(target)
+        bucket = self._extension_runner.get_extension(target)
+        if bucket is not None:
+            await self._extension_runner.emit_session_start_for(
+                bucket, {"type": "session_start", "reason": "enable"}
+            )
+        return ExtensionActionResult("enable", target, True, f"enabled {Path(target).stem}")
+
+    async def reload_extension(self, path: str) -> ExtensionActionResult:
+        """Tear down, re-import from disk, and re-register an extension (S70).
+
+        Fires ``session_shutdown`` (reason ``"reload"``) for the current instance (if
+        enabled), removes its bucket + registry entries, then RE-IMPORTS the file fresh
+        (a new module object — code edits on disk take effect) and re-invokes
+        ``register`` against a fresh bucket, finally firing ``session_start`` (reason
+        ``"reload"``). A broken file RAISES out of here (Fail-Early — the extension is
+        left torn down; the frontend surfaces the error), which is why reload does not
+        return an ``ok=False`` for an import failure.
+        """
+        target = self.resolve_extension_target(path)
+        if target is None:
+            return ExtensionActionResult("reload", path, False, f"no loaded extension {path!r}")
+        bucket = self._extension_runner.get_extension(target)
+        if bucket is not None:
+            await self._extension_runner.emit_session_shutdown_for(
+                bucket, {"type": "session_shutdown", "reason": "reload"}
+            )
+            self._extension_runner.remove_extension(target)
+            self._unregister_bucket(bucket)
+        # Re-import the file fresh (new module) so on-disk edits take effect. An import
+        # / register failure propagates (Fail-Early); the extension stays torn down.
+        from tau_agent_core.sdk import _load_one_extension
+
+        new_loaded = await _load_one_extension(Path(target), self._bind_extension_api)
+        self._loaded_extensions[target] = new_loaded
+        self._disabled_paths.discard(target)
+        new_bucket = self._extension_runner.get_extension(target)
+        if new_bucket is not None:
+            await self._extension_runner.emit_session_start_for(
+                new_bucket, {"type": "session_start", "reason": "reload"}
+            )
+        return ExtensionActionResult("reload", target, True, f"reloaded {Path(target).stem}")
 
     async def prompt(
         self,
@@ -365,6 +777,27 @@ class AgentSession:
         self._extension_api.context._signal = self._abort_signal
 
         try:
+            # S42 — the ``input`` mutating hook fires BEFORE the user node exists
+            # (roadmap §2, anchor G2; pi agent-session.ts:1007-1024). It transforms
+            # the prompt/images PRE-NODE — the transformed text is the SINGLE copy
+            # persisted+rendered+sent, exactly the legality that made
+            # ``before_agent_start`` sound — or it CONSUMES the input (``handled``:
+            # a command-like extension already ran its own effect / shown its own
+            # feedback), in which case no turn starts and prompt() returns no
+            # messages. Gated on has_handlers for the zero-extension fast path.
+            # Fires ONCE per prompt(): the followUp/nextTurn re-entries go through
+            # _run_one_turn directly and never re-emit input, matching pi (which
+            # emits input once in prompt(), not on queued re-entry). ``original_text``
+            # is kept so the caller's echoed user turn (the TUI passes the full
+            # history) is still detected+stripped against the PRE-transform text.
+            original_text = text
+            if self._extension_runner.has_handlers("input"):
+                input_result = await self._extension_runner.emit_input(text, images)
+                if input_result["handled"]:
+                    return []
+                text = input_result["prompt"]
+                images = input_result["images"]
+
             # Drain any pending "nextTurn" messages into THIS prompt's first turn
             # (S20): a message queued last prompt with ``deliver_as="nextTurn"`` is
             # injected alongside the user turn, exactly as pi pushes
@@ -375,7 +808,9 @@ class AgentSession:
             self._pending_next_turn_messages = []
             queued = [self._queued_content_to_user(c) for c in next_turn]
 
-            turn_messages = await self._run_one_turn(text, images, context, queued=queued)
+            turn_messages = await self._run_one_turn(
+                text, images, context, queued=queued, strip_ref_text=original_text
+            )
 
             # End-of-prompt drain (S20 / decision 3): auto-compaction, then the
             # deferred compact/fork intents (applied exactly ONCE here, never
@@ -395,6 +830,7 @@ class AgentSession:
         images: list[dict] | None,
         context: list[dict] | None,
         queued: list[UserMessage] | None = None,
+        strip_ref_text: str | None = None,
     ) -> list[dict[str, Any]]:
         """Run one agent-loop turn: build the user message, run the loop, persist.
 
@@ -402,6 +838,15 @@ class AgentSession:
         re-enter it within the same ``prompt()`` call. ``queued`` are pending
         ``nextTurn`` messages threaded (and persisted) after the user turn on the
         first turn of a prompt; empty on a followUp re-entry.
+
+        ``strip_ref_text`` is the text used to detect the caller's echoed user
+        turn (the TUI passes the full history, ending with this turn). It exists
+        because the S42 ``input`` hook may have transformed ``text`` upstream in
+        ``prompt()`` while the caller's echo still holds the PRE-transform text —
+        so the strip must compare against the original, not the transformed value,
+        or the loop would see both the echo AND the transformed user_msg. ``None``
+        (the followUp re-entry, where ``context`` is ``None`` anyway) falls back to
+        ``text``.
 
         Returns THIS turn's new messages only — the user message, any ``queued``
         messages, then the assistant/tool messages the loop produced.
@@ -428,8 +873,12 @@ class AgentSession:
             # Did the caller already include this user turn as the final
             # context message? The TUI passes the full history (which ends
             # with the latest user turn); a bare prompt("hi") does not. This
-            # flag also drives the persist/return logic below.
-            context_ends_with_user = _ends_with_user_text(context_messages, text)
+            # flag also drives the persist/return logic below. Compare against
+            # ``strip_ref_text`` (the PRE-``input``-transform text) so a hook that
+            # rewrote ``text`` upstream does not defeat the echo detection — see
+            # the ``strip_ref_text`` note in the docstring.
+            strip_ref = strip_ref_text if strip_ref_text is not None else text
+            context_ends_with_user = _ends_with_user_text(context_messages, strip_ref)
         else:
             context_messages = self.messages
             context_ends_with_user = False
@@ -546,17 +995,9 @@ class AgentSession:
             self._session_log.append_custom_message(cmsg, custom_type=str(cmsg["customType"]))
             turn_messages.append(cmsg)
 
-        # Assistant responses and tool results produced this turn.
-        for msg in final_messages:
-            if hasattr(msg, "model_dump"):
-                msg_dict = msg.model_dump()
-            elif isinstance(msg, dict):
-                msg_dict = msg
-            else:
-                continue
-
-            self._session_log.append_message(msg_dict)
-            turn_messages.append(msg_dict)
+        # Assistant responses and tool results produced this turn (plus any durable
+        # ``custom`` nodes the mutating ``turn_end`` hook appended mid-loop, S43).
+        self._persist_loop_messages(final_messages, turn_messages)
 
         return turn_messages
 
@@ -637,16 +1078,7 @@ class AgentSession:
             # session history — so a caller appending the result to its own
             # store doesn't re-append prior turns.
             turn_messages: list[dict[str, Any]] = []
-            for msg in final_messages:
-                if hasattr(msg, "model_dump"):
-                    msg_dict = msg.model_dump()
-                elif isinstance(msg, dict):
-                    msg_dict = msg
-                else:
-                    continue
-
-                self._session_log.append_message(msg_dict)
-                turn_messages.append(msg_dict)
+            self._persist_loop_messages(final_messages, turn_messages)
 
             return turn_messages
 
@@ -938,6 +1370,42 @@ class AgentSession:
             )
         return resolved
 
+    def _persist_loop_messages(
+        self, final_messages: list[Any], turn_messages: list[dict[str, Any]]
+    ) -> None:
+        """Persist a loop's produced messages, routing durable ``custom`` nodes.
+
+        Assistant / tool-result messages persist as plain ``message`` tree nodes.
+        An extension-injected ``role: "custom"`` node produced mid-loop by the
+        mutating ``turn_end`` hook (S43) persists as a ``customMessage`` tree node
+        instead — so it lands on the active path exactly like a ``before_agent_start``
+        injection (persisted == rendered == sent) and a reload replays the same path.
+        Each persisted dict is collected into ``turn_messages`` (this turn's new
+        messages — the ``prompt()`` return value), preserving loop order.
+
+        Fail-Early: a ``custom`` node missing ``customType`` raises rather than
+        fabricating an extension-origin identity.
+        """
+        for msg in final_messages:
+            if hasattr(msg, "model_dump"):
+                msg_dict = msg.model_dump()
+            elif isinstance(msg, dict):
+                msg_dict = msg
+            else:
+                continue
+
+            if msg_dict.get("role") == CUSTOM_ROLE:
+                custom_type = msg_dict.get("customType")
+                if not custom_type:
+                    raise ValueError(
+                        "turn_end custom node is missing 'customType' — the "
+                        "extension-origin type is required (Fail-Early)"
+                    )
+                self._session_log.append_custom_message(msg_dict, custom_type=str(custom_type))
+            else:
+                self._session_log.append_message(msg_dict)
+            turn_messages.append(msg_dict)
+
     def _custom_message_node(self, message: dict[str, Any]) -> dict[str, Any]:
         """Build the durable ``custom`` message dict for a ``before_agent_start`` hook.
 
@@ -971,6 +1439,76 @@ class AgentSession:
             timestamp=self._timestamp(),
         )
 
+    def _append_custom_message(
+        self, message: dict[str, Any], options: dict[str, Any] | None = None
+    ) -> str:
+        """Append a durable extension ``customMessage`` node (``api.send_message``).
+
+        The backend for ``ExtensionAPI.send_message`` (E6 §2 / S38). Builds a
+        ``role: "custom"`` node from ``{customType, content, display?, details?}``
+        and APPENDs it to the authoritative session log, so it lands on the active
+        path exactly like a ``before_agent_start`` injection: persisted, rendered
+        in the transcript / tree, and reload-invariant.
+
+        Per D-E6-1 the node is **display-only by default** — ``options`` may set
+        ``visible_to_model: True`` to also feed it to the model (remapped
+        custom→user on the wire); left unset (or ``False``) the node is dropped by
+        :func:`~tau_agent_core.messages.convert_to_llm` and never reaches the LLM.
+        This deliberately does NOT create a third model-visible default channel
+        (``before_agent_start`` / ``send_user_message`` already serve that).
+
+        Returns the appended entry id.
+
+        Raises:
+            ValueError: if ``message`` has no ``content`` (nothing to append) or no
+                ``customType`` (the extension-origin identity is not fabricated) —
+                Fail-Early.
+        """
+        options = options or {}
+        if "content" not in message:
+            raise ValueError("send_message: message is missing 'content' — nothing to append")
+        if "customType" not in message:
+            raise ValueError(
+                "send_message: message is missing 'customType' — the extension-origin "
+                "type is required (Fail-Early, no fabricated default)"
+            )
+        node = create_custom_message(
+            custom_type=str(message["customType"]),
+            content=message["content"],
+            display=bool(message.get("display", True)),
+            details=message.get("details"),
+            visible_to_model=bool(options.get("visible_to_model", False)),
+            timestamp=self._timestamp(),
+        )
+        return self._session_log.append_custom_message(node, custom_type=str(message["customType"]))
+
+    def _append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
+        """Append a durable, NON-message ``customEntry`` node (``api.append_entry``).
+
+        The backend for ``ExtensionAPI.append_entry`` (E6 §2 / S39). Persists the
+        extension's ``{customType, data}`` into the authoritative session log as its
+        own tree entry KIND, replacing the old RAM-only registry ``_entry_store``
+        that was lost on restart (G4). Unlike ``_append_custom_message`` this is NOT
+        a model-facing message: ``ConversationTree`` never folds a ``customEntry``
+        into the loop context and ``convert_to_llm`` never sees it, so it is durable
+        tree-as-backplane state — persisted, reload-invariant, readable through
+        ``ctx.entries()`` — but explicitly excluded from model input.
+
+        Returns the appended entry id.
+
+        Raises:
+            ValueError: if ``custom_type`` is empty (the extension-origin identity is
+                not fabricated) or ``data`` is not a dict — Fail-Early, no silent
+                default.
+        """
+        if not custom_type:
+            raise ValueError(
+                "append_entry: custom_type is required (Fail-Early, no fabricated default)"
+            )
+        if not isinstance(data, dict):
+            raise ValueError(f"append_entry: data must be a dict, got {type(data).__name__}")
+        return self._session_log.append_custom_entry(custom_type, data)
+
     def _build_turn_tools(self) -> list:
         """Merge the built-in tools with the active extension tools for a turn.
 
@@ -990,6 +1528,7 @@ class AgentSession:
         self,
         hook_handlers: Any = None,
         context: Any = None,
+        config: dict[str, Any] | None = None,
     ) -> ExtensionAPI:
         """Create an ExtensionAPI bound to this session's real refs.
 
@@ -1004,6 +1543,8 @@ class AgentSession:
         per-extension apis so every handler sees the one context the session binds
         the abort signal / live session onto; ``None`` lets ``ExtensionAPI`` make a
         fresh context (used only for the session-shared api built at construction).
+        ``config`` is this extension's per-extension config slice (S40); ``None``
+        for the session-shared api (which no extension file receives).
 
         Returns:
             An ExtensionAPI bound to this session, its event bus, and registry.
@@ -1014,6 +1555,54 @@ class AgentSession:
             registry=self._registry,
             context=context,
             hook_handlers=hook_handlers,
+            config=config,
+        )
+
+    def _surface_extension_error(self, error: ExtensionError) -> None:
+        """Route a hook / notify handler failure to the live UI surface (S44).
+
+        The single on_error sink for BOTH the mutating-hook / lifecycle dispatcher
+        (:class:`ExtensionRunner`) and the notify ``EventBus`` (via
+        :meth:`_surface_notify_error`). Paints through the session's ONE shared
+        :class:`ExtensionUI` at ``warning`` level: a TUI warning notice once a
+        delegate is set (:meth:`set_ui_delegate`), else the headless
+        ``[τ] warning: …`` stderr line. Read at call time, so whichever delegate is
+        current when the error fires is used.
+
+        The reporter must not itself crash the dispatch it is reporting from (a
+        raising ``notify`` would propagate out of the hook call-site and, worse,
+        mask the original error), so a failure of the surface falls back to stderr —
+        still visible, never swallowed (Fail-Early).
+        """
+        message = f"extension error in {error.extension_path} ({error.event}): {error.error}"
+        try:
+            # ``source`` attributes the record on the headless JSON stream (S49); it
+            # is ignored by the TUI delegate / stderr sinks. Unlike a plain
+            # ``api.ui.notify`` (shared UI, no per-call attribution), the error
+            # surface DOES know which extension failed, so it names it honestly.
+            self._extension_api.ui.notify(message, "warning", source=error.extension_path)
+        except Exception as report_err:  # noqa: BLE001 — reporter must not crash the loop
+            import sys
+
+            print(f"[τ] {message} (surface failed: {report_err})", file=sys.stderr)
+
+    def _surface_notify_error(self, error: BaseException, channel: str) -> None:
+        """Adapt a notify-``EventBus`` handler failure onto the on_error surface (S44).
+
+        The bus is anonymous — it cannot attribute a failing subscriber to a
+        specific extension file (unlike the runner, whose buckets are path-labelled),
+        so the origin is reported honestly as the notify channel rather than
+        fabricating an extension name (Fail-Early: no invented attribution). Wraps
+        the raw ``(exc, channel)`` into an :class:`ExtensionError` and routes it
+        through the shared :meth:`_surface_extension_error` sink so a raising
+        observer surfaces exactly like a raising mutating hook.
+        """
+        self._surface_extension_error(
+            ExtensionError(
+                extension_path="notify handler",
+                event=channel,
+                error=str(error),
+            )
         )
 
     def set_ui_delegate(self, delegate: Any) -> None:
@@ -1029,6 +1618,38 @@ class AgentSession:
         """
         self._extension_api.context.set_ui_delegate(delegate)
 
+    def set_extension_record_sink(self, sink: Any) -> None:
+        """Route extension activity to a headless JSON record sink (E7 §3 / S49 — G10).
+
+        Sets the sink on the session's ONE shared :class:`ExtensionUI` (via the
+        context), so every loaded extension's ``api.ui.notify(...)`` emits a
+        ``{"type": "extension", …}`` record through ``sink`` instead of the headless
+        stderr line — the parallel record family the ``--mode json`` frontend writes
+        alongside the closed ``AgentEvent`` set. Only the headless JSON path installs
+        one; the TUI sets a live delegate instead and ``--mode text`` leaves it unset
+        (stderr, unchanged). Passing ``None`` clears it.
+        """
+        self._extension_api.context.set_record_sink(sink)
+
+    def set_headless_ui_defaults(self, policy: dict[str, str]) -> None:
+        """Set the headless dialog-answer policy for this session (E7 §3 / S48).
+
+        Threads the resolved ``--ui-defaults`` / config ``"ui_defaults"`` map onto
+        the session's ONE shared :class:`ExtensionUI` (via the context), so a
+        headless dialog opened by any loaded extension auto-answers only for the
+        methods the user explicitly opted into — every other headless dialog
+        raises :class:`HeadlessDialogError` (Fail-Early, D-E6-2). This is run-scoped
+        runtime config: it is NOT persisted onto the session tree (the policy is
+        re-sourced each run, like ``--ext-config``). The TUI path never calls this —
+        it sets a live delegate instead, so a human answers.
+
+        Raises:
+            ValueError: an unknown method or answer token (propagated from
+                :meth:`ExtensionUI.set_headless_defaults`); the frontend renders it
+                as a clean CLI error.
+        """
+        self._extension_api.context.set_headless_ui_defaults(policy)
+
     def get_extension_commands(self) -> list[tuple[str, str]]:
         """List extension-registered slash commands (E5 §5 / S35).
 
@@ -1042,16 +1663,70 @@ class AgentSession:
             for name, command in self._registry.get_commands().items()
         ]
 
-    async def run_extension_command(self, name: str, args: str = "") -> bool:
-        """Run an extension-registered slash command (E5 §5 / S35).
+    def get_extension_shortcuts(self) -> list[tuple[str, str, str, str]]:
+        """List extension-registered key shortcuts (E10 §6 / S69).
+
+        Returns ``(key, command, args, description)`` for every shortcut an extension
+        registered via ``api.register_shortcut`` — the TUI's ``ctrl+e`` chord menu and
+        the command palette read this to LIST + dispatch them. ``key`` is the chord
+        tail (bound under the ``ctrl+e`` leader); ``command``/``args`` are dispatched
+        through the SAME :meth:`run_extension_command` path as a typed ``/name args``.
+        ``description`` falls back to the target command's registered description, then
+        to the empty string (listing is best-effort chrome, not a durable node).
+        """
+        out: list[tuple[str, str, str, str]] = []
+        for key, shortcut in self._registry.get_shortcuts().items():
+            command = str(shortcut.get("command", ""))
+            args = str(shortcut.get("args", ""))
+            description = shortcut.get("description")
+            if not description:
+                cmd = self._registry.get_command(command)
+                description = str(cmd.get("description", "")) if cmd else ""
+            out.append((key, command, args, str(description)))
+        return out
+
+    def get_extension_command_args(self, name: str) -> str | None:
+        """The declared argument placeholder for command ``name`` (E7 §3 / S51).
+
+        A command may declare ``"args": "<placeholder>"`` in its ``register_command``
+        definition to signal that it expects a free-form argument string (parity with
+        typing ``/name args``). The palette (:meth:`Parley.get_system_commands`) reads
+        this to decide whether a palette entry, which has no argument line, must first
+        open the S47 input modal to collect the arg string before dispatch.
+
+        Returns the placeholder string when declared, ``None`` when the command is
+        unknown or declares no ``args``. Fail-Early: a non-string ``args`` is a
+        construction bug (the field IS the placeholder text), so it RAISES rather than
+        being coerced or silently ignored.
+        """
+        command = self._registry.get_command(name)
+        if command is None:
+            return None
+        placeholder = command.get("args")
+        if placeholder is None:
+            return None
+        if not isinstance(placeholder, str):
+            raise TypeError(
+                f"extension command {name!r} declared non-string 'args' "
+                f"({type(placeholder).__name__}); 'args' must be the placeholder string."
+            )
+        return placeholder
+
+    async def run_extension_command(self, name: str, args: str = "") -> ExtensionCommandResult:
+        """Run an extension-registered slash command (E5 §5 / S35; output channel S46).
 
         Port of pi's ``_tryExecuteExtensionCommand`` (agent-session.ts:1143). Looks
         up ``name`` in the session registry and, if found, invokes its ``handler``
         with ``(args, ctx)`` where ``ctx`` is the session's ONE live
         :class:`ExtensionContext` (the same object hook handlers and ``api.ui``
         reach through, so a command's ``ctx.ui.notify`` paints in the same TUI).
-        Returns ``True`` iff the command existed and ran; ``False`` for an unknown
-        command so the caller can fall through (e.g. treat the text as a prompt).
+
+        Returns an :class:`ExtensionCommandResult`: ``handled`` is ``True`` iff the
+        command existed and ran (``False`` for an unknown command so the caller can
+        fall through and treat the text as a prompt), and ``output`` carries the
+        value the handler RETURNED (E7 §3 / S46 — previously discarded, G7). The
+        frontends render ``output`` as display-only chrome; it is never appended to
+        the active path (the tree-as-truth invariant is untouched).
 
         Fail-Early: a command registered without a callable ``handler`` cannot run,
         so an attempt to invoke one RAISES rather than silently no-op'ing — a
@@ -1059,7 +1734,7 @@ class AgentSession:
         """
         command = self._registry.get_command(name)
         if command is None:
-            return False
+            return ExtensionCommandResult(handled=False)
         handler = command.get("handler")
         if not callable(handler):
             raise RuntimeError(
@@ -1068,8 +1743,8 @@ class AgentSession:
             )
         result = handler(args, self._extension_api.context)
         if inspect.isawaitable(result):
-            await result
-        return True
+            result = await result
+        return ExtensionCommandResult(handled=True, output=result)
 
     def _bind_extension_api(self, path_label: str) -> ExtensionAPI:
         """The bucket-bound ExtensionAPI a loaded extension is handed (S24).
@@ -1080,11 +1755,21 @@ class AgentSession:
         live :class:`ExtensionContext`. ``api.on("tool_call"/…)`` on the returned
         api lands in this bucket — the dispatch surface the loop's hook call-sites
         actually read.
+
+        The per-extension config slice (S40) is selected here by the extension's
+        **file stem** — ``Path(path_label).stem`` — from ``self._extensions_config``
+        (``~/.tau/config.json`` ``"extensions"`` + ``--ext-config`` overrides), so
+        ``~/.tau/extensions/24_budget.py`` reads the ``"24_budget"`` entry. An
+        unconfigured extension gets ``{}`` (never fabricated). Inline factory
+        extensions carry a ``module:qualname`` label rather than a file path, so
+        their stem simply won't match a config key unless one is named for it.
         """
         bucket = self._extension_runner.register_extension(path_label)
+        config = self._extensions_config.get(Path(path_label).stem, {})
         return self._make_extension_api(
             hook_handlers=bucket,
             context=self._extension_api.context,
+            config=config,
         )
 
     @staticmethod

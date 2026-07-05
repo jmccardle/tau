@@ -26,6 +26,10 @@ from tau_agent_core.extension_types import (
     ExtensionAPI,
     ExtensionContext,
     ExtensionUI,
+    HeadlessDialogError,
+    form_headless_value,
+    validate_form_spec,
+    validate_panel_spec,
 )
 from tau_agent_core.extensions.registry import ExtensionRegistry
 from tau_agent_core.events import EventBus
@@ -66,11 +70,6 @@ class TestExtensionAPIInit:
         """ExtensionAPI stores its context."""
         api = ExtensionAPI()
         assert hasattr(api, "_context")
-
-    def test_extension_api_has_internal_flags(self):
-        """ExtensionAPI stores flags dict."""
-        api = ExtensionAPI()
-        assert hasattr(api, "_flags")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -256,40 +255,96 @@ class TestExtensionAPICommands:
         assert api._registry._commands["help"]["action"] == "new"
 
 
+class TestExtensionAPIShortcuts:
+    """ExtensionAPI.register_shortcut() — the guarded ctrl+e chord namespace (S69)."""
+
+    def test_register_shortcut_stores_in_registry(self):
+        """A shortcut lands in the registry keyed by its chord-tail key."""
+        api = ExtensionAPI()
+        api.register_shortcut("g", "fleet_status")
+        assert api._registry.get_shortcut("g") == {
+            "command": "fleet_status",
+            "args": "",
+            "description": None,
+        }
+        assert api._registry.get_shortcuts() == {
+            "g": {"command": "fleet_status", "args": "", "description": None}
+        }
+
+    def test_register_shortcut_carries_args_and_description(self):
+        """Optional args/description ride along for dispatch + palette display."""
+        api = ExtensionAPI()
+        api.register_shortcut("1", "abort_child", args="c-1", description="Abort child 1")
+        assert api._registry.get_shortcut("1") == {
+            "command": "abort_child",
+            "args": "c-1",
+            "description": "Abort child 1",
+        }
+
+    def test_register_shortcut_last_wins_on_duplicate_key(self):
+        """Two shortcuts on the same tail key: last wins (namespace collision)."""
+        api = ExtensionAPI()
+        api.register_shortcut("g", "first")
+        api.register_shortcut("g", "second")
+        assert api._registry.get_shortcut("g")["command"] == "second"
+
+    def test_register_shortcut_attributes_to_hook_bucket(self):
+        """The tail key is recorded on THIS extension's bucket for /extensions (S34)."""
+        from tau_agent_core.extensions.runner import ExtensionHandlers
+
+        bucket = ExtensionHandlers(path="ext.py")
+        api = ExtensionAPI(hook_handlers=bucket)
+        api.register_shortcut("g", "fleet_status")
+        assert bucket.shortcuts == ["g"]
+
+    def test_register_shortcut_empty_key_raises(self):
+        api = ExtensionAPI()
+        with pytest.raises(ValueError, match="'key' must be a non-empty string"):
+            api.register_shortcut("", "cmd")
+
+    def test_register_shortcut_whitespace_key_raises(self):
+        """A chord tail is a single key token — whitespace is a construction bug."""
+        api = ExtensionAPI()
+        with pytest.raises(ValueError, match="single key token"):
+            api.register_shortcut("ctrl e", "cmd")
+
+    def test_register_shortcut_empty_command_raises(self):
+        api = ExtensionAPI()
+        with pytest.raises(ValueError, match="'command' must be a non-empty string"):
+            api.register_shortcut("g", "")
+
+    def test_register_shortcut_non_string_args_raises(self):
+        api = ExtensionAPI()
+        with pytest.raises(TypeError, match="'args' must be a string"):
+            api.register_shortcut("g", "cmd", args=1)  # type: ignore[arg-type]
+
+    def test_register_shortcut_non_string_description_raises(self):
+        api = ExtensionAPI()
+        with pytest.raises(TypeError, match="'description' must be a string or None"):
+            api.register_shortcut("g", "cmd", description=1)  # type: ignore[arg-type]
+
+
 # ──────────────────────────────────────────────────────────────────────────────
-# ExtensionAPI flag methods
+# register_flag / get_flag deleted (E6 §2 / S38)
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-class TestExtensionAPIFlags:
-    """Tests for ExtensionAPI flag registration."""
+class TestFlagsRemoved:
+    """The dead ``register_flag`` / ``get_flag`` API was deleted in S38 (G6).
 
-    def test_register_flag(self):
-        """ExtensionAPI.register_flag() stores a flag locally and in registry."""
-        api = ExtensionAPI()
-        options = {"type": "boolean", "default": False}
-        api.register_flag("debug", options)
-        assert "debug" in api._flags
-        assert api._flags["debug"] == options
-        # Also registered in registry
-        assert "debug" in api._registry._flags
+    The ``value`` was never populated (superseded by S40 per-extension config), so
+    the methods and the ``_flags`` store are gone from both the API and the
+    registry surface.
+    """
 
-    def test_get_flag_existing(self):
-        """ExtensionAPI.get_flag() returns existing flag value."""
-        api = ExtensionAPI()
-        api.register_flag("debug", {"type": "boolean", "value": True})
-        assert api.get_flag("debug") is True
+    def test_extension_api_has_no_register_flag(self):
+        assert not hasattr(ExtensionAPI(), "register_flag")
 
-    def test_get_flag_missing(self):
-        """ExtensionAPI.get_flag() returns None for missing flag."""
-        api = ExtensionAPI()
-        assert api.get_flag("nonexistent") is None
+    def test_extension_api_has_no_get_flag(self):
+        assert not hasattr(ExtensionAPI(), "get_flag")
 
-    def test_get_flag_no_value_set(self):
-        """ExtensionAPI.get_flag() returns None when flag has no value."""
-        api = ExtensionAPI()
-        api.register_flag("debug", {"type": "boolean"})
-        assert api.get_flag("debug") is None
+    def test_extension_api_has_no_flags_store(self):
+        assert not hasattr(ExtensionAPI(), "_flags")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -298,29 +353,39 @@ class TestExtensionAPIFlags:
 
 
 class TestExtensionAPIAppendEntry:
-    """Tests for ExtensionAPI.append_entry()."""
+    """Tests for ExtensionAPI.append_entry() — now DURABLE (E6 §2 / S39).
+
+    Persists onto the session tree as a ``customEntry`` node instead of the old
+    RAM-only registry ``_entry_store`` (removed with G4). The full durable /
+    reload-invariant / off-the-wire proof lives in ``test_append_entry_durable.py``;
+    these tests cover the API-surface contract (delegation + Fail-Early raise).
+    """
 
     def test_append_entry_exists(self):
         """ExtensionAPI has append_entry method."""
         api = ExtensionAPI()
         assert hasattr(api, "append_entry")
 
-    def test_append_entry_callable(self):
-        """ExtensionAPI.append_entry() persists through registry."""
+    def test_append_entry_raises_without_session(self):
+        """Fail-Early: no session bound → raise, not a silent RAM store (G4)."""
         api = ExtensionAPI()
-        api.append_entry("notification", {"text": "test"})
-        entries = api._registry.get_entries()
-        assert len(entries) == 1
-        assert entries[0]["custom_type"] == "notification"
-        assert entries[0]["data"]["text"] == "test"
+        with pytest.raises(RuntimeError):
+            api.append_entry("notification", {"text": "test"})
 
-    def test_append_multiple_entries(self):
-        """ExtensionAPI.append_entry() can append multiple entries."""
-        api = ExtensionAPI()
+    def test_append_entry_delegates_to_session(self):
+        """append_entry() forwards {custom_type, data} to _append_custom_entry."""
+        mock_session = MagicMock()
+        api = ExtensionAPI(session=mock_session)
+        api.append_entry("notification", {"text": "test"})
+        mock_session._append_custom_entry.assert_called_once_with("notification", {"text": "test"})
+
+    def test_append_multiple_entries_delegate(self):
+        """Each append_entry() call is a separate durable append."""
+        mock_session = MagicMock()
+        api = ExtensionAPI(session=mock_session)
         api.append_entry("counter", {"value": 1})
         api.append_entry("counter", {"value": 2})
-        entries = api._registry.get_entries()
-        assert len(entries) == 2
+        assert mock_session._append_custom_entry.call_count == 2
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -331,18 +396,40 @@ class TestExtensionAPIAppendEntry:
 class TestExtensionAPISession:
     """Tests for ExtensionAPI session methods."""
 
-    def test_set_session_name_noop_without_session(self):
-        """ExtensionAPI.set_session_name() is a no-op without a session."""
+    def test_set_session_name_raises_without_session(self):
+        """ExtensionAPI.set_session_name() Fail-Early raises without a bound
+        session (S64: the old ``_session_name``-attribute check was a silent
+        no-op on every real session; a bare API has nowhere durable to land
+        the name either, so it raises like its sibling durable-write ops)."""
         api = ExtensionAPI()
-        api.set_session_name("My Session")  # should not raise
+        with pytest.raises(RuntimeError):
+            api.set_session_name("My Session")
 
     def test_set_session_name_with_session(self):
-        """ExtensionAPI.set_session_name() sets _session_name on session."""
+        """ExtensionAPI.set_session_name() forwards to the session log's
+        append_session_info (S64)."""
         mock_session = MagicMock()
-        mock_session._session_name = "old"
         api = ExtensionAPI(session=mock_session)
         api.set_session_name("new_name")
-        assert mock_session._session_name == "new_name"
+        mock_session._session_log.append_session_info.assert_called_once_with("new_name")
+
+    def test_get_session_name_raises_without_session(self):
+        """ExtensionAPI.get_session_name() Fail-Early raises without a bound
+        session (no durable name to read)."""
+        api = ExtensionAPI()
+        with pytest.raises(RuntimeError):
+            api.get_session_name()
+
+    def test_get_session_name_reads_the_session_log(self):
+        """ExtensionAPI.get_session_name() reads the session log's ``.name``,
+        returning ``None`` for a falsy (unset) name rather than the raw value."""
+        mock_session = MagicMock()
+        mock_session._session_log.name = None
+        api = ExtensionAPI(session=mock_session)
+        assert api.get_session_name() is None
+
+        mock_session._session_log.name = "existing-name"
+        assert api.get_session_name() == "existing-name"
 
     def test_send_user_message_raises_without_queue(self):
         """send_user_message() raises (not silent) until the E3-ctx queue exists.
@@ -379,19 +466,34 @@ class TestExtensionAPISession:
             api.send_user_message("Hello", deliver_as="steer")
         mock_session._queue_message.assert_not_called()
 
-    def test_send_message_noop_without_session(self):
-        """ExtensionAPI.send_message() is a no-op without session."""
+    def test_send_message_raises_without_session(self):
+        """ExtensionAPI.send_message() raises without a session (Fail-Early, S38).
+
+        The old behaviour silently no-op'd on a nonexistent method; a message with
+        nowhere durable to land is a construction bug, not a no-op.
+        """
         api = ExtensionAPI()
-        api.send_message({"text": "Hello"}, {})  # should not raise
+        with pytest.raises(RuntimeError):
+            api.send_message({"customType": "note", "content": "Hello"}, {})
 
     def test_send_message_with_session(self):
         """ExtensionAPI.send_message() appends custom message on session."""
         mock_session = MagicMock()
         mock_session._append_custom_message = MagicMock()
         api = ExtensionAPI(session=mock_session)
-        api.send_message({"text": "Hello"}, {"source": "extension"})
+        api.send_message({"customType": "note", "content": "Hello"}, {"source": "extension"})
         mock_session._append_custom_message.assert_called_once_with(
-            {"text": "Hello"}, {"source": "extension"}
+            {"customType": "note", "content": "Hello"}, {"source": "extension"}
+        )
+
+    def test_send_message_default_options_forwarded_as_empty_dict(self):
+        """Omitting options forwards ``{}`` (display-only default is applied downstream)."""
+        mock_session = MagicMock()
+        mock_session._append_custom_message = MagicMock()
+        api = ExtensionAPI(session=mock_session)
+        api.send_message({"customType": "note", "content": "Hi"})
+        mock_session._append_custom_message.assert_called_once_with(
+            {"customType": "note", "content": "Hi"}, {}
         )
 
 
@@ -410,12 +512,29 @@ class TestExtensionAPIProperty:
         assert isinstance(ui, ExtensionUI)
 
     @pytest.mark.asyncio
-    async def test_ui_is_noop_in_headless(self):
-        """ExtensionAPI.ui returns no-op UI by default (headless mode)."""
+    async def test_ui_raises_in_headless_without_policy(self):
+        """ExtensionAPI.ui dialogs RAISE headless with no policy (S48, Fail-Early)."""
+        from tau_agent_core.extension_types import HeadlessDialogError
+
         api = ExtensionAPI()
         ui = api.ui
+        with pytest.raises(HeadlessDialogError):
+            await ui.confirm("title", "msg")
+        with pytest.raises(HeadlessDialogError):
+            await ui.select("title", ["a"])
+        with pytest.raises(HeadlessDialogError):
+            await ui.input("title", default="default")
+
+    @pytest.mark.asyncio
+    async def test_ui_honors_headless_policy(self):
+        """ExtensionAPI.ui dialogs auto-answer once a headless policy is set (S48)."""
+        api = ExtensionAPI()
+        api.context.set_headless_ui_defaults(
+            {"confirm": "yes", "select": "first", "input": "default"}
+        )
+        ui = api.ui
         assert await ui.confirm("title", "msg") is True
-        assert await ui.select("title", ["a"]) == "a"
+        assert await ui.select("title", ["a", "b"]) == "a"
         assert await ui.input("title", default="default") == "default"
 
     def test_ui_returns_same_instance(self):
@@ -430,6 +549,437 @@ class TestExtensionAPIProperty:
         api = ExtensionAPI()
         ctx = api.context
         assert isinstance(ctx, ExtensionContext)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ui.form — declarative form spec (E10 §6 / S66)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+_FULL_FORM_SPEC = {
+    "title": "New task",
+    "fields": [
+        {"name": "desc", "kind": "text", "label": "Description", "default": "draft"},
+        {"name": "prio", "kind": "select", "options": ["low", "high"], "default": "high"},
+        {"name": "tags", "kind": "multiselect", "options": ["a", "b", "c"], "default": ["b"]},
+        {"name": "urgent", "kind": "confirm", "default": True},
+        {"name": "points", "kind": "number", "default": 3},
+    ],
+}
+
+
+class TestValidateFormSpec:
+    """validate_form_spec normalizes a good spec and Fail-Early rejects bad ones."""
+
+    def test_normalizes_title_and_fields(self):
+        title, fields = validate_form_spec(_FULL_FORM_SPEC)
+        assert title == "New task"
+        assert [f["name"] for f in fields] == ["desc", "prio", "tags", "urgent", "points"]
+        # label defaults to name when absent (the select field declared none).
+        assert next(f for f in fields if f["name"] == "prio")["label"] == "prio"
+        # options preserved for select/multiselect.
+        assert next(f for f in fields if f["name"] == "tags")["options"] == ["a", "b", "c"]
+
+    def test_title_defaults_to_form(self):
+        title, _ = validate_form_spec({"fields": [{"name": "x", "kind": "text"}]})
+        assert title == "Form"
+
+    def test_non_dict_spec_raises(self):
+        with pytest.raises(ValueError, match="spec must be a dict"):
+            validate_form_spec(["not", "a", "dict"])
+
+    def test_empty_fields_raises(self):
+        with pytest.raises(ValueError, match="non-empty list"):
+            validate_form_spec({"fields": []})
+
+    def test_missing_fields_raises(self):
+        with pytest.raises(ValueError, match="non-empty list"):
+            validate_form_spec({"title": "x"})
+
+    def test_field_missing_name_raises(self):
+        with pytest.raises(ValueError, match="non-empty string 'name'"):
+            validate_form_spec({"fields": [{"kind": "text"}]})
+
+    def test_duplicate_name_raises(self):
+        spec = {"fields": [{"name": "x", "kind": "text"}, {"name": "x", "kind": "number"}]}
+        with pytest.raises(ValueError, match="duplicate field name"):
+            validate_form_spec(spec)
+
+    def test_unknown_kind_raises(self):
+        with pytest.raises(ValueError, match="unknown kind"):
+            validate_form_spec({"fields": [{"name": "x", "kind": "slider"}]})
+
+    def test_select_without_options_raises(self):
+        with pytest.raises(ValueError, match="needs a non-empty 'options' list"):
+            validate_form_spec({"fields": [{"name": "x", "kind": "select"}]})
+
+    def test_multiselect_non_string_options_raises(self):
+        spec = {"fields": [{"name": "x", "kind": "multiselect", "options": [1, 2]}]}
+        with pytest.raises(ValueError, match="'options' must all be strings"):
+            validate_form_spec(spec)
+
+    def test_non_string_label_raises(self):
+        spec = {"fields": [{"name": "x", "kind": "text", "label": 5}]}
+        with pytest.raises(ValueError, match="label must be a string"):
+            validate_form_spec(spec)
+
+
+class TestFormHeadlessValue:
+    """form_headless_value returns the declared default or the kind's empty value."""
+
+    def test_declared_default_wins(self):
+        _, fields = validate_form_spec(_FULL_FORM_SPEC)
+        by_name = {f["name"]: f for f in fields}
+        assert form_headless_value(by_name["desc"]) == "draft"
+        assert form_headless_value(by_name["prio"]) == "high"
+        assert form_headless_value(by_name["tags"]) == ["b"]
+        assert form_headless_value(by_name["urgent"]) is True
+        assert form_headless_value(by_name["points"]) == 3
+
+    def test_natural_empty_per_kind_without_default(self):
+        spec = {
+            "fields": [
+                {"name": "t", "kind": "text"},
+                {"name": "n", "kind": "number"},
+                {"name": "c", "kind": "confirm"},
+                {"name": "m", "kind": "multiselect", "options": ["a", "b"]},
+                {"name": "s", "kind": "select", "options": ["a", "b"]},
+            ]
+        }
+        _, fields = validate_form_spec(spec)
+        by_name = {f["name"]: f for f in fields}
+        assert form_headless_value(by_name["t"]) == ""
+        assert form_headless_value(by_name["n"]) == 0
+        assert form_headless_value(by_name["c"]) is False
+        assert form_headless_value(by_name["m"]) == []
+        # select has no empty value — falls back to its first (concrete) option.
+        assert form_headless_value(by_name["s"]) == "a"
+
+
+class TestExtensionUIForm:
+    """ExtensionUI.form headless routing: raise / policy defaults / json record."""
+
+    @pytest.mark.asyncio
+    async def test_form_raises_headless_without_policy(self):
+        # Fail-Early: no form policy → raise, NEVER silently auto-fill.
+        ui = ExtensionUI(mode="headless")
+        with pytest.raises(HeadlessDialogError):
+            await ui.form(_FULL_FORM_SPEC)
+
+    @pytest.mark.asyncio
+    async def test_form_defaults_policy_returns_declared_defaults(self):
+        ui = ExtensionUI(mode="headless")
+        ui.set_headless_defaults({"form": "defaults"})
+        answers = await ui.form(_FULL_FORM_SPEC)
+        assert answers == {
+            "desc": "draft",
+            "prio": "high",
+            "tags": ["b"],
+            "urgent": True,
+            "points": 3,
+        }
+
+    @pytest.mark.asyncio
+    async def test_form_validates_before_policy(self):
+        # A malformed spec fails up front regardless of policy (no UI shown).
+        ui = ExtensionUI(mode="headless")
+        ui.set_headless_defaults({"form": "defaults"})
+        with pytest.raises(ValueError, match="unknown kind"):
+            await ui.form({"fields": [{"name": "x", "kind": "nope"}]})
+
+    @pytest.mark.asyncio
+    async def test_form_emits_json_record_then_resolves(self):
+        ui = ExtensionUI(mode="headless")
+        ui.set_headless_defaults({"form": "defaults"})
+        records: list[dict] = []
+        ui.set_record_sink(records.append)
+        answers = await ui.form(_FULL_FORM_SPEC)
+        assert answers["prio"] == "high"
+        assert len(records) == 1
+        rec = records[0]
+        assert rec["type"] == "extension"
+        assert rec["kind"] == "form"
+        assert rec["extension"] is None
+        assert rec["title"] == "New task"
+        assert [f["name"] for f in rec["fields"]] == ["desc", "prio", "tags", "urgent", "points"]
+
+    @pytest.mark.asyncio
+    async def test_form_emits_record_even_when_it_will_raise(self):
+        # The request is visible on the stream before the Fail-Early raise.
+        ui = ExtensionUI(mode="headless")
+        records: list[dict] = []
+        ui.set_record_sink(records.append)
+        with pytest.raises(HeadlessDialogError):
+            await ui.form(_FULL_FORM_SPEC)
+        assert len(records) == 1
+        assert records[0]["kind"] == "form"
+
+    @pytest.mark.asyncio
+    async def test_form_ui_defaults_rejects_bad_form_token(self):
+        # Only "defaults" is a valid form answer (validated like every method).
+        ui = ExtensionUI(mode="headless")
+        with pytest.raises(ValueError, match="form="):
+            ui.set_headless_defaults({"form": "yes"})
+
+    @pytest.mark.asyncio
+    async def test_form_delegates_in_tui_mode(self):
+        # TUI mode routes to the delegate (a human fills it); no policy needed.
+        ui = ExtensionUI(mode="tui")
+
+        class _Delegate:
+            async def form(self, spec):
+                return {"desc": "typed", "prio": "low"}
+
+        ui._tui_delegate = _Delegate()
+        answers = await ui.form(_FULL_FORM_SPEC)
+        assert answers == {"desc": "typed", "prio": "low"}
+
+
+class TestExtensionUISetStatus:
+    """ExtensionUI.set_status routing: delegate / json record / stderr; slot semantics."""
+
+    def test_delegates_in_tui_mode(self):
+        # TUI mode routes to the delegate's status strip (key + text passed through).
+        ui = ExtensionUI(mode="tui")
+        calls: list[tuple[str, str | None]] = []
+
+        class _Delegate:
+            def set_status(self, key, text):
+                calls.append((key, text))
+
+        ui._tui_delegate = _Delegate()
+        ui.set_status("budget", "$1.42/2.00")
+        ui.set_status("budget", None)  # clear
+        assert calls == [("budget", "$1.42/2.00"), ("budget", None)]
+
+    def test_emits_json_record(self):
+        # Headless --mode json: a set + a re-call + a clear each emit a status record.
+        ui = ExtensionUI(mode="headless")
+        records: list[dict] = []
+        ui.set_record_sink(records.append)
+        ui.set_status("budget", "$1.42/2.00")
+        ui.set_status("budget", "$1.90/2.00")  # same key updates the slot
+        ui.set_status("budget", None)  # clear rides the same record, text=None
+        assert [r["kind"] for r in records] == ["status", "status", "status"]
+        assert all(r["type"] == "extension" for r in records)
+        assert all(r["extension"] is None for r in records)
+        assert [(r["key"], r["text"]) for r in records] == [
+            ("budget", "$1.42/2.00"),
+            ("budget", "$1.90/2.00"),
+            ("budget", None),
+        ]
+
+    def test_record_carries_source_when_known(self):
+        ui = ExtensionUI(mode="headless")
+        records: list[dict] = []
+        ui.set_record_sink(records.append)
+        ui.set_status("m", "gpt", source="model-status.py")
+        assert records[0]["extension"] == "model-status.py"
+
+    def test_prints_to_stderr_without_sink(self):
+        # --mode text / SDK: no delegate, no record sink → honest stderr line.
+        ui = ExtensionUI(mode="headless")
+        with patch("sys.stderr", new=io.StringIO()) as mock_stderr:
+            ui.set_status("turn", "Turn 3...")
+            assert "[τ] status turn: Turn 3..." in mock_stderr.getvalue()
+
+    def test_clear_stderr_shows_cleared(self):
+        ui = ExtensionUI(mode="headless")
+        with patch("sys.stderr", new=io.StringIO()) as mock_stderr:
+            ui.set_status("turn", None)
+            assert "[τ] status turn: (cleared)" in mock_stderr.getvalue()
+
+    def test_empty_key_raises(self):
+        # Fail-Early: a slot with no key has nothing to update or clear.
+        ui = ExtensionUI(mode="headless")
+        with pytest.raises(ValueError, match="non-empty string"):
+            ui.set_status("", "x")
+        with pytest.raises(ValueError, match="non-empty string"):
+            ui.set_status(None, "x")  # type: ignore[arg-type]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ui.panel — declarative panel spec (E10 §6 / S68)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+_TABLE_PANEL_SPEC = {
+    "title": "Fleet",
+    "table": {
+        "columns": ["child", "status", "cost"],
+        "rows": [
+            ["c-1", "running", "$0.10"],
+            ["c-2", "done", "$0.42"],
+        ],
+    },
+    "actions": [
+        {"label": "Abort c-1", "command": "abort_child", "args": "c-1"},
+        {"label": "Refresh", "command": "refresh_fleet"},
+    ],
+}
+
+
+class TestValidatePanelSpec:
+    """validate_panel_spec normalizes a good spec and Fail-Early rejects bad ones."""
+
+    def test_normalizes_table_title_body_actions(self):
+        norm = validate_panel_spec(_TABLE_PANEL_SPEC)
+        assert norm["title"] == "Fleet"
+        assert norm["body"] == {
+            "kind": "table",
+            "columns": ["child", "status", "cost"],
+            "rows": [["c-1", "running", "$0.10"], ["c-2", "done", "$0.42"]],
+        }
+        # args defaults to "" when the action omits it.
+        assert norm["actions"] == [
+            {"label": "Abort c-1", "command": "abort_child", "args": "c-1"},
+            {"label": "Refresh", "command": "refresh_fleet", "args": ""},
+        ]
+
+    def test_text_body(self):
+        norm = validate_panel_spec({"title": "T", "text": "hello"})
+        assert norm["body"] == {"kind": "text", "text": "hello"}
+        assert norm["actions"] == []
+
+    def test_list_body(self):
+        norm = validate_panel_spec({"list": ["a", "b"]})
+        assert norm["title"] == "Panel"  # default title
+        assert norm["body"] == {"kind": "list", "items": ["a", "b"]}
+
+    def test_non_dict_spec_raises(self):
+        with pytest.raises(ValueError, match="spec must be a dict"):
+            validate_panel_spec(["nope"])
+
+    def test_non_string_title_raises(self):
+        with pytest.raises(ValueError, match="title'] must be a string"):
+            validate_panel_spec({"title": 5, "text": "x"})
+
+    def test_zero_body_keys_raises(self):
+        with pytest.raises(ValueError, match="EXACTLY ONE body"):
+            validate_panel_spec({"title": "x"})
+
+    def test_more_than_one_body_key_raises(self):
+        with pytest.raises(ValueError, match="EXACTLY ONE body"):
+            validate_panel_spec({"text": "x", "list": ["y"]})
+
+    def test_text_body_non_string_raises(self):
+        with pytest.raises(ValueError, match="'text' body must be a string"):
+            validate_panel_spec({"text": 5})
+
+    def test_list_body_non_string_items_raises(self):
+        with pytest.raises(ValueError, match="'list' body must be a list of strings"):
+            validate_panel_spec({"list": ["a", 2]})
+
+    def test_table_columns_must_be_non_empty_strings(self):
+        with pytest.raises(ValueError, match="'columns' must be a non-empty list"):
+            validate_panel_spec({"table": {"columns": [], "rows": []}})
+
+    def test_table_row_wrong_width_raises(self):
+        spec = {"table": {"columns": ["a", "b"], "rows": [["only-one"]]}}
+        with pytest.raises(ValueError, match="1 cells but there are 2 columns"):
+            validate_panel_spec(spec)
+
+    def test_table_row_non_string_cell_raises(self):
+        spec = {"table": {"columns": ["a"], "rows": [[3]]}}
+        with pytest.raises(ValueError, match="each table row must be a list of strings"):
+            validate_panel_spec(spec)
+
+    def test_action_missing_command_raises(self):
+        spec = {"text": "x", "actions": [{"label": "Go"}]}
+        with pytest.raises(ValueError, match="needs a non-empty string 'command'"):
+            validate_panel_spec(spec)
+
+    def test_action_missing_label_raises(self):
+        spec = {"text": "x", "actions": [{"command": "go"}]}
+        with pytest.raises(ValueError, match="needs a non-empty string 'label'"):
+            validate_panel_spec(spec)
+
+    def test_action_non_string_args_raises(self):
+        spec = {"text": "x", "actions": [{"label": "Go", "command": "go", "args": 5}]}
+        with pytest.raises(ValueError, match="'args' must be a string"):
+            validate_panel_spec(spec)
+
+    def test_actions_non_list_raises(self):
+        with pytest.raises(ValueError, match="'actions' must be a list"):
+            validate_panel_spec({"text": "x", "actions": "go"})
+
+
+class TestExtensionUIPanel:
+    """ExtensionUI.panel routing: delegate / json record / stderr; key + clear."""
+
+    def test_delegates_in_tui_mode(self):
+        # TUI mode routes the NORMALIZED spec (not the raw one) to the delegate.
+        ui = ExtensionUI(mode="tui")
+        calls: list[tuple[str, dict | None]] = []
+
+        class _Delegate:
+            def panel(self, key, spec):
+                calls.append((key, spec))
+
+        ui._tui_delegate = _Delegate()
+        ui.panel("fleet", _TABLE_PANEL_SPEC)
+        ui.panel("fleet", None)  # clear
+        assert calls[0][0] == "fleet"
+        assert calls[0][1]["body"]["kind"] == "table"
+        assert calls[0][1]["actions"][1]["args"] == ""  # normalized
+        assert calls[1] == ("fleet", None)
+
+    def test_emits_json_record_with_normalized_spec(self):
+        # Headless --mode json: a set + a clear each emit a panel record; the set
+        # carries the normalized spec (with its declared actions visible on the
+        # stream), the clear rides spec=None.
+        ui = ExtensionUI(mode="headless")
+        records: list[dict] = []
+        ui.set_record_sink(records.append)
+        ui.panel("fleet", _TABLE_PANEL_SPEC)
+        ui.panel("fleet", None)
+        assert [r["kind"] for r in records] == ["panel", "panel"]
+        assert all(r["type"] == "extension" for r in records)
+        assert all(r["extension"] is None for r in records)
+        assert [r["key"] for r in records] == ["fleet", "fleet"]
+        assert records[0]["spec"]["title"] == "Fleet"
+        assert [a["command"] for a in records[0]["spec"]["actions"]] == [
+            "abort_child",
+            "refresh_fleet",
+        ]
+        assert records[1]["spec"] is None
+
+    def test_record_carries_source_when_known(self):
+        ui = ExtensionUI(mode="headless")
+        records: list[dict] = []
+        ui.set_record_sink(records.append)
+        ui.panel("fleet", {"text": "hi"}, source="delegate_fleet.py")
+        assert records[0]["extension"] == "delegate_fleet.py"
+
+    def test_validates_before_routing(self):
+        # A malformed spec fails up front regardless of mode (no record, no delegate).
+        ui = ExtensionUI(mode="headless")
+        records: list[dict] = []
+        ui.set_record_sink(records.append)
+        with pytest.raises(ValueError, match="EXACTLY ONE body"):
+            ui.panel("fleet", {"title": "no body"})
+        assert records == []
+
+    def test_prints_to_stderr_without_sink(self):
+        # --mode text / SDK: no delegate, no record sink → honest stderr line.
+        ui = ExtensionUI(mode="headless")
+        with patch("sys.stderr", new=io.StringIO()) as mock_stderr:
+            ui.panel("fleet", {"title": "Fleet", "text": "2 running"})
+            assert "[τ] panel fleet: Fleet" in mock_stderr.getvalue()
+
+    def test_clear_stderr_shows_cleared(self):
+        ui = ExtensionUI(mode="headless")
+        with patch("sys.stderr", new=io.StringIO()) as mock_stderr:
+            ui.panel("fleet", None)
+            assert "[τ] panel fleet: (cleared)" in mock_stderr.getvalue()
+
+    def test_empty_key_raises(self):
+        # Fail-Early: a panel with no key has nothing to update or clear.
+        ui = ExtensionUI(mode="headless")
+        with pytest.raises(ValueError, match="non-empty string"):
+            ui.panel("", {"text": "x"})
+        with pytest.raises(ValueError, match="non-empty string"):
+            ui.panel(None, {"text": "x"})  # type: ignore[arg-type]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -537,54 +1087,83 @@ class TestExtensionContext:
 
 
 class TestExtensionUI:
-    """Tests for ExtensionUI (headless/no-op mode).
+    """Tests for ExtensionUI (headless dialog policy).
 
-    Reference: SUBPHASE-0.0.md, "8. Extension API Surface":
-    > In headless mode (RPC, SDK), all methods are no-ops.
-    > The TUI implements the real UI methods.
+    Reference: SUBPHASE-0.0.md, "8. Extension API Surface"; E7 §3 / S48. In
+    headless mode a blocking dialog raises by default (no human to ask) and
+    auto-answers only under an explicit ``--ui-defaults`` policy.
     """
 
     @pytest.mark.asyncio
-    async def test_confirm_returns_true(self):
-        """ExtensionUI.confirm() returns True by default (headless)."""
+    async def test_confirm_raises_without_policy(self):
+        """ExtensionUI.confirm() raises headless with no policy (S48)."""
         ui = ExtensionUI()
-        result = await ui.confirm("Title", "Message")
-        assert result is True
+        with pytest.raises(HeadlessDialogError):
+            await ui.confirm("Title", "Message")
 
     @pytest.mark.asyncio
-    async def test_confirm_with_params(self):
-        """ExtensionUI.confirm() accepts title and message."""
-        ui = ExtensionUI()
-        result = await ui.confirm("Confirm?", "Are you sure?")
-        assert result is True
+    async def test_confirm_yes_and_no(self):
+        """ExtensionUI.confirm() maps yes/true→True, no/false→False (S48)."""
+        assert await ExtensionUI(headless_policy={"confirm": "yes"}).confirm("t", "m") is True
+        assert await ExtensionUI(headless_policy={"confirm": "true"}).confirm("t", "m") is True
+        assert await ExtensionUI(headless_policy={"confirm": "no"}).confirm("t", "m") is False
+        assert await ExtensionUI(headless_policy={"confirm": "false"}).confirm("t", "m") is False
 
     @pytest.mark.asyncio
-    async def test_select_returns_first_item(self):
-        """ExtensionUI.select() returns first item by default (headless)."""
+    async def test_select_raises_without_policy(self):
+        """ExtensionUI.select() raises headless with no policy (S48)."""
         ui = ExtensionUI()
+        with pytest.raises(HeadlessDialogError):
+            await ui.select("Title", ["Option 1", "Option 2"])
+
+    @pytest.mark.asyncio
+    async def test_select_returns_first_item_with_policy(self):
+        """ExtensionUI.select() returns first item under select=first (S48)."""
+        ui = ExtensionUI(headless_policy={"select": "first"})
         result = await ui.select("Title", ["Option 1", "Option 2"])
         assert result == "Option 1"
 
     @pytest.mark.asyncio
-    async def test_select_returns_none_for_empty_list(self):
-        """ExtensionUI.select() returns None for empty list."""
-        ui = ExtensionUI()
+    async def test_select_returns_none_for_empty_list_with_policy(self):
+        """ExtensionUI.select() returns None for empty list under select=first (S48)."""
+        ui = ExtensionUI(headless_policy={"select": "first"})
         result = await ui.select("Title", [])
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_input_returns_default(self):
-        """ExtensionUI.input() returns default value (headless)."""
+    async def test_input_raises_without_policy(self):
+        """ExtensionUI.input() raises headless with no policy (S48)."""
         ui = ExtensionUI()
+        with pytest.raises(HeadlessDialogError):
+            await ui.input("Title", default="default_value")
+
+    @pytest.mark.asyncio
+    async def test_input_returns_default_with_policy(self):
+        """ExtensionUI.input() returns default value under input=default (S48)."""
+        ui = ExtensionUI(headless_policy={"input": "default"})
         result = await ui.input("Title", default="default_value")
         assert result == "default_value"
 
     @pytest.mark.asyncio
     async def test_input_returns_empty_string_without_default(self):
-        """ExtensionUI.input() returns empty string when no default."""
-        ui = ExtensionUI()
+        """ExtensionUI.input() returns empty string when no default (input=default)."""
+        ui = ExtensionUI(headless_policy={"input": "default"})
         result = await ui.input("Title")
         assert result == ""
+
+    def test_set_headless_defaults_rejects_unknown_method(self):
+        """set_headless_defaults raises on an unknown dialog method (Fail-Early)."""
+        ui = ExtensionUI()
+        with pytest.raises(ValueError):
+            ui.set_headless_defaults({"bogus": "yes"})
+
+    def test_set_headless_defaults_rejects_unknown_token(self):
+        """set_headless_defaults raises on an invalid answer token (Fail-Early)."""
+        ui = ExtensionUI()
+        with pytest.raises(ValueError):
+            ui.set_headless_defaults({"confirm": "maybe"})
+        with pytest.raises(ValueError):
+            ui.set_headless_defaults({"select": "last"})
 
     def test_notify_noop(self):
         """ExtensionUI.notify() is a no-op in headless mode (prints to stderr)."""
@@ -620,24 +1199,24 @@ class TestExtensionUI:
 
     @pytest.mark.asyncio
     async def test_confirm_returns_async_bool(self):
-        """ExtensionUI.confirm() is async and returns bool."""
-        ui = ExtensionUI()
+        """ExtensionUI.confirm() is async and returns bool (under a policy)."""
+        ui = ExtensionUI(headless_policy={"confirm": "yes"})
         result = await ui.confirm("Title", "Message")
         assert isinstance(result, bool)
         assert result is True
 
     @pytest.mark.asyncio
     async def test_select_returns_async_str_or_none(self):
-        """ExtensionUI.select() is async and returns str or None."""
-        ui = ExtensionUI()
+        """ExtensionUI.select() is async and returns str or None (under a policy)."""
+        ui = ExtensionUI(headless_policy={"select": "first"})
         result = await ui.select("Title", ["a", "b"])
         assert isinstance(result, str)
         assert result == "a"
 
     @pytest.mark.asyncio
     async def test_input_returns_async_str(self):
-        """ExtensionUI.input() is async and returns str."""
-        ui = ExtensionUI()
+        """ExtensionUI.input() is async and returns str (under a policy)."""
+        ui = ExtensionUI(headless_policy={"input": "default"})
         result = await ui.input("Title", default="def")
         assert isinstance(result, str)
         assert result == "def"
@@ -719,15 +1298,18 @@ class TestExtensionUITUI:
         assert delegate.last_notify == ("Hello", "warning")
 
     @pytest.mark.asyncio
-    async def test_tui_mode_without_delegate_uses_defaults(self):
-        """ExtensionUI in TUI mode without delegate uses headless defaults."""
+    async def test_tui_mode_without_delegate_uses_headless_policy(self):
+        """TUI mode without a delegate falls through to the headless policy (S48)."""
         ui = ExtensionUI(mode="tui")
-        # No delegate set — should fall through to headless behavior
+        # No delegate set — falls through to headless behavior.
         assert ui._mode == "tui"
         assert ui._tui_delegate is None
-        # confirm still returns True (no delegate to call)
-        result = await ui.confirm("T", "M")
-        assert result is True
+        # With no policy the fall-through raises (Fail-Early, no silent auto-answer).
+        with pytest.raises(HeadlessDialogError):
+            await ui.confirm("T", "M")
+        # With a policy it honors it.
+        ui.set_headless_defaults({"confirm": "yes"})
+        assert await ui.confirm("T", "M") is True
 
     def test_set_ui_delegate_enables_tui_mode(self):
         """ExtensionUI.set_ui_delegate() sets mode to TUI and delegate."""
@@ -784,9 +1366,12 @@ class TestExtensionAPIIntegration:
         assert len(tools) == 1
         assert tools[0].source == "extension"
 
-        # Append entry
-        api.append_entry("counter", {"value": 42})
-        assert len(api._registry.get_entries()) == 1
+        # Append entry — now DURABLE (S39): delegates to the bound session, not a
+        # RAM registry store (removed with G4).
+        mock_session = MagicMock()
+        session_api = ExtensionAPI(session=mock_session)
+        session_api.append_entry("counter", {"value": 42})
+        mock_session._append_custom_entry.assert_called_once_with("counter", {"value": 42})
 
     def test_ui_property_reflects_context_ui(self):
         """ExtensionAPI.ui returns the context's ExtensionUI."""

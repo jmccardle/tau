@@ -7,7 +7,21 @@ Clean, simple, fast. Built with Textual.
 from textual.app import App, ComposeResult, SystemCommand
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.widget import Widget
-from textual.widgets import Static, Input, Header, Footer, Markdown, Button, TextArea, Tree
+from textual.widgets import (
+    Static,
+    Input,
+    Header,
+    Footer,
+    Markdown,
+    Button,
+    TextArea,
+    Tree,
+    OptionList,
+    Checkbox,
+    RadioSet,
+    RadioButton,
+    SelectionList,
+)
 from textual.binding import Binding
 from textual.reactive import reactive
 from textual import events, work
@@ -21,8 +35,8 @@ import time
 import traceback
 from typing import Any, Callable, Literal, Optional
 
-from tau_coding_agent.backends import create_backend, Backend
-from tau_coding_agent.headless import _append_system_prompt
+from tau_coding_agent.backends import create_backend, make_model_resolver, Backend
+from tau_coding_agent.headless import _append_system_prompt, resolve_extensions_config
 
 # Session persistence lives in a Textual-free module so `tau -p` can save
 # sessions without importing the TUI. Sessions are append-only JSONL transcripts
@@ -39,6 +53,16 @@ from tau_coding_agent.session_store import (
 # The pure session-tree algebra lives in tau-agent-core (the loop's package, not
 # the TUI); the tree-browser (§3) is a view over ConversationTree.tree().
 from tau_agent_core.conversation_tree import ConversationTree, TreeNode
+
+# The declarative ``ui.form`` spec validator — the single source of truth the
+# generic ``ExtensionFormScreen`` shares with ``ExtensionUI.form`` (E10 §6 / S66).
+# ``ui.panel`` (S68) normalizes in ``ExtensionUI.panel`` before reaching the delegate,
+# so ``ExtensionPanel`` renders the already-normalized ``{title, body, actions}`` dict.
+from tau_agent_core.extension_types import validate_form_spec
+
+# The result of running an extension command (handled flag + the handler's
+# returned output) — the command output channel (E7 §3 / S46).
+from tau_agent_core.agent_session import ExtensionCommandResult
 
 # Extension load result + the read-only per-extension summary the /extensions
 # palette listing renders (E5 §5 / S34).
@@ -66,10 +90,14 @@ class _ExtensionUIDelegate:
     loop (the generation worker is async, not threaded), so ``App.notify`` is
     called directly.
 
-    S33 wires ``notify`` only; the interactive dialogs (``confirm`` / ``select`` /
-    ``input``) RAISE rather than silently auto-approving — flipping into TUI mode
-    must not turn a `confirm` prompt into a hidden "yes" (Fail-Early). Their modals
-    are a later step; no shipped extension calls them.
+    S33 wired ``notify`` only. E7 §3 / S47 now wires the interactive dialogs
+    (``confirm`` / ``select`` / ``input``) onto real ``ModalScreen`` overlays
+    (:class:`ExtensionConfirmModal` / :class:`ExtensionSelectModal` /
+    :class:`ExtensionInputModal`), pushed via ``push_screen_wait`` so the extension
+    hook awaits the user's answer. Extension hooks run inside the generation worker
+    (async, not threaded), which is the worker context ``push_screen_wait`` needs.
+    A cancelled ``confirm`` resolves to ``False`` — flipping into TUI mode must not
+    turn a ``confirm`` prompt into a hidden "yes" (Fail-Early).
     """
 
     #: extension notify level → Textual ``App.notify`` severity.
@@ -86,19 +114,223 @@ class _ExtensionUIDelegate:
         self._app.notify(message, severity=self._SEVERITY.get(level, "information"))
 
     async def confirm(self, title: str, message: str) -> bool:
-        raise NotImplementedError(
-            "extension api.ui.confirm is not wired into the TUI yet (S33 wired notify only)"
-        )
+        return await self._app.push_screen_wait(ExtensionConfirmModal(title, message))
 
     async def select(self, title: str, items: list[str]) -> str | None:
-        raise NotImplementedError(
-            "extension api.ui.select is not wired into the TUI yet (S33 wired notify only)"
-        )
+        return await self._app.push_screen_wait(ExtensionSelectModal(title, items))
 
     async def input(self, title: str, default: str = "") -> str:
-        raise NotImplementedError(
-            "extension api.ui.input is not wired into the TUI yet (S33 wired notify only)"
-        )
+        # The modal dismisses with None on cancel (Esc / Cancel); the ExtensionUI
+        # contract is ``-> str``, so a cancelled prompt resolves to the default
+        # (the same value the headless path returns), never a fabricated "".
+        result = await self._app.push_screen_wait(ExtensionInputModal(title, default))
+        return result if result is not None else default
+
+    async def form(self, spec: dict[str, Any]) -> dict[str, Any] | None:
+        # One generic screen renders every field kind (E10 §6 / S66). Submit
+        # dismisses with the ``{name: value}`` dict; Esc/Cancel dismisses with
+        # ``None`` (a cancelled form is not a fabricated answer set — Fail-Early).
+        return await self._app.push_screen_wait(ExtensionFormScreen(spec))
+
+    def set_status(self, key: str, text: str | None) -> None:
+        # Ambient keyed slot in the footer status strip (E10 §6 / S67). Non-blocking
+        # (no dialog to await): forwards to the app, which updates the single
+        # ``ExtensionStatusBar`` slot in place; ``text=None`` clears it. Extension
+        # hooks run on the app's event loop, so the widget mutation is direct.
+        self._app.set_extension_status(key, text)
+
+    def panel(self, key: str, spec: dict[str, Any] | None) -> None:
+        # Persistent keyed panel (E10 §6 / S68). Non-blocking (not a dialog): forwards
+        # to the app, which mounts / updates / removes the keyed ``ExtensionPanel`` in
+        # the panel host; ``spec=None`` clears it. ``spec`` is already the normalized
+        # ``{title, body, actions}`` dict from ``ExtensionUI.panel``.
+        self._app.set_extension_panel(key, spec)
+
+
+class ExtensionStatusBar(Static):
+    """One-line footer strip of keyed extension status slots (E10 §6 / S67).
+
+    The TUI surface behind ``ctx.ui.set_status(key, text)`` (pi's ``setStatus``,
+    types.ts:141): ambient, live state — e.g. budget proximity ticking each turn.
+    Each ``key`` names a SLOT; :meth:`set_slot` UPDATES that slot in place on a
+    re-call (never appends a duplicate) and REMOVES it when ``text is None`` (pi's
+    "pass undefined to clear"). Slots render in first-seen order (an insertion-
+    ordered dict) joined by a thin separator, so the strip reads left-to-right in a
+    stable order across updates.
+
+    When no slots remain the strip hides itself (``display = False``) so it costs
+    zero rows — it only occupies its one line while at least one extension has
+    something live to show. It sits just above the built-in ``Footer`` in the app's
+    vertical flow (not docked), so the two stack cleanly.
+    """
+
+    _SEPARATOR = "  │  "
+
+    def __init__(self) -> None:
+        super().__init__("", id="ext-status-bar")
+        # Insertion-ordered slots: {key: text}. A dict preserves first-seen order,
+        # so an in-place update of an existing key keeps its position.
+        self._slots: dict[str, str] = {}
+        self.display = False
+
+    def set_slot(self, key: str, text: str | None) -> None:
+        """Set, update, or clear one keyed slot, then re-render the strip."""
+        if text is None:
+            self._slots.pop(key, None)
+        else:
+            self._slots[key] = text
+        if self._slots:
+            self.display = True
+            self.update(self._SEPARATOR.join(self._slots.values()))
+        else:
+            # Nothing live to show — collapse the strip to zero rows rather than
+            # leave an empty bar.
+            self.display = False
+            self.update("")
+
+
+def render_panel_body(body: dict[str, Any]) -> str:
+    """Render a normalized ``ui.panel`` body dict to plain display text (E10 §6 / S68).
+
+    Pure (no widget access) so it is unit-testable: given a ``{"kind": …}`` body from
+    :func:`~tau_agent_core.extension_types.validate_panel_spec` it returns the exact
+    text the panel's body :class:`Static` shows. ``text`` → the string as-is; ``list``
+    → one ``• item`` line per entry; ``table`` → a monospace grid (a header row, a rule
+    row, then the data rows) with every column padded to its widest cell.
+    """
+    kind = body["kind"]
+    if kind == "text":
+        return str(body["text"])
+    if kind == "list":
+        return "\n".join(f"• {item}" for item in body["items"])
+    # table
+    columns: list[str] = body["columns"]
+    rows: list[list[str]] = body["rows"]
+    widths = [len(col) for col in columns]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(cell))
+
+    def _fmt(cells: list[str]) -> str:
+        return "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(cells))
+
+    lines = [_fmt(columns), _fmt(["─" * w for w in widths])]
+    lines.extend(_fmt(row) for row in rows)
+    return "\n".join(lines)
+
+
+class _PanelActionButton(Button):
+    """A panel action button carrying the command it dispatches (E10 §6 / S68).
+
+    Subclasses :class:`Button` to attach the ``command``/``args`` an action declares,
+    so :meth:`ExtensionPanel.on_button_pressed` can map a press straight to a command
+    dispatch without brittle id-parsing — and so an ordinary ``Button`` elsewhere in a
+    panel (were one added) would not be mistaken for an action.
+    """
+
+    def __init__(self, label: str, command: str, args: str) -> None:
+        super().__init__(label, classes="ext-panel-action")
+        self.command = command
+        self.args = args
+
+
+class ExtensionPanel(Vertical):
+    """One persistent keyed panel from a declarative spec (E10 §6 / S68).
+
+    The TUI surface behind ``ctx.ui.panel(key, spec)`` (D-E6-4: a plain-data SPEC, not
+    a widget factory) — the fleet-dashboard primitive. Renders the normalized
+    ``{title, body, actions}`` from
+    :func:`~tau_agent_core.extension_types.validate_panel_spec`: a title
+    :class:`Static`, a body :class:`Static` (via :func:`render_panel_body` — text /
+    bullet list / table grid), and, when the spec declares ``actions``, a row of
+    :class:`_PanelActionButton`. Pressing an action posts an :class:`Action` message
+    that bubbles to the app, which DISPATCHES the action's ``command`` back into the
+    extension as a ``register_command`` call — the panel→extension loop.
+
+    Live-updatable: :meth:`update_spec` rebuilds the panel's children in place (the
+    panel widget keeps its DOM position, so a re-call for the same key updates content
+    without reordering sibling panels — the fleet table ticking each turn).
+    """
+
+    class Action(Message):
+        """A panel action was pressed → dispatch ``command`` with ``args`` (S68)."""
+
+        def __init__(self, command: str, args: str) -> None:
+            self.command = command
+            self.args = args
+            super().__init__()
+
+    def __init__(self, key: str, spec: dict[str, Any]) -> None:
+        super().__init__(classes="ext-panel")
+        self._key = key
+        self._spec = spec
+
+    def compose(self) -> ComposeResult:
+        yield from self._build_widgets()
+
+    def _build_widgets(self) -> ComposeResult:
+        yield Static(self._spec["title"], classes="ext-panel-title")
+        yield Static(render_panel_body(self._spec["body"]), classes="ext-panel-body")
+        actions = self._spec["actions"]
+        if actions:
+            yield Horizontal(
+                *(_PanelActionButton(a["label"], a["command"], a["args"]) for a in actions),
+                classes="ext-panel-actions",
+            )
+
+    async def update_spec(self, spec: dict[str, Any]) -> None:
+        """Re-render this panel in place from a new normalized spec (live update)."""
+        self._spec = spec
+        await self.remove_children()
+        await self.mount(*self._build_widgets())
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        button = event.button
+        if isinstance(button, _PanelActionButton):
+            # Consume the press here and re-emit it as a semantic Action, so the app
+            # sees "run command X" rather than a raw button event it must decode.
+            event.stop()
+            self.post_message(self.Action(button.command, button.args))
+
+
+class ExtensionPanelHost(VerticalScroll):
+    """The container of live keyed :class:`ExtensionPanel` widgets (E10 §6 / S68).
+
+    The app-side landing for ``ctx.ui.panel(key, spec)``. :meth:`set_panel` MOUNTS a
+    new panel for an unseen key, UPDATES an existing key's panel in place (identity
+    preserved, so sibling order is stable across a live re-call), and REMOVES a panel
+    when ``spec is None`` (pi's "pass undefined to clear"). When no panels remain the
+    host hides itself (``display = False``) so it costs zero space — it only occupies
+    the side column while at least one extension has a panel live. Docked to the right
+    of the main area, so the chat flow is untouched when empty.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(id="ext-panel-host")
+        # Insertion-ordered {key: panel}; a dict preserves first-seen order so an
+        # in-place update keeps a panel's column position.
+        self._panels: dict[str, ExtensionPanel] = {}
+        self.display = False
+
+    def set_panel(self, key: str, spec: dict[str, Any] | None) -> None:
+        """Mount, update in place, or remove one keyed panel (E10 §6 / S68)."""
+        if spec is None:
+            panel = self._panels.pop(key, None)
+            if panel is not None:
+                panel.remove()
+            if not self._panels:
+                self.display = False
+            return
+        self.display = True
+        existing = self._panels.get(key)
+        if existing is not None:
+            # Update the SAME widget (order-stable). update_spec is async (mount /
+            # remove children); schedule it on the loop — the delegate call is sync.
+            self.call_later(existing.update_spec, spec)
+        else:
+            panel = ExtensionPanel(key, spec)
+            self._panels[key] = panel
+            self.mount(panel)
 
 
 class SystemPromptEditor(ModalScreen):
@@ -242,6 +474,282 @@ class TreeCustomInstructionsModal(ModalScreen[Optional[str]]):
             self.dismiss(self.query_one("#prompt-editor-textarea", TextArea).text)
         elif event.button.id == "custom-cancel":
             self.dismiss(None)
+
+
+class ExtensionConfirmModal(ModalScreen[bool]):
+    """Yes/No confirmation for an extension's ``api.ui.confirm`` (E7 §3 / S47).
+
+    Ports pi's ``ctx.ui.confirm(title, message)`` (types.ts:129). Copies the
+    ``TreeModeModal`` button template. ``Yes`` → ``True``; ``No`` or ``Esc`` →
+    ``False`` (a cancelled confirmation is a "no", never a hidden yes — Fail-Early).
+    pi's ``timed-confirm`` timeout option is deferred.
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(self, title: str, message: str) -> None:
+        super().__init__()
+        self._title = title
+        self._message = message
+
+    def compose(self) -> ComposeResult:
+        with Container(id="ext-confirm-dialog"):
+            yield Static(self._title, id="ext-confirm-title")
+            yield Static(self._message, id="ext-confirm-message")
+            with Horizontal(id="ext-confirm-buttons"):
+                yield Button("Yes", variant="primary", id="ext-confirm-yes")
+                yield Button("No", variant="default", id="ext-confirm-no")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "ext-confirm-yes")
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
+class ExtensionSelectModal(ModalScreen[Optional[str]]):
+    """Single-choice selector for an extension's ``api.ui.select`` (E7 §3 / S47).
+
+    Ports pi's ``ctx.ui.select(title, options)`` (types.ts:126). An ``OptionList``
+    of the items; ``Enter``/click dismisses with the chosen string, ``Esc`` with
+    ``None`` (no selection). The index into the original ``items`` list is the
+    source of truth, so the returned value is exactly the caller's string.
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(self, title: str, items: list[str]) -> None:
+        super().__init__()
+        self._title = title
+        self._items = items
+
+    def compose(self) -> ComposeResult:
+        with Container(id="ext-select-dialog"):
+            yield Static(self._title, id="ext-select-title")
+            yield OptionList(*self._items, id="ext-select-list")
+            yield Static("Enter: choose    Esc: cancel", id="ext-select-help")
+
+    def on_mount(self) -> None:
+        self.query_one("#ext-select-list", OptionList).focus()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        self.dismiss(self._items[event.option_index])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ExtensionInputModal(ModalScreen[Optional[str]]):
+    """Text prompt for an extension's ``api.ui.input`` (E7 §3 / S47).
+
+    Ports pi's ``ctx.ui.input(title, placeholder?)`` (types.ts:132). An ``Input``
+    pre-filled with the extension-supplied default; ``Enter`` or ``OK`` dismisses
+    with the (possibly edited) text, ``Esc`` or ``Cancel`` with ``None``. The
+    delegate maps a ``None`` cancel back to the default (see
+    ``_ExtensionUIDelegate.input``).
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(self, title: str, default: str = "") -> None:
+        super().__init__()
+        self._title = title
+        self._default = default
+
+    def compose(self) -> ComposeResult:
+        with Container(id="ext-input-dialog"):
+            yield Static(self._title, id="ext-input-title")
+            yield Input(value=self._default, id="ext-input-field")
+            with Horizontal(id="ext-input-buttons"):
+                yield Button("OK", variant="primary", id="ext-input-ok")
+                yield Button("Cancel", variant="default", id="ext-input-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#ext-input-field", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self.dismiss(event.value)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "ext-input-ok":
+            self.dismiss(self.query_one("#ext-input-field", Input).value)
+        else:
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ExtensionChordScreen(ModalScreen[Optional[tuple[str, str]]]):
+    """Which-key popup for the ``ctrl+e`` extension shortcut chord (E10 §6 / S69).
+
+    The second half of an extension key binding: after the ``ctrl+e`` leader (the
+    guarded namespace), this modal lists every registered shortcut as
+    ``ctrl+e <key> → /command`` and captures the NEXT key. A matching key dismisses
+    with ``(command, args)`` — dispatched by :meth:`Parley.action_extension_chord`
+    through the SAME ``run_extension_command`` path a typed ``/name args`` uses;
+    ``escape`` (or any unbound key) dismisses ``None``.
+
+    Rendered as a menu (not a silent capture) so the guarded namespace is
+    DISCOVERABLE — the user sees what ``ctrl+e`` offers, the same shortcuts the
+    command palette also lists. Only ``Static`` children (none focusable), so the
+    screen itself receives the key event — no inner widget swallows the tail key.
+    """
+
+    def __init__(self, shortcuts: list[tuple[str, str, str, str]]) -> None:
+        super().__init__()
+        self._shortcuts = shortcuts
+        # tail key -> (command, args) for O(1) capture; the list drives display order.
+        self._by_key: dict[str, tuple[str, str]] = {
+            key: (command, args) for key, command, args, _desc in shortcuts
+        }
+
+    def compose(self) -> ComposeResult:
+        with Container(id="ext-chord-dialog"):
+            yield Static("Extension shortcuts — ctrl+e then…", id="ext-chord-title")
+            for key, command, args, desc in self._shortcuts:
+                label = f"  [b]{key}[/b]  →  /{command}"
+                if args:
+                    label += f" {args}"
+                if desc:
+                    label += f"   — {desc}"
+                yield Static(label, classes="ext-chord-entry")
+
+    def on_key(self, event: events.Key) -> None:
+        # The chord tail: a registered key dispatches its command, anything else
+        # (including escape) cancels. Stop + prevent-default either way so the
+        # captured key never leaks to the app underneath.
+        event.stop()
+        event.prevent_default()
+        if event.key == "escape":
+            self.dismiss(None)
+            return
+        self.dismiss(self._by_key.get(event.key))
+
+
+class ExtensionFormScreen(ModalScreen[Optional[dict]]):
+    """One generic declarative form for an extension's ``api.ui.form`` (E10 §6 / S66).
+
+    The τ answer to pi's ``question``/``questionnaire`` widget factory: instead of an
+    extension shipping bespoke TUI code, it hands ``ui.form`` a plain-data SPEC
+    (D-E6-4) and THIS single screen renders every field. One widget maps to each
+    :data:`~tau_agent_core.extension_types.FORM_FIELD_KINDS` kind:
+
+    - ``text`` / ``number`` → :class:`Input` (``number`` restricts to numerics);
+    - ``confirm`` → :class:`Checkbox` (its own label carries the field label);
+    - ``select`` → :class:`RadioSet` of :class:`RadioButton` (single choice);
+    - ``multiselect`` → :class:`SelectionList` (N-of-M).
+
+    ``Submit`` dismisses with the ``{name: value}`` answers dict; ``Cancel``/``Esc``
+    dismisses with ``None`` (a cancelled form is not a fabricated answer set —
+    Fail-Early). The spec is validated by the SAME
+    :func:`~tau_agent_core.extension_types.validate_form_spec` the headless path
+    uses, so the two frontends can never disagree about a field's meaning.
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(self, spec: dict[str, Any]) -> None:
+        super().__init__()
+        # Re-validate the raw spec here (idempotent with ExtensionUI.form's own
+        # check) so the screen is self-contained and never renders a malformed field.
+        self._form_title, self._fields = validate_form_spec(spec)
+
+    @staticmethod
+    def _field_widget_id(index: int) -> str:
+        return f"ext-form-field-{index}"
+
+    def compose(self) -> ComposeResult:
+        with Container(id="ext-form-dialog"):
+            yield Static(self._form_title, id="ext-form-title")
+            with VerticalScroll(id="ext-form-fields"):
+                for index, field in enumerate(self._fields):
+                    yield from self._compose_field(index, field)
+            yield Static("Submit: confirm    Esc: cancel", id="ext-form-help")
+            with Horizontal(id="ext-form-buttons"):
+                yield Button("Submit", variant="primary", id="ext-form-submit")
+                yield Button("Cancel", variant="default", id="ext-form-cancel")
+
+    def _compose_field(self, index: int, field: dict[str, Any]) -> ComposeResult:
+        wid = self._field_widget_id(index)
+        kind = field["kind"]
+        label = field["label"]
+        if kind == "confirm":
+            # The Checkbox carries its own label; no separate Static row.
+            yield Checkbox(label, value=bool(field.get("default", False)), id=wid)
+            return
+        yield Static(label, classes="ext-form-label")
+        if kind in ("text", "number"):
+            default = field.get("default", "")
+            yield Input(
+                value="" if default == "" else str(default),
+                id=wid,
+                type="number" if kind == "number" else "text",
+                classes="ext-form-input",
+            )
+        elif kind == "select":
+            options = field["options"]
+            chosen = field.get("default", options[0])
+            yield RadioSet(
+                *(RadioButton(opt, value=(opt == chosen)) for opt in options),
+                id=wid,
+            )
+        elif kind == "multiselect":
+            options = field["options"]
+            chosen_set = set(field.get("default", []) or [])
+            yield SelectionList[str](
+                *((opt, opt, opt in chosen_set) for opt in options),
+                id=wid,
+            )
+
+    def _collect(self) -> dict[str, Any]:
+        answers: dict[str, Any] = {}
+        for index, field in enumerate(self._fields):
+            wid = f"#{self._field_widget_id(index)}"
+            kind = field["kind"]
+            name = field["name"]
+            if kind == "text":
+                answers[name] = self.query_one(wid, Input).value
+            elif kind == "number":
+                answers[name] = self._parse_number(self.query_one(wid, Input).value, field)
+            elif kind == "confirm":
+                answers[name] = self.query_one(wid, Checkbox).value
+            elif kind == "select":
+                radio_set = self.query_one(wid, RadioSet)
+                idx = radio_set.pressed_index
+                options = field["options"]
+                # A RadioSet always keeps one pressed once composed with a default;
+                # -1 (nothing pressed) falls back to the declared/first option.
+                answers[name] = (
+                    options[idx] if 0 <= idx < len(options) else field.get("default", options[0])
+                )
+            elif kind == "multiselect":
+                answers[name] = list(self.query_one(wid, SelectionList).selected)
+        return answers
+
+    @staticmethod
+    def _parse_number(text: str, field: dict[str, Any]) -> Any:
+        # The Input is numeric-restricted, so ``text`` is a number or empty. An empty
+        # field resolves to the declared default (or 0) — a UI default the user left
+        # untouched, not a fabricated headless answer.
+        stripped = text.strip()
+        if not stripped:
+            return field.get("default", 0)
+        try:
+            return int(stripped)
+        except ValueError:
+            return float(stripped)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "ext-form-submit":
+            self.dismiss(self._collect())
+        else:
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 # Role → (display label, CSS modifier class). ONE widget renders every kind of
@@ -428,13 +936,24 @@ class MessageBox(Static):
         await self._tools_slot.mount(box)
         return box
 
-    def set_tool_result(self, tool_call_id: str, result_text: str, is_error: bool = False) -> bool:
+    def set_tool_result(
+        self,
+        tool_call_id: str,
+        result_text: str,
+        is_error: bool = False,
+        *,
+        blocked: bool = False,
+        blocked_by: str | None = None,
+    ) -> bool:
         """Fold a tool result into its matching ToolBox. Returns ``False`` if no
-        box matches the id — the caller decides what to do, nothing is fabricated."""
+        box matches the id — the caller decides what to do, nothing is fabricated.
+
+        ``blocked``/``blocked_by`` mark an extension VETO (S50) so the ToolBox
+        renders "⛔ blocked by <ext>" instead of a generic error."""
         box = self._tool_boxes.get(tool_call_id)
         if box is None:
             return False
-        box.set_result(result_text, is_error)
+        box.set_result(result_text, is_error, blocked=blocked, blocked_by=blocked_by)
         return True
 
     @property
@@ -800,8 +1319,12 @@ class ChatDisplay(VerticalScroll):
         tc_id = event.get("id", "") or ""
         result_text = str(event.get("result", ""))
         is_error = bool(event.get("is_error", False))
+        blocked = bool(event.get("blocked", False))
+        blocked_by = event.get("blocked_by")
         box = self._tool_routes.get(tc_id)
-        if box is not None and box.set_tool_result(tc_id, result_text, is_error):
+        if box is not None and box.set_tool_result(
+            tc_id, result_text, is_error, blocked=blocked, blocked_by=blocked_by
+        ):
             self.scroll_end(animate=False)
             return
         # No matching tool box: the call always precedes its result in the live
@@ -1049,7 +1572,7 @@ class Parley(App):
     BINDINGS = [
         Binding("ctrl+b", "toggle_sidebar", "Sidebar"),
         Binding("ctrl+n", "new_chat", "New Chat"),
-        Binding("ctrl+e", "edit_system_prompt", "Edit Prompt"),
+        Binding("ctrl+e", "extension_chord", "Extensions"),
         Binding("ctrl+g", "browse_tree", "Tree"),
         Binding("ctrl+r", "toggle_reasoning", "Reasoning", priority=True),
         Binding("ctrl+t", "toggle_tools", "Tools", priority=True),
@@ -1108,6 +1631,14 @@ class Parley(App):
         self._exclude_tools: list[str] = list(run_config.get("exclude_tools", []))
         self._no_builtin_tools: bool = bool(run_config.get("no_builtin_tools", False))
         self._append_system_prompt: list[str] = list(run_config.get("append_system_prompt", []))
+        # Per-extension config overrides (S40): the parsed ``--ext-config`` map
+        # ({name: {key: value}}). Merged over config.json's ``"extensions"`` block at
+        # each backend load (``_load_backend_extensions``) so each extension's
+        # ``api.config`` gets its slice. Resolved lazily against ``self.config``
+        # (loaded just below), not here, so a config reload is reflected.
+        self._ext_config_overrides: dict[str, dict[str, Any]] = dict(
+            run_config.get("ext_config", {})
+        )
         self.load_config()
         if cli_overrides:
             self._apply_cli_overrides(cli_overrides)
@@ -1182,6 +1713,13 @@ class Parley(App):
                 yield ChatDisplay()
                 yield ChatInput(id="chat-input")
 
+            # The extension panel host (E10 §6 / S68) sits to the right of the main
+            # area; it hides itself until an extension opens a panel.
+            yield ExtensionPanelHost()
+
+        # The extension status strip (E10 §6 / S67) sits in the vertical flow just
+        # above the docked Footer; it hides itself until an extension sets a slot.
+        yield ExtensionStatusBar()
         yield Footer()
 
     def on_mount(self):
@@ -1191,6 +1729,81 @@ class Parley(App):
 
         # Focus input
         self.query_one("#chat-input", ChatInput).focus()
+
+    def set_extension_status(self, key: str, text: str | None) -> None:
+        """Update one keyed slot in the extension status strip (E10 §6 / S67).
+
+        The app-side landing for ``ctx.ui.set_status(key, text)`` — reached through
+        ``_ExtensionUIDelegate.set_status``. Forwards to the single
+        :class:`ExtensionStatusBar` in the layout, which updates the slot in place
+        (or clears it when ``text is None``) and re-renders. The bar is composed
+        unconditionally, so it is present for the whole app lifetime; the delegate is
+        only bound after mount, so no pre-mount call can reach here.
+        """
+        self.query_one(ExtensionStatusBar).set_slot(key, text)
+
+    def set_extension_panel(self, key: str, spec: dict[str, Any] | None) -> None:
+        """Mount, update, or clear one keyed extension panel (E10 §6 / S68).
+
+        The app-side landing for ``ctx.ui.panel(key, spec)`` — reached through
+        ``_ExtensionUIDelegate.panel``. Forwards to the single
+        :class:`ExtensionPanelHost` in the layout, which mounts a new panel, updates
+        an existing key's panel in place, or removes it when ``spec is None``. The
+        host is composed unconditionally, so it is present for the whole app lifetime;
+        the delegate is only bound after mount, so no pre-mount call can reach here.
+        """
+        self.query_one(ExtensionPanelHost).set_panel(key, spec)
+
+    async def on_extension_panel_action(self, message: ExtensionPanel.Action) -> None:
+        """Dispatch a panel action's command back into the extension (E10 §6 / S68).
+
+        A :class:`ExtensionPanel.Action` bubbles here when a user presses a panel
+        action button. It runs the action's ``command`` (a name an extension
+        registered via ``api.register_command``) through the SAME
+        :meth:`run_extension_command` path the palette (S35) and typed slash commands
+        (S46) use, with the action's ``args`` — so a panel closes the loop from a live
+        surface to extension logic. The handler's returned value renders as a
+        display-only ``system`` box (:meth:`_render_command_output`), never appended to
+        the active path (the tree-as-truth invariant is untouched).
+
+        Fail-Early: an action that names an UNKNOWN command surfaces an error notice
+        (``handled is False``) rather than silently doing nothing — a mis-wired action
+        is a construction bug, not a no-op. A handler exception is likewise surfaced,
+        never swallowed.
+        """
+        runner = getattr(self.current_backend, "run_extension_command", None)
+        if runner is None:
+            return
+        try:
+            result = await runner(message.command, message.args)
+        except Exception as e:
+            self.notify(f"Panel action /{message.command} failed: {e}", severity="error")
+            self.log.error(f"Panel action /{message.command} failed: {e}", exc_info=True)
+            return
+        if not result.handled:
+            self.notify(
+                f"Panel action → unknown command /{message.command}",
+                severity="error",
+            )
+            return
+        self._render_command_output(result)
+
+    async def on_unmount(self) -> None:
+        """Fire the notify-grade ``session_shutdown`` lifecycle hook on TUI quit (S41).
+
+        This is the teardown counterpart to the ``session_start`` fired from
+        :meth:`_load_backend_extensions`; it runs while the event loop is still
+        alive (Textual awaits the app's unmount handler during shutdown), covering
+        both an explicit quit and a Ctrl-C — Textual routes SIGINT through its own
+        shutdown, which unmounts the app. getattr-guarded so a non-``TauBackend``
+        test double (or a run that never built a backend) is a no-op. An extension's
+        teardown exception is surfaced by the runner (never swallowed), not
+        re-raised here — a failing shutdown hook must not wedge app teardown.
+        """
+        backend = getattr(self, "current_backend", None)
+        emit_shutdown = getattr(backend, "emit_session_shutdown", None)
+        if emit_shutdown is not None:
+            await emit_shutdown("quit")
 
     async def on_input_submitted(self, event: Input.Submitted):
         """Handle message submission."""
@@ -1220,10 +1833,19 @@ class Parley(App):
             self.action_browse_tree()
             return
 
-        # /extensions lists the loaded extensions (read-only, E5 §5 / S34).
-        # Intercepted here so the text is UI chrome, never a prompt to the model.
+        # /extensions lists the loaded extensions (E5 §5 / S34); with a verb it
+        # runs a runtime management action (E10 §6 / S70): ``/extensions disable
+        # <name>`` / ``enable`` / ``reload``. Intercepted here so the text is UI
+        # chrome, never a prompt to the model.
         if message == "/extensions":
             self.action_show_extensions()
+            return
+        if message.startswith("/extensions "):
+            rest = message[len("/extensions ") :].strip()
+            parts = rest.split(None, 1)
+            verb = parts[0] if parts else ""
+            target = parts[1].strip() if len(parts) > 1 else ""
+            await self.action_manage_extensions(verb, target)
             return
 
         # Extension-registered slash commands (E5 §5 / S35): dispatch BEFORE the
@@ -1238,7 +1860,9 @@ class Parley(App):
                 space = stripped.find(" ")
                 cmd_name = stripped if space == -1 else stripped[:space]
                 cmd_args = "" if space == -1 else stripped[space + 1 :]
-                if await runner(cmd_name, cmd_args):
+                result = await runner(cmd_name, cmd_args)
+                if result.handled:
+                    self._render_command_output(result)
                     return
 
         # Create new session if needed
@@ -1378,6 +2002,12 @@ class Parley(App):
         agent_session = getattr(self.current_backend, "agent_session", None)
         if agent_session is not None:
             self._session_event_unsub = subscribe_session_events(agent_session.route_session_event)
+            # Bind the model-name resolver (S45) so an extension's ctx.set_model(name)
+            # resolves NAME through the same config "models" map --model uses. Guarded
+            # by getattr so a non-TauBackend / test double is a no-op, not an error.
+            binder = getattr(agent_session, "set_model_resolver", None)
+            if binder is not None:
+                binder(make_model_resolver(self.config.get("models", {})))
 
     def _apply_run_config(self, model_config: dict) -> dict:
         """Inject run-level tool flags into a model_config before create_backend (S28).
@@ -1431,8 +2061,16 @@ class Parley(App):
         loader = getattr(self.current_backend, "load_extensions", None)
         if loader is None:
             return
+        # Resolve per-extension config (S40): config.json ``"extensions"`` slices +
+        # the parsed ``--ext-config`` overrides (CLI > config.json), sliced per
+        # extension by file stem inside the session and handed to ``api.config``.
+        extensions_config = resolve_extensions_config(self.config, self._ext_config_overrides)
         try:
-            result = await loader(self._extension_paths or None, discover=self._discover_extensions)
+            result = await loader(
+                self._extension_paths or None,
+                discover=self._discover_extensions,
+                extensions_config=extensions_config,
+            )
         except Exception as e:
             self.notify(f"Extension failed to load: {e}", severity="error")
             self.log.error(f"Extension load failed: {e}", exc_info=True)
@@ -1443,6 +2081,16 @@ class Parley(App):
             self.notify(f"Extension error ({err.path}): {err.error}", severity="warning")
         if result.extensions:
             self.log(f"Loaded {len(result.extensions)} extension(s)")
+
+        # Fire the notify-grade ``session_start`` lifecycle hook (E6 §2 / S41) now
+        # that the just-loaded extensions' handlers are registered — so a
+        # ``session_start`` handler can reconstruct state from ``ctx.entries()`` /
+        # install watchers. getattr-guarded so a non-``TauBackend`` test double is a
+        # no-op (same pattern as ``set_ui_delegate``/``load_extensions``). The
+        # teardown counterpart fires from :meth:`on_unmount` on TUI quit.
+        emit_start = getattr(self.current_backend, "emit_session_start", None)
+        if emit_start is not None:
+            await emit_start("startup")
 
     async def action_new_chat(self, model: Optional[str] = None):
         """Start a new chat."""
@@ -1517,42 +2165,139 @@ class Parley(App):
     def action_show_extensions(self) -> None:
         """List loaded extensions + load errors in the transcript (E5 §5 / S34).
 
-        Read-only (D-E5-6: runtime enable/reload deferred). Reads the last
-        ``_load_backend_extensions`` result — the now-populated registry/runner via
-        :func:`summarize_extensions` — and renders it as a display-only ``system``
-        box. This is UI chrome, NOT a conversation node: it is neither appended to
-        the working message list nor persisted, so the durable-hook invariant (the
-        model's input = system prompt + the linear active path) is untouched.
+        Reads the last ``_load_backend_extensions`` result — the now-populated
+        registry/runner via :func:`summarize_extensions` — annotated with each
+        extension's live enabled/disabled state (E10 §6 / S70), and renders it as a
+        display-only ``system`` box. This is UI chrome, NOT a conversation node: it is
+        neither appended to the working message list nor persisted, so the durable-hook
+        invariant (the model's input = system prompt + the linear active path) is
+        untouched — runtime management lifts the D-E5-6 read-only stance without
+        touching that invariant (the actions run on the runner, not the tree).
         """
-        listing = self._format_extensions_listing(self._extension_load_result)
+        listing = self._format_extensions_listing(
+            self._extension_load_result, self._disabled_extension_paths()
+        )
         self.query_one(ChatDisplay).add_message("system", listing)
 
-    async def _dispatch_extension_command(self, name: str) -> None:
+    def _disabled_extension_paths(self) -> set[str]:
+        """The set of currently runtime-disabled extension paths (E10 §6 / S70).
+
+        Read from the live backend's managed-extension state; ``getattr``-guarded so a
+        non-``TauBackend`` test double (no seam) reports none disabled.
+        """
+        lister = getattr(self.current_backend, "list_managed_extensions", None)
+        if lister is None:
+            return set()
+        return {path for path, enabled in lister() if not enabled}
+
+    async def action_manage_extensions(self, verb: str, target: str) -> None:
+        """Run a runtime ``/extensions`` action (enable/disable/reload) — E10 §6 / S70.
+
+        Lifts the D-E5-6 read-only stance: dispatches to the live backend's
+        ``disable_extension`` / ``enable_extension`` / ``reload_extension`` (each fires
+        the S41 ``session_shutdown`` / ``session_start`` lifecycle hooks for clean
+        teardown/bring-up), then re-renders the listing so the outcome is visible. All
+        output is display-only chrome — never a conversation node, so the tree-as-truth
+        invariant holds. A bad verb, an empty target, or a broken reload is surfaced as
+        an error notice (Fail-Early: reported, never swallowed or faked).
+        """
+        actions = {"enable", "disable", "reload"}
+        if verb not in actions:
+            self.notify(
+                f"Unknown /extensions action {verb!r} (use: enable | disable | reload)",
+                severity="error",
+            )
+            return
+        if not target:
+            self.notify(f"/extensions {verb} needs an extension name", severity="error")
+            return
+        action = getattr(self.current_backend, f"{verb}_extension", None)
+        if action is None:
+            self.notify("Runtime extension management is unavailable here", severity="warning")
+            return
+        try:
+            result = await action(target)
+        except Exception as e:
+            self.notify(f"/extensions {verb} {target} failed: {e}", severity="error")
+            self.log.error(f"/extensions {verb} {target} failed: {e}", exc_info=True)
+            return
+        self.notify(result.message, severity="information" if result.ok else "warning")
+        # Re-render the listing so the enabled/disabled column reflects the action.
+        self.action_show_extensions()
+
+    async def _dispatch_extension_command(self, name: str, args: str = "") -> None:
         """Run an extension-registered command from the palette (E5 §5 / S35).
 
         The command-palette entry (:meth:`get_system_commands`) invokes this;
-        it forwards to the live backend's :meth:`run_extension_command` with no
-        args (the palette has no argument line). A handler exception is surfaced
-        as an error notice (pi's ``_tryExecuteExtensionCommand`` likewise reports
-        rather than crashing the screen), never swallowed silently.
+        it forwards to the live backend's :meth:`run_extension_command`. A palette
+        entry for a command that declares ``"args"`` first collects the arg string
+        via :meth:`_prompt_command_args` (S51) and passes it here; a command without
+        an ``args`` placeholder dispatches with the empty string (the palette has no
+        argument line). A handler exception is surfaced as an error notice (pi's
+        ``_tryExecuteExtensionCommand`` likewise reports rather than crashing the
+        screen), never swallowed silently.
         """
         runner = getattr(self.current_backend, "run_extension_command", None)
         if runner is None:
             return
         try:
-            await runner(name)
+            result = await runner(name, args)
         except Exception as e:
             self.notify(f"Command /{name} failed: {e}", severity="error")
             self.log.error(f"Extension command /{name} failed: {e}", exc_info=True)
+            return
+        self._render_command_output(result)
+
+    @work
+    async def _prompt_command_args(self, name: str, placeholder: str) -> None:
+        """Collect an arg string for an ``args``-declaring palette command (E7 §3 / S51).
+
+        A command that declares ``"args": "<placeholder>"`` expects a free-form
+        argument string, exactly as if the user had typed ``/name args``. The palette
+        entry has no argument line, so this opens the S47 :class:`ExtensionInputModal`
+        to collect it, then dispatches through :meth:`_dispatch_extension_command`
+        with the entered text. Runs as a worker because ``push_screen_wait`` requires
+        one (the same context the S47 delegate uses).
+
+        Fail-Early: a cancelled modal (Cancel → ``None``) does NOT dispatch — an
+        arg-declaring command is not run on a fabricated empty argument the user
+        never confirmed. An entered (possibly empty) value dispatches as typed.
+        """
+        collected = await self.push_screen_wait(
+            ExtensionInputModal(f"/{name} {placeholder}".rstrip())
+        )
+        if collected is None:
+            return
+        await self._dispatch_extension_command(name, collected)
+
+    def _render_command_output(self, result: ExtensionCommandResult) -> None:
+        """Render a command's returned value as a display-only ``system`` box (S46).
+
+        Same chrome as ``/extensions`` (:meth:`action_show_extensions`) — a
+        ``system`` ``MessageBox`` mounted into the transcript view. It is
+        deliberately NOT added to ``self.messages`` (the working list that becomes
+        the model's context), so a command's report cannot leak into model input,
+        preserving the E5 §1 tree-as-truth invariant. A command that returned
+        nothing (``output_text() is None``) shows no box.
+        """
+        text = result.output_text()
+        if text is None:
+            return
+        self.query_one(ChatDisplay).add_message("system", text)
 
     @staticmethod
-    def _format_extensions_listing(result: LoadExtensionsResult) -> str:
+    def _format_extensions_listing(
+        result: LoadExtensionsResult, disabled: set[str] | None = None
+    ) -> str:
         """Render a ``LoadExtensionsResult`` as the ``/extensions`` listing text (S34).
 
         Pure (no widget access) so it is unit-testable: given the load result it
         returns the exact markdown the listing box shows — a section per loaded
         extension (name, path, tools/commands/hooks) plus a load-errors section.
+        ``disabled`` is the set of runtime-disabled extension paths (E10 §6 / S70); a
+        disabled extension is tagged in its heading so the listing reflects live state.
         """
+        disabled = disabled or set()
         infos = summarize_extensions(result)
         if not infos and not result.errors:
             return "No extensions loaded."
@@ -1560,10 +2305,13 @@ class Parley(App):
         lines: list[str] = ["# Extensions"]
         for info in infos:
             lines.append("")
-            lines.append(f"**{info.name}** — `{info.path}`")
+            status = " _(disabled)_" if info.path in disabled else ""
+            lines.append(f"**{info.name}**{status} — `{info.path}`")
             lines.append(f"- hooks: {', '.join(info.hooks) if info.hooks else '(none)'}")
             lines.append(f"- tools: {', '.join(info.tools) if info.tools else '(none)'}")
             lines.append(f"- commands: {', '.join(info.commands) if info.commands else '(none)'}")
+            shortcuts_disp = ", ".join(f"ctrl+e {k}" for k in info.shortcuts) or "(none)"
+            lines.append(f"- shortcuts: {shortcuts_disp}")
 
         if result.errors:
             lines.append("")
@@ -1689,12 +2437,39 @@ class Parley(App):
         # Read from the live backend's session registry; getattr-guarded so a
         # non-TauBackend test double is a no-op, matching set_ui_delegate/load_extensions.
         get_commands = getattr(self.current_backend, "get_extension_commands", None)
+        get_args = getattr(self.current_backend, "get_extension_command_args", None)
         if get_commands is not None:
             for cmd_name, cmd_desc in get_commands():
+                # S51: a command declaring ``"args"`` collects that string via the
+                # S47 input modal (worker-context) before dispatch; one without args
+                # dispatches directly (the palette has no argument line).
+                help_text = cmd_desc or f"Run extension command /{cmd_name}"
+                placeholder = get_args(cmd_name) if get_args is not None else None
+                if placeholder:
+                    yield SystemCommand(
+                        f"/{cmd_name}",
+                        help_text,
+                        lambda n=cmd_name, p=placeholder: self._prompt_command_args(n, p),
+                    )
+                else:
+                    yield SystemCommand(
+                        f"/{cmd_name}",
+                        help_text,
+                        lambda n=cmd_name: self._dispatch_extension_command(n),
+                    )
+
+        # Extension-registered key shortcuts (E10 §6 / S69): list each chord so it is
+        # palette-DISCOVERABLE (the guard's second discovery path alongside the ctrl+e
+        # menu) and runnable — the palette entry dispatches the shortcut's command
+        # through the SAME path as the chord and a typed /command.
+        get_shortcuts = getattr(self.current_backend, "get_extension_shortcuts", None)
+        if get_shortcuts is not None:
+            for key, command, args, desc in get_shortcuts():
+                help_text = desc or f"Run extension command /{command}"
                 yield SystemCommand(
-                    f"/{cmd_name}",
-                    cmd_desc or f"Run extension command /{cmd_name}",
-                    lambda n=cmd_name: self._dispatch_extension_command(n),
+                    f"ctrl+e {key}  →  /{command}",
+                    help_text,
+                    lambda c=command, a=args: self._dispatch_extension_command(c, a),
                 )
 
     async def action_clear_chat(self):
@@ -1868,6 +2643,54 @@ class Parley(App):
         self.notify(
             "Summarized and moved to selected node" if summarize else "Moved to selected node"
         )
+
+    def _extension_shortcuts(self) -> list[tuple[str, str, str, str]]:
+        """The live backend's registered key shortcuts (E10 §6 / S69).
+
+        Returns ``(key, command, args, description)`` per shortcut, or ``[]`` when the
+        backend is a non-``TauBackend`` test double / not yet built (getattr-guarded,
+        matching the other extension-surface reads like :meth:`get_system_commands`).
+        """
+        getter = getattr(self.current_backend, "get_extension_shortcuts", None)
+        if getter is None:
+            return []
+        result: list[tuple[str, str, str, str]] = getter()
+        return result
+
+    async def action_extension_chord(self) -> None:
+        """The ``ctrl+e`` extension chord leader (E10 §6 / S69).
+
+        When one or more extensions registered a shortcut, ``ctrl+e`` opens the
+        :class:`ExtensionChordScreen` which-key menu; the picked key's command is
+        dispatched through :meth:`_dispatch_extension_command` (the SAME path the
+        palette and typed ``/name`` use), so a keyboard shortcut is a pure accelerator
+        over an already-runnable command — nothing model-visible, no new headless
+        surface (the command it fires stays reachable by name and via ``ctrl+p``).
+
+        When NO extension registered a shortcut, ``ctrl+e`` keeps its legacy meaning
+        and edits the system prompt — zero regression for the common case where the
+        chord namespace is empty.
+
+        Kept non-priority (matching the binding it replaced), so while the message
+        input is focused ``ctrl+e`` still moves to line-end (the ``TextArea`` default);
+        the chord fires when focus is off the input, and the palette (S69 listing) is
+        the always-reachable dispatch path. The menu is pushed with a result CALLBACK
+        (not ``push_screen_wait``, which requires a worker the binding action is not),
+        and the async command dispatch is scheduled from that callback via
+        ``run_worker``.
+        """
+        shortcuts = self._extension_shortcuts()
+        if not shortcuts:
+            await self.action_edit_system_prompt()
+            return
+
+        def _dispatch_chosen(chosen: Optional[tuple[str, str]]) -> None:
+            if chosen is None:
+                return
+            command, args = chosen
+            self.run_worker(self._dispatch_extension_command(command, args))
+
+        await self.push_screen(ExtensionChordScreen(shortcuts), _dispatch_chosen)
 
     async def action_edit_system_prompt(self):
         """Edit the system prompt."""

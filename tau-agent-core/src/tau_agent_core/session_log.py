@@ -65,6 +65,8 @@ class SessionLog(Protocol):
 
     def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str: ...
 
+    def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str: ...
+
     def append_compaction(self, summary: str, first_kept_id: str, tokens_before: int) -> str: ...
 
     def append_navigate(self, target_id: str | None) -> str: ...
@@ -133,6 +135,21 @@ class InMemorySessionLog:
         custom→user, so the injected content reaches the model and survives a
         reload byte-identically."""
         return self._append("customMessage", customType=custom_type, message=message)
+
+    def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
+        """Persist a durable, NON-message ``customEntry`` node (E6 §2 / S39).
+
+        The reloadable backing for ``api.append_entry`` (formerly the RAM-only
+        registry ``_entry_store``, lost on restart — G4). It carries the extension's
+        ``{customType, data}`` as its own tree entry KIND — deliberately NOT a
+        ``message``/``customMessage``, so :class:`~tau_agent_core.conversation_tree.ConversationTree`
+        never folds it into the loop context and ``convert_to_llm`` never sees it:
+        it is tree-as-backplane state, on the durable path and readable through
+        ``ctx.entries()``, but excluded from model input. Folds onto the active path
+        like any node (it advances the leaf); the exclusion is that ``context_for``
+        emits no message for it (conversation_tree.py). The foundation S56's
+        ``TreeStore`` reconstructs from ``ctx.entries()`` on reload."""
+        return self._append("customEntry", customType=custom_type, data=data)
 
     def append_compaction(self, summary: str, first_kept_id: str, tokens_before: int) -> str:
         return self._append(

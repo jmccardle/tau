@@ -11,7 +11,11 @@ AgentSession runs against a scratch InMemorySessionLog, caller owns persistence)
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 from tau_ai.types import Model
-from tau_agent_core.agent_session import AgentSession
+from tau_agent_core.agent_session import (
+    AgentSession,
+    ExtensionActionResult,
+    ExtensionCommandResult,
+)
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.session_log import InMemorySessionLog, SessionLog
@@ -81,6 +85,61 @@ def compute_cost_usd(
     )
 
 
+def build_model_from_config(config: dict[str, Any]) -> Model:
+    """Build a tau-agent-core ``Model`` from a Parley/``~/.tau/config.json`` entry.
+
+    The single seam that turns a config ``models`` entry (or a ``--model`` ad-hoc
+    dict) into a ``Model`` — extracted from ``TauBackend.__init__`` so
+    :func:`make_model_resolver` (S45) reproduces exactly the same construction a
+    fresh backend would. Maps the ``backend`` provider field, derives the reasoning
+    flag from a non-``off`` ``thinking`` level (or an explicit ``reasoning: true``),
+    and carries the optional ``thinking_level_map``.
+    """
+    model_id = config.get("model", "gpt-4")
+    base_url = config.get("base_url", "https://api.openai.com/v1")
+    backend_type = config.get("backend", "openai").lower()
+
+    # Map provider name (Parley's "backend" field) to tau-agent-core provider.
+    provider_map = {"openai": "openai", "anthropic": "anthropic", "gemini": "gemini"}
+    provider = provider_map.get(backend_type, backend_type)
+
+    thinking_level = config.get("thinking")
+    reasoning_arg = thinking_level if thinking_level and thinking_level != "off" else None
+    model_reasoning = bool(config.get("reasoning")) or reasoning_arg is not None
+
+    return Model(
+        id=model_id,
+        name=model_id,
+        api="openai-completions",
+        provider=provider,
+        base_url=base_url,
+        context_window=128000,
+        max_tokens=4096,
+        reasoning=model_reasoning,
+        thinking_level_map=config.get("thinking_level_map"),
+    )
+
+
+def make_model_resolver(models: dict[str, Any]) -> Callable[[str], Model]:
+    """A ``name -> Model`` resolver closed over a config ``models`` map (S45).
+
+    Bound onto a live ``AgentSession`` (``set_model_resolver``) so an extension's
+    ``ctx.set_model(name)`` resolves the NAME through the SAME ``config["models"]``
+    map ``--model`` resolution uses, via :func:`build_model_from_config`. Fail-Early:
+    an unknown name raises ``KeyError`` (naming the known models) rather than
+    fabricating a model — the raise propagates out of ``set_model`` unchanged.
+    """
+
+    def resolve(name: str) -> Model:
+        entry = models.get(name)
+        if entry is None:
+            known = ", ".join(sorted(models)) or "(none configured)"
+            raise KeyError(f"unknown model {name!r}; configured models: {known}")
+        return build_model_from_config(entry)
+
+    return resolve
+
+
 class Backend(ABC):
     """Abstract base class for LLM backends."""
 
@@ -123,15 +182,17 @@ class Backend(ABC):
         *,
         discover: bool = True,
         user_dir: str | None = None,
+        extensions_config: dict[str, dict[str, Any]] | None = None,
     ) -> LoadExtensionsResult:
         """Load file-path extensions into this backend's live session (E5 §2.2).
 
         Both run paths (headless ``run_print`` and the TUI ``Parley``) load
         extensions through this seam after building the backend, so a file
         extension's hooks fire in the same ``AgentSession`` the loop runs on.
-        Returns the :class:`LoadExtensionsResult`; the caller surfaces its
-        ``errors`` (an explicit ``-e`` failure raises out of here instead —
-        Fail-Early)."""
+        ``extensions_config`` (S40) is the per-extension config map handed to each
+        extension's ``api.config``, keyed by file stem. Returns the
+        :class:`LoadExtensionsResult`; the caller surfaces its ``errors`` (an
+        explicit ``-e`` failure raises out of here instead — Fail-Early)."""
 
 
 class TauBackend(Backend):
@@ -144,19 +205,11 @@ class TauBackend(Backend):
     def __init__(self, config: dict[str, Any]):
         super().__init__(config)
 
-        # Build a tau-agent-core model config from the Parley config
+        # Build a tau-agent-core model config from the Parley config. The Model
+        # construction is shared with make_model_resolver (S45) via
+        # build_model_from_config so ctx.set_model rebuilds a Model identically.
         model_id = config.get("model", "gpt-4")
-        base_url = config.get("base_url", "https://api.openai.com/v1")
         api_key = config.get("api_key", "not-needed")
-        backend_type = config.get("backend", "openai").lower()
-
-        # Map provider name (Parley's "backend" field) to tau-agent-core provider
-        provider_map = {
-            "openai": "openai",
-            "anthropic": "anthropic",
-            "gemini": "gemini",
-        }
-        provider = provider_map.get(backend_type, backend_type)
 
         self.model_name = model_id
         self.system_prompt = config.get("system_prompt", "")
@@ -170,19 +223,8 @@ class TauBackend(Backend):
         # reasoning requested.
         thinking_level = config.get("thinking")
         reasoning_arg = thinking_level if thinking_level and thinking_level != "off" else None
-        model_reasoning = bool(config.get("reasoning")) or reasoning_arg is not None
 
-        model = Model(
-            id=model_id,
-            name=model_id,
-            api="openai-completions",
-            provider=provider,
-            base_url=base_url,
-            context_window=128000,
-            max_tokens=4096,
-            reasoning=model_reasoning,
-            thinking_level_map=config.get("thinking_level_map"),
-        )
+        model = build_model_from_config(config)
         # Kept for the tree-browser's summarizer (navigate_tree, §3.3): the
         # branch-summary ``complete_simple`` call needs the model + api key directly,
         # not via the AgentSession loop.
@@ -268,22 +310,100 @@ class TauBackend(Backend):
         """
         self.agent_session.set_ui_delegate(delegate)
 
+    def set_extension_record_sink(self, sink: Any) -> None:
+        """Forward a headless JSON record sink to the wrapped session (E7 §3 / S49 — G10).
+
+        The ``--mode json`` headless path hands in a writer that serializes each
+        extension record to one stdout line; this routes every loaded extension's
+        ``api.ui.notify(...)`` there instead of the headless stderr sink, so a parent
+        reading the child stream can see the child's extension activity. Delegates to
+        :meth:`AgentSession.set_extension_record_sink`.
+        """
+        self.agent_session.set_extension_record_sink(sink)
+
+    def set_headless_ui_defaults(self, policy: dict[str, str]) -> None:
+        """Forward the headless dialog-answer policy to the session (E7 §3 / S48).
+
+        The headless run path resolves ``--ui-defaults`` / config ``"ui_defaults"``
+        and calls this so a dialog opened by a loaded extension auto-answers only
+        for the opted-in methods; every other headless dialog raises
+        (Fail-Early, D-E6-2). Delegates to
+        :meth:`AgentSession.set_headless_ui_defaults`.
+        """
+        self.agent_session.set_headless_ui_defaults(policy)
+
+    async def emit_session_start(self, reason: str = "startup") -> None:
+        """Fire the ``session_start`` lifecycle hook on the wrapped session (S41).
+
+        Delegates to :meth:`AgentSession.emit_session_start`; the frontends call
+        this after :meth:`load_extensions` so a loaded extension's ``session_start``
+        handler runs with its registration in place (state reconstruction, watchers).
+        """
+        await self.agent_session.emit_session_start(reason)
+
+    async def emit_session_shutdown(self, reason: str = "quit") -> None:
+        """Fire the ``session_shutdown`` lifecycle hook on the wrapped session (S41).
+
+        Delegates to :meth:`AgentSession.emit_session_shutdown`; the frontends call
+        this on end-of-runtime (TUI quit, headless completion, SIGINT/SIGTERM) so an
+        extension can run teardown side effects (exit commits, stopping watchers).
+        """
+        await self.agent_session.emit_session_shutdown(reason)
+
     async def load_extensions(
         self,
         explicit_paths: list[str] | None = None,
         *,
         discover: bool = True,
         user_dir: str | None = None,
+        extensions_config: dict[str, dict[str, Any]] | None = None,
     ) -> LoadExtensionsResult:
         """Load file-path extensions into the wrapped ``AgentSession`` (E5 §2.2).
 
         Delegates to :meth:`AgentSession.load_extensions`, which binds each
         extension to this session's live :class:`ExtensionRunner` so its mutating
-        hooks fire in the loop this backend drives.
+        hooks fire in the loop this backend drives. ``extensions_config`` (S40) is
+        forwarded so each extension's ``api.config`` receives its config slice.
         """
         return await self.agent_session.load_extensions(
-            explicit_paths, discover=discover, user_dir=user_dir
+            explicit_paths,
+            discover=discover,
+            user_dir=user_dir,
+            extensions_config=extensions_config,
         )
+
+    def list_managed_extensions(self) -> list[tuple[str, bool]]:
+        """Every managed file extension as ``(path, enabled)`` (E10 §6 / S70).
+
+        Delegates to :meth:`AgentSession.list_managed_extensions`; the ``/extensions``
+        listing reads this so a runtime-disabled extension is shown as disabled.
+        """
+        return self.agent_session.list_managed_extensions()
+
+    async def disable_extension(self, path: str) -> ExtensionActionResult:
+        """Runtime-disable a loaded extension (E10 §6 / S70).
+
+        Delegates to :meth:`AgentSession.disable_extension`, which fires the
+        extension's ``session_shutdown`` teardown, then detaches its hooks + registry
+        entries. Returns the reportable :class:`ExtensionActionResult`.
+        """
+        return await self.agent_session.disable_extension(path)
+
+    async def enable_extension(self, path: str) -> ExtensionActionResult:
+        """Runtime-enable a disabled extension (E10 §6 / S70).
+
+        Delegates to :meth:`AgentSession.enable_extension` (re-invoke ``register`` +
+        ``session_start``).
+        """
+        return await self.agent_session.enable_extension(path)
+
+    async def reload_extension(self, path: str) -> ExtensionActionResult:
+        """Runtime-reload an extension from disk (E10 §6 / S70).
+
+        Delegates to :meth:`AgentSession.reload_extension` (teardown → re-import →
+        re-register → ``session_start``). A broken file raises, per Fail-Early.
+        """
+        return await self.agent_session.reload_extension(path)
 
     def get_extension_commands(self) -> list[tuple[str, str]]:
         """List extension-registered slash commands as ``(name, description)`` (S35).
@@ -294,11 +414,31 @@ class TauBackend(Backend):
         """
         return self.agent_session.get_extension_commands()
 
-    async def run_extension_command(self, name: str, args: str = "") -> bool:
-        """Run an extension-registered slash command (S35).
+    def get_extension_command_args(self, name: str) -> str | None:
+        """The declared argument placeholder for command ``name`` (E7 §3 / S51).
 
-        Delegates to :meth:`AgentSession.run_extension_command`; returns ``True``
-        iff the command existed and ran (``False`` lets the caller fall through).
+        Delegates to :meth:`AgentSession.get_extension_command_args`. The palette
+        reads this to decide whether a command's entry must open the S47 input modal
+        to collect an arg string before dispatch (parity with typed ``/name args``).
+        """
+        return self.agent_session.get_extension_command_args(name)
+
+    def get_extension_shortcuts(self) -> list[tuple[str, str, str, str]]:
+        """List extension-registered key shortcuts as ``(key, command, args, desc)`` (S69).
+
+        Delegates to :meth:`AgentSession.get_extension_shortcuts`. The app's ``ctrl+e``
+        chord menu and command palette read this to surface extension shortcuts and
+        dispatch each one's command through :meth:`run_extension_command`.
+        """
+        return self.agent_session.get_extension_shortcuts()
+
+    async def run_extension_command(self, name: str, args: str = "") -> ExtensionCommandResult:
+        """Run an extension-registered slash command (S35; output channel S46).
+
+        Delegates to :meth:`AgentSession.run_extension_command`, forwarding the
+        :class:`ExtensionCommandResult` (``handled`` + the handler's ``output``) so
+        the caller can both fall through on an unknown command and render a handled
+        command's returned value as display-only chrome.
         """
         return await self.agent_session.run_extension_command(name, args)
 
@@ -633,6 +773,10 @@ class TauBackend(Backend):
             elif event.type == "tool_execution_end":
                 tool_call_id = getattr(event, "tool_call_id", "") or ""
                 is_error = getattr(event, "is_error", False)
+                # A `tool_call` extension VETO (S50, anchor G11) renders distinctly
+                # from a generic error — carry the marker + attribution through.
+                blocked = bool(getattr(event, "blocked", False))
+                blocked_by = getattr(event, "blocked_by", None)
                 result = getattr(event, "result", "")
                 if isinstance(result, list):
                     result = " ".join(
@@ -652,6 +796,8 @@ class TauBackend(Backend):
                         "name": getattr(event, "tool_name", "") or "",
                         "result": result_str,
                         "is_error": is_error,
+                        "blocked": blocked,
+                        "blocked_by": blocked_by,
                     }
                 )
 

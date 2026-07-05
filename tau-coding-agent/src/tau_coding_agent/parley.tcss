@@ -105,6 +105,7 @@ Screen {
 .box-toolCall { border: solid #fab387; }   /* orange (legacy standalone tool box) */
 .box-toolResult { border: solid #a6e3a1; margin: 1 0 1 2; }  /* green, indented */
 .box-error { border: solid #f38ba8; }      /* red */
+.box-blocked { border: solid #f9e2af; }    /* amber — an extension veto (S50), not a tool failure */
 
 /* === Reasoning / thinking regions (collapsible, dim+italic like pi) === */
 .reasoning-region {
@@ -132,6 +133,10 @@ Screen {
 
 .tool-box.box-error > CollapsibleTitle {
     color: #f38ba8;  /* soft red on error */
+}
+
+.tool-box.box-blocked > CollapsibleTitle {
+    color: #f9e2af;  /* amber — a `tool_call` extension veto (S50), read as a policy block */
 }
 
 /* === Exchange grouping (one user→answer span; summary line title) === */
@@ -266,6 +271,212 @@ Screen {
 }
 
 #tree-mode-buttons Button:hover {
+    background: #45475a;
+}
+
+/* === Extension dialogs (confirm / select / input) — E7 §3 / S47 === */
+#ext-confirm-dialog, #ext-select-dialog, #ext-input-dialog {
+    width: 70;
+    height: auto;
+    background: #181825;
+    border: thick #45475a;
+    padding: 1;
+}
+
+#ext-select-dialog {
+    height: 30;
+}
+
+#ext-confirm-title, #ext-select-title, #ext-input-title {
+    text-align: center;
+    text-style: bold;
+    color: #cba6f7;
+    margin-bottom: 1;
+}
+
+#ext-confirm-message {
+    margin-bottom: 1;
+    color: #cdd6f4;
+}
+
+#ext-confirm-buttons, #ext-input-buttons {
+    height: auto;
+    align: center middle;
+}
+
+#ext-confirm-buttons Button, #ext-input-buttons Button {
+    margin: 0 1;
+    background: #313244;
+    border: solid #45475a;
+    color: #cdd6f4;
+}
+
+#ext-confirm-buttons Button:hover, #ext-input-buttons Button:hover {
+    background: #45475a;
+}
+
+#ext-select-list {
+    height: 1fr;
+    background: #1e1e2e;
+    border: solid #45475a;
+    color: #cdd6f4;
+}
+
+#ext-select-list:focus {
+    border: solid #cba6f7;
+}
+
+#ext-select-help {
+    text-align: center;
+    color: #6c7086;
+    margin-top: 1;
+}
+
+#ext-input-field {
+    margin-bottom: 1;
+    background: #1e1e2e;
+    border: solid #45475a;
+    color: #cdd6f4;
+}
+
+#ext-input-field:focus {
+    border: solid #cba6f7;
+}
+
+/* === Extension shortcut chord (which-key menu) — E10 §6 / S69 === */
+#ext-chord-dialog {
+    width: 70;
+    height: auto;
+    max-height: 90%;
+    background: #181825;
+    border: thick #45475a;
+    padding: 1;
+}
+
+#ext-chord-title {
+    text-align: center;
+    text-style: bold;
+    color: #cba6f7;
+    margin-bottom: 1;
+}
+
+.ext-chord-entry {
+    color: #cdd6f4;
+}
+
+/* === Extension form (declarative fields) — E10 §6 / S66 === */
+#ext-form-dialog {
+    width: 70;
+    height: auto;
+    max-height: 90%;
+    background: #181825;
+    border: thick #45475a;
+    padding: 1;
+}
+
+#ext-form-title {
+    text-align: center;
+    text-style: bold;
+    color: #cba6f7;
+    margin-bottom: 1;
+}
+
+#ext-form-fields {
+    height: auto;
+    max-height: 24;
+}
+
+.ext-form-label {
+    color: #a6adc8;
+    margin-top: 1;
+}
+
+.ext-form-input {
+    background: #1e1e2e;
+    border: solid #45475a;
+    color: #cdd6f4;
+}
+
+.ext-form-input:focus {
+    border: solid #cba6f7;
+}
+
+#ext-form-help {
+    text-align: center;
+    color: #6c7086;
+    margin-top: 1;
+}
+
+#ext-form-buttons {
+    height: auto;
+    align: center middle;
+    margin-top: 1;
+}
+
+#ext-form-buttons Button {
+    margin: 0 1;
+    background: #313244;
+    border: solid #45475a;
+    color: #cdd6f4;
+}
+
+#ext-form-buttons Button:hover {
+    background: #45475a;
+}
+
+/* === Extension status strip (E10 §6 / S67) === */
+/* One-line keyed status slots from ctx.ui.set_status(), just above the Footer.
+   Hidden (display:none, set in code) until an extension writes a slot. */
+#ext-status-bar {
+    height: 1;
+    width: 100%;
+    padding: 0 1;
+    background: #181825;
+    color: #a6adc8;
+    text-style: dim;
+}
+
+/* === Extension panel host (E10 §6 / S68) === */
+/* Persistent keyed panels from ctx.ui.panel(), docked to the right of the main
+   area. Hidden (display:none, set in code) until an extension opens a panel. */
+#ext-panel-host {
+    width: 40;
+    height: 100%;
+    padding: 0 1;
+    background: #181825;
+    border-left: solid #313244;
+}
+
+.ext-panel {
+    height: auto;
+    margin-bottom: 1;
+    padding: 0 1;
+    border: round #45475a;
+}
+
+.ext-panel-title {
+    text-style: bold;
+    color: #cba6f7;
+}
+
+.ext-panel-body {
+    color: #cdd6f4;
+    margin-top: 1;
+}
+
+.ext-panel-actions {
+    height: auto;
+    margin-top: 1;
+}
+
+.ext-panel-action {
+    margin: 0 1 0 0;
+    background: #313244;
+    border: none;
+    color: #cdd6f4;
+}
+
+.ext-panel-action:hover {
     background: #45475a;
 }
 

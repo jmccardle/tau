@@ -1050,12 +1050,14 @@ class TestExtensions:
 
         session = self.create_session(extensions=[my_ext])
 
-    def test_extension_api_can_set_session_name(self):
-        """ExtensionAPI.set_session_name() forwards to the bound session."""
+    def test_extension_api_set_session_name_raises_on_in_memory_session(self):
+        """ExtensionAPI.set_session_name() Fail-Early raises when the bound
+        session's log has no durable name slot (the SDK's in-memory log, as
+        this fixture uses) — session naming needs a file-backed log (S64)."""
         def my_ext(api):
-            api.set_session_name("test-session")  # should not raise
-            # The API is bound to the real AgentSession (no orphan session).
             assert api._session is not None
+            with pytest.raises(RuntimeError):
+                api.set_session_name("test-session")
 
         self.create_session(extensions=[my_ext])
 
@@ -1066,6 +1068,154 @@ class TestExtensions:
             assert "mycmd" in api._registry._commands
 
         self.create_session(extensions=[my_ext])
+
+    # -- Command output channel (E7 §3 / S46) ---------------------------------
+
+    def test_run_command_returns_handlers_output(self):
+        """A handled command carries the handler's returned value (S46, was G7).
+
+        The value used to be discarded — ``run_extension_command`` could only
+        report ``handled``. Now it returns an ``ExtensionCommandResult`` whose
+        ``output`` is exactly what the handler returned.
+        """
+        def my_ext(api):
+            def _report(args, ctx):
+                return f"report for {args!r}"
+
+            api.register_command("report", {"description": "r", "handler": _report})
+
+        session = self.create_session(extensions=[my_ext])
+        result = asyncio.run(session.run_extension_command("report", "todos"))
+        assert result.handled is True
+        assert result.output == "report for 'todos'"
+        assert result.output_text() == "report for 'todos'"
+
+    def test_run_command_awaits_async_handler_output(self):
+        """An async handler's awaited return value is captured, not the coroutine."""
+        def my_ext(api):
+            async def _areport(args, ctx):
+                return "async output"
+
+            api.register_command("areport", {"description": "r", "handler": _areport})
+
+        session = self.create_session(extensions=[my_ext])
+        result = asyncio.run(session.run_extension_command("areport"))
+        assert result.handled is True
+        assert result.output == "async output"
+
+    def test_run_command_none_output_has_no_text(self):
+        """A handler returning None is handled but shows no output box."""
+        def my_ext(api):
+            def _silent(args, ctx):
+                return None
+
+            api.register_command("silent", {"description": "s", "handler": _silent})
+
+        session = self.create_session(extensions=[my_ext])
+        result = asyncio.run(session.run_extension_command("silent"))
+        assert result.handled is True
+        assert result.output is None
+        assert result.output_text() is None
+
+    def test_run_command_empty_string_output_has_no_text(self):
+        """An empty-string return yields no output box (nothing to show)."""
+        def my_ext(api):
+            api.register_command(
+                "blank", {"description": "b", "handler": lambda args, ctx: ""}
+            )
+
+        session = self.create_session(extensions=[my_ext])
+        result = asyncio.run(session.run_extension_command("blank"))
+        assert result.handled is True
+        assert result.output_text() is None
+
+    def test_run_command_non_str_output_is_stringified(self):
+        """A non-str return is coerced to text for the display channels (honest, not dropped)."""
+        def my_ext(api):
+            api.register_command(
+                "num", {"description": "n", "handler": lambda args, ctx: [1, 2, 3]}
+            )
+
+        session = self.create_session(extensions=[my_ext])
+        result = asyncio.run(session.run_extension_command("num"))
+        assert result.output == [1, 2, 3]
+        assert result.output_text() == "[1, 2, 3]"
+
+    def test_run_unknown_command_is_not_handled(self):
+        """An unknown command → handled=False (caller falls through), no output."""
+        session = self.create_session()
+        result = asyncio.run(session.run_extension_command("nope"))
+        assert result.handled is False
+        assert result.output is None
+        assert result.output_text() is None
+
+    # -- Palette arg placeholder (E7 §3 / S51) --------------------------------
+
+    def test_command_args_placeholder_declared(self):
+        """A command's declared ``"args"`` placeholder is exposed for the palette."""
+        def my_ext(api):
+            api.register_command(
+                "search",
+                {"description": "search", "args": "<query>", "handler": lambda a, c: a},
+            )
+
+        session = self.create_session(extensions=[my_ext])
+        assert session.get_extension_command_args("search") == "<query>"
+
+    def test_command_args_absent_is_none(self):
+        """A command that declares no ``"args"`` returns None (no modal on dispatch)."""
+        def my_ext(api):
+            api.register_command("plain", {"description": "p", "handler": lambda a, c: a})
+
+        session = self.create_session(extensions=[my_ext])
+        assert session.get_extension_command_args("plain") is None
+
+    def test_command_args_unknown_command_is_none(self):
+        """An unknown command name has no placeholder (None, never a fabricated value)."""
+        session = self.create_session()
+        assert session.get_extension_command_args("nope") is None
+
+    def test_command_args_non_string_raises(self):
+        """Fail-Early: a non-string ``"args"`` is a construction bug, so it raises."""
+        def my_ext(api):
+            api.register_command(
+                "bad", {"description": "b", "args": True, "handler": lambda a, c: a}
+            )
+
+        session = self.create_session(extensions=[my_ext])
+        with pytest.raises(TypeError, match="non-string 'args'"):
+            session.get_extension_command_args("bad")
+
+    # -- Key shortcuts (E10 §6 / S69) -----------------------------------------
+
+    def test_get_extension_shortcuts_lists_registered(self):
+        """Registered shortcuts are exposed as (key, command, args, description)."""
+        def my_ext(api):
+            api.register_shortcut("g", "fleet_status", description="Fleet status")
+            api.register_shortcut("1", "abort_child", args="c-1")
+
+        session = self.create_session(extensions=[my_ext])
+        assert session.get_extension_shortcuts() == [
+            ("g", "fleet_status", "", "Fleet status"),
+            ("1", "abort_child", "c-1", ""),
+        ]
+
+    def test_get_extension_shortcuts_description_falls_back_to_command(self):
+        """An undescribed shortcut inherits its target command's description."""
+        def my_ext(api):
+            api.register_command(
+                "fleet_status", {"description": "Show the fleet", "handler": lambda a, c: None}
+            )
+            api.register_shortcut("g", "fleet_status")
+
+        session = self.create_session(extensions=[my_ext])
+        assert session.get_extension_shortcuts() == [
+            ("g", "fleet_status", "", "Show the fleet"),
+        ]
+
+    def test_get_extension_shortcuts_empty_when_none_registered(self):
+        session = self.create_session()
+        assert session.get_extension_shortcuts() == []
 
 
 # =============================================================================

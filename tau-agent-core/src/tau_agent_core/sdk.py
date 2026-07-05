@@ -217,14 +217,16 @@ class ExtensionInfo:
     """Read-only summary of one loaded extension for the ``/extensions`` surface.
 
     Reference: EXTENSIONS-E5-WIRING.md §5 (E5.4 / S34). Carries an extension's
-    display ``name``, source ``path``, and the ``tools`` / ``commands`` / ``hooks``
-    it registered — everything the palette listing shows for a loaded extension.
+    display ``name``, source ``path``, and the ``tools`` / ``commands`` /
+    ``shortcuts`` / ``hooks`` it registered — everything the palette listing shows
+    for a loaded extension (shortcuts E10 §6 / S69).
     """
 
     name: str
     path: str
     tools: list[str]
     commands: list[str]
+    shortcuts: list[str]
     hooks: list[str]
 
 
@@ -257,6 +259,7 @@ def summarize_extensions(result: LoadExtensionsResult) -> list[ExtensionInfo]:
                 path=ext.path,
                 tools=list(bucket.tools),
                 commands=list(bucket.commands),
+                shortcuts=list(bucket.shortcuts),
                 hooks=sorted(bucket.handlers.keys()),
             )
         )
@@ -341,7 +344,19 @@ async def _load_one_extension(
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     try:
-        spec.loader.exec_module(module)
+        # Compile the source FRESH rather than ``spec.loader.exec_module`` — the
+        # default loader reuses a ``__pycache__`` ``.pyc`` keyed by the SOURCE path
+        # (not our unique module name), validated only against the source's mtime
+        # truncated to whole seconds. A runtime ``/extensions reload`` (E10 §6 / S70)
+        # of a file just edited within the same second (especially a same-length
+        # edit) would then re-run the STALE bytecode — the reload silently would not
+        # take effect. ``module_from_spec`` has already set ``__file__`` / ``__path__``
+        # / ``__package__`` on the module (so relative imports inside a package
+        # extension still resolve), so exec'ing the freshly compiled code into it is
+        # equivalent to ``exec_module`` minus the stale-pyc trap.
+        source = module_file.read_bytes()
+        code = compile(source, str(module_file), "exec")
+        exec(code, module.__dict__)
     except Exception:
         # Don't leave a half-initialized module in the import cache.
         sys.modules.pop(module_name, None)

@@ -552,3 +552,32 @@ def test_extension_registers_all_three_hooks() -> None:
 
     reminders.reminders_extension(_RecordingApi())
     assert registered == ["before_agent_start", "tool_call", "tool_result"]
+
+
+# ── S59: the demo now consumes ext_kit.steer (the refactor's regression guard) ─
+
+
+def test_reminder_bank_wraps_steer_reminder_bank() -> None:
+    # The threshold/cooldown/drain state machine is now an ext_kit.steer.ReminderBank
+    # holding the four rules as data (each with its COOLDOWNS cooldown + REMINDER_TEXT).
+    bank = reminders.ReminderBank()
+    assert isinstance(bank._bank, reminders.steer.ReminderBank)
+    for rule in reminders.RULE_ORDER:
+        # is_pending resolves the rule (raising on an unknown one), so a clean
+        # False proves every demo rule is registered in the kit bank.
+        assert bank._bank.is_pending(rule) is False
+
+
+def test_drain_and_patch_delegate_to_the_kit_bank() -> None:
+    # _drain delegates to the kit bank's drain, and on_tool_result to patch_result:
+    # a triggered rule drains in RULE_ORDER and its <system-reminder> is appended.
+    bank = reminders.ReminderBank()
+    bank.trigger("scope-guard")
+    assert bank._drain() == ["scope-guard"]  # kit drain, registration order
+    bank.trigger("tests-readonly")
+    patch = bank.on_tool_result(
+        {"type": "tool_result", "tool_name": "read", "is_error": False, "content": []},
+        _Ctx(),
+    )
+    assert patch is not None
+    assert reminders.REMINDER_TEXT["tests-readonly"] in str(patch["content"])

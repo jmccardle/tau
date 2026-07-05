@@ -59,7 +59,9 @@ class _FakeBackend:
     def __init__(self, config):
         self.config = config
 
-    async def load_extensions(self, explicit_paths=None, *, discover=True, user_dir=None):
+    async def load_extensions(
+            self, explicit_paths=None, *, discover=True, user_dir=None, extensions_config=None
+        ):
         from tau_agent_core.sdk import LoadExtensionsResult
 
         return LoadExtensionsResult()

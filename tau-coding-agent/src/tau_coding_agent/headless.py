@@ -16,11 +16,13 @@ Reference: docs/CLI-PLAN.md (Core flag set).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import signal
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 # Persistence is the Textual-free session_store module, so a headless run can
 # write a picker-visible, resumable session without importing the TUI. Sessions
@@ -141,6 +143,127 @@ def resolve_model_config(
     return spec, model_config
 
 
+def _decode_ext_config_value(raw: str) -> Any:
+    """Decode a ``--ext-config`` value (S40).
+
+    JSON-decode when it parses — so ``ceiling=5.0`` → ``float``,
+    ``enabled=true`` → ``bool``, ``paths=["a","b"]`` → ``list`` — matching the
+    typed values a config.json entry carries; keep it as a plain ``str`` otherwise
+    (a bare unquoted word like ``mode=strict`` stays ``"strict"``). This is a
+    deliberate, predictable coercion rule, NOT a fallback that papers over a
+    subproblem — an override's type is exactly what its JSON says, or a string.
+    """
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return raw
+
+
+def parse_ext_config_overrides(items: list[str]) -> dict[str, dict[str, Any]]:
+    """Parse ``--ext-config <name>.<key>=<value>`` items into ``{name: {key: value}}`` (S40).
+
+    Each item is split on the FIRST ``=`` (so a value may contain ``=``) into
+    ``NAME.KEY`` and the value; the left side is split on the FIRST ``.`` into the
+    extension ``NAME`` (its file stem) and the ``KEY``. The value is decoded by
+    :func:`_decode_ext_config_value`. Fail-Early: a malformed item (no ``=``, no
+    ``.`` in the key part, or an empty name/key) RAISES :class:`CLIError` rather
+    than being silently dropped.
+    """
+    overrides: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if "=" not in item:
+            raise CLIError(f"--ext-config must be NAME.KEY=VALUE, got {item!r} (missing '=')")
+        lhs, _, raw_value = item.partition("=")
+        if "." not in lhs:
+            raise CLIError(
+                f"--ext-config must be NAME.KEY=VALUE, got {item!r} (the NAME.KEY part has no '.')"
+            )
+        name, _, key = lhs.partition(".")
+        name, key = name.strip(), key.strip()
+        if not name or not key:
+            raise CLIError(f"--ext-config NAME and KEY must both be non-empty, got {item!r}")
+        overrides.setdefault(name, {})[key] = _decode_ext_config_value(raw_value)
+    return overrides
+
+
+def resolve_extensions_config(
+    config: dict, overrides: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """Merge the config.json per-extension config with ``--ext-config`` overrides (S40).
+
+    Base slices come from ``~/.tau/config.json`` ``"extensions": {"<name>": {…}}``
+    (keyed by extension file stem); ``overrides`` (from
+    :func:`parse_ext_config_overrides`) apply on top per key, so CLI beats
+    config.json. Returns ``{name: {…}}`` handed to
+    ``AgentSession.load_extensions(extensions_config=…)``; an extension with no
+    entry reads ``{}``. Fail-Early: a non-object ``"extensions"`` block (or a
+    non-object entry within it) RAISES :class:`CLIError` — a malformed config is a
+    real error, not a thing to silently coerce.
+    """
+    base = config.get("extensions", {})
+    if not isinstance(base, dict):
+        raise CLIError(
+            '~/.tau/config.json "extensions" must be a JSON object mapping '
+            "extension name -> config object"
+        )
+    merged: dict[str, dict[str, Any]] = {}
+    for name, ext_conf in base.items():
+        if not isinstance(ext_conf, dict):
+            raise CLIError(f'~/.tau/config.json "extensions.{name}" must be a JSON object')
+        merged[name] = dict(ext_conf)
+    for name, kv in overrides.items():
+        merged.setdefault(name, {}).update(kv)
+    return merged
+
+
+def parse_ui_defaults(raw: str | None) -> dict[str, str]:
+    """Parse ``--ui-defaults METHOD=ANSWER,…`` into ``{method: token}`` (E7 §3 / S48).
+
+    Splits a comma-separated string (e.g. ``"confirm=yes,select=first"``) on
+    commas, then each item on the FIRST ``=``. Fail-Early: an item missing ``=`` or
+    with an empty method/answer RAISES :class:`CLIError`. The method/token pairs
+    are NOT validated against the allowed set here — that is
+    :meth:`ExtensionUI.set_headless_defaults`'s job (a single source of truth,
+    surfaced as a clean CLI error where the policy is applied). ``None``/empty →
+    ``{}`` (no policy → headless dialogs raise).
+    """
+    policy: dict[str, str] = {}
+    if not raw:
+        return policy
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise CLIError(f"--ui-defaults must be METHOD=ANSWER, got {item!r} (missing '=')")
+        method, _, token = item.partition("=")
+        method, token = method.strip(), token.strip()
+        if not method or not token:
+            raise CLIError(f"--ui-defaults METHOD and ANSWER must both be non-empty, got {item!r}")
+        policy[method] = token
+    return policy
+
+
+def resolve_ui_defaults(config: dict, overrides: dict[str, str]) -> dict[str, str]:
+    """Merge config.json ``"ui_defaults"`` with ``--ui-defaults`` overrides (S48).
+
+    The base policy comes from ``~/.tau/config.json`` ``"ui_defaults": {method:
+    answer}``; ``overrides`` (from :func:`parse_ui_defaults`) apply on top per
+    method, so CLI beats config.json (same precedence as ``--ext-config``).
+    Fail-Early: a non-object ``"ui_defaults"`` block RAISES :class:`CLIError`.
+    Answer values are stringified so a JSON ``true`` in config reads as a token the
+    policy validator recognises.
+    """
+    base = config.get("ui_defaults", {})
+    if not isinstance(base, dict):
+        raise CLIError(
+            '~/.tau/config.json "ui_defaults" must be a JSON object mapping dialog method -> answer'
+        )
+    merged: dict[str, str] = {str(k): str(v) for k, v in base.items()}
+    merged.update(overrides)
+    return merged
+
+
 def _append_system_prompt(base: str, sections: list[str] | None) -> str:
     """Append ``--append-system-prompt`` sections to a base system prompt.
 
@@ -237,6 +360,26 @@ def _apply_resume_metadata(
         session.append_session_info(title)
 
 
+def _emit_command_output(mode: str, command: str, text: str | None) -> None:
+    """Render an extension command's output on the headless channel (E7 §3 / S46).
+
+    ``--mode text`` prints the output text to stdout (nothing when the command
+    produced no output). ``--mode json`` emits ONE ``command_output`` record — a
+    separate record family alongside the closed ``AgentEvent`` set (the same
+    pattern as the session header line), carrying ``output: null`` when the
+    command ran without a returned value, so an orchestrator reading the stream
+    still sees that the command ran. Display-only: never persisted onto the path.
+    """
+    if mode == "json":
+        record = {"type": "command_output", "command": command, "output": text}
+        sys.stdout.write(json.dumps(record) + "\n")
+        sys.stdout.flush()
+        return
+    if text is not None:
+        sys.stdout.write(text + "\n")
+        sys.stdout.flush()
+
+
 async def run_print(args: "CLIArgs", config: dict) -> int:
     """Run one headless turn and render to stdout. Returns a process exit code.
 
@@ -315,69 +458,189 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
         session = prior
         _apply_resume_metadata(session, model_name, backend_name, prior, args.name)
 
-    # This turn's user message, then hand the active-path CONTEXT to the backend
-    # (cursor + compaction/branch splices applied) — not the raw linear fold, so a
-    # resumed compacted/branched session gives the model the right history (§2.6).
-    session.append_message({"role": "user", "content": prompt_text})
-    messages: list[dict] = session.context
-
     # Imported lazily: keeps `import tau_coding_agent.headless` free of the
     # backend/agent-core import chain until a run actually happens.
-    from tau_coding_agent.backends import create_backend
+    from tau_coding_agent.backends import create_backend, make_model_resolver
 
     backend = create_backend(model_config)
 
-    # Load file-path extensions into the live session (E5 §2.2). Explicit ``-e``
-    # paths come from ``--extension``; the ``~/.tau/extensions`` global dir is
-    # discovered unless ``-ne`` (``no_extensions``) was passed. A discovered load
-    # failure is collected and surfaced to stderr here; an explicit ``-e`` failure
-    # raises out of ``load_extensions`` (Fail-Early — the user named it), which
-    # ``main()`` renders as a clean CLI error.
-    explicit_extensions = model_config.get("extensions") or None
-    discover_extensions = not model_config.get("no_extensions", False)
-    ext_result = await backend.load_extensions(explicit_extensions, discover=discover_extensions)
-    for ext_error in ext_result.errors:
-        print(
-            f"[τ] failed to load extension {ext_error.path}: {ext_error.error}",
-            file=sys.stderr,
-        )
+    # Bind the model-name resolver (S45) so an extension's ctx.set_model(name)
+    # resolves NAME through the same config "models" map --model uses. Guarded via
+    # getattr so a non-``TauBackend`` test double is a transparent no-op.
+    agent_session = getattr(backend, "agent_session", None)
+    if agent_session is not None and hasattr(agent_session, "set_model_resolver"):
+        agent_session.set_model_resolver(make_model_resolver(config.get("models", {})))
 
+    # Headless dialog policy (E7 §3 / S48 — anchor G9, D-E6-2). With no policy a
+    # dialog opened by a loaded extension RAISES rather than silently auto-answering
+    # a gate; ``--ui-defaults confirm=yes,select=first`` (over config.json
+    # "ui_defaults", CLI wins) opts back into the explicit auto-answer. Applied
+    # BEFORE the load/lifecycle below so an extension's ``register`` / ``session_start``
+    # dialog is already governed. Validation errors surface as a clean CLI error.
+    set_ui_defaults = getattr(backend, "set_headless_ui_defaults", None)
+    if set_ui_defaults is not None:
+        ui_defaults = resolve_ui_defaults(config, parse_ui_defaults(args.ui_defaults))
+        try:
+            set_ui_defaults(ui_defaults)
+        except ValueError as exc:
+            raise CLIError(str(exc)) from exc
+
+    # Extension activity on the JSON stream (E7 §3 / S49 — anchor G10). In
+    # ``--mode json`` install a record sink so every loaded extension's
+    # ``api.ui.notify(...)`` (and the S44 error surface) emits a
+    # ``{"type": "extension", …}`` record — a parallel record family alongside the
+    # closed ``AgentEvent`` set, like the session header line — instead of the bare
+    # stderr line. Set BEFORE the load/lifecycle below so a ``register`` /
+    # ``session_start`` notify is already captured. ``--mode text`` leaves the sink
+    # unset (stderr, unchanged); a non-``TauBackend`` test double without the seam is
+    # a transparent no-op (same ``getattr`` guard as the other seams).
     if args.mode == "json":
-        # pi-faithful ``--mode json`` (E-json / step S8, D-delegate). Emit the
-        # session HEADER line FIRST (pi ``print-mode.ts:113-116``), then every bus
-        # event serialized to its ``type``-discriminated pi ``AgentSessionEvent``
-        # shape (NOT the legacy ``kind`` schema, and no synthetic ``done`` line):
-        # each ``message_end`` carries usage/model/stop_reason, which is the real
-        # per-child limit / failure signal the delegate (step S9) consumes. The
-        # delegate prices its own budget from those per-message tokens × config
-        # ``cost`` (E4.cost), so no ``cost_usd`` rides the json stream.
-        sys.stdout.write(json.dumps(session.header) + "\n")
-        sys.stdout.flush()
+        set_record_sink = getattr(backend, "set_extension_record_sink", None)
+        if set_record_sink is not None:
 
-        def on_pi_event(event: dict) -> None:
-            sys.stdout.write(json.dumps(event) + "\n")
-            sys.stdout.flush()
+            def _emit_extension_record(record: dict[str, Any]) -> None:
+                sys.stdout.write(json.dumps(record) + "\n")
+                sys.stdout.flush()
 
-        def noop(_delta: str) -> None:
-            pass
+            set_record_sink(_emit_extension_record)
 
-        _text, _usage, new_messages, _tcs = await backend.stream_chat(
-            messages, noop, on_pi_event=on_pi_event
+    # Session-lifecycle hooks (E6 §2 / S41). ``session_start`` fires once
+    # extensions are loaded; ``session_shutdown`` fires on headless COMPLETION and
+    # on SIGINT/SIGTERM. Resolved via ``getattr`` so a non-``TauBackend`` test
+    # double without the seam is a transparent no-op (same guard as the TUI's
+    # ``set_ui_delegate``). Signal handlers are installed only when the backend
+    # exposes the shutdown seam, so the existing fake-backend tests keep the plain
+    # KeyboardInterrupt disposition unchanged.
+    emit_session_start = getattr(backend, "emit_session_start", None)
+    emit_session_shutdown = getattr(backend, "emit_session_shutdown", None)
+    abort = getattr(backend, "abort", None)
+    installed_signals: list[signal.Signals] = []
+    if emit_session_shutdown is not None:
+        loop = asyncio.get_running_loop()
+
+        def _on_terminate() -> None:
+            # Trip the in-flight abort so the loop unwinds to the ``finally``
+            # below, which fires ``session_shutdown`` exactly once. Not fired from
+            # here directly: a signal callback is sync and cannot await the async
+            # dispatch. ``abort`` is safe to call when nothing is running.
+            if abort is not None:
+                abort()
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, _on_terminate)
+                installed_signals.append(sig)
+            except NotImplementedError:
+                # Signal handlers are unavailable on this event loop / platform
+                # (e.g. Windows ProactorEventLoop). Nothing to fabricate — the
+                # completion path still fires ``session_shutdown``.
+                pass
+
+    try:
+        # Load file-path extensions into the live session (E5 §2.2). Explicit
+        # ``-e`` paths come from ``--extension``; the ``~/.tau/extensions`` global
+        # dir is discovered unless ``-ne`` (``no_extensions``) was passed. A
+        # discovered load failure is collected and surfaced to stderr here; an
+        # explicit ``-e`` failure raises out of ``load_extensions`` (Fail-Early —
+        # the user named it), which ``main()`` renders as a clean CLI error.
+        explicit_extensions = model_config.get("extensions") or None
+        discover_extensions = not model_config.get("no_extensions", False)
+        # Per-extension config (E6 §2 / S40): config.json ``"extensions"`` slices +
+        # per-run ``--ext-config NAME.KEY=VALUE`` overrides (CLI > config.json).
+        # Sliced per extension by file stem inside the session, handed to
+        # ``api.config``.
+        extensions_config = resolve_extensions_config(
+            config, parse_ext_config_overrides(args.ext_config)
         )
-    else:  # text
+        ext_result = await backend.load_extensions(
+            explicit_extensions,
+            discover=discover_extensions,
+            extensions_config=extensions_config,
+        )
+        for ext_error in ext_result.errors:
+            print(
+                f"[τ] failed to load extension {ext_error.path}: {ext_error.error}",
+                file=sys.stderr,
+            )
 
-        def emit(delta: str) -> None:
-            sys.stdout.write(delta)
+        # ``session_start`` after the load, so a handler's ``ctx.entries()``
+        # reconstruction / watcher setup runs with its registration in place (S41).
+        if emit_session_start is not None:
+            await emit_session_start("startup")
+
+        # Command output channel (E7 §3 / S46): a prompt that is entirely a
+        # registered extension slash-command (``/name args``) RUNS the command
+        # instead of a model turn — mirroring the TUI's pre-model dispatch
+        # (``app.on_input_submitted``). The handler's returned value is printed
+        # (text) / emitted as a ``command_output`` record (json). No user turn is
+        # appended and the model is never called, so the report stays display-only
+        # chrome and never enters the persisted path (tree-as-truth, E5 §1). An
+        # unknown ``/…`` is NOT a command — it falls through to the model path
+        # below (the text is a legitimate prompt).
+        run_cmd = getattr(backend, "run_extension_command", None)
+        if run_cmd is not None and prompt_text.startswith("/"):
+            stripped = prompt_text[1:]
+            space = stripped.find(" ")
+            cmd_name = stripped if space == -1 else stripped[:space]
+            cmd_args = "" if space == -1 else stripped[space + 1 :]
+            cmd_result = await run_cmd(cmd_name, cmd_args)
+            if cmd_result.handled:
+                _emit_command_output(args.mode, cmd_name, cmd_result.output_text())
+                return 0
+
+        # This turn's user message, then hand the active-path CONTEXT to the backend
+        # (cursor + compaction/branch splices applied) — not the raw linear fold, so
+        # a resumed compacted/branched session gives the model the right history
+        # (§2.6). Appended here (after the command check) so a command run never
+        # persists a user turn.
+        session.append_message({"role": "user", "content": prompt_text})
+        messages: list[dict] = session.context
+
+        if args.mode == "json":
+            # pi-faithful ``--mode json`` (E-json / step S8, D-delegate). Emit the
+            # session HEADER line FIRST (pi ``print-mode.ts:113-116``), then every
+            # bus event serialized to its ``type``-discriminated pi
+            # ``AgentSessionEvent`` shape (NOT the legacy ``kind`` schema, and no
+            # synthetic ``done`` line): each ``message_end`` carries
+            # usage/model/stop_reason, which is the real per-child limit / failure
+            # signal the delegate (step S9) consumes. The delegate prices its own
+            # budget from those per-message tokens × config ``cost`` (E4.cost), so
+            # no ``cost_usd`` rides the json stream.
+            sys.stdout.write(json.dumps(session.header) + "\n")
             sys.stdout.flush()
 
-        _text, _usage, new_messages, _tcs = await backend.stream_chat(messages, emit)
-        sys.stdout.write("\n")
-        sys.stdout.flush()
+            def on_pi_event(event: dict) -> None:
+                sys.stdout.write(json.dumps(event) + "\n")
+                sys.stdout.flush()
 
-    # Append the loop's non-user output (assistant + toolResult); the user turn
-    # was already appended above, so skip any echoed user message.
-    for message in new_messages:
-        if message.get("role") != "user":
-            session.append_message(message)
+            def noop(_delta: str) -> None:
+                pass
 
-    return 0
+            _text, _usage, new_messages, _tcs = await backend.stream_chat(
+                messages, noop, on_pi_event=on_pi_event
+            )
+        else:  # text
+
+            def emit(delta: str) -> None:
+                sys.stdout.write(delta)
+                sys.stdout.flush()
+
+            _text, _usage, new_messages, _tcs = await backend.stream_chat(messages, emit)
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+
+        # Append the loop's non-user output (assistant + toolResult); the user turn
+        # was already appended above, so skip any echoed user message.
+        for message in new_messages:
+            if message.get("role") != "user":
+                session.append_message(message)
+
+        return 0
+    finally:
+        # Uninstall the lifecycle signal handlers (never leak them onto the loop a
+        # subsequent run — or the test harness — shares) and fire ``session_shutdown``
+        # exactly once, whether the run completed normally or a signal tripped abort.
+        for sig in installed_signals:
+            loop.remove_signal_handler(sig)
+        if emit_session_shutdown is not None:
+            await emit_session_shutdown("quit")

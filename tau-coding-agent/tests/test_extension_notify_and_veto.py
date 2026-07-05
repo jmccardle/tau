@@ -154,3 +154,49 @@ async def test_veto_renders_as_blocked_toolbox():
         assert box.has_class("box-error")
         assert box.title.startswith("✗")
         assert "denied by policy" in box._result_md._markdown
+
+
+async def test_extension_veto_renders_blocked_by_extension():
+    """S50 (anchor G11): a `tool_call` extension VETO renders DISTINCTLY from a
+    generic error — a ⛔ mark, the ``box-blocked`` class, and a
+    "blocked by <ext>: <reason>" body naming the vetoing extension.
+
+    This is the tool_result shape TauBackend.stream_chat now emits for a veto: the
+    ``blocked``/``blocked_by`` fields threaded off the ``tool_execution_end``
+    AgentEvent's new markers (S50)."""
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+
+        display.add_message("user", "write outside scope")
+        await display.begin_exchange()
+        display.handle_stream_event({"kind": "turn_start", "turn_index": 0})
+        await pilot.pause()
+        display.handle_stream_event(
+            {"kind": "tool_call", "id": "c1", "name": "write", "arguments": {"path": "/etc/x"}}
+        )
+        await pilot.pause()
+        display.handle_stream_event(
+            {
+                "kind": "tool_result",
+                "id": "c1",
+                "name": "write",
+                "result": "denied by policy",
+                "is_error": True,
+                "blocked": True,
+                "blocked_by": "/home/u/.tau/extensions/30_permission_gate.py",
+            }
+        )
+        await pilot.pause()
+
+        boxes = list(display.query(ToolBox))
+        assert len(boxes) == 1
+        box = boxes[0]
+        assert box.has_result is True
+        # Distinct from a plain error: the blocked class + a ⛔ title mark.
+        assert box.has_class("box-blocked")
+        assert not box.has_class("box-error")
+        assert box.title.startswith("⛔")
+        # The body reads "blocked by <ext-stem>: <reason>".
+        body = box._result_md._markdown
+        assert "blocked by 30_permission_gate: denied by policy" in body

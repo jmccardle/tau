@@ -25,9 +25,11 @@ from tau_agent_core.session import (
 )
 from tau_agent_core.settings import Settings
 from tau_agent_core.extension_types import (
+    HEADLESS_DIALOG_ANSWERS,
     ExtensionAPI,
     ExtensionContext,
     ExtensionUI,
+    HeadlessDialogError,
 )
 from tau_agent_core.agent_loop_types import (
     PreparedToolCall,
@@ -40,7 +42,7 @@ from tau_agent_core.tools.base import (
     AgentToolResult,
     ToolBatchResult,
 )
-from tau_agent_core.agent_session import AgentSession
+from tau_agent_core.agent_session import AgentSession, ExtensionCommandResult
 from tau_agent_core.conversation_tree import ConversationTree, TreeNode
 from tau_agent_core.session_log import InMemorySessionLog, SessionLog
 from tau_agent_core.session_manager import SessionManager
@@ -68,6 +70,7 @@ from tau_agent_core.export import (
 __all__ = [
     # Core types
     "AgentSession",
+    "ExtensionCommandResult",
     "ConversationTree",
     "TreeNode",
     "SessionLog",
@@ -89,6 +92,8 @@ __all__ = [
     "ExtensionAPI",
     "ExtensionContext",
     "ExtensionUI",
+    "HeadlessDialogError",
+    "HEADLESS_DIALOG_ANSWERS",
     "PreparedToolCall",
     "FinalizedToolCall",
     "AgentLoopConfig",

@@ -18,15 +18,17 @@ Contract:
         def register_command(self, name: str, command: dict) -> None: ...
         def get_command(self, name: str) -> dict | None: ...
         def get_commands(self) -> dict[str, dict]: ...
-        def register_flag(self, name: str, options: dict) -> None: ...
-        def get_flag(self, name: str) -> Any: ...
-        def append_entry(self, custom_type: str, data: dict) -> None: ...
-        def get_entries(self) -> list[dict]: ...
+        def register_shortcut(self, key: str, shortcut: dict) -> None: ...
+        def get_shortcut(self, key: str) -> dict | None: ...
+        def get_shortcuts(self) -> dict[str, dict]: ...
+
+Note: ``append_entry`` is NO LONGER a registry method. Durable extension state is
+persisted onto the session tree as a ``customEntry`` node via
+``AgentSession._append_custom_entry`` (E6 §2 / S39), replacing the former RAM-only
+``_entry_store`` that was lost on restart (G4). See ``ExtensionAPI.append_entry``.
 """
 
 from __future__ import annotations
-
-from typing import Any
 
 
 class ToolInfo:
@@ -61,9 +63,8 @@ class ExtensionRegistry:
         """Initialize the registry with empty collections."""
         self._tools: dict[str, dict] = {}  # name -> definition
         self._commands: dict[str, dict] = {}  # name -> command def
-        self._flags: dict[str, dict] = {}  # name -> flag def
+        self._shortcuts: dict[str, dict] = {}  # chord-tail key -> shortcut def
         self._active_tools: set[str] | None = None  # None = all active
-        self._entry_store: list[dict] = []  # extension-persisted entries
 
     def register_tool(self, definition: dict) -> None:
         """Register a tool definition."""
@@ -98,9 +99,23 @@ class ExtensionRegistry:
             return self._tools
         return {n: d for n, d in self._tools.items() if n in self._active_tools}
 
+    def unregister_tool(self, name: str) -> None:
+        """Remove a registered tool by name (E10 §6 / S70 — runtime disable/reload).
+
+        Idempotent: a name that is not present is a no-op (the caller — the session's
+        disable/reload path — drives this from a bucket's recorded tool names, so a
+        double-disable or a name a later extension overwrote is not an error). This is
+        removal of a real prior registration, NOT fabricating absent data.
+        """
+        self._tools.pop(name, None)
+
     def register_command(self, name: str, command: dict) -> None:
         """Register a slash command."""
         self._commands[name] = command
+
+    def unregister_command(self, name: str) -> None:
+        """Remove a registered slash command by name (E10 §6 / S70). Idempotent."""
+        self._commands.pop(name, None)
 
     def get_command(self, name: str) -> dict | None:
         """Look up a registered slash command by name (``None`` if unknown)."""
@@ -110,22 +125,32 @@ class ExtensionRegistry:
         """Get all registered slash commands (name -> command def)."""
         return dict(self._commands)
 
-    def register_flag(self, name: str, options: dict) -> None:
-        """Register a CLI flag."""
-        self._flags[name] = options
+    def register_shortcut(self, key: str, shortcut: dict) -> None:
+        """Register an extension key binding (E10 §6 / S69).
 
-    def get_flag(self, name: str) -> Any:
-        """Get the value of a CLI flag."""
-        return self._flags.get(name, {}).get("value")
+        ``key`` is the chord-tail key (the second key after the ``ctrl+e``
+        extension leader — the guarded namespace the TUI binds these under, so an
+        extension can never clobber a core global binding). ``shortcut`` carries
+        the ``command`` name to dispatch (plus optional ``args``/``description``).
 
-    def append_entry(self, custom_type: str, data: dict) -> None:
-        """Persist extension state (does not appear in LLM context)."""
-        entry = {
-            "custom_type": custom_type,
-            "data": data,
-        }
-        self._entry_store.append(entry)
+        Last-wins on a duplicate tail key (two extensions binding the same chord),
+        mirroring :meth:`register_tool`'s warn-and-overwrite — a namespace collision
+        is an environment fact, not one extension's construction bug.
+        """
+        if key in self._shortcuts:
+            import logging
 
-    def get_entries(self) -> list[dict]:
-        """Get all persisted extension entries."""
-        return list(self._entry_store)
+            logging.warning(f"Shortcut 'ctrl+e {key}' already registered, overwriting")
+        self._shortcuts[key] = shortcut
+
+    def unregister_shortcut(self, key: str) -> None:
+        """Remove a registered shortcut by its chord-tail key (E10 §6 / S70). Idempotent."""
+        self._shortcuts.pop(key, None)
+
+    def get_shortcut(self, key: str) -> dict | None:
+        """Look up a registered shortcut by its chord-tail key (``None`` if unknown)."""
+        return self._shortcuts.get(key)
+
+    def get_shortcuts(self) -> dict[str, dict]:
+        """Get all registered shortcuts (chord-tail key -> shortcut def)."""
+        return dict(self._shortcuts)

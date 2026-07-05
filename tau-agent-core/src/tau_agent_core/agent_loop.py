@@ -44,7 +44,7 @@ from tau_agent_core.agent_loop_types import (
     PreparedToolCall,
 )
 from tau_agent_core.events import AgentEvent
-from tau_agent_core.messages import convert_to_llm
+from tau_agent_core.messages import convert_to_llm, create_custom_message
 from tau_agent_core.tools.base import AgentTool, AgentToolResult, ToolBatchResult
 
 if TYPE_CHECKING:
@@ -52,11 +52,20 @@ if TYPE_CHECKING:
 
 
 class BlockedCall:
-    """A tool call that was blocked (e.g., argument validation failed)."""
+    """A tool call that was blocked (e.g., argument validation failed).
 
-    def __init__(self, call: PreparedToolCall, error: str) -> None:
+    ``blocked_by_extension`` names the extension that VETOED the call via a
+    ``tool_call`` hook (S50, anchor G11); it is ``None`` for a block that is NOT an
+    extension veto (argument-validation failure, fail-closed handler throw) — those
+    stay a generic errored result rather than the "⛔ blocked by <ext>" render.
+    """
+
+    def __init__(
+        self, call: PreparedToolCall, error: str, blocked_by_extension: str | None = None
+    ) -> None:
         self.call = call
         self.error = error
+        self.blocked_by_extension = blocked_by_extension
 
 
 class ErrorCall:
@@ -211,6 +220,17 @@ class AgentLoop:
                         tool_results=[],
                     )
                 )
+                # S43 — the MUTATING turn_end hook fires AFTER the notify AgentEvent:
+                # a returned message is a durable append. This is the final turn (the
+                # loop breaks below), so the node is persisted but the model only sees
+                # it on the NEXT prompt() — the same reload-durable path.
+                await self._run_mutating_turn_end(
+                    turn_index,
+                    self._turn_usage(assistant),
+                    [self._serialize_message(assistant)],
+                    messages,
+                    final_messages,
+                )
                 turn_index += 1
                 break
 
@@ -255,6 +275,23 @@ class AgentLoop:
                     turn_index=turn_index,
                     tool_results=tool_result_dicts,
                 )
+            )
+
+            # S43 — the MUTATING turn_end hook. A returned message is appended as a
+            # durable ``custom`` node to BOTH the running context (so the next turn's
+            # model sees it, custom→user on the wire) and ``final_messages`` (so
+            # AgentSession persists it as a ``customMessage`` tree node — the single
+            # durable artifact: persisted == rendered == sent). Append-only: it never
+            # rewrites the assistant/tool nodes above it.
+            await self._run_mutating_turn_end(
+                turn_index,
+                self._turn_usage(assistant),
+                [
+                    self._serialize_message(assistant),
+                    *[self._serialize_message(m) for m in batch.messages],
+                ],
+                messages,
+                final_messages,
             )
 
             if batch.terminate:
@@ -321,6 +358,14 @@ class AgentLoop:
                         tool_results=[],
                     )
                 )
+                # S43 — mutating turn_end (see run()); final turn, durable append.
+                await self._run_mutating_turn_end(
+                    turn_index,
+                    self._turn_usage(assistant),
+                    [self._serialize_message(assistant)],
+                    messages,
+                    final_messages,
+                )
                 turn_index += 1
                 break
 
@@ -363,6 +408,18 @@ class AgentLoop:
                 )
             )
 
+            # S43 — mutating turn_end (see run()); durable append before next turn.
+            await self._run_mutating_turn_end(
+                turn_index,
+                self._turn_usage(assistant),
+                [
+                    self._serialize_message(assistant),
+                    *[self._serialize_message(m) for m in batch.messages],
+                ],
+                messages,
+                final_messages,
+            )
+
             if batch.terminate:
                 break
 
@@ -383,6 +440,86 @@ class AgentLoop:
     # ------------------------------------------------------------------
     # Internal methods
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _serialize_message(message: Any) -> Any:
+        """Serialize a loop message (pydantic or dict) to a plain dict for a hook."""
+        if hasattr(message, "model_dump"):
+            return message.model_dump()
+        return message
+
+    @staticmethod
+    def _turn_usage(assistant: AssistantMessage) -> dict[str, Any]:
+        """This turn's per-completion token usage, as a dict (S43 ``turn_end`` event).
+
+        Reads the real usage the provider filled on the assistant message (the same
+        value the per-completion ``message_end`` carries). Fail-Early: a real 0 is
+        surfaced as 0, never approximated — the accessor never fabricates a value.
+        """
+        usage: dict[str, Any] = assistant.usage.model_dump()
+        return usage
+
+    async def _run_mutating_turn_end(
+        self,
+        turn_index: int,
+        usage: dict[str, Any] | None,
+        turn_messages: list[Any],
+        messages: list[Any],
+        final_messages: list[Any],
+    ) -> None:
+        """Fire the mutating ``turn_end`` hook and weave returned messages durably (S43).
+
+        Gated on ``has_handlers`` for the zero-extension fast path. Each message a
+        handler returns becomes a durable ``custom`` node
+        (:meth:`_turn_end_custom_node`) appended to BOTH the running loop context
+        (``messages`` — so the next turn's model sees it) and ``final_messages`` (so
+        :class:`~tau_agent_core.agent_session.AgentSession` persists it as a
+        ``customMessage`` tree node). Append-only: it never rewrites the
+        assistant/tool nodes produced this turn.
+        """
+        dispatcher = self._hook_dispatcher
+        if dispatcher is None or not dispatcher.has_handlers("turn_end"):
+            return
+        injected = await dispatcher.emit_turn_end(
+            turn_index=turn_index,
+            usage=usage,
+            messages=turn_messages,
+        )
+        for raw in injected:
+            node = self._turn_end_custom_node(raw)
+            messages.append(node)
+            final_messages.append(node)
+
+    @staticmethod
+    def _turn_end_custom_node(message: dict[str, Any]) -> dict[str, Any]:
+        """Build a durable ``custom`` node from a mutating ``turn_end`` return (S43).
+
+        A handler's returned ``{customType, content, display?, details?}`` becomes an
+        agent-level custom message (``role: "custom"``,
+        :func:`~tau_agent_core.messages.create_custom_message`) — the same shape and
+        validation as a ``before_agent_start`` message. Threaded into the loop this
+        turn AND persisted as a ``customMessage`` tree node by the session, so a
+        reload replays the exact path the model saw.
+
+        Raises:
+            ValueError: if the message lacks ``content`` (nothing to inject) or
+                ``customType`` (extension-origin identity is not fabricated) —
+                Fail-Early, no silent default.
+        """
+        if "content" not in message:
+            raise ValueError("turn_end message is missing 'content' — nothing to inject")
+        if "customType" not in message:
+            raise ValueError(
+                "turn_end message is missing 'customType' — the extension-origin type "
+                "is required (Fail-Early, no fabricated default)"
+            )
+        return create_custom_message(
+            custom_type=str(message["customType"]),
+            content=message["content"],
+            display=bool(message.get("display", True)),
+            details=message.get("details"),
+            timestamp=int(time.time() * 1000),
+        )
 
     async def _stream_response(self, context: list[Any]) -> AssistantMessage:
         """Stream assistant response from LLM.
@@ -609,6 +746,19 @@ class AgentLoop:
         else:
             return await self._execute_sequential(assistant, tool_calls)
 
+    def _emit_veto_record(self, tool_name: str, reason: str, extension: str | None) -> None:
+        """Emit the JSON-stream veto record for an extension-blocked call (S50).
+
+        Routed through the hook dispatcher (which owns the shared ``ExtensionUI``
+        record sink). A no-op when the loop runs standalone (no dispatcher) or off the
+        ``--mode json`` path (no sink) — the veto still surfaces on the
+        ``tool_execution_end`` AgentEvent's ``blocked`` field there.
+        """
+        dispatcher = self._hook_dispatcher
+        if dispatcher is None:
+            return
+        dispatcher.emit_veto_record(tool_name=tool_name, reason=reason, extension=extension)
+
     async def _execute_sequential(
         self,
         assistant: AssistantMessage,
@@ -654,6 +804,13 @@ class AgentLoop:
 
             prepared = await self._prepare_tool_call(tc)
             if isinstance(prepared, BlockedCall):
+                # An extension VETO (S50, anchor G11) is a distinct presentation from
+                # a generic error: mark the end event ``blocked`` + emit the JSON veto
+                # record. A non-veto block (arg validation) has no attribution and
+                # stays a plain errored result.
+                blocked_by = prepared.blocked_by_extension
+                if blocked_by is not None:
+                    self._emit_veto_record(prepared.call.name, prepared.error, blocked_by)
                 await self._emit(
                     AgentEvent(
                         type="tool_execution_end",
@@ -662,6 +819,8 @@ class AgentLoop:
                         tool_name=prepared.call.name,
                         result=prepared.error,
                         is_error=True,
+                        blocked=blocked_by is not None,
+                        blocked_by=blocked_by,
                     )
                 )
                 all_results.append(
@@ -788,6 +947,13 @@ class AgentLoop:
             else:
                 # Normal result (including from_error for BlockedCall/ ErrorCall)
                 all_results.append(res)
+                # An extension VETO (S50) surfaces distinctly: the blocked marker
+                # rides the end event and a JSON veto record is emitted. Recovered
+                # from the aligned prepared call (``from_error`` drops the attribution).
+                blocked_by: str | None = None
+                if isinstance(pc, BlockedCall) and pc.blocked_by_extension is not None:
+                    blocked_by = pc.blocked_by_extension
+                    self._emit_veto_record(res.tool_name, pc.error, blocked_by)
                 await self._emit(
                     AgentEvent(
                         type="tool_execution_end",
@@ -796,6 +962,8 @@ class AgentLoop:
                         tool_name=res.tool_name,
                         result=res.content,
                         is_error=res.is_error,
+                        blocked=blocked_by is not None,
+                        blocked_by=blocked_by,
                     )
                 )
 
@@ -905,6 +1073,10 @@ class AgentLoop:
                             arguments={},
                         ),
                         error=hook_result.get("reason") or "Tool execution was blocked",
+                        # The runner attributed the veto to the blocking extension
+                        # (S50); thread it so the call-site renders "⛔ blocked by
+                        # <ext>" + emits the JSON veto record.
+                        blocked_by_extension=hook_result.get("extension"),
                     )
                 # No re-validation after mutation (pi parity): event["input"] is
                 # the possibly-patched args object the tool executes with.

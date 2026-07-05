@@ -92,7 +92,9 @@ async def test_discovered_failure_surfaces_notice(app, monkeypatch):
     from tau_agent_core.sdk import ExtensionLoadError, LoadExtensionsResult
 
     class _ErroringBackend:
-        async def load_extensions(self, explicit_paths=None, *, discover=True, user_dir=None):
+        async def load_extensions(
+            self, explicit_paths=None, *, discover=True, user_dir=None, extensions_config=None
+        ):
             return LoadExtensionsResult(
                 errors=[ExtensionLoadError(path="/x/broken.py", error="boom")]
             )
@@ -150,7 +152,9 @@ async def test_explicit_failure_surfaces_error_notice(app, monkeypatch):
     """An explicit ``-e`` failure (loader RAISES) is caught into an error notice."""
 
     class _RaisingBackend:
-        async def load_extensions(self, explicit_paths=None, *, discover=True, user_dir=None):
+        async def load_extensions(
+            self, explicit_paths=None, *, discover=True, user_dir=None, extensions_config=None
+        ):
             raise RuntimeError("boom during import")
 
     notices: list[tuple[str, str]] = []

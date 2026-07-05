@@ -102,6 +102,68 @@ def test_headless_notify_falls_to_stderr_when_no_delegate(capsys) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 1b. Headless dialog policy on the shared session UI (S48)
+# ---------------------------------------------------------------------------
+
+
+async def test_headless_dialog_raises_by_default_for_bound_extension() -> None:
+    """A bound extension's ``ctx.ui.confirm`` RAISES headless with no policy (S48)."""
+    from tau_agent_core.extension_types import HeadlessDialogError
+
+    apis: list[Any] = []
+
+    def ext(api: Any) -> None:
+        apis.append(api)
+
+    session = AgentSession(
+        session_log=InMemorySessionLog(),
+        model=_model(),
+        extensions=[ext],
+    )
+    # No delegate, no policy → Fail-Early raise rather than a silent auto-approve.
+    import pytest
+
+    with pytest.raises(HeadlessDialogError):
+        await apis[0].ui.confirm("Delete?", "are you sure")
+
+
+async def test_set_headless_ui_defaults_honored_for_every_bound_extension() -> None:
+    """One ``set_headless_ui_defaults`` call governs ALL bound extensions (S48)."""
+    apis: list[Any] = []
+
+    def ext_a(api: Any) -> None:
+        apis.append(api)
+
+    def ext_b(api: Any) -> None:
+        apis.append(api)
+
+    session = AgentSession(
+        session_log=InMemorySessionLog(),
+        model=_model(),
+        extensions=[ext_a, ext_b],
+    )
+    session.set_headless_ui_defaults({"confirm": "yes", "select": "first", "input": "default"})
+
+    # Both bound apis share the one shared ExtensionUI, so the policy reaches both.
+    assert apis[0].ui is apis[1].ui
+    assert await apis[0].ui.confirm("t", "m") is True
+    assert await apis[1].ui.select("t", ["x", "y"]) == "x"
+    assert await apis[0].ui.input("t", "def") == "def"
+
+
+def test_set_headless_ui_defaults_rejects_bad_policy() -> None:
+    """An invalid policy token surfaces as ``ValueError`` (Fail-Early, S48)."""
+    import pytest
+
+    session = AgentSession(
+        session_log=InMemorySessionLog(),
+        model=_model(),
+    )
+    with pytest.raises(ValueError):
+        session.set_headless_ui_defaults({"confirm": "maybe"})
+
+
+# ---------------------------------------------------------------------------
 # 2. A veto emits a render signal (tool_execution_start)
 # ---------------------------------------------------------------------------
 
