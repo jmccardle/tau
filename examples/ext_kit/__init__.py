@@ -18,6 +18,10 @@ step table. This package currently ships:
   (exit-code / regex verdict), :func:`~ext_kit.gate.verdict_node` (durable
   ``customMessage`` verdict block), and the anti-cheat
   :func:`~ext_kit.gate.revert_and_recheck`.
+* :mod:`ext_kit.state` (S56) — the *backplane*: :class:`~ext_kit.state.TreeStore`
+  (typed, reload-safe records over the durable ``customEntry`` node, reconstructed
+  along the active path) and :class:`~ext_kit.state.FileStore` (atomic cross-session
+  JSON under ``~/.tau/ext-state/``).
 """
 
 from __future__ import annotations
@@ -60,17 +64,26 @@ from ext_kit.stream import (
     monitor_stream,
     read_jsonl,
 )
+from ext_kit.state import (
+    CUSTOM_ENTRY_KIND,
+    STATE_DIR_NAME,
+    FileStore,
+    TreeStore,
+)
 
 __all__ = [
+    "CUSTOM_ENTRY_KIND",
     "DEFAULT_STUCK_LIMIT",
     "DEFAULT_VERDICT_TYPE",
     "FAILED_REASONS",
     "FLAGS",
+    "STATE_DIR_NAME",
     "VERDICT_FAIL",
     "VERDICT_PASS",
     "VERDICT_TIMEOUT",
     "ChildResult",
     "ChildUsage",
+    "FileStore",
     "GateResult",
     "ProgressWatchdog",
     "RecheckResult",
@@ -79,6 +92,7 @@ __all__ = [
     "StreamMonitor",
     "StuckDetector",
     "TauEvent",
+    "TreeStore",
     "WorkerPool",
     "build_child_args",
     "event_tool_signature",
