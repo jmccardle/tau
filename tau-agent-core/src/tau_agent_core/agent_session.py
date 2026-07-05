@@ -24,7 +24,7 @@ from tau_ai.types import Model, UserMessage
 
 from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.extension_types import ExtensionAPI
-from tau_agent_core.messages import create_custom_message
+from tau_agent_core.messages import CUSTOM_ROLE, create_custom_message
 from tau_agent_core.extensions.registry import ExtensionRegistry
 from tau_agent_core.extensions.runner import ExtensionRunner
 from tau_agent_core.session import SessionState
@@ -640,17 +640,9 @@ class AgentSession:
             self._session_log.append_custom_message(cmsg, custom_type=str(cmsg["customType"]))
             turn_messages.append(cmsg)
 
-        # Assistant responses and tool results produced this turn.
-        for msg in final_messages:
-            if hasattr(msg, "model_dump"):
-                msg_dict = msg.model_dump()
-            elif isinstance(msg, dict):
-                msg_dict = msg
-            else:
-                continue
-
-            self._session_log.append_message(msg_dict)
-            turn_messages.append(msg_dict)
+        # Assistant responses and tool results produced this turn (plus any durable
+        # ``custom`` nodes the mutating ``turn_end`` hook appended mid-loop, S43).
+        self._persist_loop_messages(final_messages, turn_messages)
 
         return turn_messages
 
@@ -731,16 +723,7 @@ class AgentSession:
             # session history — so a caller appending the result to its own
             # store doesn't re-append prior turns.
             turn_messages: list[dict[str, Any]] = []
-            for msg in final_messages:
-                if hasattr(msg, "model_dump"):
-                    msg_dict = msg.model_dump()
-                elif isinstance(msg, dict):
-                    msg_dict = msg
-                else:
-                    continue
-
-                self._session_log.append_message(msg_dict)
-                turn_messages.append(msg_dict)
+            self._persist_loop_messages(final_messages, turn_messages)
 
             return turn_messages
 
@@ -1031,6 +1014,42 @@ class AgentSession:
                 )
             )
         return resolved
+
+    def _persist_loop_messages(
+        self, final_messages: list[Any], turn_messages: list[dict[str, Any]]
+    ) -> None:
+        """Persist a loop's produced messages, routing durable ``custom`` nodes.
+
+        Assistant / tool-result messages persist as plain ``message`` tree nodes.
+        An extension-injected ``role: "custom"`` node produced mid-loop by the
+        mutating ``turn_end`` hook (S43) persists as a ``customMessage`` tree node
+        instead — so it lands on the active path exactly like a ``before_agent_start``
+        injection (persisted == rendered == sent) and a reload replays the same path.
+        Each persisted dict is collected into ``turn_messages`` (this turn's new
+        messages — the ``prompt()`` return value), preserving loop order.
+
+        Fail-Early: a ``custom`` node missing ``customType`` raises rather than
+        fabricating an extension-origin identity.
+        """
+        for msg in final_messages:
+            if hasattr(msg, "model_dump"):
+                msg_dict = msg.model_dump()
+            elif isinstance(msg, dict):
+                msg_dict = msg
+            else:
+                continue
+
+            if msg_dict.get("role") == CUSTOM_ROLE:
+                custom_type = msg_dict.get("customType")
+                if not custom_type:
+                    raise ValueError(
+                        "turn_end custom node is missing 'customType' — the "
+                        "extension-origin type is required (Fail-Early)"
+                    )
+                self._session_log.append_custom_message(msg_dict, custom_type=str(custom_type))
+            else:
+                self._session_log.append_message(msg_dict)
+            turn_messages.append(msg_dict)
 
     def _custom_message_node(self, message: dict[str, Any]) -> dict[str, Any]:
         """Build the durable ``custom`` message dict for a ``before_agent_start`` hook.

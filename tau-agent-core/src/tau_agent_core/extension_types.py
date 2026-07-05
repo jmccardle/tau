@@ -463,9 +463,9 @@ class ExtensionAPI:
     def on(self, event: str, handler: Callable) -> Callable[[], None]:
         """Subscribe to an event — routed by KIND (S24 bridge).
 
-        The four MUTATING hooks (``ExtensionRunner.HOOK_EVENTS``: ``tool_call`` /
-        ``tool_result`` / ``before_agent_start`` / ``input``) AND the two notify-grade
-        session-lifecycle hooks (``ExtensionRunner.LIFECYCLE_EVENTS``:
+        The five MUTATING hooks (``ExtensionRunner.HOOK_EVENTS``: ``tool_call`` /
+        ``tool_result`` / ``before_agent_start`` / ``input`` / ``turn_end``) AND the
+        two notify-grade session-lifecycle hooks (``ExtensionRunner.LIFECYCLE_EVENTS``:
         ``session_start`` / ``session_shutdown``, S41) are dispatched by the
         session's separate ``ExtensionRunner``, whose call-sites gate on
         ``has_handlers(event)``. Those registrations must land in THIS extension's
@@ -474,6 +474,12 @@ class ExtensionAPI:
         and the lifecycle hooks in particular route through the runner precisely so
         their handler errors are SURFACED (S44) instead of swallowed like the bus.
         Every other (notify) event keeps going to the ``EventBus``.
+
+        ``turn_end`` (S43) is the mutating variant: ``api.on("turn_end", …)`` now
+        routes to the runner, where a handler may return ``{message}`` for a durable
+        append or return nothing to observe. The notify-grade ``turn_end``
+        ``AgentEvent`` on the ``EventBus`` is UNCHANGED — pure observers still reach
+        it via ``api.on("all", …)`` or :meth:`AgentSession.subscribe`.
 
         The retired ``context`` hook (E5 §3.2 / S30) is rejected UP FRONT: it was
         removed from ``HOOK_EVENTS``, so left unguarded it would fall through to the

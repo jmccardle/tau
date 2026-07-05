@@ -95,6 +95,12 @@ class ExtensionRunner:
                                exists (``prompt``/``images`` chain, later handlers
                                see the running value); ``handled: True`` consumes
                                the input without starting a turn (S42).
+    - ``turn_end``           — MUTATING variant (S43, τ divergence D-E6-6): a
+                               handler may return ``{message}`` → the loop appends
+                               it as a durable ``customMessage`` node BEFORE the
+                               next turn (append-only, same power/limits as
+                               ``before_agent_start``); returning nothing is a PURE
+                               OBSERVER, preserving pi's notify-grade ``turn_end``.
 
     (A fourth hook, ``context`` — per-call replace of the message list — existed
     through E2 but was ELIMINATED in E5 §3.2 / S30. Under the durable-hook
@@ -121,8 +127,9 @@ class ExtensionRunner:
     """
 
     #: The mutating hook events this dispatcher owns (E2 supplies the call-sites;
-    #: S42 adds ``input``, fired pre-node at the top of ``AgentSession.prompt``).
-    HOOK_EVENTS = ("tool_call", "tool_result", "before_agent_start", "input")
+    #: S42 adds ``input``, fired pre-node at the top of ``AgentSession.prompt``;
+    #: S43 adds ``turn_end``, fired per turn in the loop with a durable append).
+    HOOK_EVENTS = ("tool_call", "tool_result", "before_agent_start", "input", "turn_end")
 
     #: The notify-grade session-lifecycle hooks (S41): no return effect, but
     #: error-surfaced through :meth:`on_error` rather than swallowed. Routed to a
@@ -394,6 +401,59 @@ class ExtensionRunner:
                 if result.get("images") is not None:
                     current_images = result["images"]
         return {"handled": False, "prompt": current_prompt, "images": current_images}
+
+    async def emit_turn_end(
+        self,
+        turn_index: int,
+        usage: dict[str, Any] | None,
+        messages: list[Any],
+    ) -> list[Any]:
+        """Dispatch the MUTATING ``turn_end`` hook; accumulate returned messages (S43).
+
+        τ divergence from pi (D-E6-6): pi's ``turn_end`` is notify-only — its
+        handler return is discarded (``agent-session.ts:617``). τ additionally lets
+        a handler return ``{message}``, which the loop call-site appends as a durable
+        ``customMessage`` node BEFORE the next turn, with the same append-only power
+        and limits as ``before_agent_start`` (§1.3): it may APPEND to the active
+        path, never rewrite a prior node. A handler that returns nothing (or no
+        ``message`` key) is a PURE OBSERVER — the notify-grade ``turn_end`` behaviour
+        pi ships, which τ preserves alongside the mutating variant (roadmap S43). The
+        two coexist: an observing handler and a mutating handler both run, in load /
+        registration order, on the same event.
+
+        Each handler receives ``{"type": "turn_end", "turn_index", "usage",
+        "messages"}`` — the just-finished turn's index, its per-completion token
+        usage (or ``None``), and the messages it produced (assistant + tool
+        results). Every returned ``message`` accumulates in order; the collected list
+        is returned to the call-site (empty when nothing was returned, so the caller
+        skips the append entirely).
+
+        Handler exceptions are SURFACED via :meth:`on_error` (the S44 regime) and
+        dispatch continues to the next handler — an observing handler must neither
+        abort a mutating one nor be swallowed (Fail-Early: no silent drop).
+        """
+        injected: list[Any] = []
+        for ext in self._extensions:
+            handlers = ext.handlers.get("turn_end")
+            if not handlers:
+                continue
+            for handler in handlers:
+                event = {
+                    "type": "turn_end",
+                    "turn_index": turn_index,
+                    "usage": usage,
+                    "messages": messages,
+                }
+                try:
+                    result = await self._call(handler, event)
+                except Exception as err:  # noqa: BLE001 — surfaced, not dropped
+                    self._emit_error(ExtensionError(ext.path, "turn_end", str(err)))
+                    continue
+                if not result:
+                    continue
+                if result.get("message") is not None:
+                    injected.append(result["message"])
+        return injected
 
     # ------------------------------------------------------------------
     # Session-lifecycle dispatch — notify-grade, error-surfaced (S41)
