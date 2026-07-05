@@ -10,6 +10,10 @@ step table. This package currently ships:
 * :mod:`ext_kit.spawn` (S53) — isolated-agent spawning: :func:`~ext_kit.spawn.spawn_tau`,
   the :func:`~ext_kit.spawn.stream_tau` event iterator, usage/cost roll-up, and a
   bounded :class:`~ext_kit.spawn.WorkerPool`.
+* :mod:`ext_kit.stream` (S54) — event-stream supervision over a child stream:
+  :func:`~ext_kit.stream.iter_jsonl` reader, :class:`~ext_kit.stream.StreamCounters`,
+  :class:`~ext_kit.stream.StuckDetector`, :class:`~ext_kit.stream.ProgressWatchdog`,
+  and the :func:`~ext_kit.stream.monitor_stream` driver.
 """
 
 from __future__ import annotations
@@ -30,17 +34,37 @@ from ext_kit.spawn import (
     stream_tau,
     tau_invocation,
 )
+from ext_kit.stream import (
+    FLAGS,
+    ProgressWatchdog,
+    StreamCounters,
+    StreamMonitor,
+    StuckDetector,
+    event_tool_signature,
+    iter_jsonl,
+    monitor_stream,
+    read_jsonl,
+)
 
 __all__ = [
     "DEFAULT_STUCK_LIMIT",
     "FAILED_REASONS",
+    "FLAGS",
     "ChildResult",
     "ChildUsage",
+    "ProgressWatchdog",
     "SpawnLimits",
+    "StreamCounters",
+    "StreamMonitor",
+    "StuckDetector",
     "TauEvent",
     "WorkerPool",
     "build_child_args",
+    "event_tool_signature",
+    "iter_jsonl",
+    "monitor_stream",
     "price_increment",
+    "read_jsonl",
     "roll_message_usage",
     "spawn_all",
     "spawn_tau",
