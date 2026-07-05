@@ -269,6 +269,75 @@ Screen {
     background: #45475a;
 }
 
+/* === Extension dialogs (confirm / select / input) — E7 §3 / S47 === */
+#ext-confirm-dialog, #ext-select-dialog, #ext-input-dialog {
+    width: 70;
+    height: auto;
+    background: #181825;
+    border: thick #45475a;
+    padding: 1;
+}
+
+#ext-select-dialog {
+    height: 30;
+}
+
+#ext-confirm-title, #ext-select-title, #ext-input-title {
+    text-align: center;
+    text-style: bold;
+    color: #cba6f7;
+    margin-bottom: 1;
+}
+
+#ext-confirm-message {
+    margin-bottom: 1;
+    color: #cdd6f4;
+}
+
+#ext-confirm-buttons, #ext-input-buttons {
+    height: auto;
+    align: center middle;
+}
+
+#ext-confirm-buttons Button, #ext-input-buttons Button {
+    margin: 0 1;
+    background: #313244;
+    border: solid #45475a;
+    color: #cdd6f4;
+}
+
+#ext-confirm-buttons Button:hover, #ext-input-buttons Button:hover {
+    background: #45475a;
+}
+
+#ext-select-list {
+    height: 1fr;
+    background: #1e1e2e;
+    border: solid #45475a;
+    color: #cdd6f4;
+}
+
+#ext-select-list:focus {
+    border: solid #cba6f7;
+}
+
+#ext-select-help {
+    text-align: center;
+    color: #6c7086;
+    margin-top: 1;
+}
+
+#ext-input-field {
+    margin-bottom: 1;
+    background: #1e1e2e;
+    border: solid #45475a;
+    color: #cdd6f4;
+}
+
+#ext-input-field:focus {
+    border: solid #cba6f7;
+}
+
 /* === Code blocks in markdown === */
 Markdown CodeBlock {
     background: #11111b;

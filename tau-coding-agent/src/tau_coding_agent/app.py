@@ -7,7 +7,17 @@ Clean, simple, fast. Built with Textual.
 from textual.app import App, ComposeResult, SystemCommand
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.widget import Widget
-from textual.widgets import Static, Input, Header, Footer, Markdown, Button, TextArea, Tree
+from textual.widgets import (
+    Static,
+    Input,
+    Header,
+    Footer,
+    Markdown,
+    Button,
+    TextArea,
+    Tree,
+    OptionList,
+)
 from textual.binding import Binding
 from textual.reactive import reactive
 from textual import events, work
@@ -70,10 +80,14 @@ class _ExtensionUIDelegate:
     loop (the generation worker is async, not threaded), so ``App.notify`` is
     called directly.
 
-    S33 wires ``notify`` only; the interactive dialogs (``confirm`` / ``select`` /
-    ``input``) RAISE rather than silently auto-approving — flipping into TUI mode
-    must not turn a `confirm` prompt into a hidden "yes" (Fail-Early). Their modals
-    are a later step; no shipped extension calls them.
+    S33 wired ``notify`` only. E7 §3 / S47 now wires the interactive dialogs
+    (``confirm`` / ``select`` / ``input``) onto real ``ModalScreen`` overlays
+    (:class:`ExtensionConfirmModal` / :class:`ExtensionSelectModal` /
+    :class:`ExtensionInputModal`), pushed via ``push_screen_wait`` so the extension
+    hook awaits the user's answer. Extension hooks run inside the generation worker
+    (async, not threaded), which is the worker context ``push_screen_wait`` needs.
+    A cancelled ``confirm`` resolves to ``False`` — flipping into TUI mode must not
+    turn a ``confirm`` prompt into a hidden "yes" (Fail-Early).
     """
 
     #: extension notify level → Textual ``App.notify`` severity.
@@ -90,19 +104,17 @@ class _ExtensionUIDelegate:
         self._app.notify(message, severity=self._SEVERITY.get(level, "information"))
 
     async def confirm(self, title: str, message: str) -> bool:
-        raise NotImplementedError(
-            "extension api.ui.confirm is not wired into the TUI yet (S33 wired notify only)"
-        )
+        return await self._app.push_screen_wait(ExtensionConfirmModal(title, message))
 
     async def select(self, title: str, items: list[str]) -> str | None:
-        raise NotImplementedError(
-            "extension api.ui.select is not wired into the TUI yet (S33 wired notify only)"
-        )
+        return await self._app.push_screen_wait(ExtensionSelectModal(title, items))
 
     async def input(self, title: str, default: str = "") -> str:
-        raise NotImplementedError(
-            "extension api.ui.input is not wired into the TUI yet (S33 wired notify only)"
-        )
+        # The modal dismisses with None on cancel (Esc / Cancel); the ExtensionUI
+        # contract is ``-> str``, so a cancelled prompt resolves to the default
+        # (the same value the headless path returns), never a fabricated "".
+        result = await self._app.push_screen_wait(ExtensionInputModal(title, default))
+        return result if result is not None else default
 
 
 class SystemPromptEditor(ModalScreen):
@@ -246,6 +258,112 @@ class TreeCustomInstructionsModal(ModalScreen[Optional[str]]):
             self.dismiss(self.query_one("#prompt-editor-textarea", TextArea).text)
         elif event.button.id == "custom-cancel":
             self.dismiss(None)
+
+
+class ExtensionConfirmModal(ModalScreen[bool]):
+    """Yes/No confirmation for an extension's ``api.ui.confirm`` (E7 §3 / S47).
+
+    Ports pi's ``ctx.ui.confirm(title, message)`` (types.ts:129). Copies the
+    ``TreeModeModal`` button template. ``Yes`` → ``True``; ``No`` or ``Esc`` →
+    ``False`` (a cancelled confirmation is a "no", never a hidden yes — Fail-Early).
+    pi's ``timed-confirm`` timeout option is deferred.
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(self, title: str, message: str) -> None:
+        super().__init__()
+        self._title = title
+        self._message = message
+
+    def compose(self) -> ComposeResult:
+        with Container(id="ext-confirm-dialog"):
+            yield Static(self._title, id="ext-confirm-title")
+            yield Static(self._message, id="ext-confirm-message")
+            with Horizontal(id="ext-confirm-buttons"):
+                yield Button("Yes", variant="primary", id="ext-confirm-yes")
+                yield Button("No", variant="default", id="ext-confirm-no")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "ext-confirm-yes")
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
+class ExtensionSelectModal(ModalScreen[Optional[str]]):
+    """Single-choice selector for an extension's ``api.ui.select`` (E7 §3 / S47).
+
+    Ports pi's ``ctx.ui.select(title, options)`` (types.ts:126). An ``OptionList``
+    of the items; ``Enter``/click dismisses with the chosen string, ``Esc`` with
+    ``None`` (no selection). The index into the original ``items`` list is the
+    source of truth, so the returned value is exactly the caller's string.
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(self, title: str, items: list[str]) -> None:
+        super().__init__()
+        self._title = title
+        self._items = items
+
+    def compose(self) -> ComposeResult:
+        with Container(id="ext-select-dialog"):
+            yield Static(self._title, id="ext-select-title")
+            yield OptionList(*self._items, id="ext-select-list")
+            yield Static("Enter: choose    Esc: cancel", id="ext-select-help")
+
+    def on_mount(self) -> None:
+        self.query_one("#ext-select-list", OptionList).focus()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        self.dismiss(self._items[event.option_index])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ExtensionInputModal(ModalScreen[Optional[str]]):
+    """Text prompt for an extension's ``api.ui.input`` (E7 §3 / S47).
+
+    Ports pi's ``ctx.ui.input(title, placeholder?)`` (types.ts:132). An ``Input``
+    pre-filled with the extension-supplied default; ``Enter`` or ``OK`` dismisses
+    with the (possibly edited) text, ``Esc`` or ``Cancel`` with ``None``. The
+    delegate maps a ``None`` cancel back to the default (see
+    ``_ExtensionUIDelegate.input``).
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(self, title: str, default: str = "") -> None:
+        super().__init__()
+        self._title = title
+        self._default = default
+
+    def compose(self) -> ComposeResult:
+        with Container(id="ext-input-dialog"):
+            yield Static(self._title, id="ext-input-title")
+            yield Input(value=self._default, id="ext-input-field")
+            with Horizontal(id="ext-input-buttons"):
+                yield Button("OK", variant="primary", id="ext-input-ok")
+                yield Button("Cancel", variant="default", id="ext-input-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#ext-input-field", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self.dismiss(event.value)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "ext-input-ok":
+            self.dismiss(self.query_one("#ext-input-field", Input).value)
+        else:
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 # Role → (display label, CSS modifier class). ONE widget renders every kind of
