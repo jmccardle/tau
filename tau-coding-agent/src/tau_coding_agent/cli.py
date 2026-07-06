@@ -34,12 +34,10 @@ TAU_DIR = Path.home() / ".tau"
 
 
 def _version() -> str:
-    try:
-        from importlib.metadata import version
+    """Return τ's release version (single source: ``tau_coding_agent.__version__``)."""
+    from tau_coding_agent import __version__
 
-        return version("tau-coding-agent")
-    except Exception:
-        return "0.0.0"
+    return __version__
 
 
 @dataclass

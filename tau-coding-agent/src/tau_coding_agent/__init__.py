@@ -8,6 +8,10 @@ Public API:
 Reference: SUBPHASE-0.0.md, "AgentSession Interface" section.
 """
 
+# Single source of truth for τ's release version. The CLI ``--version`` flag and
+# ``package.sh`` both read this literal, so a release bumps one line.
+__version__ = "0.9.0"
+
 from tau_agent_core import (
     AgentSession,
     SessionManager,
@@ -17,6 +21,7 @@ from tau_agent_core import (
 )
 
 __all__ = [
+    "__version__",
     "AgentSession",
     "SessionManager",
     "AgentEvent",
