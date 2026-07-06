@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+#
+# τ pre-commit quality gate — Tier-5 rules enforcement.
+#
+# Runs the same three checks as CI-by-hand on the three src/ trees:
+#   1. ruff check          (lint)
+#   2. ruff format --check  (formatting)
+#   3. mypy                 (types)
+#
+# Scope mirrors the [tool.ruff] / [tool.mypy] config in pyproject.toml:
+# the three package src trees only (tests are not gated).
+#
+# Fail-Early: this hook REQUIRES the in-repo venv tools. It does not fall
+# back to a PATH ruff/mypy, because a different tool version could pass
+# locally and fail elsewhere (or vice-versa). If the venv is missing,
+# the hook errors loudly rather than silently using something else.
+#
+# One-time activation (per clone):  git config core.hooksPath .githooks
+#
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+RUFF="venv/bin/ruff"
+MYPY="venv/bin/mypy"
+
+for tool in "$RUFF" "$MYPY"; do
+    if [ ! -x "$tool" ]; then
+        echo "[pre-commit] ERROR: '$tool' not found or not executable." >&2
+        echo "[pre-commit] Create/activate the in-repo venv first (see CLAUDE.md):" >&2
+        echo "[pre-commit]   python -m venv venv && source venv/bin/activate" >&2
+        echo "[pre-commit]   pip install -e ./tau-ai -e ./tau-agent-core -e ./tau-coding-agent" >&2
+        exit 1
+    fi
+done
+
+SRC=(tau-ai/src tau-agent-core/src tau-coding-agent/src)
+
+echo "[pre-commit] ruff check…"
+"$RUFF" check "${SRC[@]}"
+
+echo "[pre-commit] ruff format --check…"
+"$RUFF" format --check "${SRC[@]}"
+
+echo "[pre-commit] mypy…"
+"$MYPY" "${SRC[@]}"
+
+echo "[pre-commit] all checks passed ✓"
