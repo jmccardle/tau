@@ -3,8 +3,8 @@
 Core types: UserMessage, AssistantMessage, ToolResultMessage, etc.
 Tools: ToolDefinition, define_tool, validate_tool_arguments
 Abort: AbortSignal for async cancellation
-Providers: Provider ABC, ProviderRegistry
-Client: stream_simple() helper function
+Providers: Provider ABC
+Client: stream_simple() / complete_simple() / aclose_providers()
 """
 
 from tau_ai.types import (
@@ -27,11 +27,16 @@ from tau_ai.models import (
 )
 from tau_ai.tools import define_tool, validate_tool_arguments
 from tau_ai.abort import AbortSignal
+from tau_ai.constraints import ConstraintViolation, DecodeConstraints
+from tau_ai import grammar
 from tau_ai.providers.base import Provider
-from tau_ai.providers.registry import ProviderRegistry
-from tau_ai.client import complete_simple, stream_simple
+from tau_ai.client import aclose_providers, complete_simple, stream_simple
 
 __all__ = [
+    # Constrained decoding
+    "DecodeConstraints",
+    "ConstraintViolation",
+    "grammar",
     # Types
     "UserMessage",
     "AssistantMessage",
@@ -55,8 +60,8 @@ __all__ = [
     "AbortSignal",
     # Providers
     "Provider",
-    "ProviderRegistry",
     # Client
     "stream_simple",
     "complete_simple",
+    "aclose_providers",
 ]

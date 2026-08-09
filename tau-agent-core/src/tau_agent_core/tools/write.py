@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from tau_agent_core.tools.base import AgentToolResult
 
@@ -51,7 +51,12 @@ class WriteTool:
         },
         "required": ["path", "content"],
     }
-    execution_mode = "sequential"
+    # Annotated rather than left to inference (B1/tau-004): unannotated,
+    # `execution_mode = "sequential"` infers `str`, and `ToolDefinition`
+    # declares it `Literal["sequential", "parallel"]`. `sdk._resolve_tools`
+    # copies this value into a ToolDefinition, so without the annotation mypy
+    # cannot check that copy — which is the blindness B1 exists to remove.
+    execution_mode: Literal["sequential", "parallel"] = "sequential"
 
     def __init__(self, cwd: str = ".") -> None:
         self.cwd = os.path.abspath(cwd)

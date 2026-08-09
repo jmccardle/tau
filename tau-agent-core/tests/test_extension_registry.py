@@ -157,11 +157,43 @@ class TestRegisterAndQueryTools:
         tools = reg.get_all_tools()
         assert tools[0].description == ""
 
-    def test_register_overwrites_existing_tool(self):
-        """ExtensionRegistry.register_tool() overwrites existing tool with same name."""
+    def test_register_tool_rejects_duplicate_name(self):
+        """ExtensionRegistry.register_tool() RAISES on a duplicate name (H3).
+
+        CONTRACT CHANGE, tau-004. This test previously asserted the opposite --
+        `test_register_overwrites_existing_tool`, pinning warn-and-overwrite with
+        `tools[0].description == "second"`. That behaviour is the defect H3 closes,
+        not a property worth keeping: this registry is one flat map shared by every
+        loaded extension, so "second" only means "whichever file imported last",
+        and a scenario's behaviour became a function of module load order (a §7.1.1
+        determinism break). The assertion is inverted deliberately, not relaxed --
+        the new one is at least as strict, and the surviving registration is now
+        unambiguous rather than order-dependent.
+        """
         reg = ExtensionRegistry()
         reg.register_tool({"name": "tool", "description": "first", "parameters": {}})
+
+        with pytest.raises(ValueError, match="already registered"):
+            reg.register_tool({"name": "tool", "description": "second", "parameters": {}})
+
+        # The FIRST registration survives intact -- the refusal must not corrupt
+        # or half-apply the existing entry.
+        tools = reg.get_all_tools()
+        assert len(tools) == 1
+        assert tools[0].description == "first"
+
+    def test_register_tool_after_unregister_is_allowed(self):
+        """Explicit replacement stays possible: unregister, then re-register (H3).
+
+        The raise refuses an *accidental* collision. It must not make deliberate
+        replacement impossible, because that is the path
+        `AgentSession.reload_extension` drives (`_unregister_bucket` then re-import).
+        """
+        reg = ExtensionRegistry()
+        reg.register_tool({"name": "tool", "description": "first", "parameters": {}})
+        reg.unregister_tool("tool")
         reg.register_tool({"name": "tool", "description": "second", "parameters": {}})
+
         tools = reg.get_all_tools()
         assert len(tools) == 1
         assert tools[0].description == "second"

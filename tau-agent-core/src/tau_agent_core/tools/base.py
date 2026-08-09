@@ -67,6 +67,9 @@ class AgentTool(BaseModel):
         definition: The underlying ToolDefinition
         name: Alias for definition.name
         execute: Alias for definition.execute
+        parameters: Alias for definition.parameters
+        description: Alias for definition.description
+        execution_mode: Alias for definition.execution_mode
     """
 
     definition: ToolDefinition
@@ -90,6 +93,11 @@ class AgentTool(BaseModel):
     def description(self) -> str:
         """Alias for definition.description."""
         return self.definition.description
+
+    @property
+    def execution_mode(self) -> Literal["sequential", "parallel"]:
+        """Alias for definition.execution_mode."""
+        return self.definition.execution_mode
 
     def __hash__(self) -> int:
         return hash(self.name)

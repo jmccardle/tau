@@ -30,6 +30,7 @@ Reference: SESSION-TREE-IMPLEMENTATION.md §2.6 (wiring), §4.1-§4.4 (the seam)
 
 from __future__ import annotations
 
+import copy
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Protocol, runtime_checkable
@@ -45,6 +46,32 @@ class SessionLog(Protocol):
     ``append_session_info`` are deliberately absent — ``AgentSession`` never calls
     them (the TUI/headless call those on the concrete ``Session`` directly), so
     keeping them off the Protocol avoids an unused-method contract (Fail-Early).
+
+    **Precondition: a conversation has exactly one writing process**
+    (NODE-ADDRESSABLE-AGENTS.md Decision 6). Concurrency *inside* a conversation is
+    lanes — open a :class:`BranchView`, which is a second cursor over the same
+    entry log, never a second writer of it. Concurrency *across* processes is
+    ``Session.fork(mode="export")`` (``tau_coding_agent.session_store``): a
+    verbatim entry copy into a new file with its own header, "self-contained — no
+    cross-file chaining," handed to a second process as an independent
+    conversation. There is no third option — a second process must never append
+    to the same conversation's log a first process is also appending to.
+
+    This is stated as a precondition, not enforced by a guard, a stat check, or an
+    id change here. The hazard it heads off is **not** id collision (an earlier
+    draft of the design doc said otherwise): ``_generate_entry_id`` retries against
+    the log's own id set, so a same-process collision merely redraws, and a
+    cross-process collision window is only the entries the other writer added
+    since the last load — negligible. The real hazard is that the *cursor* — the
+    file store's ``_leaf_id`` — is process-local memory that nothing re-reads: two
+    writers both parent their next append off the same node, and the conversation
+    silently becomes a fork instead of a line, with ``resolve_cursor`` picking one
+    writer's turns on reload and orphaning the other's on disk, unlinked from any
+    tree walk. Guarding against that here would mean giving this Protocol a
+    liveness check no single implementation needs today; the fix that exists
+    (``fork(mode="export")``) already prices out the correct trade at process
+    scale (a full copy) against a lane's trade at turn scale (zero copy) — see
+    Decision 6 for the full argument.
     """
 
     @property
@@ -69,9 +96,94 @@ class SessionLog(Protocol):
 
     def append_compaction(self, summary: str, first_kept_id: str, tokens_before: int) -> str: ...
 
+    def append_elide(self, first_kept_id: str) -> str:
+        """Persist a summary-less splice anchor (W3, NODE-ADDRESSABLE-AGENTS.md).
+
+        Same anchor kind ``ConversationTree._active_path_entries`` folds
+        ``compaction`` on — "skip the path from here back to ``first_kept_id``" —
+        with the ``summary``/``tokens_before`` fields dropped, since there is
+        nothing to render. Structured exclusion in tree SHAPE (Decision 2): no new
+        per-node flag, no new walker, and a branch whose path never reaches this
+        node is completely unaffected (Decision 7 keeps it out of no fold but
+        ``context_for`` — ``entries()`` stays total).
+        """
+        ...
+
     def append_navigate(self, target_id: str | None) -> str: ...
 
     def append_branch_summary(self, summary: str, from_id: str | None) -> str: ...
+
+    def append_at(
+        self,
+        parent_id: str | None,
+        entry_type: str,
+        payload: dict[str, Any],
+        *,
+        lane: str | None = None,
+    ) -> str:
+        """Append an entry at an EXPLICIT parent, optionally tagged into a lane.
+
+        The one primitive C2/W14's branch sub-agents need, and the ONLY member this
+        Protocol grew for them. Every appender above is "``append_at`` at the current
+        leaf, then move the leaf"; this exposes the parent so a second cursor can write
+        to the same log without disturbing the first. It does **not** move the store's
+        own leaf — a branch's writes must never move the primary tip (see
+        :func:`resolve_cursor`'s lane discipline).
+
+        Deliberately ONE new member rather than the ``branch()``-per-store shape first
+        sketched in the C2 plan: with ``append_at`` in place, the branch handle itself
+        (:class:`BranchView`) is storage-agnostic and lives here **once**, instead of
+        being reimplemented — and kept in sync — inside each of the three stores. It is
+        also the member ``runtime_checkable`` can actually police, since that checks
+        member *names*, never signatures: a store that ignored a ``parent_id=`` kwarg
+        bolted onto the six existing appenders would pass an ``isinstance`` check while
+        silently writing every branch to the primary lane.
+
+        ``lane`` (when given) is written as the entry's ``branchOf`` marker.
+        """
+        ...
+
+
+#: Marks an entry as belonging to a BRANCH LANE (a sub-agent's work), not the primary
+#: conversation. Carries the branch root's entry id. See :class:`BranchView` and
+#: :func:`resolve_cursor`.
+LANE_KEY = "branchOf"
+
+
+def resolve_cursor(entries: list[dict[str, Any]]) -> str | None:
+    """Resolve the persisted PRIMARY cursor (leaf pointer) from the entry log.
+
+    Latest-wins: a trailing ``navigate`` entry points at its ``targetId`` (``None`` =
+    pre-root); any other kind points at itself. pi-style logs carry no ``navigate``
+    entries, so the cursor is simply the last entry — identical to pi's "fall back to
+    last entry" on load (session-manager.ts:855-859).
+
+    Lives here, not on a concrete store, because **every** SessionLog implementation
+    (in-memory, file, and any database-backed one) must agree on it exactly — the
+    cursor is part of the entry algebra, not of any one durability layer.
+
+    **Lane discipline (C2/W14).** Entries tagged ``branchOf`` — a sub-agent's writes —
+    are skipped when deciding the primary cursor. Without this, a sub-agent's append
+    landing last before a crash would make the next load resume *inside the branch*:
+    the primary conversation would silently continue from a sub-agent's lane, which is
+    both wrong context and near-impossible to diagnose after the fact. Branch lanes are
+    concurrent with the primary lane, so "last entry in the file" stops being a sound
+    proxy for "the primary tip" the moment more than one cursor writes to one log.
+
+    Note the asymmetry, which is deliberate: the lane marker gates which entries may
+    **define** the cursor, not what a cursor may **point at**. A human navigating into a
+    branch in the tree browser still works — ``append_navigate(<branch entry>)`` writes
+    an untagged primary ``navigate`` whose ``targetId`` is a branch entry, and that is
+    honoured. What is refused is a branch entry *silently becoming* the tip on its own.
+    """
+    primary = [e for e in entries if LANE_KEY not in e]
+    if not primary:
+        return None
+    last = primary[-1]
+    if last.get("type") == "navigate":
+        target = last.get("targetId")
+        return str(target) if target is not None else None
+    return str(last["id"])
 
 
 def _now_iso() -> str:
@@ -119,7 +231,12 @@ class InMemorySessionLog:
         return self._leaf_id
 
     def entries(self) -> list[dict[str, Any]]:
-        return [dict(e) for e in self._entries]
+        # deepcopy, not dict(e): a shallow copy protects the top-level keys and leaves
+        # the nested payload SHARED, so `log.entries()[0]["message"]["content"] = ...`
+        # mutates the live log — and, in a file-backed store, silently diverges memory
+        # from the on-disk JSONL. ctx.entries() promises callers a read-only copy; this
+        # is what makes that promise true.
+        return copy.deepcopy(self._entries)
 
     def append_message(self, message: dict[str, Any]) -> str:
         return self._append("message", message=message)
@@ -152,12 +269,38 @@ class InMemorySessionLog:
         return self._append("customEntry", customType=custom_type, data=data)
 
     def append_compaction(self, summary: str, first_kept_id: str, tokens_before: int) -> str:
+        """Fail-Early on an unknown splice anchor, as ``append_navigate`` already does.
+
+        An anchor matching no entry is never found by the tree fold, so the entire kept
+        region silently drops out of the context — the worst of the three
+        unknown-id cases, because it corrupts model input rather than raising.
+        """
+        if first_kept_id not in self._ids:
+            raise ValueError(
+                f"compaction first_kept_id {first_kept_id!r} not found; the splice anchor "
+                "must name a real entry, or the whole kept region silently drops out of "
+                "the context fold"
+            )
         return self._append(
             "compaction",
             summary=summary,
             firstKeptId=first_kept_id,
             tokensBefore=tokens_before,
         )
+
+    def append_elide(self, first_kept_id: str) -> str:
+        """Persist a summary-less splice anchor (W3, NODE-ADDRESSABLE-AGENTS.md):
+        the same splice as ``append_compaction``, minus ``summary``/``tokensBefore``.
+        Fail-Early for the identical reason ``append_compaction`` validates — an
+        anchor matching no entry is never found by ``_active_path_entries``'s
+        forward scan, so the ENTIRE kept region silently drops out of the fold."""
+        if first_kept_id not in self._ids:
+            raise ValueError(
+                f"elide first_kept_id {first_kept_id!r} not found; the splice anchor "
+                "must name a real entry, or the whole kept region silently drops out of "
+                "the context fold"
+            )
+        return self._append("elide", firstKeptId=first_kept_id)
 
     def append_navigate(self, target_id: str | None) -> str:
         """Persist a cursor move; the leaf advances to ``target_id`` (not to the
@@ -186,15 +329,188 @@ class InMemorySessionLog:
         self._leaf_id = from_id  # branch point, not the current leaf (pi :1272)
         return self._append("branch_summary", summary=summary, fromId=from_id)
 
-    def _append(self, kind: str, **payload: Any) -> str:
+    def append_at(
+        self,
+        parent_id: str | None,
+        entry_type: str,
+        payload: dict[str, Any],
+        *,
+        lane: str | None = None,
+    ) -> str:
+        """Explicit-parent append (see the Protocol). Does NOT move this log's leaf."""
+        if parent_id is not None and parent_id not in self._ids:
+            raise ValueError(f"append parent {parent_id!r} not found")
         entry: dict[str, Any] = {
-            "type": kind,
+            "type": entry_type,
             "id": _generate_entry_id(self._ids),
-            "parentId": self._leaf_id,
+            "parentId": parent_id,
             "timestamp": _now_iso(),
             **payload,
         }
+        if lane is not None:
+            entry[LANE_KEY] = lane
         self._entries.append(entry)
         self._ids.add(entry["id"])
-        self._leaf_id = entry["id"]
         return str(entry["id"])
+
+    def _append(self, kind: str, **payload: Any) -> str:
+        """The primary-lane append: ``append_at`` the current leaf, then move the leaf."""
+        entry_id = self.append_at(self._leaf_id, kind, payload)
+        self._leaf_id = entry_id
+        return entry_id
+
+
+class BranchView:
+    """A second cursor over ONE underlying log — the branch sub-agent's handle (C2/W14).
+
+    A :class:`SessionLog` in its own right (so an ``AgentSession`` accepts it with **no**
+    changes), but not a second log: same ``id``, same ``entries()`` (the whole shared
+    list, not a filtered one), same durable storage. What it owns is **its own leaf**.
+    Every append it makes goes to the underlying log via ``append_at`` — parented at the
+    branch's leaf, tagged into this branch's ``lane`` — and moves only *this* view's
+    cursor, never the primary one.
+
+    Two properties then fall out of the existing fold **for free**, which is the entire
+    reason C2 is tractable (JMFTS-INTEGRATION-PLAN.md §9.2):
+
+    - **The sub-agent's context is already correct.** ``AgentSession.messages`` is
+      ``ConversationTree(log.entries(), log.cursor).context_for()``. Hand it this view
+      and the leaf→root walk from the branch leaf yields exactly the shared conversation
+      prefix (down to ``parent_id``) plus the branch's own work. Choosing ``parent_id``
+      IS choosing the sub-agent's inherited context. No new context plumbing exists.
+    - **Isolation is mutual, and it is structural rather than enforced.** ``context_for``
+      walks leaf→root, so a branch's entries are never *ancestors* of the primary leaf
+      and cannot leak into the primary context — whatever their kind, and even though
+      ``entries()`` returns them. Nothing filters them out; the tree shape means they are
+      never on the path.
+
+    ``entries()`` deliberately returns the WHOLE list (branch + primary). It must: the
+    ``ConversationTree`` fold resolves ``parentId`` by dict lookup, so hiding the primary
+    prefix from a branch would break the very walk that gives it its context.
+    """
+
+    def __init__(self, log: SessionLog, parent_id: str | None, *, lane: str, label: str) -> None:
+        self._log = log
+        self._leaf_id = parent_id
+        self._lane = lane
+        self._label = label
+
+    @property
+    def id(self) -> str:
+        """The UNDERLYING session's id — a branch is a lane in one conversation, not a
+        second conversation. (Its own identity is :attr:`lane`.)"""
+        return self._log.id
+
+    @property
+    def lane(self) -> str:
+        """This branch's lane id — the ``branchOf`` marker its entries carry."""
+        return self._lane
+
+    @property
+    def label(self) -> str:
+        """Human label for this branch (what the sub-agent was spawned to do)."""
+        return self._label
+
+    @property
+    def cursor(self) -> str | None:
+        """This branch's leaf — independent of the underlying log's primary cursor."""
+        return self._leaf_id
+
+    def entries(self) -> list[dict[str, Any]]:
+        return self._log.entries()
+
+    def _ids(self) -> set[str]:
+        return {str(e["id"]) for e in self._log.entries()}
+
+    def append_at(
+        self,
+        parent_id: str | None,
+        entry_type: str,
+        payload: dict[str, Any],
+        *,
+        lane: str | None = None,
+    ) -> str:
+        """Pass through to the underlying log, defaulting the lane to this branch's."""
+        return self._log.append_at(
+            parent_id, entry_type, payload, lane=self._lane if lane is None else lane
+        )
+
+    def _append(self, entry_type: str, **payload: Any) -> str:
+        entry_id = self.append_at(self._leaf_id, entry_type, payload)
+        self._leaf_id = entry_id
+        return entry_id
+
+    def append_message(self, message: dict[str, Any]) -> str:
+        return self._append("message", message=message)
+
+    def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
+        return self._append("customMessage", customType=custom_type, message=message)
+
+    def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
+        return self._append("customEntry", customType=custom_type, data=data)
+
+    def append_compaction(self, summary: str, first_kept_id: str, tokens_before: int) -> str:
+        """Fail-Early on an unknown anchor, exactly as the concrete stores do — a
+        compaction whose ``firstKeptId`` names nothing silently drops the whole kept
+        region from the fold rather than raising."""
+        if first_kept_id not in self._ids():
+            raise ValueError(
+                f"compaction first_kept_id {first_kept_id!r} not found; the splice anchor "
+                "must name a real entry, or the whole kept region silently drops out of "
+                "the context fold"
+            )
+        return self._append(
+            "compaction",
+            summary=summary,
+            firstKeptId=first_kept_id,
+            tokensBefore=tokens_before,
+        )
+
+    def append_elide(self, first_kept_id: str) -> str:
+        """Fail-Early on an unknown anchor, exactly as ``append_compaction`` does —
+        see :class:`InMemorySessionLog` for why a dangling anchor is the worst of
+        the unknown-id cases rather than merely a rejected call."""
+        if first_kept_id not in self._ids():
+            raise ValueError(
+                f"elide first_kept_id {first_kept_id!r} not found; the splice anchor "
+                "must name a real entry, or the whole kept region silently drops out of "
+                "the context fold"
+            )
+        return self._append("elide", firstKeptId=first_kept_id)
+
+    def append_navigate(self, target_id: str | None) -> str:
+        """Move THIS branch's leaf. The primary cursor is untouched."""
+        if target_id is not None and target_id not in self._ids():
+            raise ValueError(f"navigate target {target_id!r} not found")
+        entry_id = self._append("navigate", targetId=target_id)
+        self._leaf_id = target_id
+        return entry_id
+
+    def append_branch_summary(self, summary: str, from_id: str | None) -> str:
+        """Re-parent to the branch point before appending (pi ``branchWithSummary``)."""
+        if from_id is not None and from_id not in self._ids():
+            raise ValueError(f"branch_summary from {from_id!r} not found")
+        self._leaf_id = from_id
+        return self._append("branch_summary", summary=summary, fromId=from_id)
+
+
+def open_branch(log: SessionLog, parent_id: str | None, *, label: str) -> BranchView:
+    """Open a new branch lane over ``log``, rooted at ``parent_id``.
+
+    ``parent_id`` chooses the sub-agent's inherited context (the fold walks up from it),
+    and must name a real entry — Fail-Early, since a dangling branch root would give the
+    sub-agent an empty or wrong context with no error.
+
+    The lane id is freshly generated per call, NOT derived from ``parent_id``. Two
+    sub-agents spawned from the SAME parent (the common fan-out shape — several
+    evaluators over one retrieval result) would otherwise be tagged identically and be
+    impossible to tell apart when reading the log back, which defeats the point of
+    tagging at all.
+    """
+    if parent_id is not None and parent_id not in {str(e["id"]) for e in log.entries()}:
+        raise ValueError(
+            f"cannot open a branch at {parent_id!r}: no such entry. The branch root "
+            "chooses the sub-agent's inherited context; a dangling one would hand it a "
+            "wrong context rather than fail."
+        )
+    return BranchView(log, parent_id, lane=uuid.uuid4().hex[:8], label=label)

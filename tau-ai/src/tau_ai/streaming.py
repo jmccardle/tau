@@ -185,6 +185,12 @@ class AssistantMessageEventStream:
         self._final: AssistantMessage | None = None
         self._usage = Usage()
         self._error: str | None = None
+        # The ORIGINAL exception, preserved so ``result()`` can re-raise it with its
+        # type and attributes intact. Flattening everything to ``Exception(str(e))``
+        # destroyed information callers need — a ConstraintViolation loses its
+        # ``.output``, and an httpx timeout becomes indistinguishable from any other
+        # failure. The ErrorEvent still carries the message for event consumers.
+        self._error_exc: BaseException | None = None
         self._event_queue: asyncio.Queue[Any] = asyncio.Queue()
         self._collector_task: asyncio.Task[None] | None = None
 
@@ -245,6 +251,7 @@ class AssistantMessageEventStream:
                 )
                 self._done = True
         except Exception as e:
+            self._error_exc = e
             await self._event_queue.put(
                 ErrorEvent(
                     type="error",
@@ -306,13 +313,17 @@ class AssistantMessageEventStream:
             The fully accumulated AssistantMessage.
 
         Raises:
-            Exception: If the stream produced an ErrorEvent.
+            Exception: If the stream produced an ErrorEvent. The ORIGINAL exception is
+                re-raised with its type intact (e.g. ``ConstraintViolation``, which
+                carries the offending output), not flattened to a bare ``Exception``.
         """
         # Ensure the collector task is running (may have been called
         # directly without iterating the stream first).
         await self._ensure_collector()
         if not self._done:
             await self._wait_for_done()
+        if self._error_exc is not None:
+            raise self._error_exc
         if self._error:
             raise Exception(self._error)
         if self._final is None:
@@ -342,10 +353,19 @@ class AssistantMessageEventStream:
             # keep waiting for done/error.
 
     def abort(self) -> None:
-        """Abort the stream by propagating to the underlying provider.
+        """Stop consuming the stream locally. Does NOT cancel the HTTP request.
 
-        Calls abort() on the provider stream if it has one.  The partial
-        state is preserved even after abort.
+        Against the real stack this cancels the collector task and nothing else.
+        ``OpenAICompletionsProvider.stream_chat()`` returns a bare async generator,
+        which has no ``abort`` attribute, so the propagation branch below never
+        fires — it exists for a provider stream that chooses to expose one, and is
+        exercised only by a fake in the tests.
+
+        Real cancellation of an in-flight request is a separate mechanism: an
+        :class:`~tau_ai.abort.AbortSignal` passed as ``options={"abort_signal": ...}``,
+        which the provider polls between chunks. Reach for that, not this.
+
+        The partial state is preserved either way.
         """
         if hasattr(self._provider_stream, "abort"):
             self._provider_stream.abort()

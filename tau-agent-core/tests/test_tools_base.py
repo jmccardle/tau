@@ -281,6 +281,29 @@ class TestAgentTool:
         result = agent_tool.execute(None)
         assert result == "test"
 
+    def test_agent_tool_execution_mode_alias(self):
+        """AgentTool.execution_mode is an alias for definition.execution_mode.
+
+        Regression coverage for the H1 fix: _execute_tool_calls now reads
+        execution_mode via getattr(tool, "execution_mode", None) rather than
+        tool.definition.execution_mode, so this alias must keep surfacing the
+        wrapped ToolDefinition's value or that lookup would silently see
+        None (never "sequential") for every extension-supplied AgentTool.
+        """
+        def execute(ctx):
+            return "test"
+
+        definition = ToolDefinition(
+            name="ls",
+            label="List",
+            description="List files",
+            parameters={"type": "object", "properties": {}, "required": []},
+            execute=execute,
+            execution_mode="sequential",
+        )
+        agent_tool = AgentTool(definition=definition)
+        assert agent_tool.execution_mode == "sequential"
+
     def test_agent_tool_serialization(self):
         """AgentTool serializes to dict (includes nested definition)."""
         definition = self.create_sample_definition()

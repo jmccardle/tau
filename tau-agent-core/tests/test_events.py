@@ -10,10 +10,12 @@ Tests verify:
 """
 
 import time
+from typing import get_args
 
 import pytest
 
 from tau_agent_core.events import AgentEvent
+from tau_agent_core.submission import SubmissionSource
 
 
 class TestAgentEventCreation:
@@ -229,10 +231,12 @@ class TestAgentEventTimestamps:
         """Multiple events should have increasing timestamps."""
         events = []
         for i in range(10):
-            events.append(AgentEvent(
-                type="agent_start",
-                timestamp=int(time.time() * 1000) + i * 100,
-            ))
+            events.append(
+                AgentEvent(
+                    type="agent_start",
+                    timestamp=int(time.time() * 1000) + i * 100,
+                )
+            )
 
         for i in range(1, len(events)):
             assert events[i].timestamp > events[i - 1].timestamp
@@ -318,3 +322,74 @@ class TestAgentEventConditionalFields:
             result="output",
         )
         assert event.result == "output"
+
+
+class TestAgentEventProvenance:
+    """docs/SUBMISSION-LIFECYCLE.md "Provenance on events" (phase 2): submission_id /
+    source / submitter / correlation, stamped by AgentSession.submit() onto every event
+    a submission-driven turn emits. Wiring is exercised in tau-agent-core's
+    agent_session tests; this class is the model's own contract."""
+
+    def test_provenance_defaults_to_none(self):
+        """No partial-provenance state: an event from a call that never went
+        through submit() (continue_conversation()) carries all four as None."""
+        event = AgentEvent(type="agent_start", timestamp=0)
+        assert event.submission_id is None
+        assert event.source is None
+        assert event.submitter is None
+        assert event.correlation is None
+
+    @pytest.mark.parametrize("source", get_args(SubmissionSource))
+    def test_every_submission_source_is_a_valid_event_source(self, source):
+        event = AgentEvent(
+            type="agent_start",
+            timestamp=0,
+            submission_id="11111111-1111-1111-1111-111111111111",
+            source=source,
+            submitter=f"probe-{source}",
+            correlation={"subject": "agent.turn.request"},
+        )
+        assert event.source == source
+
+
+class TestAgentEventRoundTrip:
+    """Parity enforcement (docs/SUBMISSION-LIFECYCLE.md): every AgentEvent must
+    survive model_dump() -> reconstruct, or it is carrying something that will break
+    the JSON and webserver renderers three hops downstream — the same property
+    test_submission.py already proves for Submission/SubmissionResult."""
+
+    def _round_trip(self, event: AgentEvent) -> AgentEvent:
+        return AgentEvent(**event.model_dump())
+
+    def test_round_trip_a_bare_event(self):
+        event = AgentEvent(type="agent_start", timestamp=0)
+        assert self._round_trip(event) == event
+
+    def test_round_trip_with_full_provenance(self):
+        event = AgentEvent(
+            type="tool_execution_end",
+            timestamp=1700000000000,
+            tool_call_id="call_123",
+            tool_name="bash",
+            result="ok",
+            submission_id="sid-1",
+            source="bus",
+            submitter="nats_bus",
+            correlation={"subject": "agent.turn.request", "binding_id": 7, "tags": ["a", "b"]},
+        )
+        rebuilt = self._round_trip(event)
+        assert rebuilt == event
+        # A plain, independent structure — mutating the dump must not alias the
+        # live event (the same aliasing hazard test_submission.py pins for
+        # Submission.correlation).
+        dumped = event.model_dump()
+        dumped["correlation"]["binding_id"] = 999
+        assert event.correlation is not None
+        assert event.correlation["binding_id"] == 7
+
+    @pytest.mark.parametrize("source", get_args(SubmissionSource))
+    def test_round_trip_every_submission_source(self, source):
+        event = AgentEvent(
+            type="agent_start", timestamp=0, submission_id="sid", source=source, submitter="x"
+        )
+        assert self._round_trip(event) == event

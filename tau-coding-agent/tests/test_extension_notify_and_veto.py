@@ -21,27 +21,15 @@ import pytest
 
 from textual.app import App, ComposeResult
 
-from tau_coding_agent.app import ChatDisplay, Parley, _ExtensionUIDelegate
+from tau_coding_agent.app import ChatDisplay, _ExtensionUIDelegate
 from tau_coding_agent.backends import create_backend
 from tau_coding_agent.chat_widgets import ToolBox
 
 
 @pytest.fixture
-def app(monkeypatch, tmp_path):
-    """A Parley wired to REAL TauBackends, with sandboxed session storage."""
-    import tau_coding_agent.session_store as store
-
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
-    monkeypatch.setattr("tau_coding_agent.app.create_backend", create_backend)
-    monkeypatch.setattr(store, "_session_listeners", [])
-
-    a = Parley()
-    a.config = {
-        "models": {"m": {"backend": "openai", "model": "m", "api_key": "not-needed"}},
-        "default_model": "m",
-        "system_prompt": "sys",
-    }
-    return a
+def app(make_app):
+    """A Parley wired to REAL TauBackends (TauBackend has no network in __init__)."""
+    return make_app(create_backend=create_backend)
 
 
 # ---------------------------------------------------------------------------
@@ -127,15 +115,15 @@ async def test_veto_renders_as_blocked_toolbox():
 
         display.add_message("user", "write outside scope")
         await display.begin_exchange()
-        display.handle_stream_event({"kind": "turn_start", "turn_index": 0})
+        await display.handle_stream_event({"kind": "turn_start", "turn_index": 0})
         await pilot.pause()
         # These are exactly the events a veto now emits (tool_execution_start ->
         # tool_execution_end(is_error=True)), normalized by TauBackend.stream_chat.
-        display.handle_stream_event(
+        await display.handle_stream_event(
             {"kind": "tool_call", "id": "c1", "name": "write", "arguments": {"path": "/etc/x"}}
         )
         await pilot.pause()
-        display.handle_stream_event(
+        await display.handle_stream_event(
             {
                 "kind": "tool_result",
                 "id": "c1",
@@ -170,13 +158,13 @@ async def test_extension_veto_renders_blocked_by_extension():
 
         display.add_message("user", "write outside scope")
         await display.begin_exchange()
-        display.handle_stream_event({"kind": "turn_start", "turn_index": 0})
+        await display.handle_stream_event({"kind": "turn_start", "turn_index": 0})
         await pilot.pause()
-        display.handle_stream_event(
+        await display.handle_stream_event(
             {"kind": "tool_call", "id": "c1", "name": "write", "arguments": {"path": "/etc/x"}}
         )
         await pilot.pause()
-        display.handle_stream_event(
+        await display.handle_stream_event(
             {
                 "kind": "tool_result",
                 "id": "c1",

@@ -7,7 +7,7 @@ Phase A (docs/SESSION-UX-REDESIGN.md §9):
 - cwd dir encoding (§5.1) and uuid4+timestamp filename (§5.2);
 - ``list_sessions`` cwd-vs-all scoping and ``most_recent`` (§5.8);
 - ``fork`` — new file, header ``parent``, source untouched (§5.5);
-- ``SessionInfo.read`` — count / first / last / ``modified`` from last entry (§5.7);
+- ``read_session_info`` — count / first / last / ``modified`` from last entry (§5.7);
 - seams: ``base_dir`` override + explicit ``id`` + ``create_in_memory`` (seam 1),
   ``entries()`` / ``header`` raw views (seam 2), lifecycle events (seam 3).
 """
@@ -22,10 +22,11 @@ from tau_coding_agent.session_store import (
     SESSION_BEFORE_COMPACT,
     SESSION_BEFORE_FORK,
     SESSION_START,
+    FileSessionCatalog,
     Session,
-    SessionInfo,
     list_sessions,
     most_recent,
+    read_session_info,
     session_dir_for_cwd,
     subscribe_session_events,
 )
@@ -63,9 +64,7 @@ def test_filename_is_timestamp_then_uuid(tmp_path):
 def test_round_trip_messages_match(tmp_path):
     session = _create(tmp_path, system_prompt="You are helpful.")
     session.append_message({"role": "user", "content": "hello"})
-    session.append_message(
-        {"role": "assistant", "content": [{"type": "text", "text": "hi there"}]}
-    )
+    session.append_message({"role": "assistant", "content": [{"type": "text", "text": "hi there"}]})
 
     reloaded = Session.load(session.path)
     assert reloaded.messages == [
@@ -89,7 +88,9 @@ def test_name_property_latest_wins(tmp_path):
 def test_model_property_raises_without_model_change(tmp_path):
     # A session always has a model_change from create; an entries-only Session
     # built without one must not fabricate a default (Fail-Early).
-    bare = Session(None, Session._build_header("x", "2026-01-01T00:00:00.000Z", CWD, parent=None), [])
+    bare = Session(
+        None, Session._build_header("x", "2026-01-01T00:00:00.000Z", CWD, parent=None), []
+    )
     with pytest.raises(ValueError, match="no model_change"):
         _ = bare.model
 
@@ -163,7 +164,7 @@ def test_most_recent_returns_newest(tmp_path):
     assert infos[0].modified >= infos[1].modified
 
 
-# ── SessionInfo.read (§5.7) ─────────────────────────────────────────────────
+# ── read_session_info (§5.7) ────────────────────────────────────────────────
 
 
 def test_session_info_fields(tmp_path):
@@ -173,8 +174,9 @@ def test_session_info_fields(tmp_path):
         {"role": "assistant", "content": [{"type": "text", "text": "the answer"}]}
     )
 
-    info = SessionInfo.read(session.path)
+    info = read_session_info(session.path)
     assert info is not None
+    assert info.ref == str(session.path)
     assert info.id == session.id
     assert info.cwd == CWD
     assert info.name == "Title"
@@ -190,7 +192,7 @@ def test_session_info_fields(tmp_path):
 def test_session_info_read_returns_none_on_garbage(tmp_path):
     bad = tmp_path / "bad.jsonl"
     bad.write_text("not json at all\n")
-    assert SessionInfo.read(bad) is None
+    assert read_session_info(bad) is None
 
 
 # ── seam 1: explicit id + create_in_memory ──────────────────────────────────
@@ -225,7 +227,11 @@ def test_lifecycle_events_emitted(tmp_path):
     try:
         source = _create(tmp_path)  # → session_start
         Session.fork(source, CWD, base_dir=tmp_path)  # → session_before_fork (+ no start)
-        source.append_compaction("summary", first_kept_id="abc", tokens_before=100)
+        # A REAL anchor id: append_compaction now Fail-Earlys on one that names no entry
+        # (an unknown anchor is never found by the fold, so the whole kept region would
+        # silently vanish from the context).
+        keep = source.append_message({"role": "user", "content": "recent"})
+        source.append_compaction("summary", first_kept_id=keep, tokens_before=100)
     finally:
         unsubscribe()
 
@@ -331,3 +337,63 @@ def test_pi_parity_no_navigate_cursor_is_last_entry(tmp_path):
     reloaded = Session.load(session.path)
     assert reloaded._leaf_id == last_id
     assert reloaded.entries()[-1]["id"] == last_id
+
+
+# ── FileSessionCatalog (W10 seam adapter) ───────────────────────────────────
+#
+# The catalog *algebra* — create/load/list/fork/most_recent/resolve_ref — is no
+# longer spelled out here: it is ``SessionCatalogContractTests``, run over this
+# store in test_contract_file_catalog.py and over two others elsewhere. Six tests
+# that restated it by hand are gone. What remains is what the shared contract
+# cannot express, because it is about this store's *medium*: bytes on disk, and a
+# ref spelled as a path.
+
+
+def test_catalog_create_ephemeral_never_touches_disk(tmp_path):
+    """The contract says an ephemeral session is unreachable; here it is stronger.
+
+    Unreachable-through-the-catalog is satisfiable by a store that writes the file
+    and simply declines to list it. For ``--no-session`` on a filesystem the
+    promise is physical: no ``path``, and no ``sessions/`` directory brought into
+    existence at all.
+    """
+    catalog = FileSessionCatalog(base_dir=tmp_path)
+    session = catalog.create_ephemeral(CWD, "local-llm", "openai", system_prompt="sys")
+    session.append_message({"role": "user", "content": "ephemeral"})
+    assert session.path is None
+    assert not (tmp_path / "sessions").exists()
+
+
+def test_catalog_fork_leaves_the_source_file_byte_identical(tmp_path):
+    """Forking must not rewrite the source's JSONL — not one byte.
+
+    The contract checks the source's *messages* are unchanged, which a store could
+    satisfy while still rewriting the file (re-serializing, reordering, touching
+    mtime). Here the source is an append-only log another process may be reading.
+    """
+    catalog = FileSessionCatalog(base_dir=tmp_path)
+    source = catalog.create(CWD, "local-llm", "openai", system_prompt="sys")
+    source.append_message({"role": "user", "content": "original"})
+    source_bytes = source.path.read_bytes()
+
+    forked = catalog.fork(source, CWD)
+
+    assert forked.path != source.path
+    assert source.path.read_bytes() == source_bytes
+
+
+def test_catalog_resolve_ref_accepts_a_jsonl_path(tmp_path):
+    """This store's own override: a REF may be a path, not just an id/prefix.
+
+    ``SessionCatalog.resolve_ref`` only knows ids — ``.jsonl`` is a filesystem
+    concept core must not learn — so the path form is resolved by this subclass
+    and can only be tested against this subclass.
+    """
+    catalog = FileSessionCatalog(base_dir=tmp_path)
+    session = catalog.create(CWD, "local-llm", "openai")
+    session.append_message({"role": "user", "content": "hi"})
+
+    assert catalog.resolve_ref(str(session.path), cwd=CWD).id == session.id
+    # A path that does not exist falls THROUGH to the id search rather than raising,
+    # so the two ref spellings coexist instead of one shadowing the other.
+    assert catalog.resolve_ref(session.id, cwd=CWD).id == session.id

@@ -63,8 +63,12 @@ def test_append_entry_persists_a_custom_entry_node() -> None:
 
     api.append_entry("todo", {"text": "buy milk", "done": False})
 
+    # Filtered by customType, not just kind: construction already wrote its own
+    # ``customEntry`` (W2's non-authoritative ``agent_spec`` provenance record,
+    # NODE-ADDRESSABLE-AGENTS.md), so "customEntry" alone is no longer unique to
+    # this test's own append.
     entries = session._session_log.entries()
-    custom = [e for e in entries if e.get("type") == "customEntry"]
+    custom = [e for e in entries if e.get("type") == "customEntry" and e.get("customType") == "todo"]
     assert len(custom) == 1
     assert custom[0]["customType"] == "todo"
     assert custom[0]["data"] == {"text": "buy milk", "done": False}
@@ -97,8 +101,10 @@ def test_append_entry_readable_through_ctx_entries() -> None:
     api.append_entry("bookmark", {"label": "mid"})
 
     # ``ctx`` is the ExtensionContext ExtensionAPI bound the session onto.
+    # Filtered to THIS extension's own customType — construction's ``agent_spec``
+    # record (W2) is also a ``customEntry`` on the same log.
     entries = api._context.entries()
-    bookmarks = [e for e in entries if e.get("type") == "customEntry"]
+    bookmarks = [e for e in entries if e.get("customType") == "bookmark"]
     assert [e["data"]["label"] for e in bookmarks] == ["start", "mid"]
     assert all(e["customType"] == "bookmark" for e in bookmarks)
 
@@ -110,8 +116,10 @@ def test_append_entry_survives_reload() -> None:
     api.append_entry("counter", {"value": 42})
 
     # Simulate a reload: read the persisted entries alone, rebuild the tree.
+    # Filtered by customType — construction's own ``agent_spec`` record (W2) is
+    # a ``customEntry`` too.
     persisted = session._session_log.entries()
-    reloaded = [e for e in persisted if e.get("type") == "customEntry"]
+    reloaded = [e for e in persisted if e.get("customType") == "counter"]
     assert len(reloaded) == 1
     assert reloaded[0]["customType"] == "counter"
     assert reloaded[0]["data"] == {"value": 42}

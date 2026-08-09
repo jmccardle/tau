@@ -12,12 +12,32 @@ Driven through the real app via ``App.run_test()`` / Pilot.
 from __future__ import annotations
 
 import asyncio
+import os
+from typing import Any
 
 import pytest
 
-from tau_coding_agent.app import ChatDisplay, Parley
+from tau_agent_core.commands import CommandOutcome, resolve_command
+from tau_agent_core.submission import SubmissionResult
+from tau_coding_agent.app import ChatDisplay, ChatListItem, ChatSelected, ChatSidebar, Parley
 from tau_coding_agent.backends import TauBackend
 from tau_coding_agent.chat_widgets import ReasoningRegion, ToolBox
+
+
+def resolve_and_report(text: str) -> CommandOutcome | None:
+    """What ``AgentSession.submit`` would report for ``text`` — the double's stand-in.
+
+    The real dispatch lives in the core (tau-agent-core/tests/test_submit_commands.py
+    pins it); what this double exists to prove is that the APP routes a command to
+    ``submit_command`` and then performs the outcome, so it reuses the same pure
+    resolver rather than inventing a second answer.
+    """
+    invocation = resolve_command(text)
+    if invocation is None:
+        return None
+    return CommandOutcome(
+        name=invocation.name, args=invocation.args, performer=invocation.performer
+    )
 
 
 # A reloaded transcript with reasoning + a tool call/result + a final answer,
@@ -51,22 +71,11 @@ _RELOAD = [
 
 
 @pytest.fixture
-def app(monkeypatch, tmp_path):
-    # Sandbox session persistence (the store reads session_store.TAU_DIR) and
-    # avoid building a real backend (no network).
-    import tau_coding_agent.session_store as store
-
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
-    monkeypatch.setattr("tau_coding_agent.app.create_backend", lambda cfg: object())
-
-    a = Parley()
-    # Controlled config so the test doesn't depend on ~/.tau/config.json.
-    a.config = {
-        "models": {"m": {"backend": "openai", "model": "m"}},
-        "default_model": "m",
-        "system_prompt": "sys",
-    }
-    return a
+def app(make_app):
+    # Sandboxing, config, and an injected file catalog all come from the shared
+    # ``make_app`` (tests/conftest.py); all this fixture still chooses is that no
+    # real backend gets built.
+    return make_app(create_backend=lambda cfg: object())
 
 
 async def test_new_chat_button_creates_chat(app, tmp_path):
@@ -83,6 +92,43 @@ async def test_new_chat_button_creates_chat(app, tmp_path):
         assert app.current_session.model == "m"
         assert app.messages[0] == {"role": "system", "content": "sys"}
         assert len(list((tmp_path / "sessions").rglob("*.jsonl"))) == 1
+
+
+async def test_chat_selected_loads_session_by_ref(app, wait_for_workers_settled):
+    """Sidebar click → ``ChatListItem.chat_ref`` → ``ChatSelected`` →
+    ``on_chat_selected`` round-trips through the injected ``session_catalog``
+    (W10), not a hardcoded ``Path`` — the seam this suite exists to prove.
+    """
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        # Seed a session directly through the same catalog the app itself uses
+        # (bypassing the UI), so the sidebar has something to select.
+        seeded = app.session_catalog.create(
+            os.getcwd(), "m", "openai", system_prompt="sys", name="Picked"
+        )
+        seeded.append_message({"role": "user", "content": "hello"})
+
+        sidebar = app.query_one(ChatSidebar)
+        sidebar.refresh_chats()
+        # refresh_chats() only STARTS a thread worker now (Fix B: the catalog
+        # fetch is a blocking call, moved off the event loop) — wait for it to
+        # land before asserting on the rendered list.
+        await wait_for_workers_settled(app)
+        await pilot.pause()
+
+        item = app.query_one(ChatListItem)
+        # A storage-agnostic ref (str), not a filesystem Path — matches what
+        # SessionCatalog.load() accepts back.
+        assert item.chat_ref == str(seeded.path)
+        assert isinstance(item.chat_ref, str)
+
+        app.post_message(ChatSelected(item.chat_ref))
+        await pilot.pause()
+
+        assert app.current_session is not None
+        assert app.current_session.id == seeded.id
+        assert app.messages[-1] == {"role": "user", "content": "hello"}
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +230,7 @@ async def test_subtitle_shows_rollup_after_reload(app):
 
 
 class _BlockingBackend:
-    """A backend whose ``stream_chat`` blocks until ``abort()`` releases it.
+    """A backend whose ``submit_turn`` blocks until ``abort()`` releases it.
 
     Lets a test observe the in-flight state (worker running, UI responsive) and
     the cooperative cancel: ``abort()`` both records the call and unblocks the
@@ -194,12 +240,36 @@ class _BlockingBackend:
     the bound live ``Session`` (E3-ctx / D3 — the AgentSession is the sole
     persister), so the app's turn-end rebuild of ``self.messages`` from
     ``session.context`` surfaces the partial answer.
+
+    ``submit_turn`` (not ``stream_chat``, and since B3-a not ``stream_submission``)
+    is what the app calls: the TUI owns the :class:`Submission` record and hands it
+    to the backend, which admits it through ``AgentSession.submit``. It gets back a
+    :class:`SubmissionResult` and nothing else, because rendering comes off the
+    persistent bus subscription rather than out of this call's return value. The
+    double records every submission it is handed so a test can assert the
+    provenance the app stamped.
     """
 
     def __init__(self) -> None:
         self.aborted = False
         self._released = asyncio.Event()
         self._log = None
+        # Every submission the app handed over, in order, plus the context list it
+        # was given with it — the seam B2-a exists to make assertable.
+        self.submissions: list[Any] = []
+        self.contexts: list[list[dict]] = []
+        # Command submissions go through a DIFFERENT backend method (B2-b) — no
+        # streaming, no exchange — so they are recorded separately and a test can
+        # tell "this became a turn" from "this became a command".
+        self.command_submissions: list[Any] = []
+
+    async def submit_command(self, submission):
+        self.command_submissions.append(submission)
+        return SubmissionResult(
+            accepted=True,
+            submission_id=submission.submission_id,
+            command=resolve_and_report(submission.text),
+        )
 
     def bind_session_log(self, session_log) -> None:
         self._log = session_log
@@ -208,31 +278,29 @@ class _BlockingBackend:
         self.aborted = True
         self._released.set()
 
-    async def stream_chat(self, messages, callback, on_event=None):
+    def release(self) -> None:
+        """Unblock the in-flight turn WITHOUT recording an abort (a normal finish)."""
+        self._released.set()
+
+    async def submit_turn(self, submission, context) -> SubmissionResult:
+        self.submissions.append(submission)
+        self.contexts.append(list(context))
         await self._released.wait()
+        # One turn per release, so a queued second submission does not sail through
+        # on the first one's already-set event.
+        self._released.clear()
         partial = {"role": "assistant", "content": [{"type": "text", "text": "partial"}]}
         # Sole-persister contract: record the produced message through the bound log
-        # (the real backend does this inside AgentSession.prompt).
+        # (the real backend does this inside AgentSession.submit).
         self._log.append_message(partial)
-        return "partial", {"total_tokens": 0}, [partial], []
+        return SubmissionResult(accepted=True, submission_id=submission.submission_id)
 
 
 @pytest.fixture
-def blocking_app(monkeypatch, tmp_path):
+def blocking_app(make_app):
     """Like ``app`` but ``create_backend`` yields a controllable blocking backend."""
-    import tau_coding_agent.session_store as store
-
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
     backend = _BlockingBackend()
-    monkeypatch.setattr("tau_coding_agent.app.create_backend", lambda cfg: backend)
-
-    a = Parley()
-    a.config = {
-        "models": {"m": {"backend": "openai", "model": "m"}},
-        "default_model": "m",
-        "system_prompt": "sys",
-    }
-    return a, backend
+    return make_app(create_backend=lambda cfg: backend), backend
 
 
 class _Submit:
@@ -242,7 +310,20 @@ class _Submit:
         self.value = value
 
 
-async def test_generation_runs_in_worker_and_esc_aborts(blocking_app):
+async def _until(pilot, predicate, tries: int = 100) -> None:
+    """Pump the app until ``predicate()`` holds, or fail saying it never did.
+
+    A fixed number of ``pilot.pause()`` calls is a guess about how many scheduler
+    turns a hand-off takes; this waits for the thing itself.
+    """
+    for _ in range(tries):
+        if predicate():
+            return
+        await pilot.pause()
+    raise AssertionError("condition never became true")
+
+
+async def test_generation_runs_in_worker_and_esc_aborts(blocking_app, wait_for_workers_settled):
     app, backend = blocking_app
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -252,7 +333,7 @@ async def test_generation_runs_in_worker_and_esc_aborts(blocking_app):
         await app.on_input_submitted(_Submit("hello"))
         await pilot.pause()
 
-        # In flight: worker running (blocked in stream_chat), UI live, input gated.
+        # In flight: worker running (blocked in submit_turn), UI live, input gated.
         assert app.is_generating is True
         assert app.query_one("#chat-input").disabled is True
         assert backend.aborted is False
@@ -261,7 +342,7 @@ async def test_generation_runs_in_worker_and_esc_aborts(blocking_app):
         app.action_cancel_generation()
         assert backend.aborted is True
 
-        await app.workers.wait_for_complete()
+        await wait_for_workers_settled(app)
         await pilot.pause()
 
         # Worker finalized: input restored, flag cleared, partial answer kept.
@@ -277,6 +358,143 @@ async def test_cancel_generation_is_noop_when_idle(blocking_app):
         assert app.is_generating is False
         app.action_cancel_generation()  # nothing in flight
         assert backend.aborted is False
+
+
+# ---------------------------------------------------------------------------
+# B2-a — the TUI is a renderer plus ONE source: a typed prompt is a Submission.
+# docs/SUBMISSION-LIFECYCLE.md phase 3.
+# ---------------------------------------------------------------------------
+
+
+async def test_typed_prompt_is_admitted_as_an_interactive_submission(
+    blocking_app, wait_for_workers_settled
+):
+    """What "a human typed this" MEANS is now a record, not a private code path."""
+    app, backend = blocking_app
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        await app.on_input_submitted(_Submit("hello"))
+        await pilot.pause()
+
+        assert len(backend.submissions) == 1
+        sub = backend.submissions[0]
+        assert sub.text == "hello"
+        # Provenance (phase 2): every event this turn emits is attributable to a
+        # person at a terminal, distinguishably from a bus/timer/webhook turn.
+        assert sub.source == "interactive"
+        assert sub.submitter == "human"
+        assert sub.submission_id, "an unattributable submission is not attributable"
+        # Decision 1: interactive defaults to enqueue (steer is phase 4).
+        assert sub.multitask_strategy == "enqueue"
+        # B2-b: dispatch moved into submit(), so the interactive frontend declares
+        # it. A bus/timer submission still passes False and its "/compact" stays
+        # literal prompt text — the flag is the security boundary.
+        assert sub.expand_commands is True
+        # A human typed it, so a hook under this turn may ask that human a question.
+        assert sub.allow_user_input is True
+
+        # The context handed over is the TUI's own working list, ending with the
+        # user turn the app rendered — the pre-existing prompt(context=…) contract.
+        assert backend.contexts[0][-1] == {"role": "user", "content": "hello"}
+
+        backend.abort()
+        await wait_for_workers_settled(app)
+        await pilot.pause()
+
+
+async def test_input_history_and_clear_still_happen_before_the_submission(
+    blocking_app, wait_for_workers_settled
+):
+    """The half of on_input_submitted that is NOT the seam must be untouched."""
+    app, backend = blocking_app
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        await app.on_input_submitted(_Submit("remember me"))
+        await pilot.pause()
+
+        widget = app.query_one("#chat-input")
+        assert widget.command_history == ["remember me"]
+        assert widget.text == ""
+        # The user turn is on the working list and on screen, exactly as before.
+        assert app.messages[-1] == {"role": "user", "content": "remember me"}
+
+        backend.abort()
+        await wait_for_workers_settled(app)
+        await pilot.pause()
+
+
+async def test_blank_and_slash_commands_never_become_turns(blocking_app):
+    """Whitespace is dropped and a built-in command dispatches, as before.
+
+    Since B2-b the "as before" is achieved differently: ``expand_commands`` is True
+    and the command reaches ``submit()``, which resolves it and hands back an
+    outcome instead of running a turn. What must not change is the observable —
+    "/extensions" never becomes a model turn and never sets ``is_generating``.
+    """
+    app, backend = blocking_app
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        await app.on_input_submitted(_Submit("   "))
+        await app.on_input_submitted(_Submit("/extensions"))
+        await pilot.pause()
+
+        assert backend.submissions == [], "no turn was ever started"
+        assert [s.text for s in backend.command_submissions] == ["/extensions"]
+        assert backend.command_submissions[0].expand_commands is True
+        assert app.is_generating is False
+        # The command is chrome: it did not join the model-input working list.
+        assert all(m.get("content") != "/extensions" for m in app.messages)
+
+
+async def test_second_prompt_mid_turn_enqueues_rather_than_dropping(
+    blocking_app, wait_for_workers_settled
+):
+    """Two prompts, two turns, in order — neither cancelled, neither lost.
+
+    Before B2-a the generation worker was ``exclusive``: a second submission
+    cancelled the first mid-turn, losing the running turn's partial answer AND the
+    new prompt. That is the drop docs/SUBMISSION-LIFECYCLE.md exists to remove. The
+    submissions declare ``multitask_strategy="enqueue"``; the second one waits.
+    """
+    app, backend = blocking_app
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        await app.on_input_submitted(_Submit("one"))
+        await pilot.pause()
+        await app.on_input_submitted(_Submit("two"))
+        await pilot.pause()
+
+        # Both are outstanding; the app is still busy and the input still gated.
+        assert app.is_generating is True
+        assert app.query_one("#chat-input").disabled is True
+        # The second turn has not started yet — it is queued, not dropped. Since
+        # B3-a what makes it wait is ``_working_list_lock`` (self.messages is the
+        # context handed over AND the thing rebuilt at turn end), not a display
+        # lock: rendering no longer serializes anything.
+        assert [s.text for s in backend.submissions] == ["one"]
+
+        # Finish the first turn. The second is admitted straight after it.
+        backend.release()
+        await _until(pilot, lambda: len(backend.submissions) == 2)
+        assert [s.text for s in backend.submissions] == ["one", "two"]
+        # Still busy: a turn ending while another is outstanding must not re-enable
+        # the input or clear the flag.
+        assert app.is_generating is True
+        assert app.query_one("#chat-input").disabled is True
+
+        backend.release()
+        await wait_for_workers_settled(app)
+        await pilot.pause()
+
+        assert app.is_generating is False
+        assert app.query_one("#chat-input").disabled is False
+        assert [s.text for s in backend.submissions] == ["one", "two"]
+        # Two distinct submissions — not one record reused for both turns.
+        assert len({s.submission_id for s in backend.submissions}) == 2
 
 
 def test_taubackend_abort_delegates_to_session():

@@ -107,6 +107,22 @@ Screen {
 .box-error { border: solid #f38ba8; }      /* red */
 .box-blocked { border: solid #f9e2af; }    /* amber — an extension veto (S50), not a tool failure */
 
+/* === Foreign lanes (B3-b) === */
+/* Every box belonging to a turn this frontend did not originate — a bus/timer
+   submission's bubble, a forked sub-agent's steps, the answer promoted out of
+   either. ONE rule for all of them (including a source this build has never
+   heard of), so "not the main line" is a single glance; the border TITLE says
+   which source, and the border SUBTITLE who. Dashed + mauve so it reads as
+   adjacent to the conversation rather than part of it. */
+.chat-message.lane-foreign {
+    border: dashed #b4a7f5;
+    margin: 1 0 1 2;
+}
+
+.chat-message.lane-foreign > .message-content {
+    color: #bac2de;
+}
+
 /* === Reasoning / thinking regions (collapsible, dim+italic like pi) === */
 .reasoning-region {
     margin: 0 0 1 0;
@@ -147,6 +163,13 @@ Screen {
 .exchange-box > CollapsibleTitle {
     color: #cdd6f4;
     text-style: bold;
+}
+
+/* A foreign lane's exchange (B3-a set the class; B3-b gives it the rule it never
+   had). Same mauve as the boxes inside it, so the whole span reads as one
+   not-the-main-line unit. */
+.exchange-box.exchange-foreign > CollapsibleTitle {
+    color: #b4a7f5;
 }
 
 /* === Input Styling === */
@@ -206,6 +229,14 @@ Screen {
 
 #prompt-editor-buttons Button:hover {
     background: #45475a;
+}
+
+/* Consequence line above the RollbackPromptModal's editor — the operation
+   discards visible work, so it says so before the prompt is typed. */
+#rollback-help {
+    height: auto;
+    margin-bottom: 1;
+    color: #a6adc8;
 }
 
 /* === Session Tree Browser Modal === */
@@ -422,6 +453,18 @@ Screen {
 
 #ext-form-buttons Button:hover {
     background: #45475a;
+}
+
+/* === Foreign-lane strip (B3-b) === */
+/* One line naming every lane in flight that the user did not type, just above
+   the extension status strip. Hidden (display:none, set in code) whenever the
+   only thing running is this frontend's own turn — or nothing is. */
+#lane-strip {
+    height: 1;
+    width: 100%;
+    padding: 0 1;
+    background: #181825;
+    color: #b4a7f5;
 }
 
 /* === Extension status strip (E10 §6 / S67) === */

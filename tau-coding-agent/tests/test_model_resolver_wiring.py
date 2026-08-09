@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import pytest
 
+from tau_agent_core.rpc import commands
+
 from tau_ai.types import Model
 
 from tau_coding_agent.backends import (
@@ -71,6 +73,35 @@ def test_make_model_resolver_unknown_name_raises():
     resolve = make_model_resolver(_models())
     with pytest.raises(KeyError, match="unknown model"):
         resolve("does-not-exist")
+
+
+def test_make_model_resolver_enumerates_the_config_names_sorted():
+    """Finding 7 of the Tier B review: the RPC `get_models` verb exists so a
+    host can learn the NAMES `set_model` accepts without reading the child's
+    ~/.tau/config.json out of band (G1), and the resolver is where those names
+    live. Sorted, and a copy — mutating the caller's map afterwards must not
+    change what a bound resolver advertises or resolves."""
+    models = _models()
+    resolve = make_model_resolver(models)
+
+    assert resolve.model_names() == ["cloud", "local-llm"]
+
+    models["late-addition"] = {"backend": "openai", "model": "x"}
+    assert resolve.model_names() == ["cloud", "local-llm"]
+
+
+def test_the_shipped_resolver_answers_the_probe_get_models_makes():
+    """The whole of the coupling between this module and
+    `tau_agent_core.rpc.commands`' `get_models`, pinned on THIS side of the
+    package boundary (tau-agent-core does not import tau-coding-agent, so its
+    own test file for that verb uses a local stand-in of this shape).
+
+    Named-attribute coupling, same trade `_DURABLE_LOCATION_ATTRS` prices: the
+    RPC layer refuses rather than assuming when the probe fails, so renaming
+    `model_names` costs a loud refusal — and this test, which names the
+    constant rather than the string, fails right here instead of distantly."""
+    resolve = make_model_resolver(_models())
+    assert hasattr(resolve, commands._MODEL_CATALOG_ATTR)
 
 
 def test_backend_session_switches_model_by_name():

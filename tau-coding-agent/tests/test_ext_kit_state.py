@@ -168,8 +168,11 @@ def test_treestore_typed_records_roundtrip(tmp_path):
     )
     assert reloaded.load() == [Bookmark("start", "aaa"), Bookmark("fix", "bbb")]
 
-    # The persisted form on the tree is the plain dict (JSON-shaped).
-    raw = [e for e in api.context.entries() if e.get("type") == "customEntry"]
+    # The persisted form on the tree is the plain dict (JSON-shaped). Filtered by
+    # customType, not just kind: session construction already wrote its own
+    # `customEntry` (W2's non-authoritative `agent_spec` provenance record,
+    # NODE-ADDRESSABLE-AGENTS.md).
+    raw = [e for e in api.context.entries() if e.get("customType") == "bookmark"]
     assert raw[0]["data"] == {"label": "start", "entry_id": "aaa"}
 
 

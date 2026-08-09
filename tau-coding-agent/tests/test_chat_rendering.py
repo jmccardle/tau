@@ -26,8 +26,12 @@ normalizer it builds on (covered in its own section below).
 
 from __future__ import annotations
 
+import pytest
 from textual.app import App, ComposeResult
+from textual.widgets import Markdown
+from textual.widgets._markdown import MarkdownBlock
 
+from tau_agent_core.submission import SubmissionResult
 from tau_coding_agent.app import ChatDisplay, MessageBox
 from tau_coding_agent.chat_widgets import ExchangeBox, ToolBox
 
@@ -64,8 +68,26 @@ async def _send(display: ChatDisplay, pilot, event: dict) -> None:
     between events. Pausing here mirrors that cadence — without it the test
     would fire a synchronous burst the real backend never produces.
     """
-    display.handle_stream_event(event)
+    await display.handle_stream_event(event)
     await pilot.pause()
+
+
+async def _fresh_parse_blocks(pilot, text: str) -> list[str]:
+    """The block texts a ONE-SHOT ``Markdown.update(text)`` produces.
+
+    The independent oracle for the streamed-rendering test above: mounts a
+    brand new ``Markdown`` widget, does a normal whole-text parse of the same
+    final string, and returns its blocks' plain text -- what incremental
+    ``append()``-based streaming must match, block for block.
+    """
+    md = Markdown("")
+    await pilot.app.query_one(ChatDisplay).mount(md)
+    try:
+        await md.update(text)
+        await pilot.pause()
+        return [b._content.plain for b in md.query(MarkdownBlock)]
+    finally:
+        await md.remove()
 
 
 # A realistic one-turn-with-tools span as produced by TauBackend.stream_chat's
@@ -80,8 +102,20 @@ async def _replay_tool_turn(display: ChatDisplay, pilot) -> None:
     await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
     await _send(display, pilot, {"kind": "text_delta", "delta": "Sure, "})
     await _send(display, pilot, {"kind": "text_delta", "delta": "let me look."})
-    await _send(display, pilot, {"kind": "tool_call", "id": "c1", "name": "ls", "arguments": {"path": "."}})
-    await _send(display, pilot, {"kind": "tool_result", "id": "c1", "name": "ls", "result": "a.py\nb.py", "is_error": False})
+    await _send(
+        display, pilot, {"kind": "tool_call", "id": "c1", "name": "ls", "arguments": {"path": "."}}
+    )
+    await _send(
+        display,
+        pilot,
+        {
+            "kind": "tool_result",
+            "id": "c1",
+            "name": "ls",
+            "result": "a.py\nb.py",
+            "is_error": False,
+        },
+    )
     await _send(display, pilot, {"kind": "turn_start", "turn_index": 1})
     await _send(display, pilot, {"kind": "text_delta", "delta": "There are "})
     await _send(display, pilot, {"kind": "text_delta", "delta": "two files."})
@@ -126,7 +160,9 @@ async def test_no_text_duplication():
         await _replay_tool_turn(display, pilot)
         await pilot.pause()
 
-        assistant_texts = [b.content_text for b in display.query(MessageBox) if b.role == "assistant"]
+        assistant_texts = [
+            b.content_text for b in display.query(MessageBox) if b.role == "assistant"
+        ]
         assert assistant_texts == ["Sure, let me look.", "There are two files."], assistant_texts
         for t in assistant_texts:
             assert t.count("There are two files.") <= 1
@@ -183,7 +219,7 @@ async def test_reasoning_streams_into_step_and_collapses_on_text():
         await _send(display, pilot, {"kind": "reasoning_delta", "delta": "Let me think. "})
         await _send(display, pilot, {"kind": "reasoning_delta", "delta": "2+2=4."})
 
-        step = display._active_box
+        step = display.active_step()
         assert step is not None and step.reasoning is not None
         assert step.reasoning.collapsed is False  # expanded while thinking
         assert step.reasoning.text == "Let me think. 2+2=4."
@@ -201,6 +237,79 @@ async def test_reasoning_streams_into_step_and_collapses_on_text():
         assert answer.reasoning is not None
         assert answer.reasoning.text == "Let me think. 2+2=4."
         assert answer.reasoning.collapsed is True
+
+
+async def test_streamed_rendering_matches_full_parse_across_awkward_deltas():
+    """Fix C: reasoning/answer stream through MarkdownStream's incremental
+    ``append()`` instead of a full ``update()`` rebuild on every tick. A timing
+    win that renders "fast and blank" (or corrupted) would still pass a
+    benchmark, so this asserts on the actual rendered ``MarkdownBlock`` text —
+    not just the accumulator strings ``content_text``/``reasoning.text``,
+    which ``update_content``/``set_text`` would keep correct even if the
+    widget itself were never touched.
+
+    Deltas are split on deliberately awkward boundaries — mid multi-newline
+    run, mid-word — since ``MessageBox._format()`` doubles every ``"\\n"``
+    (paragraph breaks) and a delta that splits a run of newlines is exactly
+    where an incremental append could diverge from a whole-text parse.
+    """
+    reasoning_full = "Step one.\nStep two.\n\nStep three, a longer line.\nFinal step."
+    reasoning_deltas = [
+        "Step one.\nStep tw",  # mid-word
+        "o.\n",  # splits the "\n\n" run: first newline lands here...
+        "\nStep three, a long",  # ...second newline lands here, then mid-word
+        "er line.\nFinal step.",
+    ]
+    answer_full = "Answer line one.\nAnswer line two.\n\nAnswer line three."
+    answer_deltas = [
+        "Answer line one",
+        ".\nAnswer li",
+        "ne two.\n",
+        "\nAnswer line three.",
+    ]
+    assert "".join(reasoning_deltas) == reasoning_full
+    assert "".join(answer_deltas) == answer_full
+
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.begin_exchange()
+        await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
+        for delta in reasoning_deltas:
+            await _send(display, pilot, {"kind": "reasoning_delta", "delta": delta})
+        for delta in answer_deltas:
+            await _send(display, pilot, {"kind": "text_delta", "delta": delta})
+
+        step = display.active_step()
+        assert step is not None and step.reasoning is not None
+        # The accumulators are correct either way (kept in sync on every
+        # delta) -- the real question is what the WIDGET actually rendered.
+        assert step.reasoning.text == reasoning_full
+        assert step.content_text == answer_full
+
+        streamed_reasoning_blocks = [
+            b._content.plain for b in step.reasoning.query(MarkdownBlock)
+        ]
+        # Scoped to the answer's OWN Markdown widget: step.query(MarkdownBlock)
+        # would also pick up the reasoning region's blocks (a child of the same
+        # box), which live under a *different* Markdown widget entirely.
+        streamed_answer_blocks = [b._content.plain for b in step._md_widget.query(MarkdownBlock)]
+        # Only the answer body goes through _format (reasoning is rendered raw).
+        assert streamed_reasoning_blocks == await _fresh_parse_blocks(pilot, reasoning_full)
+        assert streamed_answer_blocks == await _fresh_parse_blocks(
+            pilot, answer_full.replace("\n", "\n\n")
+        )
+        # Non-trivial: an awkward split that silently dropped/duplicated a
+        # paragraph break would still leave the accumulators right but collapse
+        # or duplicate a block here. Reasoning has no "\n\n" doubling, so its
+        # single "\n"s are markdown SOFT breaks (same paragraph): 2 blocks
+        # ("Step one. Step two." / "Step three... Final step."). The answer's
+        # "\n"->"\n\n" doubling turns every line into its own paragraph: 3.
+        assert len(streamed_reasoning_blocks) == 2
+        assert len(streamed_answer_blocks) == 3
+
+        await display.finalize_exchange(tokens=5, seconds=1)
+        await pilot.pause()
 
 
 async def test_empty_terminal_turn_leaves_nothing():
@@ -224,8 +333,14 @@ async def test_tool_only_final_turn_keeps_collapsed_exchange():
         display = pilot.app.query_one(ChatDisplay)
         await display.begin_exchange()
         await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
-        await _send(display, pilot, {"kind": "tool_call", "id": "c1", "name": "ls", "arguments": {}})
-        await _send(display, pilot, {"kind": "tool_result", "id": "c1", "name": "ls", "result": "x", "is_error": False})
+        await _send(
+            display, pilot, {"kind": "tool_call", "id": "c1", "name": "ls", "arguments": {}}
+        )
+        await _send(
+            display,
+            pilot,
+            {"kind": "tool_result", "id": "c1", "name": "ls", "result": "x", "is_error": False},
+        )
         await display.finalize_exchange(tokens=4, seconds=1)
         await pilot.pause()
 
@@ -244,10 +359,18 @@ async def test_tool_result_error_marks_toolbox():
         display = pilot.app.query_one(ChatDisplay)
         await display.begin_exchange()
         await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
-        await _send(display, pilot, {"kind": "tool_call", "id": "c1", "name": "bash", "arguments": {"command": "false"}})
-        await _send(display, pilot, {"kind": "tool_result", "id": "c1", "name": "bash", "result": "boom", "is_error": True})
+        await _send(
+            display,
+            pilot,
+            {"kind": "tool_call", "id": "c1", "name": "bash", "arguments": {"command": "false"}},
+        )
+        await _send(
+            display,
+            pilot,
+            {"kind": "tool_result", "id": "c1", "name": "bash", "result": "boom", "is_error": True},
+        )
 
-        step = display._active_box
+        step = display.active_step()
         assert step is not None
         tb = step.tool_boxes["c1"]
         assert tb.has_result is True
@@ -271,12 +394,20 @@ async def test_tool_result_error_marks_toolbox():
 # is its own role with tool_name/is_error at the message level).
 _PERSISTED_TURN = [
     {"role": "user", "content": "list the files"},
-    {"role": "assistant", "content": [
-        {"type": "text", "text": "Sure, let me look."},
-        {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {"path": "."}},
-    ]},
-    {"role": "toolResult", "tool_call_id": "c1", "tool_name": "ls", "is_error": False,
-     "content": [{"type": "text", "text": "a.py\nb.py"}]},
+    {
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": "Sure, let me look."},
+            {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {"path": "."}},
+        ],
+    },
+    {
+        "role": "toolResult",
+        "tool_call_id": "c1",
+        "tool_name": "ls",
+        "is_error": False,
+        "content": [{"type": "text", "text": "a.py\nb.py"}],
+    },
     {"role": "assistant", "content": [{"type": "text", "text": "There are two files."}]},
 ]
 
@@ -304,9 +435,17 @@ async def test_reload_does_not_raise_on_list_content():
         display = pilot.app.query_one(ChatDisplay)
         # Tool-only assistant message (no preamble text) — pure block list.
         display.add_persisted_message(
-            {"role": "assistant", "content": [
-                {"type": "toolCall", "id": "x", "name": "bash", "arguments": {"command": "date"}},
-            ]}
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "toolCall",
+                        "id": "x",
+                        "name": "bash",
+                        "arguments": {"command": "date"},
+                    },
+                ],
+            }
         )
         await pilot.pause()
         assert _box_roles(display) == ["toolCall"]
@@ -329,8 +468,12 @@ async def test_reload_toolresult_error_gets_error_class():
         await pilot.pause()
         display = pilot.app.query_one(ChatDisplay)
         display.add_persisted_message(
-            {"role": "toolResult", "tool_name": "bash", "is_error": True,
-             "content": [{"type": "text", "text": "boom"}]}
+            {
+                "role": "toolResult",
+                "tool_name": "bash",
+                "is_error": True,
+                "content": [{"type": "text", "text": "boom"}],
+            }
         )
         await pilot.pause()
         box = display.query_one(MessageBox)
@@ -360,12 +503,20 @@ async def test_headless_saved_session_round_trips(tmp_path, monkeypatch):
     session = store.Session.create("/proj", "local-llm", "openai", system_prompt="sys")
     session.append_message({"role": "user", "content": "run date"})
     for msg in [
-        {"role": "assistant", "content": [
-            {"type": "text", "text": "ok"},
-            {"type": "toolCall", "id": "c1", "name": "bash", "arguments": {"command": "date"}},
-        ]},
-        {"role": "toolResult", "tool_call_id": "c1", "tool_name": "bash", "is_error": False,
-         "content": [{"type": "text", "text": "Thu"}]},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "ok"},
+                {"type": "toolCall", "id": "c1", "name": "bash", "arguments": {"command": "date"}},
+            ],
+        },
+        {
+            "role": "toolResult",
+            "tool_call_id": "c1",
+            "tool_name": "bash",
+            "is_error": False,
+            "content": [{"type": "text", "text": "Thu"}],
+        },
         {"role": "assistant", "content": [{"type": "text", "text": "It's Thursday."}]},
     ]:
         session.append_message(msg)
@@ -427,12 +578,23 @@ async def test_reload_aggregates_tokens_across_span():
     """The exchange summary sums each completion's persisted usage.total_tokens."""
     messages = [
         {"role": "user", "content": "go"},
-        {"role": "assistant", "usage": {"total_tokens": 30},
-         "content": [{"type": "toolCall", "id": "c1", "name": "ls", "arguments": {}}]},
-        {"role": "toolResult", "tool_call_id": "c1", "tool_name": "ls", "is_error": False,
-         "content": [{"type": "text", "text": "x"}]},
-        {"role": "assistant", "usage": {"total_tokens": 12},
-         "content": [{"type": "text", "text": "done"}]},
+        {
+            "role": "assistant",
+            "usage": {"total_tokens": 30},
+            "content": [{"type": "toolCall", "id": "c1", "name": "ls", "arguments": {}}],
+        },
+        {
+            "role": "toolResult",
+            "tool_call_id": "c1",
+            "tool_name": "ls",
+            "is_error": False,
+            "content": [{"type": "text", "text": "x"}],
+        },
+        {
+            "role": "assistant",
+            "usage": {"total_tokens": 12},
+            "content": [{"type": "text", "text": "done"}],
+        },
     ]
     async with _Harness().run_test() as pilot:
         await pilot.pause()
@@ -447,9 +609,11 @@ async def test_reload_consolidates_legacy_bloated_blocks():
     """A legacy assistant message with many one-fragment thinking/text blocks
     (written before the provider consolidated them) reloads as ONE reasoning
     region + ONE answer body, not hundreds of boxes."""
-    bloated = {"role": "assistant", "content":
-        [{"type": "thinking", "thinking": t} for t in ("Let ", "me ", "think.")]
-        + [{"type": "text", "text": t} for t in ("The ", "answer.")]}
+    bloated = {
+        "role": "assistant",
+        "content": [{"type": "thinking", "thinking": t} for t in ("Let ", "me ", "think.")]
+        + [{"type": "text", "text": t} for t in ("The ", "answer.")],
+    }
     async with _Harness().run_test() as pilot:
         await pilot.pause()
         display = pilot.app.query_one(ChatDisplay)
@@ -468,10 +632,17 @@ async def test_reload_tool_only_final_keeps_collapsed_exchange():
     and collapsed — no tool box promoted as a fake answer."""
     messages = [
         {"role": "user", "content": "go"},
-        {"role": "assistant", "content": [
-            {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {}}]},
-        {"role": "toolResult", "tool_call_id": "c1", "tool_name": "ls", "is_error": False,
-         "content": [{"type": "text", "text": "x"}]},
+        {
+            "role": "assistant",
+            "content": [{"type": "toolCall", "id": "c1", "name": "ls", "arguments": {}}],
+        },
+        {
+            "role": "toolResult",
+            "tool_call_id": "c1",
+            "tool_name": "ls",
+            "is_error": False,
+            "content": [{"type": "text", "text": "x"}],
+        },
     ]
     async with _Harness().run_test() as pilot:
         await pilot.pause()
@@ -519,15 +690,40 @@ class _FakeSession:
     def __init__(self, events):
         self._events = events
         self._handler = None
+        # A real AgentSession keeps a ledger of tokens spent OUTSIDE the loop
+        # (compaction, ctx.complete()); stream_chat folds the exchange's delta into
+        # usage_totals. This fake makes no such calls, so a constant zero is the
+        # honest reading, not a stub. See tau_agent_core.usage.
+        self._side = dict.fromkeys(
+            (
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+                "total_tokens",
+            ),
+            0,
+        )
+
+    @property
+    def side_usage(self):
+        return dict(self._side)
 
     def subscribe(self, handler):
         self._handler = handler
         return lambda: None
 
-    async def prompt(self, text, context=None):
+    async def submit(self, submission, context=None):
+        # `submit`, not `prompt`: since B2-a the backend admits the caller's own
+        # Submission through the one door instead of routing via the prompt()
+        # compatibility wrapper (docs/SUBMISSION-LIFECYCLE.md phase 3).
         for ev in self._events:
             self._handler(ev)
-        return []  # new_messages — irrelevant to this test
+        return SubmissionResult(
+            accepted=True,
+            submission_id=submission.submission_id,
+            messages=[],  # new_messages — irrelevant to this test
+        )
 
 
 async def test_backend_event_to_structured_mapping():
@@ -536,8 +732,13 @@ async def test_backend_event_to_structured_mapping():
 
     # Build a backend, then swap in a fake session (no network).
     backend = TauBackend(
-        {"model": "m", "backend": "openai", "base_url": "http://x", "api_key": "not-needed",
-         "tools": []}
+        {
+            "model": "m",
+            "backend": "openai",
+            "base_url": "http://x",
+            "api_key": "not-needed",
+            "tools": [],
+        }
     )
 
     # Scripted sequence mirroring agent_loop.py for [text -> tool call -> result -> final text]:
@@ -545,36 +746,73 @@ async def test_backend_event_to_structured_mapping():
         _FakeEvent(type="agent_start", timestamp=0),
         _FakeEvent(type="turn_start", timestamp=0, turn_index=0),
         # streaming preamble text: _stream_response re-sends the full accumulated text
-        _FakeEvent(type="message_start", timestamp=0,
-                   message={"role": "assistant", "content": [{"type": "text", "text": "Hi"}]}),
-        _FakeEvent(type="message_update", timestamp=0,
-                   message={"role": "assistant", "content": [{"type": "text", "text": "Hi"}]}),
-        _FakeEvent(type="message_update", timestamp=0,
-                   message={"role": "assistant", "content": [{"type": "text", "text": "Hi there"}]}),
+        _FakeEvent(
+            type="message_start",
+            timestamp=0,
+            message={"role": "assistant", "content": [{"type": "text", "text": "Hi"}]},
+        ),
+        _FakeEvent(
+            type="message_update",
+            timestamp=0,
+            message={"role": "assistant", "content": [{"type": "text", "text": "Hi"}]},
+        ),
+        _FakeEvent(
+            type="message_update",
+            timestamp=0,
+            message={"role": "assistant", "content": [{"type": "text", "text": "Hi there"}]},
+        ),
         # DoneEvent message_end (in _stream_response)
-        _FakeEvent(type="message_end", timestamp=0,
-                   message={"role": "assistant", "content": [
-                       {"type": "text", "text": "Hi there"},
-                       {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {"p": "."}},
-                   ]}),
+        _FakeEvent(
+            type="message_end",
+            timestamp=0,
+            message={
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Hi there"},
+                    {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {"p": "."}},
+                ],
+            },
+        ),
         # DUPLICATE message_end (emitted again in run() because tool calls exist)
-        _FakeEvent(type="message_end", timestamp=0,
-                   message={"role": "assistant", "content": [
-                       {"type": "text", "text": "Hi there"},
-                       {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {"p": "."}},
-                   ]}),
-        _FakeEvent(type="tool_execution_start", timestamp=0,
-                   tool_call_id="c1", tool_name="ls", args={"p": "."}),
-        _FakeEvent(type="tool_execution_end", timestamp=0,
-                   tool_call_id="c1", tool_name="ls",
-                   result=[{"type": "text", "text": "a.py"}], is_error=False),
+        _FakeEvent(
+            type="message_end",
+            timestamp=0,
+            message={
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Hi there"},
+                    {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {"p": "."}},
+                ],
+            },
+        ),
+        _FakeEvent(
+            type="tool_execution_start",
+            timestamp=0,
+            tool_call_id="c1",
+            tool_name="ls",
+            args={"p": "."},
+        ),
+        _FakeEvent(
+            type="tool_execution_end",
+            timestamp=0,
+            tool_call_id="c1",
+            tool_name="ls",
+            result=[{"type": "text", "text": "a.py"}],
+            is_error=False,
+        ),
         _FakeEvent(type="turn_end", timestamp=0, turn_index=0, tool_results=[]),
         # turn 1: final answer
         _FakeEvent(type="turn_start", timestamp=0, turn_index=1),
-        _FakeEvent(type="message_update", timestamp=0,
-                   message={"role": "assistant", "content": [{"type": "text", "text": "Done"}]}),
-        _FakeEvent(type="message_end", timestamp=0,
-                   message={"role": "assistant", "content": [{"type": "text", "text": "Done"}]}),
+        _FakeEvent(
+            type="message_update",
+            timestamp=0,
+            message={"role": "assistant", "content": [{"type": "text", "text": "Done"}]},
+        ),
+        _FakeEvent(
+            type="message_end",
+            timestamp=0,
+            message={"role": "assistant", "content": [{"type": "text", "text": "Done"}]},
+        ),
         _FakeEvent(type="turn_end", timestamp=0, turn_index=1, tool_results=[]),
         _FakeEvent(type="agent_end", timestamp=0),
     ]
@@ -610,3 +848,75 @@ async def test_backend_event_to_structured_mapping():
     assert len(tool_calls_info) == 1
     assert tool_calls_info[0]["id"] == "c1"
     assert tool_calls_info[0]["result"] == "a.py"
+
+
+class _CompactingFakeSession(_FakeSession):
+    """A session that AUTO-COMPACTS during the exchange.
+
+    Compaction summarizes the whole conversation, so its input is roughly a full
+    context window — routinely the priciest single call in a session, and it fires
+    without the user asking. It goes through `complete_simple`, which emits no
+    events, so it lands on the session's side ledger rather than on a `message_end`.
+    """
+
+    async def submit(self, submission, context=None):
+        out = await super().submit(submission, context)
+        # What AgentSession._perform_compaction does at the end-of-prompt drain.
+        self._side["input_tokens"] += 6000
+        self._side["output_tokens"] += 200
+        self._side["total_tokens"] += 6200
+        return out
+
+
+async def test_stream_chat_usage_includes_tokens_spent_off_the_agent_loop():
+    """The bug, at the seam where the user actually saw it.
+
+    usage_totals was summed purely from `message_end` events, which only the agent
+    LOOP emits. An auto-compaction inside the same exchange spent thousands of tokens
+    that reached no event and therefore no meter — so the cost τ displayed was
+    confidently UNDERSTATED, in the direction that makes a session look cheaper than
+    it was. `stream_chat` now folds in the session's side-ledger delta.
+    """
+    from tau_coding_agent.backends import TauBackend
+
+    backend = TauBackend(
+        {
+            "model": "m",
+            "backend": "openai",
+            "base_url": "http://x",
+            "api_key": "not-needed",
+            "tools": [],
+            # Priced, so the assertion lands on the number the user is actually shown.
+            "cost": {"input": 1_000_000.0, "output": 1_000_000.0},
+        }
+    )
+
+    loop_usage = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+    events = [
+        _FakeEvent(type="agent_start", timestamp=0),
+        _FakeEvent(type="turn_start", timestamp=0, turn_index=0),
+        _FakeEvent(
+            type="message_end",
+            timestamp=0,
+            message={
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": loop_usage,
+            },
+        ),
+        _FakeEvent(type="turn_end", timestamp=0, turn_index=0, tool_results=[]),
+        _FakeEvent(type="agent_end", timestamp=0),
+    ]
+    backend.agent_session = _CompactingFakeSession(events)  # type: ignore[assignment]
+
+    _full, usage, _new, _tc = await backend.stream_chat(
+        [{"role": "user", "content": "hi"}], callback=lambda d: None
+    )
+
+    # The loop's own 15 tokens PLUS the compaction's 6200 — not 15.
+    assert usage["prompt_tokens"] == 6010
+    assert usage["completion_tokens"] == 205
+    assert usage["total_tokens"] == 6215, "the compaction's tokens are no longer invisible"
+
+    # And the price the user sees follows: $1/token here, so 6215 tokens != 15.
+    assert usage["cost_usd"] == pytest.approx(6215.0)

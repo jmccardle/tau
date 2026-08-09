@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from textual.widget import Widget
 from textual.widgets import Collapsible, Markdown
+from textual.widgets.markdown import MarkdownStream
 
 
 def _extension_display_name(blocked_by: str | None) -> str:
@@ -79,6 +81,53 @@ def format_duration(seconds: float) -> str:
     return f"{minutes}:{secs:02d}"
 
 
+def format_telemetry(extra: dict[str, Any]) -> str | None:
+    """Render one telemetry line from a completion's ``usage["extra"]`` dict (G4).
+
+    The single formatter shared by the TUI exchange summary and
+    ``examples/70_telemetry.py`` (which imports this) — one implementation, so the
+    live readout and the example demo can never drift. ``extra`` is the
+    server-reported, non-portable per-completion telemetry τ folds onto
+    ``Usage.extra`` (llama.cpp's ``timings`` block + τ's own JSON-repair count);
+    pass ``usage.get("extra") or {}``.
+
+    Renders (each only when its source figure is actually present):
+
+    * effective decode speed — ``timings.predicted_per_second`` as ``N.N t/s``;
+    * the tool-arg JSON-repair count, when the completion reported one
+      (``repairs``);
+    * the forced-token share ``n_ff_total / predicted_n`` as ``forced=NN%`` — but
+      ONLY when ``n_ff_total`` is present. Stock llama.cpp builds never send it (a
+      jump-forward-fork-only field); omitting it is the honest move, never a
+      fabricated ``0%``.
+
+    Returns ``None`` when the completion carried no telemetry at all (no
+    ``timings``, no ``repairs``) — the caller shows the summary exactly as it would
+    without telemetry, never a stale or fabricated reading (Fail-Early).
+    """
+    timings = extra.get("timings") or {}
+    parts: list[str] = []
+
+    predicted_per_second = timings.get("predicted_per_second")
+    if isinstance(predicted_per_second, (int, float)):
+        parts.append(f"{predicted_per_second:.1f} t/s")
+
+    repairs = extra.get("repairs")
+    if isinstance(repairs, int):
+        parts.append(f"repairs={repairs}")
+
+    # n_ff_total is the fork-only forced-token count. Absent on stock builds —
+    # omit the figure entirely rather than default it to 0 (Fail-Early: a 0%
+    # forced share would claim the grammar forced nothing, which is not known).
+    n_ff_total = timings.get("n_ff_total")
+    predicted_n = timings.get("predicted_n")
+    if isinstance(n_ff_total, (int, float)) and isinstance(predicted_n, (int, float)):
+        if predicted_n > 0:
+            parts.append(f"forced={n_ff_total / predicted_n:.0%}")
+
+    return " · ".join(parts) if parts else None
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Widgets
 # ──────────────────────────────────────────────────────────────────────────
@@ -98,21 +147,115 @@ class ReasoningRegion(Collapsible):
         super().__init__(self._md, title="Thinking…", collapsed=collapsed)
         self.add_class("reasoning-region")
         self._text = ""
+        # Lazily created by append_delta on the first streamed delta once the
+        # inner Markdown has mounted; see append_delta/finish_stream.
+        self._stream: MarkdownStream | None = None
+        # Whether self._text has actually been parsed into self._md yet (D1).
+        # A region that mounts (or is set_text'd) while COLLAPSED — e.g.
+        # Parley._promote_answer's copy of a finished completion's reasoning,
+        # which sets collapsed=True in the same beat it's created — has no
+        # audience: the Contents container is `display: none`, so a full
+        # Markdown parse there produces a DOM nobody sees (measured 104ms at
+        # 2.2k reasoning tokens). Rendering is deferred until the region is
+        # actually expanded; see on_mount/_on_collapsible_expanded/_render_now.
+        self._rendered = False
 
     def on_mount(self) -> None:
-        # Flush any text set before the inner Markdown was mounted (the region is
-        # mounted lazily on the first reasoning delta, so set_text/append can run
-        # in the window before compose finishes — that early update would be lost).
+        # A region that mounts already-collapsed has no audience yet -- defer
+        # the parse to first expand (see _rendered's docstring above). One that
+        # mounts expanded (the normal live-streaming default) renders right
+        # away, exactly as before D1.
+        if self.collapsed:
+            return
+        self._render_now()
+
+    def _on_collapsible_expanded(self, event: Collapsible.Expanded) -> None:
+        """Render the buffered text the first time this region is opened.
+
+        ``Collapsible._watch_collapsed`` posts this message on EVERY
+        collapsed->False transition, including the one that happens inside
+        ``Collapsible.__init__`` itself when a region is constructed with
+        ``collapsed=False`` (our own default) — that message is queued before
+        mount and can still be pending when a caller flips ``collapsed`` back
+        to ``True`` synchronously afterwards (exactly what ``_promote_answer``
+        and ``_reload_exchange`` do: create, ``set_text``, then collapse, all
+        before the next await). By the time that stale message is finally
+        delivered, ``self.collapsed`` already reads ``True`` again, so this
+        checks the CURRENT state rather than trusting the message -- a truly
+        stale event is a no-op, a real user/toggle expand renders.
+        """
+        if self.collapsed:
+            return
+        self._render_now()
+
+    def _render_now(self) -> None:
+        """Parse the buffered text into ``self._md``, once."""
+        if self._rendered:
+            return
+        self._rendered = True
         if self._text:
-            self._md.update(self._text)
+            self._md.append(self._text)
 
     def set_text(self, text: str) -> None:
+        # finalize_exchange flushes and then collapses in the same beat, both
+        # calling set_text with the identical final string (plus append_delta,
+        # via finish_stream, having already streamed it in) -- Markdown.update()
+        # re-parses and remounts every block, so an unchanged string must be a
+        # no-op (measured: 791ms -> 455ms per end-of-message at 4k reasoning
+        # tokens). A no-op here means self._text was already this value, so the
+        # pre-mount buffer (on_mount's flush) still sees it.
+        if text == self._text:
+            return
         self._text = text
-        if self._md.is_mounted:
+        # Only touch the widget once this region has actually committed to
+        # rendering (D1): before that -- not yet mounted, or mounted but still
+        # collapsed and never opened -- stay buffered in self._text alone.
+        # _render_now reads self._text fresh on first expand, so the latest
+        # value wins even if set_text is called more than once before then.
+        if self._rendered:
             self._md.update(text)
 
     def append(self, delta: str) -> None:
+        """Whole-text convenience append (non-streaming callers, tests)."""
         self.set_text(self._text + delta)
+
+    async def append_delta(self, delta: str) -> None:
+        """Stream one delta into the reasoning body without a full rebuild.
+
+        Uses ``Markdown.get_stream``/``MarkdownStream.write`` (Textual 8.2.7),
+        which appends the fragment to the tail of the document instead of
+        reparsing+remounting everything ``set_text``/``Markdown.update()``
+        would. ``self._text`` is kept in sync on every call (not just on a
+        throttled tick) so ``text``/``set_text``'s equality guard stay correct
+        whether or not this delta was actually streamed yet.
+
+        Mirrors ``on_mount``'s pre-mount buffering: a delta that arrives before
+        the inner Markdown is mounted (or before this region is ever expanded,
+        D1) is accumulated into ``self._text`` only — the eventual mount/expand
+        catches the full buffered text up via ``append()`` (not ``update()`` —
+        see its comment), and streaming resumes from there.
+        """
+        if not delta:
+            return
+        self._text += delta
+        if not self._rendered:
+            return
+        if self._stream is None:
+            self._stream = Markdown.get_stream(self._md)
+        await self._stream.write(delta)
+
+    async def finish_stream(self) -> None:
+        """Stop this region's open stream, if any.
+
+        Called at every point the active step stops being the streaming target
+        (``_flush``, ``_collapse_active_reasoning``, ``finalize_exchange``) so
+        no ``MarkdownStream`` background task is left running once the box may
+        be collapsed, promoted from, or removed. Safe to call when nothing was
+        ever streamed (idempotent no-op).
+        """
+        if self._stream is not None:
+            stream, self._stream = self._stream, None
+            await stream.stop()
 
     @property
     def text(self) -> str:
@@ -185,12 +328,23 @@ class ExchangeBox(Collapsible):
     Expanded by default so streaming is visible; the title shows ``Working…``
     while the exchange runs and a ``N tools · X tok · M:SS`` summary once it
     finishes. Steps are mounted into the collapsible body as they arrive.
+
+    ``label`` names the lane this exchange belongs to when it is NOT the ordinary
+    "a human typed this" one — ``"bus · nats_bus"``, ``"agent · fork:explore"``
+    (B3-a). It rides on both the running title and the finished summary, because
+    the whole point of rendering another source's turn is that the reader can tell
+    it apart at a glance; ``None`` leaves both reading exactly as they always have.
     """
 
-    def __init__(self, *, collapsed: bool = False) -> None:
-        super().__init__(title="Working…", collapsed=collapsed)
+    def __init__(self, *, collapsed: bool = False, label: str | None = None) -> None:
+        super().__init__(
+            title="Working…" if label is None else f"{label} · Working…", collapsed=collapsed
+        )
         self.add_class("exchange-box")
         self._tool_count = 0
+        self._label = label
+        if label is not None:
+            self.add_class("exchange-foreign")
 
     def add_step(self, widget: Widget) -> None:
         """Mount a step widget into the exchange body, in arrival order.
@@ -220,15 +374,32 @@ class ExchangeBox(Collapsible):
     def tool_count(self) -> int:
         return self._tool_count
 
-    def set_summary(self, *, tools: int, tokens: int, seconds: float | None = None) -> None:
+    def set_summary(
+        self,
+        *,
+        tools: int,
+        tokens: int,
+        seconds: float | None = None,
+        telemetry: str | None = None,
+    ) -> None:
         """Finalize the title with the exchange's stats. Token count of 0 is
         shown as 0 — we never hide a real value behind a branch.
 
         ``seconds`` is omitted on the reload path: wall-clock duration is not
         persisted, so a reconstructed exchange shows ``N tools · X tok`` without
-        a fabricated time (Fail-Early)."""
-        label = f"{tools} tool" + ("" if tools == 1 else "s")
-        parts = [label, f"{format_tokens(tokens)} tok"]
+        a fabricated time (Fail-Early).
+
+        ``telemetry`` is the last completion's G4 readout (t/s · repairs ·
+        forced-share, from :func:`format_telemetry`); it is per-completion, not an
+        exchange aggregate like the token sum, so it is appended verbatim as one
+        more ``·`` part when present. ``None`` (a provider that reported nothing)
+        appends nothing — the summary reads exactly as it did before G4."""
+        tool_label = f"{tools} tool" + ("" if tools == 1 else "s")
+        parts = [tool_label, f"{format_tokens(tokens)} tok"]
         if seconds is not None:
             parts.append(format_duration(seconds))
+        if telemetry is not None:
+            parts.append(telemetry)
+        if self._label is not None:
+            parts.insert(0, self._label)
         self.title = "✓ " + " · ".join(parts)

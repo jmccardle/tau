@@ -22,9 +22,7 @@ import pytest
 
 from tau_agent_core.agent_session import ExtensionCommandResult
 from tau_coding_agent.app import (
-    ExtensionPanel,
     ExtensionPanelHost,
-    Parley,
     _ExtensionUIDelegate,
     _PanelActionButton,
     render_panel_body,
@@ -57,18 +55,9 @@ class _FakeBackend:
 
 
 @pytest.fixture
-def app(monkeypatch, tmp_path):
-    """A bare Parley with sandboxed config dir; no real backend needed for the host."""
-    monkeypatch.setattr("tau_coding_agent.app.TAU_DIR", tmp_path)
-    a = Parley()
-    a.config = {
-        "models": {"m": {"backend": "openai", "model": "m", "api_key": "not-needed"}},
-        "default_model": "m",
-        "system_prompt": "sys",
-    }
-    a._extension_paths = []
-    a._discover_extensions = False
-    return a
+def app(make_app):
+    """A bare Parley; no real backend needed for the host."""
+    return make_app()
 
 
 # ── render_panel_body: pure body → text (no widget access) ────────────────────

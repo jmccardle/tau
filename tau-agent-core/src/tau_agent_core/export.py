@@ -337,7 +337,12 @@ class HTMLExporter:
                     f"<p>{_html_escape(text)}</p>"
                     f"</blockquote>"
                 )
-            elif block_type == "toolCall":
+            elif block_type == "toolCall" and config.include_tool_calls:
+                # Parity with MarkdownExporter, which has always gated this block.
+                # Without the gate, include_tool_calls=False still emitted the tool
+                # NAME and its full arguments JSON (paths, commands, whatever was
+                # passed) — it only suppressed the toolResult message, so the
+                # invocation leaked into an export the user asked to exclude it from.
                 name = block.get("name", "")
                 arguments = block.get("arguments", {})
                 args_str = json.dumps(arguments, indent=2)

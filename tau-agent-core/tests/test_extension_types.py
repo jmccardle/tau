@@ -407,11 +407,16 @@ class TestExtensionAPISession:
 
     def test_set_session_name_with_session(self):
         """ExtensionAPI.set_session_name() forwards to the session log's
-        append_session_info (S64)."""
+        append_session_info (S64). Reads ``session.session_log`` — the
+        PUBLIC property (docs/RPC-TIER-B.md B5's shared
+        extension_types.apply_session_name, which the RPC set_session_name
+        verb also calls, reads the same public property require_log_appender
+        and get_state's own cursor read already use — not the private
+        ``_session_log`` attribute the pre-refactor inline body read)."""
         mock_session = MagicMock()
         api = ExtensionAPI(session=mock_session)
         api.set_session_name("new_name")
-        mock_session._session_log.append_session_info.assert_called_once_with("new_name")
+        mock_session.session_log.append_session_info.assert_called_once_with("new_name")
 
     def test_get_session_name_raises_without_session(self):
         """ExtensionAPI.get_session_name() Fail-Early raises without a bound
@@ -422,13 +427,15 @@ class TestExtensionAPISession:
 
     def test_get_session_name_reads_the_session_log(self):
         """ExtensionAPI.get_session_name() reads the session log's ``.name``,
-        returning ``None`` for a falsy (unset) name rather than the raw value."""
+        returning ``None`` for a falsy (unset) name rather than the raw
+        value. Public ``session.session_log`` — see
+        test_set_session_name_with_session's note."""
         mock_session = MagicMock()
-        mock_session._session_log.name = None
+        mock_session.session_log.name = None
         api = ExtensionAPI(session=mock_session)
         assert api.get_session_name() is None
 
-        mock_session._session_log.name = "existing-name"
+        mock_session.session_log.name = "existing-name"
         assert api.get_session_name() == "existing-name"
 
     def test_send_user_message_raises_without_queue(self):
@@ -458,13 +465,27 @@ class TestExtensionAPISession:
         mock_session._queue_message.assert_called_once_with("Hello", deliver_as="nextTurn")
 
     def test_send_user_message_rejects_bad_deliver_as(self):
-        """send_user_message() validates deliver_as against {followUp, nextTurn}."""
+        """send_user_message() validates deliver_as against the three real modes."""
         mock_session = MagicMock()
         mock_session._queue_message = MagicMock()
         api = ExtensionAPI(session=mock_session)
         with pytest.raises(ValueError):
-            api.send_user_message("Hello", deliver_as="steer")
+            api.send_user_message("Hello", deliver_as="whenever")
         mock_session._queue_message.assert_not_called()
+
+    def test_send_user_message_accepts_steer(self):
+        """``deliver_as="steer"`` reaches the session seam (phase 4).
+
+        It used to be the file's example of an INVALID mode; the steering queue
+        now exists, and this is the surface a hook steers its own turn through.
+        """
+        mock_session = MagicMock()
+        mock_session._queue_message = MagicMock()
+        api = ExtensionAPI(session=mock_session)
+        api.send_user_message("actually, use ripgrep", deliver_as="steer")
+        mock_session._queue_message.assert_called_once_with(
+            "actually, use ripgrep", deliver_as="steer"
+        )
 
     def test_send_message_raises_without_session(self):
         """ExtensionAPI.send_message() raises without a session (Fail-Early, S38).
@@ -1248,6 +1269,7 @@ class TestExtensionUITUI:
     @pytest.mark.asyncio
     async def test_tui_confirm_delegates(self):
         """ExtensionUI.confirm() delegates to TUI delegate in TUI mode."""
+
         class MockDelegate:
             async def confirm(self, title, message):
                 return False
@@ -1261,6 +1283,7 @@ class TestExtensionUITUI:
     @pytest.mark.asyncio
     async def test_tui_select_delegates(self):
         """ExtensionUI.select() delegates to TUI delegate in TUI mode."""
+
         class MockDelegate:
             async def select(self, title, items):
                 return items[1]  # return second item
@@ -1274,6 +1297,7 @@ class TestExtensionUITUI:
     @pytest.mark.asyncio
     async def test_tui_input_delegates(self):
         """ExtensionUI.input() delegates to TUI delegate in TUI mode."""
+
         class MockDelegate:
             async def input(self, title, default):
                 return "user_typed"
@@ -1286,6 +1310,7 @@ class TestExtensionUITUI:
 
     def test_tui_notify_delegates(self):
         """ExtensionUI.notify() delegates to TUI delegate in TUI mode."""
+
         class MockDelegate:
             def notify(self, message, level):
                 self.last_notify = (message, level)
@@ -1356,12 +1381,14 @@ class TestExtensionAPIIntegration:
         api.on("agent_start", lambda e: received.append(e))
 
         # Register tool
-        api.register_tool({
-            "name": "test_tool",
-            "description": "test desc",
-            "parameters": {"type": "object"},
-            "execute": lambda: None,
-        })
+        api.register_tool(
+            {
+                "name": "test_tool",
+                "description": "test desc",
+                "parameters": {"type": "object"},
+                "execute": lambda: None,
+            }
+        )
         tools = api.get_all_tools()
         assert len(tools) == 1
         assert tools[0].source == "extension"
@@ -1393,10 +1420,13 @@ class TestExtensionAPIIntegration:
         class MockTUI:
             async def confirm(self, title, message):
                 return True
+
             async def select(self, title, items):
                 return items[0] if items else None
+
             async def input(self, title, default):
                 return default
+
             def notify(self, message, level):
                 pass
 
@@ -1422,6 +1452,7 @@ class TestExtensionTypesImport:
             ExtensionContext,
             ExtensionUI,
         )
+
         assert ExtensionAPI is not None
         assert ExtensionContext is not None
         assert ExtensionUI is not None
@@ -1433,6 +1464,7 @@ class TestExtensionTypesImport:
             ExtensionContext,
             ExtensionUI,
         )
+
         assert ExtensionAPI is not None
         assert ExtensionContext is not None
         assert ExtensionUI is not None
@@ -1449,6 +1481,7 @@ class TestExtensionTypesImport:
             ExtensionContext,
             ExtensionUI,
         )
+
         assert API is ExtensionAPI
         assert Context is ExtensionContext
         assert UI is ExtensionUI

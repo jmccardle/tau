@@ -108,19 +108,35 @@ def repair_json(json_str: str) -> str:
     return "".join(repaired)
 
 
+def parse_json_with_repair_info(json_str: str) -> tuple[Any, bool]:
+    """Strict JSON parse, retrying once after :func:`repair_json`.
+
+    Returns ``(value, repaired)`` — ``repaired`` is ``True`` only when the
+    first strict parse failed and the repaired text was what actually parsed.
+    Raises ``json.JSONDecodeError`` if the text cannot be parsed even after
+    repair. Mirrors pi's ``parseJsonWithRepair``, plus the repair flag callers
+    that count repairs (e.g. the complete tool-arg buffer at finalize) need.
+    """
+    try:
+        return json.loads(json_str), False
+    except json.JSONDecodeError:
+        repaired = repair_json(json_str)
+        if repaired != json_str:
+            return json.loads(repaired), True
+        raise
+
+
 def parse_json_with_repair(json_str: str) -> Any:
     """Strict JSON parse, retrying once after :func:`repair_json`.
 
     Raises ``json.JSONDecodeError`` if the text cannot be parsed even after
-    repair. Mirrors pi's ``parseJsonWithRepair``.
+    repair. Mirrors pi's ``parseJsonWithRepair``. Thin wrapper over
+    :func:`parse_json_with_repair_info` for callers that don't care whether a
+    repair happened (e.g. the display-only partial-buffer path, where a
+    repair is normal and expected, not a measurement).
     """
-    try:
-        return json.loads(json_str)
-    except json.JSONDecodeError:
-        repaired = repair_json(json_str)
-        if repaired != json_str:
-            return json.loads(repaired)
-        raise
+    value, _repaired = parse_json_with_repair_info(json_str)
+    return value
 
 
 def _complete_structures(buf: str) -> str:

@@ -20,7 +20,6 @@ import pytest
 
 from textual.widgets import Input
 
-from tau_coding_agent.app import Parley
 from tau_coding_agent.backends import create_backend
 
 # A command declaring an ``args`` placeholder; its handler writes a marker capturing
@@ -57,21 +56,9 @@ def register(api):
 
 
 @pytest.fixture
-def app(monkeypatch, tmp_path):
-    """A Parley wired to REAL TauBackends, with sandboxed session storage."""
-    import tau_coding_agent.session_store as store
-
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
-    monkeypatch.setattr("tau_coding_agent.app.create_backend", create_backend)
-    monkeypatch.setattr(store, "_session_listeners", [])
-
-    a = Parley()
-    a.config = {
-        "models": {"m": {"backend": "openai", "model": "m", "api_key": "not-needed"}},
-        "default_model": "m",
-        "system_prompt": "sys",
-    }
-    return a
+def app(make_app):
+    """A Parley wired to REAL TauBackends (TauBackend has no network in __init__)."""
+    return make_app(create_backend=create_backend)
 
 
 async def test_args_command_exposes_placeholder(app, tmp_path):

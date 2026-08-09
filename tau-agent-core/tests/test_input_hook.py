@@ -148,7 +148,18 @@ async def test_api_on_input_routes_to_runner_bucket() -> None:
     session = _session(ext)
     result = await session._extension_runner.emit_input("hello", None)
 
-    assert seen == [{"type": "input", "prompt": "hello", "images": None}]
+    # source/submitter default to "interactive"/"human" (docs/SUBMISSION-LIFECYCLE.md
+    # "The one door" step 2): a direct emit_input() call with no Submission behind
+    # it is exactly what every prompt() call implied before submit() existed.
+    assert seen == [
+        {
+            "type": "input",
+            "prompt": "hello",
+            "images": None,
+            "source": "interactive",
+            "submitter": "human",
+        }
+    ]
     assert result == {"handled": False, "prompt": "hello", "images": None}
 
 

@@ -561,6 +561,83 @@ class TestReasoningThreadedToProvider:
         assert "reasoning" not in captured["options"]
 
 
+@pytest.mark.usefixtures("fake_llm")
+class TestToolExecutionModeThreadedToLoop:
+    """AgentSession(..., tool_execution_mode=...) must reach the
+    AgentLoopConfig the loop is built with, at BOTH construction sites:
+    prompt() (fresh-turn path, agent_session.py's AgentLoopConfig(...) inside
+    ``prompt``) and continue_conversation() (continuation path). Uses the
+    ``fake_llm`` fixture (patches only the network boundary,
+    ``tau_agent_core.agent_loop.stream_simple``) so the real AgentLoopConfig
+    construction runs; a thin wrapper captures the kwargs each site actually
+    passes, mirroring the existing ``_capturing_stream_simple`` technique.
+    """
+
+    def _session(self, tool_execution_mode: str) -> AgentSession:
+        return AgentSession(
+            session_log=InMemorySessionLog(),
+            model=Model(
+                id="gpt-4o", name="GPT-4o", api="openai-completions",
+                provider="openai", base_url="https://api.openai.com/v1",
+                context_window=128000, max_tokens=4096,
+            ),
+            tool_execution_mode=tool_execution_mode,
+        )
+
+    @staticmethod
+    def _capturing_config_factory(captured: dict):
+        from tau_agent_core.agent_loop_types import AgentLoopConfig as _RealConfig
+
+        def _factory(*args, **kwargs):
+            captured["kwargs"] = kwargs
+            return _RealConfig(*args, **kwargs)
+
+        return _factory
+
+    def test_prompt_threads_sequential_mode(self):
+        """prompt() (agent_session.py ~993, the fresh-prompt construction site)."""
+        captured: dict = {}
+        session = self._session("sequential")
+        with patch(
+            "tau_agent_core.agent_session.AgentLoopConfig",
+            self._capturing_config_factory(captured),
+        ):
+            asyncio.run(session.prompt("hi"))
+        assert captured["kwargs"]["tool_execution_mode"] == "sequential"
+
+    def test_prompt_default_is_parallel(self):
+        captured: dict = {}
+        session = self._session("parallel")
+        with patch(
+            "tau_agent_core.agent_session.AgentLoopConfig",
+            self._capturing_config_factory(captured),
+        ):
+            asyncio.run(session.prompt("hi"))
+        assert captured["kwargs"]["tool_execution_mode"] == "parallel"
+
+    def test_continue_conversation_threads_sequential_mode(self):
+        """continue_conversation() (agent_session.py ~1123, the continuation
+        construction site) — a distinct code path from prompt()."""
+        captured: dict = {}
+        session = self._session("sequential")
+        with patch(
+            "tau_agent_core.agent_session.AgentLoopConfig",
+            self._capturing_config_factory(captured),
+        ):
+            asyncio.run(session.continue_conversation())
+        assert captured["kwargs"]["tool_execution_mode"] == "sequential"
+
+    def test_continue_conversation_default_is_parallel(self):
+        captured: dict = {}
+        session = self._session("parallel")
+        with patch(
+            "tau_agent_core.agent_session.AgentLoopConfig",
+            self._capturing_config_factory(captured),
+        ):
+            asyncio.run(session.continue_conversation())
+        assert captured["kwargs"]["tool_execution_mode"] == "parallel"
+
+
 # =============================================================================
 # Test 4: Abort during prompt
 # =============================================================================
@@ -829,6 +906,25 @@ class TestCreateAgentSession:
             session_log=InMemorySessionLog(),
         )
         assert isinstance(session, AgentSession)
+
+    def test_tool_execution_mode_forwarded(self):
+        """create_agent_session(tool_execution_mode=...) reaches the AgentSession
+        it constructs (which in turn threads it into every AgentLoopConfig)."""
+        session = create_agent_session(
+            model="gpt-4o",
+            session_log=InMemorySessionLog(),
+            tool_execution_mode="sequential",
+        )
+        assert session._tool_execution_mode == "sequential"
+
+    def test_tool_execution_mode_default_is_parallel(self):
+        """The default, when the caller doesn't pass tool_execution_mode, is
+        "parallel" — matching AgentLoopConfig's own default."""
+        session = create_agent_session(
+            model="gpt-4o",
+            session_log=InMemorySessionLog(),
+        )
+        assert session._tool_execution_mode == "parallel"
 
 
 # =============================================================================
@@ -1572,6 +1668,158 @@ class TestSDKHelpers:
         """_resolve_tools() raises ValueError for unknown tools."""
         with pytest.raises(ValueError, match="Unknown tool"):
             _resolve_tools(["nonexistent"])
+
+
+# =============================================================================
+# B1 (tau-004): _resolve_tools returns ONE type.
+#
+# The hole this closes is not a behaviour, it is a *shape*. Before B1 the seven
+# built-ins came back as raw plain classes while extension tools came back as
+# AgentTool, and AgentLoop annotated `dict[str, AgentTool]` over a `list`-typed
+# seam -- so mypy had no edge to check and the suite only ever exercised the
+# half of the registry that happened to have `.definition`. tau-001's rejected
+# commit read `self._tools[tc.name].definition.execution_mode`; every built-in
+# tool call died on `AttributeError: 'LsTool' object has no attribute
+# 'definition'`, and pytest and mypy both stayed green over it.
+#
+# These tests pin the type itself, so the shape cannot drift back silently.
+# =============================================================================
+
+_ALL_BUILTIN_NAMES = ["read", "write", "edit", "bash", "ls", "grep", "find"]
+
+
+class TestResolveToolsReturnsAgentTool:
+    """_resolve_tools() returns AgentTool uniformly, carrying real values (B1)."""
+
+    def test_every_builtin_resolves_to_agent_tool(self):
+        """All seven built-ins come back as AgentTool -- no raw classes."""
+        tools = _resolve_tools(_ALL_BUILTIN_NAMES)
+        assert len(tools) == 7
+        for t in tools:
+            assert isinstance(t, AgentTool), f"{t.name} resolved to {type(t).__name__}"
+
+    def test_definition_attribute_access_works_for_every_builtin(self):
+        """`tool.definition.execution_mode` -- the literal expression tau-001's
+        rejected commit used -- is valid for every tool the registry can hold.
+
+        This is the retroactive catch. Against the pre-B1 shape this line raises
+        `AttributeError: 'ReadTool' object has no attribute 'definition'`, which
+        is exactly the crash that took down every production tool call while the
+        suite stayed green.
+        """
+        for t in _resolve_tools(_ALL_BUILTIN_NAMES):
+            assert t.definition.execution_mode in ("sequential", "parallel")
+
+    def test_wrapped_values_are_the_class_s_own_verbatim(self):
+        """The wrapper copies, it does not invent (Fail-Early).
+
+        Each field is compared against the built-in class's own attribute, so a
+        future wrap that defaulted or fabricated a value fails here rather than
+        producing a plausible tool the model would then be told about.
+        """
+        from tau_agent_core.tools.bash import BashTool
+        from tau_agent_core.tools.read import ReadTool
+
+        for cls, name in ((ReadTool, "read"), (BashTool, "bash")):
+            (tool,) = _resolve_tools([name])
+            raw = cls()
+            assert tool.definition.name == raw.name
+            assert tool.definition.label == raw.label
+            assert tool.definition.description == raw.description
+            assert tool.definition.parameters == raw.parameters
+            assert tool.definition.execution_mode == raw.execution_mode
+
+    def test_execute_is_the_real_bound_method(self):
+        """The wrapper does not interpose an adapter -- `execute` is the tool
+        instance's own bound method, so what the loop awaits is unchanged."""
+        from tau_agent_core.tools.read import ReadTool
+
+        (tool,) = _resolve_tools(["read"])
+        assert tool.definition.execute.__func__ is ReadTool.execute
+        assert isinstance(tool.definition.execute.__self__, ReadTool)
+
+    def test_system_prompt_for_builtins_is_byte_identical_to_the_raw_rendering(self):
+        """Wrapping must not silently empty the "Available tools" list.
+
+        `_build_system_prompt` used to fork on `hasattr(tool, "definition")` and
+        render `f"{name}: {label}"` for raw built-ins. After B1 that fork is gone
+        and the string comes from `prompt_snippet`. If the wrap had left
+        `prompt_snippet` at its `None` default, every built-in would vanish from
+        the system prompt -- a silent content regression with no failing test.
+        This pins the exact lines the two-branch version produced.
+        """
+        prompt = _build_system_prompt(tools=_resolve_tools(_ALL_BUILTIN_NAMES))
+        assert "- read: Read File" in prompt
+        assert "- write: Write File" in prompt
+        assert "- bash: Run Command" in prompt
+        assert "- ls: List Directory" in prompt
+        assert "- grep: Search Files" in prompt
+        assert "- find: Find Files" in prompt
+        assert "- edit: Edit File" in prompt
+
+
+class TestBuildTurnToolsRefusesDuplicateNames:
+    """H3 site 2 (`AgentSession._build_turn_tools`): one entry per name."""
+
+    def _session(self, tools):
+        return AgentSession(
+            session_log=InMemorySessionLog(),
+            model=Model(
+                id="m",
+                name="m",
+                api="openai-completions",
+                provider="openai",
+                base_url="http://localhost",
+                context_window=1000,
+                max_tokens=100,
+            ),
+            tools=tools,
+        )
+
+    def test_duplicate_name_in_the_session_tool_list_raises(self):
+        """Two tools of one name is last-write-wins with no signal: which one the
+        model calls would be decided by list order. Refused, not resolved."""
+        dup = _resolve_tools(["read"]) + _resolve_tools(["read"])
+        session = self._session(dup)
+        with pytest.raises(ValueError, match="Duplicate tool name 'read'"):
+            session._build_turn_tools()
+
+    def test_duplicate_raises_even_with_no_extensions_loaded(self):
+        """The check runs before the no-extensions early return, so a broken tool
+        list fails the same way whether or not an extension happens to be loaded."""
+        session = self._session(_resolve_tools(["ls", "ls"]))
+        assert session._resolve_extension_tools() == []
+        with pytest.raises(ValueError, match="Duplicate tool name 'ls'"):
+            session._build_turn_tools()
+
+    def test_distinct_names_are_untouched(self):
+        """Non-vacuity: the guard must not reject a healthy tool list."""
+        session = self._session(_resolve_tools(_ALL_BUILTIN_NAMES))
+        assert [t.name for t in session._build_turn_tools()] == _ALL_BUILTIN_NAMES
+
+    def test_extension_still_overrides_a_builtin_of_the_same_name(self):
+        """The documented precedence is NOT the defect and must survive.
+
+        Extension-over-built-in has a fixed winner (pi parity,
+        `_refreshToolRegistry` sets extension tools last), so it is deterministic;
+        the duplicate H3 closes is the one with no determined winner. Conflating
+        them would have broken `ext_kit.steer.wrap_tool`'s shadowing.
+        """
+        session = self._session(_resolve_tools(["read", "ls"]))
+        session._registry.register_tool(
+            {
+                "name": "read",
+                "label": "Shadowed Read",
+                "description": "extension read",
+                "parameters": {"type": "object", "properties": {}},
+                "execute": lambda *a, **k: "shadowed",
+            }
+        )
+        turn = session._build_turn_tools()
+        reads = [t for t in turn if t.name == "read"]
+        assert len(reads) == 1
+        assert reads[0].definition.description == "extension read"
+        assert {t.name for t in turn} == {"read", "ls"}
 
     def test_build_system_prompt_default(self):
         """_build_system_prompt() returns a non-empty prompt."""

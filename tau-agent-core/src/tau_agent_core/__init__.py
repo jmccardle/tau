@@ -57,7 +57,26 @@ from tau_agent_core.compaction import (
     prepare_compaction,
     should_compact,
 )
-from tau_agent_core.sdk import create_agent_session
+from tau_agent_core.compaction_policy import (
+    SCENARIO_POLICY_MODES,
+    CompactionPolicy,
+    CompactionPolicyError,
+    CompactionPolicyViolation,
+    policy_for_scenario,
+)
+from tau_agent_core.latency import (
+    PromptLatencyCollector,
+    PromptLatencySample,
+    summarize,
+)
+from tau_agent_core.run_manifest import (
+    HARNESS,
+    build_run_manifest,
+    extension_manifest_entries,
+    require_compaction_policy,
+    write_run_manifest,
+)
+from tau_agent_core.sdk import ExtensionCapabilityError, create_agent_session
 from tau_agent_core.session_manager import summarize_branch
 from tau_agent_core.rpc import RPCRequest, RPCResponse, RPCEvent, RPCHandler
 from tau_agent_core.export import (
@@ -111,8 +130,25 @@ __all__ = [
     "compact",
     "should_compact",
     "estimate_context_tokens",
+    # Declared compaction policy for a measured run (H5 / SIM_SPEC_v2 §16.8)
+    "CompactionPolicy",
+    "CompactionPolicyError",
+    "CompactionPolicyViolation",
+    "SCENARIO_POLICY_MODES",
+    "policy_for_scenario",
+    # Per-prompt latency, partitioned so a compaction is never pooled (§9, §5.2)
+    "PromptLatencyCollector",
+    "PromptLatencySample",
+    "summarize",
+    # Run manifest — the mandatory partition keys this harness owns
+    "HARNESS",
+    "build_run_manifest",
+    "extension_manifest_entries",
+    "require_compaction_policy",
+    "write_run_manifest",
     # SDK
     "create_agent_session",
+    "ExtensionCapabilityError",
     # Branch summarization
     "summarize_branch",
     # RPC types (Phase 6)

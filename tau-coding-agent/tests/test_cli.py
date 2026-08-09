@@ -13,6 +13,7 @@ import json
 
 import pytest
 
+from tau_agent_core.submission import SubmissionResult
 from tau_coding_agent import cli
 from tau_coding_agent.cli import CLIArgs, parse_cli_args
 from tau_coding_agent.headless import (
@@ -218,6 +219,28 @@ def test_resolve_exclude_tools_reaches_run_config():
     assert mc["exclude_tools"] == ["bash", "write"]
 
 
+def test_bus_flag_parses_and_reaches_the_headless_model_config():
+    """``--bus`` must survive BOTH hops: argparse → CLIArgs, and CLIArgs → config.
+
+    The first hop is the one mypy cannot see. ``parse_cli_args`` maps namespace
+    fields onto :class:`CLIArgs` by hand, and the dataclass gives ``bus`` a
+    default of ``False`` — so a missing mapping type-checks perfectly and makes
+    the flag a silent no-op. Parse real argv here rather than constructing a
+    CLIArgs, which is exactly the hop that would be skipped.
+    """
+    assert parse_cli_args(["-p", "hi"]).bus is False
+    assert parse_cli_args(["-p", "--bus", "hi"]).bus is True
+
+    _name, mc = resolve_model_config(_config(), parse_cli_args(["-p", "--bus", "hi"]))
+    assert mc["bus_available"] is True
+
+
+def test_no_bus_flag_leaves_the_capability_unstated():
+    """Absence of ``--bus`` writes nothing — it does not deny what config granted."""
+    _name, mc = resolve_model_config(_config(), parse_cli_args(["-p", "hi"]))
+    assert "bus_available" not in mc
+
+
 def test_resolve_exclude_tools_empty_raises():
     with pytest.raises(CLIError, match="no tool names parsed"):
         resolve_model_config(_config(), CLIArgs(model="gpt-4o", exclude_tools=" , "))
@@ -347,6 +370,54 @@ def test_resolve_no_model_no_default_raises():
         resolve_model_config({"models": {}}, CLIArgs(model=None))
 
 
+# ── --mode rpc validation (unit 2D) ─────────────────────────────────────────
+#
+# Only the REJECTION paths are unit-testable here: a valid `--mode rpc`
+# invocation reaches asyncio.run(run_rpc(...)), which claims stdout and reads
+# real stdin forever — exactly what tau-coding-agent/tests/test_rpc_conformance.py
+# drives over a real subprocess instead. Every check below fires BEFORE
+# load_config(), so none of it touches a real ~/.tau/config.json either.
+
+
+def test_mode_rpc_is_a_valid_choice():
+    args = parse_cli_args(["--mode", "rpc"])
+    assert args.mode == "rpc"
+
+
+def test_main_rpc_rejects_print(capsys):
+    rc = cli.main(["--mode", "rpc", "-p", "hi"])
+    assert rc == 2
+    assert "cannot be combined with --print" in capsys.readouterr().err
+
+
+def test_main_rpc_rejects_positional_messages(capsys):
+    rc = cli.main(["--mode", "rpc", "hello"])
+    assert rc == 2
+    assert "reads requests from stdin" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [["--continue"], ["--session", "x"], ["--fork", "x"], ["--resume"]],
+    ids=["continue", "session", "fork", "resume"],
+)
+def test_main_rpc_rejects_session_continuation(flag, capsys):
+    rc = cli.main(["--mode", "rpc", *flag])
+    assert rc == 2
+    assert "session continuation" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("flag", [["--name", "x"], ["--store", "file"]], ids=["name", "store"])
+def test_main_rpc_rejects_name_and_store(flag, capsys):
+    rc = cli.main(["--mode", "rpc", *flag])
+    assert rc == 2
+    # The rejection is unchanged (D-6: "the startup CLI restrictions are
+    # untouched"); its stated reason is not. The old wording ("does not persist
+    # one yet") stopped being true when Blocker 2 moved the startup session onto
+    # catalog.create, and unit S moved where that session lives.
+    assert "--name/--store" in capsys.readouterr().err
+
+
 # ── @file / prompt assembly ─────────────────────────────────────────────────
 
 
@@ -381,8 +452,14 @@ class _FakeBackend:
         self.loaded_ext_config = extensions_config  # S40: capture the resolved config map
         return LoadExtensionsResult()
 
-    async def stream_chat(self, messages, callback, on_event=None, on_pi_event=None):
-        self.messages = messages
+    async def stream_submission(
+        self, submission, context, callback, on_event=None, on_pi_event=None
+    ):
+        # B2-c: print mode owns its Submission and hands it to the one door, so the
+        # seam a backend double must implement is ``stream_submission`` — the caller's
+        # record admitted verbatim, and the 4-tuple plus the SubmissionResult back.
+        self.submission = submission
+        self.messages = context
         deltas = ["Hello ", "world"]
         if on_event is not None:
             on_event({"kind": "turn_start", "turn_index": 0})
@@ -422,7 +499,15 @@ class _FakeBackend:
         new_messages = [
             {"role": "assistant", "content": [{"type": "text", "text": "Hello world"}]},
         ]
-        return "Hello world", {"total_tokens": 3}, new_messages, []
+        return (
+            "Hello world",
+            {"total_tokens": 3},
+            new_messages,
+            [],
+            SubmissionResult(
+                accepted=True, submission_id=submission.submission_id, messages=new_messages
+            ),
+        )
 
 
 @pytest.fixture
@@ -568,6 +653,24 @@ async def test_run_print_no_session_is_ephemeral(fake_backend, capsys):
     assert _session_files(fake_backend["tau_dir"]) == []
 
 
+async def test_run_print_honors_session_dir(fake_backend, tmp_path, capsys):
+    """``--session-dir`` is a GENERAL flag, not an RPC-mode one (unit S).
+
+    Print mode's DEFAULT is unmoved — ``~/.tau/sessions``, which the fixture
+    sandboxes — but DIR overrides it, and this is how ``tau -p -c`` reaches a
+    session an RPC host wrote to its own ``<tmp>/.tau/sessions``.
+    """
+    elsewhere = tmp_path / "elsewhere"
+    rc = await run_print(
+        CLIArgs(messages=["hi"], print_mode=True, session_dir=str(elsewhere)), _config()
+    )
+    assert rc == 0
+    assert _session_files(fake_backend["tau_dir"]) == [], (
+        "--session-dir was ignored: the session went to the default base"
+    )
+    assert len(list(elsewhere.rglob("*.jsonl"))) == 1
+
+
 async def test_run_print_no_session_rejects_continue(fake_backend):
     with pytest.raises(CLIError, match="--no-session can't be combined"):
         await run_print(
@@ -654,3 +757,108 @@ def test_main_launches_tui_with_overrides(monkeypatch):
     assert rcfg["exclude_tools"] == ["bash", "write"]
     assert rcfg["no_builtin_tools"] is False
     assert rcfg["append_system_prompt"] == ["RULE"]
+
+
+# ── --store / --import-session / --export-session (W12) ────────────────────
+
+
+def test_parse_store_flag():
+    assert parse_cli_args(["-p", "--store", "jmfts", "go"]).store == "jmfts"
+    assert parse_cli_args(["-p", "--store", "file", "go"]).store == "file"
+    assert parse_cli_args(["-p", "go"]).store is None
+
+
+def test_parse_store_flag_rejects_unknown_backend():
+    # Argparse ``choices`` reject a bogus backend at parse time — only "file"/
+    # "jmfts" are valid CLI values (an unknown *config-provided* backend is
+    # instead a StoreError from store_factory.build_session_catalog).
+    with pytest.raises(SystemExit):
+        parse_cli_args(["-p", "--store", "sqlite", "go"])
+
+
+def test_store_flag_reaches_run_print(monkeypatch):
+    seen = {}
+
+    async def fake_run_print(args, config):
+        seen["store"] = args.store
+        return 0
+
+    monkeypatch.setattr(cli, "run_print", fake_run_print)
+    monkeypatch.setattr(cli, "load_config", lambda: _config())
+    cli.main(["-p", "--store", "jmfts", "hello"])
+    assert seen["store"] == "jmfts"
+
+
+def test_store_flag_reaches_tui_run_config(monkeypatch):
+    captured = {}
+
+    class FakeParley:
+        def __init__(self, cli_overrides=None, cli_run_config=None):
+            captured["run_config"] = cli_run_config
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr("tau_coding_agent.app.Parley", FakeParley)
+    monkeypatch.setattr(cli, "load_config", lambda: _config())
+    cli.main(["--store", "jmfts"])
+    assert captured["run_config"]["store"] == "jmfts"
+
+
+def test_parse_import_export_session_flags():
+    args = parse_cli_args(["--import-session", "/tmp/x.jsonl"])
+    assert args.import_session == "/tmp/x.jsonl"
+    assert args.export_session is None
+
+    args = parse_cli_args(["--export-session", "42", "/tmp/y.jsonl"])
+    assert args.export_session == ["42", "/tmp/y.jsonl"]
+    assert args.import_session is None
+
+
+def test_main_import_and_export_session_mutually_exclusive(capsys):
+    rc = cli.main(["--import-session", "a.jsonl", "--export-session", "1", "b.jsonl"])
+    assert rc == 2
+    assert "mutually exclusive" in capsys.readouterr().err
+
+
+def test_main_import_session_rejects_print_combo(capsys):
+    rc = cli.main(["--import-session", "a.jsonl", "-p", "hi"])
+    assert rc == 2
+    assert "one-shot JMFTS copy" in capsys.readouterr().err
+
+
+def test_main_export_session_rejects_continue_combo(capsys):
+    rc = cli.main(["--export-session", "1", "b.jsonl", "-c"])
+    assert rc == 2
+    assert "one-shot JMFTS copy" in capsys.readouterr().err
+
+
+def test_main_import_session_dispatches(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_import(path, config):
+        seen["path"] = path
+        seen["config"] = config
+        return 0
+
+    monkeypatch.setattr(cli, "_run_import_session", fake_import)
+    monkeypatch.setattr(cli, "load_config", lambda: _config())
+    rc = cli.main(["--import-session", str(tmp_path / "x.jsonl")])
+    assert rc == 0
+    assert seen["path"] == str(tmp_path / "x.jsonl")
+
+
+def test_main_export_session_dispatches(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_export(ref, path, config):
+        seen["ref"] = ref
+        seen["path"] = path
+        return 0
+
+    monkeypatch.setattr(cli, "_run_export_session", fake_export)
+    monkeypatch.setattr(cli, "load_config", lambda: _config())
+    rc = cli.main(["--export-session", "42", str(tmp_path / "y.jsonl")])
+    assert rc == 0
+    assert seen["ref"] == "42"
+    assert seen["path"] == str(tmp_path / "y.jsonl")

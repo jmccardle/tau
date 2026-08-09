@@ -5,8 +5,20 @@ description = "τ (tau-agent-core) monorepo"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
-testpaths = ["tau-ai/tests", "tau-agent-core/tests", "tau-coding-agent/tests"]
+testpaths = ["tau-ai/tests", "tau-agent-core/tests", "tau-coding-agent/tests", "tau-jmfts/tests"]
 asyncio_mode = "auto"
+markers = [
+    "jmfts: live integration tests against a running JMFTS server (JMFTS_TEST_URL or default LAN instance; skips if unreachable, never on a server error)",
+    "llama: live conformance probe against a llama.cpp server (TAU_LLAMA_TEST_URL or default LAN instance; DESELECTED BY DEFAULT -- opt in with `pytest -m llama`; skips if unreachable, never on a server error)",
+]
+# `llama` is deselected by default; `jmfts` is NOT. The difference is COST, not
+# availability. The jmfts gate is a 3-second HTTP probe, so attempting it and
+# skipping is free. The llama suite is a generation sweep -- ~15 s of GPU time per
+# run even when everything passes -- which does not belong in every `pytest`.
+# Opt in with `pytest -m llama`: a command-line `-m` lands after addopts and wins.
+# Re-run it ONLY for changes touching the LLM provider interfaces; see the module
+# docstring of tau-ai/tests/test_llama_conformance.py for the scope rule.
+addopts = ["-m", "not llama"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -16,7 +28,7 @@ ignore_missing_imports = true
 
 [tool.ruff]
 # Lint + format gate (enforced by .git/hooks/pre-commit). Scope mirrors the
-# mypy config: the three package src trees. line-length 100 keeps the format
+# mypy config: the four package src trees. line-length 100 keeps the format
 # churn small relative to the existing code.
 line-length = 100
 target-version = "py311"

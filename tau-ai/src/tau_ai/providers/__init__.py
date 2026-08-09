@@ -1,14 +1,18 @@
-"""τ-ai providers: LLM provider abstraction and registry.
+"""τ-ai providers: LLM provider abstraction.
 
 Exports:
     Provider: Abstract base class for LLM providers.
-    ProviderRegistry: Registry for managing provider instances.
+
+Provider *pooling* (the actual "which provider instance serves this call"
+question) lives in ``tau_ai.client`` — see ``docs/PROVIDER-LIFETIME.md``. There
+is no separate provider registry: a prior ``ProviderRegistry`` class existed
+here but was never wired to anything (``tau_ai.client.stream_simple`` built a
+fresh, throwaway one on every call — dead code, see PROVIDER-LIFETIME.md §1)
+and was removed rather than kept around describing behaviour it didn't have.
 """
 
 from tau_ai.providers.base import Provider
-from tau_ai.providers.registry import ProviderRegistry
 
 __all__ = [
     "Provider",
-    "ProviderRegistry",
 ]

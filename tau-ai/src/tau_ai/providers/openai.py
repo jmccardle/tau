@@ -25,12 +25,17 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Literal
+from typing import Any, AsyncIterator, Iterable, Literal
 
 import httpx
 
+from tau_ai import grammar as grammar_mod
+from tau_ai.constraints import ConstraintViolation
 from tau_ai.providers.base import Provider
-from tau_ai.json_parse import parse_json_with_repair, parse_streaming_json
+from tau_ai.json_parse import (
+    parse_json_with_repair_info,
+    parse_streaming_json,
+)
 from tau_ai.models import clamp_thinking_level
 from tau_ai.streaming import (
     DoneEvent,
@@ -92,6 +97,210 @@ class _Accumulator:
     has_text: bool = False
     has_thinking: bool = False
     response_id: str | None = None
+
+
+# Request-body fields τ owns and no caller-supplied dict may overwrite. These carry the
+# transport contract (what we send, and that we get a usage chunk back), not server
+# decode settings. See _guard_body_keys.
+_RESERVED_BODY_KEYS = frozenset({"model", "messages", "stream", "stream_options", "tools"})
+
+# Request-body fields that EXPRESS A DECODE CONSTRAINT. They may reach the wire only
+# through DecodeConstraints — never through Model.extra_body, per-call body options, or
+# DecodeConstraints.extra_body.
+#
+# This is not tidiness. Every one of these was live-reproduced against llama-server
+# (CONSTRAINED-GEN-AND-BRANCHING-PLAN.md §0.2):
+#
+#   * A `grammar` smuggled in via extra_body skips BOTH gates in _apply_constraints —
+#     which returns early when `constraints is None` — so it is never capability-checked
+#     and its output is never verified. Against a server that ignores the key, that is an
+#     unconstrained generation returned as a constrained one: fabricated data.
+#   * A `response_format` alongside a real DecodeConstraints(grammar=...) is worse. The
+#     server guards `grammar` + top-level `json_schema` with a loud 500, but
+#     `response_format` parses on a different path and SILENTLY WINS: a grammar restricted
+#     to include|exclude came back as `{"verdict": "REJECT"}`. The constraint was dropped
+#     and nothing said so.
+#   * `tools` reaching the payload as a body option (rather than the `tools` argument)
+#     leaves has_tools=False, so the tools gate never fires — re-opening the
+#     json_schema-silently-disables-tool-calling hole the gate exists to close.
+#
+# So: one door in, and it is the door with the gates on it.
+_CONSTRAINT_BODY_KEYS = frozenset({"grammar", "json_schema", "response_format"})
+
+
+def _guard_body_keys(source: str, keys: Iterable[str], *, model_id: str) -> None:
+    """Reject transport and constraint fields arriving through a caller-supplied dict."""
+    keyset = set(keys)
+
+    reserved = _RESERVED_BODY_KEYS & keyset
+    if reserved:
+        raise ValueError(
+            f"Model {model_id!r}: {source} may not set τ transport fields "
+            f"{sorted(reserved)}; it is for server decode/cache knobs "
+            "(cache_prompt, min_p, samplers, …)"
+        )
+
+    constraint = _CONSTRAINT_BODY_KEYS & keyset
+    if constraint:
+        raise ValueError(
+            f"Model {model_id!r}: {source} may not set decode-constraint fields "
+            f"{sorted(constraint)}. Pass a DecodeConstraints instead — it is the only "
+            "path that capability-checks the model, refuses to collide with tools, and "
+            "VERIFIES the output. Smuggled past it, a constraint the server drops "
+            "(or silently overrides) comes back as an unconstrained generation "
+            "masquerading as a constrained one."
+        )
+
+
+def _merge_thinking_fragment(
+    payload: dict[str, Any], fragment: dict[str, Any], *, model_id: str
+) -> None:
+    """Merge a `thinking_level_map` body fragment into the request payload.
+
+    Guarded like every other caller-supplied body dict. A fragment is a THIRD door
+    into the payload alongside `Model.extra_body` and per-call options, and a door
+    the constraint gates do not watch is a door around them — see `_guard_body_keys`
+    for the three live reproductions that argument rests on.
+
+    Merged one level deep rather than assigned, for the nested case: a model whose
+    "off" fragment is ``{"chat_template_kwargs": {"enable_thinking": false}}`` and
+    whose `extra_body` sets other `chat_template_kwargs` must get both. A flat
+    assignment would silently drop the ones already there, which is the same
+    silent-loss failure the fragment shape exists to fix one level up.
+
+    The fragment wins on a key-by-key collision. Asking for a thinking level is an
+    explicit, per-call act; `extra_body` is the model's static default. This matches
+    what the string path has always done — `payload["reasoning_effort"] = …` has
+    always overwritten whatever `extra_body` put there.
+    """
+    _guard_body_keys("thinking_level_map fragment", fragment.keys(), model_id=model_id)
+    for key, value in fragment.items():
+        existing = payload.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged = dict(existing)
+            merged.update(value)
+            payload[key] = merged
+        else:
+            payload[key] = value
+
+
+def _message_text(message: AssistantMessage) -> str:
+    """The assistant message's plain text — exactly what a constraint constrains.
+
+    Thinking blocks and tool calls are excluded: a grammar constrains the *content*
+    channel, and a reasoning model's ``reasoning_content`` is not part of it.
+
+    NOT stripped. Whitespace inside a grammar is significant — ``fixed("yes ")``
+    really does force the trailing space (verified live against llguidance) — so
+    stripping here would mangle a correctly-constrained output into one that fails
+    its own membership check, and τ would raise a ConstraintViolation blaming the
+    server for damage τ itself did.
+    """
+    return "".join(b.text for b in message.content if isinstance(b, TextContent))
+
+
+def _apply_constraints(
+    payload: dict[str, Any],
+    model: Model,
+    constraints: Any,
+    *,
+    has_tools: bool,
+) -> None:
+    """Map a ``DecodeConstraints`` onto the request payload, gating first.
+
+    Two gates, both Fail-Early, both verified live against llama.cpp master
+    (CONSTRAINED-GEN-AND-BRANCHING-PLAN.md §0.1):
+
+    1. **Capability.** A constraint against a model that declares no
+       ``grammar_dialect`` raises. The alternative is shipping a param that OpenAI
+       would 400 on and that other servers silently IGNORE — and a silently-ignored
+       grammar means an *unconstrained* generation returned as constrained, which is
+       fabricated data.
+
+    2. **Tools.** A constraint alongside a declared tools array raises unless
+       ``tool_choice="none"``. The server rejects ``grammar`` + tools with a 400, but
+       accepts ``json_schema`` + tools with a **200 while silently disabling tool
+       calling** — the schema grammar wins and the model invents a schema-shaped
+       answer instead of calling the tool. τ is the only line of defence for that
+       case, so the raise covers both constraint kinds.
+    """
+    if constraints is None:
+        return
+
+    # tool_choice / extra_body ride along even with no actual decode constraint.
+    if constraints.tool_choice is not None:
+        payload["tool_choice"] = constraints.tool_choice
+    if constraints.extra_body:
+        # Highest precedence: per-call over Model.extra_body over τ defaults. Guarded
+        # too — otherwise DecodeConstraints(json_schema=..., extra_body={"grammar": ...})
+        # slips BOTH onto the wire while satisfying the exactly-one-of validator, and the
+        # server picks a winner silently.
+        _guard_body_keys(
+            "DecodeConstraints.extra_body", constraints.extra_body.keys(), model_id=model.id
+        )
+        payload.update(constraints.extra_body)
+
+    if not constraints.has_constraint():
+        return
+
+    if model.grammar_dialect is None:
+        raise ValueError(
+            f"Model {model.id!r} declares no grammar support, so a decode constraint "
+            f"cannot be honoured. Set models.<name>.grammar to 'llguidance' or 'gbnf'. "
+            "(Refusing to send it anyway: a server that ignores the constraint would "
+            "return an unconstrained generation as if it were constrained.)"
+        )
+
+    if has_tools and payload.get("tool_choice") != "none":
+        raise ValueError(
+            f"Model {model.id!r}: a decode constraint cannot be combined with tools "
+            "(the server's tool grammar and the constraint grammar collide). "
+            "llama-server 400s on grammar+tools, and — worse — accepts "
+            "json_schema+tools while silently disabling tool calling. "
+            'Pass tool_choice="none" to constrain a turn that declares tools.'
+        )
+
+    grammar_text: str
+    if constraints.choices is not None:
+        # choices and grammar.choice() compile to the SAME grammar — which is why they
+        # must verify the same way (see Grammar in tau_ai.grammar).
+        grammar_text = grammar_mod.choice(*constraints.choices)
+    elif constraints.grammar is not None:
+        grammar_text = constraints.grammar
+    else:
+        # json_schema → OpenAI-style response_format. llguidance consumes JSON Schema
+        # natively, so the SERVER compiles it; τ does not reimplement that compiler.
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": "response", "schema": constraints.json_schema},
+        }
+        return
+
+    # A grammar/choices-constrained call must not THINK. A user grammar applies from
+    # the very first generated token, and a reasoning model's first token belongs to
+    # its thinking — so llama-server dutifully forces the constrained answer into the
+    # REASONING channel and returns `{"content": "", "reasoning_content": "include"}`.
+    # The constraint held perfectly; the answer just is not where anyone reads it.
+    #
+    # τ reads `content`, sees "", and raises ConstraintViolation — which looks exactly
+    # like "the server dropped the grammar" and is the opposite of what happened. Every
+    # grammar-constrained call against a thinking model produced an empty verdict this way.
+    #
+    # Thinking is also pointless here: the answer is grammar-forced, so there is
+    # nothing for reasoning to decide. Turn it off unless the caller has explicitly
+    # taken control of the chat-template kwargs.
+    #
+    # json_schema → response_format is DELIBERATELY left thinking-enabled: it returns
+    # above without reaching here. Its grammar is template-built and reasoning-aware
+    # (llama.cpp upstream #20223), so it already works with thinking ON, and forcing it
+    # off would be an unwarranted workaround.
+    if "chat_template_kwargs" not in payload:
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
+
+    # Header only for llguidance (never double-prefix; never prefix a gbnf grammar).
+    if model.grammar_dialect == "llguidance":
+        grammar_text = grammar_mod.with_header(grammar_text)
+    payload["grammar"] = grammar_text
 
 
 def _resolve_tool_call_block(
@@ -180,7 +389,7 @@ def _consolidate_text_and_thinking(accum: _Accumulator) -> list[Any]:
     return blocks
 
 
-def _usage_from_openai(data: dict) -> Usage:
+def _usage_from_openai(data: dict, timings: dict[str, Any] | None = None) -> Usage:
     """Map an OpenAI-style usage dict onto τ's :class:`Usage`.
 
     OpenAI/llama.cpp use ``prompt_tokens`` / ``completion_tokens`` /
@@ -189,17 +398,27 @@ def _usage_from_openai(data: dict) -> Usage:
     completion counts (pydantic ignores the unknown keys) and report 0. When the
     server omits ``total_tokens`` we compute it from input+output rather than
     fabricate — the real number, including a real zero.
+
+    ``timings`` is llama.cpp's per-completion telemetry block, a TOP-LEVEL
+    sibling of ``usage`` on the final SSE chunk (not nested inside it). When
+    non-empty it lands verbatim — keys unfiltered, unrenamed — on
+    ``Usage.extra["timings"]``; stock builds omit ``n_ff_total`` and τ never
+    fabricates it.
     """
     input_tokens = int(data.get("prompt_tokens") or 0)
     output_tokens = int(data.get("completion_tokens") or 0)
     total = int(data.get("total_tokens") or 0) or (input_tokens + output_tokens)
     details = data.get("prompt_tokens_details") or {}
     cache_read = int(details.get("cached_tokens") or 0)
+    extra: dict[str, Any] = {}
+    if timings:
+        extra["timings"] = dict(timings)
     return Usage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_read_tokens=cache_read,
         total_tokens=total,
+        extra=extra,
     )
 
 
@@ -211,6 +430,14 @@ class OpenAICompletionsProvider(Provider):
 
     Reference: PHASE-1-SUBPHASE-2.md, "Implementation Outline" section.
     """
+
+    # Single source of truth for the default endpoint, shared with
+    # ``tau_ai.client``'s provider pool: the pool must resolve the SAME default
+    # a bare ``base_url=None`` would fall back to here, or two calls that mean
+    # the same server ("explicit https://api.openai.com/v1" vs "omitted") would
+    # key to two different cache entries and lose the keep-alive win for no
+    # reason (see docs/PROVIDER-LIFETIME.md §5).
+    DEFAULT_BASE_URL: str = "https://api.openai.com/v1"
 
     def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
         """Initialize the OpenAI provider.
@@ -230,7 +457,7 @@ class OpenAICompletionsProvider(Provider):
         # "No API key for provider" rather than inventing one
         # (openai-completions.ts:141).
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
-        self.base_url = base_url or "https://api.openai.com/v1"
+        self.base_url = base_url or self.DEFAULT_BASE_URL
         self._client: httpx.AsyncClient | None = None
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -245,6 +472,21 @@ class OpenAICompletionsProvider(Provider):
                 timeout=httpx.Timeout(300.0, connect=10.0),
             )
         return self._client
+
+    async def aclose(self) -> None:
+        """Close the underlying HTTP client, if one was ever built.
+
+        Explicit teardown counterpart to ``_get_client``'s lazy construction.
+        Nothing in this provider calls this on its own — callers that pool
+        providers (``tau_ai.client``'s provider pool) own the decision of when
+        a provider's connections are no longer needed and must call this
+        themselves (docs/PROVIDER-LIFETIME.md §6.3: "closed explicitly, not by
+        GC"). Idempotent: closing an already-closed/never-built client is a
+        no-op, so a caller need not track whether ``_get_client`` ever ran.
+        """
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     # ──────────────────────────────────────────────────────────────────
     # Conversion: τ → OpenAI
@@ -714,13 +956,23 @@ class OpenAICompletionsProvider(Provider):
         """Build the final AssistantMessage with accumulated data."""
         content_blocks: list[Any] = _consolidate_text_and_thinking(accum)
 
+        # Repair count over the COMPLETE tool-arg buffers only (not the
+        # display-only partial-buffer path in parse_streaming_json, where a
+        # repair is normal/expected). This is the only grammar-agnostic signal
+        # for "did the model actually emit malformed JSON": a constrained tool
+        # call should repair zero times.
+        repairs = 0
+        had_tool_call_with_args = False
         for tc in accum.tool_calls:
             args_str = "".join(tc.arguments_parts)
             # Authoritative path: the stream is complete, so the arguments must
             # be valid JSON. A complete-but-unparseable payload is a real error
             # — raise (surfaced as an ErrorEvent) rather than fabricate args.
             if args_str.strip():
-                args_dict = parse_json_with_repair(args_str)
+                had_tool_call_with_args = True
+                args_dict, repaired = parse_json_with_repair_info(args_str)
+                if repaired:
+                    repairs += 1
                 if not isinstance(args_dict, dict):
                     raise ValueError(
                         f"Tool call {tc.id!r} ({tc.name!r}) arguments did not decode "
@@ -729,6 +981,13 @@ class OpenAICompletionsProvider(Provider):
             else:
                 args_dict = {}
             content_blocks.append(ToolCall(id=tc.id, name=tc.name, arguments=args_dict))
+
+        # Only a message with at least one NON-EMPTY tool-arg buffer has a
+        # repair count to report. A message with no tool calls (or only
+        # empty-argument ones) has nothing measured — `repairs: 0` there would
+        # be a lie by omission-of-context, not a real "zero repairs" datum.
+        if had_tool_call_with_args:
+            usage = usage.model_copy(update={"extra": {**usage.extra, "repairs": repairs}})
 
         # Determine stop_reason: use explicit value, or fall back to heuristic
         if stop_reason is None:
@@ -819,17 +1078,49 @@ class OpenAICompletionsProvider(Provider):
         # leaks them into the JSON body (a non-serializable object would 400/raise).
         abort_signal = options.get("abort_signal")
         body_options = {
-            k: v for k, v in options.items() if k not in ("api_key", "reasoning", "abort_signal")
+            k: v
+            for k, v in options.items()
+            if k not in ("api_key", "reasoning", "abort_signal", "constraints")
         }
+        # Both caller-supplied dicts are guarded, not just Model.extra_body: a `tools`
+        # or `grammar` key smuggled through per-call options bypasses the constraint
+        # gates just as effectively as one in static config, and the per-call path is
+        # the easier one to reach.
+        _guard_body_keys("extra_body", model.extra_body.keys(), model_id=model.id)
+        _guard_body_keys("per-call options", body_options.keys(), model_id=model.id)
+
         payload: dict[str, Any] = {
             "model": model.id,
             "messages": openai_messages,
             "stream": True,
             "stream_options": {"include_usage": True},
+            # Below **body_options: a per-call option always wins over the model's
+            # static default.
+            **model.extra_body,
             **body_options,
         }
         if openai_tools:
             payload["tools"] = openai_tools
+
+        # `Model.max_tokens` is a REQUIRED field on every Model, and until this it
+        # was never placed on the wire — declared and not consulted, the same defect
+        # class that got the `settings` parameter removed from `create_agent_session`
+        # ("a parameter whose only behaviour is rejection still advertises a
+        # capability that does not exist"). The symptom is silent and expensive:
+        # verified against llama-server, a Model with `max_tokens=512` produced a
+        # slot reporting `n_predict = -1`, so generation ran unbounded against an
+        # n_ctx of 262144 and one turn decoded ~120k tokens before anyone noticed.
+        #
+        # Skipped when the caller has already named a cap under either spelling.
+        # OpenAI's o-series rejects `max_tokens` and wants `max_completion_tokens`;
+        # llama.cpp and the classic Chat Completions API want `max_tokens`. τ sends
+        # the classic key and treats either one already present — via
+        # `Model.extra_body` or per-call options — as the caller having taken
+        # control, rather than sending two conflicting caps.
+        if not any(key in payload for key in ("max_tokens", "max_completion_tokens")):
+            payload["max_tokens"] = model.max_tokens
+
+        _apply_constraints(payload, model, options.get("constraints"), has_tools=bool(openai_tools))
 
         # Reasoning / thinking effort. The requested level arrives as the
         # τ-internal `reasoning` option; clamp it to what the model supports,
@@ -845,11 +1136,15 @@ class OpenAICompletionsProvider(Provider):
             clamped = clamp_thinking_level(model, requested)
             tlm = model.thinking_level_map or {}
             if clamped != "off":
-                payload["reasoning_effort"] = tlm.get(clamped, clamped)
+                mapped = tlm.get(clamped, clamped)
             else:
-                off_value = tlm.get("off")
-                if isinstance(off_value, str):
-                    payload["reasoning_effort"] = off_value
+                # "off" is the level whose default meaning is "ask for nothing", so
+                # it sends nothing unless the map names a concrete value for it.
+                mapped = tlm.get("off")
+            if isinstance(mapped, dict):
+                _merge_thinking_fragment(payload, mapped, model_id=model.id)
+            elif isinstance(mapped, str):
+                payload["reasoning_effort"] = mapped
 
         client = self._get_client()
         accum = _Accumulator()
@@ -859,6 +1154,11 @@ class OpenAICompletionsProvider(Provider):
                 # Declared before the streaming context so the post-loop final
                 # message build (after the response closes) can still read them.
                 usage_data: dict[str, Any] = {}
+                # llama.cpp's `timings` block: a TOP-LEVEL sibling of `usage` on
+                # the same final SSE chunk (not nested inside it), captured the
+                # same way and for the same reason — BEFORE the empty-choices
+                # guard below, or it is silently dropped.
+                timings_data: dict[str, Any] = {}
                 final_stop_reason: (
                     Literal["stop", "length", "toolUse", "error", "aborted"] | None
                 ) = None
@@ -919,6 +1219,9 @@ class OpenAICompletionsProvider(Provider):
                         chunk_usage = chunk.get("usage")
                         if chunk_usage:
                             usage_data = chunk_usage
+                        chunk_timings = chunk.get("timings")
+                        if chunk_timings:
+                            timings_data = chunk_timings
 
                         choices = chunk.get("choices", [])
                         if not choices:
@@ -979,9 +1282,41 @@ class OpenAICompletionsProvider(Provider):
                             final_stop_reason = self._map_finish_reason(finish_reason)
 
                 # Stream ended ([DONE] or closed). Emit the final message with
-                # whatever usage arrived, including a trailing usage-only chunk.
-                usage_obj = _usage_from_openai(usage_data) if usage_data else Usage()
+                # whatever usage (and timings) arrived, including a trailing
+                # usage-only chunk. `_usage_from_openai({}, {})` already yields
+                # an all-zero, extra-less Usage identical to `Usage()`, so no
+                # separate empty-data branch is needed.
+                usage_obj = _usage_from_openai(usage_data, timings_data)
                 final_msg = self._build_final_message(accum, model, usage_obj, final_stop_reason)
+
+                # Verify the constraint actually held (§4.3). This is the single choke
+                # point for BOTH streaming and complete_simple, so no constrained result
+                # can be returned unverified.
+                #
+                # Read stop_reason off the MESSAGE, not off `final_stop_reason`: a server
+                # that closes the SSE without a finish_reason leaves the local None while
+                # _build_final_message heuristically reports "stop". Gating on the local
+                # would then skip verification on a message that claims a clean stop.
+                #
+                # "length" is a HARD failure for a constrained generation, not a
+                # different-failure-already-visible-elsewhere. Nothing downstream inspects
+                # stop_reason — ctx.complete() raises only on error/aborted — so a
+                # truncated `{"verdict": "include", "confidence": 0.` would be handed to a
+                # caller as a successful constrained result and json.loads'd. Truncation
+                # means the constraint did not complete; say so.
+                constraints = options.get("constraints") if options else None
+                if constraints is not None and constraints.has_constraint():
+                    text = _message_text(final_msg)
+                    if final_msg.stop_reason == "stop":
+                        constraints.verify_output(text)
+                    elif final_msg.stop_reason == "length":
+                        raise ConstraintViolation(
+                            "constrained generation hit the token limit before the "
+                            f"constraint completed (stop_reason='length'): {text!r}. "
+                            "The output is a PREFIX of a constrained answer, not a "
+                            "constrained answer. Raise max_tokens.",
+                            text,
+                        )
 
                 # Emit one final tool-call delta per call, derived from the
                 # already-parsed ToolCall blocks on final_msg (no re-parse).
@@ -1009,6 +1344,14 @@ class OpenAICompletionsProvider(Provider):
                 )
                 return
 
+            except ConstraintViolation:
+                # NOT a transport error. A violation means the server returned an
+                # UNCONSTRAINED generation while we asked for a constrained one — a
+                # correctness failure the caller must be able to catch by type (and
+                # whose `.output` it needs). Laundering it into a generic
+                # "Streaming error" string would bury exactly the information that
+                # makes it actionable. Re-raise; the stream wrapper preserves it.
+                raise
             except Exception as e:
                 error_event = ErrorEvent(
                     type="error",

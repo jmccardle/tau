@@ -6,7 +6,7 @@
 
 The lifecycle seam is resolved via ``getattr`` on the backend, so these tests use
 a fake backend that records the calls (and, for the signal cases, blocks in
-``stream_chat`` until ``abort()`` trips — exactly how a real in-flight turn
+``stream_submission`` until ``abort()`` trips — exactly how a real in-flight turn
 unwinds when a signal lands). Sending a real signal to our own process is safe:
 ``run_print`` installs asyncio loop signal handlers, which replace the default
 disposition (no ``KeyboardInterrupt`` / no termination) while the run is live.
@@ -23,6 +23,7 @@ import signal
 import pytest
 
 import tau_coding_agent.session_store as store
+from tau_agent_core.submission import SubmissionResult
 from tau_coding_agent.cli import CLIArgs
 from tau_coding_agent.headless import run_print
 
@@ -44,7 +45,7 @@ def _config() -> dict:
 
 class _LifecycleBackend:
     """A fake backend that records lifecycle-hook calls and (optionally) blocks in
-    ``stream_chat`` until ``abort()`` is tripped (to exercise the signal path)."""
+    ``stream_submission`` until ``abort()`` is tripped (to exercise the signal path)."""
 
     def __init__(self, config, *, block: bool = False):
         self.config = config
@@ -69,13 +70,26 @@ class _LifecycleBackend:
     def abort(self) -> None:
         self._aborted.set()
 
-    async def stream_chat(self, messages, callback, on_event=None, on_pi_event=None):
+    async def stream_submission(
+        self, submission, context, callback, on_event=None, on_pi_event=None
+    ):
+        # B2-c: run_print admits its own Submission through the one door, so this is
+        # the seam it calls (the 4-tuple plus the SubmissionResult).
+        self.submission = submission
         self.started.set()
         if self._block:
             await self._aborted.wait()
         callback("ANSWER")
         new_messages = [{"role": "assistant", "content": [{"type": "text", "text": "ANSWER"}]}]
-        return "ANSWER", {"total_tokens": 1}, new_messages, []
+        return (
+            "ANSWER",
+            {"total_tokens": 1},
+            new_messages,
+            [],
+            SubmissionResult(
+                accepted=True, submission_id=submission.submission_id, messages=new_messages
+            ),
+        )
 
 
 @pytest.fixture
@@ -119,7 +133,7 @@ async def test_shutdown_fires_once_even_when_run_raises(env, monkeypatch):
         async def boom(*a, **k):
             raise RuntimeError("stream exploded")
 
-        be.stream_chat = boom  # type: ignore[method-assign]
+        be.stream_submission = boom  # type: ignore[method-assign]
         env["backend"] = be
         return be
 
@@ -141,10 +155,12 @@ async def test_shutdown_fires_on_signal(env, sig):
     our own process is safe."""
     env["install"](block=True)
 
-    run_task = asyncio.ensure_future(run_print(CLIArgs(messages=["hi"], print_mode=True), _config()))
+    run_task = asyncio.ensure_future(
+        run_print(CLIArgs(messages=["hi"], print_mode=True), _config())
+    )
 
     # Wait until the (blocking) stream has started — the loop signal handlers are
-    # installed before stream_chat runs, so the signal cannot slip past them.
+    # installed before stream_submission runs, so the signal cannot slip past them.
     for _ in range(200):
         be = env.get("backend")
         if be is not None and be.started.is_set():

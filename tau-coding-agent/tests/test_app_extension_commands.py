@@ -20,11 +20,13 @@ Reference: docs/EXTENSIONS-E5-WIRING.md §5 (E5.4 / S35).
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from textual.widgets import Input
 
-from tau_coding_agent.app import ChatDisplay, ChatInput, MessageBox, Parley
+from tau_coding_agent.app import ChatDisplay, ChatInput, MessageBox
 from tau_coding_agent.backends import create_backend
 
 # A file extension registering a slash command whose handler writes a marker file
@@ -57,23 +59,9 @@ def register(api):
 
 
 @pytest.fixture
-def app(monkeypatch, tmp_path):
-    """A Parley wired to REAL TauBackends, with sandboxed session storage."""
-    import tau_coding_agent.session_store as store
-
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
-    monkeypatch.setattr("tau_coding_agent.app.create_backend", create_backend)
-    # Isolate the module-global session-event listener list (see
-    # test_app_extension_loading.py for the rationale — avoids a cross-test leak).
-    monkeypatch.setattr(store, "_session_listeners", [])
-
-    a = Parley()
-    a.config = {
-        "models": {"m": {"backend": "openai", "model": "m", "api_key": "not-needed"}},
-        "default_model": "m",
-        "system_prompt": "sys",
-    }
-    return a
+def app(make_app):
+    """A Parley wired to REAL TauBackends (TauBackend has no network in __init__)."""
+    return make_app(create_backend=create_backend)
 
 
 async def test_extension_command_listed_and_runnable(app, tmp_path):
@@ -181,7 +169,7 @@ async def test_unknown_slash_command_falls_through(app, tmp_path):
     app._extension_paths = [str(ext)]
     app._discover_extensions = False
 
-    generated: list[str] = []
+    generated: list[Any] = []
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -189,14 +177,27 @@ async def test_unknown_slash_command_falls_through(app, tmp_path):
         await pilot.pause()
 
         # Replace the streaming worker so the fall-through doesn't call a provider.
-        app._generate_response = lambda: generated.append(app.messages[-1]["content"])  # type: ignore[method-assign]
+        # It now takes the Submission the app built for the fall-through text
+        # (B2-a, docs/SUBMISSION-LIFECYCLE.md phase 3), so capture that too.
+        app._generate_response = lambda submission: generated.append(  # type: ignore[method-assign]
+            (app.messages[-1]["content"], submission)
+        )
 
         chat_input = app.query_one("#chat-input", ChatInput)
         await app.on_input_submitted(Input.Submitted(chat_input, "/nope not-a-command"))
         await pilot.pause()
 
         # Unknown command fell through to the prompt path (the text was queued to send).
-        assert generated == ["/nope not-a-command"]
+        assert len(generated) == 1
+        content, submission = generated[0]
+        assert content == "/nope not-a-command"
+        # …as an ordinary interactive submission. ``expand_commands`` is True since
+        # B2-b, and that is exactly what makes the fall-through worth pinning:
+        # dispatch is ON and the text STILL reaches the model, because an
+        # unregistered "/…" resolves to no command at all.
+        assert submission.text == "/nope not-a-command"
+        assert (submission.source, submission.submitter) == ("interactive", "human")
+        assert submission.expand_commands is True
 
 
 async def test_command_without_handler_raises(app, tmp_path):

@@ -16,6 +16,7 @@ import pytest
 
 from tau_ai.json_parse import (
     parse_json_with_repair,
+    parse_json_with_repair_info,
     parse_streaming_json,
     repair_json,
 )
@@ -28,6 +29,7 @@ from tau_ai.types import Model, TextContent, ToolCall, UserMessage
 # ──────────────────────────────────────────────────────────────────────────
 # SSE test harness (feeds aiter_lines, the way real httpx does)
 # ──────────────────────────────────────────────────────────────────────────
+
 
 class _StreamCM:
     """Async context manager mimicking ``httpx.AsyncClient.stream(...)``."""
@@ -74,9 +76,13 @@ class _FakeClient:
 
 def _model() -> Model:
     return Model(
-        id="test-model", name="test-model", api="openai-completions",
-        provider="openai", base_url="http://localhost/v1",
-        context_window=8192, max_tokens=1024,
+        id="test-model",
+        name="test-model",
+        api="openai-completions",
+        provider="openai",
+        base_url="http://localhost/v1",
+        context_window=8192,
+        max_tokens=1024,
     )
 
 
@@ -91,17 +97,50 @@ def _tool_call_chunks(calls: list[dict], *, arg_fragment: int = 4) -> list[dict]
     chunks: list[dict] = [{"id": "c", "choices": [{"delta": {"content": "ok"}}]}]
     for idx, call in enumerate(calls):
         for j, ch in enumerate(call["name"]):
-            chunks.append({"id": "c", "choices": [{"delta": {"tool_calls": [{
-                "index": idx,
-                "id": call["id"] if j == 0 else None,
-                "function": {"name": ch, "arguments": ""},
-            }]}}]})
-        args_str = call["arguments"] if isinstance(call["arguments"], str) else json.dumps(call["arguments"])
+            chunks.append(
+                {
+                    "id": "c",
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": idx,
+                                        "id": call["id"] if j == 0 else None,
+                                        "function": {"name": ch, "arguments": ""},
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                }
+            )
+        args_str = (
+            call["arguments"]
+            if isinstance(call["arguments"], str)
+            else json.dumps(call["arguments"])
+        )
         for k in range(0, len(args_str), arg_fragment):
-            chunks.append({"id": "c", "choices": [{"delta": {"tool_calls": [{
-                "index": idx,
-                "function": {"name": None, "arguments": args_str[k:k + arg_fragment]},
-            }]}}]})
+            chunks.append(
+                {
+                    "id": "c",
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": idx,
+                                        "function": {
+                                            "name": None,
+                                            "arguments": args_str[k : k + arg_fragment],
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                }
+            )
     chunks.append({"id": "c", "choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
     return chunks
 
@@ -115,12 +154,14 @@ def _run_stream(provider: OpenAICompletionsProvider, response: _FakeResponse) ->
             messages=[UserMessage(content=[TextContent(text="go")], timestamp=0)],
         )
         return [e async for e in stream]
+
     return asyncio.run(go())
 
 
 # ──────────────────────────────────────────────────────────────────────────
 # Provider streaming: the regression
 # ──────────────────────────────────────────────────────────────────────────
+
 
 def test_fragmented_arguments_accumulate_to_valid_json():
     """The exact failure case: multi-fragment arguments must concatenate."""
@@ -140,10 +181,13 @@ def test_fragmented_arguments_accumulate_to_valid_json():
 
 def test_parallel_tool_calls_routed_by_index():
     """Two calls whose argument fragments carry only `index` (no id)."""
-    chunks = _tool_call_chunks([
-        {"id": "call_a", "name": "read", "arguments": {"path": "main.py"}},
-        {"id": "call_b", "name": "bash", "arguments": {"command": "npm test"}},
-    ], arg_fragment=2)
+    chunks = _tool_call_chunks(
+        [
+            {"id": "call_a", "name": "read", "arguments": {"path": "main.py"}},
+            {"id": "call_b", "name": "bash", "arguments": {"command": "npm test"}},
+        ],
+        arg_fragment=2,
+    )
     events = _run_stream(OpenAICompletionsProvider(api_key="sk-test"), _FakeResponse(_sse(chunks)))
     done = [e for e in events if isinstance(e, DoneEvent)]
     assert len(done) == 1
@@ -177,15 +221,14 @@ def test_complete_but_invalid_final_arguments_raise_error_event():
 # adopts the provider's DoneEvent.final.
 # ──────────────────────────────────────────────────────────────────────────
 
+
 def test_stream_simple_end_to_end_tool_call(monkeypatch):
     chunks = _tool_call_chunks(
         [{"id": "call_e2e", "name": "bash", "arguments": {"command": "echo hi", "n": 3}}],
         arg_fragment=3,
     )
     resp = _FakeResponse(_sse(chunks))
-    monkeypatch.setattr(
-        OpenAICompletionsProvider, "_get_client", lambda self: _FakeClient(resp)
-    )
+    monkeypatch.setattr(OpenAICompletionsProvider, "_get_client", lambda self: _FakeClient(resp))
 
     async def go():
         stream = await stream_simple(
@@ -206,6 +249,7 @@ def test_stream_simple_end_to_end_tool_call(monkeypatch):
 # json_parse unit tests
 # ──────────────────────────────────────────────────────────────────────────
 
+
 def test_repair_json_escapes_raw_control_chars():
     raw = '{"text": "line1\nline2"}'  # raw newline inside the string literal
     with pytest.raises(json.JSONDecodeError):
@@ -218,14 +262,118 @@ def test_parse_json_with_repair_raises_on_incomplete():
         parse_json_with_repair('{"command": ')
 
 
-@pytest.mark.parametrize("partial,expected", [
-    ('{"command": "ls -l', {"command": "ls -l"}),
-    ('{"a": 1, "b": ', {"a": 1}),
-    ('{"a": 1, "b": 2}', {"a": 1, "b": 2}),
-    ('', {}),
-    ('   ', {}),
-    ('not json at all', {}),
-    ('{"nested": {"x": [1, 2', {"nested": {"x": [1, 2]}}),
-])
+@pytest.mark.parametrize(
+    "partial,expected",
+    [
+        ('{"command": "ls -l', {"command": "ls -l"}),
+        ('{"a": 1, "b": ', {"a": 1}),
+        ('{"a": 1, "b": 2}', {"a": 1, "b": 2}),
+        ("", {}),
+        ("   ", {}),
+        ("not json at all", {}),
+        ('{"nested": {"x": [1, 2', {"nested": {"x": [1, 2]}}),
+    ],
+)
 def test_parse_streaming_json_best_effort(partial, expected):
     assert parse_streaming_json(partial) == expected
+
+
+def test_parse_json_with_repair_info_clean_parse_not_repaired():
+    value, repaired = parse_json_with_repair_info('{"a": 1}')
+    assert value == {"a": 1}
+    assert repaired is False
+
+
+def test_parse_json_with_repair_info_control_char_is_repaired():
+    raw = '{"text": "line1\nline2"}'  # raw newline inside the string literal
+    value, repaired = parse_json_with_repair_info(raw)
+    assert value == {"text": "line1\nline2"}
+    assert repaired is True
+
+
+def test_parse_json_with_repair_info_garbage_raises():
+    with pytest.raises(json.JSONDecodeError):
+        parse_json_with_repair_info('{"command": ')
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# W8/G4 telemetry: llama.cpp `timings` sibling chunk + repair count on Usage
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_timings_sibling_chunk_lands_on_usage_extra():
+    """llama.cpp emits `timings` as a top-level SIBLING of `usage` on the trailing
+    chunk, whose `choices` is empty — both must be read before the empty-choices
+    guard or they (and the token counts) are silently dropped."""
+    chunks = [
+        {"id": "c", "choices": [{"delta": {"content": "hi"}}]},
+        {"id": "c", "choices": [{"delta": {}, "finish_reason": "stop"}]},
+        {
+            "id": "c",
+            "choices": [],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+            "timings": {
+                "prompt_n": 5,
+                "prompt_ms": 12.3,
+                "prompt_per_token_ms": 2.46,
+                "prompt_per_second": 406.5,
+                "predicted_n": 3,
+                "predicted_ms": 45.6,
+                "predicted_per_token_ms": 15.2,
+                "predicted_per_second": 65.8,
+            },
+        },
+    ]
+    events = _run_stream(OpenAICompletionsProvider(api_key="sk-test"), _FakeResponse(_sse(chunks)))
+    done = [e for e in events if isinstance(e, DoneEvent)]
+    assert len(done) == 1
+    final = done[0].final
+    assert final.usage.output_tokens == 3
+    assert final.usage.input_tokens == 5
+    assert final.usage.extra["timings"] == chunks[2]["timings"]
+
+
+def test_repair_counted_for_tool_call_with_control_char_in_arguments():
+    """A complete tool-arg buffer with a raw control char repairs — and the
+    repair is COUNTED (this is the complete-buffer path, not the display-only
+    partial-buffer path, where a repair is normal and uncounted)."""
+    chunks = _tool_call_chunks(
+        [{"id": "call_r", "name": "bash", "arguments": '{"command": "a\nb"}'}],
+        arg_fragment=3,
+    )
+    events = _run_stream(OpenAICompletionsProvider(api_key="sk-test"), _FakeResponse(_sse(chunks)))
+    done = [e for e in events if isinstance(e, DoneEvent)]
+    final = done[0].final
+    tcs = [c for c in final.content if isinstance(c, ToolCall)]
+    assert tcs[0].arguments == {"command": "a\nb"}
+    assert final.usage.extra["repairs"] == 1
+
+
+def test_repairs_zero_for_clean_tool_call_arguments():
+    """A tool call whose arguments needed no repair reports the real zero — the
+    interesting datum a constrained-decoding hypothesis is built on."""
+    chunks = _tool_call_chunks(
+        [{"id": "call_c", "name": "bash", "arguments": {"command": "ls"}}],
+        arg_fragment=3,
+    )
+    events = _run_stream(OpenAICompletionsProvider(api_key="sk-test"), _FakeResponse(_sse(chunks)))
+    done = [e for e in events if isinstance(e, DoneEvent)]
+    final = done[0].final
+    assert final.usage.extra["repairs"] == 0
+
+
+def test_no_repairs_key_when_message_has_no_tool_calls():
+    """A plain text completion has no tool-arg buffer to measure — `repairs`
+    must be ABSENT, not a fabricated 0 (Fail-Early: no lie by omission-of-context)."""
+    chunks = [
+        {"id": "c", "choices": [{"delta": {"content": "hi"}}]},
+        {
+            "id": "c",
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        },
+    ]
+    events = _run_stream(OpenAICompletionsProvider(api_key="sk-test"), _FakeResponse(_sse(chunks)))
+    done = [e for e in events if isinstance(e, DoneEvent)]
+    final = done[0].final
+    assert "repairs" not in final.usage.extra

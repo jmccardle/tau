@@ -2,3 +2,13 @@ __pycache__
 venv
 .tau
 tau-*.tar.gz
+
+# build artifacts from package.sh
+tau-*/build/
+
+# setuptools regenerates these on every `pip install -e`, so a tracked copy is
+# a diff on every machine that installs the repo and never a diff anyone reads.
+*.egg-info/
+
+# pytest-cov database
+.coverage

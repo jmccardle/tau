@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import tau_coding_agent.session_store as store
 from tau_coding_agent.cli import CLIArgs
@@ -27,7 +28,7 @@ from tau_coding_agent.session_store import Session, list_sessions
 
 # An extension that notifies on session_start AND from a /ping command handler (which
 # also returns a report string, so the command_output channel fires too).
-_NOTIFY_EXT = '''
+_NOTIFY_EXT = """
 def register(api):
     def _on_start(event, ctx):
         api.ui.notify("started", "info")
@@ -38,7 +39,7 @@ def register(api):
 
     api.on("session_start", _on_start)
     api.register_command("ping", {"description": "ping", "handler": _ping})
-'''
+"""
 
 
 def _config() -> dict:
@@ -133,7 +134,7 @@ async def test_extension_records_are_display_only_not_persisted(monkeypatch, tmp
     infos = list_sessions(cwd=os.getcwd())
     assert infos, "the run should have created a persisted session"
     for info in infos:
-        session = Session.load(info.path)
+        session = Session.load(Path(info.ref))
         for msg in session.context:
             content = str(msg.get("content", ""))
             assert "started" not in content

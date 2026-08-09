@@ -324,9 +324,33 @@ async def test_next_turn_lands_on_the_next_prompt() -> None:
 
 
 async def test_queue_message_rejects_unknown_deliver_as() -> None:
-    """The session-side seam validates deliver_as (Fail-Early, no silent drop)."""
+    """The session-side seam validates deliver_as (Fail-Early, no silent drop).
+
+    ``"steer"`` used to be the unknown value here; phase 4 made it real, so the
+    unknown case needs a name the queue genuinely does not have.
+    """
     session = _make_session()
     with pytest.raises(ValueError, match="followUp"):
-        session._queue_message("x", deliver_as="steer")
+        session._queue_message("x", deliver_as="whenever")
     assert session._pending_follow_up_messages == []
     assert session._pending_next_turn_messages == []
+    assert session._pending_steer_messages == []
+
+
+async def test_queue_message_steer_lands_on_the_steering_queue() -> None:
+    """``deliver_as="steer"`` is the seam an in-turn hook uses (phase 4).
+
+    ``submit()`` refuses a call from the in-flight turn's own asyncio task, so
+    this — not ``ctx.submit()`` — is how a hook steers the turn it is running
+    inside. It queues a real ``UserMessage`` (the loop appends it straight into
+    its running context), and touches neither of the other two queues.
+    """
+    session = _make_session()
+    session._queue_message("turn left", deliver_as="steer")
+
+    assert session._pending_follow_up_messages == []
+    assert session._pending_next_turn_messages == []
+    assert len(session._pending_steer_messages) == 1
+    queued = session._pending_steer_messages[0]
+    assert queued.role == "user"
+    assert queued.content[0].text == "turn left"

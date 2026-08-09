@@ -14,19 +14,29 @@ This module provides:
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import inspect
 import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from tau_ai.types import Model
 
 from tau_agent_core.agent_session import AgentSession
+from tau_agent_core.compaction_policy import CompactionPolicy
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.session_log import InMemorySessionLog, SessionLog
+from tau_agent_core.tools.base import AgentTool, ToolDefinition
+from tau_agent_core.tools.bash import BashTool
+from tau_agent_core.tools.edit import EditTool
+from tau_agent_core.tools.find import FindTool
+from tau_agent_core.tools.grep import GrepTool
+from tau_agent_core.tools.ls import LsTool
+from tau_agent_core.tools.read import ReadTool
+from tau_agent_core.tools.write import WriteTool
 
 
 # ─── Default model definitions ───────────────────────────────────────
@@ -99,56 +109,127 @@ def resolve_model(
     )
 
 
-def _resolve_tools(tool_names: list[str] | None) -> list:
-    """Resolve tool names to tool instances.
+# The seven built-in tool classes, imported statically and mapped by name.
+#
+# This replaced a `{name: (module_name, class_name)}` table walked with
+# `getattr(tools_pkg, …)` + `__import__` (B1). The dynamic form bought nothing at
+# runtime — `tau_agent_core.tools.__init__` already imports all seven eagerly, so
+# both arms resolved the same already-loaded classes — while costing the whole
+# point of this task: `getattr` returns `Any`, so mypy could not see what
+# `_resolve_tools` was building and could not check its own return annotation.
+# Measured, not assumed: with the dynamic form in place, reverting the AgentTool
+# wrap below to a bare `tool_objs.append(tool_obj)` left the gate reporting
+# "Success: no issues found in 68 source files". Static imports make that
+# reversion an error, which is the difference between an annotation mypy enforces
+# and one it merely records.
+#
+# The union type is spelled out rather than hidden behind `type` or a Protocol so
+# the checked edge is a real one: `dict[str, type]` re-erases to `Any` and puts us
+# back where we started.
+_BuiltinToolClass = (
+    type[ReadTool]
+    | type[WriteTool]
+    | type[EditTool]
+    | type[BashTool]
+    | type[LsTool]
+    | type[GrepTool]
+    | type[FindTool]
+)
 
-    Tool instances must have .name, .label, .description, .parameters,
-    and .execute attributes.
+_BUILTIN_TOOL_CLASSES: dict[str, _BuiltinToolClass] = {
+    "read": ReadTool,
+    "write": WriteTool,
+    "edit": EditTool,
+    "bash": BashTool,
+    "ls": LsTool,
+    "grep": GrepTool,
+    "find": FindTool,
+}
+
+
+def _resolve_tools(tool_names: list[str] | None) -> list[AgentTool]:
+    """Resolve tool names to :class:`AgentTool` instances.
+
+    **The registry holds exactly one type (B1).** This function used to return the
+    raw built-in classes (``ReadTool()``, ``BashTool()``, …) while extension tools
+    arrived as :class:`AgentTool` from
+    :meth:`AgentSession._resolve_extension_tools`, so ``AgentLoop._tools`` —
+    annotated ``dict[str, AgentTool]`` — actually held two unrelated shapes. mypy had
+    no typed edge to check across (``AgentSession.__init__`` took a bare ``list``),
+    which is why a green type gate and a green suite both reported success over
+    `tau-001`'s ``.definition.execution_mode`` read that crashed on every built-in
+    tool call. A gate reporting success over something it cannot see is the defect
+    this normalisation removes: the annotation is now true rather than aspirational.
+
+    Each built-in class carries ``name`` / ``label`` / ``description`` /
+    ``parameters`` / ``execution_mode`` as plain class attributes and an
+    ``async def execute(tool_call_id, args, signal=None, on_update=None)``. Those are
+    copied verbatim into a :class:`ToolDefinition`; nothing is defaulted, invented, or
+    inferred, and ``execute`` is the instance's own bound method, so the object the
+    loop awaits is unchanged.
+
+    ``prompt_snippet`` is set to ``f"{name}: {label}"``, which is exactly the string
+    :func:`_build_system_prompt` used to compute in its now-deleted raw-tool branch.
+    Moving it to construction time keeps the rendered system prompt byte-identical
+    while letting the renderer become a single uniform loop — the alternative
+    (leaving it ``None`` and having the renderer fall back) would have silently
+    dropped every built-in from the "Available tools" list.
+
+    **Built-in names only, and no fallback (NODE-ADDRESSABLE-AGENTS.md W5).** An
+    unrecognised name raises ``ValueError`` rather than being skipped or guessed
+    at, and that is deliberate — a session that quietly starts without the tool
+    the caller asked for is the failure this repo's Fail-Early rule exists to
+    prevent. What W5 says was missing is not a fallback but the POINTER, so:
+    **a custom tool does not come through here.** It goes to one of two places,
+    both of which already exist:
+
+    - :class:`~tau_agent_core.agent_session.AgentSession`'s own ``tools=``
+      constructor parameter, which takes :class:`AgentTool` OBJECTS directly (it
+      is the same list this function returns — ``create_agent_session`` merely
+      resolves names into it). An SDK caller who wants both built-ins and a custom
+      tool can call this function for the names and concatenate.
+    - an **extension**, via ``ExtensionAPI.register_tool`` (a plain-dict pi
+      ``ToolDefinition``) — the route for a tool that should arrive with a loaded
+      extension rather than be wired by the embedder. Those become
+      :class:`AgentTool` separately, in
+      ``AgentSession._resolve_extension_tools``, and are merged into the loop's
+      tools each turn.
+
+    Neither route is a workaround for this one; they are the surfaces that take
+    objects, while this one takes names.
 
     Args:
-        tool_names: List of tool name strings (e.g., ["read", "bash"]).
+        tool_names: List of BUILT-IN tool name strings (e.g., ["read", "bash"]).
 
     Returns:
-        List of tool instances (AgentTool or raw tool class).
+        List of :class:`AgentTool` — one per requested name, in request order.
 
     Raises:
-        ValueError: If a tool name is not recognized.
+        ValueError: If a tool name is not a built-in (see above for where custom
+            :class:`AgentTool` objects go instead).
     """
     if not tool_names:
         return []
 
-    # Import the tools package to get access to built-in tools
-    import tau_agent_core.tools as tools_pkg
-
-    # Map of tool name to (module, class_name) for dynamic import
-    tool_classes = {
-        "read": ("read", "ReadTool"),
-        "write": ("write", "WriteTool"),
-        "edit": ("edit", "EditTool"),
-        "bash": ("bash", "BashTool"),
-        "ls": ("ls", "LsTool"),
-        "grep": ("grep", "GrepTool"),
-        "find": ("find", "FindTool"),
-    }
-
-    tool_objs: list = []
+    tool_objs: list[AgentTool] = []
     for name in tool_names:
-        if name not in tool_classes:
+        if name not in _BUILTIN_TOOL_CLASSES:
             raise ValueError(f"Unknown tool: {name}")
 
-        mod_name, class_name = tool_classes[name]
-        mod = getattr(tools_pkg, mod_name, None)
-        if mod is None:
-            mod = __import__(
-                f"tau_agent_core.tools.{mod_name}",
-                fromlist=[class_name],
+        tool_obj = _BUILTIN_TOOL_CLASSES[name]()
+        tool_objs.append(
+            AgentTool(
+                definition=ToolDefinition(
+                    name=tool_obj.name,
+                    label=tool_obj.label,
+                    description=tool_obj.description,
+                    parameters=tool_obj.parameters,
+                    execute=tool_obj.execute,
+                    prompt_snippet=f"{tool_obj.name}: {tool_obj.label}",
+                    execution_mode=tool_obj.execution_mode,
+                )
             )
-        cls = getattr(mod, class_name, None)
-        if cls is None:
-            raise ValueError(f"Unknown tool: {name}")
-
-        tool_obj = cls()
-        tool_objs.append(tool_obj)
+        )
 
     return tool_objs
 
@@ -177,6 +258,35 @@ _GLOBAL_EXTENSIONS_DIR = "~/.tau/extensions"
 # may be re-loaded; distinct names avoid clobbering sys.modules entries).
 _ext_load_counter = 0
 
+#: The two module-level attributes an extension file uses to declare itself
+#: bus-touching (H7/H8, SIM_SPEC_v2 §16.6/§16.10). Deliberately module-level
+#: rather than an ``api.declare_subjects(...)`` call made from inside
+#: ``register(api)``: H8 requires the capability be checked BEFORE the
+#: extension runs, and the only thing readable before ``register(api)`` is
+#: invoked is what the module set at import time — mirroring how ``register``
+#: itself is already a required module-level attribute this loader checks.
+_TOUCHES_BUS_ATTR = "TOUCHES_BUS"
+_SUBJECTS_ATTR = "SUBJECTS"
+
+
+class ExtensionCapabilityError(Exception):
+    """A bus-touching extension's declaration is missing or cannot be honoured.
+
+    Raised at the factory, before ``register(api)`` runs (H8: "refuse rather
+    than discover"). Two distinct causes share this type because both are the
+    same failure — a declaration nobody validated — one at the writing end
+    and one at the checking end:
+
+    - the module sets ``TOUCHES_BUS = True`` but ``SUBJECTS`` is absent, empty,
+      or not a sequence of non-empty strings (H7: "a silent omission is a load
+      error rather than a hole in the diff");
+    - the module declares ``TOUCHES_BUS = True`` and valid ``SUBJECTS``, but the
+      session it is loading into has no bus transport
+      (``bus_available=False``) — a declared capability the session cannot
+      back, refused rather than loaded and left to fail silently the first
+      time a handler reaches for a bus it does not have.
+    """
+
 
 @dataclass
 class LoadedExtension:
@@ -185,11 +295,24 @@ class LoadedExtension:
     Narrowed port of pi's ``Extension`` record (coding-agent types.ts:1577) to
     what S1 needs: the source ``path``, the module-level ``register`` factory
     that was invoked, and the ``ExtensionAPI`` it registered against.
+
+    ``content_hash``, ``subjects`` and ``touches_bus`` are H7/H8's addition
+    (SIM_SPEC_v2 §16.6/§16.10): the file's identity at load time, and its
+    declared bus subjects, if any. ``content_hash`` is a sha256 of the exact
+    bytes compiled — the same source read used to ``exec`` the module — so two
+    loads of the same path at different contents produce different hashes and
+    are never mistaken for one condition (the pattern §15.1's ``producer``,
+    ``Trace.arm``, and H5's compaction policy already established for this
+    program: a configuration that changes what a number means is a mandatory
+    partition key).
     """
 
     path: str
     register: Callable[..., Any]
     api: ExtensionAPI
+    content_hash: str = ""
+    subjects: tuple[str, ...] = ()
+    touches_bus: bool = False
 
 
 @dataclass
@@ -220,6 +343,12 @@ class ExtensionInfo:
     display ``name``, source ``path``, and the ``tools`` / ``commands`` /
     ``shortcuts`` / ``hooks`` it registered — everything the palette listing shows
     for a loaded extension (shortcuts E10 §6 / S69).
+
+    ``content_hash`` and ``subjects`` are H7's addition (SIM_SPEC_v2 §16.6): the
+    file's identity at load time and its declared bus subjects (``()`` for an
+    extension that does not touch the bus). This is the pair
+    :func:`~tau_agent_core.run_manifest.build_run_manifest` emits into
+    ``manifest.json`` beside ``harness`` and ``compaction``.
     """
 
     name: str
@@ -228,6 +357,8 @@ class ExtensionInfo:
     commands: list[str]
     shortcuts: list[str]
     hooks: list[str]
+    content_hash: str = ""
+    subjects: tuple[str, ...] = ()
 
 
 def summarize_extensions(result: LoadExtensionsResult) -> list[ExtensionInfo]:
@@ -261,6 +392,8 @@ def summarize_extensions(result: LoadExtensionsResult) -> list[ExtensionInfo]:
                 commands=list(bucket.commands),
                 shortcuts=list(bucket.shortcuts),
                 hooks=sorted(bucket.handlers.keys()),
+                content_hash=ext.content_hash,
+                subjects=ext.subjects,
             )
         )
     return infos
@@ -310,6 +443,8 @@ def _standalone_api_factory(path: str) -> ExtensionAPI:
 async def _load_one_extension(
     path: Path,
     api_factory: Callable[[str], ExtensionAPI],
+    *,
+    bus_available: bool = False,
 ) -> LoadedExtension:
     """Import one extension module and invoke its ``register(api)``.
 
@@ -317,9 +452,22 @@ async def _load_one_extension(
     the module-level ``register`` callable, invokes ``register(api)``, and
     awaits the result when ``register`` is a coroutine function.
 
+    H7/H8 (SIM_SPEC_v2 §16.6/§16.10) run BEFORE ``register`` is looked up: an
+    extension declares itself bus-touching via two module-level attributes,
+    ``TOUCHES_BUS = True`` and ``SUBJECTS = (...)`` — checkable at this point
+    because they are set at import time, unlike anything a running
+    ``register(api)`` might do. ``TOUCHES_BUS`` with no non-empty ``SUBJECTS``
+    is refused (H7: a silent omission must be a load error, not a hole in the
+    diff). ``TOUCHES_BUS`` with valid ``SUBJECTS`` but ``bus_available=False``
+    is refused too (H8: a declared capability the session cannot back is
+    refused at the factory, not discovered later inside a handler that reaches
+    for a bus that isn't there). Both raise :class:`ExtensionCapabilityError`
+    and neither calls ``register`` — "refuse rather than discover" means the
+    extension's side effects never begin.
+
     Raises on any failure (missing file/spec, missing or non-callable
-    ``register``, or an exception raised by ``register``); the caller applies
-    the explicit-vs-discovered error policy.
+    ``register``, an unmet H7/H8 declaration, or an exception raised by
+    ``register``); the caller applies the explicit-vs-discovered error policy.
     """
     global _ext_load_counter
 
@@ -362,10 +510,43 @@ async def _load_one_extension(
         sys.modules.pop(module_name, None)
         raise
 
+    # Content identity (H7): a sha256 of the exact bytes just compiled, so a
+    # reload of the same path after an on-disk edit is provably a different
+    # condition rather than the same label reused (see LoadedExtension).
+    content_hash = hashlib.sha256(source).hexdigest()
+
+    # The declared-capability preflight (H7/H8), BEFORE register is even looked
+    # up — see the docstring. sys.modules is cleaned up on refusal for the same
+    # reason the except above cleans it up: don't leave a half-admitted module
+    # behind for a later import to trip over.
+    touches_bus = bool(getattr(module, _TOUCHES_BUS_ATTR, False))
+    raw_subjects = getattr(module, _SUBJECTS_ATTR, ())
+    subjects: tuple[str, ...] = ()
+    if touches_bus:
+        subjects = tuple(raw_subjects) if isinstance(raw_subjects, (list, tuple)) else ()
+        if not subjects or not all(isinstance(s, str) and s for s in subjects):
+            sys.modules.pop(module_name, None)
+            raise ExtensionCapabilityError(
+                f"{path} sets {_TOUCHES_BUS_ATTR} = True but {_SUBJECTS_ATTR} is "
+                f"{raw_subjects!r}, not a non-empty sequence of non-empty subject "
+                "strings. An extension that touches the bus must declare which "
+                "subjects (H7) — 'leave it unset' is not admissible."
+            )
+        if not bus_available:
+            sys.modules.pop(module_name, None)
+            raise ExtensionCapabilityError(
+                f"{path} declares {_TOUCHES_BUS_ATTR} = True with subjects "
+                f"{subjects!r}, but this session has no bus transport "
+                "(bus_available=False). Refusing to load rather than admitting an "
+                "extension whose declared capability the session cannot back (H8)."
+            )
+
     register = getattr(module, "register", None)
     if register is None:
+        sys.modules.pop(module_name, None)
         raise AttributeError(f"{path} has no register(api) function")
     if not callable(register):
+        sys.modules.pop(module_name, None)
         raise TypeError(f"{path} register is not callable")
 
     # Path-aware (S24): the factory keys each extension's api to its real file
@@ -375,7 +556,14 @@ async def _load_one_extension(
     if inspect.isawaitable(outcome):
         await outcome
 
-    return LoadedExtension(path=str(path), register=register, api=api)
+    return LoadedExtension(
+        path=str(path),
+        register=register,
+        api=api,
+        content_hash=content_hash,
+        subjects=subjects,
+        touches_bus=touches_bus,
+    )
 
 
 async def _load_extensions(
@@ -385,6 +573,7 @@ async def _load_extensions(
     user_dir: str | None = None,
     api_factory: Callable[[str], ExtensionAPI] | None = None,
     collect_explicit_errors: bool = False,
+    bus_available: bool = False,
 ) -> LoadExtensionsResult:
     """Discover, import, and invoke ``register(api)`` for every extension.
 
@@ -416,6 +605,12 @@ async def _load_extensions(
             docs/EXTENSIONS-DEMO-ROADMAP.md): a launched Textual session can't
             cleanly abort mid-load, and dropping the partial result left
             ``/extensions`` empty while the good extensions' tools kept working.
+        bus_available: Whether this load's session has a bus transport (H8,
+            SIM_SPEC_v2 §16.10). Threaded to every :func:`_load_one_extension`
+            call; an extension that declares ``TOUCHES_BUS = True`` is refused
+            with :class:`ExtensionCapabilityError` when this is ``False``
+            (default) — no bus wiring exists yet anywhere in this package, so
+            the safe default is "no extension gets to claim it".
 
     Returns:
         ``LoadExtensionsResult`` with the loaded extensions and any load errors
@@ -452,7 +647,7 @@ async def _load_extensions(
 
     for path, is_explicit in work:
         try:
-            loaded = await _load_one_extension(path, api_factory)
+            loaded = await _load_one_extension(path, api_factory, bus_available=bus_available)
         except Exception as exc:
             if is_explicit and not collect_explicit_errors:
                 # Fail-Early: the user named this path — surfacing it silently
@@ -476,7 +671,7 @@ async def _load_extensions(
 
 def _build_system_prompt(
     cwd: str | None = None,
-    tools: list | None = None,
+    tools: list[AgentTool] | None = None,
 ) -> str:
     """Build system prompt from context files and tool definitions.
 
@@ -488,7 +683,7 @@ def _build_system_prompt(
 
     Args:
         cwd: Current working directory.
-        tools: List of tool instances (AgentTool or raw tool class).
+        tools: List of :class:`AgentTool` (one shape — see :func:`_resolve_tools`).
 
     Returns:
         Complete system prompt string.
@@ -518,21 +713,18 @@ def _build_system_prompt(
         lines.append("Additional instructions from .tau/SYSTEM.md:")
         lines.append(system_md.read_text(encoding="utf-8", errors="replace"))
 
-    # Add tool definitions (handles both AgentTool and raw tool classes)
+    # Add tool definitions. One shape, one branch (B1): the former
+    # `hasattr(tool, "definition")` fork existed only because the built-ins arrived
+    # as raw classes. Its raw arm computed `f"{tool.name}: {tool.label}"`, which
+    # `_resolve_tools` now writes into `prompt_snippet` at construction — so this
+    # renders byte-identically to the two-branch version for both tool sources.
     if tools:
         lines.append("")
         lines.append("---")
         lines.append("Available tools:")
         for tool in tools:
-            # Handle both AgentTool (has .definition) and raw tools (has .label)
-            if hasattr(tool, "definition"):
-                # AgentTool
-                snippet = tool.definition.prompt_snippet
-                guidelines = tool.definition.prompt_guidelines
-            else:
-                # Raw tool class (ReadTool, BashTool, etc.)
-                snippet = f"{tool.name}: {getattr(tool, 'label', tool.name)}"
-                guidelines = None
+            snippet = tool.definition.prompt_snippet
+            guidelines = tool.definition.prompt_guidelines
 
             if snippet:
                 lines.append(f"- {snippet}")
@@ -554,7 +746,9 @@ def create_agent_session(
     system_prompt: str | None = None,
     thinking_level: str = "off",
     cwd: str | None = None,
-    settings: dict | None = None,
+    tool_execution_mode: Literal["sequential", "parallel"] = "parallel",
+    compaction_policy: CompactionPolicy | None = None,
+    bus_available: bool = False,
 ) -> AgentSession:
     """Create an AgentSession with all defaults.
 
@@ -563,14 +757,36 @@ def create_agent_session(
     - Tool discovery (string names → AgentTool objects)
     - Extension registration (inline factory callables invoked at construction)
     - System prompt building (from AGENTS.md, .tau/SYSTEM.md)
-    - Settings loading (from ~/.tau/settings.json)
+
+    It does NOT load ``~/.tau/settings.json``. Nothing in any package reads
+    ``Settings`` outside tests; every value this factory uses is either passed
+    in by the caller or defaulted here.
+
+    There is deliberately **no** ``settings`` parameter (B5). One was accepted here
+    and never read — a caller passing ``settings={...}`` got a session that ignored
+    it and looked fine, which is the same "declared and not consulted" failure H1
+    fixed for ``execution_mode``, and pi's agent package has no ``settings`` concept
+    to port from. It is removed rather than made to raise, because a parameter whose
+    only behaviour is rejection still advertises a capability that does not exist;
+    an unexpected-keyword ``TypeError`` says the true thing. Deciding what such a
+    dict would *mean* — how it composes with the ``~/.tau/config.json`` the CLI and
+    TUI actually read — is the config-precedence design question (B2) and is not
+    settled here.
 
     Args:
         model: Model identifier string or Model object (default: "gpt-4o").
         provider: Provider name for model resolution (default: "openai").
         base_url: Optional custom API base URL.
         api_key: Optional API key.
-        tools: List of tool name strings (e.g., ["read", "bash"]).
+        tools: List of BUILT-IN tool name strings (e.g., ["read", "bash"]),
+            resolved by :func:`_resolve_tools`, which raises ``ValueError`` on any
+            name it does not recognize (NODE-ADDRESSABLE-AGENTS.md §5/W5). This
+            parameter does not accept :class:`~tau_agent_core.tools.base.AgentTool`
+            instances and gains no fallback that does — a custom tool must go
+            through the :class:`~tau_agent_core.agent_session.AgentSession`
+            constructor's ``tools=`` directly, or be registered by an extension
+            (``ExtensionAPI`` tool registration, loaded via ``extensions=``/
+            ``load_extensions``).
         session_log: Optional SessionLog to persist through (the coding-agent's
             file Session on the live path). Defaults to an in-memory log.
         extensions: List of extension factory callables.
@@ -579,7 +795,26 @@ def create_agent_session(
             "high", "xhigh"). A non-"off" level marks the model reasoning-capable
             and is forwarded to the provider as `reasoning_effort`.
         cwd: Current working directory.
-        settings: Optional settings dict.
+        tool_execution_mode: Batch-level tool execution policy ("sequential" or
+            "parallel", default "parallel") forwarded to AgentSession, which
+            threads it into every AgentLoopConfig the session builds. A tool
+            declaring a per-tool "sequential" execution_mode still forces its
+            batch to run sequentially regardless of this setting.
+        compaction_policy: Optional declared
+            :class:`~tau_agent_core.compaction_policy.CompactionPolicy` (H5,
+            SIM_SPEC_v2 §16.8). ``None`` — the default — is the shipped behaviour:
+            auto-compaction on, summarising through this session's own model. A
+            MEASUREMENT run declares one, because a compaction is a model call at
+            the tail of a prompt and an undeclared one lands inside §5.2's headline
+            latency number and on the far side of §11.1's partition. Declaring a
+            policy never makes compaction quieter — it adds construction-time and
+            runtime checks that raise.
+        bus_available: Whether this session has a bus transport a loaded
+            extension may declare against (H8, SIM_SPEC_v2 §16.10). ``False``
+            — the default — refuses to load any file extension that declares
+            ``TOUCHES_BUS = True`` (see :func:`_load_one_extension`); no NATS
+            wiring exists in this package yet (tau-007), so there is nothing
+            to back that capability with until a caller sets this ``True``.
 
     Returns:
         Fully configured AgentSession instance.
@@ -627,4 +862,7 @@ def create_agent_session(
         extensions=ext_factories,
         api_key=api_key,
         reasoning=reasoning_arg,
+        compaction_policy=compaction_policy,
+        tool_execution_mode=tool_execution_mode,
+        bus_available=bus_available,
     )

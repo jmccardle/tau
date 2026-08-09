@@ -67,12 +67,44 @@ class ExtensionRegistry:
         self._active_tools: set[str] | None = None  # None = all active
 
     def register_tool(self, definition: dict) -> None:
-        """Register a tool definition."""
+        """Register a tool definition. A duplicate name **raises** (H3).
+
+        This used to log a warning and overwrite. Last-write-wins with no signal is
+        the failure to close: this registry is one flat, unattributed map shared by
+        every loaded extension, so which of two same-named tools survives is decided
+        by the order the extension files happened to import. A scenario's behaviour
+        then becomes a function of module loading — a §7.1.1 determinism break that
+        does not present here at all, but as a flaky assertion in whatever subsystem
+        ends up calling the wrong implementation. A warning on stderr is not a signal
+        anything acts on; refusing the registration is.
+
+        **Deliberate divergence from pi, stated because it is one.** pi never errors
+        on this and never warns: each extension owns its own ``tools`` Map
+        (``coding-agent/src/core/extensions/loader.ts:192-198`` — ``Map.set``, so
+        silent last-wins *within* one extension), and cross-extension collisions are
+        resolved silently *first*-wins when the maps are merged
+        (``runner.ts:417-428``, ``if (!toolsByName.has(...))``). τ has no per-extension
+        map to merge — the structure that lets pi answer the question quietly does not
+        exist here — so τ answers it loudly instead. Note this also replaces τ's own
+        previous divergence: warn-and-*last*-wins was already the opposite of pi's
+        silent-*first*-wins.
+
+        Reload is unaffected: :meth:`AgentSession.reload_extension` calls
+        ``_unregister_bucket`` (which drives :meth:`unregister_tool` over the old
+        bucket's names) *before* re-importing and re-registering, so an extension
+        never collides with its own previous incarnation. A raise here therefore means
+        a genuine conflict with a *different* currently-active extension.
+
+        Raises:
+            ValueError: if a tool of this name is already registered.
+        """
         name = definition["name"]
         if name in self._tools:
-            import logging
-
-            logging.warning(f"Tool '{name}' already registered, overwriting")
+            raise ValueError(
+                f"Tool '{name}' is already registered. Two tools cannot share a name: "
+                "which one survived would depend on extension load order. Rename one, "
+                "or call unregister_tool() first if replacement is intended."
+            )
         self._tools[name] = definition
 
     def get_all_tools(self) -> list[ToolInfo]:
@@ -104,8 +136,12 @@ class ExtensionRegistry:
 
         Idempotent: a name that is not present is a no-op (the caller — the session's
         disable/reload path — drives this from a bucket's recorded tool names, so a
-        double-disable or a name a later extension overwrote is not an error). This is
-        removal of a real prior registration, NOT fabricating absent data.
+        double-disable is not an error). This is removal of a real prior registration,
+        NOT fabricating absent data.
+
+        The former "or a name a later extension overwrote" case no longer exists:
+        :meth:`register_tool` refuses a duplicate rather than overwriting (H3), so a
+        bucket's recorded names can only ever be its own.
         """
         self._tools.pop(name, None)
 
@@ -133,9 +169,17 @@ class ExtensionRegistry:
         extension can never clobber a core global binding). ``shortcut`` carries
         the ``command`` name to dispatch (plus optional ``args``/``description``).
 
-        Last-wins on a duplicate tail key (two extensions binding the same chord),
-        mirroring :meth:`register_tool`'s warn-and-overwrite — a namespace collision
-        is an environment fact, not one extension's construction bug.
+        Last-wins on a duplicate tail key (two extensions binding the same chord) — a
+        namespace collision is an environment fact, not one extension's construction
+        bug.
+
+        **This no longer mirrors** :meth:`register_tool`, which now raises (H3); the
+        cross-reference is corrected rather than the behaviour changed, because a key
+        binding and a tool name are not the same stake. A shadowed chord costs the
+        user one keystroke they can re-issue; a shadowed tool name silently changes
+        what the *model* executes. Whether shortcuts should raise too is a real
+        question and deliberately not decided here — `tau-004` scoped H3 to the two
+        tool-registration sites.
         """
         if key in self._shortcuts:
             import logging

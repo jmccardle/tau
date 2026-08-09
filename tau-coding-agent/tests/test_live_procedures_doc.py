@@ -39,7 +39,6 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-import pytest
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree

@@ -16,12 +16,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from tau_ai.models import EXTENDED_THINKING_LEVELS
+from tau_coding_agent.config import TAU_DIR, ConfigError, load_config
 from tau_coding_agent.headless import (
     CLIError,
     parse_ext_config_overrides,
@@ -29,8 +28,7 @@ from tau_coding_agent.headless import (
     run_print,
 )
 
-# τ data dir / config (matches app.py's TAU_DIR).
-TAU_DIR = Path.home() / ".tau"
+__all__ = ["TAU_DIR", "load_config", "main"]
 
 
 def _version() -> str:
@@ -59,6 +57,10 @@ class CLIArgs:
     # the headless run config; the loader/registry consumers land in E1 (S3+).
     extensions: list[str] = field(default_factory=list)  # --extension/-e (repeatable path)
     no_extensions: bool = False  # -ne → suppress DISCOVERY only; explicit -e still load
+    # --bus (H8): declares that this run may reach a message bus, so an extension
+    # declaring TOUCHES_BUS is allowed to load. A capability grant, not a
+    # connection — the broker URL is per-extension config.
+    bus: bool = False
     exclude_tools: str | None = None  # -xt → comma-separated tool denylist
     no_builtin_tools: bool = False  # -nbt → (degenerates to --no-tools until E1)
     no_session: bool = False  # --no-session → ephemeral, unpersisted run
@@ -80,6 +82,24 @@ class CLIArgs:
     session: str | None = None  # --session REF → specific session (path|stem)
     fork: str | None = None  # --fork REF → fork a session into a new one
     name: str | None = None  # --name/-n → session display title
+    # Session store backend (W12): --store file|jmfts overrides config.json
+    # "session_store.backend" for this run only. None → let config decide (default
+    # "file"). docs/JMFTS-INTEGRATION-PLAN.md §3.1.
+    store: str | None = None
+    # --session-dir DIR (pi args.ts:112, docs/CLI-PLAN.md §3 "Secondary"): the
+    # file store's base directory, i.e. seam 1's `base_dir`. None → each mode's
+    # own default: ~/.tau/sessions for the TUI and --print, <tmp>/.tau-<uid>/sessions
+    # for --mode rpc (unit S / docs/RPC-TIER-B.md D-6 — an RPC host spawning τ
+    # per request must not fill the human's session list, and must not steal
+    # their `--continue`). Unlike --name/--store this is NOT rejected under
+    # --mode rpc: it is precisely the flag a host uses to opt back INTO the
+    # user's session list.
+    session_dir: str | None = None
+    # One-shot JMFTS import/export commands (W12 §"Expose the importer"). Neither
+    # combines with --print/messages/session-continuation flags — each runs the
+    # requested round-trip and exits, independent of the agent loop entirely.
+    import_session: str | None = None  # --import-session PATH
+    export_session: list[str] | None = None  # --export-session REF PATH (nargs=2)
     verbose: bool = False
 
     @property
@@ -106,8 +126,14 @@ def build_parser() -> argparse.ArgumentParser:
             "  tau --thinking high         # TUI, request high reasoning effort\n"
             '  tau -p -c "and then?"       # continue the most recent session\n'
             '  tau -p --session 17188 "go" # resume a session by filename stem\n'
+            '  tau -p --store jmfts "hi"   # headless turn persisted to JMFTS\n'
+            "  tau --import-session x.jsonl        # copy a file session into JMFTS\n"
+            "  tau --export-session 42 x.jsonl     # copy JMFTS doc 42 to a file\n"
+            "  tau --mode rpc --model gpt-4o       # JSON-RPC 2.0 server over stdio\n"
             "\n"
-            "--resume (interactive picker) is available in the TUI, not headlessly."
+            "--resume (interactive picker) is available in the TUI, not headlessly.\n"
+            "--mode rpc runs a persistent protocol server (docs/REMOTE-CONTROL.md); "
+            "it does not combine with --print."
         ),
     )
     parser.add_argument("--version", "-v", action="version", version=f"tau {_version()}")
@@ -125,9 +151,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mode",
-        choices=["text", "json"],
+        choices=["text", "json", "rpc"],
         default="text",
-        help="headless output format: text transcript (default) or JSONL events",
+        help=(
+            "headless output format: text transcript (default) or JSONL events; "
+            "'rpc' runs a persistent JSON-RPC 2.0 server over stdio instead "
+            "(docs/REMOTE-CONTROL.md) and does not combine with --print"
+        ),
     )
     parser.add_argument(
         "--model",
@@ -169,6 +199,21 @@ def build_parser() -> argparse.ArgumentParser:
         dest="no_extensions",
         action="store_true",
         help="disable extension DISCOVERY (explicit --extension paths still load)",
+    )
+    # H8's capability declaration, reaching the console. `bus_available` was a
+    # `create_agent_session` parameter that NOTHING in this package set, so the
+    # loader refused every TOUCHES_BUS extension in the TUI and in print mode —
+    # only a hand-written script could load one. This is the allowance, stated
+    # by the operator rather than inferred: it says "this run may reach a message
+    # bus", not "connect to one" (the URL is per-extension config).
+    parser.add_argument(
+        "--bus",
+        dest="bus",
+        action="store_true",
+        help=(
+            "declare that this run may reach a message bus, so extensions "
+            "declaring TOUCHES_BUS are allowed to load (e.g. nats_bus)"
+        ),
     )
     parser.add_argument(
         "--exclude-tools",
@@ -265,6 +310,38 @@ def build_parser() -> argparse.ArgumentParser:
         "(requires a reasoning-capable model)",
     )
     parser.add_argument(
+        "--store",
+        default=None,
+        choices=["file", "jmfts"],
+        help="session store backend for this run, overriding ~/.tau/config.json "
+        '"session_store.backend" (default: file)',
+    )
+    parser.add_argument(
+        "--session-dir",
+        dest="session_dir",
+        default=None,
+        metavar="DIR",
+        help="store sessions under DIR instead of the default location "
+        "(~/.tau/sessions for the TUI and --print; a private <tmp>/.tau-<uid>/sessions "
+        "for --mode rpc, so an RPC host does not fill your session list). "
+        "File store only — it has no meaning for --store jmfts",
+    )
+    parser.add_argument(
+        "--import-session",
+        dest="import_session",
+        default=None,
+        metavar="PATH",
+        help="import a .jsonl session file into the configured JMFTS store, then exit",
+    )
+    parser.add_argument(
+        "--export-session",
+        dest="export_session",
+        nargs=2,
+        default=None,
+        metavar=("REF", "PATH"),
+        help="export a JMFTS-backed session (REF = JMFTS doc id) to a .jsonl file, then exit",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="verbose logging (long-only; pi-aligned, -v is --version)",
@@ -287,6 +364,7 @@ def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
         # action="append" yields None when the flag is absent → normalize to [].
         extensions=list(ns.extensions or []),
         no_extensions=ns.no_extensions,
+        bus=ns.bus,
         exclude_tools=ns.exclude_tools,
         no_builtin_tools=ns.no_builtin_tools,
         no_session=ns.no_session,
@@ -300,19 +378,12 @@ def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
         session=ns.session,
         fork=ns.fork,
         name=ns.name,
+        store=ns.store,
+        session_dir=ns.session_dir,
+        import_session=ns.import_session,
+        export_session=list(ns.export_session) if ns.export_session else None,
         verbose=ns.verbose,
     )
-
-
-def load_config() -> dict:
-    """Load ``~/.tau/config.json`` (or an empty config if absent)."""
-    config_path = TAU_DIR / "config.json"
-    if not config_path.exists():
-        return {}
-    loaded = json.loads(config_path.read_text())
-    if not isinstance(loaded, dict):
-        raise CLIError(f"{config_path} must contain a JSON object")
-    return loaded
 
 
 def _launch_tui(args: CLIArgs, config: dict) -> int:
@@ -345,16 +416,70 @@ def _launch_tui(args: CLIArgs, config: dict) -> int:
     run_config = {
         "extensions": list(args.extensions or []),
         "no_extensions": args.no_extensions,
+        # H8 capability, run-level like the extension flags it gates: a model
+        # switch must not silently revoke it mid-session.
+        "bus": args.bus,
         "exclude_tools": exclude_tools,
         "no_builtin_tools": args.no_builtin_tools,
         "append_system_prompt": list(args.append_system_prompt or []),
         "ext_config": ext_config_overrides,
+        # --store (W12): threaded to Parley.__init__, which resolves it via
+        # store_factory.build_session_catalog before building the SessionCatalog
+        # the TUI's ChatSidebar/session lifecycle uses.
+        "store": args.store,
+        # --session-dir (unit S): same seam, same call — the TUI's sidebar then
+        # lists exactly what lives under DIR, which is how a human reviews the
+        # RPC sessions written to <tmp>/.tau-<uid>/sessions.
+        "session_dir": args.session_dir,
     }
 
     from tau_coding_agent.app import Parley
 
     app = Parley(cli_overrides=overrides or None, cli_run_config=run_config)
     app.run()
+    return 0
+
+
+def _run_import_session(path: str, config: dict) -> int:
+    """``--import-session PATH``: materialize a file-store ``.jsonl`` session as
+    a JMFTS conversation subtree, then exit (W12 "Expose the importer";
+    ``tau_jmfts.importer.import_session`` does the actual work — this is just
+    the CLI surface for it, per docs/JMFTS-INTEGRATION-PLAN.md §3.4/importer.py).
+
+    Always targets the configured JMFTS store directly (``session_store.url``/
+    ``$JMFTS_API_URL``), independent of ``--store``/``session_store.backend`` —
+    an import's whole point is to populate JMFTS, so there is no "file" reading
+    of this flag to honor.
+    """
+    from tau_coding_agent.store_factory import build_jmfts_client, resolve_host_parent_id
+
+    client = build_jmfts_client(config)
+    try:
+        from tau_jmfts.importer import import_session
+
+        log = import_session(path, client, host_parent_id=resolve_host_parent_id(config))
+    finally:
+        client.close()
+    print(f"imported {path} -> JMFTS document {log.root_doc_id} (session {log.id})")
+    return 0
+
+
+def _run_export_session(ref: str, path: str, config: dict) -> int:
+    """``--export-session REF PATH``: write a JMFTS-backed session (REF = doc
+    id) as a file-store-shaped ``.jsonl`` the file ``Session.load`` can open
+    directly, then exit. See :func:`_run_import_session` for the inverse."""
+    from tau_coding_agent.store_factory import build_jmfts_client
+
+    client = build_jmfts_client(config)
+    try:
+        from tau_jmfts.importer import export_session
+        from tau_jmfts.store import JmftsSessionLog
+
+        log = JmftsSessionLog.load(client, ref)
+        export_session(log, path)
+    finally:
+        client.close()
+    print(f"exported JMFTS document {ref} -> {path}")
     return 0
 
 
@@ -366,6 +491,117 @@ def main(argv: list[str] | None = None) -> int:
         print(f"τ-coding-agent args: {args}", file=sys.stderr)
 
     try:
+        # --import-session/--export-session (W12): one-shot JMFTS<->file copies
+        # that run instead of a turn/the TUI, so they are dispatched before
+        # anything else and reject being combined with run-mode flags (Fail-Early
+        # — silently ignoring, say, a stray --print would be confusing).
+        if args.import_session is not None or args.export_session is not None:
+            if args.import_session is not None and args.export_session is not None:
+                raise CLIError("--import-session and --export-session are mutually exclusive")
+            if (
+                args.print_mode
+                or args.messages
+                or args.resume
+                or args.continue_session
+                or args.session
+                or args.fork
+                # --session-dir names a FILE-store location, and these two
+                # commands talk to JMFTS directly (see _run_import_session's
+                # docstring: they ignore --store for the same reason). Refused
+                # rather than accepted-and-ignored, exactly like the pairs above.
+                or args.session_dir is not None
+            ):
+                raise CLIError(
+                    "--import-session/--export-session run a one-shot JMFTS copy and "
+                    "exit; they can't be combined with --print, messages, "
+                    "session-continuation flags, or --session-dir (which names a "
+                    "file-store location these commands never read)"
+                )
+            config = load_config()
+            if args.import_session is not None:
+                return _run_import_session(args.import_session, config)
+            assert args.export_session is not None  # the outer `or` guarantees this branch
+            ref, path = args.export_session
+            return _run_export_session(ref, path, config)
+
+        # --session-dir names where a PERSISTED session goes; --no-session
+        # persists none. Rejected rather than ignored (Fail-Early — the same
+        # reasoning headless.run_print applies to --no-session + --continue).
+        if args.no_session and args.session_dir is not None:
+            raise CLIError(
+                "--session-dir names where sessions are stored, but --no-session "
+                "stores none (the run is ephemeral); drop one of them"
+            )
+
+        # --mode rpc: a persistent JSON-RPC 2.0 server over stdio
+        # (docs/REMOTE-CONTROL.md), unreachable before this branch existed —
+        # §3 of that doc: "cli.py:141-145 accepts --mode text|json ... and
+        # the file contains no reference to RPCHandler." It is its own run
+        # mode, neither the TUI nor --print, so it is dispatched explicitly
+        # here rather than left to fall through the print/TUI branches below
+        # by accident (the precedent this file already sets a few checks
+        # down: an incoherent flag combination is refused, not silently
+        # resolved one way).
+        #
+        # It does NOT require --print, and the two are mutually exclusive
+        # rather than "rpc implies print": -p means "run one turn from argv
+        # text, print it, exit"; --mode rpc means "read an unbounded stream
+        # of requests from stdin until told to stop". pi's own rpc
+        # invocation (PI_RPC_REPLACEMENT.md §1.1 — the consumer this surface
+        # is meant to replace) already proves the shape: `pi --mode rpc
+        # --provider ... --model ... --no-session --tools bash`, no print
+        # flag anywhere. Session/model/extension setup still goes through
+        # the same resolve_model_config/create_backend/load_extensions path
+        # every other mode uses (tau_coding_agent.rpc_mode.run_rpc) — this
+        # block only decides WHETHER to take that path, not how it runs.
+        if args.mode == "rpc":
+            if args.print_mode:
+                raise CLIError(
+                    "--mode rpc runs a persistent JSON-RPC server over stdio; it "
+                    "cannot be combined with --print, which runs a single "
+                    "headless turn from argv and exits. Drop -p/--print, or use "
+                    "--mode text/json for a headless run."
+                )
+            if args.messages:
+                raise CLIError(
+                    "--mode rpc reads requests from stdin (the 'prompt'/'submit' "
+                    "RPC methods), not positional arguments; drop the trailing "
+                    "message text."
+                )
+            if args.resume or args.continue_session or args.session or args.fork:
+                raise CLIError(
+                    "--mode rpc does not support session continuation FLAGS AT "
+                    "STARTUP (--continue/--session/--fork/--resume); a run always "
+                    "starts a fresh AgentSession of its own. Session lifecycle "
+                    "IS reachable once the process is running, over the wire "
+                    "(the new_session/fork/switch_session RPC verbs, "
+                    "docs/REMOTE-CONTROL.md §4[6]) — connect and call one of "
+                    "those instead of asking the CLI to start pre-attached to a "
+                    "session."
+                )
+            if args.name is not None or args.store is not None:
+                # Unchanged rejection (D-6: "the startup CLI restrictions are
+                # untouched"); only the REASON is restated, because the old
+                # wording ("does not persist one yet") stopped being true when
+                # Blocker 2 moved the startup session onto `catalog.create`.
+                # --session-dir is deliberately NOT in this set: it is the one
+                # startup session flag --mode rpc honors, since it is how a
+                # host chooses between its private <tmp>/.tau-<uid>/sessions default
+                # and the user's own list (unit S).
+                raise CLIError(
+                    "--name/--store name/select a session AT STARTUP, and a "
+                    "--mode rpc process always starts on a fresh session of its "
+                    "own choosing; it reaches the session store over the wire "
+                    "instead (switch_session's session_id resolves against the "
+                    "same default store every other mode uses with no --store "
+                    "flag). --session-dir IS accepted, and is how a host chooses "
+                    "where that startup session lives."
+                )
+            config = load_config()
+            from tau_coding_agent.rpc_mode import run_rpc
+
+            return asyncio.run(run_rpc(args, config))
+
         # --resume is an interactive picker; it has no headless meaning and the
         # TUI uses the sidebar, so reject it clearly rather than no-op (Fail-Early).
         if args.resume:
@@ -395,7 +631,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.mode == "json":
             raise CLIError("--mode json only applies to headless --print runs")
         return _launch_tui(args, config)
-    except CLIError as exc:
+    except ConfigError as exc:
+        # CLIError subclasses ConfigError, so this catches both a bad flag and a
+        # malformed ~/.tau/config.json.
         print(f"tau: error: {exc}", file=sys.stderr)
         return 2
 

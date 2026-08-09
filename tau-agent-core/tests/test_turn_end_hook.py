@@ -205,6 +205,10 @@ async def test_emit_turn_end_observer_returns_nothing() -> None:
     assert seen == [
         {
             "type": "turn_end",
+            # tau-003 (§12.4/§16.5): the event names its own firing unit, so a
+            # handler holding the bare dict can state what it counted rather than
+            # inferring the cadence from documentation about a different hook.
+            "firing_unit": "agent_loop_turn",
             "turn_index": 3,
             "usage": {"tokens": 42},
             "messages": [{"role": "assistant"}],

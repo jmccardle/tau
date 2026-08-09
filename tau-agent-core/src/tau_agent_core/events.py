@@ -13,7 +13,14 @@ Event types:
 - message_start, message_update, message_end
 - tool_execution_start, tool_execution_update, tool_execution_end
 
-Constraint: Events are fire-and-forget. Handlers are called synchronously.
+Constraint: "fire-and-forget" here means FAILURE ISOLATION, never scheduling.
+A handler that raises does not kill its siblings or its emitter; it is surfaced
+and the remaining handlers still run. Emission itself is *awaited*: ``emit``
+calls each handler in turn and, when the call returns a coroutine, awaits it
+before moving on — so a slow handler slows the emitter. That is load-bearing,
+not incidental: it is what lets a subscriber apply backpressure to the agent
+loop (see ``tau_agent_core.rpc``'s T3 credit gate, and §4[1] T3 / §10 of
+docs/REMOTE-CONTROL.md, which records getting this exact distinction wrong).
 """
 
 from __future__ import annotations
@@ -23,6 +30,8 @@ import sys
 from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
+
+from tau_agent_core.submission import SubmissionSource
 
 #: A notify-bus error listener. Called ``listener(exc, channel)`` when a
 #: subscribed handler raises — the S44 surface that replaces the old silent
@@ -35,6 +44,7 @@ class AgentEvent(BaseModel):
     """A single event from the agent loop.
 
     Reference: SUBPHASE-0.0.md, "5. Agent Events" section.
+    Reference: docs/SUBMISSION-LIFECYCLE.md, "Provenance on events" (phase 2).
 
     Attributes:
         type: Event type discriminator
@@ -53,6 +63,25 @@ class AgentEvent(BaseModel):
             paired with ``blocked`` on a ``tool_execution_end``; ``None`` otherwise.
         tool_results: List of tool result messages (turn_end)
         messages: List of messages produced (agent_end)
+        error: Why an ``agent_end`` closed, when the loop raised rather than
+            finishing (``"RuntimeError: Connection refused"``). ``None`` on a
+            normal close; always paired with ``is_error=True``.
+        submission_id: The ``Submission`` that drove this turn, if any — Jupyter's
+            ``parent_header``. ``None`` for a turn not driven through ``submit()``
+            (e.g. ``continue_conversation()``, which predates the Submission
+            contract) — an honest "no submission", never a fabricated id.
+        source: The submission's origin (``"interactive"``, ``"bus"``, ``"agent"``,
+            …) — pi's ``InputSource`` equivalent, so a renderer can decide *how* to
+            show a turn (Jupyter's rule: render every source, differently) without
+            the core knowing any renderer exists. ``None`` alongside
+            ``submission_id``.
+        submitter: WHO submitted — an extension name, ``"human"``, a channel id.
+            ``None`` alongside ``submission_id``.
+        correlation: The submission's free-form origin detail (bus subject, cron
+            id, HTTP request id), carried through unchanged so an embedded server
+            can fan out to the right stream. ``None`` alongside ``submission_id``
+            (an EMPTY dict would claim "a submission with no correlation data";
+            ``None`` says "no submission stamped this event" instead).
     """
 
     type: Literal[
@@ -86,6 +115,23 @@ class AgentEvent(BaseModel):
     blocked_by: str | None = None
     tool_results: list[dict[str, Any]] | None = None
     messages: list[dict[str, Any]] | None = None
+    # Set on an ``agent_end`` that closes a loop which RAISED, alongside
+    # ``is_error=True``; ``None`` on a normal close. Data field, not a new ``type``
+    # (S49) — same pattern as ``blocked``/``blocked_by``. Without it "the agent
+    # finished" and "the agent died mid-turn" are the same event.
+    error: str | None = None
+
+    # Provenance (docs/SUBMISSION-LIFECYCLE.md "Provenance on events", phase 2):
+    # stamped by AgentSession.submit() onto every event a submission-driven turn
+    # emits (agent_session._stamp_event). All four are ``None`` together — there is
+    # no partial-provenance state — and stay ``None`` for events from a call that
+    # never went through submit() (continue_conversation()). NOT filtering
+    # anything at the bus: a frontend reads these to decide how to RENDER a turn,
+    # never to drop one — see the spec's "Jupyter's rule, not the obvious one".
+    submission_id: str | None = None
+    source: SubmissionSource | None = None
+    submitter: str | None = None
+    correlation: dict[str, Any] | None = None
 
 
 class EventBus:
@@ -106,8 +152,12 @@ class EventBus:
             async def emit(self, event: AgentEvent) -> None: ...
             async def emit_channel(self, channel: str, *args, **kwargs) -> None: ...
 
-    Constraint: Events are fire-and-forget. Handlers are called
-    synchronously for performance.
+    Constraint: "fire-and-forget" is a failure-isolation contract, not a
+    scheduling one — see the module docstring. ``emit`` awaits each handler
+    that returns a coroutine before moving to the next, so handlers are
+    ordered with respect to each other AND to the emitter, and a handler that
+    suspends suspends the emitter. Subscribers rely on this to pace the agent
+    loop; do not "optimize" it into ``create_task``.
 
     Attributes:
         _listeners: Dict mapping event type/channel to list of handler callables.

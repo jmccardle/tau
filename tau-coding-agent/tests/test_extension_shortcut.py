@@ -118,23 +118,9 @@ async def test_chord_screen_unbound_key_cancels():
 
 
 @pytest.fixture
-def app(monkeypatch, tmp_path):
-    """A Parley wired to REAL TauBackends, with sandboxed session storage."""
-    import tau_coding_agent.session_store as store
-
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
-    monkeypatch.setattr("tau_coding_agent.app.create_backend", create_backend)
-    # Isolate the module-global session-event listener list (see
-    # test_app_extension_commands.py for the rationale — avoids a cross-test leak).
-    monkeypatch.setattr(store, "_session_listeners", [])
-
-    a = Parley()
-    a.config = {
-        "models": {"m": {"backend": "openai", "model": "m", "api_key": "not-needed"}},
-        "default_model": "m",
-        "system_prompt": "sys",
-    }
-    return a
+def app(make_app):
+    """A Parley wired to REAL TauBackends (TauBackend has no network in __init__)."""
+    return make_app(create_backend=create_backend)
 
 
 async def test_shortcut_binding_dispatches_command(app, tmp_path):

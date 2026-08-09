@@ -23,13 +23,13 @@ from tau_coding_agent.headless import run_print
 
 # An extension registering a report command whose handler RETURNS a string (the
 # output channel) — no marker file needed, the printed/emitted output proves it ran.
-_OUTPUT_EXT = '''
+_OUTPUT_EXT = """
 def register(api):
     def _todos(args, ctx):
         return "TODOS:" + args
 
     api.register_command("todos", {"description": "list todos", "handler": _todos})
-'''
+"""
 
 
 def _config() -> dict:
@@ -114,13 +114,14 @@ async def test_command_run_does_not_persist_a_user_turn(monkeypatch, tmp_path, c
     # Reload every persisted session under this cwd and assert none recorded the
     # command text as a user turn (nor any assistant/tool output).
     import os
+    from pathlib import Path
 
     from tau_coding_agent.session_store import Session, list_sessions
 
     infos = list_sessions(cwd=os.getcwd())
     assert infos, "the run should have created a persisted session"
     for info in infos:
-        session = Session.load(info.path)
+        session = Session.load(Path(info.ref))
         for msg in session.context:
             assert msg.get("role") != "user", "a command run must not persist a user turn"
             assert "TODOS:" not in str(msg.get("content", ""))
@@ -130,16 +131,21 @@ async def test_unknown_slash_prompt_is_not_a_command(monkeypatch, tmp_path):
     """An unknown ``/…`` is NOT a registered command → it falls through to the model.
 
     We don't want to hit a provider, so assert the fall-through indirectly: with no
-    matching command the run proceeds to ``stream_chat`` (which, against a real
-    provider config, raises rather than silently short-circuiting). The point is
-    that ``run_extension_command`` reported ``handled=False`` and the code did NOT
-    treat the prompt as a handled command.
+    matching command the run proceeds to ``stream_submission`` (which, against a real
+    provider config, raises rather than silently short-circuiting).
+
+    B2-c changed HOW that conclusion is reached, and the change is visible here.
+    ``resolve_command`` decides against the known vocabulary BEFORE anything runs, so
+    an unknown slash no longer *probes* the extension registry — ``/nope`` used to
+    reach ``run_extension_command`` and be told ``handled=False``. Nothing observable
+    to the user changes (the text still goes to the model verbatim); what changes is
+    that no handler dispatch is attempted for text that was never a command.
     """
     monkeypatch.setattr(store, "TAU_DIR", tmp_path)
     ext = _write_ext(tmp_path)
 
-    dispatched: list[tuple[str, str]] = []
-    from tau_agent_core.agent_session import AgentSession, ExtensionCommandResult
+    dispatched: list[tuple[str, bool]] = []
+    from tau_agent_core.agent_session import AgentSession
 
     real_run = AgentSession.run_extension_command
 
@@ -150,17 +156,25 @@ async def test_unknown_slash_prompt_is_not_a_command(monkeypatch, tmp_path):
 
     monkeypatch.setattr(AgentSession, "run_extension_command", _spy)
 
-    # Stub stream_chat on the backend class so the fall-through does not hit a
-    # provider — capture that the model path WAS reached for the unknown command.
-    reached_model: list[bool] = []
+    # Stub stream_submission on the backend class so the fall-through does not hit a
+    # provider — capture that the model path WAS reached for the unknown command, and
+    # with the print-mode submission (not one derived by the adapter).
+    admitted: list = []
+    from tau_agent_core.submission import SubmissionResult
     from tau_coding_agent.backends import TauBackend
 
-    async def _fake_stream(self, messages, callback, on_event=None, on_pi_event=None):
-        reached_model.append(True)
+    async def _fake_stream(self, submission, context, callback, on_event=None, on_pi_event=None):
+        admitted.append(submission)
         callback("hi")
-        return "hi", {"total_tokens": 1}, [], []
+        return (
+            "hi",
+            {"total_tokens": 1},
+            [],
+            [],
+            SubmissionResult(accepted=True, submission_id=submission.submission_id),
+        )
 
-    monkeypatch.setattr(TauBackend, "stream_chat", _fake_stream)
+    monkeypatch.setattr(TauBackend, "stream_submission", _fake_stream)
 
     args = CLIArgs(
         messages=["/nope not-a-command"],
@@ -173,8 +187,7 @@ async def test_unknown_slash_prompt_is_not_a_command(monkeypatch, tmp_path):
     rc = await run_print(args, _config())
     assert rc == 0
 
-    # The command was probed and reported NOT handled, then the model path ran.
-    assert dispatched == [("nope", False)]
-    assert reached_model == [True]
-
-    _ = ExtensionCommandResult  # imported for the type it names above
+    # No handler dispatch was attempted, and the unrecognised slash reached the model
+    # as ordinary prompt text.
+    assert dispatched == []
+    assert [s.text for s in admitted] == ["/nope not-a-command"]

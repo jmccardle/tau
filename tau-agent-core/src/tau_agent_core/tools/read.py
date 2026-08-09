@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import base64
 import os
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from tau_agent_core.tools.base import AgentToolResult
 
@@ -51,7 +51,12 @@ class ReadTool:
         },
         "required": ["path"],
     }
-    execution_mode = "parallel"
+    # Annotated rather than left to inference (B1/tau-004): unannotated,
+    # `execution_mode = "parallel"` infers `str`, and `ToolDefinition`
+    # declares it `Literal["sequential", "parallel"]`. `sdk._resolve_tools`
+    # copies this value into a ToolDefinition, so without the annotation mypy
+    # cannot check that copy — which is the blindness B1 exists to remove.
+    execution_mode: Literal["sequential", "parallel"] = "parallel"
 
     DEFAULT_MAX_LINES = 4096
     IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}

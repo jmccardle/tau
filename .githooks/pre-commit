@@ -35,7 +35,7 @@ for tool in "$RUFF" "$MYPY"; do
     fi
 done
 
-SRC=(tau-ai/src tau-agent-core/src tau-coding-agent/src)
+SRC=(tau-ai/src tau-agent-core/src tau-coding-agent/src tau-jmfts/src)
 
 echo "[pre-commit] ruff check…"
 "$RUFF" check "${SRC[@]}"

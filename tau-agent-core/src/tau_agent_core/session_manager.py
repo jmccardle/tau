@@ -438,7 +438,15 @@ class SessionManager:
             raise RuntimeError("No active session")
 
         entries = self._get_entries()
-        active_path = self._build_active_path(entries)
+        # The path is walked back from entry_id, NOT from the manager's current tip.
+        # This argument was accepted and then ignored: clone() called
+        # _build_active_path(entries), which starts at self._active_entry_id, so
+        # cloning an earlier entry silently produced a copy of the WHOLE session —
+        # clone("early") and clone("tip") returned byte-identical files. Nothing in
+        # the tree calls clone() yet, which is why it went unnoticed.
+        if not any(e["id"] == entry_id for e in entries):
+            raise ValueError(f"No entry {entry_id!r} in the active session")
+        active_path = self._build_active_path(entries, tip_id=entry_id)
 
         # Create new session file
         new_session_path = os.path.join(
@@ -514,11 +522,11 @@ class SessionManager:
             return self._read_file(self._active_session_path)
         return []
 
-    def _build_active_path(self, entries: list[dict]) -> list[dict]:
+    def _build_active_path(self, entries: list[dict], tip_id: str | None = None) -> list[dict]:
         """Build the active path by following parent_id chain.
 
-        Starting from active_entry_id, walk backwards through parent_id
-        links to reconstruct the path from root to the current entry.
+        Starting from ``tip_id`` (default: active_entry_id), walk backwards
+        through parent_id links to reconstruct the path from root to that entry.
         Then handle compaction: if a compaction entry is in the path,
         entries before it (closer to root) are compacted and replaced
         by the compaction summary.
@@ -535,7 +543,7 @@ class SessionManager:
 
         # Walk backwards from active_entry_id to root
         path = []
-        current_id = self._active_entry_id or (entries[0]["id"] if entries else None)
+        current_id = tip_id or self._active_entry_id or (entries[0]["id"] if entries else None)
         visited = set()
 
         while current_id and current_id not in visited:
@@ -708,7 +716,7 @@ async def summarize_branch(
     *,
     api_key: str | None = None,
     custom_instructions: str | None = None,
-) -> str:
+) -> tuple[str, dict[str, int]]:
     """Summarize an abandoned branch's text into a concise summary.
 
     The summarizer engine behind the tree-browser's "Summarize" modes (pi
@@ -722,9 +730,15 @@ async def summarize_branch(
     aborted, or empty LLM response RAISES rather than fabricating a summary from raw
     text. No branch-summary is ever silently invented.
 
+    Returns:
+        ``(summary, usage)`` — the text AND what producing it cost. This is a real LLM
+        call made outside the agent loop, so nothing else can observe its tokens; if it
+        does not report them, they go uncounted (see :mod:`tau_agent_core.usage`).
+
     Reference: SESSION-TREE-IMPLEMENTATION.md §3.1, §3.3.
     """
-    from tau_ai.client import complete_simple
+    from tau_agent_core.completion import CompletionFailed, resolved_complete
+    from tau_agent_core.usage import usage_of
     from tau_ai.types import TextContent
 
     text = branch_text.strip()
@@ -748,11 +762,14 @@ async def summarize_branch(
     }
     options: dict[str, Any] | None = {"api_key": api_key} if api_key is not None else None
 
-    response = await complete_simple(model, context, options)
-    if getattr(response, "stop_reason", None) in ("error", "aborted"):
-        detail = getattr(response, "error_message", None) or getattr(response, "stop_reason", "")
-        raise RuntimeError(f"Branch summarization failed: {detail}")
+    # The shared completion door (C1). Its error/aborted check raises CompletionFailed;
+    # translate to this path's taxonomy (RuntimeError). Billing stays caller-side: we
+    # return (summary, usage) on success and the caller records it.
+    try:
+        response = await resolved_complete(model, context, options=options)
+    except CompletionFailed as exc:
+        raise RuntimeError(f"Branch summarization failed: {exc.detail}") from exc
     summary = "\n".join(c.text for c in response.content if isinstance(c, TextContent)).strip()
     if not summary:
         raise RuntimeError("Branch summarization returned an empty summary")
-    return summary
+    return summary, usage_of(response)

@@ -30,28 +30,9 @@ def register(api):
 
 
 @pytest.fixture
-def app(monkeypatch, tmp_path):
-    """A Parley wired to REAL TauBackends, with sandboxed session storage."""
-    import tau_coding_agent.session_store as store
-
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
-    # Use the real backend factory (TauBackend has no network in __init__).
-    monkeypatch.setattr("tau_coding_agent.app.create_backend", create_backend)
-    # A real backend gives the app a real AgentSession, so _bind_backend_session
-    # registers a MODULE-GLOBAL session-event listener (subscribe_session_events).
-    # The app never unsubscribes on shutdown (harmless in a one-shot process), so
-    # isolate the global list to a fresh one here — monkeypatch restores the
-    # original (listener-free) list on teardown, discarding this app's leak so a
-    # later test_session_store session-emit can't fire into a dead listener.
-    monkeypatch.setattr(store, "_session_listeners", [])
-
-    a = Parley()
-    a.config = {
-        "models": {"m": {"backend": "openai", "model": "m", "api_key": "not-needed"}},
-        "default_model": "m",
-        "system_prompt": "sys",
-    }
-    return a
+def app(make_app):
+    """A Parley wired to REAL TauBackends (TauBackend has no network in __init__)."""
+    return make_app(create_backend=create_backend)
 
 
 async def test_new_chat_binds_file_extension_to_backend(app, tmp_path):
@@ -137,6 +118,30 @@ def test_apply_run_config_no_flags_returns_unchanged(app):
     """A bare tau (no run flags) leaves the model_config object untouched."""
     original = {"backend": "openai", "model": "m", "tools": ["read"]}
     assert app._apply_run_config(original) is original
+
+
+def test_apply_run_config_bus_grants_the_h8_capability(app):
+    """``--bus`` reaches the model_config TauBackend builds its session from.
+
+    Until this was threaded, ``bus_available`` was a ``create_agent_session``
+    parameter nothing in this package set, so every TOUCHES_BUS extension was
+    refused in the TUI and ``nats_bus`` was loadable only from a script.
+    """
+    app._bus_available = True
+    mc = app._apply_run_config({"backend": "openai", "model": "m"})
+    assert mc["bus_available"] is True
+
+
+def test_apply_run_config_without_bus_does_not_revoke_a_configured_one(app):
+    """No ``--bus`` must not overwrite a model entry that granted it itself.
+
+    The flag GRANTS the capability; its absence is "no opinion", not a denial.
+    Writing False here would make ``"bus_available": true`` in config.json
+    unusable without also passing a flag every single run.
+    """
+    app._bus_available = False
+    mc = app._apply_run_config({"backend": "openai", "model": "m", "bus_available": True})
+    assert mc["bus_available"] is True
 
 
 async def test_new_chat_appends_system_prompt(app, tmp_path):
@@ -296,8 +301,6 @@ def test_format_extensions_listing_surfaces_load_errors(tmp_path):
 
     from tau_agent_core.sdk import ExtensionLoadError, _load_extensions
 
-    from tau_coding_agent.app import Parley
-
     ext = tmp_path / "full_ext.py"
     ext.write_text(_FULL_EXT)
 
@@ -317,7 +320,5 @@ def test_format_extensions_listing_surfaces_load_errors(tmp_path):
 def test_format_extensions_listing_empty_when_nothing_loaded():
     """With no extensions and no errors the listing says so (honest empty state)."""
     from tau_agent_core.sdk import LoadExtensionsResult
-
-    from tau_coding_agent.app import Parley
 
     assert Parley._format_extensions_listing(LoadExtensionsResult()) == "No extensions loaded."

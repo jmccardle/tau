@@ -80,21 +80,25 @@ class TestZeroLlmOps:
         # … and a COPY: mutating it must not touch the log.
         entries.append({"type": "message"})
         assert len(ctx.entries()) == len(session.session_log.entries())
-        # Four message entries: user+assistant per prompt.
-        assert [e["type"] for e in ctx.entries()] == ["message"] * 4
+        # Construction wrote its own non-authoritative `agent_spec` provenance
+        # record first (W2, NODE-ADDRESSABLE-AGENTS.md); then four message
+        # entries: user+assistant per prompt.
+        assert [e["type"] for e in ctx.entries()] == ["customEntry"] + ["message"] * 4
 
     async def test_navigate_moves_cursor_and_reshrinks_context(self):
         session = await self._seeded()
         ctx = _ctx(session)
         entries = session.session_log.entries()
         assert len(session.messages) == 4
-        target = entries[1]["id"]  # the first assistant reply
+        # entries[0] is construction's own `agent_spec` provenance record (W2);
+        # the first real turn starts at index 1.
+        target = entries[2]["id"]  # the first assistant reply
 
         rendered = await ctx.navigate(target)
 
         # A navigate entry was APPENDED to the one log …
         log_entries = session.session_log.entries()
-        assert len(log_entries) == 5
+        assert len(log_entries) == 6
         assert log_entries[-1]["type"] == "navigate"
         assert log_entries[-1]["targetId"] == target
         # … the cursor moved to the target …
@@ -115,7 +119,8 @@ class TestZeroLlmOps:
     async def test_fork_in_place_navigates_and_appends(self):
         session = await self._seeded()
         ctx = _ctx(session)
-        target = session.session_log.entries()[1]["id"]
+        # entries()[0] is construction's own `agent_spec` provenance record (W2).
+        target = session.session_log.entries()[2]["id"]
 
         rendered = await ctx.fork(target, mode="in_place")
 

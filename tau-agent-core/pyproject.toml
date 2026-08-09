@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "tau-ai",
     "pydantic>=2.0",
+    "nats-py>=2.15.0",
 ]
 
 [project.optional-dependencies]

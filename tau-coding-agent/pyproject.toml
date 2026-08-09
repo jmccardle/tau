@@ -24,5 +24,12 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# bootstrap_config() reads tau_default_config.json out of the installed package on
+# first run. Without this it is source-tree-only and `pip install tau-coding-agent`
+# ships a τ that dies with FileNotFoundError before it can print a prompt.
+# Covered by tests/test_config.py::test_the_packaged_template_is_shipped_and_valid.
+[tool.setuptools.package-data]
+tau_coding_agent = ["tau_default_config.json"]
+
 [project.scripts]
 tau = "tau_coding_agent.cli:main"

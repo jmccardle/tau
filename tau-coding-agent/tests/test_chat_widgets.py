@@ -15,10 +15,14 @@ from tau_coding_agent.chat_widgets import (
     ReasoningRegion,
     ToolBox,
     format_duration,
+    format_telemetry,
     format_tokens,
     format_tool_summary,
 )
 from tau_coding_agent.app import MessageBox
+
+
+_STOCK_TIMINGS = {"predicted_n": 20, "predicted_per_second": 41.2}
 
 
 class _Host(App[None]):
@@ -34,6 +38,7 @@ class _Host(App[None]):
 
 
 # ── pure formatters ────────────────────────────────────────────────────────
+
 
 def test_format_tool_summary():
     assert format_tool_summary("read", {"path": "main.py"}) == "read(path=main.py)"
@@ -51,7 +56,32 @@ def test_format_tokens_and_duration():
     assert format_duration(186) == "3:06"
 
 
+# ── format_telemetry (G4) ────────────────────────────────────────────────────
+
+
+def test_format_telemetry_stock_timings_shows_speed_and_repairs():
+    # A stock llama.cpp completion: t/s + repairs, and NO fabricated forced share.
+    line = format_telemetry({"timings": _STOCK_TIMINGS, "repairs": 0})
+    assert line == "41.2 t/s · repairs=0"
+    assert "forced" not in line
+
+
+def test_format_telemetry_fork_timings_includes_forced_share():
+    # The jump-forward fork sends n_ff_total → the forced share becomes real.
+    line = format_telemetry({"timings": {**_STOCK_TIMINGS, "n_ff_total": 15}})
+    assert line is not None
+    assert "41.2 t/s" in line
+    assert "forced=75%" in line  # 15 / 20
+
+
+def test_format_telemetry_empty_or_none_is_none():
+    # Nothing measured → None; the caller shows the summary exactly as pre-G4.
+    assert format_telemetry({}) is None
+    assert format_telemetry({"timings": {}}) is None
+
+
 # ── ReasoningRegion ─────────────────────────────────────────────────────────
+
 
 async def test_reasoning_region_streams_and_finishes():
     region = ReasoningRegion()
@@ -81,6 +111,7 @@ async def test_reasoning_region_collapses_without_scrollbar():
 
 # ── ToolBox ─────────────────────────────────────────────────────────────────
 
+
 async def test_tool_box_pairs_call_and_result():
     box = ToolBox("read", {"path": "main.py"}, tool_call_id="call_1")
     async with _Host(box).run_test() as pilot:
@@ -109,6 +140,7 @@ async def test_tool_box_error_marks_title_and_class():
 
 # ── ExchangeBox ─────────────────────────────────────────────────────────────
 
+
 async def test_exchange_box_groups_steps_and_summarizes():
     exchange = ExchangeBox()
     async with _Host(exchange).run_test() as pilot:
@@ -133,6 +165,26 @@ async def test_exchange_box_groups_steps_and_summarizes():
         exchange.set_summary(tools=2, tokens=102700, seconds=186)
         await pilot.pause()
         assert exchange.title == "✓ 2 tools · 102.7k tok · 3:06"
+
+
+async def test_exchange_summary_appends_telemetry_suffix():
+    """G4: the last completion's telemetry rides the summary as one more `·` part."""
+    exchange = ExchangeBox()
+    async with _Host(exchange).run_test() as pilot:
+        await pilot.pause()
+        exchange.set_summary(tools=2, tokens=1200, seconds=3, telemetry="41.2 t/s · repairs=0")
+        await pilot.pause()
+        assert exchange.title == "✓ 2 tools · 1.2k tok · 0:03 · 41.2 t/s · repairs=0"
+
+
+async def test_exchange_summary_without_telemetry_is_unchanged():
+    """A provider that reported nothing (telemetry=None) reads exactly as pre-G4."""
+    exchange = ExchangeBox()
+    async with _Host(exchange).run_test() as pilot:
+        await pilot.pause()
+        exchange.set_summary(tools=2, tokens=1200, seconds=3)
+        await pilot.pause()
+        assert exchange.title == "✓ 2 tools · 1.2k tok · 0:03"
 
 
 async def test_exchange_summary_shows_zero_tokens_not_hidden():
@@ -170,6 +222,7 @@ async def test_nested_exchange_has_no_interior_scrollbars():
 
 
 # ── MessageBox as the universal host (one message → one widget) ──────────────
+
 
 async def test_message_box_plain_text_is_unchanged():
     box = MessageBox("user", "hello")

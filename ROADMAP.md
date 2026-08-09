@@ -4,7 +4,26 @@ Living schedule of open work. Each item cites the evidence (file:line, doc, or
 test) it came from so it can be audited against the source of truth (pi) and the
 "Fail Early" rule.
 
-**State (2026-07-04, latest):** the **E0–E4 chain + S24** and now the **entire E5
+**State (2026-07-14, latest):** the **constrained-decoding + JMFTS-backing-store
+workstream (W0–W15) is fully committed on `master`** (`63f686a`→`b865a42`). This
+workstream is tracked under four overlapping naming vocabularies (**W**-series
+schedule, **G**-series constrained-gen targets, **JMFTS Phases 1–6 + C1/C2**, and
+the **llama.cpp fork Phases A–D** in `turboquant_experiments`) — reconciled once, with
+audited per-item status and the debts left behind, in
+**`docs/WORKSTREAM-CROSSWALK.md`**. Open threads from it: C1 landed additive-only (3
+callers still bypass the model resolver), G4 telemetry is capture-only (no TUI/json
+readout), the `lazy-grammar-thinking` llama.cpp PR is written+tested but uncommitted,
+and JMFTS-side **CR-4 (auth/CORS)** is the one unbuilt item with a real deadline
+before conversations land on the shared instance. **G6 (jump-forward / ff-token
+constrained-decode) is now BUILT and GPU-verified (2026-07-16)** — see the
+"RESULT — BUILT and verified" block in `docs/RESEARCH-INTEGRATION-EVALUATION.md`
+(byte-equivalence holds on all 5 grammars; 8.58x forced-only / 1574 t/s effective
+on the 35B; `timings.ff_n` is the §6-metric-#7 verification signal). This build
+(`build-jf-cuda`, tmux `jf35`) now serves `local-llm` on `:8080`. Nothing is
+committed on the llama.cpp fork (branch `jump-forward`, per the no-AI-PR rule). G7
+builds on it and remains open.
+
+**State (2026-07-04):** the **E0–E4 chain + S24** and now the **entire E5
 milestone (S25–S37) are LANDED** on `feat/extensions-e0-e4`
 (`docs/EXTENSIONS-E5-WIRING.md`). E5.1 (spine, S25–S28) loads extensions into a
 running process on BOTH paths (`tau -p -e` and the TUI); **E5.2–E5.5 (S29–S37)**

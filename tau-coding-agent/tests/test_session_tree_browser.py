@@ -102,6 +102,37 @@ async def test_tree_modal_navigates_and_selects_interior_node(tmp_path):
     assert harness.result == user_id
 
 
+def test_an_agent_spec_row_names_the_model_and_tools(tmp_path):
+    """B1-e: the browser row for an ``agent_spec`` node (W2,
+    NODE-ADDRESSABLE-AGENTS.md). It used to read ``customEntry: agent_spec`` —
+    the node whose entire purpose is telling a reader WHICH agent produced the
+    turns below it, saying nothing about which agent that was.
+    """
+    session = _linear_session(tmp_path)
+    spec_id = session.append_custom_entry(
+        "agent_spec",
+        {
+            "model": {"id": "gpt-4o", "provider": "openai", "context_window": 128000},
+            "system_prompt_digest": "abc123",
+            "tools": ["read", "grep"],
+            "extensions": [],
+            "cwd": str(tmp_path),
+        },
+    )
+    nodes: dict[str, object] = {}
+
+    def _collect(node) -> None:
+        nodes[node.id] = node
+        for child in node.children:
+            _collect(child)
+
+    for root in ConversationTree(session.entries(), session.cursor).tree():
+        _collect(root)
+
+    label = SessionTreeModal._label(nodes[spec_id])
+    assert "gpt-4o" in label and "read, grep" in label
+
+
 # --- TauBackend.navigate_tree ----------------------------------------------
 
 
@@ -226,20 +257,10 @@ async def test_navigate_summarize_raises_on_empty_llm_response(tmp_path):
 # --- re-render seam (§3.4) --------------------------------------------------
 
 
-async def test_reload_messages_shows_post_navigate_context(tmp_path, monkeypatch):
-    import tau_coding_agent.session_store as store
+async def test_reload_messages_shows_post_navigate_context(make_app):
+    from tau_coding_agent.app import ChatDisplay
 
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
-    monkeypatch.setattr("tau_coding_agent.app.create_backend", lambda cfg: _backend())
-
-    from tau_coding_agent.app import ChatDisplay, Parley
-
-    app = Parley()
-    app.config = {
-        "models": {"m": {"backend": "openai", "model": "m"}},
-        "default_model": "m",
-        "system_prompt": "sys",
-    }
+    app = make_app(create_backend=lambda cfg: _backend())
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.action_new_chat()

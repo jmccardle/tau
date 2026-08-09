@@ -1903,3 +1903,416 @@ class TestRunContinueContext:
             messages2 = await loop.run_continue(context=messages)
             assert len(messages2) == 1  # one new assistant message
             assert call_count[0] == 2
+
+
+# ---------------------------------------------------------------------------
+# Test 21: _execute_tool_calls batch partition (pi agent-loop.ts:381-384)
+# ---------------------------------------------------------------------------
+
+
+def _make_tracking_tool(
+    name: str,
+    execution_mode: str,
+    active: list[int],
+    max_active: list[int],
+    delay: float = 0.02,
+) -> AgentTool:
+    """A tool that records observed concurrency via a shared counter.
+
+    ``active`` is incremented on entry and decremented on exit; ``max_active``
+    records the high-water mark. A batch that never lets ``max_active`` exceed
+    1 was serialized; a batch that pushes it above 1 overlapped.
+    """
+
+    async def execute_impl(**kw):
+        active[0] += 1
+        max_active[0] = max(max_active[0], active[0])
+        try:
+            await asyncio.sleep(delay)
+        finally:
+            active[0] -= 1
+        return f"{name} done"
+
+    tool_def = ToolDefinition(
+        name=name,
+        label=name.capitalize(),
+        description=f"The {name} tool",
+        parameters={"type": "object", "properties": {}, "required": []},
+        execute=execute_impl,
+        execution_mode=execution_mode,  # type: ignore[arg-type]
+    )
+    return AgentTool(definition=tool_def)
+
+
+def _make_tool_call(
+    tool_id: str, tool_name: str, arguments: dict[str, Any] | None = None
+) -> TauToolCall:
+    return TauToolCall(type="toolCall", id=tool_id, name=tool_name, arguments=arguments or {})
+
+
+class TestExecuteToolCallsBatchPartition:
+    """_execute_tool_calls: sequential-if-config-OR-any-tool-sequential.
+
+    Reference: pi agent-loop.ts:381-384.
+    """
+
+    @pytest.mark.asyncio
+    async def test_mixed_batch_forces_sequential(self):
+        """Config says parallel, but one tool in the batch is sequential:
+        the WHOLE batch (including the parallel tool) must serialize.
+        """
+        active = [0]
+        max_active = [0]
+        seq_tool = _make_tracking_tool("seq_tool", "sequential", active, max_active)
+        par_tool = _make_tracking_tool("par_tool", "parallel", active, max_active)
+
+        config = AgentLoopConfig(model="gpt-4o", tool_execution_mode="parallel")
+        loop = AgentLoop(config=config, tools=[seq_tool, par_tool])
+
+        assistant = _make_text_assistant("x")
+        tool_calls = [
+            _make_tool_call("call_1", "par_tool"),
+            _make_tool_call("call_2", "seq_tool"),
+        ]
+
+        batch = await loop._execute_tool_calls(assistant, tool_calls)
+
+        assert max_active[0] == 1, "mixed batch overlapped despite a sequential tool"
+        assert len(batch.tool_results) == 2
+        assert all(not r.is_error for r in batch.tool_results)
+
+    @pytest.mark.asyncio
+    async def test_all_parallel_batch_overlaps(self):
+        """Config parallel, every tool in the batch parallel: must actually gather."""
+        active = [0]
+        max_active = [0]
+        tool_a = _make_tracking_tool("tool_a", "parallel", active, max_active)
+        tool_b = _make_tracking_tool("tool_b", "parallel", active, max_active)
+
+        config = AgentLoopConfig(model="gpt-4o", tool_execution_mode="parallel")
+        loop = AgentLoop(config=config, tools=[tool_a, tool_b])
+
+        assistant = _make_text_assistant("x")
+        tool_calls = [
+            _make_tool_call("call_1", "tool_a"),
+            _make_tool_call("call_2", "tool_b"),
+        ]
+
+        batch = await loop._execute_tool_calls(assistant, tool_calls)
+
+        assert max_active[0] == 2, "all-parallel batch failed to overlap"
+        assert len(batch.tool_results) == 2
+
+    @pytest.mark.asyncio
+    async def test_config_sequential_overrides_all_parallel_tools(self):
+        """Config sequential forces serialization even when every tool is parallel."""
+        active = [0]
+        max_active = [0]
+        tool_a = _make_tracking_tool("tool_a", "parallel", active, max_active)
+        tool_b = _make_tracking_tool("tool_b", "parallel", active, max_active)
+
+        config = AgentLoopConfig(model="gpt-4o", tool_execution_mode="sequential")
+        loop = AgentLoop(config=config, tools=[tool_a, tool_b])
+
+        assistant = _make_text_assistant("x")
+        tool_calls = [
+            _make_tool_call("call_1", "tool_a"),
+            _make_tool_call("call_2", "tool_b"),
+        ]
+
+        batch = await loop._execute_tool_calls(assistant, tool_calls)
+
+        assert max_active[0] == 1, "config=sequential failed to serialize all-parallel tools"
+        assert len(batch.tool_results) == 2
+
+    @pytest.mark.asyncio
+    async def test_unknown_tool_name_does_not_force_sequential(self):
+        """A tool call naming an unregistered tool contributes nothing to the
+        sequential check (pi's optional-chaining lookup yields undefined, which
+        is never "sequential") — the batch of KNOWN parallel tools still overlaps.
+        """
+        active = [0]
+        max_active = [0]
+        tool_a = _make_tracking_tool("tool_a", "parallel", active, max_active)
+        tool_b = _make_tracking_tool("tool_b", "parallel", active, max_active)
+
+        config = AgentLoopConfig(model="gpt-4o", tool_execution_mode="parallel")
+        loop = AgentLoop(config=config, tools=[tool_a, tool_b])
+
+        assistant = _make_text_assistant("x")
+        tool_calls = [
+            _make_tool_call("call_1", "tool_a"),
+            _make_tool_call("call_2", "tool_b"),
+            _make_tool_call("call_3", "does_not_exist"),
+        ]
+
+        batch = await loop._execute_tool_calls(assistant, tool_calls)
+
+        assert max_active[0] == 2, "unknown tool name incorrectly forced serialization"
+        assert len(batch.tool_results) == 3
+        unknown_result = next(r for r in batch.tool_results if r.tool_name == "does_not_exist")
+        assert unknown_result.is_error
+
+
+# ---------------------------------------------------------------------------
+# Test 22: _execute_tool_calls against the ACTUAL built-in tool shape
+#
+# This is the exact runtime path `create_agent_session(tools=["read", "bash",
+# ...])` -> AgentSession -> AgentLoop takes, i.e. every non-extension `tau`
+# invocation, and it is the path no test exercised when tau-001's
+# `.definition.execution_mode` regression went out over a green suite.
+#
+# HISTORY, because the setup invariant below was inverted by tau-004 and an
+# inverted assertion is exactly the kind of thing that should never be silent:
+# self._tools USED TO BE heterogeneous -- extension tools were AgentTool, but
+# the seven built-ins from sdk._resolve_tools() were raw plain-class instances
+# (ReadTool, WriteTool, ...) with NO `.definition` at all. These two tests
+# therefore asserted `not hasattr(t, "definition")` as their setup invariant,
+# to guarantee they were driving the shape the regression crashed on. B1
+# (tau-004) normalised `_resolve_tools` to return AgentTool, so that invariant
+# is now false BY DESIGN and is replaced with its opposite: every element is an
+# AgentTool. That is a strictly stronger pin, not a weaker one -- it asserts a
+# type rather than the absence of an attribute -- and the behavioural bodies
+# (drive a real _resolve_tools batch through _execute_tool_calls and observe
+# serialization) are untouched, so what these tests actually catch is unchanged.
+# ---------------------------------------------------------------------------
+
+
+def _instrument_execute(
+    tool: Any,
+    active: list[int],
+    max_active: list[int],
+    delay: float = 0.02,
+) -> None:
+    """Monkeypatch a REAL built-in tool's `.execute` in place.
+
+    Only `execute` is replaced (to observe concurrency without touching the
+    filesystem/subprocess); `.name` and `.execution_mode` are untouched, real
+    values carried over verbatim from the actual tool class in
+    tau_agent_core.tools.* -- this is what makes the test exercise the real
+    registry output rather than a stand-in.
+
+    The write goes to `tool.definition.execute` because `AgentTool.execute` is a
+    read-only alias property. Before B1 this patched the raw class instance's
+    own attribute; the target moved with the shape, the substitution did not.
+    """
+
+    async def tracking_execute(**kw: Any) -> str:
+        active[0] += 1
+        max_active[0] = max(max_active[0], active[0])
+        try:
+            await asyncio.sleep(delay)
+        finally:
+            active[0] -= 1
+        return f"{tool.name} done"
+
+    tool.definition.execute = tracking_execute
+
+
+class TestExecuteToolCallsBuiltinToolShape:
+    """_execute_tool_calls against real sdk._resolve_tools()-shaped tools.
+
+    Reference: pi agent-loop.ts:381-384; regression fixed on top of commit
+    70ced69 (H1), which read execution_mode via `.definition.execution_mode`
+    unconditionally -- a shape only AgentTool had at the time. The built-ins
+    resolved by `_resolve_tools` (tau_agent_core/sdk.py) had no `.definition`
+    at all, so that lookup raised AttributeError for every batch containing one
+    of them -- i.e. every batch tau's own SDK entry point can produce.
+    """
+
+    @pytest.mark.asyncio
+    async def test_real_builtin_sequential_tools_force_serialization(self):
+        """A batch of the REAL bash/write/edit tools (each declares
+        execution_mode = "sequential" on its class) must serialize -- and, on
+        70ced69, crashes instead.
+        """
+        from tau_agent_core.sdk import _resolve_tools
+
+        tools = _resolve_tools(["bash", "write", "edit"])
+        # Setup invariant, inverted by B1 (see the module comment above): the
+        # registry now holds ONE type. Asserting it here keeps the test from
+        # silently drifting off the production shape, which is the job the old
+        # `not hasattr(t, "definition")` assertion did for the old shape.
+        assert all(isinstance(t, AgentTool) for t in tools), (
+            "test setup invariant: _resolve_tools must return AgentTool uniformly"
+        )
+
+        active = [0]
+        max_active = [0]
+        for t in tools:
+            _instrument_execute(t, active, max_active)
+
+        config = AgentLoopConfig(model="gpt-4o", tool_execution_mode="parallel")
+        loop = AgentLoop(config=config, tools=tools)
+
+        assistant = _make_text_assistant("x")
+        tool_calls = [
+            _make_tool_call("call_1", "bash", {"command": "echo hi"}),
+            _make_tool_call("call_2", "write", {"path": "/tmp/x", "content": "hi"}),
+            _make_tool_call(
+                "call_3", "edit", {"path": "/tmp/x", "old_string": "a", "new_string": "b"}
+            ),
+        ]
+
+        batch = await loop._execute_tool_calls(assistant, tool_calls)
+
+        assert max_active[0] == 1, "real sequential built-ins overlapped"
+        assert len(batch.tool_results) == 3
+        assert all(not r.is_error for r in batch.tool_results)
+
+    @pytest.mark.asyncio
+    async def test_real_builtin_parallel_tools_run_concurrently(self):
+        """A batch of only REAL read/ls/grep tools (each declares
+        execution_mode = "parallel") must actually overlap.
+        """
+        from tau_agent_core.sdk import _resolve_tools
+
+        tools = _resolve_tools(["read", "ls", "grep"])
+        assert all(isinstance(t, AgentTool) for t in tools)
+
+        active = [0]
+        max_active = [0]
+        for t in tools:
+            _instrument_execute(t, active, max_active)
+
+        config = AgentLoopConfig(model="gpt-4o", tool_execution_mode="parallel")
+        loop = AgentLoop(config=config, tools=tools)
+
+        assistant = _make_text_assistant("x")
+        tool_calls = [
+            _make_tool_call("call_1", "read", {"path": "/tmp/x"}),
+            _make_tool_call("call_2", "ls", {}),
+            _make_tool_call("call_3", "grep", {"pattern": "foo"}),
+        ]
+
+        batch = await loop._execute_tool_calls(assistant, tool_calls)
+
+        assert max_active[0] == 3, "real parallel built-ins failed to overlap"
+        assert len(batch.tool_results) == 3
+        assert all(not r.is_error for r in batch.tool_results)
+
+    @pytest.mark.asyncio
+    async def test_tool_with_no_execution_mode_raises_rather_than_defaulting(self):
+        """A registered tool lacking `execution_mode` RAISES (Fail-Early).
+
+        Every τ built-in declares the attribute and ToolDefinition declares it
+        with a default, so a tool shape without it is a construction gap. The
+        read is deliberately unguarded: silently treating it as "parallel"
+        would resurrect the dead-field defect H1 exists to fix, for exactly
+        the tool shapes nobody anticipated. This is a narrow, deliberate
+        divergence from pi, whose `executionMode?` is optional
+        (types.ts:388) and read via optional chaining (agent-loop.ts:382);
+        τ's own type makes the field non-optional.
+        """
+
+        class NoExecutionModeTool:
+            name = "no_mode_tool"
+            label = "No Mode"
+            description = "A tool with no execution_mode attribute"
+            parameters: dict[str, Any] = {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            }
+
+            async def execute(self, **kw: Any) -> str:
+                return "done"
+
+        assert not hasattr(NoExecutionModeTool(), "execution_mode")
+
+        active = [0]
+        max_active = [0]
+        no_mode_tool = NoExecutionModeTool()
+        par_tool = _make_tracking_tool("par_tool", "parallel", active, max_active)
+
+        config = AgentLoopConfig(model="gpt-4o", tool_execution_mode="parallel")
+        loop = AgentLoop(config=config, tools=[no_mode_tool, par_tool])  # type: ignore[list-item]
+
+        assistant = _make_text_assistant("x")
+        tool_calls = [
+            _make_tool_call("call_1", "no_mode_tool"),
+            _make_tool_call("call_2", "par_tool"),
+        ]
+
+        with pytest.raises(AttributeError, match="execution_mode"):
+            await loop._execute_tool_calls(assistant, tool_calls)
+
+
+# ---------------------------------------------------------------------------
+# Test 23 (B1 / tau-004): the loop's registry holds ONE type, end to end.
+#
+# tau-001's rejected commit shipped over a green pytest AND a green mypy. Both
+# gates reported success because `AgentLoop._tools` was annotated
+# `dict[str, AgentTool]` over a seam that was really `list`, and because no test
+# ever built a loop the way production builds one -- through
+# create_agent_session -> AgentSession -> _build_turn_tools -> AgentLoop.
+#
+# The tests below drive that full path and assert the invariant the annotation
+# was only claiming. They go red on the pre-B1 shape.
+# ---------------------------------------------------------------------------
+
+
+class TestLoopRegistryIsUniformlyAgentTool:
+    """`AgentLoop._tools` is genuinely `dict[str, AgentTool]` on the real path."""
+
+    def _production_loop(self, tool_names: list[str], session=None) -> AgentLoop:
+        """Build a loop exactly as the SDK/TUI path does."""
+        from tau_agent_core.sdk import create_agent_session
+
+        session = session or create_agent_session(model="gpt-4o", tools=tool_names)
+        return AgentLoop(
+            config=AgentLoopConfig(model="gpt-4o", tool_execution_mode="parallel"),
+            tools=session._build_turn_tools(),
+        )
+
+    def test_every_registry_entry_is_an_agent_tool(self):
+        """The default TUI toolset (backends.py) resolves to one type."""
+        loop = self._production_loop(["read", "write", "edit", "bash", "ls", "grep", "find"])
+        assert len(loop._tools) == 7
+        for name, tool in loop._tools.items():
+            assert isinstance(tool, AgentTool), f"{name} is {type(tool).__name__}"
+
+    def test_definition_execution_mode_reads_for_every_registry_entry(self):
+        """`self._tools[name].definition.execution_mode` -- tau-001's rejected
+        expression, verbatim -- is valid for every entry of a production loop.
+
+        THIS is the retroactive catch. On the rejected shape this raises
+        `AttributeError: 'LsTool' object has no attribute 'definition'` for the
+        first built-in it touches, which is what `tau` did on every tool call
+        while the suite reported 2622 passing.
+        """
+        loop = self._production_loop(["read", "write", "edit", "bash", "ls", "grep", "find"])
+        modes = {n: loop._tools[n].definition.execution_mode for n in loop._tools}
+        assert modes == {
+            "read": "parallel",
+            "write": "sequential",
+            "edit": "sequential",
+            "bash": "sequential",
+            "ls": "parallel",
+            "grep": "parallel",
+            "find": "parallel",
+        }
+
+    def test_registry_stays_uniform_when_extension_tools_are_mixed_in(self):
+        """The pre-B1 registry was heterogeneous precisely when BOTH sources were
+        present -- extension tools had `.definition`, built-ins did not. A loop
+        built from both must still hold one type."""
+        from tau_agent_core.sdk import create_agent_session
+
+        session = create_agent_session(model="gpt-4o", tools=["read", "bash"])
+        session._registry.register_tool(
+            {
+                "name": "ext_tool",
+                "label": "Ext",
+                "description": "an extension tool",
+                "parameters": {"type": "object", "properties": {}},
+                "execute": lambda *a, **k: "ok",
+            }
+        )
+        loop = self._production_loop([], session=session)
+
+        assert set(loop._tools) == {"read", "bash", "ext_tool"}
+        assert {type(t) for t in loop._tools.values()} == {AgentTool}
+        # And the definition-level read works across both sources.
+        assert loop._tools["bash"].definition.execution_mode == "sequential"
+        assert loop._tools["ext_tool"].definition.execution_mode == "parallel"

@@ -17,18 +17,25 @@ pi parity: packages/coding-agent/src/core/session-manager.ts (cited inline).
 
 from __future__ import annotations
 
+import copy
 import json
 import os
+import stat
+import tempfile
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, SessionInfo
+from tau_agent_core.session_log import LANE_KEY, resolve_cursor
 
-# τ data dir for config and session storage (matches app.py / cli.py).
-TAU_DIR = Path.home() / ".tau"
+# τ data dir for config and session storage. Re-exported (not redefined) from the
+# single config module — tests still monkeypatch ``session_store.TAU_DIR``, which
+# rebinds this module global and works exactly as before.
+from tau_coding_agent.config import TAU_DIR, ConfigError
+
 # pi derives this from APP_NAME (config.ts:481-482, PI_CODING_AGENT_SESSION_DIR);
 # a TAU_CODING_AGENT_SESSION_DIR override is reserved but not implemented (§5.1).
 SESSIONS_DIRNAME = "sessions"
@@ -94,6 +101,126 @@ def session_dir_for_cwd(cwd: str, base_dir: Path | None = None) -> Path:
         "--" + abspath.lstrip("/\\").replace("/", "-").replace("\\", "-").replace(":", "-") + "--"
     )
     return _sessions_base(base_dir) / dashed
+
+
+# ---------------------------------------------------------------------------
+# RPC mode's DEFAULT session base (unit S / docs/RPC-TIER-B.md D-6).
+#
+# `--mode rpc` does not write into the user's `~/.tau/sessions`: every spawn of
+# an editor plugin's τ child would otherwise leave a durable, listable,
+# 0-message session there, and `--continue` (`headless._select_session` ->
+# `catalog.most_recent(cwd)`) would resume THAT instead of the human's work.
+# Separating the LOCATION per mode is the fix (rather than filtering the
+# listing, or reverting the startup session to ephemeral and re-breaking every
+# durability promise D-6 exists to keep). `--session-dir` overrides it in both
+# directions, and `--session-dir ~/.tau/sessions` is how a host says "yes, I
+# really do want these in the user's list".
+# ---------------------------------------------------------------------------
+
+
+class UnsafeSessionDirError(ConfigError):
+    """The chosen session base exists but is not a private directory we own.
+
+    A :class:`~tau_coding_agent.config.ConfigError` so ``cli.main()``'s single
+    handler renders it as ``tau: error: ...`` (exit 2) — this must ABORT the
+    run. Fail-Early: τ never writes into such a path and never quietly picks a
+    different one, because both of those are how a symlink planted in a shared
+    temp dir turns into "τ wrote your transcripts somewhere you can read".
+    """
+
+
+def _ensure_private_dir(path: Path) -> None:
+    """``mkdir(0o700)`` ``path``, or verify an existing one is ours and private.
+
+    The whole guard for hazard 2 of unit S: a name under a shared, sticky
+    ``/tmp`` can be pre-created by anyone — as a symlink into someone's home,
+    or as a directory of their own — and would then harvest whatever τ writes
+    there next. :func:`rpc_default_session_base` puts our uid IN the name so
+    two legitimate users never contend for one entry (round-3 finding 1); this
+    function is what handles the case that remains after that, which is a
+    HOSTILE squat on the name belonging to the uid being attacked.
+
+    - Missing → created ``0o700`` (umask can only remove bits from that).
+    - Exists and is not a directory → refuse. ``lstat`` (never ``stat``), so a
+      SYMLINK is the non-directory it is rather than the directory it points at.
+    - Exists, is a directory, but ``st_uid`` is not ours → refuse.
+    - Ours, but group/other-accessible → tightened to ``0o700``. We own it, so
+      narrowing it is ours to do; leaving a session store other users can plant
+      files in is exactly the hazard this function exists for.
+    """
+    try:
+        path.mkdir(mode=0o700)
+        return
+    except FileExistsError:
+        pass
+    # Racing creator, or a pre-existing entry. Either way, inspect what is
+    # actually there rather than assuming the mkdir lost a benign race.
+    st = path.lstat()
+    if not stat.S_ISDIR(st.st_mode):
+        kind = "symlink" if stat.S_ISLNK(st.st_mode) else "non-directory file"
+        raise UnsafeSessionDirError(
+            f"refusing to use {path} as a session directory: it exists and is a "
+            f"{kind}. τ will not follow it and will not silently choose another "
+            "path; remove it, or pass --session-dir DIR to name one explicitly."
+        )
+    if st.st_uid != os.getuid():
+        raise UnsafeSessionDirError(
+            f"refusing to use {path} as a session directory: it is owned by uid "
+            f"{st.st_uid}, not by you (uid {os.getuid()}). Another user created "
+            "it first; remove it, or pass --session-dir DIR to name one "
+            "explicitly."
+        )
+    if st.st_mode & 0o077:
+        path.chmod(0o700)
+
+
+def rpc_tmp_dirname() -> str:
+    """``.tau-<uid>`` — the per-user directory name under the temp dir.
+
+    The uid is IN the name, and that is the whole point (round-3 review,
+    finding 1). The first shape of this was a flat ``.tau``, which on a default
+    distro means ``/tmp/.tau`` — and ``/tmp`` is ``drwxrwxrwt``, shared and
+    sticky. The first user to run ``--mode rpc`` on the box created it ``0700``,
+    and :func:`_ensure_private_dir`'s ownership check — correct, and kept —
+    then refused it for every OTHER user, aborting the run with exit 2 before
+    it served a single request. ``--mode rpc`` became a mode one uid per boot
+    could use, with an error message whose stated remedy ("remove it") the
+    sticky bit forbids.
+
+    Qualifying the name retires the COLLISION without weakening one refusal:
+    a hostile user can still pre-create ``.tau-<your uid>``, and
+    :func:`_ensure_private_dir` still refuses it loudly. What changes is that a
+    second honest user is no longer indistinguishable from that attacker.
+    """
+    return f".tau-{os.getuid()}"
+
+
+def rpc_default_session_base() -> Path:
+    """``<tempdir>/.tau-<uid>/sessions`` — the DEFAULT base for ``--mode rpc``.
+
+    Creates and validates both levels (:func:`_ensure_private_dir`) and returns
+    the path; raises :class:`UnsafeSessionDirError` rather than writing into or
+    around anything suspicious.
+
+    ``tempfile.gettempdir()`` rather than a hardcoded ``/tmp``: it IS ``/tmp``
+    unless ``$TMPDIR`` says otherwise, and honoring ``$TMPDIR`` costs nothing
+    while giving every subprocess test (and every distro that hands each user a
+    private temp dir) a real sandbox instead of the shared one. The uid in the
+    name (:func:`rpc_tmp_dirname`) is what makes the SHARED case work too —
+    see there.
+
+    **Durability is bounded by machine uptime.** Most systems clear the temp dir
+    on reboot, so an RPC session is durable for the life of the machine, not
+    forever. That is stated on the wire too — in ``set_model``'s and
+    ``set_session_name``'s ``notes`` — because the point of D-6 was to stop a
+    cursor promising a durability it does not deliver, and replacing a loud lie
+    with a quiet one would be the same defect wearing a different hat.
+    """
+    tau_dir = Path(tempfile.gettempdir()) / rpc_tmp_dirname()
+    _ensure_private_dir(tau_dir)
+    base = tau_dir / SESSIONS_DIRNAME
+    _ensure_private_dir(base)
+    return base
 
 
 def _now_iso() -> str:
@@ -166,20 +293,13 @@ class Session:
 
     @staticmethod
     def _resolve_cursor(entries: list[dict[str, Any]]) -> str | None:
-        """Resolve the persisted cursor (leaf pointer) from the LAST entry.
+        """Resolve the persisted cursor — delegates to the shared entry algebra.
 
-        Latest-wins, mirroring how ``model``/``name`` resolve (§2.2): a ``navigate``
-        entry points at its ``targetId`` (``null`` = pre-root, before the first
-        entry); any other kind points at itself. Pi-style files carry no
-        ``navigate`` entries, so the cursor is the last entry — identical to pi's
-        "fall back to last entry" on load (session-manager.ts:855-859)."""
-        if not entries:
-            return None
-        last = entries[-1]
-        if last.get("type") == "navigate":
-            target = last.get("targetId")
-            return str(target) if target is not None else None
-        return str(last["id"])
+        The rule lives in ``tau_agent_core.session_log.resolve_cursor`` so every store
+        (in-memory, file, database-backed) resolves the cursor identically; it is part
+        of the entry algebra, not of any one durability layer.
+        """
+        return resolve_cursor(entries)
 
     # --- identity / header -------------------------------------------------
 
@@ -214,13 +334,25 @@ class Session:
 
     @property
     def messages(self) -> list[dict[str, Any]]:
-        """Raw linear fold: every ``message`` entry in load order.
+        """Raw linear fold: every PRIMARY-lane ``message`` entry in load order.
 
         This IGNORES the cursor and never splices compaction/``branch_summary``,
         so it is *not* what the user sees or the model receives — use ``context``
         for that. Kept because a few callers still want the flat entry list.
+
+        **Lane-filtered (C2/W14).** Ignoring the cursor was harmless while one cursor
+        wrote the log; with branch sub-agents it stops being harmless, because a
+        cursor-ignoring fold picks up every sub-agent's messages too. The consumers are
+        exactly the places a user would notice and mistrust: ``display_title()`` (a
+        session named after a sub-agent's internal prompt), ``read_session_info``'s
+        ``message_count``/``first_message`` in the picker, and ``rpc``'s
+        ``message_count``. A sub-agent's private turns are not messages *of this
+        conversation*, so they are excluded here. Anything wanting the true raw log
+        still has ``entries()``.
         """
-        return [e["message"] for e in self._entries if e.get("type") == "message"]
+        return [
+            e["message"] for e in self._entries if e.get("type") == "message" and LANE_KEY not in e
+        ]
 
     @property
     def context(self) -> list[dict[str, Any]]:
@@ -262,8 +394,13 @@ class Session:
         return None
 
     def entries(self) -> list[dict[str, Any]]:
-        """Ordered raw entries, all kinds (seam 2 — export / pi-faithful json)."""
-        return [dict(e) for e in self._entries]
+        """Ordered raw entries, all kinds (seam 2 — export / pi-faithful json).
+
+        deepcopy, not dict(e): a shallow copy shares the nested payload, so a caller
+        doing ``entries()[0]["message"]["content"] = …`` would mutate the live log AND
+        silently diverge it from the on-disk JSONL, which is never rewritten.
+        """
+        return copy.deepcopy(self._entries)
 
     def display_title(self) -> str:
         """A short human label: the name, else the first user message, else model."""
@@ -410,6 +547,23 @@ class Session:
         return self._append("session_info", name=name)
 
     def append_compaction(self, summary: str, first_kept_id: str, tokens_before: int) -> str:
+        """Persist a compaction splice anchored at ``first_kept_id``.
+
+        Fail-Early on an unknown anchor, exactly as ``append_navigate`` and
+        ``append_branch_summary`` already do. This one was missing, and it is the most
+        damaging of the three to get wrong: ``ConversationTree._active_path_entries``
+        walks the path looking for the anchor and only starts keeping entries once it
+        finds it, so an id that matches nothing means the anchor is *never* found and
+        the ENTIRE kept region is silently dropped from the fold. The context comes
+        back as ``[summary] + whatever_was_appended_after`` and the conversation
+        quietly loses its recent history — no error, no warning.
+        """
+        if first_kept_id not in self._ids:
+            raise ValueError(
+                f"compaction first_kept_id {first_kept_id!r} not found; the splice anchor "
+                "must name a real entry, or the whole kept region silently drops out of "
+                "the context fold"
+            )
         _emit_session_event(SESSION_BEFORE_COMPACT, self, first_kept_id=first_kept_id)
         return self._append(
             "compaction",
@@ -417,6 +571,28 @@ class Session:
             firstKeptId=first_kept_id,
             tokensBefore=tokens_before,
         )
+
+    def append_elide(self, first_kept_id: str) -> str:
+        """Persist a summary-less splice anchor (W3, NODE-ADDRESSABLE-AGENTS.md).
+
+        The same splice ``ConversationTree._active_path_entries`` runs for
+        ``compaction`` — anchor on the last of ``{"compaction", "elide"}`` in the
+        path, drop everything before ``firstKeptId`` — with the ``summary`` and
+        ``tokensBefore`` fields dropped: there is nothing to render, only a span to
+        exclude. No ``SESSION_BEFORE_COMPACT`` event here — it names a compaction
+        run specifically, and an ``elide`` is not one.
+
+        Fail-Early on an unknown anchor, exactly as ``append_compaction`` does: an
+        id matching nothing is never found by the fold's forward scan, so the
+        entire kept region would silently drop out of context rather than raise.
+        """
+        if first_kept_id not in self._ids:
+            raise ValueError(
+                f"elide first_kept_id {first_kept_id!r} not found; the splice anchor "
+                "must name a real entry, or the whole kept region silently drops out of "
+                "the context fold"
+            )
+        return self._append("elide", firstKeptId=first_kept_id)
 
     def append_navigate(self, target_id: str | None) -> str:
         """Persist a cursor move as a first-class ``navigate`` entry (§2.2).
@@ -489,19 +665,44 @@ class Session:
         if system_prompt:
             self.append_message({"role": "system", "content": system_prompt})
 
-    def _append(self, kind: str, **payload: Any) -> str:
+    def append_at(
+        self,
+        parent_id: str | None,
+        entry_type: str,
+        payload: dict[str, Any],
+        *,
+        lane: str | None = None,
+    ) -> str:
+        """Explicit-parent append — the C2/W14 branch primitive (see the ``SessionLog``
+        Protocol). Parents where it is TOLD and does **not** move this log's leaf: a
+        sub-agent's writes must never drag the primary cursor into its lane.
+
+        The interleaving this allows (a branch's lines landing between two primary lines
+        in one JSONL file) is already valid on disk — entries carry an explicit
+        ``parentId``, so load order was never what defined the tree. Only the *writer*
+        convenience of chaining off a single ``_leaf_id`` ever assumed one cursor.
+        """
+        if parent_id is not None and parent_id not in self._ids:
+            raise ValueError(f"append parent {parent_id!r} not found")
         entry: dict[str, Any] = {
-            "type": kind,
+            "type": entry_type,
             "id": _generate_entry_id(self._ids),
-            "parentId": self._leaf_id,
+            "parentId": parent_id,
             "timestamp": _now_iso(),
             **payload,
         }
+        if lane is not None:
+            entry[LANE_KEY] = lane
         self._entries.append(entry)
         self._ids.add(entry["id"])
-        self._leaf_id = entry["id"]
         self._persist_entry(entry)
         return str(entry["id"])
+
+    def _append(self, kind: str, **payload: Any) -> str:
+        """The primary-lane append: ``append_at`` the current leaf, then move the leaf."""
+        entry_id = self.append_at(self._leaf_id, kind, payload)
+        self._leaf_id = entry_id
+        return entry_id
 
     def _persist_header(self) -> None:
         if self.path is None:
@@ -520,94 +721,83 @@ class Session:
 
 # ---------------------------------------------------------------------------
 # SessionInfo — the picker's lightweight streaming reader (§5.7).
+#
+# The dataclass itself now lives in tau_agent_core.session_catalog (W10): a path
+# for the file store, a doc id for a future JMFTS-backed one — ``ref`` is the
+# storage-agnostic handle, so the type had to move where storage-agnostic code
+# (SessionCatalog.resolve_ref/most_recent) can consume it without importing
+# tau_coding_agent (that import would be circular). The FILE-READING is not
+# storage-agnostic, so ``read_session_info`` (formerly the ``SessionInfo.read``
+# classmethod) stays here — tau-agent-core owns zero file I/O and that must stay
+# true.
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class SessionInfo:
-    """List metadata extracted without building agent messages (fast listing)."""
+def read_session_info(path: Path) -> SessionInfo | None:
+    """Stream a file → SessionInfo, or None on any parse error (skip at the
+    list edge — Fail-Early: a corrupt file shouldn't break the whole listing)."""
+    try:
+        header: dict[str, Any] | None = None
+        name: str | None = None
+        message_count = 0
+        first_message = ""
+        last_message = ""
+        last_timestamp: str | None = None
 
-    path: Path
-    id: str
-    cwd: str
-    name: str | None
-    created: datetime
-    modified: datetime
-    message_count: int
-    first_message: str
-    last_message: str
-    parent: str | None
+        with path.open("r", encoding="utf-8") as handle:
+            for raw in handle:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                entry = json.loads(raw)
+                if header is None:
+                    if entry.get("type") != "session":
+                        return None
+                    header = entry
+                    continue
 
-    def display_title(self) -> str:
-        if self.name:
-            return self.name
-        text = self.first_message.replace("\n", " ")
-        if not text:
-            return f"Session ({self.id[:8]})"
-        return text[:50] + ("..." if len(text) > 50 else "")
+                timestamp = entry.get("timestamp")
+                if isinstance(timestamp, str):
+                    last_timestamp = timestamp
 
-    @classmethod
-    def read(cls, path: Path) -> "SessionInfo | None":
-        """Stream a file → SessionInfo, or None on any parse error (skip at the
-        list edge — Fail-Early: a corrupt file shouldn't break the whole listing)."""
-        try:
-            header: dict[str, Any] | None = None
-            name: str | None = None
-            message_count = 0
-            first_message = ""
-            last_message = ""
-            last_timestamp: str | None = None
+                kind = entry.get("type")
+                if kind == "session_info":
+                    value = entry.get("name")
+                    name = value.strip() if isinstance(value, str) and value.strip() else None
+                elif kind == "message" and LANE_KEY not in entry:
+                    # Primary lane only (C2/W14). A branch sub-agent's turns are not
+                    # messages of THIS conversation: counting them would inflate the
+                    # picker's message_count and — worse — let a sub-agent's internal
+                    # prompt become the session's first_message, i.e. its display title.
+                    message = entry.get("message", {})
+                    role = message.get("role")
+                    if role in ("user", "assistant"):
+                        message_count += 1
+                        text = _extract_text(message)
+                        if text:
+                            last_message = text
+                            if not first_message and role == "user":
+                                first_message = text
 
-            with path.open("r", encoding="utf-8") as handle:
-                for raw in handle:
-                    raw = raw.strip()
-                    if not raw:
-                        continue
-                    entry = json.loads(raw)
-                    if header is None:
-                        if entry.get("type") != "session":
-                            return None
-                        header = entry
-                        continue
-
-                    timestamp = entry.get("timestamp")
-                    if isinstance(timestamp, str):
-                        last_timestamp = timestamp
-
-                    kind = entry.get("type")
-                    if kind == "session_info":
-                        value = entry.get("name")
-                        name = value.strip() if isinstance(value, str) and value.strip() else None
-                    elif kind == "message":
-                        message = entry.get("message", {})
-                        role = message.get("role")
-                        if role in ("user", "assistant"):
-                            message_count += 1
-                            text = _extract_text(message)
-                            if text:
-                                last_message = text
-                                if not first_message and role == "user":
-                                    first_message = text
-
-            if header is None:
-                return None
-
-            created = _parse_iso(str(header["timestamp"]))
-            modified = _parse_iso(last_timestamp) if last_timestamp else created
-            return cls(
-                path=path,
-                id=str(header["id"]),
-                cwd=str(header.get("cwd", "")),
-                name=name,
-                created=created,
-                modified=modified,
-                message_count=message_count,
-                first_message=first_message,
-                last_message=last_message,
-                parent=header.get("parent"),
-            )
-        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        if header is None:
             return None
+
+        created = _parse_iso(str(header["timestamp"]))
+        modified = _parse_iso(last_timestamp) if last_timestamp else created
+        return SessionInfo(
+            ref=str(path),
+            id=str(header["id"]),
+            cwd=str(header.get("cwd", "")),
+            name=name,
+            created=created,
+            modified=modified,
+            message_count=message_count,
+            first_message=first_message,
+            last_message=last_message,
+            parent=header.get("parent"),
+        )
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -632,7 +822,7 @@ def list_sessions(cwd: str | None = None, base_dir: Path | None = None) -> list[
         if not directory.exists():
             continue
         for file in directory.glob("*.jsonl"):
-            info = SessionInfo.read(file)
+            info = read_session_info(file)
             if info is not None:
                 infos.append(info)
     infos.sort(key=lambda i: i.modified, reverse=True)
@@ -642,4 +832,82 @@ def list_sessions(cwd: str | None = None, base_dir: Path | None = None) -> list[
 def most_recent(cwd: str | None = None, base_dir: Path | None = None) -> Path | None:
     """The most recently modified session's path (pi ``findMostRecentSession``)."""
     infos = list_sessions(cwd, base_dir)
-    return infos[0].path if infos else None
+    return Path(infos[0].ref) if infos else None
+
+
+# ---------------------------------------------------------------------------
+# FileSessionCatalog — the SessionCatalog seam's file-store adapter (W10).
+# ---------------------------------------------------------------------------
+
+
+class FileSessionCatalog(SessionCatalog):
+    """Thin :class:`~tau_agent_core.session_catalog.SessionCatalog` adapter over
+    the existing module-level ``Session``/``list_sessions`` API.
+
+    Adds no new behaviour: every method is a direct pass-through to the concrete
+    ``Session`` classmethods (or ``list_sessions``/``read_session_info`` for
+    listing) that already implement this on-disk format. ``base_dir`` is the
+    optional seam-1 override (``--session-dir``, and every test that sandboxes a
+    ``tmp_path``); ``None`` means the real ``~/.tau/sessions``.
+    """
+
+    def __init__(self, base_dir: Path | None = None) -> None:
+        self._base_dir = base_dir
+
+    def create(
+        self,
+        cwd: str,
+        model: str,
+        backend: str,
+        *,
+        system_prompt: str | None = None,
+        name: str | None = None,
+    ) -> Session:
+        return Session.create(
+            cwd,
+            model,
+            backend,
+            system_prompt=system_prompt,
+            name=name,
+            base_dir=self._base_dir,
+        )
+
+    def create_ephemeral(
+        self,
+        cwd: str,
+        model: str,
+        backend: str,
+        *,
+        system_prompt: str | None = None,
+        name: str | None = None,
+    ) -> Session:
+        return Session.create_in_memory(cwd, model, backend, system_prompt=system_prompt, name=name)
+
+    def load(self, ref: str) -> Session:
+        return Session.load(Path(ref))
+
+    def fork(self, source: ConversationSession, cwd: str) -> Session:
+        # A real type gate, not an `assert`: asserts are stripped under `python -O`,
+        # which would turn this into a silently-wrong call on a foreign session.
+        if not isinstance(source, Session):
+            raise TypeError(
+                f"FileSessionCatalog.fork requires a file-backed Session, got {type(source)!r}"
+            )
+        return Session.fork(source, cwd, base_dir=self._base_dir)
+
+    def list(self, cwd: str | None = None) -> list[SessionInfo]:
+        return list_sessions(cwd, base_dir=self._base_dir)
+
+    def resolve_ref(self, ref: str, *, cwd: str | None = None) -> ConversationSession:
+        """A file-store REF may be a ``.jsonl`` PATH as well as a session id.
+
+        The path form is this store's own directly-addressable ref, so it is
+        resolved here rather than in the storage-agnostic base — core must not know
+        what a ``.jsonl`` is. A path that does not exist falls through to the base's
+        id / id-prefix search (matching the original ``p.exists()`` guard); a path
+        that exists but is *malformed* still raises out of ``load()``, so a real
+        corruption surfaces instead of being silently reinterpreted as an id.
+        """
+        if Path(ref).suffix == ".jsonl" and Path(ref).exists():
+            return self.load(ref)
+        return super().resolve_ref(ref, cwd=cwd)

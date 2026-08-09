@@ -50,13 +50,17 @@ def test_custom_entry_survives_ondisk_reload(tmp_path) -> None:
 
     session._append_custom_entry("todo", {"text": "buy milk", "done": False, "n": 3})
 
+    # Filtered by customType, not just kind: construction already wrote its own
+    # `customEntry` (W2's non-authoritative `agent_spec` provenance record,
+    # NODE-ADDRESSABLE-AGENTS.md), so "customEntry" alone is no longer unique to
+    # this test's own append.
     before = store.entries()
-    assert sum(1 for e in before if e.get("type") == "customEntry") == 1
+    assert sum(1 for e in before if e.get("customType") == "todo") == 1
 
     # A real reload from the persisted JSONL bytes.
     reloaded = Session.load(store.path)
     assert reloaded.entries() == before  # byte-identical round-trip
-    entries = [e for e in reloaded.entries() if e.get("type") == "customEntry"]
+    entries = [e for e in reloaded.entries() if e.get("customType") == "todo"]
     assert len(entries) == 1
     assert entries[0]["customType"] == "todo"
     assert entries[0]["data"] == {"text": "buy milk", "done": False, "n": 3}

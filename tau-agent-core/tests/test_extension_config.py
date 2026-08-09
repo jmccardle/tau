@@ -155,7 +155,12 @@ class TestConfigNotPersisted:
 
         # It IS held as runtime state on the session...
         assert session._extensions_config == {"budget": {"ceiling": 5.0}}
-        # ...but nothing about it was appended to the durable log.
+        # ...but nothing about it was appended to the durable log: the only entry
+        # construction wrote is its own non-authoritative `agent_spec` provenance
+        # record (W2, NODE-ADDRESSABLE-AGENTS.md), which carries no config.
         blob = json.dumps(session.session_log.entries())
         assert "ceiling" not in blob
-        assert session.session_log.entries() == []
+        entries = session.session_log.entries()
+        assert len(entries) == 1
+        assert entries[0]["type"] == "customEntry"
+        assert entries[0]["customType"] == "agent_spec"

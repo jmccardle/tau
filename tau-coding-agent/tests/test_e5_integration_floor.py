@@ -270,26 +270,9 @@ def register(api):
 
 
 @pytest.fixture
-def app(monkeypatch, tmp_path):
-    """A Parley wired to REAL TauBackends, with sandboxed session storage."""
-    import tau_coding_agent.session_store as store
-
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
-    monkeypatch.setattr("tau_coding_agent.app.create_backend", create_backend)
-    # Isolate the module-global session-event listener list so a real backend's
-    # subscribe_session_events leak can't fire into a later test (see
-    # test_app_extension_loading.py for the rationale).
-    monkeypatch.setattr(store, "_session_listeners", [])
-
-    from tau_coding_agent.app import Parley
-
-    a = Parley()
-    a.config = {
-        "models": {"m": {"backend": "openai", "model": "m", "api_key": "not-needed"}},
-        "default_model": "m",
-        "system_prompt": "sys",
-    }
-    return a
+def app(make_app):
+    """A Parley wired to REAL TauBackends (TauBackend has no network in __init__)."""
+    return make_app(create_backend=create_backend)
 
 
 async def test_tui_floor_extensions_listing_and_veto(app, tmp_path):
@@ -335,13 +318,13 @@ async def test_tui_floor_extensions_listing_and_veto(app, tmp_path):
         display = app.query_one(ChatDisplay)
         display.add_message("user", "write outside scope")
         await display.begin_exchange()
-        display.handle_stream_event({"kind": "turn_start", "turn_index": 0})
+        await display.handle_stream_event({"kind": "turn_start", "turn_index": 0})
         await pilot.pause()
-        display.handle_stream_event(
+        await display.handle_stream_event(
             {"kind": "tool_call", "id": "c1", "name": "write", "arguments": {"path": "/etc/x"}}
         )
         await pilot.pause()
-        display.handle_stream_event(
+        await display.handle_stream_event(
             {
                 "kind": "tool_result",
                 "id": "c1",

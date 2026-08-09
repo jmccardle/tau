@@ -24,6 +24,7 @@ import os
 import pytest
 
 import tau_coding_agent.session_store as store
+from tau_agent_core.submission import SubmissionResult
 from tau_coding_agent.cli import CLIArgs
 from tau_coding_agent.headless import CLIError, run_print
 from tau_coding_agent.session_store import Session
@@ -60,21 +61,35 @@ class _FakeBackend:
         self.config = config
 
     async def load_extensions(
-            self, explicit_paths=None, *, discover=True, user_dir=None, extensions_config=None
-        ):
+        self, explicit_paths=None, *, discover=True, user_dir=None, extensions_config=None
+    ):
         from tau_agent_core.sdk import LoadExtensionsResult
 
         return LoadExtensionsResult()
 
-    async def stream_chat(self, messages, callback, on_event=None):
-        self.messages = messages  # capture the context the loop was given
+    async def stream_submission(
+        self, submission, context, callback, on_event=None, on_pi_event=None
+    ):
+        # B2-c: run_print builds its own Submission and admits it through the one
+        # door, so a double stands in for ``stream_submission`` — the caller's record
+        # in, the 4-tuple plus the SubmissionResult out.
+        self.submission = submission
+        self.messages = context  # capture the context the loop was given
         callback("ANSWER")
         if on_event is not None:
             on_event({"kind": "text_delta", "delta": "ANSWER"})
         new_messages = [
             {"role": "assistant", "content": [{"type": "text", "text": "ANSWER"}]},
         ]
-        return "ANSWER", {"total_tokens": 1}, new_messages, []
+        return (
+            "ANSWER",
+            {"total_tokens": 1},
+            new_messages,
+            [],
+            SubmissionResult(
+                accepted=True, submission_id=submission.submission_id, messages=new_messages
+            ),
+        )
 
 
 @pytest.fixture
@@ -183,8 +198,10 @@ async def test_explicit_model_overrides_stored_on_resume(env):
     b = env["seed"]("local-llm", "b1")
     await run_print(
         CLIArgs(
-            messages=["next"], print_mode=True,
-            continue_session=True, model="gpt-4o",
+            messages=["next"],
+            print_mode=True,
+            continue_session=True,
+            model="gpt-4o",
         ),
         _config(),
     )
@@ -319,8 +336,10 @@ async def test_name_updates_title_on_continue(env):
     b = env["seed"]("local-llm", "b1")
     await run_print(
         CLIArgs(
-            messages=["next"], print_mode=True,
-            continue_session=True, name="Renamed",
+            messages=["next"],
+            print_mode=True,
+            continue_session=True,
+            name="Renamed",
         ),
         _config(),
     )
@@ -335,8 +354,10 @@ async def test_system_prompt_with_resume_errors(env):
     with pytest.raises(CLIError, match="system-prompt can't be combined"):
         await run_print(
             CLIArgs(
-                messages=["next"], print_mode=True,
-                continue_session=True, system_prompt="ROLE",
+                messages=["next"],
+                print_mode=True,
+                continue_session=True,
+                system_prompt="ROLE",
             ),
             _config(),
         )

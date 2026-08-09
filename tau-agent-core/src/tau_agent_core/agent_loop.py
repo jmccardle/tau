@@ -100,6 +100,17 @@ class AgentLoop:
             Unlike ``emit`` (fire-and-forget), its ``emit_*`` methods return
             results that the mutating-hook call-sites thread forward. ``None``
             when the loop runs standalone (no session / no extensions).
+        _steer_queue: The session's live steering queue — the delivery point for
+            ``multitask_strategy="steer"`` (docs/SUBMISSION-LIFECYCLE.md phase 4;
+            pi ``agent-loop.ts:166-186``). The LIST OBJECT itself is shared with
+            :class:`~tau_agent_core.agent_session.AgentSession` rather than a
+            drain callback, deliberately: the loop must both PEEK (to decide
+            whether a would-be-final turn takes one more LLM call) and DRAIN
+            (immediately before the call that carries the content), and a
+            drain-only seam forces the loop to hold drained content in a local
+            that a ``max_turns`` exit would strand. Sharing the list means
+            nothing leaves the queue until the very statement that delivers it.
+            ``None`` when the loop runs standalone (no session).
     """
 
     def __init__(
@@ -110,6 +121,7 @@ class AgentLoop:
         model: Any = None,
         abort_signal: AbortSignal | None = None,
         hook_dispatcher: ExtensionRunner | None = None,
+        steer_queue: list[Any] | None = None,
     ) -> None:
         self.config = config
         self._emit = emit or (lambda e: asyncio.create_task(self._noop_emit(e)))
@@ -125,6 +137,9 @@ class AgentLoop:
         # in; the call-sites gate on has_hook_handlers() for the zero-extension
         # fast path.
         self._hook_dispatcher: ExtensionRunner | None = hook_dispatcher
+        # The session's steering queue (phase 4). See the class docstring for why
+        # this is the shared list and not a drain callback.
+        self._steer_queue: list[Any] | None = steer_queue
 
     @staticmethod
     async def _noop_emit(event: AgentEvent) -> None:
@@ -192,122 +207,138 @@ class AgentLoop:
         turn_index = 0
         final_messages: list[Any] = []
 
-        while turn_index < self.config.max_turns:
-            if self._abort_signal and self._abort_signal.is_aborted():
-                break
+        try:
+            while turn_index < self.config.max_turns:
+                if self._abort_signal and self._abort_signal.is_aborted():
+                    break
 
-            await self._emit(
-                AgentEvent(
-                    type="turn_start",
-                    timestamp=int(time.time() * 1000),
-                    turn_index=turn_index,
+                await self._emit(
+                    AgentEvent(
+                        type="turn_start",
+                        timestamp=int(time.time() * 1000),
+                        turn_index=turn_index,
+                    )
                 )
-            )
 
-            # Stream response from LLM
-            assistant = await self._stream_response(messages)
-            final_messages.append(assistant)
+                # Steering delivery (phase 4). BEFORE the LLM call and AFTER the
+                # previous iteration's tool results were appended — the definition of
+                # "steer". On the first iteration this catches content submitted
+                # between admission and the loop actually starting (pi polls here for
+                # the same reason: "user may have typed while waiting").
+                await self._deliver_steer(messages, final_messages)
 
-            tool_calls = assistant.get_tool_calls()
+                # Stream response from LLM
+                assistant = await self._stream_response(messages)
+                final_messages.append(assistant)
 
-            if not tool_calls:
-                # Text-only response — turn ends
+                tool_calls = assistant.get_tool_calls()
+
+                if not tool_calls:
+                    # Text-only response — turn ends
+                    await self._emit(
+                        AgentEvent(
+                            type="turn_end",
+                            timestamp=int(time.time() * 1000),
+                            turn_index=turn_index,
+                            tool_results=[],
+                        )
+                    )
+                    # S43 — the MUTATING turn_end hook fires AFTER the notify AgentEvent:
+                    # a returned message is a durable append. This is the final turn (the
+                    # loop breaks below), so the node is persisted but the model only sees
+                    # it on the NEXT prompt() — the same reload-durable path.
+                    await self._run_mutating_turn_end(
+                        turn_index,
+                        self._turn_usage(assistant),
+                        [self._serialize_message(assistant)],
+                        messages,
+                        final_messages,
+                    )
+                    turn_index += 1
+                    # A steer that landed during THIS turn keeps the loop alive for one
+                    # more LLM call — pi's inner-loop condition is
+                    # ``hasMoreToolCalls || pendingMessages.length > 0``
+                    # (agent-loop.ts:173), so "there is no next LLM call" is not the
+                    # answer: steering CREATES one. PEEKED, not drained, so the
+                    # ``max_turns`` bound above still owns the decision and content is
+                    # never taken off the queue by an iteration that will not send it.
+                    if self._steer_queue:
+                        continue
+                    break
+
+                # Emit message_end for the assistant's text/tool call response
+                msg_content = [
+                    c.model_dump() if hasattr(c, "model_dump") else c for c in assistant.content
+                ]
+                await self._emit(
+                    AgentEvent(
+                        type="message_end",
+                        timestamp=int(time.time() * 1000),
+                        message={
+                            "role": "assistant",
+                            "content": msg_content,
+                        },
+                    )
+                )
+
+                # Execute tool calls
+                batch = await self._execute_tool_calls(assistant, tool_calls)
+
+                # Add tool results to messages
+                for msg in batch.messages:
+                    messages.append(msg)
+                    final_messages.append(msg)
+
+                # Emit turn_end with tool results
+                tool_result_dicts = []
+                for tr in batch.tool_results:
+                    tool_result_dicts.append(
+                        {
+                            "tool_call_id": tr.tool_call_id,
+                            "tool_name": tr.tool_name,
+                            "content": tr.content,
+                            "is_error": tr.is_error,
+                        }
+                    )
                 await self._emit(
                     AgentEvent(
                         type="turn_end",
                         timestamp=int(time.time() * 1000),
                         turn_index=turn_index,
-                        tool_results=[],
+                        tool_results=tool_result_dicts,
                     )
                 )
-                # S43 — the MUTATING turn_end hook fires AFTER the notify AgentEvent:
-                # a returned message is a durable append. This is the final turn (the
-                # loop breaks below), so the node is persisted but the model only sees
-                # it on the NEXT prompt() — the same reload-durable path.
+
+                # S43 — the MUTATING turn_end hook. A returned message is appended as a
+                # durable ``custom`` node to BOTH the running context (so the next turn's
+                # model sees it, custom→user on the wire) and ``final_messages`` (so
+                # AgentSession persists it as a ``customMessage`` tree node — the single
+                # durable artifact: persisted == rendered == sent). Append-only: it never
+                # rewrites the assistant/tool nodes above it.
                 await self._run_mutating_turn_end(
                     turn_index,
                     self._turn_usage(assistant),
-                    [self._serialize_message(assistant)],
+                    [
+                        self._serialize_message(assistant),
+                        *[self._serialize_message(m) for m in batch.messages],
+                    ],
                     messages,
                     final_messages,
                 )
+
+                if batch.terminate:
+                    break
+
                 turn_index += 1
-                break
 
-            # Emit message_end for the assistant's text/tool call response
-            msg_content = [
-                c.model_dump() if hasattr(c, "model_dump") else c for c in assistant.content
-            ]
-            await self._emit(
-                AgentEvent(
-                    type="message_end",
-                    timestamp=int(time.time() * 1000),
-                    message={
-                        "role": "assistant",
-                        "content": msg_content,
-                    },
-                )
-            )
+        except BaseException as exc:
+            # The bracket closes however the loop ended — see _emit_agent_end.
+            # `except` rather than `finally` so the close can say WHY; the raise
+            # below is unconditional, so nothing is swallowed by observing it.
+            await self._emit_agent_end(final_messages, exc)
+            raise
 
-            # Execute tool calls
-            batch = await self._execute_tool_calls(assistant, tool_calls)
-
-            # Add tool results to messages
-            for msg in batch.messages:
-                messages.append(msg)
-                final_messages.append(msg)
-
-            # Emit turn_end with tool results
-            tool_result_dicts = []
-            for tr in batch.tool_results:
-                tool_result_dicts.append(
-                    {
-                        "tool_call_id": tr.tool_call_id,
-                        "tool_name": tr.tool_name,
-                        "content": tr.content,
-                        "is_error": tr.is_error,
-                    }
-                )
-            await self._emit(
-                AgentEvent(
-                    type="turn_end",
-                    timestamp=int(time.time() * 1000),
-                    turn_index=turn_index,
-                    tool_results=tool_result_dicts,
-                )
-            )
-
-            # S43 — the MUTATING turn_end hook. A returned message is appended as a
-            # durable ``custom`` node to BOTH the running context (so the next turn's
-            # model sees it, custom→user on the wire) and ``final_messages`` (so
-            # AgentSession persists it as a ``customMessage`` tree node — the single
-            # durable artifact: persisted == rendered == sent). Append-only: it never
-            # rewrites the assistant/tool nodes above it.
-            await self._run_mutating_turn_end(
-                turn_index,
-                self._turn_usage(assistant),
-                [
-                    self._serialize_message(assistant),
-                    *[self._serialize_message(m) for m in batch.messages],
-                ],
-                messages,
-                final_messages,
-            )
-
-            if batch.terminate:
-                break
-
-            turn_index += 1
-
-        await self._emit(
-            AgentEvent(
-                type="agent_end",
-                timestamp=int(time.time() * 1000),
-                messages=[
-                    m.model_dump() if hasattr(m, "model_dump") else m for m in final_messages
-                ],
-            )
-        )
+        await self._emit_agent_end(final_messages)
 
         return final_messages
 
@@ -333,98 +364,149 @@ class AgentLoop:
 
         await self._emit(AgentEvent(type="agent_start", timestamp=int(time.time() * 1000)))
 
-        while turn_index < self.config.max_turns:
-            if self._abort_signal and self._abort_signal.is_aborted():
-                break
+        try:
+            while turn_index < self.config.max_turns:
+                if self._abort_signal and self._abort_signal.is_aborted():
+                    break
 
-            await self._emit(
-                AgentEvent(
-                    type="turn_start",
-                    timestamp=int(time.time() * 1000),
-                    turn_index=turn_index,
+                await self._emit(
+                    AgentEvent(
+                        type="turn_start",
+                        timestamp=int(time.time() * 1000),
+                        turn_index=turn_index,
+                    )
                 )
-            )
 
-            assistant = await self._stream_response(messages)
-            final_messages.append(assistant)
+                # Steering delivery — same contract as run() (phase 4). A continuation
+                # is a turn like any other, so content steered at it is delivered
+                # before its next LLM call rather than waiting for a fresh prompt.
+                await self._deliver_steer(messages, final_messages)
 
-            tool_calls = assistant.get_tool_calls()
-            if not tool_calls:
+                assistant = await self._stream_response(messages)
+                final_messages.append(assistant)
+
+                tool_calls = assistant.get_tool_calls()
+                if not tool_calls:
+                    await self._emit(
+                        AgentEvent(
+                            type="turn_end",
+                            timestamp=int(time.time() * 1000),
+                            turn_index=turn_index,
+                            tool_results=[],
+                        )
+                    )
+                    # S43 — mutating turn_end (see run()); final turn, durable append.
+                    await self._run_mutating_turn_end(
+                        turn_index,
+                        self._turn_usage(assistant),
+                        [self._serialize_message(assistant)],
+                        messages,
+                        final_messages,
+                    )
+                    turn_index += 1
+                    # See run(): a steer that arrived during this turn buys one more
+                    # LLM call rather than being stranded until the next prompt.
+                    if self._steer_queue:
+                        continue
+                    break
+
+                await self._emit(
+                    AgentEvent(
+                        type="message_end",
+                        timestamp=int(time.time() * 1000),
+                        message={
+                            "role": "assistant",
+                            "content": [
+                                c.model_dump() if hasattr(c, "model_dump") else c
+                                for c in assistant.content
+                            ],
+                        },
+                    )
+                )
+
+                batch = await self._execute_tool_calls(assistant, tool_calls)
+
+                for msg in batch.messages:
+                    messages.append(msg)
+                    final_messages.append(msg)
+
+                tool_result_dicts = []
+                for tr in batch.tool_results:
+                    tool_result_dicts.append(
+                        {
+                            "tool_call_id": tr.tool_call_id,
+                            "tool_name": tr.tool_name,
+                            "content": tr.content,
+                            "is_error": tr.is_error,
+                        }
+                    )
                 await self._emit(
                     AgentEvent(
                         type="turn_end",
                         timestamp=int(time.time() * 1000),
                         turn_index=turn_index,
-                        tool_results=[],
+                        tool_results=tool_result_dicts,
                     )
                 )
-                # S43 — mutating turn_end (see run()); final turn, durable append.
+
+                # S43 — mutating turn_end (see run()); durable append before next turn.
                 await self._run_mutating_turn_end(
                     turn_index,
                     self._turn_usage(assistant),
-                    [self._serialize_message(assistant)],
+                    [
+                        self._serialize_message(assistant),
+                        *[self._serialize_message(m) for m in batch.messages],
+                    ],
                     messages,
                     final_messages,
                 )
+
+                if batch.terminate:
+                    break
+
                 turn_index += 1
-                break
 
-            await self._emit(
-                AgentEvent(
-                    type="message_end",
-                    timestamp=int(time.time() * 1000),
-                    message={
-                        "role": "assistant",
-                        "content": [
-                            c.model_dump() if hasattr(c, "model_dump") else c
-                            for c in assistant.content
-                        ],
-                    },
-                )
-            )
+        except BaseException as exc:
+            # The bracket closes however the loop ended — see _emit_agent_end.
+            # `except` rather than `finally` so the close can say WHY; the raise
+            # below is unconditional, so nothing is swallowed by observing it.
+            await self._emit_agent_end(final_messages, exc)
+            raise
 
-            batch = await self._execute_tool_calls(assistant, tool_calls)
+        await self._emit_agent_end(final_messages)
 
-            for msg in batch.messages:
-                messages.append(msg)
-                final_messages.append(msg)
+        return final_messages
 
-            tool_result_dicts = []
-            for tr in batch.tool_results:
-                tool_result_dicts.append(
-                    {
-                        "tool_call_id": tr.tool_call_id,
-                        "tool_name": tr.tool_name,
-                        "content": tr.content,
-                        "is_error": tr.is_error,
-                    }
-                )
-            await self._emit(
-                AgentEvent(
-                    type="turn_end",
-                    timestamp=int(time.time() * 1000),
-                    turn_index=turn_index,
-                    tool_results=tool_result_dicts,
-                )
-            )
+    # ------------------------------------------------------------------
+    # Internal methods
+    # ------------------------------------------------------------------
 
-            # S43 — mutating turn_end (see run()); durable append before next turn.
-            await self._run_mutating_turn_end(
-                turn_index,
-                self._turn_usage(assistant),
-                [
-                    self._serialize_message(assistant),
-                    *[self._serialize_message(m) for m in batch.messages],
-                ],
-                messages,
-                final_messages,
-            )
+    async def _emit_agent_end(
+        self,
+        final_messages: list[Any],
+        error: BaseException | None = None,
+    ) -> None:
+        """Close the ``agent_start`` bracket, however the loop ended.
 
-            if batch.terminate:
-                break
+        This used to be reachable only by falling out of the ``while``, so a loop
+        that RAISED — a provider ``ErrorEvent`` becomes a ``RuntimeError``
+        (:meth:`_stream_response`); a dropped connection — or one that was
+        CANCELLED (``abort()`` cancels every forked task) emitted no ``agent_end``
+        at all, leaving the bracket open for the rest of the session.
 
-            turn_index += 1
+        pi never has this problem because a provider error is a *value* there:
+        ``agent-loop.ts:342-353`` handles ``"error"`` in the same case as
+        ``"done"``, returns a ``stopReason="error"`` message, and emits
+        ``turn_end``/``agent_end`` on the way out normally. τ raises instead —
+        deliberately, so a caller cannot read a failed turn as a successful one —
+        which makes closing the bracket this loop's own job.
 
+        No synthetic ``turn_end`` accompanies the error close. pi can emit one
+        because it has a real final message to attach; here the turn was abandoned
+        mid-flight and a ``turn_end`` carrying ``tool_results=[]`` would assert
+        that a turn completed with no tools, which is a claim, not an observation.
+        """
+        detail = str(error) if error is not None else ""
         await self._emit(
             AgentEvent(
                 type="agent_end",
@@ -432,14 +514,60 @@ class AgentLoop:
                 messages=[
                     m.model_dump() if hasattr(m, "model_dump") else m for m in final_messages
                 ],
+                is_error=error is not None,
+                error=(
+                    None
+                    if error is None
+                    else (f"{type(error).__name__}: {detail}" if detail else type(error).__name__)
+                ),
             )
         )
 
-        return final_messages
+    async def _deliver_steer(self, messages: list[Any], final_messages: list[Any]) -> int:
+        """Weave every queued steering message into the context. Returns how many.
 
-    # ------------------------------------------------------------------
-    # Internal methods
-    # ------------------------------------------------------------------
+        Reference: docs/SUBMISSION-LIFECYCLE.md phase 4 (``multitask_strategy=
+        "steer"``); pi ``agent-loop.ts:172-186``.
+
+        THE delivery point steer is defined by: called immediately before an
+        ``_stream_response`` call, after the previous turn's tool calls have
+        already appended their ``toolResult`` messages. Not the turn edge (that
+        is ``enqueue``), not an abort (that is ``rollback``), and emphatically
+        not a parked wait for input — the loop never blocks on this; it takes
+        whatever is there and goes.
+
+        Drain and delivery are the same statement, so nothing can be removed
+        from the session's queue and then not sent. Each message is appended to
+        BOTH the running context (``messages`` — what the next LLM call sees)
+        and ``final_messages`` (what ``AgentSession._persist_loop_messages``
+        writes to the log), which is how a steered utterance ends up in the
+        transcript rather than reaching the model through a hidden channel.
+        ``message_start``/``message_end`` bracket each one so a renderer can
+        show it, exactly as pi emits them.
+        """
+        if not self._steer_queue:
+            return 0
+        pending = list(self._steer_queue)
+        self._steer_queue.clear()
+        for message in pending:
+            payload = self._serialize_message(message)
+            await self._emit(
+                AgentEvent(
+                    type="message_start",
+                    timestamp=int(time.time() * 1000),
+                    message=payload,
+                )
+            )
+            messages.append(message)
+            final_messages.append(message)
+            await self._emit(
+                AgentEvent(
+                    type="message_end",
+                    timestamp=int(time.time() * 1000),
+                    message=payload,
+                )
+            )
+        return len(pending)
 
     @staticmethod
     def _serialize_message(message: Any) -> Any:
@@ -734,6 +862,38 @@ class AgentLoop:
     ) -> ToolBatchResult:
         """Execute tool calls (sequential or parallel).
 
+        The batch runs sequentially if the config says so, OR if any tool call
+        in the batch resolves to a registered tool declaring
+        ``execution_mode == "sequential"`` (pi agent-loop.ts:381-384). A call
+        whose name is not in ``self._tools`` contributes nothing to that check
+        (pi's optional-chaining lookup yields undefined for an unknown tool,
+        which is never "sequential") — unknown names are handled downstream by
+        ``_prepare_tool_call``. Only when the config says "parallel" AND every
+        resolvable tool in the batch is "parallel" does the batch gather.
+
+        ``self._tools`` is **homogeneous** since B1 (`tau-004`): every entry is an
+        ``AgentTool``, from ``sdk._resolve_tools`` and from
+        ``AgentSession._resolve_extension_tools`` alike, so the declared
+        ``dict[str, AgentTool]`` is true and ``.execution_mode`` resolves through
+        the same alias property for both sources. It was not always so — the
+        built-ins used to arrive as raw classes with no ``.definition``, which is
+        what made `tau-001`'s ``.definition.execution_mode`` crash on every
+        production tool call while mypy and the suite both stayed green. The read
+        below is kept as a plain attribute read rather than reverted to
+        ``.definition.execution_mode``: the alias is the narrower dependency, and
+        it is the one the seven built-in classes' own plain ``execution_mode``
+        attribute also satisfies, which keeps a directly-constructed loop honest.
+
+        The read is deliberately unguarded: every τ built-in declares
+        ``execution_mode`` and ``ToolDefinition`` declares it with a default,
+        so a registered tool that lacks the attribute is an unanticipated
+        shape — a construction gap, which raises rather than silently
+        resolving to "parallel" and quietly resurrecting the dead-field defect
+        this method exists to fix. This is a deliberate, narrow divergence
+        from pi, whose ``executionMode?`` is optional (``types.ts:388``) and
+        read through optional chaining (``agent-loop.ts:382``); τ's own type
+        makes the field non-optional, so "absent" is not a state τ specifies.
+
         Args:
             assistant: The assistant message containing tool calls.
             tool_calls: List of ToolCall objects.
@@ -741,10 +901,14 @@ class AgentLoop:
         Returns:
             ToolBatchResult with tool result messages.
         """
-        if self.config.tool_execution_mode == "parallel":
-            return await self._execute_parallel(assistant, tool_calls)
-        else:
+        has_sequential_tool_call = any(
+            self._tools[tc.name].execution_mode == "sequential"
+            for tc in tool_calls
+            if tc.name in self._tools
+        )
+        if self.config.tool_execution_mode == "sequential" or has_sequential_tool_call:
             return await self._execute_sequential(assistant, tool_calls)
+        return await self._execute_parallel(assistant, tool_calls)
 
     def _emit_veto_record(self, tool_name: str, reason: str, extension: str | None) -> None:
         """Emit the JSON-stream veto record for an extension-blocked call (S50).

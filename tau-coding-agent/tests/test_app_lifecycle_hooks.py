@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import pytest
 
-from tau_coding_agent.app import Parley
 from tau_coding_agent.backends import create_backend
 
 
@@ -37,21 +36,9 @@ def _lifecycle_ext(out_path: str) -> str:
 
 
 @pytest.fixture
-def app(monkeypatch, tmp_path):
-    import tau_coding_agent.session_store as store
-
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
-    monkeypatch.setattr("tau_coding_agent.app.create_backend", create_backend)
-    # Isolate the module-global session-event listener list (see test_app_extension_loading).
-    monkeypatch.setattr(store, "_session_listeners", [])
-
-    a = Parley()
-    a.config = {
-        "models": {"m": {"backend": "openai", "model": "m", "api_key": "not-needed"}},
-        "default_model": "m",
-        "system_prompt": "sys",
-    }
-    return a
+def app(make_app):
+    """A Parley wired to REAL TauBackends (TauBackend has no network in __init__)."""
+    return make_app(create_backend=create_backend)
 
 
 def _lines(path) -> list[str]:

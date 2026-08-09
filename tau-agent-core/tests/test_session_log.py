@@ -155,9 +155,12 @@ class TestSdkDefaultPathPersistsAndReads:
         asyncio.run(session.prompt("hello"))
 
         # The turn was appended to the injected log (persist path), and context is
-        # rebuilt from it via ConversationTree (read path).
+        # rebuilt from it via ConversationTree (read path). The leading entry is
+        # construction's own non-authoritative `agent_spec` provenance record (W2,
+        # NODE-ADDRESSABLE-AGENTS.md); the turn itself is plain `message` entries.
         kinds = [e["type"] for e in log.entries()]
-        assert kinds and all(k == "message" for k in kinds)
+        assert kinds[0] == "customEntry"
+        assert kinds[1:] and all(k == "message" for k in kinds[1:])
         assert session.messages == ConversationTree(log.entries(), log.cursor).context_for()
         roles = [m["role"] for m in session.messages]
         assert "user" in roles and "assistant" in roles

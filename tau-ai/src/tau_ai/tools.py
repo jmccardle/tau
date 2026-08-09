@@ -42,11 +42,19 @@ def _validate_json_schema(schema: dict[str, Any], data: dict[str, Any]) -> dict[
                     errors.append(
                         f"Field '{field_name}': expected string, got {type(value).__name__}"
                     )
-                elif expected_type == "integer" and not isinstance(value, int):
+                # `bool` subclasses `int` in Python but is a distinct type in JSON
+                # Schema, so both numeric checks must exclude it explicitly —
+                # otherwise a model emitting `true` for an integer parameter passes
+                # validation and the tool does arithmetic on a bool.
+                elif expected_type == "integer" and (
+                    isinstance(value, bool) or not isinstance(value, int)
+                ):
                     errors.append(
                         f"Field '{field_name}': expected integer, got {type(value).__name__}"
                     )
-                elif expected_type == "number" and not isinstance(value, (int, float)):
+                elif expected_type == "number" and (
+                    isinstance(value, bool) or not isinstance(value, (int, float))
+                ):
                     errors.append(
                         f"Field '{field_name}': expected number, got {type(value).__name__}"
                     )

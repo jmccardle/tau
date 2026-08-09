@@ -24,7 +24,6 @@ import pytest
 
 from tau_ai.streaming import DoneEvent, TextDeltaEvent
 from tau_ai.types import AssistantMessage, TextContent, Usage
-from tau_coding_agent.app import Parley
 
 
 def _assistant(text: str) -> AssistantMessage:
@@ -83,28 +82,22 @@ async def _fake_stream_simple(model, context, options=None):
 
 
 @pytest.fixture
-def app(monkeypatch, tmp_path):
-    """Real ``TauBackend`` + a faked LLM, session persistence sandboxed to tmp."""
-    import tau_coding_agent.session_store as store
-
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+def app(monkeypatch, make_app):
+    """Real ``TauBackend`` + a faked LLM (patched at the agent-loop seam)."""
     monkeypatch.setattr("tau_agent_core.agent_loop.stream_simple", _fake_stream_simple)
-
-    a = Parley()
-    a.config = {
-        "models": {
-            "m": {
-                "backend": "openai",
-                "model": "m",
-                "base_url": "http://localhost/v1",
-                "api_key": "not-needed",
-                "tools": [],  # single completion, deterministic
-            }
-        },
-        "default_model": "m",
-        "system_prompt": "sys",
-    }
-    return a
+    return make_app(
+        config={
+            "models": {
+                "m": {
+                    "backend": "openai",
+                    "model": "m",
+                    "base_url": "http://localhost/v1",
+                    "api_key": "not-needed",
+                    "tools": [],  # single completion, deterministic
+                }
+            },
+        }
+    )
 
 
 class _Submit:
@@ -118,12 +111,12 @@ def _roles(entries) -> list[str]:
     return [e["message"]["role"] for e in entries if e.get("type") == "message"]
 
 
-async def test_turn_persists_through_live_session_exactly_once(app):
+async def test_turn_persists_through_live_session_exactly_once(app, wait_for_workers_settled):
     async with app.run_test() as pilot:
         await pilot.pause()
 
         await app.on_input_submitted(_Submit("hello"))
-        await app.workers.wait_for_complete()
+        await wait_for_workers_settled(app)
         await pilot.pause()
 
         session = app.current_session
@@ -144,12 +137,12 @@ async def test_turn_persists_through_live_session_exactly_once(app):
         assert user_entries[0]["message"]["content"] == [{"type": "text", "text": "hello"}]
 
 
-async def test_working_list_is_a_view_over_session_context(app):
+async def test_working_list_is_a_view_over_session_context(app, wait_for_workers_settled):
     async with app.run_test() as pilot:
         await pilot.pause()
 
         await app.on_input_submitted(_Submit("hello"))
-        await app.workers.wait_for_complete()
+        await wait_for_workers_settled(app)
         await pilot.pause()
 
         session = app.current_session
@@ -164,7 +157,7 @@ async def test_working_list_is_a_view_over_session_context(app):
         assert any(m.get("role") == "assistant" for m in app.messages)
 
 
-async def test_second_turn_does_not_duplicate_the_first(app):
+async def test_second_turn_does_not_duplicate_the_first(app, wait_for_workers_settled):
     """Two turns in a row: the live log grows by exactly one exchange each time —
     the history-duplication failure mode (context re-fed and re-persisted) cannot
     occur when the session is the single writer."""
@@ -172,11 +165,11 @@ async def test_second_turn_does_not_duplicate_the_first(app):
         await pilot.pause()
 
         await app.on_input_submitted(_Submit("first"))
-        await app.workers.wait_for_complete()
+        await wait_for_workers_settled(app)
         await pilot.pause()
 
         await app.on_input_submitted(_Submit("second"))
-        await app.workers.wait_for_complete()
+        await wait_for_workers_settled(app)
         await pilot.pause()
 
         session = app.current_session

@@ -9,10 +9,63 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import tempfile
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from tau_agent_core.tools.base import AgentToolResult
+
+
+async def _terminate_process_group(
+    process: asyncio.subprocess.Process,
+    grace_period: float = 2.0,
+) -> None:
+    """Kill a subprocess and everything in its process group.
+
+    The subprocess must have been started with ``start_new_session=True``, so
+    its pid is also its process group id (pgid): the shell, every pipeline
+    member, and anything it backgrounded (via ``&``) all share that pgid and
+    die together, POSIX-style.
+
+    Escalates: SIGTERM to the group, wait up to ``grace_period`` for the
+    direct child (the shell) to exit, then SIGKILL to the group regardless —
+    a group member that ignored SIGTERM (or a straggler that forked after it
+    was sent) does not get to survive. ``ProcessLookupError`` from a signal
+    that finds no such process/group is expected once the group is gone and
+    is swallowed; any other error is not. A pid-reuse guard (``returncode is
+    not None`` before the first signal) protects the initial SIGTERM the same
+    way CPython's own ``Process.kill()`` would; it is deliberately not
+    reapplied before the final SIGKILL, because that escalation exists
+    precisely to reach group members that outlive the shell's own exit.
+    """
+    pgid = process.pid
+    if process.returncode is not None:
+        # asyncio already knows this child exited (its watcher reaped it and
+        # recorded the exit status locally) — mirror the guard CPython's
+        # subprocess.Popen.send_signal() applies via self.poll() (bpo-38630),
+        # which is what protects the ordinary Process.kill() path this
+        # function replaces. Once every member of a process group has
+        # exited, the kernel is free to recycle that pgid onto an unrelated
+        # session/group leader; signalling `pgid` here on stale local
+        # knowledge could hit that unrelated group instead. If any group
+        # member is still alive, the pgid stays reserved and this branch
+        # cannot be reached in error, so nothing here can leak an orphan.
+        return
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return  # Group is already gone; nothing left to escalate to.
+    try:
+        await asyncio.wait_for(process.wait(), timeout=grace_period)
+    except asyncio.TimeoutError:
+        pass
+    finally:
+        # Always escalate, even if we were cancelled while waiting out the
+        # grace period — cleanup must not be skippable by cancellation.
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 class BashTool:
@@ -48,7 +101,12 @@ class BashTool:
         },
         "required": ["command"],
     }
-    execution_mode = "sequential"
+    # Annotated rather than left to inference (B1/tau-004): unannotated,
+    # `execution_mode = "sequential"` infers `str`, and `ToolDefinition`
+    # declares it `Literal["sequential", "parallel"]`. `sdk._resolve_tools`
+    # copies this value into a ToolDefinition, so without the annotation mypy
+    # cannot check that copy — which is the blindness B1 exists to remove.
+    execution_mode: Literal["sequential", "parallel"] = "sequential"
 
     DEFAULT_TIMEOUT_MS = 30000
     MAX_OUTPUT_LINES = 4096
@@ -103,6 +161,7 @@ class BashTool:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self.cwd,
+                start_new_session=True,
             )
 
             # Collect output
@@ -118,10 +177,7 @@ class BashTool:
                 while True:
                     if signal and signal.is_aborted():
                         aborted = True
-                        try:
-                            process.kill()
-                        except ProcessLookupError:
-                            pass
+                        await _terminate_process_group(process)
                         raise asyncio.CancelledError("Command aborted")
                     await asyncio.sleep(self.POLL_INTERVAL)
 
@@ -162,8 +218,20 @@ class BashTool:
                     )
                     # Wait for process to fully finish to get exit code
                     await process.wait()
+                    # No group kill here, deliberately: the shell exited on
+                    # its own, so anything still holding the pgid is a
+                    # daemonized process the command asked to outlive it
+                    # (e.g. `nohup server >/dev/null 2>&1 &`) — the same
+                    # UNIX contract as closing a terminal on a nohup'd job.
+                    # This intentionally does NOT implement pi's
+                    # trackDetachedChildPid / killTrackedDetachedChildren
+                    # (shell.ts:170-183), which persists such pids so a
+                    # later, *session*-lifetime kill can still reach them:
+                    # that is cross-call process-level signal tracking, out
+                    # of scope for this unit (P2/R-T4 cover a single
+                    # execute() call's own kill paths, not session teardown).
                 except asyncio.TimeoutError:
-                    process.kill()
+                    await _terminate_process_group(process)
                     truncated = True
                     stderr_chunks.insert(0, f"[Command timed out after {timeout_secs}s]\n")
                     await process.wait()
@@ -175,10 +243,7 @@ class BashTool:
                         pass
 
             except asyncio.CancelledError:
-                try:
-                    process.kill()
-                except ProcessLookupError:
-                    pass
+                await _terminate_process_group(process)
                 try:
                     await process.wait()
                 except Exception:

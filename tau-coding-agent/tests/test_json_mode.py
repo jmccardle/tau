@@ -78,6 +78,73 @@ def test_serializer_drops_duplicate_content_only_message_end():
     assert tau_event_to_pi_event(event) is None
 
 
+# --- G4/B: the ``usage.extra`` telemetry LOCK -------------------------------
+#
+# pi's message_end ALREADY carries ``message.usage.extra`` (llama.cpp timings + τ's
+# JSON-repair count) verbatim through the plain-dict passthrough — nothing named it,
+# nothing tested it, so the debt read "empty". These lock it: the serializer must
+# preserve a non-empty ``extra`` and must NEVER fabricate an empty ``{}`` for a
+# completion that carried none. Reuses the stock-timings shape from
+# ``test_70_telemetry.py``.
+STOCK_TIMINGS = {
+    "prompt_n": 12,
+    "prompt_ms": 40.5,
+    "predicted_n": 20,
+    "predicted_ms": 250.0,
+    "predicted_per_second": 80.0,
+}
+
+
+def test_serializer_preserves_usage_extra_timings_and_repairs():
+    # Build the message dict the way the loop does — off the REAL Usage.model_dump —
+    # so ``extra`` is tested against the shape the provider actually emits, not one
+    # invented for the test (Usage.extra is populated at construction).
+    usage = Usage(
+        input_tokens=12,
+        output_tokens=20,
+        total_tokens=32,
+        extra={"timings": STOCK_TIMINGS, "repairs": 0},
+    )
+    event = AgentEvent(
+        type="message_end",
+        timestamp=0,
+        message={
+            "role": "assistant",
+            "content": [{"type": "text", "text": "hi"}],
+            "usage": usage.model_dump(),
+            "model": "qwen",
+            "stop_reason": "stop",
+        },
+    )
+    out = tau_event_to_pi_event(event)
+    assert out is not None
+    extra = out["message"]["usage"]["extra"]
+    # exclude_none must NOT drop the nested telemetry — it is real measured data.
+    assert extra["timings"] == STOCK_TIMINGS
+    assert extra["repairs"] == 0
+
+
+def test_serializer_does_not_fabricate_an_empty_extra_when_absent():
+    # A provider that reported no telemetry yields a usage dict with NO ``extra`` key.
+    # The plain-dict passthrough must leave it absent — never inject ``extra: {}``
+    # (Fail-Early: an empty telemetry dict would read as "measured, and it was empty",
+    # which is a different, false claim from "not measured").
+    event = AgentEvent(
+        type="message_end",
+        timestamp=0,
+        message={
+            "role": "assistant",
+            "content": [{"type": "text", "text": "hi"}],
+            "usage": {"total_tokens": 5},
+            "model": "qwen",
+            "stop_reason": "stop",
+        },
+    )
+    out = tau_event_to_pi_event(event)
+    assert out is not None
+    assert "extra" not in out["message"]["usage"]
+
+
 # --- through the real backend bus + run_print -------------------------------
 
 

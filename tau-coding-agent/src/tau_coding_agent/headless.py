@@ -1,17 +1,25 @@
 """Headless (non-interactive) run path for the τ CLI's ``--print`` mode.
 
 This drives the *same* agent path the TUI uses — ``create_backend(model_config)``
-→ ``backend.stream_chat(messages, callback, on_event)`` — but renders to stdout
-instead of Textual widgets. It deliberately does NOT touch ``run_agent_loop.py``
-(that file is a meta-orchestrator that shells out to ``pi`` to build τ; it is not
-a headless τ runner).
+→ ``backend.stream_submission(submission, context, callback, …)`` — but renders to
+stdout instead of Textual widgets. It deliberately does NOT touch
+``run_agent_loop.py`` (that file is a meta-orchestrator that shells out to ``pi``
+to build τ; it is not a headless τ runner).
 
 Model resolution mirrors ``Parley.action_new_chat`` (``app.py``): a ``--model``
 name is looked up in the ``models`` map of ``~/.tau/config.json``; the selected
 entry's ``backend``/``model``/``base_url``/``api_key`` are handed to
 ``create_backend`` unchanged. CLI flags override per-invocation.
 
-Reference: docs/CLI-PLAN.md (Core flag set).
+**Print mode is a frontend, and says so** (docs/SUBMISSION-LIFECYCLE.md phase 3,
+part 3 — the spec's own framing: *"Headless (headless.py:382, run_print) reaches the
+model by a different path. The SDK reaches it by a third"*). It now owns a
+:class:`~tau_agent_core.submission.Submission` of its own instead of letting
+``stream_chat`` derive one, because the record it needs is not the one that
+derivation hardcodes — see :func:`build_print_submission` for what each field says
+and why.
+
+Reference: docs/CLI-PLAN.md (Core flag set); docs/SUBMISSION-LIFECYCLE.md.
 """
 
 from __future__ import annotations
@@ -23,13 +31,37 @@ import signal
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
-# Persistence is the Textual-free session_store module, so a headless run can
-# write a picker-visible, resumable session without importing the TUI. Sessions
-# are append-only JSONL files partitioned by cwd (docs/SESSION-UX-REDESIGN.md);
-# the listing helpers read the dir lazily, so tests that monkeypatch
-# ``session_store.TAU_DIR`` redirect storage without a stale module-level copy.
-from tau_coding_agent.session_store import Session, list_sessions, most_recent
+# The submission lifecycle (docs/SUBMISSION-LIFECYCLE.md phase 3, part 3). Print
+# mode reached the model by its own route — ``backend.stream_chat(messages, …)``,
+# which derived a submission for it — and answered "is this a command" with its own
+# hand-rolled first-space split. Both now go through the one door: this module
+# builds the :class:`Submission` that says what ``tau -p "…"`` MEANS and hands it to
+# ``AgentSession.submit`` (via ``TauBackend.stream_submission`` /
+# ``TauBackend.submit_command``), and :func:`~tau_agent_core.commands.resolve_command`
+# is the same pure function ``submit()`` itself uses.
+from tau_agent_core.commands import (
+    CommandOutcome,
+    UnsupportedCommandError,
+    resolve_command,
+    unsupported_command_message,
+)
+
+# Persistence goes through the storage-agnostic SessionCatalog seam (W10) rather
+# than the concrete file Session directly, so a headless run can write a
+# picker-visible, resumable session without hardcoding the file store.
+# ``store_factory.build_session_catalog`` resolves ``--store``/config
+# ``session_store.backend`` (W12, docs/JMFTS-INTEGRATION-PLAN.md §3.1) into
+# either the on-disk ``FileSessionCatalog`` (append-only JSONL files
+# partitioned by cwd, docs/SESSION-UX-REDESIGN.md — the default, and reads
+# TAU_DIR lazily via session_store's module-level helpers, so tests that
+# monkeypatch ``session_store.TAU_DIR`` redirect storage without a stale
+# module-level copy) or a JMFTS-backed ``JmftsSessionCatalog``.
+from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
+from tau_agent_core.submission import Submission
+from tau_coding_agent.config import ConfigError
+from tau_coding_agent.store_factory import build_session_catalog
 
 # Canonical thinking levels live in τ-ai (single source of truth); pi: the same
 # set in ``args.ts:57``. A ``model:level`` suffix or the ``--thinking`` flag is
@@ -41,8 +73,12 @@ if TYPE_CHECKING:  # avoid importing the dataclass module at runtime cost
     from tau_coding_agent.cli import CLIArgs
 
 
-class CLIError(Exception):
-    """A user-facing CLI error. ``main()`` prints it and exits non-zero."""
+class CLIError(ConfigError):
+    """A user-facing CLI error. ``main()`` prints it and exits non-zero.
+
+    Subclasses ``ConfigError`` so the one handler in ``main()`` catches both a bad
+    flag and a malformed ``config.json``.
+    """
 
 
 def resolve_model_config(
@@ -133,6 +169,12 @@ def resolve_model_config(
         model_config["extensions"] = list(args.extensions)
     if args.no_extensions:
         model_config["no_extensions"] = True
+
+    # ``--bus`` (H8): the same capability grant the TUI threads through
+    # ``_apply_run_config``. Only ever set TRUE — the absence of the flag must not
+    # revoke a ``"bus_available": true`` the model entry granted deliberately.
+    if args.bus:
+        model_config["bus_available"] = True
 
     # Appended system-prompt sections (pi appendSystemPrompt, system-prompt.ts:48).
     # ``run_print`` folds them into the stored session prompt via _append_system_prompt
@@ -306,58 +348,42 @@ def assemble_prompt(messages: list[str]) -> str:
     return "\n".join(parts).strip()
 
 
-def _resolve_session_ref(selector: str, *, all_sessions: bool = False) -> Session:
-    """Resolve a ``--session``/``--fork`` REF to a loaded :class:`Session`.
+def _select_session(args: "CLIArgs", catalog: SessionCatalog) -> ConversationSession | None:
+    """Resolve the continuation flags to a loaded source session, or None.
 
-    A REF is either a path to a ``.jsonl`` session file, or a session **id** (the
-    uuid in the header/filename) — an exact id match wins; otherwise a unique id
-    *prefix* is accepted. Resolution is scoped to the **current cwd's** session
-    dir (``all_sessions`` widens to every dir). Zero or multiple matches raise
-    (Fail-Early: never guess which session was meant).
-    """
-    p = Path(selector)
-    if p.suffix == ".jsonl" and p.exists():
-        return Session.load(p)
-
-    infos = list_sessions(None if all_sessions else os.getcwd())
-    exact = [i for i in infos if i.id == selector]
-    matches = exact or [i for i in infos if i.id.startswith(selector)]
-    if not matches:
-        scope = "any directory" if all_sessions else "this directory"
-        raise CLIError(
-            f"no session matches {selector!r} (looked for a .jsonl path and a "
-            f"session id under {scope}'s ~/.tau/sessions history)"
-        )
-    if len(matches) > 1:
-        ids = ", ".join(sorted(i.id for i in matches))
-        raise CLIError(f"{selector!r} matches multiple sessions ({ids}); be more specific")
-    return Session.load(matches[0].path)
-
-
-def _select_session(args: "CLIArgs") -> Session | None:
-    """Resolve the continuation flags to a loaded source :class:`Session`, or None.
-
-    ``--continue`` selects the most recent session in the current cwd;
-    ``--session``/``--fork`` select a specific one. The flags are mutually
-    exclusive at the argparse layer, so at most one is set. Returns None for a
-    fresh run. For ``--fork`` this is the *source* — the caller forks it.
+    ``--continue`` selects the most recent session in the current cwd
+    (:meth:`SessionCatalog.most_recent`); ``--session``/``--fork`` select a
+    specific one — a path, an exact id, or a unique id prefix
+    (:meth:`SessionCatalog.resolve_ref`, scoped to the current cwd). The flags
+    are mutually exclusive at the argparse layer, so at most one is set. Returns
+    None for a fresh run. For ``--fork`` this is the *source* — the caller forks
+    it.
     """
     if args.continue_session:
-        path = most_recent(os.getcwd())
-        if path is None:
+        session = catalog.most_recent(os.getcwd())
+        if session is None:
             raise CLIError(
-                "no saved sessions to continue (this directory has no ~/.tau/sessions history)"
+                "no saved sessions to continue (this directory has no history in "
+                "the session store this run resolved — ~/.tau/sessions unless "
+                "--session-dir/--store says otherwise)"
             )
-        return Session.load(path)
+        return session
 
     selector = args.session or args.fork
     if selector is None:
         return None
-    return _resolve_session_ref(selector)
+    try:
+        return catalog.resolve_ref(selector, cwd=os.getcwd())
+    except LookupError as exc:
+        raise CLIError(str(exc)) from exc
 
 
 def _apply_resume_metadata(
-    session: Session, model_name: str, backend_name: str, prior: Session, title: str | None
+    session: ConversationSession,
+    model_name: str,
+    backend_name: str,
+    prior: ConversationSession,
+    title: str | None,
 ) -> None:
     """On resume/fork, record a model switch and/or a rename if they changed."""
     if model_name != prior.model or backend_name != prior.backend:
@@ -386,7 +412,175 @@ def _emit_command_output(mode: str, command: str, text: str | None) -> None:
         sys.stdout.flush()
 
 
-async def run_print(args: "CLIArgs", config: dict) -> int:
+def build_print_submission(prompt_text: str) -> Submission:
+    """The record that says what ``tau -p "…"`` means (SUBMISSION-LIFECYCLE phase 3).
+
+    Every field here is a claim about the invocation, and three of them are the
+    substance of this work item:
+
+    ``source="interactive"`` / ``submitter="human"`` — a ``tau -p`` invocation IS a
+    human at a frontend; the frontend simply does not draw. The alternative reading,
+    ``source="rpc"``, would be a claim about the transport that print mode cannot
+    make: τ has a real RPC transport (``rpc.py``) and cannot tell a person typing
+    ``tau -p "fix the test"`` at a shell from a script that shelled out. What print
+    mode CAN say truthfully is who the text came from — the process's own operator —
+    which is exactly what ``submitter`` is for ("WHO, not what kind"). pi agrees by
+    construction: its print mode calls the same ``session.prompt(message)`` its
+    interactive mode does (``modes/print-mode.ts:122``).
+
+    ``allow_user_input=False`` — and this is why the source axis does not have to
+    carry non-interactivity in the first place. It is Jupyter's ``allow_stdin``,
+    which the spec borrows precisely because *"one process can serve an interactive
+    client and a batch job at once; a global is_interactive flag cannot express
+    that"*: **who submitted** and **whether a human can be asked a question** are two
+    different facts, and print mode is the case that separates them. There is nobody
+    to answer a modal, so a hook that opens one under this turn takes the
+    headless-answer route — the explicit ``--ui-defaults`` token, or
+    :class:`~tau_agent_core.extension_types.HeadlessDialogError`. That composes with
+    the pre-existing policy rather than duplicating it: ``ExtensionUI._human_delegate``
+    already returns ``None`` in a process with no TUI delegate, so this flag adds
+    nothing a print run could previously get around — what it adds is that the
+    enforcement no longer depends on the *process* having no delegate, and the raise
+    now names the submission instead of the mode. An embedded τ that grows a delegate
+    tomorrow inherits the correct behaviour for free.
+
+    ``expand_commands=True`` — print mode declares itself an interactive frontend for
+    B2-b's security property, and it is a boundary rather than a convenience. The
+    line B2-b draws is between text the process's own operator supplied and text that
+    arrived from a third party while τ was running: a NATS payload, a webhook body, a
+    timer's stored template. ``prompt_text`` is ``argv`` (or a file it named, via
+    ``@file``) — chosen before the process existed, at the same trust level as a
+    keystroke in the TUI. It is also what print mode already did: an extension
+    ``/name args`` has dispatched here since S46, and answering False would delete a
+    shipped feature AND leave this module with a second, drifting answer to "what is
+    a command" — the hand-rolled first-space split B2-b called out as a debt.
+
+    The caveat that follows from the same reasoning, stated rather than hidden: a
+    caller that puts UNTRUSTED text (a model-authored sub-task, a webhook body) in
+    ``argv`` has granted it argv's trust level, and it can now dispatch the four
+    built-ins as well as a registered extension command. ``examples/20_delegate.py``
+    is not that caller — it prefixes every child prompt with ``"Task: "`` and passes
+    ``--no-extensions``, so a child prompt cannot begin with ``/`` at all — but a
+    future one must prefix, or refuse a leading ``/`` itself.
+
+    ``multitask_strategy="enqueue"`` — a fresh process has nothing in flight, with
+    exactly one exception: an extension's ``session_start`` handler may have spawned
+    a task that submits. ``"reject"`` would then refuse the very prompt the user
+    invoked τ to run, which is the wrong answer to a race the user cannot see;
+    ``"enqueue"`` waits for that turn and then runs, and is guaranteed to run within
+    the call (unlike ``deliver_as="nextTurn"``, which parks).
+
+    ``store_history`` is left at its default ``True``: the persistence of record for
+    a print run is the :class:`~tau_agent_core.session_catalog.ConversationSession`
+    this module appends to itself, but ``False`` would ALSO skip the end-of-prompt
+    drain and the ``user_turn_end`` boundary — extension hooks a headless run fires
+    today — so it would be a behaviour change wearing a persistence flag's name.
+    """
+    return Submission(
+        text=prompt_text,
+        source="interactive",
+        submitter="human",
+        submission_id=uuid4().hex,
+        multitask_strategy="enqueue",
+        expand_commands=True,
+        allow_user_input=False,
+    )
+
+
+def _extension_command_names(backend: Any) -> list[str]:
+    """The names extensions registered as slash commands, for the pre-submission peek.
+
+    ``getattr``-guarded exactly like the app's counterpart
+    (``Parley._extension_command_names``) and like every other backend-capability read
+    on this path: a test double simply has none, which makes the peek resolve only τ's
+    built-ins — those need no backend, being τ's own vocabulary hardcoded in
+    :mod:`tau_agent_core.commands`.
+    """
+    lister = getattr(backend, "get_extension_commands", None)
+    if lister is None:
+        return []
+    return [name for name, _description in lister()]
+
+
+async def _dispatch_command_submission(backend: Any, submission: Submission, mode: str) -> None:
+    """Admit a command submission through the one door and perform its outcome.
+
+    The headless twin of ``Parley._dispatch_command_submission``. The submission goes
+    through ``AgentSession.submit`` exactly as a prompt does — same admission, same
+    ``input`` hook chain, same provenance stamp — and comes back carrying a typed
+    :class:`~tau_agent_core.commands.CommandOutcome` instead of messages.
+
+    Three things that are not "nothing happened", and are therefore not silent:
+
+    - a backend with no ``submit_command`` (a test double) RAISES: the user typed a
+      command and there is no door to send it through, and sending it to the model
+      instead is precisely the silent fallback this lifecycle removes.
+    - ``accepted is False`` raises :class:`CLIError`, so the process exits non-zero
+      with the refusal's own reason rather than exiting 0 having done nothing.
+    - ``result.command is None`` means ``submit()`` ran a TURN instead — an ``input``
+      hook rewrote the text between this module's peek and the core's own resolution.
+      That turn really ran, unrendered and unpersisted by this module, so it is
+      reported rather than passed over.
+    """
+    submit_command = getattr(backend, "submit_command", None)
+    if submit_command is None:
+        raise UnsupportedCommandError(
+            f"{type(backend).__name__} has no submit_command(), so the command "
+            f"{submission.text!r} cannot be admitted. Command dispatch lives in "
+            "AgentSession.submit (docs/SUBMISSION-LIFECYCLE.md phase 3); a backend "
+            "that cannot reach it cannot run commands, and sending the text to the "
+            "model instead would be the silent fallback this lifecycle removes."
+        )
+    result = await submit_command(submission)
+    if not result.accepted:
+        raise CLIError(
+            f"{submission.text!r} was refused: {result.rejection_reason or 'no reason given'}"
+        )
+    if result.command is None:
+        raise UnsupportedCommandError(
+            f"{submission.text!r} was dispatched as a command by print mode but "
+            "AgentSession.submit ran a TURN for it — an `input` hook transformed the "
+            "text after print mode resolved it. The turn ran without being rendered "
+            "or persisted by this run. Fix the hook, or stop it from rewriting text "
+            "that resolves to a command."
+        )
+    _perform_command_outcome(result.command, mode)
+
+
+def _perform_command_outcome(outcome: CommandOutcome, mode: str) -> None:
+    """Do the half of a dispatched command only this frontend can do (B2-b).
+
+    ``performer="core"`` — the session already ran an extension-registered command and
+    all that is left is to show what it returned, on the S46 channel this module
+    already had: stdout text, or one ``command_output`` record under ``--mode json``.
+
+    ``performer="frontend"`` — a built-in the core deliberately did not run because it
+    needs a frontend, and print mode has none of the four:
+
+    - ``/tree`` and ``/fork`` open a modal browser; there is no screen to push it onto.
+    - ``/extensions`` paints a panel (or manages extensions in a process that is about
+      to exit, which would be a runtime toggle nothing outlives).
+    - ``/compact`` is the one that looks performable and is not, for a specific
+      reason worth writing down: ``run_print`` does NOT bind its
+      ``ConversationSession`` as the AgentSession's log (unlike the TUI, E3-ctx / D3
+      — it owns persistence itself and appends produced messages by hand), so
+      ``compact_messages`` would summarize a working list this process discards
+      milliseconds later. That is an LLM call whose only result is thrown away —
+      strictly worse than saying it cannot be done.
+
+    So this raises :class:`~tau_agent_core.commands.UnsupportedCommandError`, which is
+    the seam's designed answer and not a gap: the core is allowed to resolve commands
+    a given frontend cannot perform, and the contract is that such a frontend says so
+    out loud. The visible change is that ``tau -p "/compact"`` now raises instead of
+    sending the eight characters to a model that will be confused by them.
+    """
+    if outcome.performer == "core":
+        _emit_command_output(mode, outcome.name, outcome.output)
+        return
+    raise UnsupportedCommandError(unsupported_command_message(outcome, "print mode (tau -p)"))
+
+
+async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | None = None) -> int:
     """Run one headless turn and render to stdout. Returns a process exit code.
 
     ``--mode text`` streams raw assistant text deltas (a plain transcript).
@@ -395,11 +589,45 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
     ``AgentSessionEvent`` from the agent bus (``message_end`` carries
     usage/model/stop_reason). No legacy ``kind`` schema, no synthetic ``done``.
 
-    The run is persisted as an append-only JSONL session under the current cwd's
-    ``~/.tau/sessions`` dir — each produced message is appended as it is known
-    (no whole-file rewrite). In-place for ``--continue``/``--session``; a new
-    forked file for ``--fork``; a fresh file otherwise.
+    Both modes reach the model through ``AgentSession.submit`` — the one door
+    (docs/SUBMISSION-LIFECYCLE.md phase 3, part 3) — carrying the record
+    :func:`build_print_submission` builds, via ``backend.stream_submission`` for a
+    prompt and ``backend.submit_command`` for a command. Neither output shape
+    changes: the JSON lines already carry ``submission_id``/``source``/``submitter``/
+    ``correlation`` (phase 2 stamped provenance onto every ``AgentEvent``, and the
+    serializer's ``model_dump`` has emitted them since), and what this changes is
+    that they now attribute the turn to a submission print mode itself minted rather
+    than to one the adapter derived on its behalf.
+
+    The run is persisted through ``catalog`` (a :class:`SessionCatalog` — the W10
+    seam; ``None`` resolves ``args.store``/``config["session_store"]`` via
+    :func:`~tau_coding_agent.store_factory.build_session_catalog`, defaulting to
+    the on-disk :class:`~tau_coding_agent.session_store.FileSessionCatalog`) as
+    an append-only session under the current cwd — each produced message is
+    appended as it is known (no whole-file rewrite). In-place for
+    ``--continue``/``--session``; a new forked session for ``--fork``; a fresh
+    one otherwise.
+
+    ``--session-dir`` (unit S) rides the same call: print mode's DEFAULT stays
+    ``~/.tau/sessions`` — only ``--mode rpc`` moved (docs/RPC-TIER-B.md D-6) —
+    but a headless run can be pointed anywhere, including at RPC mode's own
+    ``<tmp>/.tau-<uid>/sessions``, which is how ``tau -p -c`` continues a session an
+    RPC host started.
     """
+    # `persist=not args.no_session`: an ephemeral run asks this catalog for
+    # `create_ephemeral` and nothing else — `--no-session` + `--continue`/
+    # `--session`/`--fork` is refused a few lines down, so `_select_session`
+    # cannot reach the store either — and `create_ephemeral` is in-memory under
+    # both stores. Reported by Tectum's prototyping: `tau -p --no-session`
+    # exited 2 at startup against an unreachable JMFTS server, refusing a run
+    # over a dependency it does not have. See `build_session_catalog`.
+    catalog = (
+        catalog
+        if catalog is not None
+        else build_session_catalog(
+            config, args.store, args.session_dir, persist=not args.no_session
+        )
+    )
     prompt_text = assemble_prompt(args.messages)
     if not prompt_text:
         raise CLIError(
@@ -418,7 +646,7 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
         )
 
     # Resolve a source session to continue/fork (None for a fresh run).
-    prior = _select_session(args)
+    prior = _select_session(args, catalog)
 
     # The stored session already carries its system message; injecting another
     # (or silently dropping an override) would both be wrong — reject the combo.
@@ -451,14 +679,14 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
         system_prompt = _append_system_prompt(
             system_prompt, model_config.get("append_system_prompt")
         )
-        # --no-session → ephemeral (path=None, appends never touch disk); the
-        # create_in_memory seam is the one-API alternative to create (§E0.2).
-        create = Session.create_in_memory if args.no_session else Session.create
+        # --no-session → ephemeral (no on-disk file, appends never touch disk); the
+        # create_ephemeral seam is the one-API alternative to create (§E0.2).
+        create = catalog.create_ephemeral if args.no_session else catalog.create
         session = create(
             cwd, model_name, backend_name, system_prompt=system_prompt or None, name=args.name
         )
     elif args.fork is not None:
-        session = Session.fork(prior, cwd)
+        session = catalog.fork(prior, cwd)
         _apply_resume_metadata(session, model_name, backend_name, prior, args.name)
     else:  # --continue / --session: append in place
         session = prior
@@ -574,25 +802,35 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
         if emit_session_start is not None:
             await emit_session_start("startup")
 
-        # Command output channel (E7 §3 / S46): a prompt that is entirely a
-        # registered extension slash-command (``/name args``) RUNS the command
-        # instead of a model turn — mirroring the TUI's pre-model dispatch
-        # (``app.on_input_submitted``). The handler's returned value is printed
-        # (text) / emitted as a ``command_output`` record (json). No user turn is
-        # appended and the model is never called, so the report stays display-only
-        # chrome and never enters the persisted path (tree-as-truth, E5 §1). An
-        # unknown ``/…`` is NOT a command — it falls through to the model path
-        # below (the text is a legitimate prompt).
-        run_cmd = getattr(backend, "run_extension_command", None)
-        if run_cmd is not None and prompt_text.startswith("/"):
-            stripped = prompt_text[1:]
-            space = stripped.find(" ")
-            cmd_name = stripped if space == -1 else stripped[:space]
-            cmd_args = "" if space == -1 else stripped[space + 1 :]
-            cmd_result = await run_cmd(cmd_name, cmd_args)
-            if cmd_result.handled:
-                _emit_command_output(args.mode, cmd_name, cmd_result.output_text())
-                return 0
+        # THE one door (docs/SUBMISSION-LIFECYCLE.md phase 3, part 3). What this
+        # invocation MEANS is a record handed to ``AgentSession.submit`` — the same
+        # method the TUI and every extension go through — rather than a private
+        # route into the loop. See ``build_print_submission`` for every field's
+        # justification, in particular the three this work item turns on:
+        # source/submitter (a human at a frontend that does not draw),
+        # allow_user_input=False (nobody is here to answer a dialog), and
+        # expand_commands=True (argv is the operator's own text).
+        submission = build_print_submission(prompt_text)
+
+        # Command output channel (E7 §3 / S46), now resolved by the CORE's vocabulary
+        # instead of this module's own first-space split: a prompt that is entirely a
+        # command (``/name args``) RUNS the command instead of a model turn. The
+        # handler's returned value is printed (text) / emitted as a ``command_output``
+        # record (json). No user turn is appended and the model is never called, so
+        # the report stays display-only chrome and never enters the persisted path
+        # (tree-as-truth, E5 §1). An unknown ``/…`` still resolves to None and falls
+        # through to the model path below (the text is a legitimate prompt).
+        #
+        # This peek is a rendering/persistence concern, not a second dispatch: it
+        # decides whether the session grows a user turn and whether ``--mode json``
+        # writes a session header, both of which must NOT happen for input that never
+        # becomes a turn. ``submit()`` remains the authority and resolves again on the
+        # post-``input``-hook text; the two can only disagree if a hook rewrites one
+        # into the other, which ``_dispatch_command_submission`` reports rather than
+        # absorbs.
+        if resolve_command(prompt_text, _extension_command_names(backend)) is not None:
+            await _dispatch_command_submission(backend, submission, args.mode)
+            return 0
 
         # This turn's user message, then hand the active-path CONTEXT to the backend
         # (cursor + compaction/branch splices applied) — not the raw linear fold, so
@@ -622,8 +860,8 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
             def noop(_delta: str) -> None:
                 pass
 
-            _text, _usage, new_messages, _tcs = await backend.stream_chat(
-                messages, noop, on_pi_event=on_pi_event
+            _text, _usage, new_messages, _tcs, result = await backend.stream_submission(
+                submission, messages, noop, on_pi_event=on_pi_event
             )
         else:  # text
 
@@ -631,7 +869,49 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
                 sys.stdout.write(delta)
                 sys.stdout.flush()
 
-            _text, _usage, new_messages, _tcs = await backend.stream_chat(messages, emit)
+            _text, _usage, new_messages, _tcs, result = await backend.stream_submission(
+                submission, messages, emit
+            )
+
+        # A refusal is a typed in-band RESULT (LSP ApplyWorkspaceEditResult), and the
+        # one thing print mode must not do with it is exit 0 having printed nothing.
+        # Unreachable under ``"enqueue"``, which waits rather than refusing — but the
+        # strategy is a field on the record, one line from changing, and an adapter
+        # that folded ``accepted=False`` into "an empty turn" is exactly the silent
+        # drop this lifecycle exists to prevent.
+        if not result.accepted:
+            raise CLIError(
+                f"the prompt was refused: {result.rejection_reason or 'no reason given'}"
+            )
+
+        # An ``input`` hook rewrote this text into a command AFTER the peek above
+        # resolved it as ordinary prompt text, so ``submit()`` — the authority —
+        # dispatched instead of running a turn (``messages`` is empty by
+        # construction, not because the model said nothing). Perform the outcome on
+        # the same channel the peeked path uses: an extension command has ALREADY
+        # RUN inside ``submit()`` and its returned text is here to print, and a
+        # built-in raises ``UnsupportedCommandError`` exactly as the argv-supplied
+        # ``tau -p "/compact"`` does — which side of the hook the slash arrived from
+        # must not decide whether the command is reported or vanishes. Reading only
+        # ``result.accepted`` here (and then iterating an empty message list) exited
+        # 0 having written a bare newline: the silent no-op this lifecycle exists to
+        # remove, and the case the TUI's ``_get_assistant_response`` and both
+        # ``_dispatch_command_submission`` halves already handle.
+        #
+        # NOT undone: the user turn appended above is already on the persisted
+        # session, where a dispatched command writes nothing. The append is
+        # deliberately ahead of the model call (a crash mid-turn still records the
+        # question) and this module's ``ConversationSession`` is append-only, so the
+        # honest report is the command output plus a user turn that records what was
+        # actually submitted — not a rewritten history.
+        if result.command is not None:
+            _perform_command_outcome(result.command, args.mode)
+            return 0
+
+        # Terminate the ``--mode text`` transcript. After the two checks above, so
+        # the newline marks the end of a turn that really ran rather than padding a
+        # refusal or a dispatched command's output.
+        if args.mode != "json":
             sys.stdout.write("\n")
             sys.stdout.flush()
 
@@ -650,3 +930,12 @@ async def run_print(args: "CLIArgs", config: dict) -> int:
             loop.remove_signal_handler(sig)
         if emit_session_shutdown is not None:
             await emit_session_shutdown("quit")
+
+        # Close the pooled τ-ai providers' HTTP clients for this loop
+        # (docs/PROVIDER-LIFETIME.md §6.3) — AFTER session_shutdown, since a
+        # handler may itself make a final LLM call. This runs inside the same
+        # asyncio.run() that drove the turn (cli.py), so it is the last point
+        # the loop is guaranteed still alive to close on.
+        from tau_ai.client import aclose_providers
+
+        await aclose_providers()

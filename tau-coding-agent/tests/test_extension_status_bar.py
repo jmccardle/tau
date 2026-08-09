@@ -17,23 +17,14 @@ from __future__ import annotations
 
 import pytest
 
-from tau_coding_agent.app import ExtensionStatusBar, Parley, _ExtensionUIDelegate
+from tau_coding_agent.app import ExtensionStatusBar, _ExtensionUIDelegate
 
 
 @pytest.fixture
-def app(monkeypatch, tmp_path):
-    """A bare Parley with sandboxed config dir; no backend needed for the strip."""
-    monkeypatch.setattr("tau_coding_agent.app.TAU_DIR", tmp_path)
-    a = Parley()
-    a.config = {
-        "models": {"m": {"backend": "openai", "model": "m", "api_key": "not-needed"}},
-        "default_model": "m",
-        "system_prompt": "sys",
-    }
-    # No extension loading — the strip is exercised directly, not via a demo.
-    a._extension_paths = []
-    a._discover_extensions = False
-    return a
+def app(make_app):
+    """A bare Parley; no backend needed for the strip, and no extension loading —
+    the strip is exercised directly, not via a demo."""
+    return make_app()
 
 
 def _line(bar: ExtensionStatusBar) -> str:

@@ -1,0 +1,147 @@
+{
+  "probed_at": "2026-08-08T05:24:35+00:00",
+  "url": "http://192.168.1.100:8080",
+  "prompt": "What is 17*23? Answer with just the number.",
+  "server": {
+    "build_info": "b1061-2da6686",
+    "model_path": "/fast/model/moe-compare/qwen36-35B-IQ4_XS.gguf",
+    "n_ctx": 262144,
+    "reasoning_format": "none",
+    "chat_format": "Content-only",
+    "chat_template_caps": {
+      "supports_object_arguments": true,
+      "supports_parallel_tool_calls": true,
+      "supports_preserve_reasoning": true,
+      "supports_string_content": true,
+      "supports_system_role": true,
+      "supports_tool_calls": true,
+      "supports_tools": true,
+      "supports_typed_content": false
+    }
+  },
+  "measurements": {
+    "baseline": {
+      "reasoning_tokens": 502,
+      "content_tokens": 3,
+      "completion_tokens": 508,
+      "predicted_ms": 2785.988,
+      "content": "391"
+    },
+    "baseline_repeat": {
+      "reasoning_tokens": 502,
+      "content_tokens": 3,
+      "completion_tokens": 508,
+      "predicted_ms": 2784.957,
+      "content": "391"
+    },
+    "reasoning_effort": {
+      "high": {
+        "reasoning_tokens": 502,
+        "content_tokens": 3,
+        "completion_tokens": 508,
+        "predicted_ms": 2785.091,
+        "content": "391"
+      },
+      "low": {
+        "reasoning_tokens": 502,
+        "content_tokens": 3,
+        "completion_tokens": 508,
+        "predicted_ms": 2784.761,
+        "content": "391"
+      },
+      "banana": {
+        "reasoning_tokens": 502,
+        "content_tokens": 3,
+        "completion_tokens": 508,
+        "predicted_ms": 2785.624,
+        "content": "391"
+      }
+    },
+    "thinking_budget_tokens": {
+      "1": {
+        "reasoning_tokens": 15,
+        "content_tokens": 3,
+        "completion_tokens": 21,
+        "predicted_ms": 117.271,
+        "content": "391"
+      },
+      "64": {
+        "reasoning_tokens": 77,
+        "content_tokens": 3,
+        "completion_tokens": 84,
+        "predicted_ms": 458.281,
+        "content": "391"
+      },
+      "256": {
+        "reasoning_tokens": 270,
+        "content_tokens": 3,
+        "completion_tokens": 276,
+        "predicted_ms": 1511.289,
+        "content": "391"
+      }
+    },
+    "thinking_budget_zero": {
+      "reasoning_tokens": 14,
+      "content_tokens": 3,
+      "completion_tokens": 20,
+      "predicted_ms": 111.314,
+      "content": "391"
+    },
+    "thinking_budget_encodings": {
+      "string_zero": {
+        "reasoning_tokens": 502,
+        "content_tokens": 3,
+        "completion_tokens": 508,
+        "predicted_ms": 2783.453,
+        "content": "391"
+      },
+      "null": {
+        "reasoning_tokens": 502,
+        "content_tokens": 3,
+        "completion_tokens": 508,
+        "predicted_ms": 2784.576,
+        "content": "391"
+      },
+      "negative_one": {
+        "reasoning_tokens": 502,
+        "content_tokens": 3,
+        "completion_tokens": 508,
+        "predicted_ms": 2784.476,
+        "content": "391"
+      },
+      "misspelled_key": {
+        "reasoning_tokens": 502,
+        "content_tokens": 3,
+        "completion_tokens": 508,
+        "predicted_ms": 2784.473,
+        "content": "391"
+      }
+    },
+    "thinking_budget_encodings_ignored": [
+      "misspelled_key",
+      "negative_one",
+      "null",
+      "string_zero"
+    ],
+    "chat_template_enable_thinking_false": {
+      "reasoning_tokens": 0,
+      "content_tokens": 3,
+      "completion_tokens": 4,
+      "predicted_ms": 22.514,
+      "content": "391"
+    }
+  },
+  "verdicts": {
+    "reasoning_effort": "ignored",
+    "thinking_budget_tokens": "honored",
+    "thinking_budget_zero": "floor",
+    "thinking_budget_malformed": "silently-ignored",
+    "chat_template_enable_thinking": "honored"
+  },
+  "deterministic": true,
+  "server_features": [
+    "chat_template_enable_thinking",
+    "thinking_budget_tokens",
+    "thinking_budget_zero"
+  ]
+}

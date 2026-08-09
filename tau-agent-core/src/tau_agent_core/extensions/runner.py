@@ -81,6 +81,30 @@ class ExtensionHandlers:
 
 ErrorListener = Callable[[ExtensionError], None]
 
+#: Declared discourse position for a ``before_agent_start`` injected message
+#: (§12.4's tempo table, corrected by §16.5). ``"before_user"`` threads the message
+#: AHEAD of the user's utterance — the *phasic* position, results attached as
+#: context deliberation begins from. ``"after_user"`` threads it behind the
+#: utterance, which is pi's order and therefore the default for a message that does
+#: not declare one.
+MESSAGE_POSITION_BEFORE_USER = "before_user"
+MESSAGE_POSITION_AFTER_USER = "after_user"
+MESSAGE_POSITIONS = (MESSAGE_POSITION_BEFORE_USER, MESSAGE_POSITION_AFTER_USER)
+
+#: The firing unit each turn-boundary hook event carries, as a field ON the event.
+#:
+#: Two hooks in this harness fire at turn boundaries and they count different
+#: turns: ``turn_end`` once per assistant completion, ``user_turn_end`` once per
+#: ``AgentSession.prompt()``. A handler receives a bare event dict, so without this
+#: field it holds a count whose unit it cannot state — it has to know the cadence
+#: from documentation it may have read about a different hook. That is §9 rule 1
+#: one layer down, and it is the same defect ``Trace.arm`` was added to close in
+#: freeze v1.1: a partition key that lived only in the surrounding directory, so
+#: any consumer holding the bare record had lost it and could pool two populations
+#: with nothing detecting the mix.
+FIRING_UNIT_AGENT_LOOP_TURN = "agent_loop_turn"
+FIRING_UNIT_USER_TURN = "user_turn"
+
 
 class ExtensionRunner:
     """Return-collecting dispatcher for the mutating hook events.
@@ -92,7 +116,10 @@ class ExtensionRunner:
     - ``tool_result``        — field-patch the shared result event (later handlers
                                see earlier patches).
     - ``before_agent_start`` — ``system_prompt`` chains (last wins, live to later
-                               handlers); ``message`` values accumulate.
+                               handlers); ``message`` values accumulate. A returned
+                               message may DECLARE its discourse position
+                               (``"position": "before_user" | "after_user"``); see
+                               :meth:`emit_before_agent_start`.
     - ``input``              — transform the user prompt BEFORE the user node
                                exists (``prompt``/``images`` chain, later handlers
                                see the running value); ``handled: True`` consumes
@@ -103,6 +130,30 @@ class ExtensionRunner:
                                next turn (append-only, same power/limits as
                                ``before_agent_start``); returning nothing is a PURE
                                OBSERVER, preserving pi's notify-grade ``turn_end``.
+                               Fires once per AGENT-LOOP turn (per assistant
+                               completion), NOT once per user turn — see
+                               :meth:`emit_turn_end`.
+    - ``user_turn_end``      — fires exactly ONCE per ``AgentSession.prompt()``,
+                               at the boundary ``turn_end`` is not: after the loop,
+                               the followUp drain and auto-compaction. Same durable
+                               ``{message}`` append as ``turn_end``. See
+                               :meth:`emit_user_turn_end`.
+    - ``session_before_switch`` — veto point for
+                               :class:`~tau_agent_core.agent_session_runtime
+                               .AgentSessionRuntime`'s ``new_session``/``fork``/
+                               ``switch_session`` (H2, docs/REMOTE-CONTROL.md
+                               §4[6]). A handler returning ``{"cancel": True}``
+                               short-circuits the dispatch and the runtime
+                               operation reports ``{"cancelled": True}`` without
+                               touching anything. Mirrors pi's
+                               ``emitBeforeSwitch``/``emitBeforeFork``
+                               (``agent-session-runtime.ts:133-165``), collapsed
+                               to ONE hook event because τ's simpler,
+                               reset-in-place runtime does not distinguish "new
+                               session" from "fork" the way pi's per-operation
+                               ``SessionManager`` recreation does — both are just
+                               a ``reason`` on the same event. See
+                               :meth:`emit_session_before_switch`.
 
     (A fourth hook, ``context`` — per-call replace of the message list — existed
     through E2 but was ELIMINATED in E5 §3.2 / S30. Under the durable-hook
@@ -130,8 +181,17 @@ class ExtensionRunner:
 
     #: The mutating hook events this dispatcher owns (E2 supplies the call-sites;
     #: S42 adds ``input``, fired pre-node at the top of ``AgentSession.prompt``;
-    #: S43 adds ``turn_end``, fired per turn in the loop with a durable append).
-    HOOK_EVENTS = ("tool_call", "tool_result", "before_agent_start", "input", "turn_end")
+    #: S43 adds ``turn_end``, fired per turn in the loop with a durable append;
+    #: ``user_turn_end`` fires once per ``prompt()`` at the session tail).
+    HOOK_EVENTS = (
+        "tool_call",
+        "tool_result",
+        "before_agent_start",
+        "input",
+        "turn_end",
+        "user_turn_end",
+        "session_before_switch",
+    )
 
     #: The notify-grade session-lifecycle hooks (S41): no return effect, but
     #: error-surfaced through :meth:`on_error` rather than swallowed. Routed to a
@@ -342,6 +402,33 @@ class ExtensionRunner:
         threaded into each subsequent handler's event (last wins). Each handler's
         ``message`` accumulates. Returns ``{messages, system_prompt}`` (either key
         ``None`` when untouched) only if something changed, else ``None``.
+
+        **Discourse position (§12.4 / §16.5).** A returned ``message`` may carry a
+        ``"position"`` key declaring where it is threaded relative to the user's
+        utterance:
+
+        - ``"after_user"`` (the default when the key is absent) — the message
+          follows the user turn: ``[user, *nextTurn, *after_user]``. This is pi's
+          order verbatim (``agent-session.ts:1089-1120``; the newer harness agrees
+          for hook messages, ``agent-harness.ts:577``), so an extension that says
+          nothing keeps pi-parity behaviour byte for byte.
+        - ``"before_user"`` — the message PRECEDES the user turn:
+          ``[*before_user, user, *nextTurn, *after_user]``. This is the *phasic*
+          discourse position §12.4's tempo table means by "results attached before
+          deliberation": the injected material reads to the model as context the
+          utterance arrives into, not as material following it.
+
+        The point of the key is that the position stops being an accident of the
+        threading and becomes a property the reflex surface DECLARES. §16.5 records
+        why that matters: a surface rendering written for one order and threaded in
+        the other still runs, still passes, and reads differently to the model —
+        a corrupted measurement rather than a crash.
+
+        Raises:
+            ValueError: on any ``position`` value other than those two. Fail-Early:
+                an unrecognised position is not silently resolved to a plausible
+                default, because "silently plausible" is exactly the failure this
+                key exists to remove.
         """
         current_system_prompt = system_prompt
         messages: list[Any] = []
@@ -365,7 +452,18 @@ class ExtensionRunner:
                 if not result:
                     continue
                 if result.get("message") is not None:
-                    messages.append(result["message"])
+                    message = result["message"]
+                    position = message.get("position", MESSAGE_POSITION_AFTER_USER)
+                    if position not in MESSAGE_POSITIONS:
+                        raise ValueError(
+                            f"before_agent_start message from {ext.path!r} declares "
+                            f"position={position!r}; the discourse position must be one of "
+                            f"{list(MESSAGE_POSITIONS)}. Fail-Early — an unrecognised "
+                            "position is not defaulted, because a reflex surface threaded "
+                            "into the wrong discourse position still runs and still passes "
+                            "(§12.4 / §16.5)."
+                        )
+                    messages.append(message)
                 if result.get("system_prompt") is not None:
                     current_system_prompt = result["system_prompt"]
                     system_prompt_modified = True
@@ -380,19 +478,34 @@ class ExtensionRunner:
         self,
         prompt: str,
         images: list[dict[str, Any]] | None,
+        *,
+        source: str = "interactive",
+        submitter: str = "human",
     ) -> dict[str, Any]:
         """Dispatch ``input``; transforms chain, ``handled`` short-circuits.
 
         S42 / roadmap §2 (anchor G2). pi ``runner.ts:1095-1133`` (``emitInput``),
         flattened to τ's ``{prompt, images} -> {prompt?, handled?}`` contract.
 
-        Fires BEFORE the user node exists (the call-site is at the top of
-        :meth:`AgentSession.prompt`), so a transformed prompt is the SINGLE copy
-        that gets persisted, rendered, and sent — no invariant violation, exactly
-        the reasoning that made ``before_agent_start`` legal.
+        Fires BEFORE the user node exists (the call-site is now
+        :meth:`~tau_agent_core.agent_session.AgentSession.submit`, moved there
+        from ``prompt()`` per docs/SUBMISSION-LIFECYCLE.md "The one door" step 2
+        so every submission source shares this pipeline), so a transformed prompt
+        is the SINGLE copy that gets persisted, rendered, and sent — no invariant
+        violation, exactly the reasoning that made ``before_agent_start`` legal.
+
+        ``source``/``submitter`` are the originating
+        :class:`~tau_agent_core.submission.Submission`'s provenance (pi's
+        ``InputSource`` equivalent, absent from τ before the submission lifecycle
+        work) — carried onto the event so a handler can branch on *who* submitted,
+        e.g. treat a ``source="bus"`` input differently from one typed by a human.
+        Defaulting to ``"interactive"``/``"human"`` keeps a direct call (as the
+        existing test suite makes) equivalent to what every ``prompt()`` call
+        implied before this parameter existed.
 
         Each handler receives ``{"type": "input", "prompt": <running text>,
-        "images": <running images>}`` and may return:
+        "images": <running images>, "source": <source>, "submitter": <submitter>}``
+        and may return:
 
         - ``{"handled": True}`` — consume the input WITHOUT starting a turn (a
           command-like extension that showed its own feedback); dispatch stops
@@ -420,6 +533,8 @@ class ExtensionRunner:
                     "type": "input",
                     "prompt": current_prompt,
                     "images": current_images,
+                    "source": source,
+                    "submitter": submitter,
                 }
                 try:
                     result = await self._call(handler, event)
@@ -459,8 +574,23 @@ class ExtensionRunner:
         two coexist: an observing handler and a mutating handler both run, in load /
         registration order, on the same event.
 
-        Each handler receives ``{"type": "turn_end", "turn_index", "usage",
-        "messages"}`` — the just-finished turn's index, its per-completion token
+        **Firing unit: the agent-loop turn, not the user turn (§12.4 / §16.5).** The
+        call-sites are the four per-completion points in :meth:`AgentLoop.run` /
+        :meth:`AgentLoop.run_continue`, so an utterance resolved in six tool
+        round-trips fires this hook six times. That is correct and is pi's cadence
+        (``agent-loop.ts:197``/``:218``, once per assistant message) — a
+        per-completion observer needs a per-completion hook. It is NOT the
+        *consolidative* tempo: mapping a once-per-utterance consolidation onto this
+        hook runs it once per round-trip, which is not a crash and not a test
+        failure, only a number wrong by a factor nobody measured. Use
+        ``user_turn_end`` for that cadence (:meth:`emit_user_turn_end`).
+
+        Each handler receives ``{"type": "turn_end", "firing_unit", "turn_index",
+        "usage", "messages"}``. ``firing_unit`` is
+        :data:`FIRING_UNIT_AGENT_LOOP_TURN`, carried ON the event so a handler
+        holding it can state the unit of its own count instead of inferring the
+        cadence from documentation. The rest: the just-finished turn's index, its
+        per-completion token
         usage (or ``None``), and the messages it produced (assistant + tool
         results). Every returned ``message`` accumulates in order; the collected list
         is returned to the call-site (empty when nothing was returned, so the caller
@@ -478,6 +608,7 @@ class ExtensionRunner:
             for handler in handlers:
                 event = {
                     "type": "turn_end",
+                    "firing_unit": FIRING_UNIT_AGENT_LOOP_TURN,
                     "turn_index": turn_index,
                     "usage": usage,
                     "messages": messages,
@@ -492,6 +623,121 @@ class ExtensionRunner:
                 if result.get("message") is not None:
                     injected.append(result["message"])
         return injected
+
+    async def emit_user_turn_end(
+        self,
+        loop_turns: int,
+        messages: list[Any],
+    ) -> list[Any]:
+        """Dispatch ``user_turn_end`` — the once-per-``prompt()`` boundary hook.
+
+        **Why this exists.** §12.4's tempo table maps the *consolidative* tempo onto
+        ``turn_end``, and §16.5 correction 2 records why that is wrong done
+        literally: ``turn_end`` fires per agent-loop turn, so an utterance resolved
+        in six tool round-trips runs six consolidation passes and six sets of
+        durable writes. §16.5 names the two legitimate answers — "guard the handler
+        on a turn boundary (the ``prompt()`` return is the boundary)" or "run
+        consolidation from the node after ``prompt()`` returns". This hook is the
+        first one, provided by the harness instead of re-derived (and re-got-wrong)
+        by every extension that wants the flywheel cadence.
+
+        **Firing unit, precisely.** Exactly once per :meth:`AgentSession.prompt`
+        call that starts a turn, at its tail — AFTER the agent loop, AFTER the
+        followUp re-entries (which run inside the same ``prompt()``), and AFTER
+        auto-compaction and the deferred compact/fork drain. So the handler sees the
+        whole user turn, in its final persisted form, once. It does NOT fire when
+        an ``input`` handler consumed the input with ``handled: True`` (no turn
+        started, so no turn ended), it does NOT fire when ``prompt()`` raises (there
+        is no clean boundary to consolidate at — Fail-Early over a half-turn
+        consolidation), and it does NOT fire for
+        :meth:`AgentSession.continue_conversation`, which produces loop turns
+        without a user turn.
+
+        **This hook has no pi counterpart.** pi's ``turn_end`` is notify-only
+        (``agent-session.ts:617``) and pi has no once-per-prompt mutating hook; its
+        nearest relative is the harness's notify-grade ``settled``
+        (``agent-harness.ts:533``). A deliberate τ divergence, recorded here and in
+        ``AgentSession._run_user_turn_end``.
+
+        Each handler receives ``{"type": "user_turn_end", "firing_unit",
+        "loop_turns", "messages"}``. ``firing_unit`` is
+        :data:`FIRING_UNIT_USER_TURN`, the counterpart of ``turn_end``'s
+        :data:`FIRING_UNIT_AGENT_LOOP_TURN`; ``loop_turns``
+        is the number of agent-loop turns this user turn consumed (assistant
+        completions, followUp re-entries included) and the user turn's messages in
+        persisted order. Returning ``{message}`` appends a durable ``customMessage``
+        node (same power and limits as ``before_agent_start``: append-only, never a
+        rewrite); returning nothing is a pure observer.
+
+        Handler exceptions are SURFACED via :meth:`on_error` (the S44 regime) and
+        dispatch continues to the next handler.
+        """
+        injected: list[Any] = []
+        for ext in self._extensions:
+            handlers = ext.handlers.get("user_turn_end")
+            if not handlers:
+                continue
+            for handler in handlers:
+                event = {
+                    "type": "user_turn_end",
+                    "firing_unit": FIRING_UNIT_USER_TURN,
+                    "loop_turns": loop_turns,
+                    "messages": messages,
+                }
+                try:
+                    result = await self._call(handler, event)
+                except Exception as err:  # noqa: BLE001 — surfaced, not dropped
+                    self._emit_error(ExtensionError(ext.path, "user_turn_end", str(err)))
+                    continue
+                if not result:
+                    continue
+                if result.get("message") is not None:
+                    injected.append(result["message"])
+        return injected
+
+    async def emit_session_before_switch(self, reason: str, target: str | None = None) -> bool:
+        """Dispatch ``session_before_switch``; the first ``{"cancel": True}`` wins.
+
+        H2 (docs/REMOTE-CONTROL.md §4[6]): the veto point
+        :class:`~tau_agent_core.agent_session_runtime.AgentSessionRuntime` calls
+        before ``new_session``/``fork``/``switch_session`` touch anything. Load-
+        order iteration, short-circuiting on the FIRST handler that vetoes —
+        pi's ``emitBeforeSwitch``/``emitBeforeFork`` return as soon as
+        ``result?.cancel === true`` (``agent-session-runtime.ts:142-147``), and
+        this does the same rather than polling every handler once the answer is
+        already known.
+
+        Each handler receives ``{"type": "session_before_switch", "reason",
+        "target"}``. ``reason`` is ``"new"``, ``"resume"`` (switch_session), or
+        ``"fork"`` — pi's own vocabulary (``SessionShutdownEvent["reason"]``,
+        minus ``"quit"``, which this hook never fires for). ``target`` is the
+        session id being switched/forked to when the caller supplied one
+        (``switch_session``'s ``session_id``), else ``None``.
+
+        Returns ``True`` (vetoed) or ``False`` (proceed) — deliberately a bare
+        bool rather than the raw handler dict: the runtime's only decision here
+        is "stop or continue", and threading a dict through would invite a
+        second consumer to read fields this hook does not promise.
+
+        Handler exceptions are SURFACED via :meth:`on_error` (the S44 regime)
+        and dispatch continues to the next handler — one extension's failing
+        veto check must not silently block (or silently fail to block) another
+        extension's.
+        """
+        for ext in self._extensions:
+            handlers = ext.handlers.get("session_before_switch")
+            if not handlers:
+                continue
+            for handler in handlers:
+                event = {"type": "session_before_switch", "reason": reason, "target": target}
+                try:
+                    result = await self._call(handler, event)
+                except Exception as err:  # noqa: BLE001 — surfaced, not dropped
+                    self._emit_error(ExtensionError(ext.path, "session_before_switch", str(err)))
+                    continue
+                if result and result.get("cancel"):
+                    return True
+        return False
 
     def emit_veto_record(self, *, tool_name: str, reason: str, extension: str | None) -> None:
         """Emit a JSON-stream veto record for a blocked tool call (S50 — anchor G11).

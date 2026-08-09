@@ -30,6 +30,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from tau_agent_core.completion import CompletionFailed, resolved_complete
+from tau_agent_core.usage import add_usage, usage_of, zero_usage
 from tau_ai.client import complete_simple
 from tau_ai.types import Model, TextContent
 
@@ -102,7 +104,19 @@ class CompactionResult:
     tokens_before: int
     details: CompactionDetails | None = None
     compacted_entry_ids: list[str] = field(default_factory=list)
+    # Context tokens the compaction REMOVED: the summarized range, less the
+    # summary that replaces it (see ``compact``). Not ``tokens_before`` less the
+    # summary — that counted the kept tail as removed. Signed: a summary bigger
+    # than the prefix it replaced is a negative saving, reported as one.
     tokens_saved: int = 0
+    # What GENERATING this summary cost (see tau_agent_core.usage). Compaction
+    # summarizes the entire conversation, so its input is roughly a full context
+    # window — routinely the most expensive single call in a session, and it fires
+    # automatically. It went through `complete_simple`, which emits no events, so
+    # these tokens reached no meter and the session's displayed cost was understated
+    # by exactly the call the user never asked for. `tokens_saved` says what
+    # compaction bought; this says what it charged.
+    usage: dict[str, int] = field(default_factory=zero_usage)
 
 
 # ─── Token estimation ────────────────────────────────────────────────────
@@ -477,8 +491,14 @@ async def generate_summary(
     custom_instructions: str | None = None,
     previous_summary: str | None = None,
     thinking_level: str | None = None,
-) -> str:
+) -> tuple[str, dict[str, int]]:
     """Generate (or iteratively update) a conversation summary (pi: generateSummary).
+
+    Returns:
+        ``(summary, usage)`` — the text AND what producing it cost. A function that
+        spends tokens has to say how many, or the caller cannot account for them:
+        this one's input is the whole conversation, and it used to throw that number
+        away (see :mod:`tau_agent_core.usage`).
 
     Raises:
         CompactionError: on an aborted/errored or otherwise failed completion.
@@ -509,20 +529,29 @@ async def generate_summary(
     }
     options = _summary_options(model, api_key, max_tokens, thinking_level)
 
+    # The shared completion door (C1). complete_fn is passed explicitly as this
+    # module's own ``complete_simple`` so that a test patching
+    # ``tau_agent_core.compaction.complete_simple`` is honored (the shared primitive
+    # otherwise reaches for ``tau_ai.client.complete_simple``). We keep compaction's
+    # error taxonomy: the shared error/aborted check raises CompletionFailed, which we
+    # translate — preserving the aborted-vs-summarization_failed code split — and a
+    # provider/transport failure below stays ``summarization_failed``. Billing is
+    # caller-side: we return (summary, usage).
     try:
-        response = await complete_simple(model, context, options)
+        response = await resolved_complete(
+            model, context, options=options, complete_fn=complete_simple
+        )
+    except CompletionFailed as exc:
+        if exc.stop_reason == "aborted":
+            raise CompactionError("aborted", exc.error_message or "Summarization aborted") from exc
+        raise CompactionError(
+            "summarization_failed",
+            f"Summarization failed: {exc.error_message or 'Unknown error'}",
+        ) from exc
     except Exception as exc:  # provider/transport failure
         raise CompactionError("summarization_failed", f"Summarization failed: {exc}") from exc
 
-    if response.stop_reason == "aborted":
-        raise CompactionError("aborted", response.error_message or "Summarization aborted")
-    if response.stop_reason == "error":
-        raise CompactionError(
-            "summarization_failed",
-            f"Summarization failed: {response.error_message or 'Unknown error'}",
-        )
-
-    return _summary_text(response)
+    return _summary_text(response), usage_of(response)
 
 
 async def generate_turn_prefix_summary(
@@ -532,8 +561,13 @@ async def generate_turn_prefix_summary(
     api_key: str | None,
     *,
     thinking_level: str | None = None,
-) -> str:
-    """Summarize the prefix of a split turn (pi: generateTurnPrefixSummary)."""
+) -> tuple[str, dict[str, int]]:
+    """Summarize the prefix of a split turn (pi: generateTurnPrefixSummary).
+
+    Returns ``(summary, usage)`` — see :func:`generate_summary`. On a split turn this
+    call runs CONCURRENTLY with the history summary, so a compaction can spend two
+    completions, and both have to be counted.
+    """
     budget = math.floor(0.5 * reserve_tokens)
     max_tokens = min(budget, model.max_tokens) if model.max_tokens > 0 else budget
 
@@ -554,24 +588,28 @@ async def generate_turn_prefix_summary(
     }
     options = _summary_options(model, api_key, max_tokens, thinking_level)
 
+    # See generate_summary: the shared door (C1), with this module's ``complete_simple``
+    # passed so the compaction patch site is honored and the CompactionError taxonomy
+    # (including aborted-vs-summarization_failed) is preserved.
     try:
-        response = await complete_simple(model, context, options)
+        response = await resolved_complete(
+            model, context, options=options, complete_fn=complete_simple
+        )
+    except CompletionFailed as exc:
+        if exc.stop_reason == "aborted":
+            raise CompactionError(
+                "aborted", exc.error_message or "Turn prefix summarization aborted"
+            ) from exc
+        raise CompactionError(
+            "summarization_failed",
+            f"Turn prefix summarization failed: {exc.error_message or 'Unknown error'}",
+        ) from exc
     except Exception as exc:
         raise CompactionError(
             "summarization_failed", f"Turn prefix summarization failed: {exc}"
         ) from exc
 
-    if response.stop_reason == "aborted":
-        raise CompactionError(
-            "aborted", response.error_message or "Turn prefix summarization aborted"
-        )
-    if response.stop_reason == "error":
-        raise CompactionError(
-            "summarization_failed",
-            f"Turn prefix summarization failed: {response.error_message or 'Unknown error'}",
-        )
-
-    return _summary_text(response)
+    return _summary_text(response), usage_of(response)
 
 
 # ─── Preparation + orchestration ─────────────────────────────────────────
@@ -592,6 +630,20 @@ class CompactionPreparation:
     compacted_entry_ids: list[str] = field(default_factory=list)
 
 
+def _summary_context_message(summary: str) -> dict[str, Any]:
+    """The user message a compaction summary becomes when it re-enters context.
+
+    One spelling of the wrapper, shared by ``_build_messages_from_entries``
+    (reading a compaction entry that already exists) and ``compact``'s
+    ``tokens_saved`` arithmetic (pricing the summary it is about to write). Two
+    spellings would let the estimate drift from the thing it estimates.
+    """
+    return {
+        "role": "user",
+        "content": [{"type": "text", "text": f"[[Compaction summary: {summary}]]"}],
+    }
+
+
 def _build_messages_from_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Flatten active-path entries to LLM messages.
 
@@ -610,13 +662,7 @@ def _build_messages_from_entries(entries: list[dict[str, Any]]) -> list[dict[str
             if isinstance(msg, dict):
                 messages.append(msg)
         elif etype == "compaction":
-            summary = entry.get("summary", "")
-            messages.append(
-                {
-                    "role": "user",
-                    "content": [{"type": "text", "text": f"[[Compaction summary: {summary}]]"}],
-                }
-            )
+            messages.append(_summary_context_message(entry.get("summary", "")))
     return messages
 
 
@@ -642,8 +688,11 @@ def prepare_compaction(
     """Prepare active-path entries for compaction, or None when inapplicable.
 
     Faithful port of pi's prepareCompaction (compaction.ts:542), reading τ entry
-    dicts. Returns None when there is nothing to compact (empty path, or the path
-    already ends in a compaction entry).
+    dicts. Returns None when there is nothing to compact: an empty path, a path
+    that already ends in a compaction entry, or — τ's one divergence from pi
+    here, see the comment at the guard — a cut that would remove no message from
+    the context at all, which is what the shipped ``keep_recent_tokens`` produces
+    for every conversation smaller than it.
 
     Raises:
         CompactionError("invalid_session"): when the chosen first-kept entry has
@@ -702,6 +751,25 @@ def prepare_compaction(
             if msg is not None:
                 turn_prefix_messages.append(msg)
 
+    # These two lists ARE what leaves the context: everything else in the
+    # replaced range (session/agent_spec/model_change bookkeeping, a superseded
+    # compaction entry) contributes no tokens to the model input in the first
+    # place. Both empty therefore means this "compaction" would remove nothing —
+    # and with the shipped ``keep_recent_tokens`` (20000) that is the ORDINARY
+    # outcome for any conversation smaller than that, i.e. the DEFAULT path of
+    # the manual ``compact`` verb (RPC Tier B B2). Returning a preparation here
+    # made ``compact()`` spend a completion summarizing an empty
+    # ``<conversation>``, append that summary (GROWING the context by it), and
+    # publish a ``tokens_saved`` for a removal that never happened. "Nothing to
+    # compact" already has a spelling on this contract — ``None``, which
+    # ``AgentSession.compact()`` reports as ``performed=false`` — so report the
+    # real outcome instead of fabricating a compaction (Fail Early). The
+    # first-kept-id check above deliberately stays AHEAD of this: an unmigrated
+    # session is a hard error whether or not this particular cut would have
+    # moved anything.
+    if not messages_to_summarize and not turn_prefix_messages:
+        return None
+
     # Files touched across the summarized range (pi seeds from the previous
     # compaction's stored details; τ's CompactionEntry does not persist file
     # lists, so accumulation starts fresh each compaction — documented divergence).
@@ -752,9 +820,10 @@ async def compact(
 
     if preparation.is_split_turn and preparation.turn_prefix_messages:
 
-        async def _history() -> str:
+        async def _history() -> tuple[str, dict[str, int]]:
             if not preparation.messages_to_summarize:
-                return "No prior history."
+                # Nothing was sent to a provider, so nothing was spent. A true zero.
+                return "No prior history.", zero_usage()
             return await generate_summary(
                 preparation.messages_to_summarize,
                 model,
@@ -765,7 +834,10 @@ async def compact(
                 thinking_level=thinking_level,
             )
 
-        history_summary, turn_prefix_summary = await asyncio.gather(
+        (
+            (history_summary, history_usage),
+            (turn_prefix_summary, prefix_usage),
+        ) = await asyncio.gather(
             _history(),
             generate_turn_prefix_summary(
                 preparation.turn_prefix_messages,
@@ -778,8 +850,11 @@ async def compact(
         summary = (
             f"{history_summary}\n\n---\n\n**Turn Context (split turn):**\n\n{turn_prefix_summary}"
         )
+        # A split turn spends TWO completions. Counting one would understate the
+        # compaction's cost by roughly half.
+        usage = add_usage(history_usage, prefix_usage)
     else:
-        summary = await generate_summary(
+        summary, usage = await generate_summary(
             preparation.messages_to_summarize,
             model,
             preparation.settings.reserve_tokens,
@@ -792,7 +867,21 @@ async def compact(
     read_files, modified_files = compute_file_lists(preparation.file_ops)
     summary += format_file_operations(read_files, modified_files)
 
-    tokens_saved = max(0, preparation.tokens_before - math.ceil(len(summary) / 4))
+    # What this compaction REMOVED from context, which is what the field claims:
+    # the summarized range (history + any split-turn prefix) leaves, and
+    # ``summary`` takes its place. ``tokens_before`` is the whole active path —
+    # it includes the recent context the cut deliberately KEEPS — so subtracting
+    # the summary from it reported the kept tail as saved as well (measured on a
+    # three-turn session: tokens_before=5003, tokens_saved=4953, nothing gone).
+    # Both sides use the same estimator as ``tokens_before`` so the subtraction
+    # is between like quantities, not between the estimator and a len//4 guess.
+    # Deliberately NOT clamped at zero: a summary longer than the prefix it
+    # replaces saved a negative number of tokens, and rounding that up to 0 is
+    # the same fabrication in a smaller denomination (Fail Early).
+    tokens_removed = estimate_context_tokens(
+        [*preparation.messages_to_summarize, *preparation.turn_prefix_messages]
+    ).tokens
+    tokens_saved = tokens_removed - estimate_tokens(_summary_context_message(summary))
 
     return CompactionResult(
         summary=summary,
@@ -801,6 +890,7 @@ async def compact(
         details=CompactionDetails(read_files=read_files, modified_files=modified_files),
         compacted_entry_ids=preparation.compacted_entry_ids,
         tokens_saved=tokens_saved,
+        usage=usage,
     )
 
 

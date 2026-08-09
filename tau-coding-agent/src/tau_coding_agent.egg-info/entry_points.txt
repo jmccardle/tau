@@ -1,2 +1,0 @@
-[console_scripts]
-tau = tau_coding_agent.cli:main

@@ -22,33 +22,45 @@ from textual.widgets import (
     RadioButton,
     SelectionList,
 )
+from textual.widgets.markdown import MarkdownStream
 from textual.binding import Binding
 from textual.reactive import reactive
 from textual import events, work
 from textual.message import Message
 from textual.screen import ModalScreen
-from pathlib import Path
+from textual.worker import get_current_worker
 from datetime import datetime, timedelta
+import asyncio
 import json
 import os
 import time
 import traceback
 from typing import Any, Callable, Literal, Optional
+from uuid import uuid4
 
-from tau_coding_agent.backends import create_backend, make_model_resolver, Backend
+from tau_coding_agent.backends import (
+    DEFAULT_LANE,
+    Backend,
+    RenderRouter,
+    create_backend,
+    make_model_resolver,
+)
 from tau_coding_agent.headless import _append_system_prompt, resolve_extensions_config
 
 # Session persistence lives in a Textual-free module so `tau -p` can save
 # sessions without importing the TUI. Sessions are append-only JSONL transcripts
 # partitioned by cwd (docs/SESSION-UX-REDESIGN.md); the TUI keeps a live working
 # message list and funnels each produced message through Session.append_message.
+# Construction/lookup goes through the storage-agnostic SessionCatalog seam (W10)
+# rather than the concrete Session directly, so the TUI never hardcodes the file
+# store either.
+from tau_agent_core.agent_session_runtime import AgentSessionRuntime
+from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, SessionInfo
+from tau_coding_agent.config import TAU_DIR, bootstrap_config, update_config
 from tau_coding_agent.session_store import (
-    TAU_DIR,
-    Session,
-    SessionInfo,
-    list_sessions,
     subscribe_session_events,
 )
+from tau_coding_agent.store_factory import build_session_catalog, resolve_backend_name
 
 # The pure session-tree algebra lives in tau-agent-core (the loop's package, not
 # the TUI); the tree-browser (§3) is a view over ConversationTree.tree().
@@ -68,6 +80,23 @@ from tau_agent_core.agent_session import ExtensionCommandResult
 # palette listing renders (E5 §5 / S34).
 from tau_agent_core.sdk import LoadExtensionsResult, summarize_extensions
 
+# The submission record every input source funnels through
+# (docs/SUBMISSION-LIFECYCLE.md "The one door"). The TUI constructs one per typed
+# prompt in ``on_input_submitted`` — it is a SOURCE like any other, not a
+# privileged path into the loop.
+from tau_agent_core.submission import Submission
+
+# Command dispatch (docs/SUBMISSION-LIFECYCLE.md submit() step 3 / B2-b). The DECISION
+# — "this input is command X with arguments Y" — is the core's and is shared with
+# ``AgentSession.submit``; performing a frontend-shaped outcome (a modal, a panel, a
+# transcript re-render) is this app's, and failing to be able to is an exception.
+from tau_agent_core.commands import (
+    CommandOutcome,
+    UnsupportedCommandError,
+    resolve_command,
+    unsupported_command_message,
+)
+
 # Collapsible chat components. MessageBox (below) is the universal per-message
 # host; these are the children it composes — one reasoning region and N tool
 # boxes — plus the exchange grouping used by the streaming state machine.
@@ -76,6 +105,7 @@ from tau_coding_agent.chat_widgets import (
     ReasoningRegion,
     ToolBox,
     format_duration,
+    format_telemetry,
     format_tokens,
 )
 
@@ -187,6 +217,86 @@ class ExtensionStatusBar(Static):
             # leave an empty bar.
             self.display = False
             self.update("")
+
+
+class LaneStrip(Static):
+    """One-line footer strip naming every FOREIGN lane currently streaming (B3-b).
+
+    Reference: docs/SUBMISSION-LIFECYCLE.md phase 3. The transcript shows a
+    foreign lane's *content* — badged bubbles, a labelled exchange — but content
+    scrolls, and a forked sub-agent that runs for two minutes inside a collapsed
+    exchange three screens up is running invisibly. This is the ambient half: while
+    anything the user did not type is in flight, one line says so, and it says
+    which.
+
+    Deliberately a separate widget from :class:`ExtensionStatusBar` rather than a
+    slot in it. That bar's slots are an EXTENSION's to name (``ctx.ui.set_status``
+    keys come from extension code), so lane activity living there would be one
+    ``set_status("lanes", …)`` away from being silently overwritten by the very
+    extension whose fork it is reporting.
+
+    Same idiom as that bar, though — an insertion-ordered dict of live entries,
+    joined by a thin separator, hidden (``display = False``) at zero entries so it
+    costs no rows on an ordinary session. Only foreign lanes are listed: the
+    frontend's own typed turn already has the input disabled and the header
+    subtitle to say it is working, and a strip that lit up for every prompt would
+    be the noise the badge rules exist to avoid.
+    """
+
+    _SEPARATOR = "  │  "
+
+    def __init__(self) -> None:
+        super().__init__("", id="lane-strip")
+        # lane id -> origin badge, in the order the lanes opened.
+        self._lanes: dict[str, str] = {}
+        self.display = False
+
+    def open_lane(self, lane: str, label: str | None) -> None:
+        """Track ``lane`` as live under its origin badge.
+
+        ``label is None`` is this frontend's own typed turn, which the strip does
+        not report — not a filtered-out source, a lane the reader is already
+        looking at.
+        """
+        if label is None:
+            return
+        self._lanes[lane] = label
+        self._render_strip()
+
+    def close_lane(self, lane: str) -> None:
+        """Drop ``lane`` from the strip. A lane it never tracked is a no-op —
+        that is the ordinary interactive lane ending."""
+        if self._lanes.pop(lane, None) is not None:
+            self._render_strip()
+
+    def clear_lanes(self) -> None:
+        """Forget every tracked lane (a backend/session swap abandons them)."""
+        if self._lanes:
+            self._lanes = {}
+            self._render_strip()
+
+    @property
+    def lanes(self) -> dict[str, str]:
+        """The live lanes, ``{lane: badge}``, in open order."""
+        return dict(self._lanes)
+
+    @property
+    def summary(self) -> str:
+        """The line this strip currently shows — ``""`` when it is hidden.
+
+        Derived from :attr:`lanes` rather than cached, so what the strip says and
+        what it is tracking cannot drift; the widget's own text is set from here.
+        """
+        if not self._lanes:
+            return ""
+        count = len(self._lanes)
+        noun = "lane" if count == 1 else "lanes"
+        return f"⑂ {count} other {noun}: " + self._SEPARATOR.join(self._lanes.values())
+
+    def _render_strip(self) -> None:
+        summary = self.summary
+        self.display = bool(summary)
+        self.update(summary)
 
 
 def render_panel_body(body: dict[str, Any]) -> str:
@@ -367,21 +477,35 @@ class SessionTreeModal(ModalScreen[Optional[str]]):
     ``textual.widgets.Tree`` populated from ``ConversationTree.tree()``, the current
     leaf highlighted. ``Enter`` dismisses with the chosen entry id; ``Esc`` cancels
     (``None``). Copies the ``SystemPromptEditor`` modal template.
+
+    ``title``/``help_text`` exist for the SECOND pick of the elide flow (W3), which
+    asks a different question of the same browser — "where does the fold resume?"
+    rather than "where do we branch from?". One reused browser with a different
+    caption, not a second widget: the tree, the leaf highlight and the key handling
+    are identical, and only the sentence above them is not.
     """
 
     BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
 
-    def __init__(self, roots: list[TreeNode]) -> None:
+    def __init__(
+        self,
+        roots: list[TreeNode],
+        *,
+        title: str = "Browse Conversation Tree",
+        help_text: str = "Enter: branch from node    Esc: cancel",
+    ) -> None:
         super().__init__()
         self._roots = roots
+        self._title = title
+        self._help_text = help_text
 
     def compose(self) -> ComposeResult:
         with Container(id="tree-browser-dialog"):
-            yield Static("Browse Conversation Tree", id="tree-browser-title")
+            yield Static(self._title, id="tree-browser-title")
             tree: Tree[str] = Tree("session", id="tree-browser-tree")
             tree.show_root = False
             yield tree
-            yield Static("Enter: branch from node    Esc: cancel", id="tree-browser-help")
+            yield Static(self._help_text, id="tree-browser-help")
 
     def on_mount(self) -> None:
         tree = self.query_one("#tree-browser-tree", Tree)
@@ -423,22 +547,30 @@ class SessionTreeModal(ModalScreen[Optional[str]]):
 
 
 class TreeModeModal(ModalScreen[Optional[str]]):
-    """The three-mode chooser after a branch point is picked (§3.1).
+    """The mode chooser after a node is picked (§3.1).
 
     pi's ``showExtensionSelector`` (interactive-mode.ts:4479-4483): "No summary" /
     "Summarize" / "Summarize with custom instructions". Dismisses with
     ``"navigate"`` / ``"summarize"`` / ``"custom"`` (or ``None`` on cancel).
+
+    Plus a fourth, τ-only mode: ``"elide"`` (W3, NODE-ADDRESSABLE-AGENTS.md). It is
+    the odd one out and the title says so — the other three treat the picked node as
+    a BRANCH POINT and move the cursor back to it, while ``elide`` treats it as the
+    fold's ANCHOR and needs a second node (the resume point) before it can do
+    anything. :meth:`Parley.action_browse_tree` collects that second pick; this
+    modal only names the mode.
     """
 
     BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
 
     def compose(self) -> ComposeResult:
         with Container(id="tree-mode-dialog"):
-            yield Static("Branch from selected node", id="tree-mode-title")
+            yield Static("Act on selected node", id="tree-mode-title")
             with Vertical(id="tree-mode-buttons"):
-                yield Button("No summary", variant="primary", id="mode-navigate")
-                yield Button("Summarize abandoned branch", id="mode-summarize")
-                yield Button("Summarize with custom instructions…", id="mode-custom")
+                yield Button("Branch: no summary", variant="primary", id="mode-navigate")
+                yield Button("Branch: summarize abandoned branch", id="mode-summarize")
+                yield Button("Branch: summarize with custom instructions…", id="mode-custom")
+                yield Button("Elide a span ending here…", id="mode-elide")
                 yield Button("Cancel", id="mode-cancel")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -446,6 +578,7 @@ class TreeModeModal(ModalScreen[Optional[str]]):
             "mode-navigate": "navigate",
             "mode-summarize": "summarize",
             "mode-custom": "custom",
+            "mode-elide": "elide",
         }
         self.dismiss(mapping.get(event.button.id or ""))
 
@@ -474,6 +607,58 @@ class TreeCustomInstructionsModal(ModalScreen[Optional[str]]):
             self.dismiss(self.query_one("#prompt-editor-textarea", TextArea).text)
         elif event.button.id == "custom-cancel":
             self.dismiss(None)
+
+
+class RollbackPromptModal(ModalScreen[Optional[str]]):
+    """Collect the prompt that replaces the turn being rolled back.
+
+    The affordance for ``multitask_strategy="rollback"``
+    (docs/SUBMISSION-LIFECYCLE.md decision 2). A rollback is not "stop" — it is
+    "stop, un-path what that turn did, and run THIS instead", and the core has no
+    way to express the first two halves without the third: ``submit()`` needs the
+    replacement text, and it must be submitted while the doomed turn still holds
+    the turn slot. So the affordance has to ask for text, and the input widget is
+    disabled for the duration of a turn, which leaves a modal.
+
+    Prefilled with the aborted turn's own prompt, because the two things a person
+    wants here are "run that again from before it went wrong" (accept the prefill)
+    and "run this corrected version instead" (edit it), and prefilling makes the
+    first one a single keypress. Reuses the ``SystemPromptEditor`` shell like
+    :class:`TreeCustomInstructionsModal` does, plus one line saying what is about
+    to happen to the running turn — the operation discards visible work, and the
+    other destructive tree operations (branch, summarize, elide) all name their
+    consequence before they run.
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(self, prefill: str = "") -> None:
+        super().__init__()
+        self._prefill = prefill
+
+    def compose(self) -> ComposeResult:
+        with Container(id="prompt-editor-dialog"):
+            yield Static("Roll back the in-flight turn", id="prompt-editor-title")
+            yield Static(
+                "The running turn is aborted and its messages fall off the active "
+                "path — nothing is deleted, the tree browser still shows them. This "
+                "prompt runs in their place, from the context as it stood before "
+                "that turn started.",
+                id="rollback-help",
+            )
+            yield TextArea(self._prefill, id="prompt-editor-textarea")
+            with Horizontal(id="prompt-editor-buttons"):
+                yield Button("Roll back & run", variant="primary", id="rollback-run")
+                yield Button("Cancel", variant="default", id="rollback-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "rollback-run":
+            self.dismiss(self.query_one("#prompt-editor-textarea", TextArea).text)
+        elif event.button.id == "rollback-cancel":
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class ExtensionConfirmModal(ModalScreen[bool]):
@@ -766,7 +951,33 @@ ROLE_LABELS: dict[str, str] = {
     # distinctly so it never reads as a literal user turn (role "custom" on the
     # node, serialized custom→user only on the wire).
     "custom": "Extension",
+    # Submission sources (B3-b). A turn nobody typed HERE still opens with a
+    # bubble carrying its own text — Jupyter's ``execute_input`` re-broadcast —
+    # and that bubble must not claim a human wrote it. So the SOURCE is the role
+    # (docs/SUBMISSION-LIFECYCLE.md ``SubmissionSource``) and it selects the label
+    # + colour exactly the way every other kind here does.
+    #
+    # These are entries, not an allow-list: an unlisted source falls through to
+    # ``role.capitalize()`` in :meth:`MessageBox.on_mount` and to the shared
+    # ``lane-foreign`` CSS rule, so a novel source renders with a generic
+    # attribution instead of being dropped. Filtering is the failure mode this
+    # whole design exists to prevent.
+    "interactive": "User",  # a human, but not the one at THIS frontend
+    "rpc": "RPC",
+    "extension": "Extension",
+    "bus": "Bus",
+    "timer": "Timer",
+    "webhook": "Webhook",
+    "voice": "Voice",
+    "agent": "Sub-agent",
 }
+
+#: CSS class worn by every widget belonging to a lane this frontend did not
+#: originate — a bus/timer submission's bubble, a forked sub-agent's steps, the
+#: answer promoted out of either (B3-b). ONE class rather than one per source, so
+#: a source nobody has heard of is still visually foreign; the box's border TITLE
+#: names which source it actually was.
+LANE_FOREIGN_CLASS = "lane-foreign"
 
 
 def format_tool_call_body(name: str, arguments: object) -> str:
@@ -853,6 +1064,9 @@ class MessageBox(Static):
         self._subtitle = subtitle
         self._reasoning: ReasoningRegion | None = None
         self._tool_boxes: dict[str, ToolBox] = {}
+        # Lazily created by append_content_delta on the first streamed delta
+        # once the inner Markdown has composed; see append_content_delta/finish_stream.
+        self._stream: MarkdownStream | None = None
 
     def _format(self, content: str) -> str:
         # Preserve single newlines as paragraph breaks for Markdown.
@@ -862,9 +1076,18 @@ class MessageBox(Static):
         # Three stacked slots: reasoning (lazy), the text body, tool boxes (lazy).
         # Empty slots collapse to zero height, so a plain user message looks
         # exactly like a single text box.
+        #
+        # The inner Markdown is always constructed EMPTY, even when
+        # self._content is already non-empty here (a streaming step whose
+        # first delta(s) landed before compose() ran, buffered by
+        # append_content_delta's hasattr gate) -- on_mount catches it up via
+        # append(), deliberately not by seeding the constructor. See
+        # on_mount's comment for why: Markdown(text)'s implicit update(text)
+        # call computes its _last_parsed_line bookkeeping differently than
+        # append() does, and the two can disagree.
         self._reasoning_slot = Vertical(classes="message-reasoning")
         yield self._reasoning_slot
-        md = Markdown(self._format(self._content), classes="message-content")
+        md = Markdown("", classes="message-content")
         self._md_widget = md
         yield md
         self._tools_slot = Vertical(classes="message-tools")
@@ -874,6 +1097,28 @@ class MessageBox(Static):
         # The role label + color live on the box border (not the inner Markdown),
         # so reasoning + text + tools sit inside one titled border.
         self.border_title = ROLE_LABELS.get(self.role, self.role.capitalize())
+        # Catch up whatever content was already set (a normal fully-formed
+        # message, or a streaming step whose deltas outran compose()) onto the
+        # now-mounted, still-empty Markdown widget.
+        #
+        # Routed through append(), deliberately NOT update(): Markdown.update()
+        # computes its internal _last_parsed_line bookkeeping as a naive
+        # "physical line count", whereas Markdown.append() derives it from the
+        # actual parse tree (the start line of the last still-open top-level
+        # block). These disagree whenever the seeded text ends with a
+        # construct spanning more than one physical line as ONE block (a
+        # still-open fenced code block survives _format's blanket "\n"->"\n\n"
+        # doubling, since a blank line inside a fence doesn't close it) -- a
+        # later append_content_delta would then reparse from update()'s wrong
+        # line offset and *replace* the block already rendered, silently
+        # dropping the earlier text (same failure mode verified directly on
+        # ReasoningRegion's identical fix). Since existing_blocks is empty on
+        # a freshly-mounted widget either way, append() here mounts the exact
+        # same block tree update() would have for this first-ever content —
+        # the only difference is _last_parsed_line staying self-consistent
+        # with every append_content_delta call that follows.
+        if self._content:
+            self._md_widget.append(self._format(self._content))
         if self._subtitle:
             self.border_subtitle = self._subtitle
 
@@ -888,9 +1133,61 @@ class MessageBox(Static):
 
     def update_content(self, content: str) -> None:
         """Replace the text body in place (used for streaming text)."""
+        # Same string in twice in a row -- a _flush/finalize call after
+        # append_content_delta already streamed every delta in -- is the
+        # common case now; Markdown.update() unconditionally re-parses and
+        # remounts every block, so skip it when nothing actually changed.
+        # content_text/_promote_answer read self._content, not the widget, so
+        # it's fine to bail before touching the Markdown -- the value they'd
+        # see is unchanged either way.
+        if content == self._content:
+            return
         self._content = content
         if hasattr(self, "_md_widget"):
             self._md_widget.update(self._format(content))
+
+    async def append_content_delta(self, delta: str) -> None:
+        """Stream one delta into the text body without a full document rebuild.
+
+        Uses ``Markdown.get_stream``/``MarkdownStream.write`` (Textual 8.2.7),
+        appending instead of the reparse+remount-everything ``update_content``/
+        ``Markdown.update()`` does. ``_format()`` is a stateless single-character
+        replace (``"\\n"`` -> ``"\\n\\n"``) with no cross-character lookaround, so
+        it distributes over concatenation: ``_format(a) + _format(b) ==
+        _format(a + b)`` for any split point. Formatting each delta on its own
+        before appending therefore produces the identical document a whole-text
+        ``update_content(self._content)`` would, even when a delta splits mid
+        newline.
+
+        ``self._content`` is kept in sync on every call (not just a throttled
+        tick) so ``content_text``/``update_content``'s equality guard stay
+        correct whether or not this delta was actually streamed yet. Mirrors
+        ``update_content``'s existing ``hasattr`` gate: a delta that arrives
+        before ``compose()`` has run is accumulated into ``self._content``
+        only -- ``on_mount`` catches the full buffered text up via ``append()``
+        once the widget mounts (not ``update()`` -- see its comment), and
+        streaming resumes from there.
+        """
+        if not delta:
+            return
+        self._content += delta
+        if not hasattr(self, "_md_widget"):
+            return
+        if self._stream is None:
+            self._stream = Markdown.get_stream(self._md_widget)
+        await self._stream.write(self._format(delta))
+
+    async def finish_stream(self) -> None:
+        """Stop this box's open content stream, if any.
+
+        Called at every point the active step stops being the streaming target
+        (``_flush``, ``finalize_exchange``) so no ``MarkdownStream`` background
+        task is left running once the box may be collapsed, promoted from, or
+        removed. Safe to call when nothing was ever streamed (idempotent no-op).
+        """
+        if self._stream is not None:
+            stream, self._stream = self._stream, None
+            await stream.stop()
 
     @property
     def content_text(self) -> str:
@@ -974,28 +1271,43 @@ class ChatListItem(Static):
 
     def __init__(self, info: SessionInfo):
         super().__init__(f"• {info.display_title()}", classes="chat-list-item")
-        self.chat_path = info.path
+        # A storage-agnostic handle (SessionCatalog.load(ref)), not a filesystem
+        # path — a path for the file store, a doc id for a future JMFTS-backed one
+        # (W10). Named for what it IS, not for the one store that happens to back
+        # it today.
+        self.chat_ref = info.ref
         self.info = info
 
     def on_click(self):
         """Handle click to load this session."""
-        self.post_message(ChatSelected(self.chat_path))
+        self.post_message(ChatSelected(self.chat_ref))
 
 
 class ChatSelected(Message):
     """Message sent when a session is selected from the sidebar."""
 
-    def __init__(self, chat_path: Path):
+    def __init__(self, chat_ref: str):
         super().__init__()
-        self.chat_path = chat_path
+        self.chat_ref = chat_ref
 
 
 class ChatSidebar(Container):
     """Sidebar showing this directory's recent sessions, grouped by date."""
 
-    def __init__(self):
+    # Applies to today/yesterday/older alike (older was the only one capped
+    # before this fix) — an unbounded group is how a single mount storm grows
+    # without limit as the catalog does.
+    _GROUP_LIMIT = 10
+
+    def __init__(self, catalog: SessionCatalog):
         super().__init__(id="sidebar")
+        self.catalog = catalog
         self.sessions: list[SessionInfo] = []
+        # Set by _apply_sessions when a refresh lands while collapsed — the
+        # mount/compositor cost of _render_chat_list is real (seconds, for a
+        # large catalog) and paid for zero visible effect while nothing can
+        # see #chat-list. ensure_rendered() catches it up on expand.
+        self._render_pending = False
 
     def compose(self) -> ComposeResult:
         """Compose sidebar contents."""
@@ -1006,10 +1318,81 @@ class ChatSidebar(Container):
             # Will be populated dynamically
             pass
 
-    def refresh_chats(self):
-        """Refresh the session list (cwd-scoped — §8 of the redesign)."""
-        self.sessions = list_sessions(os.getcwd())
+    def refresh_chats(self) -> None:
+        """Refresh the session list (cwd-scoped — §8 of the redesign).
+
+        ``catalog.list()`` is a synchronous call that can be a genuine blocking
+        network round trip: the JMFTS-backed catalog pages over EVERY
+        ``tau:conversation`` root in the whole instance and filters by cwd
+        client-side (measured live: 1,762 roots, 18 sequential HTTP requests,
+        ~154ms — and it only grows). Calling it directly here, on the event
+        loop, used to freeze the entire TUI for that long. It is dispatched to
+        a thread worker instead (Textual's own rule: "if the await might take
+        more than ~50ms, use a worker").
+
+        This method itself stays synchronous and returns immediately — it only
+        *starts* the worker. Callers that must observe the refreshed list
+        before proceeding (chiefly tests) should await it settling — see
+        ``tests/conftest.py``'s ``wait_for_workers_settled``, not the bare
+        ``app.workers.wait_for_complete()``: because this worker is
+        ``exclusive``, a still-running previous refresh gets cancelled rather
+        than awaited to completion, and ``Worker.wait()`` raises
+        ``WorkerCancelled`` for that — a benign, expected outcome of this
+        method's own staleness guard, not a failure a caller should have to
+        handle case-by-case.
+        """
+        self._refresh_chats_worker()
+
+    @work(thread=True, exclusive=True, group="sidebar-refresh")
+    def _refresh_chats_worker(self) -> None:
+        """The blocking fetch, off the event loop.
+
+        ``exclusive=True`` cancels any still-running refresh from this same
+        widget when a newer one starts (turns can end back-to-back faster than
+        one listing round trip). That cancellation only flips
+        ``worker.is_cancelled`` — a thread already blocked inside
+        ``catalog.list()`` keeps running to completion regardless — so the
+        result is checked for staleness before it is applied. Without that
+        check, a slow superseded fetch could land after a faster newer one and
+        overwrite the sidebar with stale data: a freeze traded for a lie.
+        """
+        worker = get_current_worker()
+        sessions = self.catalog.list(os.getcwd())
+        if worker.is_cancelled:
+            return
+        self.app.call_from_thread(self._apply_sessions, sessions)
+
+    def _apply_sessions(self, sessions: list[SessionInfo]) -> None:
+        """Runs on the UI thread via ``call_from_thread`` — the only place
+        ``self.sessions`` is written and the chat list re-rendered, so widget
+        mutation never happens off the main thread.
+
+        While the sidebar is collapsed (``display: none``, toggled by
+        ``action_toggle_sidebar``), ``_render_chat_list`` is skipped rather
+        than run into a DOM nobody can see: a catalog fetch started before
+        collapsing (mount-time, or a stale one still in flight) can land at
+        an arbitrary later moment, and its render cost does not go away just
+        because the widget is hidden — Textual still pays it in full,
+        synchronously, on the main thread (confirmed live via py-spy: an
+        unbatched mount loop over a few hundred sessions pinned the event
+        loop — and with it every keystroke — for 8+ seconds). The data is
+        still recorded so ``ensure_rendered`` can catch up on expand.
+        """
+        self.sessions = sessions
+        if self.styles.display == "none":
+            self._render_pending = True
+            return
         self._render_chat_list()
+
+    def ensure_rendered(self) -> None:
+        """Catch up a render that ``_apply_sessions`` deferred while collapsed.
+
+        Called by ``action_toggle_sidebar`` when the sidebar becomes visible
+        again — the counterpart to the skip in ``_apply_sessions``.
+        """
+        if self._render_pending:
+            self._render_pending = False
+            self._render_chat_list()
 
     def _render_chat_list(self):
         """Render the session list grouped by recency."""
@@ -1037,21 +1420,26 @@ class ChatSidebar(Container):
             else:
                 older.append(info)
 
-        # Mount grouped items
+        # One mount() call for every widget in the group, not one call per
+        # item: Textual's mount() does real synchronous attach/CSS/layout
+        # work per call, and looping it item-by-item over a few hundred
+        # sessions is exactly what turned into the multi-second freeze this
+        # fixes. Every group is capped at _GROUP_LIMIT for the same reason
+        # "older" already was — today/yesterday were the unbounded ones.
+        widgets: list[Widget] = []
         if today:
-            chat_list.mount(Static("[bold]Today[/bold]", classes="chat-group-header"))
-            for info in today:
-                chat_list.mount(ChatListItem(info))
+            widgets.append(Static("[bold]Today[/bold]", classes="chat-group-header"))
+            widgets.extend(ChatListItem(info) for info in today[: self._GROUP_LIMIT])
 
         if yesterday:
-            chat_list.mount(Static("[bold]Yesterday[/bold]", classes="chat-group-header"))
-            for info in yesterday:
-                chat_list.mount(ChatListItem(info))
+            widgets.append(Static("[bold]Yesterday[/bold]", classes="chat-group-header"))
+            widgets.extend(ChatListItem(info) for info in yesterday[: self._GROUP_LIMIT])
 
         if older:
-            chat_list.mount(Static("[bold]Older[/bold]", classes="chat-group-header"))
-            for info in older[:10]:  # Limit older sessions
-                chat_list.mount(ChatListItem(info))
+            widgets.append(Static("[bold]Older[/bold]", classes="chat-group-header"))
+            widgets.extend(ChatListItem(info) for info in older[: self._GROUP_LIMIT])
+
+        chat_list.mount(*widgets)
 
     def on_mount(self):
         """Refresh sessions when mounted."""
@@ -1067,13 +1455,58 @@ class ChatSidebar(Container):
             await self.app.run_action("new_chat")
 
 
+class _LaneRender:
+    """One render lane's live exchange state (B3-a).
+
+    Was five instance attributes on :class:`ChatDisplay`, which is precisely why
+    the display could render one turn at a time: ``begin_exchange`` reset them and
+    ``finalize_exchange`` closed whatever they currently pointed at, so two
+    overlapping turns interleaved into one exchange and finalized each other's.
+    As a per-lane record the same state exists once per concurrently-streaming
+    turn — a forked sub-agent, or a bus submission arriving mid-answer.
+    """
+
+    __slots__ = (
+        "exchange",
+        "label",
+        "active_box",
+        "active_text",
+        "active_reasoning",
+        "tool_routes",
+    )
+
+    def __init__(self, exchange: Optional[ExchangeBox] = None, label: str | None = None) -> None:
+        self.exchange = exchange
+        #: This lane's origin badge (``"bus · nats_bus"``, ``"agent · fork:explore"``),
+        #: or ``None`` for the ordinary "a human typed it here" lane. Held on the
+        #: LANE rather than only on the exchange because the exchange does not
+        #: survive the span: a no-tool exchange is unwrapped at finalize and its
+        #: answer promoted to top level, so a fork's answer would otherwise end up
+        #: an unlabelled ``Assistant`` box in the middle of the primary transcript
+        #: — exactly the mistake a reader must never be able to make (B3-b).
+        self.label = label
+        #: The current turn's assistant step box (reasoning + text + tools).
+        self.active_box: Optional[MessageBox] = None
+        # Accumulators for the active step (the 30 Hz throttle can skip the final
+        # delta, so the tails are flushed when the target changes).
+        self.active_text: str = ""
+        self.active_reasoning: str = ""
+        #: Route each tool result to the step that issued the call, by id.
+        self.tool_routes: dict[str, MessageBox] = {}
+
+
 class ChatDisplay(VerticalScroll):
     """Main chat display area with incremental, arrival-ordered rendering.
 
-    One user→answer span is an **exchange**. While the agent loop streams, the
-    display runs a state machine driven by normalized backend events (see
-    ``TauBackend.stream_chat``'s ``on_event``) that groups the span under one
-    collapsible :class:`ExchangeBox`:
+    One user→answer span is an **exchange**, and each concurrently-streaming turn
+    is a **lane** (B3-a) — keyed by ``submission_id``, or ``branch:<lane>`` for a
+    forked sub-agent. Lanes render side by side without interleaving; a lane
+    nobody named is :data:`DEFAULT_LANE`, which is what every pre-B3-a caller (the
+    reload path, a test replaying widget events) implicitly used.
+
+    While the agent loop streams, each lane runs a state machine driven by
+    normalized backend events (see ``RenderRouter`` in ``backends.py``) that groups
+    the span under one collapsible :class:`ExchangeBox`:
 
     - :meth:`begin_exchange` (before the loop) opens an expanded ``ExchangeBox``.
     - each ``turn_start`` mounts ONE assistant :class:`MessageBox` *step* into
@@ -1096,31 +1529,60 @@ class ChatDisplay(VerticalScroll):
 
     def __init__(self):
         super().__init__(id="chat-display")
-        self._last_render_time = 0.0
-        # Per-exchange streaming state (one user→answer span).
-        self._exchange: Optional[ExchangeBox] = None
-        # The current turn's assistant step box (reasoning + text + tools).
-        self._active_box: Optional[MessageBox] = None
-        # Accumulators for the active step (the 30 Hz throttle can skip the
-        # final delta, so the tails are flushed when the target changes).
-        self._active_text: str = ""
-        self._active_reasoning: str = ""
-        # Route each tool result to the step that issued the call, by id.
-        self._tool_routes: dict[str, MessageBox] = {}
+        # Per-LANE streaming state (B3-a). One entry per concurrently-streaming
+        # turn; created on demand so an event for a lane nobody opened still
+        # renders (the pre-B3-a defensive path, where a step with no exchange
+        # mounts at top level) instead of vanishing.
+        self._lanes: dict[str, _LaneRender] = {}
 
-    def clear_messages(self):
-        """Clear all messages from display and reset streaming state."""
+    async def clear_messages(self):
+        """Clear all messages from display and reset streaming state.
+
+        Async: a chat cleared *mid-stream* (new-chat/clear-chat while a turn is
+        still streaming) can have an open ``MarkdownStream`` on the active
+        lane's step (content and/or reasoning) -- ``.remove()``ing that box out
+        without stopping its stream first would leave the stream's background
+        task referencing a detached widget forever (a leaked task, and the
+        exact "left open on a box that gets removed" case the streaming
+        redesign has to not raise on). Stopping first, via the same
+        ``finish_stream`` every other lane-transition point uses, makes the
+        ensuing ``.remove()`` calls safe.
+        """
+        for state in self._lanes.values():
+            box = state.active_box
+            if box is None:
+                continue
+            if box.reasoning is not None:
+                await box.reasoning.finish_stream()
+            await box.finish_stream()
         self.query(ExchangeBox).remove()
         self.query(MessageBox).remove()
-        self._reset_exchange_state()
+        self._lanes = {}
 
-    def _reset_exchange_state(self) -> None:
-        """Drop all per-exchange streaming references."""
-        self._exchange = None
-        self._active_box = None
-        self._active_text = ""
-        self._active_reasoning = ""
-        self._tool_routes = {}
+    def _lane(self, lane: str) -> _LaneRender:
+        """This lane's render state, created on demand.
+
+        On demand rather than "raise if absent": the display has always tolerated
+        an event with no exchange open (``_start_step`` mounts at top level), and
+        that tolerance is what keeps a chat cleared mid-turn from turning every
+        subsequent delta into an error.
+        """
+        state = self._lanes.get(lane)
+        if state is None:
+            state = _LaneRender()
+            self._lanes[lane] = state
+        return state
+
+    def active_step(self, lane: str = DEFAULT_LANE) -> Optional[MessageBox]:
+        """The step box a lane is currently streaming into, if any.
+
+        The one piece of lane state anything outside this class reads (tests
+        asserting where reasoning/tool output landed). Public and lane-addressed
+        rather than a poked-at private attribute, because "which box is live" is
+        now a question that has a different answer per lane.
+        """
+        state = self._lanes.get(lane)
+        return None if state is None else state.active_box
 
     def add_message(self, role: str, content: str, subtitle: str = ""):
         """Add a finished (non-streaming) message box to the display."""
@@ -1192,136 +1654,177 @@ class ChatDisplay(VerticalScroll):
         raise TypeError(f"cannot render persisted message content of type {type(content).__name__}")
 
     # ------------------------------------------------------------------
-    # Streaming state machine (driven by TauBackend.stream_chat on_event)
+    # Streaming state machine (driven by backends.RenderRouter's lane events)
     # ------------------------------------------------------------------
 
-    async def begin_exchange(self) -> None:
-        """Open a new exchange (one user→answer span) before the agent loop runs.
+    async def begin_exchange(self, lane: str = DEFAULT_LANE, *, label: str | None = None) -> None:
+        """Open a new exchange for ``lane`` before its agent loop runs.
 
         Awaits the mount so the exchange's collapsible body has composed before
         the first ``turn_start`` adds a step into it (begin→turn_start has no
         natural render tick between them, unlike the network-paced events that
         follow). Steps mount into the expanded ``ExchangeBox`` as the loop
         streams; :meth:`finalize_exchange` later collapses it to a summary line.
+
+        ``label`` marks a lane that is NOT this frontend's own typed turn — a bus
+        or timer submission, a forked sub-agent — so the reader can tell it apart
+        (Jupyter's rule: render every source, differently). ``None`` renders
+        exactly as it always has. It is kept on the lane as well as on the
+        exchange, because every box the lane mounts wears it (B3-b): the exchange
+        outlives neither the promoted answer nor, for a no-tool span, itself.
         """
-        self._reset_exchange_state()
-        self._exchange = ExchangeBox()
-        await self.mount(self._exchange)
+        exchange = ExchangeBox(label=label)
+        self._lanes[lane] = _LaneRender(exchange, label)
+        await self.mount(exchange)
         self.scroll_end(animate=False)
 
-    def handle_stream_event(self, event: dict) -> None:
-        """Render one normalized backend lifecycle event in arrival order."""
+    async def handle_stream_event(self, event: dict) -> None:
+        """Render one normalized backend lifecycle event in arrival order.
+
+        The event names its lane; an event that names none belongs to
+        :data:`DEFAULT_LANE`, the one implicit lane every pre-B3-a caller used.
+
+        Async because reasoning/text deltas now stream through a
+        ``MarkdownStream`` (``MessageBox.append_content_delta`` /
+        ``ReasoningRegion.append_delta``), whose ``write()`` is itself async;
+        every caller in the live path already awaits its way down from the
+        event bus, so this just extends that chain one level further.
+        """
+        state = self._lane(event.get("lane") or DEFAULT_LANE)
         kind = event.get("kind")
         if kind == "turn_start":
-            self._on_turn_start()
+            await self._on_turn_start(state)
         elif kind == "reasoning_delta":
-            self._on_reasoning_delta(event.get("delta", ""))
+            await self._on_reasoning_delta(state, event.get("delta", ""))
         elif kind == "text_delta":
-            self._on_text_delta(event.get("delta", ""))
+            await self._on_text_delta(state, event.get("delta", ""))
         elif kind == "tool_call":
-            self._on_tool_call(event)
+            await self._on_tool_call(state, event)
         elif kind == "tool_result":
-            self._on_tool_result(event)
+            self._on_tool_result(state, event)
 
-    def _start_step(self) -> MessageBox:
-        """Mount a fresh assistant step box for the current turn.
+    def _start_step(self, state: _LaneRender) -> MessageBox:
+        """Mount a fresh assistant step box for this lane's current turn.
 
-        Steps live inside the exchange so the whole span groups under one
+        Steps live inside the lane's exchange so the whole span groups under one
         summary. If no exchange is open (defensive — the live path always calls
         :meth:`begin_exchange` first), the step mounts at top level.
+
+        A foreign lane's step is badged and class-marked (B3-b). The step is an
+        ``assistant`` message either way — a forked sub-agent's answer really is
+        an assistant message — but WHOSE assistant it is has to be on the box
+        itself, not only on the enclosing exchange, or a reader scrolling past a
+        collapsed summary reads a sub-agent's text as the main line's.
         """
-        box = MessageBox("assistant", "")
-        if self._exchange is not None:
-            self._exchange.add_step(box)
+        box = MessageBox("assistant", "", state.label or "")
+        if state.label is not None:
+            box.add_class(LANE_FOREIGN_CLASS)
+        if state.exchange is not None:
+            state.exchange.add_step(box)
         else:
             self.mount(box)
         return box
 
-    def _flush(self) -> None:
-        """Force the active step to show all accumulated reasoning + text.
+    async def _flush(self, state: _LaneRender) -> None:
+        """Stop the lane's active step's streams and show all accumulated text.
 
-        The 30 Hz throttle can skip the final delta; call this whenever the
-        active step stops being the target (new turn, tool call, end of stream).
+        Every stream write is applied as it arrives now (no throttle to skip a
+        final delta), so by the time this runs ``self._text``/``self._content``
+        already equal ``state.active_reasoning``/``state.active_text`` and the
+        ``set_text``/``update_content`` calls below are no-ops in the streaming
+        case — they remain as a safety net for any caller that set content some
+        other way. Stopping the stream FIRST (rather than after) is what makes
+        this call safe to follow with ``.remove()``: no ``MarkdownStream``
+        background task is left referencing a box that leaves the DOM.
         """
-        box = self._active_box
+        box = state.active_box
         if box is None:
             return
-        if self._active_reasoning and box.reasoning is not None:
-            box.reasoning.set_text(self._active_reasoning)
-        if self._active_text:
-            box.update_content(self._active_text)
+        if box.reasoning is not None:
+            await box.reasoning.finish_stream()
+            if state.active_reasoning:
+                box.reasoning.set_text(state.active_reasoning)
+        await box.finish_stream()
+        if state.active_text:
+            box.update_content(state.active_text)
         self.scroll_end(animate=False)
 
-    def _collapse_active_reasoning(self) -> None:
-        """Freeze + collapse the active step's reasoning once the answer begins.
+    async def _collapse_active_reasoning(self, state: _LaneRender) -> None:
+        """Freeze + collapse the lane's active reasoning once the answer begins.
 
         Reasoning precedes a completion's answer/tool calls, so the first text
         or tool event marks it complete. Runs once per step (a collapsed region
-        short-circuits), flushing the full reasoning text before it folds away.
+        short-circuits), stopping the reasoning stream and flushing the full
+        text before it folds away.
         """
-        box = self._active_box
+        box = state.active_box
         if box is not None and box.reasoning is not None and not box.reasoning.collapsed:
-            if self._active_reasoning:
-                box.reasoning.set_text(self._active_reasoning)
+            await box.reasoning.finish_stream()
+            if state.active_reasoning:
+                box.reasoning.set_text(state.active_reasoning)
             box.reasoning.mark_done()
             box.reasoning.collapsed = True
 
-    def _on_turn_start(self) -> None:
-        # Flush the previous step's throttled tail and freeze its reasoning (a
-        # new turn means the previous completion is done, even if it was
-        # reasoning-only), then open a fresh step and reset the accumulators.
-        self._flush()
-        self._collapse_active_reasoning()
-        self._active_text = ""
-        self._active_reasoning = ""
-        self._active_box = self._start_step()
+    async def _on_turn_start(self, state: _LaneRender) -> None:
+        # Flush the previous step's tail and freeze its reasoning (a new turn
+        # means the previous completion is done, even if it was reasoning-only),
+        # then open a fresh step and reset the accumulators.
+        await self._flush(state)
+        await self._collapse_active_reasoning(state)
+        state.active_text = ""
+        state.active_reasoning = ""
+        state.active_box = self._start_step(state)
         self.scroll_end(animate=False)
 
-    def _on_reasoning_delta(self, delta: str) -> None:
-        if not delta or self._active_box is None:
+    async def _on_reasoning_delta(self, state: _LaneRender, delta: str) -> None:
+        if not delta or state.active_box is None:
             return
-        self._active_reasoning += delta
-        region = self._active_box.ensure_reasoning()
-        # Throttle re-render to ~30 Hz (shared with text; within a turn reasoning
-        # fully precedes text, so they don't contend).
-        now = time.time()
-        if now - self._last_render_time > 0.033:
-            region.set_text(self._active_reasoning)
-            self.scroll_end(animate=False)
-            self._last_render_time = now
+        state.active_reasoning += delta
+        region = state.active_box.ensure_reasoning()
+        # No hand-rolled throttle: MarkdownStream coalesces bursts on its own
+        # (its background task batches whatever accumulated in its pending
+        # queue while a previous append was still being applied). Measured at
+        # 40 tok/s over 8s (tmp/paced.py): the old 30 Hz gate still issued 152
+        # Markdown.update() full-document rebuilds (89,696 chars re-parsed,
+        # 76x the document size); routing every delta here through
+        # append_delta instead issues 1 update() (the framework's own
+        # mount-time seed) and 299 Markdown.append() calls totalling 1,196
+        # chars -- i.e. almost exactly the document size, not a multiple of it.
+        await region.append_delta(delta)
+        self.scroll_end(animate=False)
 
-    def _on_text_delta(self, delta: str) -> None:
-        if not delta or self._active_box is None:
+    async def _on_text_delta(self, state: _LaneRender, delta: str) -> None:
+        if not delta or state.active_box is None:
             return
         # Answer content has begun — this step's reasoning is complete.
-        self._collapse_active_reasoning()
-        self._active_text += delta
-        now = time.time()
-        if now - self._last_render_time > 0.033:
-            self._active_box.update_content(self._active_text)
-            self.scroll_end(animate=False)
-            self._last_render_time = now
-
-    def _on_tool_call(self, event: dict) -> None:
-        # Preamble reasoning/text for this step is complete; show it, fold the
-        # reasoning, then add the tool box below the text (reasoning→text→tools).
-        if self._active_box is None:
-            self._active_box = self._start_step()
-        self._flush()
-        self._collapse_active_reasoning()
-        tc_id = event.get("id", "") or ""
-        self._active_box.add_tool_call(event.get("name", ""), event.get("arguments", {}), tc_id)
-        if tc_id:
-            self._tool_routes[tc_id] = self._active_box
+        await self._collapse_active_reasoning(state)
+        state.active_text += delta
+        await state.active_box.append_content_delta(delta)
         self.scroll_end(animate=False)
 
-    def _on_tool_result(self, event: dict) -> None:
+    async def _on_tool_call(self, state: _LaneRender, event: dict) -> None:
+        # Preamble reasoning/text for this step is complete; show it, fold the
+        # reasoning, then add the tool box below the text (reasoning→text→tools).
+        if state.active_box is None:
+            state.active_box = self._start_step(state)
+        await self._flush(state)
+        await self._collapse_active_reasoning(state)
+        tc_id = event.get("id", "") or ""
+        state.active_box.add_tool_call(event.get("name", ""), event.get("arguments", {}), tc_id)
+        if tc_id:
+            state.tool_routes[tc_id] = state.active_box
+        self.scroll_end(animate=False)
+
+    def _on_tool_result(self, state: _LaneRender, event: dict) -> None:
         tc_id = event.get("id", "") or ""
         result_text = str(event.get("result", ""))
         is_error = bool(event.get("is_error", False))
         blocked = bool(event.get("blocked", False))
         blocked_by = event.get("blocked_by")
-        box = self._tool_routes.get(tc_id)
+        # Routed within the lane: two turns streaming at once can each have a live
+        # tool call, and a shared route table would fold one lane's result into the
+        # other lane's box.
+        box = state.tool_routes.get(tc_id)
         if box is not None and box.set_tool_result(
             tc_id, result_text, is_error, blocked=blocked, blocked_by=blocked_by
         ):
@@ -1332,36 +1835,82 @@ class ChatDisplay(VerticalScroll):
         # standalone box — surface it loudly instead (Fail-Early).
         self.app.log(f"tool_result for unknown tool_call_id {tc_id!r}; no ToolBox to fold into")
 
-    async def finalize_exchange(self, *, tokens: int, seconds: float) -> None:
-        """Close the current exchange after the agent loop finishes.
+    async def finalize_exchange(
+        self,
+        *,
+        tokens: int,
+        seconds: float | None,
+        telemetry: str | None = None,
+        lane: str = DEFAULT_LANE,
+    ) -> None:
+        """Close ``lane``'s exchange after its agent loop finishes.
 
         Flushes tails, then snaps the final text-only answer OUT below the
         collapsed summary so it stays visible. A trivial exchange (no tools) is
         unwrapped to just the plain answer — no grouping where there's nothing
         to group. One reparent, here, by reconstruction (Textual cannot move a
         live widget across parents).
+
+        ``telemetry`` is the last completion's G4 readout string (from
+        :func:`format_telemetry`), appended to the summary/subtitle when present;
+        ``None`` (a provider that reported no timings) leaves the summary unchanged.
         """
-        self._flush()
-        self._collapse_active_reasoning()  # freeze the last step's reasoning
-        exchange = self._exchange
+        state = self._lanes.pop(lane, None)
+        if state is None:
+            # Nothing was ever opened for this lane — a lane_end whose lane_start
+            # never rendered (a chat cleared mid-turn). Say so rather than
+            # finalizing some other lane's exchange, which is the interleaving
+            # this refactor exists to make impossible.
+            self.app.log(f"finalize_exchange for lane {lane!r} with no open exchange")
+            return
+        await self._flush(state)
+        await self._collapse_active_reasoning(state)  # freeze the last step's reasoning
+        exchange = state.exchange
         if exchange is None:
-            self._reset_exchange_state()
             return
 
-        await self._close_exchange(exchange, tokens=tokens, seconds=seconds)
-        self._reset_exchange_state()
+        await self._close_exchange(
+            exchange,
+            tokens=tokens,
+            seconds=seconds,
+            telemetry=telemetry,
+            label=state.label,
+        )
         self.scroll_end(animate=False)
 
     @staticmethod
-    def _exchange_subtitle(tokens: int, seconds: float | None) -> str:
+    def _exchange_subtitle(
+        tokens: int,
+        seconds: float | None,
+        telemetry: str | None = None,
+        label: str | None = None,
+    ) -> str:
         """The stats line stamped on an unwrapped (no-tool) answer. Duration is
-        omitted when unknown (reload) rather than fabricated (Fail-Early)."""
-        if seconds is None:
-            return f"{format_tokens(tokens)} tok"
-        return f"{format_tokens(tokens)} tok · {format_duration(seconds)}"
+        omitted when unknown (reload) rather than fabricated (Fail-Early).
+
+        ``telemetry`` is the last completion's G4 readout, appended as one more
+        ``·`` part when present; ``None`` appends nothing.
+
+        ``label`` is the lane's origin badge and leads the line when present
+        (B3-b), because this subtitle is the ONLY chrome an unwrapped answer has
+        left: the exchange that carried the badge is removed on this path."""
+        parts = [f"{format_tokens(tokens)} tok"]
+        if seconds is not None:
+            parts.append(format_duration(seconds))
+        if telemetry is not None:
+            parts.append(telemetry)
+        if label is not None:
+            parts.insert(0, label)
+        return " · ".join(parts)
 
     async def _close_exchange(
-        self, exchange: ExchangeBox, *, tokens: int, seconds: float | None
+        self,
+        exchange: ExchangeBox,
+        *,
+        tokens: int,
+        seconds: float | None,
+        telemetry: str | None = None,
+        label: str | None = None,
     ) -> None:
         """Collapse a fully-built exchange to its summary and surface the answer.
 
@@ -1387,7 +1936,7 @@ class ChatDisplay(VerticalScroll):
 
         promoted = None
         if final is not None:
-            promoted = await self._promote_answer(final, after=exchange)
+            promoted = await self._promote_answer(final, after=exchange, label=label)
 
         if tool_count == 0:
             # Nothing worth grouping — drop the wrapper entirely (this also
@@ -1395,22 +1944,40 @@ class ChatDisplay(VerticalScroll):
             # span has no summary line, so the (real) token + duration would be
             # lost — stamp them on the answer's subtitle instead of hiding them.
             if promoted is not None:
-                promoted.set_subtitle(self._exchange_subtitle(tokens, seconds))
+                promoted.set_subtitle(self._exchange_subtitle(tokens, seconds, telemetry, label))
             exchange.remove()
         else:
             if final is not None:
                 final.remove()
             exchange.collapsed = True
-            exchange.set_summary(tools=tool_count, tokens=tokens, seconds=seconds)
+            exchange.set_summary(
+                tools=tool_count, tokens=tokens, seconds=seconds, telemetry=telemetry
+            )
 
-    async def _promote_answer(self, src: MessageBox, *, after: Widget) -> MessageBox:
+    async def _promote_answer(
+        self, src: MessageBox, *, after: Widget, label: str | None = None
+    ) -> MessageBox:
         """Mount a fresh top-level answer box copied from ``src``, after ``after``.
 
         Reconstructs rather than reparents (Textual has no cross-parent move).
         The terminal answer is text + optional reasoning (no tools), so copying
         its text and reasoning string is faithful and cheap.
+
+        The copied reasoning is mounted collapsed (D1): ``ReasoningRegion``
+        defers the actual Markdown parse until the region is expanded, so
+        copying a long reasoning string here no longer means parsing it for a
+        Contents container nobody can see (measured 104ms at 2.2k reasoning
+        tokens before the fix). ``region.text`` still returns the real string
+        immediately either way -- only the widget-side parse is deferred.
+
+        ``label`` is copied too (B3-b). Promotion moves the answer OUT of the
+        exchange to top level, where the primary transcript lives; a fork's
+        answer arriving there unbadged is the one place a sub-agent's text could
+        be read as the main agent's.
         """
-        new = MessageBox("assistant", src.content_text)
+        new = MessageBox("assistant", src.content_text, label or "")
+        if label is not None:
+            new.add_class(LANE_FOREIGN_CLASS)
         await self.mount(new, after=after)
         if src.reasoning is not None:
             region = new.ensure_reasoning()
@@ -1438,7 +2005,7 @@ class ChatDisplay(VerticalScroll):
         it is not persisted and we do not fabricate it (Fail-Early). Tokens come
         from each completion's persisted ``usage`` (a true 0 for pre-fix chats).
         """
-        self.clear_messages()
+        await self.clear_messages()
         n = len(messages)
         i = 0
         while i < n:
@@ -1582,13 +2149,22 @@ class Parley(App):
         # priority=True: caught during generation regardless of which widget holds
         # focus. The action no-ops when nothing is generating.
         Binding("escape", "cancel_generation", "Cancel", show=False, priority=True),
+        # Esc's "and un-path what it did" variant (docs/SUBMISSION-LIFECYCLE.md
+        # decision 2). ctrl+z is TextArea's undo, and this steals it ONLY while a
+        # turn is generating — which is exactly when the input is disabled and that
+        # undo is unreachable anyway: ``check_action`` returns False otherwise, and a
+        # priority binding whose check_action is False does not consume the key
+        # (textual app.py ``_check_bindings`` → ``run_action``), so it falls through
+        # to the editor untouched. The same False hides it from the Footer, so the
+        # label appears exactly when pressing it would do something.
+        Binding("ctrl+z", "rollback_turn", "Rollback", show=True, priority=True),
     ]
 
     # The active persisted session (append-only sink) and the live working
     # message list sent to the model. They are kept in step: every produced
     # message is appended to both; clear/compact mutate the working list (the
     # session file keeps the full transcript — append-only, no rewrite).
-    current_session: reactive[Optional[Session]] = reactive(None)
+    current_session: reactive[Optional[ConversationSession]] = reactive(None)
     current_backend: Optional[Backend] = None
     config: dict = {}
     # Global show/hide state for the two collapsible content kinds. Each toggle
@@ -1596,15 +2172,17 @@ class Parley(App):
     # reactive records the last-applied intent (for the toggle's feedback).
     reasoning_collapsed: reactive[bool] = reactive(False)
     tools_collapsed: reactive[bool] = reactive(False)
-    # True while a response worker is streaming. Gates Esc-to-cancel and the
-    # input-disabled state; flipped on in on_input_submitted, off in the worker's
-    # finally.
+    # True while ANY submitted turn is outstanding (streaming, or waiting behind
+    # one that is). Gates Esc-to-cancel and the input-disabled state; flipped on in
+    # on_input_submitted, off in the worker's finally once the LAST outstanding
+    # submission has finished — see ``_submissions_in_flight``.
     is_generating: reactive[bool] = reactive(False)
 
     def __init__(
         self,
         cli_overrides: Optional[dict] = None,
         cli_run_config: Optional[dict] = None,
+        session_catalog: Optional[SessionCatalog] = None,
     ):
         super().__init__()
         # The live conversation context (sent to the model). Mirrors the active
@@ -1615,6 +2193,39 @@ class Parley(App):
         # (new-chat / clear / resume / model-swap) — unsub the old backend first so a
         # replaced backend's dead bus stops receiving events (no listener leak).
         self._session_event_unsub: Optional[Callable[[], None]] = None
+        # How many submissions this app has handed to the backend and not yet seen
+        # finish. Almost always 0 or 1; >1 only when a second prompt is submitted
+        # while a turn is outstanding, which the core queues (the submissions
+        # declare ``multitask_strategy="enqueue"``). ``is_generating`` and the
+        # input-disabled state are functions of "is this zero", so a turn ending
+        # while another is still queued must NOT re-enable the input.
+        self._submissions_in_flight: int = 0
+        # B3-a: the persistent render subscription. ONE attach for the life of a
+        # backend (``_bind_backend_session``), not one per awaited turn — which is
+        # what makes a turn this app never initiated renderable at all. Rebound
+        # alongside ``_session_event_unsub`` when the backend/session changes.
+        self._render_router: Optional[RenderRouter] = None
+        # When each open lane started, for the exchange summary's wall clock. Keyed
+        # by lane, because two lanes have two different clocks — the previous code
+        # could keep one ``start`` local precisely because it could only ever be
+        # rendering one turn.
+        self._lane_started: dict[str, float] = {}
+        # A mutex over THE WORKING MESSAGE LIST, not over the display.
+        #
+        # Until B3-a this was ``_display_lock`` and its job was to stop two turns
+        # interleaving into one exchange; the per-lane renderer makes that
+        # impossible by construction, so that reason is gone. What remains is a
+        # real, narrower one: ``self.messages`` is the context handed to
+        # ``submit_turn`` and is REBOUND from ``session.context`` when a turn
+        # finishes, so a second submission that read it before the first turn
+        # reconciled would send the model a conversation missing the answer it is
+        # replying to. Held from reading the list to writing it back.
+        #
+        # It serializes only THIS app's own typed submissions, which declare
+        # ``multitask_strategy="enqueue"`` and are serialized by the core anyway. It
+        # is not on the render path at all: a forked or bus-originated lane streams
+        # while this is held.
+        self._working_list_lock = asyncio.Lock()
         # Run-level extension loading config (CLI ``-e`` / ``-ne``), applied to
         # EVERY backend this app creates via ``_load_backend_extensions`` so a model
         # switch doesn't drop extensions (E5 §2.2). Defaults match a bare ``tau``:
@@ -1631,6 +2242,10 @@ class Parley(App):
         self._exclude_tools: list[str] = list(run_config.get("exclude_tools", []))
         self._no_builtin_tools: bool = bool(run_config.get("no_builtin_tools", False))
         self._append_system_prompt: list[str] = list(run_config.get("append_system_prompt", []))
+        # ``--bus`` (H8): run-level, for the same reason the extension flags are —
+        # the capability gates which extensions may load, so a model switch that
+        # silently revoked it would unload the bus mid-session.
+        self._bus_available: bool = bool(run_config.get("bus", False))
         # Per-extension config overrides (S40): the parsed ``--ext-config`` map
         # ({name: {key: value}}). Merged over config.json's ``"extensions"`` block at
         # each backend load (``_load_backend_extensions``) so each extension's
@@ -1642,6 +2257,43 @@ class Parley(App):
         self.load_config()
         if cli_overrides:
             self._apply_cli_overrides(cli_overrides)
+
+        # The storage-agnostic construction/lookup seam (W10): every current_session
+        # assignment goes through this one instance rather than the concrete file
+        # Session, so ``--store``/config ``session_store`` (W12,
+        # docs/JMFTS-INTEGRATION-PLAN.md §3.1) can inject a different SessionCatalog
+        # without touching the TUI again. Built AFTER ``self.config`` is loaded
+        # (``load_config()`` above) since resolving the "jmfts" backend needs it —
+        # and it performs a real network health check, so a misconfigured/
+        # unreachable store must fail HERE, before the TUI's event loop starts
+        # (Fail-Early), not on the first session action. ``session_catalog`` (an
+        # explicit constructor arg, e.g. from tests) always wins over resolving one.
+        self.session_catalog: SessionCatalog = (
+            session_catalog
+            if session_catalog is not None
+            else build_session_catalog(
+                self.config,
+                run_config.get("store"),
+                # --session-dir (unit S): the TUI's default is unchanged
+                # (~/.tau/sessions); passing DIR is also how a human opens the
+                # sessions --mode rpc wrote to its private <tmp>/.tau-<uid>/sessions.
+                run_config.get("session_dir"),
+            )
+        )
+        # Purely descriptive metadata for AgentSessionRuntime's F2 wire tuple
+        # (docs/REMOTE-CONTROL.md §7.2) — the TUI itself never reads it back.
+        # Resolved the same way session_catalog itself is; if a caller passed
+        # an explicit `session_catalog=` not built from `run_config["store"]`
+        # (a test double), this label may not describe it — harmless, since
+        # nothing here branches on it.
+        self._store_name: str = resolve_backend_name(self.config, run_config.get("store"))
+        # AgentSessionRuntime (phase 3, H1) — the session-lifecycle layer
+        # behind action_new_chat/action_clear_chat/on_chat_selected. `None`
+        # until the first real (agent_session-bearing) backend is bound;
+        # stays `None` for a backend double with no `.agent_session` (the
+        # same tolerance every other backend-capability read in this class
+        # already has — see `_rebind_after_session_swap`).
+        self._session_runtime: Optional[AgentSessionRuntime] = None
 
     def _apply_cli_overrides(self, overrides: dict) -> None:
         """Merge CLI flag overrides over the loaded config (CLI > config.json).
@@ -1658,56 +2310,22 @@ class Parley(App):
             self.config["system_prompt"] = overrides["system_prompt"]
 
     def load_config(self):
-        """Load configuration from config.json."""
-        config_path = TAU_DIR / "config.json"
-        if config_path.exists():
-            self.config = json.loads(config_path.read_text())
-            self.log(f"Loaded config with {len(self.config.get('models', {}))} models")
-        else:
-            # Create default config
-            self.log("No config found, creating default")
-            self.config = {
-                "models": {
-                    "gpt-4o": {
-                        "backend": "openai",
-                        "model": "gpt-4o",
-                        "base_url": "https://api.openai.com/v1",
-                        "api_key": "your-api-key-here",
-                        "tools": ["read", "write", "edit", "bash", "ls", "grep", "find"],
-                    },
-                    "claude-3.5-sonnet": {
-                        "backend": "anthropic",
-                        "model": "claude-3-5-sonnet-20241022",
-                        "api_key": "your-api-key-here",
-                        "tools": ["read", "write", "edit", "bash", "ls", "grep", "find"],
-                    },
-                    "gemini-2.0": {
-                        "backend": "gemini",
-                        "model": "gemini-2.0-flash-exp",
-                        "api_key": "your-api-key-here",
-                        "tools": ["read", "write", "edit", "bash", "ls", "grep", "find"],
-                    },
-                    "local-llm": {
-                        "backend": "openai",
-                        "model": "qwen3-32b-kv4b",
-                        "base_url": "http://192.168.1.100:8000/v1",
-                        "api_key": "not-needed",
-                        "tools": ["read", "write", "edit", "bash", "ls", "grep", "find"],
-                    },
-                },
-                "default_model": "local-llm",
-                "system_prompt": "You are a helpful assistant. Be concise and clear.",
-            }
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            config_path.write_text(json.dumps(self.config, indent=2))
-            self.log(f"Created default config at {config_path}")
+        """Load ``~/.tau/config.json``, creating it from the packaged template if absent.
+
+        Delegates to the single reader in ``config.py``. The TUI used to carry its
+        own hardcoded default here, which disagreed with the packaged
+        ``tau_default_config.json`` — so the file a first-run user actually got was
+        not the one we maintain.
+        """
+        self.config = bootstrap_config()
+        self.log(f"Loaded config with {len(self.config.get('models', {}))} models")
 
     def compose(self) -> ComposeResult:
         """Compose the application layout."""
         yield Header()
 
         with Horizontal():
-            yield ChatSidebar()
+            yield ChatSidebar(self.session_catalog)
 
             with Vertical(id="main-area"):
                 yield ChatDisplay()
@@ -1717,14 +2335,16 @@ class Parley(App):
             # area; it hides itself until an extension opens a panel.
             yield ExtensionPanelHost()
 
-        # The extension status strip (E10 §6 / S67) sits in the vertical flow just
-        # above the docked Footer; it hides itself until an extension sets a slot.
+        # The foreign-lane strip (B3-b) and the extension status strip (E10 §6 /
+        # S67) sit in the vertical flow just above the docked Footer; each hides
+        # itself until it has something live to say.
+        yield LaneStrip()
         yield ExtensionStatusBar()
         yield Footer()
 
     def on_mount(self):
         """Set up the application on mount."""
-        self.title = "Parley"
+        self.title = "Tau"
         self.sub_title = "Ready"
 
         # Focus input
@@ -1799,14 +2419,65 @@ class Parley(App):
         test double (or a run that never built a backend) is a no-op. An extension's
         teardown exception is surfaced by the runner (never swallowed), not
         re-raised here — a failing shutdown hook must not wedge app teardown.
+
+        Also closes the pooled τ-ai providers' HTTP clients for this loop
+        (docs/PROVIDER-LIFETIME.md §6.3) — AFTER the shutdown hook above, since
+        an extension's ``session_shutdown`` handler may itself make a final LLM
+        call and needs a live client to do it with. This is the last point the
+        loop is still guaranteed alive; there is no later hook to defer to.
         """
         backend = getattr(self, "current_backend", None)
         emit_shutdown = getattr(backend, "emit_session_shutdown", None)
         if emit_shutdown is not None:
             await emit_shutdown("quit")
 
+        from tau_ai.client import aclose_providers
+
+        await aclose_providers()
+
     async def on_input_submitted(self, event: Input.Submitted):
-        """Handle message submission."""
+        """Handle message submission — the TUI's ONE input source.
+
+        docs/SUBMISSION-LIFECYCLE.md phase 3. What a human typing means is now a
+        :class:`~tau_agent_core.submission.Submission` handed to
+        :meth:`AgentSession.submit` (via ``TauBackend.submit_turn``) rather
+        than a private route into ``prompt()``: ``source="interactive"``,
+        ``submitter="human"`` so every event this turn emits is attributable to a
+        person at a terminal (phase 2's provenance stamp), and
+        ``multitask_strategy="enqueue"`` per decision 1 — pi's TUI eventually binds
+        Enter→steer and Alt+Enter→followUp, and because the strategy is a field on
+        the record, the second keybinding is a one-line change here when ``steer``
+        lands in phase 4.
+
+        ``expand_commands=True`` (B2-b): the slash-command block that used to sit in
+        this method is gone. ``AgentSession.submit`` resolves ``/compact`` / ``/tree``
+        / ``/fork`` / ``/extensions`` and every extension-registered ``/name args``
+        through :mod:`tau_agent_core.commands`, and reports the decision on
+        ``SubmissionResult.command``; :meth:`_perform_command_outcome` does the half
+        only a TUI can do. A NATS or timer submission still passes ``False`` and its
+        "/compact" is literal prompt text — the flag is the security boundary, and
+        this call site is the one that positively declares itself a human frontend.
+
+        The PEEK before the submission (:func:`resolve_command`, the same pure
+        function ``submit()`` uses) is a rendering concern, not a second dispatch:
+        the transcript must not grow a user bubble, and ``self.messages`` must not
+        grow a user turn, for input that will never become one. Asking afterwards
+        would mean rendering the turn and then unrendering it. ``submit()`` remains
+        the authority and resolves again on the post-``input``-hook text; the two
+        can only disagree if a hook rewrites one into the other, which
+        :meth:`_dispatch_command_submission` and :meth:`_get_assistant_response`
+        each report rather than absorb.
+
+        ``allow_user_input=True`` is the assertion only this call site (and
+        ``rollback_turn``) can honestly make: a human typed this, so an extension
+        hook running under the turn may ask that same human a question.
+
+        Input history and clearing the widget stay here and are NOT part of the
+        submission: they are properties of the ChatInput widget (up-arrow recall),
+        and a bus or timer submission has no widget to recall into. Session
+        materialisation, the working-list append and the rendered user turn stay
+        here too, now gated on the peek.
+        """
         # ChatInput is the app's only Input.Submitted source (it posts
         # Input.Submitted(self, ...)), so the submitting widget is always the
         # #chat-input ChatInput.
@@ -1820,55 +2491,39 @@ class Parley(App):
         input_widget.add_to_history(message)
         input_widget.clear_input()
 
-        # Slash commands are intercepted here, BEFORE the text reaches the model.
-        # Without this, "/compact" was just sent as a prompt and the model
-        # "played along" instead of the harness compacting the conversation.
-        if message == "/compact":
-            await self.action_compact()
-            return
+        # The submission record. See the docstring for every field's reason.
+        submission = Submission(
+            text=message,
+            source="interactive",
+            submitter="human",
+            submission_id=uuid4().hex,
+            multitask_strategy="enqueue",
+            expand_commands=True,
+            allow_user_input=True,
+        )
 
-        # /tree and /fork both open the tree-browser (pi aliases,
-        # keybindings.ts:252-253). Intercepted here so the text never reaches the model.
-        if message in ("/tree", "/fork"):
-            self.action_browse_tree()
-            return
+        # Peek: will this dispatch as a command instead of starting a turn? Pure —
+        # it runs nothing. ``submit()`` remains the authority and resolves again on
+        # the post-``input``-hook text; this only decides whether to render a user
+        # turn. An unknown "/…" resolves to None and falls through to the model
+        # exactly as it always has.
+        is_command = resolve_command(message, self._extension_command_names()) is not None
 
-        # /extensions lists the loaded extensions (E5 §5 / S34); with a verb it
-        # runs a runtime management action (E10 §6 / S70): ``/extensions disable
-        # <name>`` / ``enable`` / ``reload``. Intercepted here so the text is UI
-        # chrome, never a prompt to the model.
-        if message == "/extensions":
-            self.action_show_extensions()
-            return
-        if message.startswith("/extensions "):
-            rest = message[len("/extensions ") :].strip()
-            parts = rest.split(None, 1)
-            verb = parts[0] if parts else ""
-            target = parts[1].strip() if len(parts) > 1 else ""
-            await self.action_manage_extensions(verb, target)
-            return
-
-        # Extension-registered slash commands (E5 §5 / S35): dispatch BEFORE the
-        # text reaches the model. A leading "/" whose name matches a registered
-        # command runs its handler (pi ``_tryExecuteExtensionCommand``, splitting
-        # ``/name args`` on the first space); an UNKNOWN "/…" returns False here and
-        # falls through to be sent as an ordinary prompt.
-        if message.startswith("/"):
-            runner = getattr(self.current_backend, "run_extension_command", None)
-            if runner is not None:
-                stripped = message[1:]
-                space = stripped.find(" ")
-                cmd_name = stripped if space == -1 else stripped[:space]
-                cmd_args = "" if space == -1 else stripped[space + 1 :]
-                result = await runner(cmd_name, cmd_args)
-                if result.handled:
-                    self._render_command_output(result)
-                    return
-
-        # Create new session if needed
+        # Session materialisation — the spec's submit() step 4, which that method's
+        # own docstring assigns to the FRONTEND ("e.g. the TUI's action_new_chat").
+        # It happens for a command as well as a prompt, and before either: ``submit()``
+        # is a method ON an AgentSession, so with no session there is no door to admit
+        # anything through. The visible consequence is that typing "/extensions" as the
+        # very first thing starts a chat — which is what the app was one keystroke away
+        # from doing anyway, and is preferable to a second, session-less command path
+        # that would quietly diverge from this one.
         if self.current_session is None:
             await self.action_new_chat()
         assert self.current_session is not None  # action_new_chat sets current_session
+
+        if is_command:
+            await self._dispatch_command_submission(submission)
+            return
 
         # Add the user turn to the working list so it is part of the context sent
         # to the model this turn. Do NOT persist it here: the AgentSession (bound to
@@ -1877,31 +2532,167 @@ class Parley(App):
         # authoritative log at turn-end (``self.messages = session.context``).
         self.messages.append({"role": "user", "content": message})
 
-        # Display user message
-        display = self.query_one(ChatDisplay)
-        display.add_message("user", message)
+        # The user BUBBLE is NOT rendered here any more (B3-a). It is rendered from
+        # the ``lane_start`` this submission produces, like every other source's,
+        # which is Jupyter re-broadcasting ``execute_input``: *the submission
+        # itself* goes out on the wire so every client shows it. Two things follow.
+        # The text shown is the POST-``input``-hook text — what actually reached the
+        # model, rather than what was typed at something that rewrote it. And a
+        # queued second prompt's bubble appears when its turn starts rather than
+        # stranded above a still-running exchange. Rendering it here as well would
+        # be the half-migrated renderer: one source drawn by the frontend that
+        # submitted it, every other drawn by the bus.
 
         # Run the turn in a worker so the event loop stays free while the model
         # streams — that is what lets Esc-to-cancel be processed mid-response
         # (a direct `await` here parked the App message pump for the whole turn).
-        # Input is disabled for the duration; the worker re-enables it on finish.
+        # Input is disabled for the duration; the LAST worker to finish re-enables
+        # it (``_submissions_in_flight``).
         input_widget.disabled = True
+        self._submissions_in_flight += 1
         self.is_generating = True
         self.sub_title = "Thinking… (Esc to cancel)"
-        self._generate_response()
+        self._generate_response(submission)
 
-    @work(exclusive=True, group="generation")
-    async def _generate_response(self) -> None:
-        """Background worker: run one assistant turn and render it.
+    def _extension_command_names(self) -> list[str]:
+        """The names extensions have registered as slash commands, for the peek.
 
-        Replaces the old inline ``await``. ``exclusive``/``group`` let
-        :meth:`action_cancel_generation` target it. The ``finally`` restores the
-        input regardless of how the turn ended (normal, error, or cooperative
-        abort — which returns the partial answer rather than raising).
+        ``getattr``-guarded like every other backend-capability read in this class
+        (:meth:`_disabled_extension_paths`, :meth:`get_system_commands`): a test
+        double or a backend built before extensions loaded simply has none, which
+        makes the peek fall through to the model — the same thing an unregistered
+        ``/…`` has always done. The built-in commands need no backend at all; they
+        are τ's own vocabulary, hardcoded in :mod:`tau_agent_core.commands`.
+        """
+        lister = getattr(self.current_backend, "get_extension_commands", None)
+        if lister is None:
+            return []
+        return [name for name, _description in lister()]
+
+    async def _dispatch_command_submission(self, submission: Submission) -> None:
+        """Admit a command submission through the one door and perform its outcome.
+
+        docs/SUBMISSION-LIFECYCLE.md phase 3. The submission goes through
+        ``AgentSession.submit`` exactly like a prompt does — same admission, same
+        ``input`` hook chain, same provenance stamp — and comes back with a typed
+        :class:`~tau_agent_core.commands.CommandOutcome` instead of messages.
+
+        No worker and no ``is_generating``: a dispatched command runs no model call,
+        so there is nothing to stream, nothing to cancel with Esc, and no reason to
+        gate the input. That is also why it does not go through
+        :meth:`_get_assistant_response` — opening an exchange and taking the display
+        lock for a turn that will not happen would leave an empty collapsible box in
+        the transcript.
+
+        Three outcomes, all of which say something rather than nothing:
+
+        - a backend with no :meth:`submit_command` (a test double, a future backend)
+          RAISES — the user typed a command and there is no door to send it through.
+        - ``result.accepted is False`` surfaces the ``rejection_reason`` verbatim.
+        - ``result.command is None`` means ``submit()`` ran a TURN instead: an
+          ``input`` hook rewrote the text between this app's peek and the core's own
+          resolution. That turn really ran, unrendered, so it is reported as an
+          error rather than passed over — the transcript is now behind the session,
+          and pretending otherwise is the divergence this method must not hide.
+        """
+        submit_command = getattr(self.current_backend, "submit_command", None)
+        if submit_command is None:
+            raise UnsupportedCommandError(
+                f"{type(self.current_backend).__name__} has no submit_command(), so "
+                f"the command {submission.text!r} cannot be admitted. Command "
+                "dispatch lives in AgentSession.submit (docs/SUBMISSION-LIFECYCLE.md "
+                "phase 3); a backend that cannot reach it cannot run commands, and "
+                "sending the text to the model instead would be the silent fallback "
+                "this lifecycle removes."
+            )
+        result = await submit_command(submission)
+        if not result.accepted:
+            self.notify(
+                result.rejection_reason or f"{submission.text} was refused",
+                severity="warning",
+            )
+            return
+        if result.command is None:
+            raise UnsupportedCommandError(
+                f"{submission.text!r} was dispatched as a command by this app but "
+                "AgentSession.submit ran a TURN for it — an `input` hook transformed "
+                "the text after the app resolved it. The turn ran without being "
+                "rendered; reload the transcript. Fix the hook, or stop it from "
+                "rewriting text that resolves to a command."
+            )
+        await self._perform_command_outcome(result.command)
+
+    async def _perform_command_outcome(self, outcome: CommandOutcome) -> None:
+        """Do the half of a dispatched command only a frontend can do (B2-b).
+
+        The other side of :mod:`tau_agent_core.commands`' split. ``performer="core"``
+        means the session already ran it (an extension-registered command) and the
+        only thing left is to show what it returned, as the same display-only
+        ``system`` box :meth:`_render_command_output` mounts — never into
+        ``self.messages``, so a command's report cannot leak into model input (E5 §1
+        tree-as-truth).
+
+        ``performer="frontend"`` is a built-in the core deliberately did not run
+        because it needs a screen: ``/compact`` re-renders the transcript, ``/tree``
+        and ``/fork`` open the browser, ``/extensions`` paints a panel or runs a
+        runtime management action. Each lands on the identical action the keybinding
+        and the palette already call, so there is one implementation of each command
+        and this method only routes.
+
+        Fail-Early: an outcome naming a built-in this app has no branch for RAISES.
+        That is the whole point of the seam — the core is allowed to resolve
+        commands a given frontend cannot perform, and the contract is that such a
+        frontend says so out loud instead of returning as though it had. A silent
+        ``else: pass`` here would make :data:`FRONTEND_COMMANDS` a list of things
+        that may or may not work depending on where you typed them.
+        """
+        if outcome.performer == "core":
+            self._render_command_output(ExtensionCommandResult(handled=True, output=outcome.output))
+            return
+
+        if outcome.name == "compact":
+            await self.action_compact()
+            return
+        if outcome.name in ("tree", "fork"):
+            # pi aliases the two (keybindings.ts:252-253) — both open the browser.
+            self.action_browse_tree()
+            return
+        if outcome.name == "extensions":
+            if not outcome.args:
+                self.action_show_extensions()
+                return
+            parts = outcome.args.split(None, 1)
+            verb = parts[0]
+            target = parts[1].strip() if len(parts) > 1 else ""
+            await self.action_manage_extensions(verb, target)
+            return
+
+        raise UnsupportedCommandError(unsupported_command_message(outcome, "the Parley TUI"))
+
+    @work(group="generation")
+    async def _generate_response(self, submission: Submission) -> None:
+        """Background worker: admit one submission and render the turn it starts.
+
+        Replaces the old inline ``await``. The ``finally`` restores the input
+        regardless of how the turn ended (normal, error, or cooperative abort —
+        which returns the partial answer rather than raising).
+
+        **Not ``exclusive`` any more, and that is the fix, not a relaxation.** An
+        exclusive group cancels the group's other workers when a new one starts, so
+        a second submission arriving mid-turn hard-cancelled the first — killing an
+        admitted turn inside ``submit()`` and losing both the partial answer and the
+        second prompt. That is precisely the silent drop docs/SUBMISSION-LIFECYCLE.md
+        exists to remove ("nats_bus.py hand-rolls state['turn_in_flight'] and
+        drops"). The submissions declare ``enqueue``; the second one now waits and
+        then runs. Nothing else depended on the exclusivity:
+        :meth:`action_cancel_generation` has never cancelled the worker — it trips
+        the backend's abort signal and lets the turn unwind through its own
+        ``finally``, which is what keeps the partial answer and the persistence
+        consistent.
         """
         input_widget = self.query_one("#chat-input", ChatInput)
         try:
-            await self._get_assistant_response()
+            await self._get_assistant_response(submission)
         except Exception as e:
             self.notify(f"Error: {str(e)}", severity="error")
             self.log.error(f"Error getting response: {e}")
@@ -1910,9 +2701,16 @@ class Parley(App):
                 "system", f"**Error occurred:**\n```\n{str(e)}\n{traceback.format_exc()}\n```"
             )
         finally:
-            self.is_generating = False
-            input_widget.disabled = False
-            input_widget.focus()
+            # A turn ending while another submission is still outstanding must not
+            # re-enable the input or clear ``is_generating``: the app is still busy,
+            # Esc must still reach the turn that is running, and typing into a live
+            # queue is exactly how the second prompt used to get lost.
+            self._submissions_in_flight -= 1
+            if self._submissions_in_flight <= 0:
+                self._submissions_in_flight = 0
+                self.is_generating = False
+                input_widget.disabled = False
+                input_widget.focus()
             # Show the running conversation rollup (tools · tokens) next to the
             # model, refreshed now that this exchange has been appended + saved.
             self._refresh_subtitle()
@@ -1922,75 +2720,446 @@ class Parley(App):
 
         Trips the backend's abort signal — the provider stops at the next streamed
         delta and the agent loop unwinds, so ``_get_assistant_response`` returns
-        with the partial answer and the worker's ``finally`` re-enables input. No
-        hard task-cancel, so there is no half-applied widget/persistence state.
+        with the partial answer and the last worker's ``finally`` re-enables input.
+        No hard task-cancel, so there is no half-applied widget/persistence state.
+
+        It aborts THE turn that is running, not everything outstanding: a submission
+        queued behind it gets its own fresh ``AbortSignal`` when ``submit()`` admits
+        it, so Esc cancels this answer and the next queued prompt still runs. That
+        matches what Esc has always meant here ("stop this response"); "discard the
+        queue" is not a thing the TUI can express today and inventing it silently —
+        cancelling a submission the core has already accepted — is the drop this
+        lifecycle removes rather than adds.
         """
         if not self.is_generating or self.current_backend is None:
             return
         self.current_backend.abort()
         self.sub_title = "Cancelling…"
 
-    async def _get_assistant_response(self):
-        """Get and display assistant response with streaming.
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Decide which of the two ``priority=True`` app bindings are live right now.
 
-        One user→answer span renders as a single collapsible exchange. The span
-        is opened (:meth:`ChatDisplay.begin_exchange`) before the loop runs and
-        closed (:meth:`ChatDisplay.finalize_exchange`) after it returns; in
-        between, the backend's normalized ``on_event`` stream drives the steps
-        (reasoning, text, tool calls/results) in true arrival order. The summary
-        line is stamped from REAL usage + measured wall-clock — never an
-        approximation (Fail-Early: a true 0 is shown as 0).
+        ``False`` does two things at once, and both are load-bearing here: the Footer
+        stops advertising the binding, and the key is no longer consumed — a priority
+        binding whose ``check_action`` is falsy makes ``run_action`` return ``False``,
+        so textual's ``_check_bindings`` keeps walking the chain down to the focused
+        widget.
+
+        - **``rollback_turn`` needs a turn to roll back.** Idle, ``ctrl+z`` falls
+          through to the ``ChatInput`` TextArea as its ordinary undo; generating, the
+          input is disabled and that undo is unreachable anyway, so the two uses never
+          contend.
+        - **Neither survives a modal.** A ``priority=True`` App binding beats a modal's
+          own bindings (the priority pass walks ``reversed(_binding_chain)``, and the
+          App is at the far end of it), so while a dialog is up ``escape`` reached
+          ``action_cancel_generation`` — which dispatches, and therefore CONSUMES the
+          key — instead of closing the dialog. That was invisible while no modal could
+          be open during a turn: the action no-op'd and Esc merely did nothing. It is
+          not invisible now. :class:`RollbackPromptModal` is open precisely while a
+          turn generates, so Esc would have aborted the very turn the modal exists to
+          roll back, leaving the user with a dialog that will not close and a
+          submission that can no longer be admitted. Ceding both keys to whatever
+          dialog is on top restores "Esc closes the dialog" everywhere, and ``ctrl+z``
+          becomes undo inside the rollback prompt editor rather than a second
+          rollback modal stacked on the first.
+        """
+        if action in ("rollback_turn", "cancel_generation") and len(self.screen_stack) > 1:
+            return False
+        if action == "rollback_turn":
+            return self.is_generating
+        return super().check_action(action, parameters)
+
+    def watch_is_generating(self, generating: bool) -> None:
+        """Re-evaluate the Footer when a turn starts or stops.
+
+        :meth:`check_action` reads ``is_generating``, and Textual only re-queries
+        bindings when it is told to; without this the "Rollback" label would appear
+        and disappear a beat late (on the next focus change), which for a binding
+        whose whole point is "press this DURING a turn" is the wrong beat.
+        """
+        self.refresh_bindings()
+
+    @staticmethod
+    def _last_user_text(messages: list[dict]) -> str:
+        """The most recent user message's text, flattened — the rollback prefill.
+
+        Mirrors ``TauBackend._extract_last_user_message``: content is a plain string
+        on the TUI's own working list and a block list once it has been round-tripped
+        through the session log, and both shapes reach here.
+        """
+        for message in reversed(messages):
+            if message.get("role") != "user":
+                continue
+            content = message.get("content", "")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                return "\n".join(
+                    str(block.get("text", ""))
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                )
+        return ""
+
+    @work(group="rollback")
+    async def action_rollback_turn(self) -> None:
+        """ctrl+z: abort the in-flight turn, un-path it, and run a prompt in its place.
+
+        The TUI affordance for ``multitask_strategy="rollback"``
+        (docs/SUBMISSION-LIFECYCLE.md decision 2), which has been in the core since
+        phase 2 with no way for a human to reach it. Esc's
+        :meth:`action_cancel_generation` stops a turn and leaves its partial work on
+        the active path; this is the variant that also moves the cursor back to the
+        leaf the aborted turn started from, so the abandoned messages fall off the
+        ``parentId`` walk. Nothing is deleted — the tree browser still shows them
+        (decision 2: "append-only means nothing was un-said, only un-pathed").
+
+        Runs as a worker: it must ``push_screen_wait`` the prompt modal, and — more
+        importantly — it must not block the message pump, because the turn it is
+        rolling back is still streaming into the display while this runs. The group
+        is deliberately NOT ``"generation"``: that group is ``exclusive``, so landing
+        in it would hard-cancel the very worker whose turn ``submit()`` is about to
+        abort cooperatively, and a cancelled task mid-``submit_turn`` is the
+        half-applied state ``action_cancel_generation`` exists to avoid.
+
+        The refusals, all of which say so rather than silently doing something else:
+
+        - **Nothing generating.** ``submit()`` reads "is a turn in flight" at
+          admission and, finding none, degrades to an ordinary turn at the current
+          cursor — nothing is un-pathed. That is right for the core (there is nothing
+          to discard) and wrong for a human who just asked to discard something, so
+          the check is here, before the submission, and again after the modal closes,
+          since the turn can finish while the prompt is being typed.
+        - **A slash command.** ``rollback_turn`` submits with ``expand_commands``
+          ``False`` and keeps it that way now that B2-b has given the flag a
+          consumer: this submission's whole job is to run a MODEL turn in place of
+          the one it aborted, and dispatching a command instead would leave the
+          conversation un-pathed with nothing running in the discarded turn's place.
+          A leading "/" is therefore refused with the reason rather than sent.
+        - **``accepted=False``.** The stale-target guard (``_current_turn_token``)
+          refuses when a different submission was admitted and completed while this
+          one waited for the turn slot, because rolling back then would discard THAT
+          submission's work. Its ``rejection_reason`` is shown verbatim: a typed
+          refusal the UI swallowed is the silent drop this whole lifecycle exists to
+          prevent.
+
+        The replacement turn now DOES stream into the transcript, and this method
+        did not have to ask for it: since B3-a the renderer is a persistent bus
+        subscription, and a rollback submission is admitted through the same
+        ``submit()`` as any other, so it opens its own lane like any other. What
+        this method still does afterwards is swap ``self.messages`` and
+        ``reload_messages`` — the same seam ``/compact`` and the tree browser use —
+        because the un-pathing is a TREE change and only a rebuild from the
+        post-rollback session shows the abandoned turn dropping out of the context.
+        """
+        if not self.is_generating:
+            self.notify(
+                "Nothing is generating — rollback discards an in-flight turn",
+                severity="warning",
+            )
+            return
+        # Bound up front: it survives the intervening ``await``s (unlike a
+        # hasattr-narrowed local) and is ``None`` for a backend that lacks it.
+        rollback_turn = getattr(self.current_backend, "rollback_turn", None)
+        if rollback_turn is None:
+            self.notify("This backend does not support rollback", severity="warning")
+            return
+
+        text = await self.push_screen_wait(RollbackPromptModal(self._last_user_text(self.messages)))
+        if text is None:
+            return
+        text = text.strip()
+        if not text:
+            self.notify(
+                "Rollback needs a prompt to run in place of the aborted turn",
+                severity="warning",
+            )
+            return
+        if text.startswith("/"):
+            self.notify(
+                "A rollback prompt is sent to the model as-is — slash commands are "
+                "not expanded here",
+                severity="warning",
+            )
+            return
+        if not self.is_generating:
+            self.notify(
+                "The turn finished while you were typing — there is nothing left to roll back",
+                severity="warning",
+            )
+            return
+
+        self.sub_title = "Rolling back…"
+        try:
+            result = await rollback_turn(text)
+        except Exception as e:
+            self.notify(f"Rollback failed: {e}", severity="error")
+            self.log.error(f"Rollback failed: {e}")
+            self.log.error(traceback.format_exc())
+            self._refresh_subtitle()
+            return
+
+        if not result.accepted:
+            self.notify(result.rejection_reason or "Rollback was refused", severity="warning")
+            self._refresh_subtitle()
+            return
+
+        # Same re-render seam as action_compact / action_browse_tree / the elide flow:
+        # the session is the authority (the AgentSession persisted this turn through
+        # the bound live log), so read the post-rollback context back rather than
+        # patching the working list.
+        assert self.current_session is not None  # is_generating implies a session
+        self.messages = list(self.current_session.context)
+        await self.query_one(ChatDisplay).reload_messages(self.messages)
+        self._refresh_subtitle()
+        self.notify("Rolled back and re-ran from before the aborted turn")
+
+    async def _get_assistant_response(self, submission: Submission) -> None:
+        """Admit ``submission`` and await the turn it starts. Renders nothing.
+
+        B3-a. This method used to be the renderer: it opened an exchange, awaited
+        ``stream_submission``, fed its ``on_event`` stream into the display, and
+        closed the exchange with the returned usage. That shape is single-stream by
+        construction — one awaited call, one buffer, one exchange — so a forked
+        second agent and a turn originated by a bus, timer or extension had no
+        representation in it. Rendering now happens in :meth:`_on_render_event`,
+        off a subscription that is attached for the life of the backend and sees
+        every lane, including the ones this app never submitted.
+
+        What is left here is the half that genuinely belongs to the SUBMITTER
+        rather than to the renderer: awaiting completion (so the input re-enables
+        and ``is_generating`` clears when THIS turn is done), surfacing a typed
+        refusal, performing a command outcome, and reconciling the working message
+        list against the session that just recorded the turn.
+
+        :attr:`_working_list_lock` is held across read-context → await → write-back
+        for the reason its own comment gives: ``self.messages`` is both the context
+        handed over and the thing rebuilt afterwards. It is NOT a render lock any
+        more — another lane streams into the display while this is held.
+        """
+        assert self.current_session is not None  # set before a turn runs
+        # Same idiom, newly load-bearing: annotating ``submission`` makes this a
+        # TYPED function, so mypy now checks the body it previously skipped.
+        assert self.current_backend is not None  # a turn cannot start without one
+        async with self._working_list_lock:
+            # THE one door, awaited without a second subscription: the persistent
+            # renderer has already drawn every delta this turn produced, so asking
+            # for them again (``stream_submission``) would mean rendering twice.
+            result = await self.current_backend.submit_turn(submission, self.messages)
+
+            # A typed in-band refusal (LSP ``ApplyWorkspaceEditResult``) is SHOWN,
+            # never swallowed — a refusal the UI hides is the silent drop the whole
+            # lifecycle exists to prevent. ``enqueue`` waits rather than refusing, so
+            # this is not reachable today; it is here because the strategy is a field
+            # on the record and the value at the call site is one line from changing
+            # (decision 1's Alt+Enter / phase 4's steer).
+            if not result.accepted:
+                self.notify(result.rejection_reason or "The turn was refused", severity="warning")
+
+            # An `input` hook rewrote this prompt into a command AFTER the app
+            # resolved it as ordinary text (:meth:`on_input_submitted`'s peek), so
+            # ``submit()`` dispatched instead of running a turn. Perform the outcome
+            # rather than showing an empty answer — the user's input WAS acted on.
+            # No exchange or user bubble was drawn for it either, because a
+            # dispatched submission emits no ``submission_start``.
+            if result.command is not None:
+                await self._perform_command_outcome(result.command)
+
+            # Rebuild the working list as a VIEW over the authoritative session
+            # (E3-ctx / D3, pi ``rebuildChatFromMessages``). The AgentSession — bound to
+            # this live Session — already persisted this turn's user + assistant/tool
+            # messages as the loop ran; there is one write path, so the app no longer
+            # appends them itself (that was the double-write). Reading ``session.context``
+            # back reconciles the working list (which carried a transient copy of the
+            # user turn) with what was actually recorded, applying any compaction/branch
+            # splice. This is a data rebuild only — the incremental streaming render
+            # already mounted this turn's widgets, so the display is left untouched.
+            self.messages = list(self.current_session.context)
+
+            # Refresh sidebar. Starts a thread worker and returns immediately
+            # (see ChatSidebar.refresh_chats) — nothing after this point in
+            # this turn depends on the listing having landed, so ending the
+            # turn does not wait on it.
+            self.query_one(ChatSidebar).refresh_chats()
+
+    # ------------------------------------------------------------------
+    # The renderer: one persistent bus subscription, many lanes (B3-a)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _lane_label(source: object, submitter: object) -> str | None:
+        """How this lane should be marked, or ``None`` for "a human typed it here".
+
+        The Jupyter rule the spec states and warns is easy to get backwards: a
+        frontend filters on "is this mine?" to decide HOW to render, and still
+        renders the rest. So this returns a LABEL, never a "drop it" — the only
+        thing the answer changes is whether the exchange is badged with where it
+        came from.
+        """
+        if source == "interactive" and submitter == "human":
+            return None
+        return f"{source} · {submitter}"
+
+    @staticmethod
+    def _lane_role(source: object) -> str:
+        """The :class:`MessageBox` role for a foreign lane's submission bubble (B3-b).
+
+        The SOURCE is the role, so ``ROLE_LABELS`` gives the bubble its border
+        title — "Timer", "Bus", "Sub-agent" — instead of the "User" a submission
+        nobody typed used to wear. An unlisted source is passed through verbatim
+        and capitalized by :meth:`MessageBox.on_mount`, which is the whole reason
+        this is a lookup with a fallback rather than a match: a source this build
+        has never heard of must still render, attributed as best we can, because a
+        renderer that hides what it does not recognise is the failure mode.
+
+        A source that is missing or blank is the one case with nothing to say, and
+        it says exactly that — ``"unknown"`` — rather than borrowing ``"user"``
+        and claiming a human was involved.
+        """
+        text = str(source or "").strip()
+        return text or "unknown"
+
+    async def _on_render_event(self, event: dict) -> None:
+        """Render one lane-tagged event from the persistent bus subscription.
+
+        Reference: docs/SUBMISSION-LIFECYCLE.md phase 3 / B3-a. Called for EVERY
+        turn the session runs — this app's own typed prompts, an extension's or a
+        bus driver's submission, and a ``fork``'s second agent — because the
+        subscription is attached to the session rather than to a call.
         """
         display = self.query_one(ChatDisplay)
+        kind = event.get("kind")
+        lane = event.get("lane") or DEFAULT_LANE
+        if kind == "lane_start":
+            label = self._lane_label(event.get("source"), event.get("submitter"))
+            # The submission itself, rendered — Jupyter's ``execute_input``
+            # re-broadcast. A foreign lane's bubble is badged with its origin so
+            # "the agent just said something I did not ask for" is legible rather
+            # than mysterious, AND typed as its source (B3-b) so the border reads
+            # "Timer" rather than "User" over text no user typed.
+            role = "user" if label is None else self._lane_role(event.get("source"))
+            bubble = display.add_message(role, event.get("text", ""), subtitle=label or "")
+            if label is not None:
+                bubble.add_class(LANE_FOREIGN_CLASS)
+            self._lane_started[lane] = time.time()
+            self.query_one(LaneStrip).open_lane(lane, label)
+            await display.begin_exchange(lane, label=label)
+            return
+        if kind == "lane_end":
+            self.query_one(LaneStrip).close_lane(lane)
+            started = self._lane_started.pop(lane, None)
+            # Fail-Early: an unknown start time is reported as unknown (the summary
+            # omits the duration) rather than as a fabricated 0.0 second turn.
+            elapsed = None if started is None else time.time() - started
+            # The G4 telemetry rides the LAST completion's usage.extra (t/s /
+            # forced-share are per-completion, not aggregates); format_telemetry
+            # returns None on a provider that reported nothing, so the summary then
+            # reads exactly as it did pre-G4.
+            telemetry = format_telemetry(event.get("extra") or {})
+            await display.finalize_exchange(
+                tokens=int(event.get("tokens", 0) or 0),
+                seconds=elapsed,
+                telemetry=telemetry,
+                lane=lane,
+            )
+            # Reconcile the working list against the session that just recorded
+            # this turn. :meth:`_get_assistant_response` does this too, and for its
+            # own turn this is the earlier (pre-drain) half of the same read — but
+            # a turn nobody here submitted has NO awaiting caller to do it, and a
+            # rendered turn the model-input list does not know about is exactly the
+            # divergence that makes the next typed prompt contradict the screen.
+            if self.current_session is not None:
+                self.messages = list(self.current_session.context)
+            self._refresh_subtitle()
+            return
+        await display.handle_stream_event(event)
 
-        # Bridge backend lifecycle events onto the display state machine.
-        # The separate text `callback` is unused here (text is delivered via
-        # the `text_delta` structured event), but the contract still requires
-        # it, so pass a no-op.
-        def on_event(event: dict) -> None:
-            display.handle_stream_event(event)
+    def _bind_render_subscription(self) -> None:
+        """(Re)attach the persistent renderer to the current backend's bus.
 
-        assert self.current_session is not None  # set before a turn runs
-        start = time.time()
-        await display.begin_exchange()
-        content, usage, _new_messages, tool_calls_info = await self.current_backend.stream_chat(
-            self.messages,
-            lambda _delta: None,
-            on_event=on_event,
-        )
-        elapsed = time.time() - start
+        One subscription per backend, dropped and remade when the backend or its
+        session changes — the same lifetime ``_session_event_unsub`` has, and for
+        the same reason: a replaced backend's dead bus must stop reaching this
+        app's widgets.
 
-        # Collapse the exchange to its summary and surface the final answer.
-        await display.finalize_exchange(tokens=usage.get("total_tokens", 0), seconds=elapsed)
+        Lanes still open on the OLD router are abandoned rather than closed,
+        deliberately: every caller of this method (new-chat, clear, resume,
+        model-swap) also clears or reloads the transcript, so the exchange those
+        lanes were drawing no longer exists to be finalized.
 
-        # Rebuild the working list as a VIEW over the authoritative session
-        # (E3-ctx / D3, pi ``rebuildChatFromMessages``). The AgentSession — bound to
-        # this live Session — already persisted this turn's user + assistant/tool
-        # messages as the loop ran; there is one write path, so the app no longer
-        # appends them itself (that was the double-write). Reading ``session.context``
-        # back reconciles the working list (which carried a transient copy of the
-        # user turn) with what was actually recorded, applying any compaction/branch
-        # splice. This is a data rebuild only — the incremental streaming render
-        # already mounted this turn's widgets, so the display is left untouched.
-        self.messages = list(self.current_session.context)
+        ``getattr``-guarded like every other backend-capability read in this class:
+        a test double or a non-``TauBackend`` simply renders nothing.
+        """
+        if self._render_router is not None:
+            self._render_router.detach()
+            self._render_router = None
+        self._lane_started = {}
+        # The strip reports what is live; lanes abandoned with the old router are
+        # not, so it is cleared with the clocks rather than left advertising a fork
+        # whose events can no longer arrive.
+        self.query_one(LaneStrip).clear_lanes()
+        subscribe_render = getattr(self.current_backend, "subscribe_render", None)
+        if subscribe_render is None:
+            return
+        self._render_router = subscribe_render(self._on_render_event, on_orphan=self._log_orphan)
 
-        # Refresh sidebar
-        self.query_one(ChatSidebar).refresh_chats()
+    def _log_orphan(self, reason: str) -> None:
+        """Report an event that named no open lane (never drop it in silence).
+
+        These are real — ``continue_conversation()`` on resume, and a bare
+        ``compact()``, emit ``agent_start``/``agent_end`` with no submission to
+        stamp them — and they are not errors, so this is the Textual log rather
+        than a toast. What it is not is nothing: a renderer that swallowed them
+        would be indistinguishable from one that had quietly stopped working.
+        """
+        self.log(f"render router: {reason}")
 
     def _bind_backend_session(self) -> None:
-        """Rebind the backend's AgentSession onto the current live ``Session``.
+        """Rebind the backend's AgentSession onto the current live ``Session``,
+        without going through ``AgentSessionRuntime``.
 
-        Called after every point that makes a ``Session`` current (new-chat, clear,
-        resume) so the AgentSession persists the turn — and any agent-driven
-        compact/navigate — through the one on-disk log the TUI reads back (E3-ctx /
-        D3, AgentSession is the sole persister). Guarded by ``getattr`` so a backend
-        without the seam (a test double, or a non-``TauBackend``) is a no-op rather
-        than an error.
+        The fallback path for a backend with no real ``AgentSession`` to build
+        a runtime around (a test double, or a non-``TauBackend`` — the same
+        tolerance every backend-capability read in this class already has).
+        Every call site that DOES have a real ``AgentSession`` goes through
+        ``AgentSessionRuntime`` instead (H1, phase 3): the runtime performs
+        this same ``session_log`` bind internally (plus the H2 veto and H3
+        reset this method knows nothing about) and then invokes
+        :meth:`_rebind_after_session_swap` itself, via
+        ``AgentSessionRuntime.set_rebind_session``. This method exists so the
+        NO-runtime case still gets the ``session_log`` bind
+        :meth:`_rebind_after_session_swap` does not perform.
         """
         binder = getattr(self.current_backend, "bind_session_log", None)
         if binder is not None and self.current_session is not None:
             binder(self.current_session)
+        self._rebind_after_session_swap()
 
+    def _rebind_after_session_swap(self) -> None:
+        """Reattach TUI-specific plumbing to ``self.current_backend`` (H1's
+        rebind callback).
+
+        Everything ``AgentSessionRuntime``'s own swap does NOT know how to do
+        — the seam-3 extension-bus bridge, the model-name resolver, the
+        renderer — because it is TUI-specific, not session-lifecycle logic
+        (``agent_session_runtime.py``'s module docstring is explicit that
+        this is exactly why ``set_rebind_session`` exists rather than the
+        runtime hardcoding it). Two callers:
+
+        - :meth:`_bind_backend_session` (the no-runtime fallback above), which
+          calls this directly, after its own ``session_log`` bind.
+        - ``AgentSessionRuntime.set_rebind_session``'s callback, registered by
+          ``action_new_chat``/``action_clear_chat``/``on_chat_selected``
+          BEFORE calling ``new_session``/``fork``/``switch_session`` — invoked
+          by the runtime itself, AFTER the swap's ``session_log`` is already
+          live and its turn lock has been released (so this method reading
+          ``self.current_backend.agent_session`` fresh, right here, can never
+          race the swap that produced it).
+
+        Reads ``self.current_backend``/``self.current_session`` rather than
+        taking them as parameters — both callers above have ALREADY updated
+        them before this runs.
+        """
         # Seam-3 → extension bus (S21 / §E3c.4): route this backend's session
         # lifecycle events onto its AgentSession's EventBus so extension handlers
         # (api.on("session_before_compact", …)) fire. Rebind on every current-session
@@ -2009,6 +3178,32 @@ class Parley(App):
             if binder is not None:
                 binder(make_model_resolver(self.config.get("models", {})))
 
+        # B3-a: (re)attach the persistent renderer, alongside — and for the same
+        # lifetime as — the extension-bus bridge above. Rendering is no longer
+        # something a turn brings with it, so it has to be bound where the backend
+        # is, not where a prompt is.
+        self._bind_render_subscription()
+
+    def _build_session_runtime(
+        self, backend: Any, model: str, backend_name: str
+    ) -> Optional[AgentSessionRuntime]:
+        """``AgentSessionRuntime`` over ``backend``'s ``AgentSession`` — or
+        ``None`` when ``backend`` has none (test double / non-``TauBackend``,
+        the same tolerance :meth:`_rebind_after_session_swap` already has).
+
+        Always installs :meth:`_rebind_after_session_swap` as the rebind
+        callback — the one thing every one of the three call sites needs and
+        would otherwise have to register identically three times.
+        """
+        agent_session = getattr(backend, "agent_session", None)
+        if agent_session is None:
+            return None
+        runtime = AgentSessionRuntime(
+            agent_session, self.session_catalog, os.getcwd(), model, backend_name, self._store_name
+        )
+        runtime.set_rebind_session(lambda _session: self._rebind_after_session_swap())
+        return runtime
+
     def _apply_run_config(self, model_config: dict) -> dict:
         """Inject run-level tool flags into a model_config before create_backend (S28).
 
@@ -2026,7 +3221,9 @@ class Parley(App):
         # (new-chat, resume) inherit it.
         global_replay = self.config.get("reasoning_replay")
         inject_replay = global_replay is not None and "reasoning_replay" not in model_config
-        if not (self._exclude_tools or self._no_builtin_tools or inject_replay):
+        if not (
+            self._exclude_tools or self._no_builtin_tools or inject_replay or self._bus_available
+        ):
             return model_config
         mc = dict(model_config)
         if self._no_builtin_tools:
@@ -2035,6 +3232,12 @@ class Parley(App):
             mc["exclude_tools"] = self._exclude_tools
         if inject_replay:
             mc["reasoning_replay"] = global_replay
+        if self._bus_available:
+            # Only ever set TRUE here: ``--bus`` grants the capability, and a
+            # model entry may grant it on its own (``"bus_available": true``).
+            # Writing False would let the absence of a flag REVOKE what the
+            # config file deliberately allowed.
+            mc["bus_available"] = True
         return mc
 
     async def _load_backend_extensions(self) -> None:
@@ -2143,31 +3346,65 @@ class Parley(App):
             self.config.get("system_prompt", "You are a helpful assistant."),
             self._append_system_prompt,
         )
-        self.current_session = Session.create(
-            os.getcwd(),
-            model,
-            model_config["backend"],
-            system_prompt=system_prompt or None,
+        # AgentSessionRuntime (H1, phase 3): the runtime performs the
+        # session_log bind, the H2 veto check, and the H3 reset (a no-op
+        # here — this AgentSession was just constructed, so there is
+        # nothing dirty to reset) — see _build_session_runtime.
+        self._session_runtime = self._build_session_runtime(
+            self.current_backend, model, model_config["backend"]
         )
-        self._bind_backend_session()
+        if self._session_runtime is not None:
+            result = await self._session_runtime.new_session(
+                persist=True, system_prompt=system_prompt or None
+            )
+            if result.get("blocked"):
+                # Finding 1 (phase-3 review): the in-flight turn did not stop
+                # within the runtime's bounded wait — nothing was touched.
+                self.notify(result["reason"], severity="warning")
+                return
+            if result["cancelled"]:
+                self.notify("New chat cancelled by an extension", severity="warning")
+                return
+            self.current_session = result["session"]
+        else:
+            # No real AgentSession on this backend (test double / non-TauBackend)
+            # — same tolerance _bind_backend_session's own getattr guards have.
+            self.current_session = self.session_catalog.create(
+                os.getcwd(),
+                model,
+                model_config["backend"],
+                system_prompt=system_prompt or None,
+            )
+            self._bind_backend_session()
         await self._load_backend_extensions()
         self.messages = list(self.current_session.context)
 
         # Clear display
         display = self.query_one(ChatDisplay)
-        display.clear_messages()
+        await display.clear_messages()
 
         # Update UI
         self.sub_title = f"{model}"
         self.notify(f"Started new chat with {model}")
 
-        # Refresh sidebar
+        # Refresh sidebar. Starts a thread worker and returns immediately (see
+        # ChatSidebar.refresh_chats); this is the last thing the action does,
+        # so nothing here waits on the listing. The new session is already
+        # current — it just won't show up in the sidebar list until the
+        # worker lands, same as any other session created elsewhere while
+        # this one is open. Callers that need it to have landed (tests) can
+        # ``await app.workers.wait_for_complete()``.
         self.query_one(ChatSidebar).refresh_chats()
 
     def action_toggle_sidebar(self):
         """Toggle sidebar visibility."""
         sidebar = self.query_one(ChatSidebar)
-        sidebar.styles.display = "none" if sidebar.styles.display == "block" else "block"
+        showing = sidebar.styles.display != "block"
+        sidebar.styles.display = "block" if showing else "none"
+        if showing:
+            # A refresh may have landed and been deferred (_apply_sessions)
+            # while this was collapsed — catch it up now that it's visible.
+            sidebar.ensure_rendered()
 
     def action_toggle_reasoning(self) -> None:
         """Fold/unfold every reasoning region in the transcript at once.
@@ -2429,6 +3666,18 @@ class Parley(App):
             self.action_browse_tree,
         )
 
+        # The rollback affordance's second discovery path (the first is the Footer
+        # label, which appears while a turn runs). Listed unconditionally: the
+        # palette is built once per invocation and an entry that vanishes is harder
+        # to find than one that explains why it did nothing — the action says
+        # "nothing is generating" when there is no turn to roll back.
+        yield SystemCommand(
+            "Roll back the in-flight turn…",
+            "Abort the running turn, drop it off the active path, and run another "
+            "prompt from where it started",
+            self.action_rollback_turn,
+        )
+
         yield SystemCommand(
             "Edit System Prompt",
             "Edit the system prompt for new chats",
@@ -2509,18 +3758,45 @@ class Parley(App):
             if system_msg and isinstance(system_msg.get("content"), str)
             else None
         )
-        self.current_session = Session.create(
-            os.getcwd(),
-            self.current_session.model,
-            self.current_session.backend,
-            system_prompt=system_prompt,
-        )
-        self._bind_backend_session()
+        # AgentSessionRuntime (H1, phase 3): the SAME backend/AgentSession as
+        # before — reuse the runtime already bound to it (constructed by
+        # whichever of action_new_chat/on_chat_selected last set
+        # current_backend) rather than building a new one. This is the one
+        # call site where H3's reset set is NOT a no-op: unlike a freshly
+        # constructed AgentSession, this one may carry usage/queued-message/
+        # deferred-op state from the conversation being cleared, and
+        # new_session() is what actually clears it — action_clear_chat had no
+        # such cleanup before this phase.
+        if self._session_runtime is not None:
+            result = await self._session_runtime.new_session(
+                persist=True, system_prompt=system_prompt
+            )
+            if result.get("blocked"):
+                # Finding 1 (phase-3 review): the in-flight turn did not stop
+                # within the runtime's bounded wait — nothing was touched.
+                self.notify(result["reason"], severity="warning")
+                return
+            if result["cancelled"]:
+                self.notify("Clear chat cancelled by an extension", severity="warning")
+                return
+            self.current_session = result["session"]
+        else:
+            self.current_session = self.session_catalog.create(
+                os.getcwd(),
+                self.current_session.model,
+                self.current_session.backend,
+                system_prompt=system_prompt,
+            )
+            self._bind_backend_session()
         self.messages = list(self.current_session.context)
 
         # Clear display
         display = self.query_one(ChatDisplay)
-        display.clear_messages()
+        await display.clear_messages()
+        # Starts a thread worker and returns immediately (see
+        # ChatSidebar.refresh_chats). The notify below doesn't depend on it,
+        # and the new session is already current regardless of when the
+        # sidebar list itself catches up.
         self.query_one(ChatSidebar).refresh_chats()
 
         self.notify("Chat cleared")
@@ -2599,15 +3875,18 @@ class Parley(App):
 
     @work
     async def action_browse_tree(self) -> None:
-        """Open the tree-browser and act on the chosen branch point (§3).
+        """Open the tree-browser and act on the chosen node (§3).
 
-        Runs as a worker so it can ``push_screen_wait`` the three modal steps
-        (browse → mode → optional custom instructions). Operates on the LIVE
-        ``current_session`` — the TUI owns persistence (§2.6) — building a
-        ``ConversationTree`` over its entries and handing the picked node to
-        ``backend.navigate_tree``, which appends the ``navigate``/``branch_summary``
+        Runs as a worker so it can ``push_screen_wait`` the modal steps (browse →
+        mode → optional custom instructions, or → a second browse for ``elide``).
+        Operates on the LIVE ``current_session`` — the TUI owns persistence (§2.6) —
+        building a ``ConversationTree`` over its entries and handing the picked node
+        to ``backend.navigate_tree``, which appends the ``navigate``/``branch_summary``
         entry and returns the post-navigate context. Re-renders through the same
         path ``action_compact`` uses (§3.4): swap ``self.messages`` + reload.
+
+        The ``elide`` mode (W3) branches off to :meth:`_elide_span_flow` after the
+        mode pick, because it needs a second node id rather than a summarizer.
         """
         session = self.current_session
         if session is None:
@@ -2628,12 +3907,24 @@ class Parley(App):
         target_id = await self.push_screen_wait(SessionTreeModal(roots))
         if target_id is None:
             return
-        if target_id == session.cursor:
-            self.notify("Already at that node")
-            return
 
         mode = await self.push_screen_wait(TreeModeModal())
         if mode is None:
+            return
+
+        if mode == "elide":
+            # The picked node is the elide's ANCHOR, not a branch point — and an
+            # anchor that is already the cursor is the NORMAL case (fold the history
+            # behind the current tip and keep going), so the "already at that node"
+            # guard below deliberately does not apply to it.
+            await self._elide_span_flow(session, target_id, roots)
+            return
+
+        if target_id == session.cursor:
+            # Checked AFTER the mode pick, not before: it is a statement about
+            # *branching* (the three modes that move the cursor back), and hoisting
+            # it above the chooser would make it reject the elide flow too.
+            self.notify("Already at that node")
             return
 
         custom_instructions: Optional[str] = None
@@ -2664,6 +3955,64 @@ class Parley(App):
         self.notify(
             "Summarized and moved to selected node" if summarize else "Moved to selected node"
         )
+
+    async def _elide_span_flow(
+        self, session: ConversationSession, anchor_id: str, roots: list[TreeNode]
+    ) -> None:
+        """Second half of the ``elide`` mode: pick the resume point, then fold (W3).
+
+        Called from :meth:`action_browse_tree`'s worker, so ``push_screen_wait`` is
+        legal here. Split out rather than inlined because it asks a *second* node
+        question, which no other mode does: ``anchor_id`` is where the fold jumps
+        FROM (the elide is appended under it, and the kept region ends there) and the
+        node picked here is where it jumps TO — ``firstKeptId``, the first entry the
+        fold keeps.
+
+        The browser is the SAME :class:`SessionTreeModal` with a different caption:
+        the second question is asked of the same tree, and a purpose-built second
+        widget would be the same list rendered twice. It shows the whole tree rather
+        than pre-filtering to the anchor's ancestors, because the tree is how a user
+        recognizes the node they mean — and an unreachable pick is caught by
+        ``elide_span``'s validation and reported, which is strictly more informative
+        than a node that mysteriously cannot be selected.
+
+        Every failure is surfaced through ``notify(severity="error")`` — the path the
+        other modes' failures already take — and nothing is appended when validation
+        fails: ``elide_span`` checks before it writes, so a rejected elide leaves the
+        session byte-identical rather than half-applied.
+        """
+        elide_span = getattr(self.current_backend, "elide_span", None)
+        if elide_span is None:
+            self.notify("This backend does not support eliding", severity="warning")
+            return
+
+        first_kept_id = await self.push_screen_wait(
+            SessionTreeModal(
+                roots,
+                title="Elide: pick the resume point",
+                help_text="Enter: resume the fold here    Esc: cancel",
+            )
+        )
+        if first_kept_id is None:
+            return
+
+        before = len(self.messages)
+        self.sub_title = "Eliding span…"
+        try:
+            new_messages = elide_span(session, anchor_id, first_kept_id)
+        except Exception as e:
+            self.notify(f"Elide failed: {e}", severity="error")
+            self.log.error(f"Elide failed: {e}")
+            self.log.error(traceback.format_exc())
+            self._refresh_subtitle()
+            return
+
+        # Same re-render seam as action_compact / action_browse_tree (§3.4): swap the
+        # working list, reload the display, refresh the rollup.
+        self.messages = new_messages
+        await self.query_one(ChatDisplay).reload_messages(self.messages)
+        self._refresh_subtitle()
+        self.notify(f"Elided {before} → {len(new_messages)} messages")
 
     def _extension_shortcuts(self) -> list[tuple[str, str, str, str]]:
         """The live backend's registered key shortcuts (E10 §6 / S69).
@@ -2719,10 +4068,12 @@ class Parley(App):
 
         def handle_result(new_prompt: str | None):
             if new_prompt is not None:
+                # Read-modify-write the ON-DISK config, not ``self.config``: the
+                # latter has CLI overrides merged into it (_apply_cli_overrides), so
+                # writing it back would persist a one-run --model/--system-prompt
+                # flag as the permanent default.
+                update_config("system_prompt", new_prompt)
                 self.config["system_prompt"] = new_prompt
-                # Save config
-                config_path = TAU_DIR / "config.json"
-                config_path.write_text(json.dumps(self.config, indent=2))
                 self.notify("System prompt updated")
 
         await self.push_screen(SystemPromptEditor(current_prompt), handle_result)
@@ -2730,8 +4081,9 @@ class Parley(App):
     async def on_chat_selected(self, message: ChatSelected):
         """Handle session selection from sidebar."""
         try:
-            # Load the selected session
-            session = Session.load(message.chat_path)
+            # Load the selected session — needed to learn its model, which
+            # decides what backend to build BEFORE a runtime can switch onto it.
+            session = self.session_catalog.load(message.chat_ref)
 
             # Get model config and create backend
             model_config = self.config["models"].get(session.model)
@@ -2740,8 +4092,31 @@ class Parley(App):
                 return
 
             self.current_backend = create_backend(self._apply_run_config(model_config))
-            self.current_session = session
-            self._bind_backend_session()
+            # AgentSessionRuntime (H1, phase 3): switch_session() re-resolves
+            # message.chat_ref through the catalog — one extra load beyond the
+            # one above, needed regardless since the target's model has to be
+            # known before a backend for it can even be built — and performs
+            # the H2 veto / H3 reset (a no-op on this brand-new AgentSession)
+            # before binding.
+            self._session_runtime = self._build_session_runtime(
+                self.current_backend, session.model, model_config["backend"]
+            )
+            if self._session_runtime is not None:
+                result = await self._session_runtime.switch_session(message.chat_ref)
+                if result.get("blocked"):
+                    # Finding 1 (phase-3 review): the in-flight turn did not
+                    # stop within the runtime's bounded wait — nothing was
+                    # touched.
+                    self.notify(result["reason"], severity="warning")
+                    return
+                if result["cancelled"]:
+                    self.notify("Switch cancelled by an extension", severity="warning")
+                    return
+                session = result["session"]
+                self.current_session = session
+            else:
+                self.current_session = session
+                self._bind_backend_session()
             await self._load_backend_extensions()
             # Seed from the active-path context (cursor + compaction/branch splices),
             # NOT the raw linear fold — else a resumed compacted/branched session

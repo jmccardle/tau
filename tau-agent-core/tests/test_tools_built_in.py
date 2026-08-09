@@ -18,7 +18,9 @@ Reference: PHASE-2-SUBPHASE-3.md, "Testing Strategy" section.
 """
 
 import asyncio
+import contextlib
 import os
+import signal
 import sys
 import tempfile
 import time
@@ -570,6 +572,173 @@ class TestBashToolAbort:
         signal.abort()
         result = await tool.execute("tc1", {"command": "echo hello"}, signal, None)
         assert "aborted" in result["content"][0]["text"].lower()
+
+
+# ============================================================================
+# Test 7b: Bash tool — process-group kill leaves no orphans (R-T4)
+# ============================================================================
+
+def _process_is_alive(pid: int) -> bool:
+    """True if `pid` refers to a live process, checked without side effects."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Exists (owned by someone else) — still alive from our perspective.
+        return True
+    return True
+
+
+async def _wait_for_process_death(pid: int, timeout: float = 5.0, poll_interval: float = 0.02) -> None:
+    """Poll for real process death; raise if `pid` outlives `timeout` seconds.
+
+    This is a real assertion (repeated os.kill(pid, 0) probes), not a
+    sleep-and-hope: it returns the moment the kernel reports the pid gone,
+    and fails loudly if it never does.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _process_is_alive(pid):
+            return
+        await asyncio.sleep(poll_interval)
+    raise AssertionError(f"pid {pid} is still alive after {timeout}s — orphan survived the kill")
+
+
+async def _read_pid_file(pidfile, timeout: float = 2.0) -> int:
+    """Wait for a backgrounded process to publish its pid, then return it."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pidfile.exists():
+            text = pidfile.read_text().strip()
+            if text:
+                return int(text)
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"process never wrote its pid to {pidfile}")
+
+
+def _force_kill_group(pgid: int) -> None:
+    """Best-effort final safety net: kill an entire process group outright.
+
+    Used only from test `finally` blocks, so a bug that reintroduces the
+    hang this suite guards against (see module docstring below) cannot leak
+    a `sleep 300` — or its parent shell — past the test that found it.
+    """
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pgid, signal.SIGKILL)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process-group kill (P2) is POSIX-only")
+class TestBashToolProcessGroupKill:
+    """Test 7b: R-T4 — no orphan survives a bash-tool kill, timeout or abort.
+
+    Each command backgrounds a long-lived grandchild (`sleep 300 &`) that
+    writes its own pid to disk, then blocks the shell on `wait` so the shell
+    itself is still alive when the kill fires. Reference: REMOTE-CONTROL.md
+    P2/R-T4 — `Process.kill()` on the shell alone leaves such a grandchild
+    running; a process-group kill must not.
+
+    This is not merely a hygiene bug: a grandchild that inherits the shell's
+    stdout/stderr pipe (unredirected, as `&` leaves it) keeps that pipe's
+    write end open after the shell dies, and CPython's
+    `asyncio.subprocess.Process.wait()` does not resolve until every pipe
+    reports EOF (`base_subprocess.py: _try_finish`) — so the *whole tool
+    call*, not just the grandchild, hangs forever without a group kill.
+    Every `await tool.execute(...)` below is therefore itself
+    `asyncio.wait_for`-bounded: a regression must fail this test, not wedge
+    the suite.
+    """
+
+    async def test_timeout_kills_backgrounded_grandchild(self, tmp_path):
+        """Bash tool timeout kills the whole group, not just the shell."""
+        pidfile = tmp_path / "grandchild.pid"
+        shell_pidfile = tmp_path / "shell.pid"
+        tool = BashTool(cwd=str(tmp_path))
+        command = f"echo $$ > {shell_pidfile}; sleep 300 & echo $! > {pidfile}; wait"
+        pid = None
+        shell_pid = None
+
+        # Run execute() as a task and capture both pids *before* any
+        # assertion runs: the shell writes them almost immediately (well
+        # before its 200ms timeout fires), so this costs nothing, and it
+        # means a failure anywhere below — including a failure of the tool
+        # call itself — still leaves the `finally` block able to reap the
+        # grandchild instead of leaking it. See the abort test for the same
+        # shape.
+        task = asyncio.create_task(
+            tool.execute("tc1", {"command": command, "timeout": 200}, None, None)
+        )
+        try:
+            pid = await _read_pid_file(pidfile)
+            shell_pid = await _read_pid_file(shell_pidfile)
+
+            try:
+                result = await asyncio.wait_for(task, timeout=10)
+            except asyncio.TimeoutError:
+                raise AssertionError(
+                    "tool.execute() did not return within 10s of its own 200ms "
+                    "timeout — the shell was killed but a surviving grandchild "
+                    "held the output pipe open, hanging process.wait() forever"
+                ) from None
+            assert result["details"]["truncated"] is True
+
+            await _wait_for_process_death(pid)
+        finally:
+            # Hermetic: never leak the grandchild, even if an assertion above fails.
+            if not task.done():
+                task.cancel()
+            if shell_pid is not None:
+                _force_kill_group(shell_pid)
+            if pid is not None:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+
+    async def test_abort_kills_backgrounded_grandchild(self, tmp_path):
+        """Bash tool abort kills the whole group, not just the shell."""
+        pidfile = tmp_path / "grandchild.pid"
+        shell_pidfile = tmp_path / "shell.pid"
+        tool = BashTool(cwd=str(tmp_path))
+        abort_signal = AbortSignal()
+        command = f"echo $$ > {shell_pidfile}; sleep 300 & echo $! > {pidfile}; wait"
+        pid = None
+        shell_pid = None
+
+        task = asyncio.create_task(
+            tool.execute("tc1", {"command": command}, abort_signal, None)
+        )
+        try:
+            pid = await _read_pid_file(pidfile)
+            shell_pid = await _read_pid_file(shell_pidfile)
+
+            abort_signal.abort()
+            try:
+                # Whether the tool completes via its "aborted" branch or
+                # observes the shell's own kill-induced exit is a
+                # pre-existing race in how check_abort() and read_stream()
+                # interleave (unrelated to P2) and not what this test is
+                # about — R-T4 only cares that the call returns at all and
+                # that the grandchild does not survive.
+                await asyncio.wait_for(task, timeout=10)
+            except asyncio.TimeoutError:
+                raise AssertionError(
+                    "tool.execute() did not return within 10s of abort() — "
+                    "a surviving grandchild held the output pipe open, "
+                    "hanging process.wait() forever"
+                ) from None
+
+            await _wait_for_process_death(pid)
+        finally:
+            if not task.done():
+                task.cancel()
+            if shell_pid is not None:
+                _force_kill_group(shell_pid)
+            if pid is not None:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
 
 
 # ============================================================================
