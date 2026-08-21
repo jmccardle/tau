@@ -41,8 +41,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tau_ai.streaming import DoneEvent
-from tau_ai.types import AssistantMessage, Model, ToolCall, Usage
+from tau_llm.streaming import DoneEvent
+from tau_llm.types import AssistantMessage, Model, ToolCall, Usage
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
@@ -215,9 +215,7 @@ async def test_usd_budget_warns_then_aborts_through_the_loop() -> None:
     usage = Usage(input_tokens=100_000, output_tokens=100_000)
 
     session = _make_session()
-    guard = budget.BudgetGuard(
-        cost={"input": 3.0, "output": 15.0, "cache_read": 0.3}, max_usd=1.0
-    )
+    guard = budget.BudgetGuard(cost={"input": 3.0, "output": 15.0, "cache_read": 0.3}, max_usd=1.0)
     _wire_guard(session, guard)
 
     with patch(

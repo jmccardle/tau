@@ -17,7 +17,7 @@ import pytest
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.extension_types import ExtensionContext
 from tau_agent_core.session_log import InMemorySessionLog
-from tau_ai.types import AssistantMessage, Model, TextContent
+from tau_llm.types import AssistantMessage, Model, TextContent
 
 
 def _model(name: str = "primary") -> Model:
@@ -56,7 +56,7 @@ def ctx_and_log(monkeypatch):
         calls.append({"model": model, "messages": context["messages"], "options": options or {}})
         return _reply("ANSWER", model=model.id)
 
-    monkeypatch.setattr("tau_ai.client.complete_simple", fake_complete_simple)
+    monkeypatch.setattr("tau_llm.client.complete_simple", fake_complete_simple)
 
     ctx = ExtensionContext()
     ctx._session = session
@@ -142,7 +142,7 @@ class TestFailEarly:
                 timestamp=0,
             )
 
-        monkeypatch.setattr("tau_ai.client.complete_simple", erroring)
+        monkeypatch.setattr("tau_llm.client.complete_simple", erroring)
 
         with pytest.raises(RuntimeError, match="upstream exploded"):
             await ctx.complete([{"role": "user", "content": "hi"}])
@@ -153,7 +153,7 @@ class TestFailEarly:
         async def empty(model, context, options=None):
             return _reply("   ")
 
-        monkeypatch.setattr("tau_ai.client.complete_simple", empty)
+        monkeypatch.setattr("tau_llm.client.complete_simple", empty)
 
         with pytest.raises(RuntimeError, match="empty response"):
             await ctx.complete_text([{"role": "user", "content": "hi"}])
@@ -167,7 +167,7 @@ class TestFailEarly:
 class TestConstraintsThread:
     async def test_constraints_reach_the_provider_options(self, ctx_and_log):
         """G3: the constraint parameter is in C1's signature from day one."""
-        from tau_ai.constraints import DecodeConstraints
+        from tau_llm.constraints import DecodeConstraints
 
         ctx, _, calls = ctx_and_log
         constraints = DecodeConstraints(choices=["include", "exclude"])
@@ -191,7 +191,7 @@ class TestConstraintsEcho:
     """
 
     async def test_a_constrained_completion_emits_one_describe_record(self, ctx_and_log):
-        from tau_ai.constraints import DecodeConstraints
+        from tau_llm.constraints import DecodeConstraints
 
         ctx, _, _ = ctx_and_log
         records: list[dict] = []

@@ -27,7 +27,7 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.session_log import InMemorySessionLog
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 # ── import the kit as a top-level package (examples/ on the path) ────────────
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -36,7 +36,6 @@ if _EXAMPLES not in sys.path:
     sys.path.insert(0, _EXAMPLES)
 
 from ext_kit import gate  # noqa: E402  (path insertion must precede the import)
-
 
 # ── run_gate: exit-code verdict ──────────────────────────────────────────────
 

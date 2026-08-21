@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from tau_ai import AbortSignal
+from tau_llm import AbortSignal
 
 # ── import the kit as a top-level package (examples/ on the path) ────────────
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -34,7 +34,6 @@ if _EXAMPLES not in sys.path:
     sys.path.insert(0, _EXAMPLES)
 
 from ext_kit import spawn  # noqa: E402  (path insertion must precede the import)
-
 
 # ── fake OpenAI-compatible provider (real HTTP server the child talks to) ────
 

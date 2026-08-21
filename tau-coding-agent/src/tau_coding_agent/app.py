@@ -4,6 +4,10 @@ Parley - A minimalist, performant chat interface for LLMs.
 Clean, simple, fast. Built with Textual.
 """
 
+from rich import box
+from rich.console import RenderableType
+from rich.table import Table
+from rich.text import Text
 from textual.app import App, ComposeResult, SystemCommand
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.widget import Widget
@@ -29,12 +33,14 @@ from textual import events, work
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.worker import get_current_worker
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 import asyncio
 import json
 import os
 import time
 import traceback
+from pathlib import Path
 from typing import Any, Callable, Literal, Optional
 from uuid import uuid4
 
@@ -44,7 +50,9 @@ from tau_coding_agent.backends import (
     RenderRouter,
     create_backend,
     make_model_resolver,
+    resolve_tool_names,
 )
+from tau_coding_agent.tagline import pick_tagline
 from tau_coding_agent.headless import _append_system_prompt, resolve_extensions_config
 
 # Session persistence lives in a Textual-free module so `tau -p` can save
@@ -101,7 +109,9 @@ from tau_agent_core.commands import (
 # host; these are the children it composes — one reasoning region and N tool
 # boxes — plus the exchange grouping used by the streaming state machine.
 from tau_coding_agent.chat_widgets import (
+    ContentSource,
     ExchangeBox,
+    MarkdownLineFormatter,
     ReasoningRegion,
     ToolBox,
     format_duration,
@@ -299,14 +309,24 @@ class LaneStrip(Static):
         self.update(summary)
 
 
-def render_panel_body(body: dict[str, Any]) -> str:
-    """Render a normalized ``ui.panel`` body dict to plain display text (E10 §6 / S68).
+def render_panel_body(body: dict[str, Any]) -> RenderableType:
+    """Render a normalized ``ui.panel`` body dict to the panel's body renderable (S68).
 
     Pure (no widget access) so it is unit-testable: given a ``{"kind": …}`` body from
-    :func:`~tau_agent_core.extension_types.validate_panel_spec` it returns the exact
-    text the panel's body :class:`Static` shows. ``text`` → the string as-is; ``list``
-    → one ``• item`` line per entry; ``table`` → a monospace grid (a header row, a rule
-    row, then the data rows) with every column padded to its widest cell.
+    :func:`~tau_agent_core.extension_types.validate_panel_spec` it returns what the
+    panel's body :class:`Static` shows. ``text`` → the string as-is; ``list`` → one
+    ``• item`` line per entry; ``table`` → a Rich :class:`~rich.table.Table` styled as
+    the same monospace grid (a header row, a rule row, then the data rows).
+
+    The table is a *renderable* rather than a pre-padded string because the width it
+    has to fit is not knowable here: the body ``Static`` is built in
+    :meth:`ExtensionPanel.compose`, before the compositor has given the panel a
+    region, and that region changes again on every terminal resize. A grid padded to
+    its widest cell overflows any panel narrower than the sum of those cells, and the
+    ``Static`` then soft-wraps it mid-row into unreadable fragments. A ``Table`` is
+    measured against the console width it is actually handed, so it divides that width
+    between the columns, wraps a cell that has somewhere to wrap, and marks one it had
+    to cut with an ellipsis.
     """
     kind = body["kind"]
     if kind == "text":
@@ -316,17 +336,20 @@ def render_panel_body(body: dict[str, Any]) -> str:
     # table
     columns: list[str] = body["columns"]
     rows: list[list[str]] = body["rows"]
-    widths = [len(col) for col in columns]
+    # SIMPLE_HEAD is the header rule and nothing else; its column divider is a space,
+    # which with the right padding reproduces the two-space gap of the old grid.
+    table = Table(
+        box=box.SIMPLE_HEAD,
+        show_edge=False,
+        pad_edge=False,
+        padding=(0, 1, 0, 0),
+        header_style=None,
+    )
+    for column in columns:
+        table.add_column(column)
     for row in rows:
-        for i, cell in enumerate(row):
-            widths[i] = max(widths[i], len(cell))
-
-    def _fmt(cells: list[str]) -> str:
-        return "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(cells))
-
-    lines = [_fmt(columns), _fmt(["─" * w for w in widths])]
-    lines.extend(_fmt(row) for row in rows)
-    return "\n".join(lines)
+        table.add_row(*row)
+    return table
 
 
 class _PanelActionButton(Button):
@@ -415,12 +438,34 @@ class ExtensionPanelHost(VerticalScroll):
     of the main area, so the chat flow is untouched when empty.
     """
 
+    class VisibilityChanged(Message):
+        """The host gained its first panel, or lost its last.
+
+        The host's own width is CSS (``#ext-panel-host``), but whether the SIDEBAR
+        also fits beside it is a decision about the whole row, so the app makes it
+        (``Parley._apply_side_columns``). This message is what tells the app the
+        row changed — posted from :meth:`set_panel` rather than read off
+        ``host.display`` on a timer, and posted by the host rather than by
+        ``Parley.set_extension_panel`` because a caller may hold the host directly.
+        """
+
+        def __init__(self, visible: bool) -> None:
+            super().__init__()
+            self.visible = visible
+
     def __init__(self) -> None:
         super().__init__(id="ext-panel-host")
         # Insertion-ordered {key: panel}; a dict preserves first-seen order so an
         # in-place update keeps a panel's column position.
         self._panels: dict[str, ExtensionPanel] = {}
         self.display = False
+
+    def _set_visible(self, visible: bool) -> None:
+        """Show/hide the host, announcing only an actual change of state."""
+        if self.display == visible:
+            return
+        self.display = visible
+        self.post_message(self.VisibilityChanged(visible))
 
     def set_panel(self, key: str, spec: dict[str, Any] | None) -> None:
         """Mount, update in place, or remove one keyed panel (E10 §6 / S68)."""
@@ -429,9 +474,9 @@ class ExtensionPanelHost(VerticalScroll):
             if panel is not None:
                 panel.remove()
             if not self._panels:
-                self.display = False
+                self._set_visible(False)
             return
-        self.display = True
+        self._set_visible(True)
         existing = self._panels.get(key)
         if existing is not None:
             # Update the SAME widget (order-stable). update_spec is async (mount /
@@ -470,6 +515,18 @@ class SystemPromptEditor(ModalScreen):
             self.dismiss(None)
 
 
+def _elide(text: str, width: int) -> str:
+    """``text`` cut to ``width`` cells, ending in ``…`` when anything was cut.
+
+    A width too small to hold even one character plus the marker returns the text
+    unchanged: a label elided to nothing tells the reader less than one that
+    overflows, and the caller can see the overflow.
+    """
+    if width < 2 or len(text) <= width:
+        return text
+    return text[: width - 1] + "…"
+
+
 class SessionTreeModal(ModalScreen[Optional[str]]):
     """Browse the conversation tree and pick a node to branch from (§3.2).
 
@@ -483,44 +540,168 @@ class SessionTreeModal(ModalScreen[Optional[str]]):
     rather than "where do we branch from?". One reused browser with a different
     caption, not a second widget: the tree, the leaf highlight and the key handling
     are identical, and only the sentence above them is not.
+
+    Rows sit beside a :class:`TreeDetailPane` showing the highlighted node in full
+    — the rows say *which* node, the pane says *what it is*. ``resolve_entry`` is
+    what makes that possible and is required: a browser that cannot show a body is
+    the elided-preview draft this replaced, not a degraded mode worth keeping.
     """
 
     BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    #: Terminal HEIGHT at or above which the detail pane is drawn. The pane is
+    #: stacked under the tree and takes half the body, so rows are what it can run
+    #: out of — width it always has all of. Its floor is the arrangement it exists
+    #: to produce: :attr:`TreeDetailPane.LEAD_ROWS` of the previous message, then
+    #: the selected box's top border and a line of its text. Below that the pane
+    #: can no longer say what it was added to say, and the rows are better spent
+    #: on tree nodes. Measured, not derived — 20 is where the pane first holds the
+    #: lead plus the selected box's top border and two lines of its text; at 18 it
+    #: is down to one line and at 16 to the border alone, which identifies a node
+    #: without showing it. ``test_detail_pane_min_height_is_where_the_floor_is``
+    #: re-measures this, so a later change to the split, the chrome or the title
+    #: block fails rather than silently drifting.
+    DETAIL_MIN_HEIGHT = 20
 
     def __init__(
         self,
         roots: list[TreeNode],
         *,
+        resolve_entry: Callable[[str], dict[str, Any]],
         title: str = "Browse Conversation Tree",
-        help_text: str = "Enter: branch from node    Esc: cancel",
+        help_text: str = "Enter: branch    Tab: detail pane    Esc: cancel",
     ) -> None:
         super().__init__()
         self._roots = roots
+        self._resolve_entry = resolve_entry
         self._title = title
         self._help_text = help_text
+        self._rows: list[tuple[Any, str, int]] = []
+        # id → node, and id → parent id, for the detail pane's neighbours. Built
+        # from the graph handed in, so the pane never re-walks the session log.
+        self._by_id: dict[str, TreeNode] = {}
+        self._parent_of: dict[str, str] = {}
+        self._depth_of: dict[str, int] = {}
+        for root in roots:
+            self._index(root, 0)
+
+    def _index(self, node: TreeNode, depth: int) -> None:
+        self._by_id[node.id] = node
+        self._depth_of[node.id] = depth
+        for child in node.children:
+            self._parent_of[child.id] = node.id
+            self._index(child, depth + 1)
 
     def compose(self) -> ComposeResult:
         with Container(id="tree-browser-dialog"):
             yield Static(self._title, id="tree-browser-title")
-            tree: Tree[str] = Tree("session", id="tree-browser-tree")
-            tree.show_root = False
-            yield tree
+            # Stacked, not side by side: both halves are wrapped text, and a
+            # column split starves both of the width they need (see the
+            # `#tree-browser-body` rule in parley.tcss).
+            with Vertical(id="tree-browser-body"):
+                tree: Tree[str] = Tree("session", id="tree-browser-tree")
+                tree.show_root = False
+                yield tree
+                yield TreeDetailPane(self._resolve_entry)
             yield Static(self._help_text, id="tree-browser-help")
 
+    # -- the detail pane's window on the tree --------------------------------
+
+    # ``DetailView``/``TreeDetailPane`` are defined further down the module (they
+    # build on ``MessageBox``, which builds on nothing here); quoted because this
+    # file does not use postponed annotation evaluation.
+    def _view_of(self, node_id: str) -> "DetailView | None":
+        """The three-node window around ``node_id``, or ``None`` if unknown.
+
+        ``None`` rather than a raise: ``Tree.NodeHighlighted`` also fires for the
+        widget's own hidden root, whose ``data`` is ``None`` and which names no
+        conversation node at all.
+        """
+        selected = self._by_id.get(node_id)
+        if selected is None:
+            return None
+        parent_id = self._parent_of.get(node_id)
+        previous = self._by_id.get(parent_id) if parent_id is not None else None
+        # The oldest child (``ConversationTree.tree`` sorts children by
+        # timestamp), which is the message that actually followed this one in
+        # time. A later sibling is a *branch*, counted separately rather than
+        # silently chosen as "the" next message.
+        following = selected.children[0] if selected.children else None
+        return DetailView(
+            selected=selected,
+            previous=previous,
+            following=following,
+            earlier=self._depth_of[previous.id] if previous is not None else 0,
+            later=self._subtree_size(following) - 1 if following is not None else 0,
+            branches=len(selected.children),
+        )
+
+    @staticmethod
+    def _subtree_size(node: TreeNode) -> int:
+        total = 0
+        stack = [node]
+        while stack:
+            current = stack.pop()
+            total += 1
+            stack.extend(current.children)
+        return total
+
+    async def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
+        """Move the detail pane to whatever the cursor now sits on."""
+        await self._show_node(event.node.data)
+
+    async def _show_cursor_node(self) -> None:
+        """Draw the pane for wherever the cursor already is.
+
+        ``Tree`` posts ``NodeHighlighted`` only when ``cursor_line`` *changes*, so
+        a session whose current leaf is also the first row — a conversation with
+        no branches yet, which is most of them — never emits one, and the pane
+        would open blank next to a highlighted row. Called once after the initial
+        layout; :meth:`TreeDetailPane.show` dedupes it against the event that a
+        session with a deeper leaf does emit.
+        """
+        node = self.query_one("#tree-browser-tree", Tree).cursor_node
+        await self._show_node(None if node is None else node.data)
+
+    async def _show_node(self, node_id: object) -> None:
+        pane = self.query_one(TreeDetailPane)
+        if not pane.display:
+            return
+        view = None if node_id is None else self._view_of(str(node_id))
+        if view is not None:
+            await pane.show(view)
+
+    def _apply_detail_pane(self) -> None:
+        """Show or hide the pane for the current height (see :attr:`DETAIL_MIN_HEIGHT`).
+
+        The one place the pane's ``display`` is written, mirroring
+        ``Parley._apply_side_columns``: an inline style set from two places is
+        permanent and invisible to the other.
+        """
+        pane = self.query_one(TreeDetailPane)
+        pane.display = self.app.size.height >= self.DETAIL_MIN_HEIGHT
+
     def on_mount(self) -> None:
+        self._apply_detail_pane()
         tree = self.query_one("#tree-browser-tree", Tree)
         leaf_widget: list[Any] = []
+        # (widget node, full label, depth) for every row, kept so _relabel can
+        # re-elide from the untruncated text on every resize. Eliding an already
+        # elided label would eat a character per resize.
+        self._rows = []
 
-        def _add(parent, node: TreeNode) -> None:
-            widget_node = parent.add(self._label(node), data=node.id)
+        def _add(parent, node: TreeNode, depth: int) -> None:
+            label = self._label(node)
+            widget_node = parent.add(label, data=node.id)
             widget_node.expand()
+            self._rows.append((widget_node, label, depth))
             if node.is_leaf:
                 leaf_widget.append(widget_node)
             for child in node.children:
-                _add(widget_node, child)
+                _add(widget_node, child, depth + 1)
 
         for root in self._roots:
-            _add(tree.root, root)
+            _add(tree.root, root, 0)
 
         # Highlight the current leaf (pi passes realLeafId to the selector). Defer
         # until after the first refresh — a node's ``line`` (which ``move_cursor``
@@ -528,7 +709,39 @@ class SessionTreeModal(ModalScreen[Optional[str]]):
         if leaf_widget:
             leaf_node = leaf_widget[0]
             tree.call_after_refresh(tree.move_cursor, leaf_node)
+        # Same reason: the tree has no width yet, so the labels cannot be sized
+        # to it until it has laid out at least once.
+        tree.call_after_refresh(self._relabel)
+        tree.call_after_refresh(self._show_cursor_node)
         tree.focus()
+
+    def on_resize(self, event: object) -> None:
+        self._apply_detail_pane()
+        self._relabel()
+
+    def _relabel(self) -> None:
+        """Fit every row's label to the tree's current width.
+
+        ``textual.widgets.Tree`` renders one physical line per node and does not
+        wrap, so a preview longer than the row is not shortened — it runs off the
+        edge and the tree grows a horizontal scrollbar, which is a poor way to
+        read a sentence. Eliding puts the truncation where the reader can see it.
+
+        An elided preview is a preview the reader cannot finish, which is what
+        :class:`TreeDetailPane` beside these rows is for: the row identifies the
+        node, the pane shows it whole and wrapped.
+        """
+        if not self._rows:
+            return
+        tree = self.query_one("#tree-browser-tree", Tree)
+        width = tree.content_size.width
+        if width <= 0:
+            return
+        for widget_node, label, depth in self._rows:
+            # Textual indents each level by ``guide_depth`` cells and prefixes the
+            # row with a toggle; both eat into the label's share of the line.
+            available = width - (depth + 1) * tree.guide_depth
+            widget_node.set_label(_elide(label, available))
 
     @staticmethod
     def _label(node: TreeNode) -> str:
@@ -970,6 +1183,15 @@ ROLE_LABELS: dict[str, str] = {
     "webhook": "Webhook",
     "voice": "Voice",
     "agent": "Sub-agent",
+    # Session-log entry kinds that are NOT messages. They never appear in the
+    # transcript — nothing produces one as a turn — but the tree browser's detail
+    # pane (:class:`TreeDetailPane`) draws them in the same boxes, and the same
+    # ``role.capitalize()`` fallthrough would title them "Branch_summary".
+    "compaction": "Compaction",
+    "branch_summary": "Branch summary",
+    "navigate": "Navigate",
+    "elide": "Elide",
+    "customEntry": "Entry",
 }
 
 #: CSS class worn by every widget belonging to a lane this frontend did not
@@ -1055,22 +1277,48 @@ class MessageBox(Static):
 
     A box may start as ``role="pending"`` and be *resolved* in place via
     :meth:`set_role` without re-mounting, preserving true arrival order.
+
+    ``source`` says what the body text IS — an assistant's markdown, or verbatim
+    line-oriented output (a tool result, a traceback, what a user typed). It is
+    required, because only the caller knows, and the two are rendered differently
+    (see :class:`MarkdownLineFormatter`). It is deliberately NOT derived from
+    ``role``: ``set_role`` retypes a box in place, and a box's text does not
+    change kind when its label does.
     """
 
-    def __init__(self, role: str, content: str = "", subtitle: str = ""):
+    def __init__(
+        self,
+        role: str,
+        content: str = "",
+        subtitle: str = "",
+        *,
+        source: ContentSource,
+    ):
         super().__init__(classes=f"chat-message box-{role}")
         self.role = role
         self._content = content
         self._subtitle = subtitle
+        self._source = source
         self._reasoning: ReasoningRegion | None = None
         self._tool_boxes: dict[str, ToolBox] = {}
         # Lazily created by append_content_delta on the first streamed delta
         # once the inner Markdown has composed; see append_content_delta/finish_stream.
         self._stream: MarkdownStream | None = None
+        # Carries fenced-code-block state across streamed deltas. Reset by
+        # _format, which re-seats it from a whole document.
+        self._formatter = MarkdownLineFormatter(self._source)
 
     def _format(self, content: str) -> str:
-        # Preserve single newlines as paragraph breaks for Markdown.
-        return content.replace("\n", "\n\n")
+        """Format a WHOLE body, and re-seat the streaming formatter to match.
+
+        Every caller of this method replaces the entire document (``on_mount``
+        catching up a pre-mount buffer, ``update_content`` swapping the body), so
+        the incremental state has to restart from the same text — otherwise a
+        delta appended afterwards would continue from a fence state belonging to
+        text that is no longer there.
+        """
+        self._formatter = MarkdownLineFormatter(self._source)
+        return self._formatter.feed(content)
 
     def compose(self) -> ComposeResult:
         # Three stacked slots: reasoning (lazy), the text body, tool boxes (lazy).
@@ -1106,9 +1354,10 @@ class MessageBox(Static):
         # "physical line count", whereas Markdown.append() derives it from the
         # actual parse tree (the start line of the last still-open top-level
         # block). These disagree whenever the seeded text ends with a
-        # construct spanning more than one physical line as ONE block (a
-        # still-open fenced code block survives _format's blanket "\n"->"\n\n"
-        # doubling, since a blank line inside a fence doesn't close it) -- a
+        # construct spanning more than one physical line as ONE block -- a
+        # still-open fenced code block is the everyday case, and _format now
+        # leaves its interior newlines alone, so it stays one multi-line block --
+        # a
         # later append_content_delta would then reparse from update()'s wrong
         # line offset and *replace* the block already rendered, silently
         # dropping the earlier text (same failure mode verified directly on
@@ -1151,13 +1400,11 @@ class MessageBox(Static):
 
         Uses ``Markdown.get_stream``/``MarkdownStream.write`` (Textual 8.2.7),
         appending instead of the reparse+remount-everything ``update_content``/
-        ``Markdown.update()`` does. ``_format()`` is a stateless single-character
-        replace (``"\\n"`` -> ``"\\n\\n"``) with no cross-character lookaround, so
-        it distributes over concatenation: ``_format(a) + _format(b) ==
-        _format(a + b)`` for any split point. Formatting each delta on its own
-        before appending therefore produces the identical document a whole-text
-        ``update_content(self._content)`` would, even when a delta splits mid
-        newline.
+        ``Markdown.update()`` does. Each delta is formatted by the box's
+        :class:`MarkdownLineFormatter`, which carries fenced-code-block state
+        forward across calls; feeding it one delta at a time therefore produces
+        the identical document a whole-text ``update_content(self._content)``
+        would, even when a delta splits mid newline or mid fence marker.
 
         ``self._content`` is kept in sync on every call (not just a throttled
         tick) so ``content_text``/``update_content``'s equality guard stay
@@ -1175,7 +1422,7 @@ class MessageBox(Static):
             return
         if self._stream is None:
             self._stream = Markdown.get_stream(self._md_widget)
-        await self._stream.write(self._format(delta))
+        await self._stream.write(self._formatter.feed(delta))
 
     async def finish_stream(self) -> None:
         """Stop this box's open content stream, if any.
@@ -1311,7 +1558,7 @@ class ChatSidebar(Container):
 
     def compose(self) -> ComposeResult:
         """Compose sidebar contents."""
-        yield Static("Parley", classes="sidebar-title")
+        yield Static("τ", classes="sidebar-title")
         yield Button("+ New Chat", id="new-chat-button", variant="primary")
 
         with VerticalScroll(id="chat-list"):
@@ -1495,7 +1742,455 @@ class _LaneRender:
         self.tool_routes: dict[str, MessageBox] = {}
 
 
-class ChatDisplay(VerticalScroll):
+def _display_path(path: Path) -> str:
+    """``path`` with ``$HOME`` collapsed to ``~``, for display only.
+
+    Purely cosmetic, and never fed back to anything that opens a file — the whole
+    point is that ``~/Development/agent-harness-py`` fits the chat column where
+    the absolute path may not. A path outside ``$HOME`` is returned unchanged.
+    """
+    try:
+        return f"~/{path.relative_to(Path.home())}"
+    except ValueError:
+        return str(path)
+
+
+#: The parenthetical for an empty tool row, keyed by the resolved ``no_tools``
+#: policy. The two flags are NOT interchangeable to a reader of this row: under
+#: ``--no-tools`` the next turn has nothing at all, while under
+#: ``--no-builtin-tools`` an extension may still be offering tools this row does
+#: not list (it states the built-ins, which is all ``resolve_tool_names`` knows).
+_NO_TOOLS_REASON: dict[str, str] = {
+    "all": "none (--no-tools)",
+    "builtin": "none (--no-builtin-tools)",
+}
+
+
+def _tools_row(model_config: dict[str, Any]) -> str:
+    """Render the pane's ``tools`` row for one resolved model config.
+
+    Names the flag that emptied the list rather than guessing one. Before this,
+    the row said ``--no-builtin-tools`` for every empty set — including under
+    ``--no-tools``, and including a ``"tools": []`` the config file itself
+    declared, neither of which that flag caused. A config-declared empty set now
+    reads as a plain ``none``: true, and not attributed to a flag nobody passed.
+    """
+    names = resolve_tool_names(model_config)
+    if names:
+        return " ".join(names)
+    return _NO_TOOLS_REASON.get(str(model_config.get("no_tools")), "none")
+
+
+@dataclass(frozen=True)
+class SessionFacts:
+    """What the empty chat pane states, already resolved to display strings.
+
+    Everything here is *configuration*, never a probe: ``endpoint`` is the URL τ
+    will post to, not a URL it has reached. Showing a reachability tick nothing
+    verified is the failure this type is shaped to avoid — the pane can be honest
+    about what it was told without pretending to know what it was not.
+    """
+
+    #: One line under the τ. Constant unless ``--fun`` is on (see
+    #: :mod:`tau_coding_agent.tagline`).
+    tagline: str
+    #: The model id that goes on the wire, e.g. ``qwen36-35B-IQ4_XS``.
+    model: str
+    #: Where it goes: a ``base_url`` when the entry has one, else the backend name
+    #: (``anthropic``/``gemini`` entries address their own endpoints).
+    endpoint: str
+    #: The working directory every ``read``/``write``/``bash`` call is relative
+    #: to, with ``$HOME`` collapsed to ``~``.
+    cwd: str
+    #: What the next turn's tool set is, already rendered: the resolved built-in
+    #: names space-separated, or — when there are none — ``none`` naming the flag
+    #: that emptied it (``--no-tools`` withholds extension tools too;
+    #: ``--no-builtin-tools`` does not). An empty tool set is a fact worth
+    #: reading, not a blank row, and WHICH flag produced it is the fact.
+    #: Empty string only when there is no resolvable model entry to ask.
+    tools: str
+    #: The session store this chat will be written to.
+    store: str
+
+
+class ChatPlaceholder(Static):
+    """What the chat column says before the first message (handoff §4.4).
+
+    Not a greeting. The header already says ``Tau``, the footer already lists the
+    keybindings, and the sidebar already says whether there are saved sessions —
+    so the one thing this frame can add is the **configuration the next turn will
+    run against**, which nothing else on screen states. A wrong ``base_url`` or a
+    missing ``bash`` is otherwise discovered after a prompt is typed and a
+    timeout elapses.
+
+    It also carries the one line of identity: the τ and its tagline. That is here
+    rather than in a splash because this frame IS the screenshot — the README and
+    the docs header render exactly this, for a reader who has never run τ.
+
+    Deliberately NOT here: rotating startup tips. A tip that changes on the next
+    ``ctrl+n`` cannot be found again, restates a footer that is three rows below,
+    and makes the pane non-deterministic — which would break the SVG snapshot
+    suite and ``devshot``. The single fixed hint below explains a footer key
+    (``ctrl+g``) instead of repeating it.
+    """
+
+    #: Width of the label gutter. ``store`` is the longest label at 5, so 9 leaves
+    #: four spaces before the value column.
+    LABEL_WIDTH = 9
+
+    def __init__(self, facts: SessionFacts) -> None:
+        super().__init__(id="chat-placeholder")
+        self._facts = facts
+
+    def update_facts(self, facts: SessionFacts) -> None:
+        """Re-state the pane against ``facts``.
+
+        Called by :meth:`ChatDisplay._sync_placeholder` every time the pane
+        becomes visible, because the model can change (``/model``, a resumed
+        session) while the chat is empty. Re-reading on show — rather than
+        snapshotting once at construction — is what keeps a visible fact true.
+        """
+        self._facts = facts
+        self.refresh()
+
+    def render(self) -> RenderableType:
+        """Rebuild the pane from :attr:`_facts`.
+
+        ``render`` rather than a stored renderable, so :meth:`update_facts` only
+        has to swap the dataclass and call ``refresh()`` — there is no second copy
+        of the text to keep in step.
+        """
+        f = self._facts
+        rows = [
+            ("model", f.model),
+            ("", f.endpoint),
+            ("cwd", f.cwd),
+            # ``_session_facts`` has already named the flag; the bare "none" is
+            # only reachable from the unresolvable-model branch, which has no
+            # config to attribute it to.
+            ("tools", f.tools or "none"),
+            ("store", f.store),
+        ]
+        body = Text(justify="left")
+        body.append("τ\n", style="bold")
+        body.append(f.tagline + "\n\n", style="dim")
+        for label, value in rows:
+            # `dim` rather than a hex literal: it composes with whatever color the
+            # stylesheet gives this widget, so the label/value hierarchy survives a
+            # future theme swap without a second palette living in Python.
+            body.append(f"{label:<{self.LABEL_WIDTH}}", style="dim")
+            body.append(value + "\n")
+        body.append("\nCtrl+Enter sends · Ctrl+P commands\n", style="dim")
+        body.append(
+            "Ctrl+G opens the session tree, where you can branch from any earlier message.",
+            style="dim",
+        )
+        return body
+
+
+class MessageList(VerticalScroll):
+    """A scrollable column of :class:`MessageBox` widgets, and how to fill it.
+
+    The two renderers every transcript view shares: :meth:`add_message` (one
+    finished box) and :meth:`add_persisted_message` (one τ on-disk message, which
+    may be several boxes). :class:`ChatDisplay` adds the live streaming state
+    machine on top; :class:`TreeDetailPane` adds nothing but a scroll position.
+
+    It is a base class rather than a helper function because the boxes must be
+    CHILDREN of the scrolling widget, and because ``.chat-message`` styling is
+    written against that containment — the detail pane looks like the chat view
+    for the reason that it *is* the chat view's renderer, not because a second
+    implementation was kept in step by hand.
+    """
+
+    def add_message(self, role: str, content: str, subtitle: str = "", *, source: ContentSource):
+        """Add a finished (non-streaming) message box to the display.
+
+        ``source`` is passed straight through to :class:`MessageBox` and is
+        required for the same reason it is required there: only this caller knows
+        whether it is handing over an assistant's markdown or verbatim output.
+        """
+        box = MessageBox(role, content, subtitle, source=source)
+        self.mount(box)
+        self.scroll_end(animate=False)
+        return box
+
+    def add_persisted_message(self, msg: dict) -> list[MessageBox]:
+        """Render one *persisted* message (from a saved chat) in arrival order.
+
+        Unlike the live path — driven by streaming lifecycle events — a reloaded
+        message carries its content as the τ on-disk shape: a plain string
+        (user/system), or a list of block dicts (assistant: ``text`` +
+        ``toolCall`` blocks; ``toolResult``: a separate role with ``text`` blocks
+        plus top-level ``tool_name``/``is_error``). Each block becomes the SAME
+        ``MessageBox`` kind the live path would have produced — a ``str``-only
+        renderer here is exactly the bug that froze the TUI on chat reload, so we
+        normalize instead of handing a list to ``MessageBox``.
+
+        Returns every box it mounted, in order, because one message is not one
+        box: an assistant turn that interleaves text and tool calls becomes
+        several, and a caller that has to style or scroll to "that message"
+        (:class:`TreeDetailPane`) needs all of them, not the first.
+
+        Raises ``TypeError`` on an unrenderable content shape rather than
+        silently dropping it (Fail-Early): an unexpected shape is a real bug.
+        """
+        role = msg.get("role", "")
+
+        # toolResult is its own message role; the tool name + error flag live at
+        # the message level, the result text in `text` blocks.
+        if role == "toolResult":
+            result_text = _join_text_blocks(msg.get("content", []))
+            box = self.add_message(
+                "toolResult",
+                format_tool_result_body(
+                    msg.get("tool_name", ""),
+                    result_text,
+                    bool(msg.get("is_error", False)),
+                ),
+                source="verbatim",
+            )
+            if msg.get("is_error"):
+                box.add_class("box-error")
+            return [box]
+
+        # A bare-string body is the on-disk shape for a user or system turn —
+        # literal text nobody wrote as markdown — and, for an assistant turn, the
+        # answer markdown it authored.
+        text_source: ContentSource = "markdown" if role == "assistant" else "verbatim"
+
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            return [self.add_message(role, content, source=text_source)]
+        if isinstance(content, list):
+            # Assistant turns interleave text and tool calls. Accumulate text
+            # into one box, flushing it before each tool call so order is kept
+            # (text-then-call renders as two boxes, the call after the text).
+            boxes: list[MessageBox] = []
+            text_buf: list[str] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "text":
+                    text_buf.append(block.get("text", ""))
+                elif btype == "toolCall":
+                    if text_buf:
+                        boxes.append(self.add_message(role, "".join(text_buf), source=text_source))
+                        text_buf = []
+                    boxes.append(
+                        self.add_message(
+                            "toolCall",
+                            format_tool_call_body(
+                                block.get("name", ""), block.get("arguments", {})
+                            ),
+                            source="verbatim",
+                        )
+                    )
+            if text_buf:
+                boxes.append(self.add_message(role, "".join(text_buf), source=text_source))
+            return boxes
+
+        raise TypeError(f"cannot render persisted message content of type {type(content).__name__}")
+
+
+@dataclass(frozen=True)
+class DetailView:
+    """The window of conversation the tree browser's detail pane shows.
+
+    Three nodes at most — the selected one and its two conversational neighbours
+    — plus counts of what lies beyond them, which is all the ``⋯`` rows need to
+    say something true. Computed by :meth:`SessionTreeModal._view_of` from the
+    ``TreeNode`` graph alone; the pane resolves the bodies.
+    """
+
+    selected: TreeNode
+    previous: TreeNode | None
+    following: TreeNode | None
+    #: Ancestors strictly above ``previous`` (0 → the fold marker is not drawn).
+    earlier: int
+    #: Descendants strictly below ``following`` along the whole subtree.
+    later: int
+    #: Children of ``selected``, when more than one — a fork below the cursor.
+    branches: int
+
+
+class TreeDetailPane(MessageList):
+    """The tree browser's right-hand pane: the selected node, in full, in context.
+
+    The browser row is one elided line, which answers "which node is this?" and
+    not "is this the one I meant?". This pane answers the second question with
+    the SAME renderer the transcript uses (:class:`MessageList`), so a node reads
+    here exactly as it read in the chat — collapsibles and all, since the boxes
+    are real :class:`MessageBox` widgets and a tool box or reasoning region in
+    one can be opened.
+
+    Only three nodes are mounted at a time. That is not a performance hedge that
+    trades away completeness — a tree browser's neighbours are the PARENT and a
+    CHILD, and moving between forks replaces both, so a full-conversation list
+    would be rewritten on most moves anyway. ``⋯ N earlier`` / ``⋯ N later`` rows
+    state what is not drawn instead of implying the conversation is three
+    messages long.
+
+    The neighbours wear ``detail-context``, which desaturates their border and
+    body while keeping the per-role hue: the reader still sees "user above,
+    assistant below" without those boxes competing with the selection.
+    """
+
+    #: Rows of the previous message kept on screen above the selection. Enough to
+    #: show its closing border and a line of its tail, so the selected box reads
+    #: as following something rather than starting the pane.
+    LEAD_ROWS = 3
+
+    def __init__(self, resolve_entry: Callable[[str], dict[str, Any]]) -> None:
+        super().__init__(id="tree-detail")
+        #: id → raw session entry. The pane needs bodies, which ``TreeNode`` does
+        #: not carry (see ``ConversationTree.entry``); injected rather than
+        #: imported so the modal's caller decides what log is being browsed.
+        self._resolve_entry = resolve_entry
+        self._shown_id: str | None = None
+        self._selected_boxes: list[MessageBox] = []
+        #: A rebuild is waiting to be scrolled into place. Cleared by
+        #: :meth:`_scroll_to_selection` once the layout it needs actually exists.
+        self._position_pending = False
+
+    async def show(self, view: DetailView) -> None:
+        """Rebuild the pane for ``view`` and scroll the selection into place.
+
+        A repeat of the node already shown is a no-op — Textual re-emits
+        ``NodeHighlighted`` on events that do not move the cursor (a click on the
+        current row, a re-focus), and rebuilding on those would drop the reader's
+        scroll position and any collapsible they had opened.
+        """
+        if view.selected.id == self._shown_id:
+            return
+        self._shown_id = view.selected.id
+        await self.remove_children()
+        self._selected_boxes = []
+
+        if view.earlier:
+            await self.mount(self._fold_row(f"⋯ {view.earlier} earlier"))
+        if view.previous is not None:
+            self._dim(self._render_node(view.previous))
+        self._selected_boxes = self._render_node(view.selected)
+        if view.following is not None:
+            self._dim(self._render_node(view.following))
+        trailer = self._trailer(view)
+        if trailer:
+            await self.mount(self._fold_row(trailer))
+
+        # Positioning needs measured heights, which exist only after a layout.
+        self._position_pending = True
+        self.call_after_refresh(self._scroll_to_selection)
+
+    def _size_updated(self, size, virtual_size, container_size, layout: bool = True) -> bool:
+        """Take the second chance at positioning, once the layout is real.
+
+        The ``call_after_refresh`` in :meth:`show` is not reliably late enough:
+        the boxes it mounted may still be unmeasured on that tick, and a scroll
+        against a zero ``max_scroll_y`` clamps to the top and silently does
+        nothing — leaving the selection under a long previous message, which is
+        the one arrangement the pane exists to prevent. This hook is where
+        ``ScrollView`` learns its virtual size, so it is the earliest point at
+        which the answer can be right. Both paths run; whichever finds a measured
+        layout first clears the flag and the other becomes a no-op.
+        """
+        changed = super()._size_updated(size, virtual_size, container_size, layout)
+        if self._position_pending:
+            self._scroll_to_selection()
+        return changed
+
+    @staticmethod
+    def _trailer(view: DetailView) -> str:
+        """The bottom ``⋯`` row's text, or ``""`` when nothing is below.
+
+        A fork is reported separately from the count because it is a different
+        fact: ``later`` says how much conversation is hidden, ``branches`` says
+        that the node the reader is looking at is where the history splits, which
+        is usually why they opened this browser at all.
+        """
+        parts = []
+        if view.branches > 1:
+            parts.append(f"{view.branches} branches from here")
+        if view.later:
+            parts.append(f"{view.later} later")
+        return f"⋯ {', '.join(parts)}" if parts else ""
+
+    @staticmethod
+    def _fold_row(text: str) -> Static:
+        return Static(text, classes="detail-fold")
+
+    @staticmethod
+    def _dim(boxes: list[MessageBox]) -> None:
+        for message_box in boxes:
+            message_box.add_class("detail-context")
+
+    def _render_node(self, node: TreeNode) -> list[MessageBox]:
+        """One tree node as the boxes the transcript would have drawn for it.
+
+        Three kinds of payload, handled explicitly rather than by a single
+        ``preview`` shortcut, because the pane exists to show more than the row
+        already did:
+
+        - a ``message``/``customMessage`` carries a real message — rendered by
+          the shared :meth:`~MessageList.add_persisted_message`, so an assistant
+          turn arrives with its tool boxes attached;
+        - a ``compaction``/``branch_summary`` carries a ``summary``, of which the
+          row showed only the first line — the whole text is drawn here;
+        - anything else (``navigate``, ``elide``, ``customEntry``) has no body
+          beyond what ``ConversationTree`` already composed into ``preview``, so
+          that IS the full text, not a truncation of one.
+        """
+        entry = self._resolve_entry(node.id)
+        kind = str(entry.get("type", "")) or node.kind
+        if kind in ("message", "customMessage"):
+            message = entry.get("message")
+            if isinstance(message, dict):
+                return self.add_persisted_message(message)
+        if kind in ("compaction", "branch_summary"):
+            return [self.add_message(kind, str(entry.get("summary", "")), source="verbatim")]
+        return [self.add_message(kind, node.preview, source="verbatim")]
+
+    def _scroll_to_selection(self) -> None:
+        """Put the selected node's top edge :attr:`LEAD_ROWS` below the pane top.
+
+        Not ``scroll_to_widget(top=True)``: that would park the selection flush
+        against the pane's top edge and scroll the previous message entirely out,
+        which is the one thing the layout is supposed to prevent. Scrolling to an
+        absolute virtual row instead means a short previous message (nothing to
+        scroll past) and a very long one land in the same place.
+
+        Returns without clearing :attr:`_position_pending` when the boxes have no
+        measured height yet — the position is not yet knowable, and guessing at it
+        would put the selection somewhere arbitrary. :meth:`_size_updated` calls
+        back when the layout lands.
+        """
+        if not self._selected_boxes:
+            self._position_pending = False
+            return
+        selected = self._selected_boxes[0]
+        if not selected.virtual_region.height:
+            return
+        self._position_pending = False
+        self.scroll_to(y=max(0, selected.virtual_region.y - self.LEAD_ROWS), animate=False)
+
+    @property
+    def selected_boxes(self) -> list[MessageBox]:
+        """The boxes drawn for the selected node (the undimmed ones)."""
+        return list(self._selected_boxes)
+
+    @property
+    def shown_id(self) -> str | None:
+        """The node currently drawn, or ``None`` before the first :meth:`show`.
+
+        Public so a caller can wait for the pane to catch up with the tree rather
+        than guess at how many event-loop turns that takes — the pane's draw is
+        two deferred callbacks behind a cursor move.
+        """
+        return self._shown_id
+
+
+class ChatDisplay(MessageList):
     """Main chat display area with incremental, arrival-ordered rendering.
 
     One user→answer span is an **exchange**, and each concurrently-streaming turn
@@ -1527,13 +2222,65 @@ class ChatDisplay(VerticalScroll):
     list is a separate concern.
     """
 
-    def __init__(self):
+    def __init__(self, facts: Callable[[], SessionFacts] | None = None):
         super().__init__(id="chat-display")
         # Per-LANE streaming state (B3-a). One entry per concurrently-streaming
         # turn; created on demand so an event for a lane nobody opened still
         # renders (the pre-B3-a defensive path, where a step with no exchange
         # mounts at top level) instead of vanishing.
         self._lanes: dict[str, _LaneRender] = {}
+        # A CALLABLE, not a snapshot: the model can change (/model, a resumed
+        # session) while the chat is empty, and a pane stating last hour's model
+        # is worse than no pane. Called on each show, which is rare.
+        #
+        # Optional because a bare renderer harness legitimately has no empty
+        # state — two test apps mount a ChatDisplay purely to assert what
+        # add_message produced. `None` composes no placeholder at all rather than
+        # inventing facts nobody supplied.
+        self._facts_source = facts
+        self._placeholder: ChatPlaceholder | None = None
+
+    def compose(self) -> ComposeResult:
+        """Compose the placeholder, when this display has facts to state.
+
+        Yielded rather than mounted, so it does not pass through :meth:`mount` —
+        which would re-enter :meth:`_sync_placeholder` before the attribute it
+        reads is assigned.
+        """
+        if self._facts_source is not None:
+            self._placeholder = ChatPlaceholder(self._facts_source())
+            yield self._placeholder
+
+    def _sync_placeholder(self) -> None:
+        """Show the placeholder exactly while this display holds no messages.
+
+        **Derived from the DOM, never told.** Every caller that adds or removes
+        content would otherwise have to remember to update a flag, and the one
+        that forgot would leave the pane visible under a live transcript. Asking
+        the tree what is in it cannot go stale — the only failure mode left is a
+        missed call, which is why ``test_chat_placeholder.py`` asserts the state
+        after every public entry point.
+        """
+        placeholder = self._placeholder
+        if placeholder is None:
+            return
+        has_content = bool(self.query(MessageBox)) or bool(self.query(ExchangeBox))
+        placeholder.display = not has_content
+        if not has_content:
+            placeholder.update_facts(self._facts_source())  # type: ignore[misc]
+
+    def mount(self, *widgets: Widget, before=None, after=None):
+        """Mount children, then re-decide whether the placeholder still applies.
+
+        The structural hook for "content arrived": every box that enters this
+        display directly — :meth:`MessageList.add_message`, :meth:`begin_exchange`,
+        the defensive top-level step path — goes through here. Overriding one
+        method beats sprinkling a sync call through five call sites and finding
+        out later which one was missed.
+        """
+        result = super().mount(*widgets, before=before, after=after)
+        self._sync_placeholder()
+        return result
 
     async def clear_messages(self):
         """Clear all messages from display and reset streaming state.
@@ -1555,9 +2302,13 @@ class ChatDisplay(VerticalScroll):
             if box.reasoning is not None:
                 await box.reasoning.finish_stream()
             await box.finish_stream()
-        self.query(ExchangeBox).remove()
-        self.query(MessageBox).remove()
+        await self.query(ExchangeBox).remove()
+        await self.query(MessageBox).remove()
         self._lanes = {}
+        # The "content left" half of the pair with :meth:`mount`. Awaiting the two
+        # removals above is what makes this correct rather than racy: _sync reads
+        # the DOM, so it has to run after the nodes are actually gone.
+        self._sync_placeholder()
 
     def _lane(self, lane: str) -> _LaneRender:
         """This lane's render state, created on demand.
@@ -1583,75 +2334,6 @@ class ChatDisplay(VerticalScroll):
         """
         state = self._lanes.get(lane)
         return None if state is None else state.active_box
-
-    def add_message(self, role: str, content: str, subtitle: str = ""):
-        """Add a finished (non-streaming) message box to the display."""
-        box = MessageBox(role, content, subtitle)
-        self.mount(box)
-        self.scroll_end(animate=False)
-        return box
-
-    def add_persisted_message(self, msg: dict) -> None:
-        """Render one *persisted* message (from a saved chat) in arrival order.
-
-        Unlike the live path — driven by streaming lifecycle events — a reloaded
-        message carries its content as the τ on-disk shape: a plain string
-        (user/system), or a list of block dicts (assistant: ``text`` +
-        ``toolCall`` blocks; ``toolResult``: a separate role with ``text`` blocks
-        plus top-level ``tool_name``/``is_error``). Each block becomes the SAME
-        ``MessageBox`` kind the live path would have produced — a ``str``-only
-        renderer here is exactly the bug that froze the TUI on chat reload, so we
-        normalize instead of handing a list to ``MessageBox``.
-
-        Raises ``TypeError`` on an unrenderable content shape rather than
-        silently dropping it (Fail-Early): an unexpected shape is a real bug.
-        """
-        role = msg.get("role", "")
-
-        # toolResult is its own message role; the tool name + error flag live at
-        # the message level, the result text in `text` blocks.
-        if role == "toolResult":
-            result_text = _join_text_blocks(msg.get("content", []))
-            box = self.add_message(
-                "toolResult",
-                format_tool_result_body(
-                    msg.get("tool_name", ""),
-                    result_text,
-                    bool(msg.get("is_error", False)),
-                ),
-            )
-            if msg.get("is_error"):
-                box.add_class("box-error")
-            return
-
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            self.add_message(role, content)
-            return
-        if isinstance(content, list):
-            # Assistant turns interleave text and tool calls. Accumulate text
-            # into one box, flushing it before each tool call so order is kept
-            # (text-then-call renders as two boxes, the call after the text).
-            text_buf: list[str] = []
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                btype = block.get("type")
-                if btype == "text":
-                    text_buf.append(block.get("text", ""))
-                elif btype == "toolCall":
-                    if text_buf:
-                        self.add_message(role, "".join(text_buf))
-                        text_buf = []
-                    self.add_message(
-                        "toolCall",
-                        format_tool_call_body(block.get("name", ""), block.get("arguments", {})),
-                    )
-            if text_buf:
-                self.add_message(role, "".join(text_buf))
-            return
-
-        raise TypeError(f"cannot render persisted message content of type {type(content).__name__}")
 
     # ------------------------------------------------------------------
     # Streaming state machine (driven by backends.RenderRouter's lane events)
@@ -1716,7 +2398,7 @@ class ChatDisplay(VerticalScroll):
         itself, not only on the enclosing exchange, or a reader scrolling past a
         collapsed summary reads a sub-agent's text as the main line's.
         """
-        box = MessageBox("assistant", "", state.label or "")
+        box = MessageBox("assistant", "", state.label or "", source="markdown")
         if state.label is not None:
             box.add_class(LANE_FOREIGN_CLASS)
         if state.exchange is not None:
@@ -1975,7 +2657,7 @@ class ChatDisplay(VerticalScroll):
         answer arriving there unbadged is the one place a sub-agent's text could
         be read as the main agent's.
         """
-        new = MessageBox("assistant", src.content_text, label or "")
+        new = MessageBox("assistant", src.content_text, label or "", source="markdown")
         if label is not None:
             new.add_class(LANE_FOREIGN_CLASS)
         await self.mount(new, after=after)
@@ -2037,7 +2719,7 @@ class ChatDisplay(VerticalScroll):
         for msg in span:
             role = msg.get("role", "")
             if role == "assistant":
-                step = MessageBox("assistant", "")
+                step = MessageBox("assistant", "", source="markdown")
                 await exchange.add_step_async(step)
                 thinking, text, calls = _split_assistant_blocks(msg.get("content"))
                 if thinking:
@@ -2136,6 +2818,30 @@ class Parley(App):
 
     CSS_PATH = "parley.tcss"
 
+    # Declared, not assigned in on_mount: `App.title` falls back to the CLASS
+    # NAME until something overwrites it, so anything that reads it before mount
+    # — the terminal window title Textual sets on startup, `take_svg_screenshot`
+    # captioning a screenshot — got "Parley", the fork's name rather than this
+    # program's. Same values, set early enough to be the only ones there ever
+    # were. `sub_title` still changes constantly at runtime; this is its resting
+    # value.
+    TITLE = "Tau"
+    SUB_TITLE = "Ready"
+
+    #: Narrowest terminal on which the sidebar and an open extension panel can BOTH
+    #: sit beside a readable chat column. Below it the sidebar yields — the panel is
+    #: something an extension just put on screen, the sidebar is navigation that is
+    #: one ctrl+b away, and at 80 columns there is not room for all three.
+    #:
+    #: It follows from the two CSS widths (``#sidebar`` 25%, ``#ext-panel-host`` 30%
+    #: in parley.tcss): the chat is left 45%, less 2 columns of scrollbar gutter and
+    #: 4 of ChatDisplay padding, so its content column is about ``0.45W - 6``. 101 is
+    #: the measured width at which that first reaches the 40-column floor — 100 is
+    #: one column short, which is why the number is not round.
+    #: ``test_side_columns_min_width_is_where_the_floor_is`` re-measures it, so a
+    #: later change to either percentage fails rather than silently drifts.
+    SIDE_COLUMNS_MIN_WIDTH = 101
+
     BINDINGS = [
         Binding("ctrl+b", "toggle_sidebar", "Sidebar"),
         Binding("ctrl+n", "new_chat", "New Chat"),
@@ -2183,8 +2889,25 @@ class Parley(App):
         cli_overrides: Optional[dict] = None,
         cli_run_config: Optional[dict] = None,
         session_catalog: Optional[SessionCatalog] = None,
+        fun: bool = False,
     ):
         super().__init__()
+        # --fun (see tau_coding_agent.tagline). Defaults FALSE here rather than to
+        # tagline.FUN_DEFAULT, so constructing a Parley programmatically — every
+        # test, every scene, devshot — is deterministic whether or not this tree
+        # was packaged. Only cli.py passes the packaged default through.
+        #
+        # Resolved to a string ONCE, right here: this is the whole reach of the
+        # flag. `self._tagline` is a str from this line onward, so nothing
+        # downstream can branch on "is fun on".
+        self._tagline: str = pick_tagline(fun)
+        # The working directory the empty chat pane reports. An attribute rather
+        # than a Path.cwd() call at the point of use, because it is part of what
+        # `testing.sandbox.build_parley` has to pin: a rendered scene that printed
+        # the developer's real cwd would differ on every machine, which is the
+        # same class of leak as a test app reading the real ~/.tau/config.json.
+        # Nothing but the pane reads it — tools resolve paths themselves.
+        self._cwd: Path = Path.cwd()
         # The live conversation context (sent to the model). Mirrors the active
         # session's messages but is mutable for clear/compact.
         self.messages: list[dict] = []
@@ -2205,6 +2928,13 @@ class Parley(App):
         # what makes a turn this app never initiated renderable at all. Rebound
         # alongside ``_session_event_unsub`` when the backend/session changes.
         self._render_router: Optional[RenderRouter] = None
+        # The user's explicit sidebar choice (ctrl+b), or None while the sidebar
+        # follows the responsive default (``_apply_side_columns``). An explicit
+        # toggle STICKS: pressing ctrl+b on a narrow screen brings the sidebar back
+        # even next to an open panel, and hiding it on a wide screen keeps it hidden
+        # when a panel closes. Nothing resets it — the app never overrides a choice
+        # the user made by hand.
+        self._sidebar_override: Optional[bool] = None
         # When each open lane started, for the exchange summary's wall clock. Keyed
         # by lane, because two lanes have two different clocks — the previous code
         # could keep one ``start`` local precisely because it could only ever be
@@ -2240,7 +2970,17 @@ class Parley(App):
         # Run-level tool/prompt flags (S28), applied at each create_backend /
         # new-chat so a model switch keeps them. Defaults are inert (a bare tau).
         self._exclude_tools: list[str] = list(run_config.get("exclude_tools", []))
-        self._no_builtin_tools: bool = bool(run_config.get("no_builtin_tools", False))
+        # The resolved tool-suppression policy for this RUN: ``"all"`` (-nt),
+        # ``"builtin"`` (-nbt) or ``None``. Run-level for the same reason
+        # ``_exclude_tools`` is — ``/model`` builds a new backend from a different
+        # model entry, and a policy that lived on the entry would be handed back
+        # by the switch. ``cli._launch_tui`` collapses the two flags into this one
+        # value before the app ever sees them.
+        self._no_tools: str | None = run_config.get("no_tools")
+        #: ``--tools``: the built-in allowlist, run-level for the same reason
+        #: ``no_tools`` is (see :meth:`_apply_run_config`). ``None`` means the flag
+        #: was absent and each model entry's own ``tools`` key still applies.
+        self._tool_allowlist: list[str] | None = run_config.get("tools")
         self._append_system_prompt: list[str] = list(run_config.get("append_system_prompt", []))
         # ``--bus`` (H8): run-level, for the same reason the extension flags are —
         # the capability gates which extensions may load, so a model switch that
@@ -2320,6 +3060,46 @@ class Parley(App):
         self.config = bootstrap_config()
         self.log(f"Loaded config with {len(self.config.get('models', {}))} models")
 
+    def _session_facts(self) -> SessionFacts:
+        """The configuration the empty chat pane states (handoff §4.4).
+
+        Read fresh on every show — :class:`ChatDisplay` holds this method, not its
+        result — because ``/model`` and a resumed session both change the answer
+        while the chat is still empty.
+
+        The tool list comes from :func:`_tools_row`, which asks
+        :func:`~tau_coding_agent.backends.resolve_tool_names` over
+        ``_apply_run_config``'s output — the exact call :class:`TauBackend` makes
+        when it constructs them, so the pane cannot advertise a tool the next turn
+        will not have. An unknown ``default_model``
+        is reported as such rather than papered over: it is the same condition
+        :meth:`action_new_chat` refuses to start on, and the pane is where a user
+        can see it before typing.
+        """
+        name = self.config.get("default_model", "local-llm")
+        entry = self.config.get("models", {}).get(name)
+        if entry is None:
+            return SessionFacts(
+                tagline=self._tagline,
+                model=f"{name} — not in config.json",
+                endpoint="unusable until this is fixed",
+                cwd=_display_path(self._cwd),
+                tools="",
+                store=self._store_name,
+            )
+        resolved = self._apply_run_config(entry)
+        return SessionFacts(
+            tagline=self._tagline,
+            model=str(resolved.get("model", name)),
+            # A model entry addressing a first-party API (anthropic, gemini) has no
+            # base_url of its own; naming the backend is the true answer there, and
+            # a blank row would read as "nowhere".
+            endpoint=str(resolved.get("base_url") or resolved.get("backend", "")),
+            cwd=_display_path(self._cwd),
+            tools=_tools_row(resolved),
+            store=self._store_name,
+        )
+
     def compose(self) -> ComposeResult:
         """Compose the application layout."""
         yield Header()
@@ -2328,7 +3108,7 @@ class Parley(App):
             yield ChatSidebar(self.session_catalog)
 
             with Vertical(id="main-area"):
-                yield ChatDisplay()
+                yield ChatDisplay(self._session_facts)
                 yield ChatInput(id="chat-input")
 
             # The extension panel host (E10 §6 / S68) sits to the right of the main
@@ -2344,11 +3124,59 @@ class Parley(App):
 
     def on_mount(self):
         """Set up the application on mount."""
-        self.title = "Tau"
-        self.sub_title = "Ready"
+        # title/sub_title are now class-level TITLE/SUB_TITLE — see the comment
+        # there for why they cannot wait until mount.
 
         # Focus input
         self.query_one("#chat-input", ChatInput).focus()
+
+        # The first frame is a layout decision like any later one: an app started at
+        # 80x24 with a panel already open must not render the starved chat once
+        # before a resize corrects it.
+        self._apply_side_columns()
+
+    # ------------------------------------------------------------------
+    # Responsive side columns
+    # ------------------------------------------------------------------
+
+    def _sidebar_fits(self) -> bool:
+        """Whether the sidebar can share this terminal with an open panel.
+
+        Always true while no extension panel is open — the sidebar alone is a
+        quarter of the width and leaves the chat three quarters at any size.
+        """
+        if not self.query_one(ExtensionPanelHost).display:
+            return True
+        return self.size.width >= self.SIDE_COLUMNS_MIN_WIDTH
+
+    def _apply_side_columns(self) -> None:
+        """Show or hide the sidebar for the current width and panel state.
+
+        The ONE place ``#sidebar``'s display is written, so the responsive default
+        and the ctrl+b override cannot fight over it — an inline style set by one
+        of them is otherwise permanent and invisible to the other.
+        """
+        sidebar = self.query_one(ChatSidebar)
+        visible = self._sidebar_override
+        if visible is None:
+            visible = self._sidebar_fits()
+        if sidebar.display == visible:
+            return
+        sidebar.display = visible
+        if visible:
+            # A refresh may have landed and been deferred (_apply_sessions) while
+            # this was collapsed — catch it up now that it's visible.
+            sidebar.ensure_rendered()
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Re-decide which side columns fit when the terminal changes size."""
+        self._apply_side_columns()
+
+    def on_extension_panel_host_visibility_changed(
+        self, message: ExtensionPanelHost.VisibilityChanged
+    ) -> None:
+        """A panel opened or closed: re-decide whether the sidebar still fits."""
+        self._apply_side_columns()
 
     def set_extension_status(self, key: str, text: str | None) -> None:
         """Update one keyed slot in the extension status strip (E10 §6 / S67).
@@ -2420,7 +3248,7 @@ class Parley(App):
         teardown exception is surfaced by the runner (never swallowed), not
         re-raised here — a failing shutdown hook must not wedge app teardown.
 
-        Also closes the pooled τ-ai providers' HTTP clients for this loop
+        Also closes the pooled τ-llm providers' HTTP clients for this loop
         (docs/PROVIDER-LIFETIME.md §6.3) — AFTER the shutdown hook above, since
         an extension's ``session_shutdown`` handler may itself make a final LLM
         call and needs a live client to do it with. This is the last point the
@@ -2431,7 +3259,7 @@ class Parley(App):
         if emit_shutdown is not None:
             await emit_shutdown("quit")
 
-        from tau_ai.client import aclose_providers
+        from tau_llm.client import aclose_providers
 
         await aclose_providers()
 
@@ -2697,8 +3525,12 @@ class Parley(App):
             self.notify(f"Error: {str(e)}", severity="error")
             self.log.error(f"Error getting response: {e}")
             self.log.error(traceback.format_exc())
+            # A traceback is verbatim by definition — its line breaks ARE the
+            # stack frames, and this box is the only place the user sees them.
             self.query_one(ChatDisplay).add_message(
-                "system", f"**Error occurred:**\n```\n{str(e)}\n{traceback.format_exc()}\n```"
+                "system",
+                f"**Error occurred:**\n```\n{str(e)}\n{traceback.format_exc()}\n```",
+                source="verbatim",
             )
         finally:
             # A turn ending while another submission is still outstanding must not
@@ -3038,7 +3870,12 @@ class Parley(App):
             # than mysterious, AND typed as its source (B3-b) so the border reads
             # "Timer" rather than "User" over text no user typed.
             role = "user" if label is None else self._lane_role(event.get("source"))
-            bubble = display.add_message(role, event.get("text", ""), subtitle=label or "")
+            # The submission text verbatim: whoever (or whatever) submitted it
+            # typed lines, not markdown, and this bubble is the record of what
+            # was actually sent.
+            bubble = display.add_message(
+                role, event.get("text", ""), subtitle=label or "", source="verbatim"
+            )
             if label is not None:
                 bubble.add_class(LANE_FOREIGN_CLASS)
             self._lane_started[lane] = time.time()
@@ -3207,13 +4044,21 @@ class Parley(App):
     def _apply_run_config(self, model_config: dict) -> dict:
         """Inject run-level tool flags into a model_config before create_backend (S28).
 
-        ``--no-builtin-tools`` drops the built-in tool set (``tools=[]``);
-        extension-registered tools survive because they merge in later
+        Both tool-suppression flags empty the built-in set (``tools=[]``); which
+        one was given rides as ``no_tools`` — ``"all"`` (``--no-tools``) or
+        ``"builtin"`` (``--no-builtin-tools``) — the single resolved policy
+        ``TauBackend`` forwards to ``AgentSession``. Only ``"all"`` also withholds
+        extension-registered tools; under ``"builtin"`` they merge in as usual
         (``AgentSession._build_turn_tools``). ``--exclude-tools`` rides as an
         ``exclude_tools`` denylist that ``TauBackend`` applies to the resolved
-        built-ins. Returns the config unchanged when neither flag is set, so a bare
+        built-ins. Returns the config unchanged when no flag is set, so a bare
         ``tau`` is untouched; otherwise a shallow copy (never mutate the shared
         ``config["models"]`` entry).
+
+        This runs at EVERY ``create_backend``, which is what makes these flags
+        survive a mid-session ``/model`` switch: the policy is re-applied to
+        whichever model entry the switch selected, instead of having been baked
+        into the one entry the process started on.
         """
         # Fold the top-level ``reasoning_replay`` default into this entry when the
         # entry doesn't set its own (per-model wins; else the global default; else
@@ -3222,11 +4067,22 @@ class Parley(App):
         global_replay = self.config.get("reasoning_replay")
         inject_replay = global_replay is not None and "reasoning_replay" not in model_config
         if not (
-            self._exclude_tools or self._no_builtin_tools or inject_replay or self._bus_available
+            self._exclude_tools
+            or self._no_tools
+            or self._tool_allowlist is not None
+            or inject_replay
+            or self._bus_available
         ):
             return model_config
         mc = dict(model_config)
-        if self._no_builtin_tools:
+        # Allowlist first, suppression second: --no-tools is the stronger claim and
+        # must win when both are given, matching resolve_model_config's own
+        # if/elif on the headless path. Writing them the other way round would let
+        # -t hand back tools that -nt had just withheld.
+        if self._tool_allowlist is not None:
+            mc["tools"] = list(self._tool_allowlist)
+        if self._no_tools:
+            mc["no_tools"] = self._no_tools
             mc["tools"] = []
         if self._exclude_tools:
             mc["exclude_tools"] = self._exclude_tools
@@ -3397,14 +4253,16 @@ class Parley(App):
         self.query_one(ChatSidebar).refresh_chats()
 
     def action_toggle_sidebar(self):
-        """Toggle sidebar visibility."""
-        sidebar = self.query_one(ChatSidebar)
-        showing = sidebar.styles.display != "block"
-        sidebar.styles.display = "block" if showing else "none"
-        if showing:
-            # A refresh may have landed and been deferred (_apply_sessions)
-            # while this was collapsed — catch it up now that it's visible.
-            sidebar.ensure_rendered()
+        """Toggle sidebar visibility.
+
+        Records the flip as ``_sidebar_override`` and lets ``_apply_side_columns``
+        do the write, so the key always inverts what is ON SCREEN — including
+        putting the sidebar back next to a panel on a narrow terminal, where the
+        responsive default had hidden it. The choice then sticks (see the attribute):
+        a keypress is not a hint the layout may overrule.
+        """
+        self._sidebar_override = not self.query_one(ChatSidebar).display
+        self._apply_side_columns()
 
     def action_toggle_reasoning(self) -> None:
         """Fold/unfold every reasoning region in the transcript at once.
@@ -3435,7 +4293,9 @@ class Parley(App):
         listing = self._format_extensions_listing(
             self._extension_load_result, self._disabled_extension_paths()
         )
-        self.query_one(ChatDisplay).add_message("system", listing)
+        # τ authors this string as markdown (see _format_extensions_listing) —
+        # headings and bullet lists it wrote on purpose, not captured output.
+        self.query_one(ChatDisplay).add_message("system", listing, source="markdown")
 
     def _disabled_extension_paths(self) -> set[str]:
         """The set of currently runtime-disabled extension paths (E10 §6 / S70).
@@ -3541,7 +4401,12 @@ class Parley(App):
         text = result.output_text()
         if text is None:
             return
-        self.query_one(ChatDisplay).add_message("system", text)
+        # Command output, and τ did not write it: an extension handler may return
+        # a markdown report, but it may equally return a value that
+        # ``output_text`` stringified, whose line breaks are all the structure it
+        # has. Verbatim keeps those; the cost on a markdown report is blank lines,
+        # which is the cheaper of the two mistakes.
+        self.query_one(ChatDisplay).add_message("system", text, source="verbatim")
 
     @staticmethod
     def _format_extensions_listing(
@@ -3899,12 +4764,13 @@ class Parley(App):
             self.notify("This backend does not support tree navigation", severity="warning")
             return
 
-        roots = ConversationTree(session.entries(), session.cursor).tree()
+        tree = ConversationTree(session.entries(), session.cursor)
+        roots = tree.tree()
         if not roots:
             self.notify("Conversation tree is empty", severity="warning")
             return
 
-        target_id = await self.push_screen_wait(SessionTreeModal(roots))
+        target_id = await self.push_screen_wait(SessionTreeModal(roots, resolve_entry=tree.entry))
         if target_id is None:
             return
 
@@ -3917,7 +4783,7 @@ class Parley(App):
             # anchor that is already the cursor is the NORMAL case (fold the history
             # behind the current tip and keep going), so the "already at that node"
             # guard below deliberately does not apply to it.
-            await self._elide_span_flow(session, target_id, roots)
+            await self._elide_span_flow(session, target_id, roots, tree.entry)
             return
 
         if target_id == session.cursor:
@@ -3957,7 +4823,11 @@ class Parley(App):
         )
 
     async def _elide_span_flow(
-        self, session: ConversationSession, anchor_id: str, roots: list[TreeNode]
+        self,
+        session: ConversationSession,
+        anchor_id: str,
+        roots: list[TreeNode],
+        resolve_entry: Callable[[str], dict[str, Any]],
     ) -> None:
         """Second half of the ``elide`` mode: pick the resume point, then fold (W3).
 
@@ -3989,8 +4859,9 @@ class Parley(App):
         first_kept_id = await self.push_screen_wait(
             SessionTreeModal(
                 roots,
+                resolve_entry=resolve_entry,
                 title="Elide: pick the resume point",
-                help_text="Enter: resume the fold here    Esc: cancel",
+                help_text="Enter: resume here    Tab: detail pane    Esc: cancel",
             )
         )
         if first_kept_id is None:

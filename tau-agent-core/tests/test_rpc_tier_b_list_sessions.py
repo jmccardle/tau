@@ -61,7 +61,7 @@ from tau_agent_core.rpc.dialect import SESSION_NOT_PERSISTED
 from tau_agent_core.rpc.handler import RPCHandler
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, SessionInfo
 from tau_agent_core.session_log import InMemorySessionLog
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 _CWD = "/work"
 _OTHER_CWD = "/elsewhere"

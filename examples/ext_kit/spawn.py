@@ -369,7 +369,7 @@ async def stream_tau(
     consumer that rolls usage up and enforces limits.
 
     Abort propagation: ``signal`` is anything exposing ``is_aborted() -> bool``
-    (e.g. ``tau_ai.AbortSignal`` from ``ctx.signal``). It is polled before each
+    (e.g. ``tau_llm.AbortSignal`` from ``ctx.signal``). It is polled before each
     event; once aborted the iterator stops and the child is killed. ``timeout``
     is an overall wall-clock deadline over the whole stream. The child is always
     terminated when the iterator is closed (exhaustion, ``break``, exception,

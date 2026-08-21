@@ -36,7 +36,9 @@ async def test_list_legal_moves_tool() -> None:
 
 
 async def test_check_status_tool_names_checker() -> None:
-    state = ChessGameState(board=Board.from_piece_map({"e1": "K", "e6": "r", "a6": "k"}, side=WHITE))
+    state = ChessGameState(
+        board=Board.from_piece_map({"e1": "K", "e6": "r", "a6": "k"}, side=WHITE)
+    )
     payload = _payload(await CheckStatusTool(state).execute("tc1", {}))
     assert payload["in_check"] is True
     assert payload["checked_by"] == ["e6"]
@@ -74,8 +76,10 @@ async def test_attackers_defenders_tool() -> None:
 
 async def test_fen_tool() -> None:
     state = ChessGameState(board=Board())
-    assert _payload(await FenTool(state).execute("tc1", {})) == \
-        "rnqknr/pppppp/6/6/PPPPPP/RNQKNR w - - 0 1"
+    assert (
+        _payload(await FenTool(state).execute("tc1", {}))
+        == "rnqknr/pppppp/6/6/PPPPPP/RNQKNR w - - 0 1"
+    )
 
 
 async def test_static_eval_tool() -> None:

@@ -1,11 +1,11 @@
 [project]
-name = "tau-monorepo"
-version = "0.0.0"
+name = "ffwf-tau-monorepo"
+version = "0.9.2"
 description = "τ (tau-agent-core) monorepo"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
-testpaths = ["tau-ai/tests", "tau-agent-core/tests", "tau-coding-agent/tests", "tau-jmfts/tests"]
+testpaths = ["tau-llm/tests", "tau-agent-core/tests", "tau-coding-agent/tests", "tau-jmfts/tests"]
 asyncio_mode = "auto"
 markers = [
     "jmfts: live integration tests against a running JMFTS server (JMFTS_TEST_URL or default LAN instance; skips if unreachable, never on a server error)",
@@ -17,7 +17,7 @@ markers = [
 # run even when everything passes -- which does not belong in every `pytest`.
 # Opt in with `pytest -m llama`: a command-line `-m` lands after addopts and wins.
 # Re-run it ONLY for changes touching the LLM provider interfaces; see the module
-# docstring of tau-ai/tests/test_llama_conformance.py for the scope rule.
+# docstring of tau-llm/tests/test_llama_conformance.py for the scope rule.
 addopts = ["-m", "not llama"]
 
 [tool.mypy]
@@ -34,6 +34,21 @@ line-length = 100
 target-version = "py311"
 extend-exclude = ["venv"]
 
-# Default lint rules (pyflakes F + pycodestyle E4/E7/E9) are kept as-is; the
-# formatter owns whitespace and wrapping, so E1/E2/E3 stay disabled to avoid
-# fighting it. Import sorting (I) is intentionally deferred to a later pass.
+[tool.ruff.lint]
+# The rule set is STATED, not inherited. It used to be left implicit -- "ruff's
+# defaults happen to be what we want" -- and that made the gate depend on which
+# ruff version a clone installed, since `dev` pins no version. Measured on this
+# tree: ruff 0.15.17 reports 0 errors and ruff 0.16.4 reports 293, because 0.16
+# widened the default set (I, S, DTZ, FURB, PERF, TRY, …). A contributor whose
+# install date differed by a few weeks got a red pre-commit hook on code they
+# had not touched.
+#
+# Naming the four categories fixes that without pinning ruff: pyflakes (F) plus
+# the pycodestyle subsets that are real errors rather than layout opinions. The
+# formatter owns whitespace and wrapping, so E1/E2/E3 stay out to avoid fighting
+# it. Import sorting (I) is still deferred to its own pass -- deliberately, and
+# now visibly, rather than by accident of a version.
+#
+# The FORMATTER needs no such treatment: `ruff format --check` reports the same
+# 90 files clean on both versions.
+select = ["E4", "E7", "E9", "F"]

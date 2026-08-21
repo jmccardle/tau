@@ -22,8 +22,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tau_ai.streaming import TextDeltaEvent
-from tau_ai.types import AssistantMessage, Model, TextContent, Usage
+from tau_llm.streaming import TextDeltaEvent
+from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.rpc import DEFAULT_OUTPUT_QUEUE_EVENT_BOUND, RPCHandler
@@ -386,7 +386,9 @@ async def test_abort_lets_a_credit_starved_turn_wind_down_without_waiting_for_ro
     assert "_credited" not in item  # bypassed the bound; did not consume one
 
 
-async def test_acquire_event_credit_does_not_wait_at_all_once_already_aborted(real_handler, real_session):
+async def test_acquire_event_credit_does_not_wait_at_all_once_already_aborted(
+    real_handler, real_session
+):
     """The cheap half of the same mechanism: an ALREADY-aborted turn's
     remaining items should not each pay one poll interval winding down."""
     bound = DEFAULT_OUTPUT_QUEUE_EVENT_BOUND

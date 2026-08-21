@@ -93,8 +93,7 @@ def session_dir_for_cwd(cwd: str, base_dir: Path | None = None) -> Path:
 
     Ports pi's ``getDefaultSessionDirPath`` (session-manager.ts:438-442):
     ``--`` + abspath (leading slash stripped, ``/`` ``\\`` ``:`` → ``-``) + ``--``.
-    ``/home/john/Development/agent-harness-py`` →
-    ``--home-john-Development-agent-harness-py--``.
+    ``/srv/work/agent-harness-py`` → ``--srv-work-agent-harness-py--``.
     """
     abspath = os.path.abspath(cwd)
     dashed = (

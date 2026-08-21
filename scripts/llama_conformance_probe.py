@@ -2,7 +2,7 @@
 """Measure which thinking/reasoning knobs an OpenAI-compatible endpoint actually honors.
 
 τ has ONE wire representation for a thinking level (`reasoning_effort`, sent from
-`tau_ai.providers.openai.stream_chat`). A server may implement a different one, or
+`tau_llm.providers.openai.stream_chat`). A server may implement a different one, or
 none. When it implements a different one the failure is SILENT: the request is
 accepted, the parameter is ignored, and the generation comes back looking normal.
 That is the shape of defect τ's guards exist for, and no amount of documentation
@@ -17,7 +17,7 @@ endpoint's behavior changes when the knob changes.
 
 Deliberately standalone: no τ imports, no ~/.tau/config.json, `httpx` only. It is
 meant to be runnable by whoever is holding the endpoint, including people who do
-not have τ checked out. `tau-ai/tests/test_llama_conformance.py` (marker `llama`)
+not have τ checked out. `tau-llm/tests/test_llama_conformance.py` (marker `llama`)
 is the thin pytest wrapper that calls `probe()` and asserts the recorded verdicts.
 
 Fail-Early: a transport failure is reported as unreachable and exits 2 without
@@ -37,7 +37,10 @@ from typing import Any
 
 import httpx
 
-DEFAULT_URL = os.environ.get("TAU_LLAMA_TEST_URL", "http://192.168.1.100:8080")
+# The server under test belongs to whoever is running the probe, so there is
+# no default address here. Unset means "no endpoint", which probe() reports as
+# Unreachable — the same outcome as a server that is down, and a skip upstream.
+DEFAULT_URL = os.environ.get("TAU_LLAMA_TEST_URL", "")
 
 # Short, and it reasons far more than it answers: baseline reasoning is ~500 tokens
 # against a 3-token answer, so "did the knob shorten the thinking" has a wide, cheap
@@ -146,7 +149,9 @@ def _post_get(url: str, path: str) -> dict[str, Any]:
 
 def probe(url: str = DEFAULT_URL) -> dict[str, Any]:
     """Run every measurement and return the report. Raises `Unreachable` if the
-    endpoint cannot be reached at all."""
+    endpoint cannot be reached at all — including when none was configured."""
+    if not url:
+        raise Unreachable("no endpoint configured: set $TAU_LLAMA_TEST_URL or pass --url")
     report: dict[str, Any] = {
         "probed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "url": url,
@@ -330,7 +335,9 @@ def _render(report: dict[str, Any]) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--url", default=DEFAULT_URL, help=f"endpoint (default {DEFAULT_URL})")
+    parser.add_argument(
+        "--url", default=DEFAULT_URL, help="endpoint (default: $TAU_LLAMA_TEST_URL)"
+    )
     parser.add_argument("--json", dest="json_out", help="write the full report to this path")
     args = parser.parse_args()
 

@@ -13,8 +13,8 @@ import sys
 from abc import ABC, abstractmethod
 from typing import Any, Awaitable, Callable, Literal, cast
 from uuid import uuid4
-from tau_ai.models import EXTENDED_THINKING_LEVELS, is_valid_thinking_level
-from tau_ai.types import Model
+from tau_llm.models import EXTENDED_THINKING_LEVELS, is_valid_thinking_level
+from tau_llm.types import Model
 from tau_agent_core.agent_session import (
     AgentSession,
     ExtensionActionResult,
@@ -33,9 +33,35 @@ from tau_agent_core.submission import Submission, SubmissionResult
 #: same as it always did while a multi-lane renderer keys on real lane ids.
 DEFAULT_LANE = "main"
 
+#: The built-in tools a model entry that names none gets. Named rather than
+#: inlined at its one use because the empty chat pane prints this list back to
+#: the user before the first turn — two copies of it would drift, and the copy
+#: on screen would be the one that lied.
+DEFAULT_TOOL_NAMES: tuple[str, ...] = ("read", "write", "edit", "bash", "ls", "grep", "find")
+
 #: A render event handler. Sync or async — :class:`RenderRouter` awaits whatever
 #: it gets back, so a Textual app can mount widgets from it.
 RenderHandler = Callable[[dict[str, Any]], Awaitable[None] | None]
+
+
+def resolve_tool_names(config: dict[str, Any]) -> list[str]:
+    """The built-in tool names one model config resolves to, in order.
+
+    The single reader of ``config["tools"]`` / ``config["exclude_tools"]``:
+    :class:`TauBackend` calls it to decide what to construct, and
+    ``Parley._session_facts`` calls it to decide what to *display*. Both take the
+    config AFTER ``Parley._apply_run_config``, so ``--exclude-tools`` and both
+    tool-suppression flags — ``--no-tools`` and ``--no-builtin-tools``, each of
+    which sets ``tools=[]`` — are already folded in.
+
+    This answers only "which BUILT-INS?". Whether extension-registered tools are
+    also withheld is ``config["no_tools"] == "all"``, decided far downstream in
+    ``AgentSession._build_turn_tools``; it is not this function's question and is
+    deliberately not second-guessed here.
+    """
+    names = config.get("tools", list(DEFAULT_TOOL_NAMES))
+    exclude = set(config.get("exclude_tools") or [])
+    return [t for t in names if t not in exclude]
 
 
 def tau_event_to_pi_event(event: AgentEvent) -> dict[str, Any] | None:
@@ -960,7 +986,16 @@ class TauBackend(Backend):
         # construction is shared with make_model_resolver (S45) via
         # build_model_from_config so ctx.set_model rebuilds a Model identically.
         model_id = config.get("model", "gpt-4")
-        api_key = config.get("api_key", "not-needed")
+        # NO default. The provider raises "No API key for provider: …" on a
+        # falsy key (openai.py), and that raise is the documented behaviour —
+        # but it only ever fired if a missing key actually reached it. This line
+        # used to substitute the "not-needed" sentinel, which is truthy, so a
+        # config entry with no api_key sailed past the gate and sent that string
+        # to whatever base_url resolved to (default: api.openai.com), producing a
+        # 401 from a third party instead of a startup error naming the real
+        # problem. A local server still opts in by writing "not-needed"
+        # explicitly, exactly as the shipped template does.
+        api_key = config.get("api_key")
 
         self.model_name = model_id
         self.system_prompt = config.get("system_prompt", "")
@@ -982,20 +1017,27 @@ class TauBackend(Backend):
         self._model = model
         self._api_key = api_key
 
-        # Discover tools from config. Defaults to all built-in tools.
-        tool_names = config.get("tools", ["read", "write", "edit", "bash", "ls", "grep", "find"])
-        # --exclude-tools denylist (pi excludeTools): drop the named built-ins from
-        # the resolved set (E5 §2.3 / S28). Applied here so BOTH run paths honour it
-        # (they build the session through this one seam). Extension-registered tools
-        # are merged later in AgentSession._build_turn_tools and are NOT subject to
-        # this built-in denylist — pi's excludeTools targets the built-in registry.
-        exclude = set(config.get("exclude_tools") or [])
-        if exclude:
-            tool_names = [t for t in tool_names if t not in exclude]
+        # Discover tools from config. Defaults to all built-in tools, minus the
+        # --exclude-tools denylist (pi excludeTools; E5 §2.3 / S28) — see
+        # ``resolve_tool_names``, which the empty chat pane shares so the list the
+        # user reads is the list this constructs. Extension-registered tools merge
+        # in later (``AgentSession._build_turn_tools``) and are NOT subject to the
+        # denylist — pi's excludeTools targets the built-in registry.
+        tool_names = resolve_tool_names(config)
         if tool_names:
             tools = _resolve_tools(tool_names)
         else:
             tools = []
+
+        # The resolved tool-suppression policy (``--no-tools`` → "all",
+        # ``--no-builtin-tools`` → "builtin", absent → None), set by
+        # ``headless.resolve_no_tools`` at the argv boundary and carried on the
+        # model config next to ``exclude_tools``. Both flags already emptied
+        # ``tool_names`` above; forwarding this is what makes "all" ALSO withhold
+        # extension-registered tools, and it is the only difference between the
+        # two flags. An unrecognised value raises in AgentSession rather than
+        # degrading to "no suppression".
+        no_tools = config.get("no_tools")
 
         # Forward the configured API key to the session -> agent loop ->
         # provider. The provider requires a truthy key (Fail-Early); local
@@ -1036,6 +1078,7 @@ class TauBackend(Backend):
             # from a hand-written script. Default stays False: reaching a bus is
             # a capability the operator grants, never one a run assumes.
             bus_available=bool(config.get("bus_available", False)),
+            no_tools=no_tools,
         )
 
     def bind_session_log(self, session_log: SessionLog) -> None:

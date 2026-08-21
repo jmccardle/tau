@@ -6,7 +6,7 @@ How a single user turn travels from HTTP bytes to a rendered tool call/result, a
 
 | Vocabulary | Defined in | Producer | Examples |
 |---|---|---|---|
-| **τ-ai streaming events** | `tau_ai/streaming.py` | the provider (`openai.py`) | `TextDeltaEvent`, `ToolCallDeltaEvent`, `DoneEvent`, `ErrorEvent` |
+| **τ-llm streaming events** | `tau_llm/streaming.py` | the provider (`openai.py`) | `TextDeltaEvent`, `ToolCallDeltaEvent`, `DoneEvent`, `ErrorEvent` |
 | **τ-agent-core AgentEvents** | `tau_agent_core/events.py` | the agent loop / event bus | `agent_start`, `turn_start`, `message_start`, `message_update`, `message_end`, `tool_execution_start`, `tool_execution_end`, `turn_end`, `agent_end` |
 
 The agent loop **consumes** the first and **emits** the second. `TauBackend` subscribes to the second to drive the TUI. Do not confuse them — both have a notion of "message" and "delta," but they are different shapes.
@@ -14,7 +14,7 @@ The agent loop **consumes** the first and **emits** the second. `TauBackend` sub
 ## End-to-end flow
 
 ```
-HTTP SSE  ──►  OpenAICompletionsProvider.stream_chat   (tau-ai/providers/openai.py)
+HTTP SSE  ──►  OpenAICompletionsProvider.stream_chat   (tau-llm/providers/openai.py)
                  • parse `data:` lines → chunk dicts
                  • accumulate into _Accumulator (text / thinking / tool_calls)
                  • yield TextDeltaEvent / ToolCallDeltaEvent per chunk
@@ -48,7 +48,7 @@ HTTP SSE  ──►  OpenAICompletionsProvider.stream_chat   (tau-ai/providers/o
 
 A tool call is re-encoded at every boundary. When debugging, follow `arguments` through all four:
 
-1. **Provider** — `tau_ai.types.ToolCall` (pydantic): `{type:"toolCall", id, name, arguments: dict}`. Built in `_build_final_message` from the accumulated `arguments_parts`.
+1. **Provider** — `tau_llm.types.ToolCall` (pydantic): `{type:"toolCall", id, name, arguments: dict}`. Built in `_build_final_message` from the accumulated `arguments_parts`.
 2. **Loop / event** — converted to a plain dict via `model_dump()` at the loop boundary: `{"type":"toolCall","id":...,"name":...,"arguments": {...}}`, carried inside `AgentEvent.message["content"]`.
 3. **Backend** — flattened into `tool_calls_info`: `{"id","name","arguments", "result"?, "error"?}`.
 4. **TUI** — `arguments` is `json.dumps`-ed into a Markdown code block by `ChatDisplay.add_tool_call`.
@@ -72,6 +72,6 @@ Correct accumulation therefore keys each in-progress call by the `index` field (
 | Did the server actually send tool-call deltas? | raw chunks in `openai.py` SSE loop (`stream_chat`) |
 | Did the provider accumulate valid JSON? | `_build_final_message` `args_str` in `openai.py` |
 | Did the loop see tool calls? | `assistant.get_tool_calls()` in `agent_loop.run` |
-| Did validation reject them? | `_prepare_tool_call` → `validate_tool_arguments` (`tau_ai/tools.py`) |
+| Did validation reject them? | `_prepare_tool_call` → `validate_tool_arguments` (`tau_llm/tools.py`) |
 | Did the tool receive correct args? | `_execute_tool` in `agent_loop.py` |
 | Did the TUI get them? | `capture_event`'s `message_end` branch in `backends.py` |

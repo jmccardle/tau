@@ -29,7 +29,6 @@ from tau_coding_agent.cli import CLIArgs
 from tau_coding_agent.headless import CLIError, run_print
 from tau_coding_agent.session_store import Session
 
-
 # ── config / fakes ──────────────────────────────────────────────────────────
 
 

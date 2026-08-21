@@ -92,7 +92,7 @@ from tau_agent_core.compaction import (
 from tau_agent_core.compaction_utils import create_file_ops
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.session_manager import SessionManager
-from tau_ai.types import AssistantMessage, Model, TextContent, Usage
+from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 

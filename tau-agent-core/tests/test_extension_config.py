@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_log import InMemorySessionLog
@@ -65,9 +65,7 @@ class TestConfigSlicing:
         session = _make_session()
 
         cfg = {"budget": {"ceiling": 5.0, "warn": 0.8}, "other": {"k": "v"}}
-        result = await session.load_extensions(
-            [str(ext)], discover=False, extensions_config=cfg
-        )
+        result = await session.load_extensions([str(ext)], discover=False, extensions_config=cfg)
 
         assert len(result.extensions) == 1
         # The "budget" slice (keyed by the file stem) — NOT "other", NOT the whole map.

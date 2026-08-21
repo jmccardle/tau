@@ -20,7 +20,7 @@ import os
 import httpx
 import pytest
 
-JMFTS_TEST_URL = os.environ.get("JMFTS_TEST_URL", "http://192.168.1.100:8007")
+JMFTS_TEST_URL = os.environ.get("JMFTS_TEST_URL", "http://192.168.1.100:8100")
 JMFTS_API_TOKEN = os.environ.get("JMFTS_API_TOKEN")
 
 # Every document this test suite creates carries this usetype/title prefix so

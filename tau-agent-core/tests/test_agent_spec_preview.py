@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree

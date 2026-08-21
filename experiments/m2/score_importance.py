@@ -90,6 +90,7 @@ def main() -> int:
     scores: dict[int, int] = {}
 
     with httpx.Client() as client:
+
         def work(row):
             return row[0], score_one(client, row[1])
 
@@ -111,7 +112,7 @@ def main() -> int:
 
     dist = Counter(scores.values())
     elapsed = time.time() - started
-    print(f"\nscored {len(scores)} in {elapsed:.0f}s ({len(scores)/elapsed:.1f}/s)")
+    print(f"\nscored {len(scores)} in {elapsed:.0f}s ({len(scores) / elapsed:.1f}/s)")
     print("distribution:")
     for rating in sorted(dist):
         bar = "#" * int(60 * dist[rating] / max(dist.values()))

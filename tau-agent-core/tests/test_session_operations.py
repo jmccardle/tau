@@ -1042,7 +1042,7 @@ def test_extract_deep_branch_traverses_every_generation(mgr):
 
 def _fake_response(text: str, stop_reason: str = "stop"):
     """A minimal AssistantMessage stand-in for complete_simple's return."""
-    from tau_ai.types import AssistantMessage, TextContent, Usage
+    from tau_llm.types import AssistantMessage, TextContent, Usage
 
     return AssistantMessage(
         content=[TextContent(text=text)] if text else [],
@@ -1069,7 +1069,7 @@ def _summarize(
             capture["options"] = options
         return _fake_response(summary_text, stop_reason)
 
-    with patch("tau_ai.client.complete_simple", mock_complete_simple):
+    with patch("tau_llm.client.complete_simple", mock_complete_simple):
         # summarize_branch returns (text, usage) — it makes a real LLM call
         # outside the agent loop, so it must report what it spent or those
         # tokens go uncounted. These tests are about the TEXT; the usage

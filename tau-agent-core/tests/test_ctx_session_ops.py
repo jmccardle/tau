@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from tau_ai.types import AssistantMessage, Model, TextContent
+from tau_llm.types import AssistantMessage, Model, TextContent
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
@@ -202,7 +202,7 @@ class TestCompact:
 
 class TestSummarizeBranch:
     async def test_summarize_branch_appends_branch_summary_and_rerenders(self, monkeypatch):
-        monkeypatch.setattr("tau_ai.client.complete_simple", _summary_response("BRANCH"))
+        monkeypatch.setattr("tau_llm.client.complete_simple", _summary_response("BRANCH"))
         session = AgentSession(
             session_log=InMemorySessionLog(),
             model=_model(),
@@ -227,7 +227,7 @@ class TestSummarizeBranch:
         assert rendered == session.messages
 
     async def test_navigate_summarize_delegates_to_summarize_branch(self, monkeypatch):
-        monkeypatch.setattr("tau_ai.client.complete_simple", _summary_response("VIANAV"))
+        monkeypatch.setattr("tau_llm.client.complete_simple", _summary_response("VIANAV"))
         session = AgentSession(
             session_log=InMemorySessionLog(),
             model=_model(),

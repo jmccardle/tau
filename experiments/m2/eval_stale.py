@@ -96,7 +96,11 @@ def main() -> int:
                 for alpha, halflife in GRID:
                     kwargs = {}
                     if alpha:
-                        kwargs = {"recency_weight": alpha, "recency_halflife_days": halflife, "now": now}
+                        kwargs = {
+                            "recency_weight": alpha,
+                            "recency_halflife_days": halflife,
+                            "now": now,
+                        }
                     results = repo.hybrid_search(
                         query,
                         limit=50,  # the whole haystack, so ranks are always comparable
@@ -123,8 +127,15 @@ def main() -> int:
                     if r_new <= 5:
                         t["new_at_5"] += 1
                     per_instance.append(
-                        {"uid": inst["uid"], "type": inst["type"], "dim": dim,
-                         "alpha": alpha, "halflife": halflife, "rank_new": r_new, "rank_old": r_old}
+                        {
+                            "uid": inst["uid"],
+                            "type": inst["type"],
+                            "dim": dim,
+                            "alpha": alpha,
+                            "halflife": halflife,
+                            "rank_new": r_new,
+                            "rank_old": r_old,
+                        }
                     )
             if n % 25 == 0:
                 print(f"  {n}/{len(manifest)} instances", flush=True)
@@ -132,29 +143,38 @@ def main() -> int:
     rows = []
     for (alpha, halflife, dim), t in sorted(tallies.items()):
         n = t["n"] or 1
-        rows.append({
-            "alpha": alpha, "halflife": halflife, "dim": dim, "n": t["n"],
-            "new_over_old": t["new_over_old"] / n,
-            "new_at_1": t["new_at_1"] / n,
-            "new_at_5": t["new_at_5"] / n,
-            "mean_rank_new": t["sum_rank_new"] / n,
-            "mean_rank_old": t["sum_rank_old"] / n,
-            "missing": t["missing"],
-        })
+        rows.append(
+            {
+                "alpha": alpha,
+                "halflife": halflife,
+                "dim": dim,
+                "n": t["n"],
+                "new_over_old": t["new_over_old"] / n,
+                "new_at_1": t["new_at_1"] / n,
+                "new_at_5": t["new_at_5"] / n,
+                "mean_rank_new": t["sum_rank_new"] / n,
+                "mean_rank_old": t["sum_rank_old"] / n,
+                "missing": t["missing"],
+            }
+        )
 
     with open(OUT, "w") as fh:
         json.dump({"summary": rows, "per_instance": per_instance}, fh)
 
     print()
-    print(f"{'alpha':>6} {'half-life':>10} {'dim':>5} {'n':>5} "
-          f"{'new>old':>8} {'new@1':>7} {'new@5':>7} {'rank_new':>9} {'rank_old':>9}")
+    print(
+        f"{'alpha':>6} {'half-life':>10} {'dim':>5} {'n':>5} "
+        f"{'new>old':>8} {'new@1':>7} {'new@5':>7} {'rank_new':>9} {'rank_old':>9}"
+    )
     print("-" * 78)
     for r in rows:
         hl = "-" if r["halflife"] is None else f"{r['halflife']:.0f}d"
         dim = r["dim"].replace("_query", "")
-        print(f"{r['alpha']:>6.1f} {hl:>10} {dim:>5} {r['n']:>5} "
-              f"{r['new_over_old']:>8.3f} {r['new_at_1']:>7.3f} {r['new_at_5']:>7.3f} "
-              f"{r['mean_rank_new']:>9.2f} {r['mean_rank_old']:>9.2f}")
+        print(
+            f"{r['alpha']:>6.1f} {hl:>10} {dim:>5} {r['n']:>5} "
+            f"{r['new_over_old']:>8.3f} {r['new_at_1']:>7.3f} {r['new_at_5']:>7.3f} "
+            f"{r['mean_rank_new']:>9.2f} {r['mean_rank_old']:>9.2f}"
+        )
     print(f"\nfull results: {OUT}")
     return 0
 

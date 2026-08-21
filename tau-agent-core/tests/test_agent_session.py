@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tau_ai.types import Model
+from tau_llm.types import Model
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.extension_types import ExtensionAPI
@@ -37,7 +37,6 @@ from tau_agent_core.sdk import (
     _build_system_prompt,
     _load_extensions,
 )
-
 
 # =============================================================================
 # Test 1: AgentSession creation
@@ -89,6 +88,7 @@ class TestAgentSessionCreation:
 
     def test_create_agent_session_with_tools(self):
         """AgentSession can be created with tools."""
+
         def execute(ctx):
             return "test"
 
@@ -174,9 +174,13 @@ class TestSubscribeUnsubscribe:
         return AgentSession(
             session_log=InMemorySessionLog(),
             model=Model(
-                id="gpt-4o", name="GPT-4o", api="openai-completions",
-                provider="openai", base_url="https://api.openai.com/v1",
-                context_window=128000, max_tokens=4096,
+                id="gpt-4o",
+                name="GPT-4o",
+                api="openai-completions",
+                provider="openai",
+                base_url="https://api.openai.com/v1",
+                context_window=128000,
+                max_tokens=4096,
             ),
         )
 
@@ -291,9 +295,13 @@ class TestPromptRunsLoop:
         return AgentSession(
             session_log=InMemorySessionLog(),
             model=Model(
-                id="gpt-4o", name="GPT-4o", api="openai-completions",
-                provider="openai", base_url="https://api.openai.com/v1",
-                context_window=128000, max_tokens=4096,
+                id="gpt-4o",
+                name="GPT-4o",
+                api="openai-completions",
+                provider="openai",
+                base_url="https://api.openai.com/v1",
+                context_window=128000,
+                max_tokens=4096,
             ),
         )
 
@@ -397,9 +405,13 @@ class TestPromptReturnsOnlyThisTurnsMessages:
         return AgentSession(
             session_log=InMemorySessionLog(),
             model=Model(
-                id="gpt-4o", name="GPT-4o", api="openai-completions",
-                provider="openai", base_url="https://api.openai.com/v1",
-                context_window=128000, max_tokens=4096,
+                id="gpt-4o",
+                name="GPT-4o",
+                api="openai-completions",
+                provider="openai",
+                base_url="https://api.openai.com/v1",
+                context_window=128000,
+                max_tokens=4096,
             ),
         )
 
@@ -412,10 +424,12 @@ class TestPromptReturnsOnlyThisTurnsMessages:
                 pass
 
             async def run(self, prompts, context):  # noqa: ANN001
-                return [{
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": answer}],
-                }]
+                return [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": answer}],
+                    }
+                ]
 
         return _FakeLoop
 
@@ -475,9 +489,13 @@ class TestApiKeyThreadedToProvider:
         return AgentSession(
             session_log=InMemorySessionLog(),
             model=Model(
-                id="gpt-4o", name="GPT-4o", api="openai-completions",
-                provider="openai", base_url="https://api.openai.com/v1",
-                context_window=128000, max_tokens=4096,
+                id="gpt-4o",
+                name="GPT-4o",
+                api="openai-completions",
+                provider="openai",
+                base_url="https://api.openai.com/v1",
+                context_window=128000,
+                max_tokens=4096,
             ),
             api_key=api_key,
         )
@@ -489,6 +507,7 @@ class TestApiKeyThreadedToProvider:
                 async def _gen():
                     return
                     yield  # pragma: no cover - makes this an async generator
+
                 return _gen()
 
             async def result(self):
@@ -533,9 +552,14 @@ class TestReasoningThreadedToProvider:
         return AgentSession(
             session_log=InMemorySessionLog(),
             model=Model(
-                id="gpt-4o", name="GPT-4o", api="openai-completions",
-                provider="openai", base_url="https://api.openai.com/v1",
-                context_window=128000, max_tokens=4096, reasoning=True,
+                id="gpt-4o",
+                name="GPT-4o",
+                api="openai-completions",
+                provider="openai",
+                base_url="https://api.openai.com/v1",
+                context_window=128000,
+                max_tokens=4096,
+                reasoning=True,
             ),
             reasoning=reasoning,
         )
@@ -577,9 +601,13 @@ class TestToolExecutionModeThreadedToLoop:
         return AgentSession(
             session_log=InMemorySessionLog(),
             model=Model(
-                id="gpt-4o", name="GPT-4o", api="openai-completions",
-                provider="openai", base_url="https://api.openai.com/v1",
-                context_window=128000, max_tokens=4096,
+                id="gpt-4o",
+                name="GPT-4o",
+                api="openai-completions",
+                provider="openai",
+                base_url="https://api.openai.com/v1",
+                context_window=128000,
+                max_tokens=4096,
             ),
             tool_execution_mode=tool_execution_mode,
         )
@@ -651,9 +679,13 @@ class TestAbortDuringPrompt:
         return AgentSession(
             session_log=InMemorySessionLog(),
             model=Model(
-                id="gpt-4o", name="GPT-4o", api="openai-completions",
-                provider="openai", base_url="https://api.openai.com/v1",
-                context_window=128000, max_tokens=4096,
+                id="gpt-4o",
+                name="GPT-4o",
+                api="openai-completions",
+                provider="openai",
+                base_url="https://api.openai.com/v1",
+                context_window=128000,
+                max_tokens=4096,
             ),
         )
 
@@ -712,9 +744,13 @@ class TestContinueConversation:
         return AgentSession(
             session_log=InMemorySessionLog(),
             model=Model(
-                id="gpt-4o", name="GPT-4o", api="openai-completions",
-                provider="openai", base_url="https://api.openai.com/v1",
-                context_window=128000, max_tokens=4096,
+                id="gpt-4o",
+                name="GPT-4o",
+                api="openai-completions",
+                provider="openai",
+                base_url="https://api.openai.com/v1",
+                context_window=128000,
+                max_tokens=4096,
             ),
         )
 
@@ -939,9 +975,13 @@ class TestExtensions:
         return AgentSession(
             session_log=InMemorySessionLog(),
             model=Model(
-                id="gpt-4o", name="GPT-4o", api="openai-completions",
-                provider="openai", base_url="https://api.openai.com/v1",
-                context_window=128000, max_tokens=4096,
+                id="gpt-4o",
+                name="GPT-4o",
+                api="openai-completions",
+                provider="openai",
+                base_url="https://api.openai.com/v1",
+                context_window=128000,
+                max_tokens=4096,
             ),
             extensions=extensions,
         )
@@ -959,17 +999,20 @@ class TestExtensions:
 
     def test_extension_can_register_tool(self):
         """Extension can register a tool via the API."""
+
         async def _exec(tool_call_id, params, signal, on_update, ctx):
             return {"content": [{"type": "text", "text": "ok"}]}
 
         def my_ext(api):
-            api.register_tool({
-                "name": "my_tool",
-                "label": "My Tool",
-                "description": "A test tool",
-                "parameters": {"type": "object", "properties": {}},
-                "execute": _exec,
-            })
+            api.register_tool(
+                {
+                    "name": "my_tool",
+                    "label": "My Tool",
+                    "description": "A test tool",
+                    "parameters": {"type": "object", "properties": {}},
+                    "execute": _exec,
+                }
+            )
 
         self.create_session(extensions=[my_ext])
         # The ExtensionAPI tracks tools internally
@@ -987,9 +1030,7 @@ class TestExtensions:
             api.on("agent_start", lambda e: events_received.append(e))
 
         session = self.create_session(extensions=[my_ext])
-        asyncio.run(
-            session._events.emit(AgentEvent(type="agent_start", timestamp=0))
-        )
+        asyncio.run(session._events.emit(AgentEvent(type="agent_start", timestamp=0)))
         assert len(events_received) == 1
         assert events_received[0].type == "agent_start"
 
@@ -1004,9 +1045,9 @@ class TestExtensions:
         """
         from unittest.mock import patch
 
-        from tau_ai.streaming import DoneEvent, TextDeltaEvent
-        from tau_ai.types import AssistantMessage, TextContent, Usage
-        from tau_ai.types import ToolCall as TauToolCall
+        from tau_llm.streaming import DoneEvent, TextDeltaEvent
+        from tau_llm.types import AssistantMessage, TextContent, Usage
+        from tau_llm.types import ToolCall as TauToolCall
 
         received: list = []
 
@@ -1034,9 +1075,13 @@ class TestExtensions:
         session = AgentSession(
             session_log=InMemorySessionLog(),
             model=Model(
-                id="gpt-4o", name="GPT-4o", api="openai-completions",
-                provider="openai", base_url="https://api.openai.com/v1",
-                context_window=128000, max_tokens=4096,
+                id="gpt-4o",
+                name="GPT-4o",
+                api="openai-completions",
+                provider="openai",
+                base_url="https://api.openai.com/v1",
+                context_window=128000,
+                max_tokens=4096,
             ),
             tools=[echo_tool],
             extensions=[my_ext],
@@ -1079,7 +1124,9 @@ class TestExtensions:
             call_count[0] += 1
             if call_count[0] == 1:
                 tool_call = TauToolCall(
-                    type="toolCall", id="call_1", name="echo",
+                    type="toolCall",
+                    id="call_1",
+                    name="echo",
                     arguments={"text": "hi"},
                 )
                 final = _assistant([tool_call], "toolUse")
@@ -1092,9 +1139,7 @@ class TestExtensions:
                 ]
             )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", side_effect=fake_stream_simple
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=fake_stream_simple):
             asyncio.run(session.prompt("run echo"))
 
         assert len(received) == 1
@@ -1129,9 +1174,13 @@ class TestExtensions:
         session = AgentSession(
             session_log=InMemorySessionLog(),
             model=Model(
-                id="gpt-4o", name="GPT-4o", api="openai-completions",
-                provider="openai", base_url="https://api.openai.com/v1",
-                context_window=128000, max_tokens=4096,
+                id="gpt-4o",
+                name="GPT-4o",
+                api="openai-completions",
+                provider="openai",
+                base_url="https://api.openai.com/v1",
+                context_window=128000,
+                max_tokens=4096,
             ),
             extensions=None,
         )
@@ -1139,6 +1188,7 @@ class TestExtensions:
 
     def test_extension_api_has_ui(self):
         """ExtensionAPI exposes a ui property."""
+
         def my_ext(api):
             assert hasattr(api, "ui")
             ui = api.ui
@@ -1150,6 +1200,7 @@ class TestExtensions:
         """ExtensionAPI.set_session_name() Fail-Early raises when the bound
         session's log has no durable name slot (the SDK's in-memory log, as
         this fixture uses) — session naming needs a file-backed log (S64)."""
+
         def my_ext(api):
             assert api._session is not None
             with pytest.raises(RuntimeError):
@@ -1159,6 +1210,7 @@ class TestExtensions:
 
     def test_extension_api_can_register_command(self):
         """ExtensionAPI.register_command() lands in the session-owned registry."""
+
         def my_ext(api):
             api.register_command("mycmd", {"description": "A command"})
             assert "mycmd" in api._registry._commands
@@ -1174,6 +1226,7 @@ class TestExtensions:
         report ``handled``. Now it returns an ``ExtensionCommandResult`` whose
         ``output`` is exactly what the handler returned.
         """
+
         def my_ext(api):
             def _report(args, ctx):
                 return f"report for {args!r}"
@@ -1188,6 +1241,7 @@ class TestExtensions:
 
     def test_run_command_awaits_async_handler_output(self):
         """An async handler's awaited return value is captured, not the coroutine."""
+
         def my_ext(api):
             async def _areport(args, ctx):
                 return "async output"
@@ -1201,6 +1255,7 @@ class TestExtensions:
 
     def test_run_command_none_output_has_no_text(self):
         """A handler returning None is handled but shows no output box."""
+
         def my_ext(api):
             def _silent(args, ctx):
                 return None
@@ -1215,10 +1270,9 @@ class TestExtensions:
 
     def test_run_command_empty_string_output_has_no_text(self):
         """An empty-string return yields no output box (nothing to show)."""
+
         def my_ext(api):
-            api.register_command(
-                "blank", {"description": "b", "handler": lambda args, ctx: ""}
-            )
+            api.register_command("blank", {"description": "b", "handler": lambda args, ctx: ""})
 
         session = self.create_session(extensions=[my_ext])
         result = asyncio.run(session.run_extension_command("blank"))
@@ -1227,6 +1281,7 @@ class TestExtensions:
 
     def test_run_command_non_str_output_is_stringified(self):
         """A non-str return is coerced to text for the display channels (honest, not dropped)."""
+
         def my_ext(api):
             api.register_command(
                 "num", {"description": "n", "handler": lambda args, ctx: [1, 2, 3]}
@@ -1249,6 +1304,7 @@ class TestExtensions:
 
     def test_command_args_placeholder_declared(self):
         """A command's declared ``"args"`` placeholder is exposed for the palette."""
+
         def my_ext(api):
             api.register_command(
                 "search",
@@ -1260,6 +1316,7 @@ class TestExtensions:
 
     def test_command_args_absent_is_none(self):
         """A command that declares no ``"args"`` returns None (no modal on dispatch)."""
+
         def my_ext(api):
             api.register_command("plain", {"description": "p", "handler": lambda a, c: a})
 
@@ -1273,6 +1330,7 @@ class TestExtensions:
 
     def test_command_args_non_string_raises(self):
         """Fail-Early: a non-string ``"args"`` is a construction bug, so it raises."""
+
         def my_ext(api):
             api.register_command(
                 "bad", {"description": "b", "args": True, "handler": lambda a, c: a}
@@ -1286,6 +1344,7 @@ class TestExtensions:
 
     def test_get_extension_shortcuts_lists_registered(self):
         """Registered shortcuts are exposed as (key, command, args, description)."""
+
         def my_ext(api):
             api.register_shortcut("g", "fleet_status", description="Fleet status")
             api.register_shortcut("1", "abort_child", args="c-1")
@@ -1298,6 +1357,7 @@ class TestExtensions:
 
     def test_get_extension_shortcuts_description_falls_back_to_command(self):
         """An undescribed shortcut inherits its target command's description."""
+
         def my_ext(api):
             api.register_command(
                 "fleet_status", {"description": "Show the fleet", "handler": lambda a, c: None}
@@ -1412,10 +1472,7 @@ class TestInMemoryIsolation:
             asyncio.run(session.prompt(f"prompt {i}"))
 
         for i, session in enumerate(sessions):
-            user_msgs = [
-                m for m in session.messages
-                if m.get("role") == "user"
-            ]
+            user_msgs = [m for m in session.messages if m.get("role") == "user"]
             assert len(user_msgs) >= 1
             assert user_msgs[0].get("content")[0].get("text") == f"prompt {i}"
 
@@ -1432,9 +1489,13 @@ class TestCompact:
         return AgentSession(
             session_log=InMemorySessionLog(),
             model=Model(
-                id="gpt-4o", name="GPT-4o", api="openai-completions",
-                provider="openai", base_url="https://api.openai.com/v1",
-                context_window=128000, max_tokens=4096,
+                id="gpt-4o",
+                name="GPT-4o",
+                api="openai-completions",
+                provider="openai",
+                base_url="https://api.openai.com/v1",
+                context_window=128000,
+                max_tokens=4096,
             ),
         )
 
@@ -1828,6 +1889,7 @@ class TestBuildTurnToolsRefusesDuplicateNames:
 
     def test_build_system_prompt_includes_tools(self):
         """_build_system_prompt() includes tool snippets."""
+
         def execute(ctx):
             return "test"
 

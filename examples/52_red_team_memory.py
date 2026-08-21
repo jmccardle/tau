@@ -331,9 +331,7 @@ async def run_red_team_swarm(
 
     deduped = review.dedupe_findings(raw)
 
-    async def _gate(
-        finding: dict[str, Any], _index: int
-    ) -> tuple[dict[str, Any], gate.GateResult]:
+    async def _gate(finding: dict[str, Any], _index: int) -> tuple[dict[str, Any], gate.GateResult]:
         verdict = await recheck_finding(
             finding, diff, model=model, cwd=cwd, timeout=child_timeout, corpus=corpus
         )

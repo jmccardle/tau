@@ -29,7 +29,7 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.messages import convert_to_llm
-from tau_ai.types import Model
+from tau_llm.types import Model
 from tau_coding_agent.session_store import Session
 
 # ── import the kit as a top-level package (examples/ on the path) ────────────
@@ -39,7 +39,6 @@ if _EXAMPLES not in sys.path:
     sys.path.insert(0, _EXAMPLES)
 
 from ext_kit import state  # noqa: E402  (path insertion must precede the import)
-
 
 # ── fixtures: a real (on-disk) session + a bound ExtensionAPI ─────────────────
 

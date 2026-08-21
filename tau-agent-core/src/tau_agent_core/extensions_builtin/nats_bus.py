@@ -132,7 +132,7 @@ tau-002 (H9/T8) — what is built, and what is not
 Built: the client half of publish-before-perform. Each effector call subscribes
 the ack subject **before** publishing (so a fast effector cannot ack into a
 subscription that does not exist yet), publishes, then awaits the ack —
-polling the tool's :class:`~tau_ai.abort.AbortSignal` between short waits so an
+polling the tool's :class:`~tau_llm.abort.AbortSignal` between short waits so an
 aborted turn does not park this coroutine, bounded by ``ack_timeout_s`` so an
 unacked mutation raises rather than hanging. An ack whose payload says
 ``ok: False`` or carries a non-null ``error`` raises too: "zero orphans" means
@@ -186,8 +186,21 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-import nats
-import nats.errors
+# nats-py is the ``[bus]`` extra, not a base dependency of tau-agent-core. This
+# file is never imported by the package — it is read, compiled and exec'd by
+# ``_load_one_extension``, so this line runs only when someone actually loads the
+# extension. The loader reports the exception verbatim as "failed to load
+# extension <path>: <error>", and "No module named 'nats'" is not something a user
+# can act on: they asked for a bus, not for a library they have never heard of.
+try:
+    import nats
+    import nats.errors
+except ModuleNotFoundError as _exc:  # pragma: no cover - depends on install extras
+    raise ImportError(
+        "the nats_bus extension needs the 'bus' extra, which this install does "
+        "not have: pip install 'ffwf-tau-agent-core[bus]'. Nothing else in τ "
+        "requires nats-py."
+    ) from _exc
 
 #: The general subject namespace this extension type touches (H7). A concrete
 #: instance binds the configured subset. ``events.sensation.>`` and
@@ -220,7 +233,7 @@ class VerbSpec:
         description: What the model is told the tool does.
         parameters: This verb's JSON Schema, handed verbatim to
             ``register_tool``. It is also the ONLY argument validation τ does:
-            :func:`~tau_ai.tools.validate_tool_arguments` checks it in
+            :func:`~tau_llm.tools.validate_tool_arguments` checks it in
             ``AgentLoop._prepare_tool_call`` before ``execute`` is reached, so
             this file does not re-check types. See :func:`_make_effector` for
             where that boundary sits and what deliberately falls the other side
@@ -329,7 +342,7 @@ VERBS: dict[str, VerbSpec] = {
     #     comes back as a ``status: "error"`` / ``"refused"`` ack, which is a
     #     real answer rather than a guess this side would have had to invent.
     #   * coordinates are ``integer``, and τ's validator rejects a ``bool`` for
-    #     an integer param (``tau_ai/tools.py``). That matters here rather than
+    #     an integer param (``tau_llm/tools.py``). That matters here rather than
     #     abstractly: ``verbs._require_int`` rejects bools too, so without the
     #     τ-side check a model emitting ``{"x": true}`` would have burned a
     #     round trip to be told what τ already knew.

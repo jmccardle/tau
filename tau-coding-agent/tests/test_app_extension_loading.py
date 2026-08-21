@@ -19,7 +19,7 @@ from __future__ import annotations
 import pytest
 
 from tau_coding_agent.app import Parley
-from tau_coding_agent.backends import create_backend
+from tau_coding_agent.backends import create_backend, resolve_tool_names
 
 # A file extension registering a tool_result hook — presence on the backend's
 # live runner proves register(api) ran against THIS session (not a standalone one).
@@ -102,9 +102,71 @@ async def test_discovered_failure_surfaces_notice(app, monkeypatch):
 
 def test_apply_run_config_no_builtin_tools_drops_builtins(app):
     """--no-builtin-tools sets tools=[] (extension tools survive the later merge)."""
-    app._no_builtin_tools = True
+    app._no_tools = "builtin"
     mc = app._apply_run_config({"backend": "openai", "model": "m", "tools": ["read"]})
     assert mc["tools"] == []
+    # The policy rides alongside, so TauBackend can tell this apart from --no-tools.
+    assert mc["no_tools"] == "builtin"
+
+
+def test_apply_run_config_no_tools_marks_the_run_all(app):
+    """--no-tools empties the built-ins AND declares "all", the only difference."""
+    app._no_tools = "all"
+    mc = app._apply_run_config({"backend": "openai", "model": "m", "tools": ["read"]})
+    assert mc["tools"] == []
+    assert mc["no_tools"] == "all"
+
+
+def test_model_switch_under_no_tools_does_not_restore_tools(app):
+    """The mid-session ``/model`` switch must not hand the tools back.
+
+    ``_apply_run_config`` runs at EVERY ``create_backend``, so switching to a
+    completely different model entry — one that declares its own tool list —
+    re-applies the run's policy to it. Before ``--no-tools`` became run-level it
+    lived on ONE entry (``resolve_model_config`` wrote ``tools: []`` there), and
+    the entry the switch selected still had every tool.
+    """
+    app._no_tools = "all"
+    first = app._apply_run_config({"backend": "openai", "model": "a", "tools": ["read"]})
+    switched = app._apply_run_config(
+        {"backend": "openai", "model": "b", "tools": ["read", "write", "bash"]}
+    )
+    assert first["tools"] == [] and first["no_tools"] == "all"
+    assert switched["tools"] == [] and switched["no_tools"] == "all"
+    assert resolve_tool_names(switched) == []
+
+
+def test_model_switch_under_a_tool_allowlist_keeps_the_allowlist(app):
+    """``--tools`` is the same class of run-level policy as ``--no-tools``.
+
+    It had the identical defect: it took effect only by triggering
+    ``resolve_model_config``, which wrote the allowlist into the ONE entry the
+    process started on, so a ``/model`` switch selected an entry that still had
+    every tool it declared. The allowlist now rides run-level and is re-applied
+    to whichever entry the switch chose.
+    """
+    app._tool_allowlist = ["read"]
+    first = app._apply_run_config({"backend": "openai", "model": "a", "tools": ["read", "bash"]})
+    switched = app._apply_run_config(
+        {"backend": "openai", "model": "b", "tools": ["read", "write", "bash"]}
+    )
+    assert first["tools"] == ["read"]
+    assert switched["tools"] == ["read"]
+    assert resolve_tool_names(switched) == ["read"]
+
+
+def test_no_tools_beats_a_tool_allowlist(app):
+    """Both flags given: ``--no-tools`` is the stronger claim and must win.
+
+    ``_apply_run_config`` writes the allowlist before the suppression for this
+    reason; the other order would let ``-t`` hand back tools ``-nt`` withheld.
+    Mirrors resolve_model_config's if/elif on the headless path.
+    """
+    app._tool_allowlist = ["read", "bash"]
+    app._no_tools = "all"
+    mc = app._apply_run_config({"backend": "openai", "model": "a", "tools": ["read", "bash"]})
+    assert mc["tools"] == []
+    assert mc["no_tools"] == "all"
 
 
 def test_apply_run_config_exclude_tools_rides_as_denylist(app):

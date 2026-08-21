@@ -19,14 +19,16 @@ import asyncio
 import sys
 from dataclasses import dataclass, field
 
-from tau_ai.models import EXTENDED_THINKING_LEVELS
+from tau_llm.models import EXTENDED_THINKING_LEVELS
 from tau_coding_agent.config import TAU_DIR, ConfigError, load_config
 from tau_coding_agent.headless import (
     CLIError,
     parse_ext_config_overrides,
     resolve_model_config,
+    resolve_no_tools,
     run_print,
 )
+from tau_coding_agent.tagline import FUN_DEFAULT
 
 __all__ = ["TAU_DIR", "load_config", "main"]
 
@@ -62,7 +64,11 @@ class CLIArgs:
     # connection — the broker URL is per-extension config.
     bus: bool = False
     exclude_tools: str | None = None  # -xt → comma-separated tool denylist
-    no_builtin_tools: bool = False  # -nbt → (degenerates to --no-tools until E1)
+    # -nbt → drop the BUILT-IN set only; extension-registered tools survive.
+    # Paired with ``no_tools`` (-nt, zero tools of any kind) by
+    # ``headless.resolve_no_tools``, which is where the two become one value —
+    # nothing downstream reads either boolean.
+    no_builtin_tools: bool = False
     no_session: bool = False  # --no-session → ephemeral, unpersisted run
     # Per-extension config overrides (S40): repeatable --ext-config NAME.KEY=VALUE.
     # Applied over ~/.tau/config.json "extensions" per key (CLI > config.json).
@@ -101,6 +107,11 @@ class CLIArgs:
     import_session: str | None = None  # --import-session PATH
     export_session: list[str] | None = None  # --export-session REF PATH (nargs=2)
     verbose: bool = False
+    # --fun / --no-fun: randomize the TUI's startup tagline. Reaches exactly one
+    # string (tau_coding_agent.tagline.pick_tagline) and nothing else; inert in
+    # every headless path, which prints no tagline. The DEFAULT is the packaged
+    # one — False in a checkout, rewritten to True by package.sh.
+    fun: bool = FUN_DEFAULT
 
     @property
     def is_verbose(self) -> bool:
@@ -181,7 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-nt",
         dest="no_tools",
         action="store_true",
-        help="disable all tools (read-only agent)",
+        help="offer the model no tools at all, built-in or extension-registered",
     )
     # Extensions + tool-filtering + ephemeral-session flags (pi args.ts:104-153).
     parser.add_argument(
@@ -228,7 +239,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-nbt",
         dest="no_builtin_tools",
         action="store_true",
-        help="disable built-in tools (currently degenerates to --no-tools; see docs)",
+        help="disable the built-in tools; extension-registered tools still apply",
     )
     parser.add_argument(
         "--no-session",
@@ -346,6 +357,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="verbose logging (long-only; pi-aligned, -v is --version)",
     )
+    # The one paired boolean in the flag set, because it is the one flag whose
+    # default flips between a source checkout (off) and a release (on) — so BOTH
+    # directions have to be expressible. A released τ needs --no-fun to get a
+    # reproducible screen back; a checkout needs --fun to see the other taglines.
+    parser.add_argument(
+        "--fun",
+        action=argparse.BooleanOptionalAction,
+        default=FUN_DEFAULT,
+        help=(
+            "pick the startup tagline at random instead of always the first "
+            f"(default: {'on' if FUN_DEFAULT else 'off'}; affects nothing but that one line)"
+        ),
+    )
     return parser
 
 
@@ -383,13 +407,22 @@ def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
         import_session=ns.import_session,
         export_session=list(ns.export_session) if ns.export_session else None,
         verbose=ns.verbose,
+        fun=ns.fun,
     )
 
 
 def _launch_tui(args: CLIArgs, config: dict) -> int:
     """Launch the Parley TUI, applying model/system-prompt overrides."""
     overrides: dict = {}
-    if args.model or args.provider or args.tools or args.no_tools or args.thinking:
+    # Neither ``args.no_tools`` nor ``args.tools`` is a trigger here. Both used to
+    # be, and for both that was the only way they took effect in the TUI: this
+    # block writes into ONE model ENTRY, so ``/model`` mid-session switched to a
+    # different entry and silently handed the tools back — the denied set under
+    # ``-nt``, the un-allowlisted set under ``-t``. Run-level policy has to ride in
+    # ``run_config`` with the other tool flags (see below), which is where both
+    # now go. ``--model``/``--provider``/``--thinking`` stay: those really do
+    # describe one model entry.
+    if args.model or args.provider or args.thinking:
         name, model_config = resolve_model_config(config, args)
         # Merge over any existing entry so config-derived keys (api_key, etc.)
         # survive when only some fields are overridden.
@@ -401,14 +434,23 @@ def _launch_tui(args: CLIArgs, config: dict) -> int:
 
     # Run-level flags apply to EVERY backend the TUI creates, so they ride
     # separately from the per-model ``overrides`` (a model switch must not drop
-    # them, and -xt/-nbt/--append-system-prompt don't trigger the override block
-    # above): explicit ``-e`` paths + ``-ne`` discovery, plus the tool/prompt
+    # them, and -xt/-nt/-nbt/--append-system-prompt don't trigger the override
+    # block above): explicit ``-e`` paths + ``-ne`` discovery, plus the tool/prompt
     # flags (E5 §2.2-2.3). Passed even when empty so the app has a definite policy.
     exclude_tools = (
         [t.strip() for t in args.exclude_tools.split(",") if t.strip()]
         if args.exclude_tools
         else []
     )
+    # ``--tools``: the built-in ALLOWLIST, parsed here so a malformed value fails
+    # before the TUI launches, and carried run-level for the reason above.
+    # ``None`` (flag absent) is distinct from a parsed list and means "no
+    # allowlist" — the model entry's own ``tools`` key, if any, still decides.
+    tool_allowlist: list[str] | None = None
+    if args.tools:
+        tool_allowlist = [t.strip() for t in args.tools.split(",") if t.strip()]
+        if not tool_allowlist:
+            raise CLIError("--tools given but no tool names parsed")
     # Per-extension config overrides (S40): parse ``--ext-config`` here so a
     # malformed item surfaces as a clean CLI error BEFORE the TUI launches; the app
     # merges them over config.json's ``"extensions"`` at each backend load.
@@ -420,7 +462,12 @@ def _launch_tui(args: CLIArgs, config: dict) -> int:
         # switch must not silently revoke it mid-session.
         "bus": args.bus,
         "exclude_tools": exclude_tools,
-        "no_builtin_tools": args.no_builtin_tools,
+        "tools": tool_allowlist,
+        # ONE resolved value for -nt/-nbt (``"all"``/``"builtin"``/``None``),
+        # collapsed here at the argv boundary exactly as pi does in
+        # main.ts:424-428. The app never sees the two booleans, so it has no
+        # interaction left to re-derive.
+        "no_tools": resolve_no_tools(args),
         "append_system_prompt": list(args.append_system_prompt or []),
         "ext_config": ext_config_overrides,
         # --store (W12): threaded to Parley.__init__, which resolves it via
@@ -433,9 +480,30 @@ def _launch_tui(args: CLIArgs, config: dict) -> int:
         "session_dir": args.session_dir,
     }
 
-    from tau_coding_agent.app import Parley
+    # Textual is the ``[tui]`` extra, not a base dependency — ``tau -p`` runs a
+    # full turn without it. This lazy import is the ONLY crossing into the Textual
+    # app, so it is also the only place the absence can be reported. A bare
+    # ModuleNotFoundError naming `textual` tells the user nothing: they installed
+    # τ, not Textual, and the fix is an extra they were never shown.
+    # Only the two libraries the extra actually provides are translated. Any other
+    # ModuleNotFoundError from app.py's import chain is a real defect and must keep
+    # its own traceback rather than be relabelled as a packaging problem.
+    try:
+        from tau_coding_agent.app import Parley
+    except ModuleNotFoundError as exc:
+        if exc.name not in {"textual", "rich"}:
+            raise
+        raise CLIError(
+            f"the interactive TUI needs the 'tui' extra ({exc.name} is missing): "
+            "pip install 'ffwf-tau-coding-agent[tui]'. Headless mode "
+            "(tau -p ...) works without it."
+        ) from exc
 
-    app = Parley(cli_overrides=overrides or None, cli_run_config=run_config)
+    # `fun` rides as its own argument rather than inside run_config: run_config is
+    # threaded into every backend this app builds, and the tagline flag has no
+    # business being visible from there. This is the flag's ONLY crossing into the
+    # app, and Parley resolves it to a string in __init__.
+    app = Parley(cli_overrides=overrides or None, cli_run_config=run_config, fun=args.fun)
     app.run()
     return 0
 

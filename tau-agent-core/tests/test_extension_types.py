@@ -34,7 +34,6 @@ from tau_agent_core.extension_types import (
 from tau_agent_core.extensions.registry import ExtensionRegistry
 from tau_agent_core.events import EventBus
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # ExtensionAPI — method existence and basic properties
 # ──────────────────────────────────────────────────────────────────────────────

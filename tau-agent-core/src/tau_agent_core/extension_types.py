@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal
 from uuid import uuid4
 
 from tau_agent_core.compaction import estimate_context_tokens
+from tau_agent_core.tools.base import ExtensionToolDefinition
 from tau_agent_core.submission import (
     MultitaskStrategy,
     Submission,
@@ -1143,7 +1144,7 @@ class ExtensionContext:
         return entries
 
     def resolve_model(self, model: Any = None) -> Any:
-        """Resolve ``model`` to a ``tau_ai.Model``.
+        """Resolve ``model`` to a ``tau_llm.Model``.
 
         ``None`` → the session's current model. A **string** → looked up in the same
         config ``models`` registry the TUI picks from, via the resolver already injected
@@ -1201,11 +1202,11 @@ class ExtensionContext:
             messages: τ message dicts (``{"role": ..., "content": ...}``).
             model: model name (resolved via the config registry), a ``Model``, or None
                 for the session's current model.
-            constraints: an optional ``tau_ai.DecodeConstraints``.
+            constraints: an optional ``tau_llm.DecodeConstraints``.
             api_key: overrides the session's key.
 
         Returns:
-            A ``tau_ai.AssistantMessage``.
+            A ``tau_llm.AssistantMessage``.
 
         Raises:
             RuntimeError: the completion errored or was aborted.
@@ -1293,7 +1294,7 @@ class ExtensionContext:
         output *with* it. Stripping here would hand the caller a string the constraint
         never produced — and one that fails the very membership check it just passed.
         """
-        from tau_ai.types import TextContent
+        from tau_llm.types import TextContent
 
         response = await self.complete(
             messages, model=model, constraints=constraints, api_key=api_key
@@ -2120,7 +2121,7 @@ class ExtensionAPI:
         channel = ext_channel(self._emitting_extension_name(), topic)
         await self._event_bus.emit_channel(channel, payload)
 
-    def register_tool(self, definition: dict) -> None:
+    def register_tool(self, definition: dict | ExtensionToolDefinition) -> None:
         """Register a tool callable by the LLM (pi ``ToolDefinition`` shape).
 
         Mirrors pi's ``registerTool(tool: ToolDefinition)``
@@ -2137,29 +2138,42 @@ class ExtensionAPI:
         Optional keys: ``label`` (defaults to ``name`` for UI), ``prompt_snippet``,
         ``prompt_guidelines``, ``execution_mode`` ("sequential"/"parallel").
 
-        Adds ``_source: "extension"`` and registers with the session-owned
-        registry; the resolved tool is merged into the loop's tools next turn.
+        The dict is validated into an
+        :class:`~tau_agent_core.tools.base.ExtensionToolDefinition` — the schema
+        for this shape — with ``source="extension"``. Passing that model directly
+        works too. Either way the registry stores the model, so every reader
+        downstream sees typed attributes instead of a mapping whose keys it has to
+        guess; the resolved tool is merged into the loop's tools next turn.
 
         Raises:
             ValueError: if a required key is missing.
             TypeError: if ``parameters`` is not a dict or ``execute`` is not callable.
         """
+        # These four checks predate the model and are KEPT rather than delegated
+        # to pydantic: they name the offending key in register_tool's own words,
+        # and their exception types (ValueError for a missing key, TypeError for a
+        # wrong one) are what callers and tests already handle. Pydantic would
+        # raise ValidationError for both.
+        if isinstance(definition, ExtensionToolDefinition):
+            fields = definition.model_dump()
+        else:
+            fields = dict(definition)  # don't mutate the caller's dict
         for key in ("name", "description", "parameters", "execute"):
-            if key not in definition:
+            if key not in fields:
                 raise ValueError(f"register_tool: missing required key '{key}'")
-        if not isinstance(definition["parameters"], dict):
+        if not isinstance(fields["parameters"], dict):
             raise TypeError("register_tool: 'parameters' must be a JSON-schema dict")
-        if not callable(definition["execute"]):
+        if not callable(fields["execute"]):
             raise TypeError("register_tool: 'execute' must be callable")
 
-        definition = dict(definition)  # don't mutate caller's dict
-        definition["_source"] = "extension"
-        self._registry.register_tool(definition)
+        fields["_source"] = "extension"
+        resolved = ExtensionToolDefinition.model_validate(fields)
+        self._registry.register_tool(resolved)
         # Attribute the tool to THIS extension for the /extensions surface (E5 §5 /
         # S34). The registry stores tools globally (by name); the per-extension
         # runner bucket is the only place that records which extension owns it.
         if self._hook_handlers is not None:
-            self._hook_handlers.tools.append(definition["name"])
+            self._hook_handlers.tools.append(resolved.name)
 
     def get_all_tools(self) -> list[Any]:
         """Get all registered tools.

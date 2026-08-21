@@ -22,7 +22,6 @@ from tau_coding_agent.headless import (
     resolve_ui_defaults,
 )
 
-
 # ── the flag parses onto CLIArgs ────────────────────────────────────────────
 
 

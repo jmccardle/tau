@@ -20,7 +20,7 @@ from tau_coding_agent.backends import create_backend
 
 # A file extension with a tool_result hook (appends a marker) and a session_shutdown
 # teardown that writes a marker file — the file proves the S41 teardown fired on disable.
-_EXT = '''
+_EXT = """
 import pathlib
 
 DOWN = pathlib.Path({down!r})
@@ -34,7 +34,7 @@ def register(api):
 
     api.on("tool_result", on_tool_result)
     api.on("session_shutdown", lambda e, c: DOWN.write_text(str(e.get("reason", ""))))
-'''
+"""
 
 
 @pytest.fixture
@@ -97,7 +97,9 @@ async def test_slash_reload_rebinds(app, tmp_path):
         await pilot.pause()
 
         await app.on_input_submitted(
-            Input.Submitted(app.query_one("#chat-input", ChatInput), "/extensions disable probe_ext")
+            Input.Submitted(
+                app.query_one("#chat-input", ChatInput), "/extensions disable probe_ext"
+            )
         )
         await pilot.pause()
         assert await _emit_tool_result(app) is None

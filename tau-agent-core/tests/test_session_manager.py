@@ -22,7 +22,6 @@ import pytest
 
 from tau_agent_core.session_manager import SessionInfo, SessionManager, SessionState
 
-
 # =============================================================================
 # Test 1: Session creation and loading
 # =============================================================================
@@ -74,7 +73,9 @@ class TestSessionCreation:
     def test_load_returns_session_state(self, tmp_path):
         """load() reads a JSONL file and returns a SessionState."""
         mgr = SessionManager(sessions_dir=str(tmp_path))
-        session_path = mgr.new_session(model_id="gpt-4o", )
+        session_path = mgr.new_session(
+            model_id="gpt-4o",
+        )
 
         state = mgr.load(session_path)
         assert isinstance(state, SessionState)
@@ -122,11 +123,13 @@ class TestSessionCreation:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "e1",
-            "type": "message",
-            "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "e1",
+                "type": "message",
+                "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+            }
+        )
 
         with open(session_path, "r") as f:
             for line in f:
@@ -150,15 +153,17 @@ class TestAppendMessages:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "m1",
-            "type": "message",
-            "timestamp": 1000,
-            "message": {
-                "role": "user",
-                "content": [{"type": "text", "text": "hello"}],
-            },
-        })
+        mgr.append_entry(
+            {
+                "id": "m1",
+                "type": "message",
+                "timestamp": 1000,
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "hello"}],
+                },
+            }
+        )
 
         messages = mgr.get_active_messages()
         assert len(messages) == 1
@@ -172,15 +177,17 @@ class TestAppendMessages:
         mgr._active_session_path = session_path
 
         for i in range(3):
-            mgr.append_entry({
-                "id": f"m{i}",
-                "type": "message",
-                "timestamp": 1000 + i,
-                "message": {
-                    "role": "user",
-                    "content": [{"type": "text", "text": f"msg{i}"}],
-                },
-            })
+            mgr.append_entry(
+                {
+                    "id": f"m{i}",
+                    "type": "message",
+                    "timestamp": 1000 + i,
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": f"msg{i}"}],
+                    },
+                }
+            )
 
         messages = mgr.get_active_messages()
         assert len(messages) == 3
@@ -194,12 +201,14 @@ class TestAppendMessages:
         mgr._active_session_path = session_path
 
         original_active_id = mgr._active_entry_id
-        mgr.append_entry({
-            "id": "m1",
-            "type": "message",
-            "timestamp": 1000,
-            "message": {"role": "user", "content": []},
-        })
+        mgr.append_entry(
+            {
+                "id": "m1",
+                "type": "message",
+                "timestamp": 1000,
+                "message": {"role": "user", "content": []},
+            }
+        )
 
         entries = mgr._read_file(session_path)
         # The message should have the session entry's id as parent
@@ -212,11 +221,13 @@ class TestAppendMessages:
         mgr._active_session_path = session_path
 
         before = int(time.time() * 1000)
-        mgr.append_entry({
-            "id": "m1",
-            "type": "message",
-            "message": {"role": "user", "content": []},
-        })
+        mgr.append_entry(
+            {
+                "id": "m1",
+                "type": "message",
+                "message": {"role": "user", "content": []},
+            }
+        )
         after = int(time.time() * 1000)
 
         entries = mgr._read_file(session_path)
@@ -229,11 +240,13 @@ class TestAppendMessages:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "type": "message",
-            "timestamp": 1000,
-            "message": {"role": "user", "content": []},
-        })
+        mgr.append_entry(
+            {
+                "type": "message",
+                "timestamp": 1000,
+                "message": {"role": "user", "content": []},
+            }
+        )
 
         entries = mgr._read_file(session_path)
         assert "id" in entries[1]
@@ -253,12 +266,14 @@ class TestAppendMessages:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "m1",
-            "type": "message",
-            "timestamp": 1000,
-            "message": {"role": "assistant", "content": [{"type": "text", "text": "Hi there"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "m1",
+                "type": "message",
+                "timestamp": 1000,
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "Hi there"}]},
+            }
+        )
 
         messages = mgr.get_active_messages()
         assert isinstance(messages, list)
@@ -281,20 +296,24 @@ class TestTreeNavigation:
         mgr._active_session_path = session_path
 
         # Build a tree: session -> m1 -> m2
-        mgr.append_entry({
-            "id": "m1",
-            "type": "message",
-            "timestamp": 1,
-            "parent_id": None,
-            "message": {"role": "user", "content": [{"type": "text", "text": "hello"}]},
-        })
-        mgr.append_entry({
-            "id": "m2",
-            "type": "message",
-            "timestamp": 2,
-            "parent_id": "m1",
-            "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "m1",
+                "type": "message",
+                "timestamp": 1,
+                "parent_id": None,
+                "message": {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+            }
+        )
+        mgr.append_entry(
+            {
+                "id": "m2",
+                "type": "message",
+                "timestamp": 2,
+                "parent_id": "m1",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+            }
+        )
 
         # Navigate to m1 (go back in tree)
         mgr.navigate("m1")
@@ -308,18 +327,32 @@ class TestTreeNavigation:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "a", "type": "message", "timestamp": 1,
-            "message": {"role": "user", "content": [{"type": "text", "text": "1"}]},
-        })
-        mgr.append_entry({
-            "id": "b", "type": "message", "timestamp": 2, "parent_id": "a",
-            "message": {"role": "assistant", "content": [{"type": "text", "text": "2"}]},
-        })
-        mgr.append_entry({
-            "id": "c", "type": "message", "timestamp": 3, "parent_id": "b",
-            "message": {"role": "user", "content": [{"type": "text", "text": "3"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "a",
+                "type": "message",
+                "timestamp": 1,
+                "message": {"role": "user", "content": [{"type": "text", "text": "1"}]},
+            }
+        )
+        mgr.append_entry(
+            {
+                "id": "b",
+                "type": "message",
+                "timestamp": 2,
+                "parent_id": "a",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "2"}]},
+            }
+        )
+        mgr.append_entry(
+            {
+                "id": "c",
+                "type": "message",
+                "timestamp": 3,
+                "parent_id": "b",
+                "message": {"role": "user", "content": [{"type": "text", "text": "3"}]},
+            }
+        )
 
         # At root (session entry), should get only user message 1
         mgr.navigate(None)  # Go to root
@@ -335,10 +368,14 @@ class TestTreeNavigation:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "m1", "type": "message", "timestamp": 1,
-            "message": {"role": "user", "content": []},
-        })
+        mgr.append_entry(
+            {
+                "id": "m1",
+                "type": "message",
+                "timestamp": 1,
+                "message": {"role": "user", "content": []},
+            }
+        )
 
         mgr.navigate("m1")
         assert mgr._active_entry_id == "m1"
@@ -349,10 +386,14 @@ class TestTreeNavigation:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "m1", "type": "message", "timestamp": 1,
-            "message": {"role": "user", "content": []},
-        })
+        mgr.append_entry(
+            {
+                "id": "m1",
+                "type": "message",
+                "timestamp": 1,
+                "message": {"role": "user", "content": []},
+            }
+        )
 
         state = mgr.navigate("m1")
         assert isinstance(state, SessionState)
@@ -365,18 +406,30 @@ class TestTreeNavigation:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "m1", "type": "message", "timestamp": 1,
-            "message": {"role": "user", "content": [{"type": "text", "text": "first"}]},
-        })
-        mgr.append_entry({
-            "id": "m2", "type": "message", "timestamp": 2,
-            "message": {"role": "assistant", "content": [{"type": "text", "text": "second"}]},
-        })
-        mgr.append_entry({
-            "id": "m3", "type": "message", "timestamp": 3,
-            "message": {"role": "user", "content": [{"type": "text", "text": "third"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "m1",
+                "type": "message",
+                "timestamp": 1,
+                "message": {"role": "user", "content": [{"type": "text", "text": "first"}]},
+            }
+        )
+        mgr.append_entry(
+            {
+                "id": "m2",
+                "type": "message",
+                "timestamp": 2,
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "second"}]},
+            }
+        )
+        mgr.append_entry(
+            {
+                "id": "m3",
+                "type": "message",
+                "timestamp": 3,
+                "message": {"role": "user", "content": [{"type": "text", "text": "third"}]},
+            }
+        )
 
         # Fork at m2
         forked = mgr.fork("m2", "at")
@@ -395,14 +448,22 @@ class TestTreeNavigation:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "m1", "type": "message", "timestamp": 1,
-            "message": {"role": "user", "content": [{"type": "text", "text": "first"}]},
-        })
-        mgr.append_entry({
-            "id": "m2", "type": "message", "timestamp": 2,
-            "message": {"role": "assistant", "content": [{"type": "text", "text": "second"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "m1",
+                "type": "message",
+                "timestamp": 1,
+                "message": {"role": "user", "content": [{"type": "text", "text": "first"}]},
+            }
+        )
+        mgr.append_entry(
+            {
+                "id": "m2",
+                "type": "message",
+                "timestamp": 2,
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "second"}]},
+            }
+        )
 
         # Fork before m2
         forked = mgr.fork("m2", "before")
@@ -419,24 +480,36 @@ class TestTreeNavigation:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "m1", "type": "message", "timestamp": 1,
-            "message": {"role": "user", "content": [{"type": "text", "text": "first"}]},
-        })
-        mgr.append_entry({
-            "id": "m2", "type": "message", "timestamp": 2,
-            "message": {"role": "assistant", "content": [{"type": "text", "text": "second"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "m1",
+                "type": "message",
+                "timestamp": 1,
+                "message": {"role": "user", "content": [{"type": "text", "text": "first"}]},
+            }
+        )
+        mgr.append_entry(
+            {
+                "id": "m2",
+                "type": "message",
+                "timestamp": 2,
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "second"}]},
+            }
+        )
 
         # Fork before m2 — copies entries before m2: [session, m1]
         forked = mgr.fork("m2", "before")
         mgr._active_session_path = session_path
 
         # Add more to original after fork
-        mgr.append_entry({
-            "id": "m3", "type": "message", "timestamp": 3,
-            "message": {"role": "user", "content": [{"type": "text", "text": "third"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "m3",
+                "type": "message",
+                "timestamp": 3,
+                "message": {"role": "user", "content": [{"type": "text", "text": "third"}]},
+            }
+        )
 
         # Original should have m1, m2, m3
         original_entries = mgr._read_file(session_path)
@@ -467,20 +540,35 @@ class TestCompaction:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "old1", "type": "message", "timestamp": 1,
-            "message": {"role": "user", "content": [{"type": "text", "text": "old conversation"}]},
-        })
-        mgr.append_entry({
-            "id": "comp1", "type": "compaction", "timestamp": 2,
-            "first_kept_id": "new1",
-            "summary": "Previous conversation was about project setup",
-            "tokens_saved": 500,
-        })
-        mgr.append_entry({
-            "id": "new1", "type": "message", "timestamp": 3,
-            "message": {"role": "user", "content": [{"type": "text", "text": "new message"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "old1",
+                "type": "message",
+                "timestamp": 1,
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "old conversation"}],
+                },
+            }
+        )
+        mgr.append_entry(
+            {
+                "id": "comp1",
+                "type": "compaction",
+                "timestamp": 2,
+                "first_kept_id": "new1",
+                "summary": "Previous conversation was about project setup",
+                "tokens_saved": 500,
+            }
+        )
+        mgr.append_entry(
+            {
+                "id": "new1",
+                "type": "message",
+                "timestamp": 3,
+                "message": {"role": "user", "content": [{"type": "text", "text": "new message"}]},
+            }
+        )
 
         messages = mgr.get_active_messages()
         # Should NOT include old1, should include compaction summary
@@ -495,19 +583,31 @@ class TestCompaction:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "old1", "type": "message", "timestamp": 1,
-            "message": {"role": "user", "content": [{"type": "text", "text": "old"}]},
-        })
-        mgr.append_entry({
-            "id": "comp1", "type": "compaction", "timestamp": 2,
-            "first_kept_id": "new1",
-            "summary": "Summarized content",
-        })
-        mgr.append_entry({
-            "id": "new1", "type": "message", "timestamp": 3,
-            "message": {"role": "user", "content": [{"type": "text", "text": "new"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "old1",
+                "type": "message",
+                "timestamp": 1,
+                "message": {"role": "user", "content": [{"type": "text", "text": "old"}]},
+            }
+        )
+        mgr.append_entry(
+            {
+                "id": "comp1",
+                "type": "compaction",
+                "timestamp": 2,
+                "first_kept_id": "new1",
+                "summary": "Summarized content",
+            }
+        )
+        mgr.append_entry(
+            {
+                "id": "new1",
+                "type": "message",
+                "timestamp": 3,
+                "message": {"role": "user", "content": [{"type": "text", "text": "new"}]},
+            }
+        )
 
         messages = mgr.get_active_messages()
         compaction_msg = messages[0]
@@ -522,20 +622,32 @@ class TestCompaction:
         mgr._active_session_path = session_path
 
         for i in range(5):
-            mgr.append_entry({
-                "id": f"old{i}", "type": "message", "timestamp": i,
-                "message": {"role": "user", "content": [{"type": "text", "text": f"old{i}"}]},
-            })
+            mgr.append_entry(
+                {
+                    "id": f"old{i}",
+                    "type": "message",
+                    "timestamp": i,
+                    "message": {"role": "user", "content": [{"type": "text", "text": f"old{i}"}]},
+                }
+            )
 
-        mgr.append_entry({
-            "id": "comp1", "type": "compaction", "timestamp": 100,
-            "first_kept_id": "new1",
-            "summary": "All old messages compacted",
-        })
-        mgr.append_entry({
-            "id": "new1", "type": "message", "timestamp": 101,
-            "message": {"role": "user", "content": [{"type": "text", "text": "new"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "comp1",
+                "type": "compaction",
+                "timestamp": 100,
+                "first_kept_id": "new1",
+                "summary": "All old messages compacted",
+            }
+        )
+        mgr.append_entry(
+            {
+                "id": "new1",
+                "type": "message",
+                "timestamp": 101,
+                "message": {"role": "user", "content": [{"type": "text", "text": "new"}]},
+            }
+        )
 
         messages = mgr.get_active_messages()
         # Should have compaction summary + new message
@@ -549,20 +661,32 @@ class TestCompaction:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "old1", "type": "message", "timestamp": 1,
-            "message": {"role": "user", "content": [{"type": "text", "text": "x"}]},
-        })
-        mgr.append_entry({
-            "id": "comp1", "type": "compaction", "timestamp": 2,
-            "first_kept_id": "new1",
-            "summary": "Compaction",
-            "tokens_saved": 200,
-        })
-        mgr.append_entry({
-            "id": "new1", "type": "message", "timestamp": 3,
-            "message": {"role": "user", "content": [{"type": "text", "text": "y"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "old1",
+                "type": "message",
+                "timestamp": 1,
+                "message": {"role": "user", "content": [{"type": "text", "text": "x"}]},
+            }
+        )
+        mgr.append_entry(
+            {
+                "id": "comp1",
+                "type": "compaction",
+                "timestamp": 2,
+                "first_kept_id": "new1",
+                "summary": "Compaction",
+                "tokens_saved": 200,
+            }
+        )
+        mgr.append_entry(
+            {
+                "id": "new1",
+                "type": "message",
+                "timestamp": 3,
+                "message": {"role": "user", "content": [{"type": "text", "text": "y"}]},
+            }
+        )
 
         entries = mgr._read_file(session_path)
         compaction = [e for e in entries if e["type"] == "compaction"][0]
@@ -602,15 +726,17 @@ class TestInMemoryMode:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "m1",
-            "type": "message",
-            "timestamp": 1000,
-            "message": {
-                "role": "user",
-                "content": [{"type": "text", "text": "hello"}],
-            },
-        })
+        mgr.append_entry(
+            {
+                "id": "m1",
+                "type": "message",
+                "timestamp": 1000,
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "hello"}],
+                },
+            }
+        )
 
         messages = mgr.get_active_messages()
         assert len(messages) == 1
@@ -623,15 +749,17 @@ class TestInMemoryMode:
         mgr._active_session_path = session_path
 
         for i in range(5):
-            mgr.append_entry({
-                "id": f"m{i}",
-                "type": "message",
-                "timestamp": 1000 + i,
-                "message": {
-                    "role": "user",
-                    "content": [{"type": "text", "text": f"msg{i}"}],
-                },
-            })
+            mgr.append_entry(
+                {
+                    "id": f"m{i}",
+                    "type": "message",
+                    "timestamp": 1000 + i,
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": f"msg{i}"}],
+                    },
+                }
+            )
 
         messages = mgr.get_active_messages()
         assert len(messages) == 5
@@ -644,19 +772,23 @@ class TestInMemoryMode:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "m1",
-            "type": "message",
-            "timestamp": 1,
-            "message": {"role": "user", "content": [{"type": "text", "text": "first"}]},
-        })
-        mgr.append_entry({
-            "id": "m2",
-            "type": "message",
-            "timestamp": 2,
-            "parent_id": "m1",
-            "message": {"role": "assistant", "content": [{"type": "text", "text": "second"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "m1",
+                "type": "message",
+                "timestamp": 1,
+                "message": {"role": "user", "content": [{"type": "text", "text": "first"}]},
+            }
+        )
+        mgr.append_entry(
+            {
+                "id": "m2",
+                "type": "message",
+                "timestamp": 2,
+                "parent_id": "m1",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "second"}]},
+            }
+        )
 
         mgr.navigate("m1")
         messages = mgr.get_active_messages()
@@ -669,12 +801,14 @@ class TestInMemoryMode:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "m1",
-            "type": "message",
-            "timestamp": 1,
-            "message": {"role": "user", "content": [{"type": "text", "text": "fork me"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "m1",
+                "type": "message",
+                "timestamp": 1,
+                "message": {"role": "user", "content": [{"type": "text", "text": "fork me"}]},
+            }
+        )
 
         # fork() writes to _sessions_dir which is still file-based
         # This tests that the file operations work alongside memory operations
@@ -692,25 +826,31 @@ class TestInMemoryMode:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "old1",
-            "type": "message",
-            "timestamp": 1,
-            "message": {"role": "user", "content": [{"type": "text", "text": "old"}]},
-        })
-        mgr.append_entry({
-            "id": "comp1",
-            "type": "compaction",
-            "timestamp": 2,
-            "first_kept_id": "new1",
-            "summary": "Compacted content",
-        })
-        mgr.append_entry({
-            "id": "new1",
-            "type": "message",
-            "timestamp": 3,
-            "message": {"role": "user", "content": [{"type": "text", "text": "new"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "old1",
+                "type": "message",
+                "timestamp": 1,
+                "message": {"role": "user", "content": [{"type": "text", "text": "old"}]},
+            }
+        )
+        mgr.append_entry(
+            {
+                "id": "comp1",
+                "type": "compaction",
+                "timestamp": 2,
+                "first_kept_id": "new1",
+                "summary": "Compacted content",
+            }
+        )
+        mgr.append_entry(
+            {
+                "id": "new1",
+                "type": "message",
+                "timestamp": 3,
+                "message": {"role": "user", "content": [{"type": "text", "text": "new"}]},
+            }
+        )
 
         messages = mgr.get_active_messages()
         texts = " ".join(m["content"][0]["text"] for m in messages)
@@ -832,12 +972,14 @@ class TestClone:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "m1",
-            "type": "message",
-            "timestamp": 1,
-            "message": {"role": "user", "content": [{"type": "text", "text": "clone me"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "m1",
+                "type": "message",
+                "timestamp": 1,
+                "message": {"role": "user", "content": [{"type": "text", "text": "clone me"}]},
+            }
+        )
 
         cloned = mgr.clone("m1")
         assert os.path.exists(cloned)
@@ -850,12 +992,14 @@ class TestClone:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "m1",
-            "type": "message",
-            "timestamp": 1,
-            "message": {"role": "user", "content": [{"type": "text", "text": "original"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "m1",
+                "type": "message",
+                "timestamp": 1,
+                "message": {"role": "user", "content": [{"type": "text", "text": "original"}]},
+            }
+        )
 
         cloned = mgr.clone("m1")
         entries = mgr._read_file(cloned)
@@ -868,22 +1012,29 @@ class TestClone:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "m1",
-            "type": "message",
-            "timestamp": 1,
-            "message": {"role": "user", "content": [{"type": "text", "text": "original"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "m1",
+                "type": "message",
+                "timestamp": 1,
+                "message": {"role": "user", "content": [{"type": "text", "text": "original"}]},
+            }
+        )
 
         cloned = mgr.clone("m1")
 
         # Modify the original
-        mgr.append_entry({
-            "id": "m2",
-            "type": "message",
-            "timestamp": 2,
-            "message": {"role": "assistant", "content": [{"type": "text", "text": "added later"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "m2",
+                "type": "message",
+                "timestamp": 2,
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "added later"}],
+                },
+            }
+        )
 
         # Cloned should not have m2
         cloned_entries = mgr._read_file(cloned)
@@ -1034,12 +1185,14 @@ class TestEdgeCases:
         mgr._active_session_path = session_path
         mgr._active_entry_id = "active_parent"
 
-        mgr.append_entry({
-            "id": "m1",
-            "type": "message",
-            "parent_id": "custom_parent",
-            "message": {"role": "user", "content": [{"type": "text", "text": "test"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "m1",
+                "type": "message",
+                "parent_id": "custom_parent",
+                "message": {"role": "user", "content": [{"type": "text", "text": "test"}]},
+            }
+        )
 
         entries = mgr._read_file(session_path)
         assert entries[1]["parent_id"] == "custom_parent"
@@ -1050,12 +1203,14 @@ class TestEdgeCases:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "m1",
-            "type": "message",
-            "timestamp": 1,
-            "message": {"role": "user", "content": [{"type": "text", "text": "fork base"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "m1",
+                "type": "message",
+                "timestamp": 1,
+                "message": {"role": "user", "content": [{"type": "text", "text": "fork base"}]},
+            }
+        )
 
         fork1 = mgr.fork("m1", "at")
         fork2 = mgr.fork("m1", "at")
@@ -1091,12 +1246,14 @@ class TestEdgeCases:
         session_path = mgr.new_session()
         mgr._active_session_path = session_path
 
-        mgr.append_entry({
-            "id": "m1",
-            "type": "message",
-            "timestamp": 1,
-            "message": {"role": "user", "content": [{"type": "text", "text": "test"}]},
-        })
+        mgr.append_entry(
+            {
+                "id": "m1",
+                "type": "message",
+                "timestamp": 1,
+                "message": {"role": "user", "content": [{"type": "text", "text": "test"}]},
+            }
+        )
 
         # Fork before m1 — should only have the session entry
         forked = mgr.fork("m1", "before")

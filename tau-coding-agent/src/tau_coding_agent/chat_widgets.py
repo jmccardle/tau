@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from textual.widget import Widget
 from textual.widgets import Collapsible, Markdown
@@ -46,6 +46,88 @@ def _extension_display_name(blocked_by: str | None) -> str:
 # ──────────────────────────────────────────────────────────────────────────
 # Formatting helpers (shared by the live and reload paths)
 # ──────────────────────────────────────────────────────────────────────────
+
+
+#: What a message body's text actually IS, chosen by the widget that renders it.
+#:
+#: ``"markdown"`` — the author wrote markdown and meant it: an assistant answer,
+#: a τ-authored listing. Its blank lines are its paragraph breaks and its single
+#: newlines are soft wraps, exactly as CommonMark says.
+#:
+#: ``"verbatim"`` — line-oriented output that is not markdown at all: a tool
+#: result, shell/command output, a traceback, the text a user typed. Its line
+#: breaks carry meaning, and markdown would collapse each one into a space.
+ContentSource = Literal["markdown", "verbatim"]
+
+
+class MarkdownLineFormatter:
+    """Prepare a message body for a Textual ``Markdown`` widget, according to
+    what the body's SOURCE is.
+
+    A ``"verbatim"`` body — a tool result, an error listing, shell output — is not
+    markdown, and markdown collapses each of its lone newlines into a space. Every
+    newline is doubled so each line survives as its own paragraph. (Not inside a
+    fenced code block, where a newline is already literal: doing it there is what
+    used to put a blank line between every line of every code block.)
+
+    A ``"markdown"`` body — an assistant's answer — is passed through untouched.
+    Doubling there is actively wrong: a model that hard-wraps its prose at 80
+    columns got a blank line between every wrapped line, so one sentence rendered
+    as several paragraphs. The split is by SOURCE and never by inspecting the text,
+    because the only text-level test available is "does this look hard-wrapped",
+    and a heuristic that guesses wrong rejoins two lines of a tool result — the one
+    thing the doubling exists to protect. The caller always knows which it has.
+
+    Stateful by necessity: whether a newline is inside a fence depends on every
+    line before it. The state is carried across :meth:`feed` calls, so a streaming
+    caller can hand over one delta at a time and get exactly the document a single
+    whole-text call would produce, no matter where the deltas split — including
+    mid-newline. That is the property ``MessageBox.append_content_delta`` relies on.
+    A ``"markdown"`` formatter tracks fences too, so :attr:`in_fence` reads the same
+    either way even though nothing is rewritten.
+
+    Fence detection is a line whose first non-space characters are ``` — an opener
+    and its closer are not required to match, which is looser than CommonMark but
+    is what a streamed body actually contains.
+    """
+
+    __slots__ = ("_in_fence", "_line", "_source")
+
+    def __init__(self, source: ContentSource) -> None:
+        # Required, with no default: "which kind of text is this" has no safe
+        # guess, and a caller that has not decided is the bug (Fail-Early).
+        self._source = source
+        self._in_fence = False
+        self._line = ""
+
+    @property
+    def source(self) -> ContentSource:
+        """What this formatter was told the body is."""
+        return self._source
+
+    @property
+    def in_fence(self) -> bool:
+        """Whether the next character belongs to an open fenced code block."""
+        return self._in_fence
+
+    def feed(self, text: str) -> str:
+        """Format the next fragment, continuing from the state so far."""
+        out: list[str] = []
+        double = self._source == "verbatim"
+        for char in text:
+            if char != "\n":
+                out.append(char)
+                self._line += char
+                continue
+            # The line just ended, so we can finally classify it. A fence
+            # DELIMITER keeps its single newline too: doubling it would open the
+            # code block with a blank line, or close it with one.
+            is_delimiter = self._line.lstrip().startswith("```")
+            out.append("\n" if (not double or self._in_fence or is_delimiter) else "\n\n")
+            if is_delimiter:
+                self._in_fence = not self._in_fence
+            self._line = ""
+        return "".join(out)
 
 
 def format_tool_summary(name: str, arguments: object) -> str:

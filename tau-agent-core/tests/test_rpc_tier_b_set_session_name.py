@@ -29,7 +29,7 @@ from tau_agent_core import extension_types
 from tau_agent_core.rpc import commands, dialect
 from tau_agent_core.rpc.handler import RPCHandler
 from tau_agent_core.session_log import InMemorySessionLog
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 
 def _model() -> Model:

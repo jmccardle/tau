@@ -24,8 +24,8 @@ from typing import Any
 
 import pytest
 
-from tau_ai.constraints import ConstraintViolation, DecodeConstraints
-from tau_ai.types import AssistantMessage, Model, TextContent
+from tau_llm.constraints import ConstraintViolation, DecodeConstraints
+from tau_llm.types import AssistantMessage, Model, TextContent
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_log import InMemorySessionLog
@@ -100,7 +100,7 @@ def session_and_calls(monkeypatch):
             timestamp=0,
         )
 
-    monkeypatch.setattr("tau_ai.client.complete_simple", fake_complete_simple)
+    monkeypatch.setattr("tau_llm.client.complete_simple", fake_complete_simple)
     return session, calls
 
 
@@ -119,9 +119,7 @@ async def _dispatch(session: AgentSession, extension_path: Path, command: str, a
 
 
 class TestTheDemoActuallyRuns:
-    async def test_review_dispatches_through_the_real_command_registry(
-        self, session_and_calls
-    ):
+    async def test_review_dispatches_through_the_real_command_registry(self, session_and_calls):
         """The regression that shipped: /review AttributeError'd on dispatch."""
         session, calls = session_and_calls
 
@@ -171,7 +169,7 @@ class TestTheDemoActuallyRuns:
                 f"constrained output {prose!r} is not one of ['include', 'exclude']", prose
             )
 
-        monkeypatch.setattr("tau_ai.client.complete_simple", grammar_died)
+        monkeypatch.setattr("tau_llm.client.complete_simple", grammar_died)
 
         notices: list[tuple[str, str]] = []
 
@@ -186,9 +184,9 @@ class TestTheDemoActuallyRuns:
 
         result = await _dispatch(session, _PATH, "review", "tls")
 
-        assert any(
-            level == "error" and "constraint violated" in msg for level, msg in notices
-        ), f"the violation must reach the user; got {notices!r}"
+        assert any(level == "error" and "constraint violated" in msg for level, msg in notices), (
+            f"the violation must reach the user; got {notices!r}"
+        )
         assert not (result and result.output), "no verdict table on a violated constraint"
 
 

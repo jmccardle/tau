@@ -86,7 +86,10 @@ class ListLegalMovesTool(_StateTool):
     )
 
     async def execute(
-        self, tool_call_id: str, args: dict, signal: Any = None,
+        self,
+        tool_call_id: str,
+        args: dict,
+        signal: Any = None,
         on_update: Callable | None = None,
     ) -> dict:
         return _ok(self.name, tool_call_id, chess_tools.list_legal_moves(self.state.board))
@@ -101,7 +104,10 @@ class CheckStatusTool(_StateTool):
     )
 
     async def execute(
-        self, tool_call_id: str, args: dict, signal: Any = None,
+        self,
+        tool_call_id: str,
+        args: dict,
+        signal: Any = None,
         on_update: Callable | None = None,
     ) -> dict:
         return _ok(self.name, tool_call_id, chess_tools.check_status(self.state.board))
@@ -123,7 +129,10 @@ class PieceInfoTool(_StateTool):
     }
 
     async def execute(
-        self, tool_call_id: str, args: dict, signal: Any = None,
+        self,
+        tool_call_id: str,
+        args: dict,
+        signal: Any = None,
         on_update: Callable | None = None,
     ) -> dict:
         square = args.get("square")
@@ -149,7 +158,10 @@ class AttackersDefendersTool(_StateTool):
     }
 
     async def execute(
-        self, tool_call_id: str, args: dict, signal: Any = None,
+        self,
+        tool_call_id: str,
+        args: dict,
+        signal: Any = None,
         on_update: Callable | None = None,
     ) -> dict:
         square = args.get("square")
@@ -157,7 +169,8 @@ class AttackersDefendersTool(_StateTool):
             return _err(self.name, tool_call_id, "Missing required argument: 'square'")
         try:
             return _ok(
-                self.name, tool_call_id,
+                self.name,
+                tool_call_id,
                 chess_tools.attackers_defenders(self.state.board, square),
             )
         except ValueError as e:
@@ -170,7 +183,10 @@ class FenTool(_StateTool):
     description = "Return the current position as a FEN string (6x6 Los Alamos variant)."
 
     async def execute(
-        self, tool_call_id: str, args: dict, signal: Any = None,
+        self,
+        tool_call_id: str,
+        args: dict,
+        signal: Any = None,
         on_update: Callable | None = None,
     ) -> dict:
         return _ok(self.name, tool_call_id, chess_tools.board_to_fen(self.state.board))
@@ -187,7 +203,10 @@ class StaticEvalTool(_StateTool):
     )
 
     async def execute(
-        self, tool_call_id: str, args: dict, signal: Any = None,
+        self,
+        tool_call_id: str,
+        args: dict,
+        signal: Any = None,
         on_update: Callable | None = None,
     ) -> dict:
         return _ok(self.name, tool_call_id, chess_tools.static_eval(self.state.board))
@@ -212,7 +231,10 @@ class PlayMoveTool(_StateTool):
     }
 
     async def execute(
-        self, tool_call_id: str, args: dict, signal: Any = None,
+        self,
+        tool_call_id: str,
+        args: dict,
+        signal: Any = None,
         on_update: Callable | None = None,
     ) -> dict:
         move = args.get("move")
@@ -222,12 +244,14 @@ class PlayMoveTool(_StateTool):
             parse_move(self.state.board, move)  # raises on illegal/malformed
         except ValueError as e:
             return _err(
-                self.name, tool_call_id,
+                self.name,
+                tool_call_id,
                 f"Illegal move {move!r}: {e}. Call list_legal_moves and choose a legal one.",
             )
         self.state.pending_move = move
         return _ok(
-            self.name, tool_call_id,
+            self.name,
+            tool_call_id,
             {"accepted": move, "message": f"Move {move} recorded."},
             terminate=True,
         )

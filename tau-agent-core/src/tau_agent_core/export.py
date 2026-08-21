@@ -19,14 +19,13 @@ import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
-
 # ---------------------------------------------------------------------------
-# Message types used by the exporters (from tau_ai.types)
+# Message types used by the exporters (from tau_llm.types)
 # ---------------------------------------------------------------------------
 
 # The exporters work with plain dicts representing messages, matching the
-# tau_ai types.  This avoids a circular dependency between tau-agent-core
-# and tau-ai at import time.
+# tau_llm types.  This avoids a circular dependency between tau-agent-core
+# and tau-llm at import time.
 
 
 @dataclass
@@ -389,7 +388,7 @@ def export_session(
     Args:
         messages: List of message dicts representing the session.
             Each dict should have 'role' and 'content' keys,
-            matching the tau_ai message types.
+            matching the tau_llm message types.
         config: Export configuration. Defaults to
             ExportConfig(format="markdown") if not provided.
 

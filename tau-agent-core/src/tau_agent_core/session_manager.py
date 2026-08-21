@@ -739,7 +739,7 @@ async def summarize_branch(
     """
     from tau_agent_core.completion import CompletionFailed, resolved_complete
     from tau_agent_core.usage import usage_of
-    from tau_ai.types import TextContent
+    from tau_llm.types import TextContent
 
     text = branch_text.strip()
     if not text:

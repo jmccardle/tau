@@ -13,7 +13,7 @@ Bring-up (each piece verified independently before running this):
 
     docker run -d --rm --name tau-nats -p 4222:4222 -p 8222:8222 nats:latest -m 8222
     cd ~/Development/jmfts && docker compose up -d     # api on :8100
-    curl -s http://192.168.1.100:8080/v1/models        # the LLM
+    curl -s "$TAU_LLAMA_TEST_URL"/v1/models            # the LLM
     python scripts/tectum_responder.py                 # this
     cd ~/Development/tectum/parley-nats && parley-nats harness_text --no-up
 
@@ -37,7 +37,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 from tau_agent_core.sdk import create_agent_session
 
@@ -74,19 +74,37 @@ async def main() -> None:
     sys.stdout.reconfigure(line_buffering=True)
 
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--workspace", default="responder",
-                    help="agent identity; publishes events.workspace.<ws>.out.<verb>")
+    ap.add_argument(
+        "--workspace",
+        default="responder",
+        help="agent identity; publishes events.workspace.<ws>.out.<verb>",
+    )
     ap.add_argument("--inbound-subject", default=DEFAULT_INBOUND)
     ap.add_argument("--nats-url", default="nats://127.0.0.1:4222")
-    ap.add_argument("--llm-url", default="http://192.168.1.100:8080/v1")
+    # No baked-in address: the endpoint is the operator's, not this file's.
+    ap.add_argument(
+        "--llm-url",
+        required=not os.environ.get("TAU_LLAMA_TEST_URL"),
+        default=(
+            (os.environ.get("TAU_LLAMA_TEST_URL", "").rstrip("/") + "/v1")
+            if os.environ.get("TAU_LLAMA_TEST_URL")
+            else None
+        ),
+    )
     ap.add_argument("--model", default="/fast/model/moe-compare/qwen36-35B-IQ4_XS.gguf")
-    ap.add_argument("--verbs", default="speak",
-                    help="comma-separated effector verbs to register as tools")
-    ap.add_argument("--max-tokens", type=int, default=4096,
-                    help="hard cap per completion (Model.max_tokens); "
-                         "0 leaves generation unbounded (the server default)")
-    ap.add_argument("--think", action="store_true",
-                    help="leave the chat template's reasoning ON (default: off)")
+    ap.add_argument(
+        "--verbs", default="speak", help="comma-separated effector verbs to register as tools"
+    )
+    ap.add_argument(
+        "--max-tokens",
+        type=int,
+        default=4096,
+        help="hard cap per completion (Model.max_tokens); "
+        "0 leaves generation unbounded (the server default)",
+    )
+    ap.add_argument(
+        "--think", action="store_true", help="leave the chat template's reasoning ON (default: off)"
+    )
     args = ap.parse_args()
 
     ext_path = (
@@ -107,7 +125,7 @@ async def main() -> None:
     # 120k decoded tokens and no tool call. `extra_body` IS that path — a
     # first-class per-model field, not a smuggled payload key.
     #
-    # `max_tokens` reaches the wire as of the tau-ai fix in this branch's history
+    # `max_tokens` reaches the wire as of the tau-llm fix in this branch's history
     # ("send Model.max_tokens — it was declared and never consulted"). Before it,
     # a Model declaring max_tokens=512 produced a llama.cpp slot reporting
     # `n_predict = -1`: generation ran unbounded against n_ctx=262144, which is how
@@ -171,9 +189,12 @@ async def main() -> None:
     # session's EventBus has no public accessor yet; a demo runner reaching for
     # ``_events`` is not worth widening the API over.
     bus = session._events
-    bus.on("ext:nats_bus:inbound", lambda p: print(
-        f"[inbound] {p['subject']} :: "
-        f"{p['event'].get('payload', {}).get('text', '')!r}"))
+    bus.on(
+        "ext:nats_bus:inbound",
+        lambda p: print(
+            f"[inbound] {p['subject']} :: {p['event'].get('payload', {}).get('text', '')!r}"
+        ),
+    )
     bus.on("ext:nats_bus:inbound_error", lambda p: print(f"[bad payload] {p}"))
     bus.on("ext:nats_bus:inbound_dropped", lambda p: print(f"[dropped] {p}"))
     bus.on("ext:nats_bus:turn_error", lambda p: print(f"[turn error] {p}"))

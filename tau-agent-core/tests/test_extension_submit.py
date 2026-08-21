@@ -26,7 +26,7 @@ import inspect
 
 import pytest
 
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.extension_types import UNATTRIBUTED_EXTENSION, ExtensionAPI

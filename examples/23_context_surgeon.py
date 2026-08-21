@@ -40,13 +40,24 @@ landed E3-ctx op surface (``ExtensionContext.compact`` / ``summarize_branch`` /
 ## Usage
 
 ```python
+import importlib.util
+import sys
+
 from tau_agent_core.sdk import create_agent_session
-from examples.context_surgeon import context_surgeon_extension  # via importlib in tests
+
+# examples/ is not an importable package: there is no __init__.py and every
+# filename starts with a digit. Load the file by path, as `tau -e` does.
+_spec = importlib.util.spec_from_file_location("ext", "examples/23_context_surgeon.py")
+ext = importlib.util.module_from_spec(_spec)
+# Register BEFORE exec_module: a module using `from __future__ import
+# annotations` resolves its own dataclass annotations through sys.modules.
+sys.modules[_spec.name] = ext
+_spec.loader.exec_module(ext)
 
 session = create_agent_session(
     model="gpt-4o",
     tools=["read"],
-    extensions=[context_surgeon_extension],
+    extensions=[ext.register],
 )
 ```
 
@@ -319,3 +330,18 @@ def context_surgeon_extension(api: Any) -> None:
     api.register_tool(COMPACT_NOW_TOOL)
     api.register_tool(SUMMARIZE_HISTORY_TOOL)
     api.register_tool(FORK_SESSION_TOOL)
+
+
+#: Module-level ``register`` the file-path loader looks up (``tau -e
+#: examples/23_context_surgeon.py`` → ``getattr(module, "register")``), so the demo
+#: is loadable through the public ``-e`` surface, not only by importing
+#: ``context_surgeon_extension`` directly.
+#:
+#: NOTE: ``-e`` loads the three TOOLS and nothing else. It does NOT wire
+#: :data:`context_surgeon_gatekeeper` — the ``tool_call`` veto the module docstring
+#: names as the safety these mutation tools depend on. That omission is deliberate
+#: (``context_surgeon_extension`` registers only the tools, by design), so loading
+#: this file ALONE gives the agent compact/summarize/fork with no filesystem fence.
+#: Load ``22_gatekeeper.py`` alongside it — ``tau -e examples/22_gatekeeper.py -e
+#: examples/23_context_surgeon.py`` — or register the veto yourself.
+register = context_surgeon_extension

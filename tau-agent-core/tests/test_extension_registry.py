@@ -14,6 +14,9 @@ Reference: SUBPHASE-0.0.md, ExtensionRegistry contract
 """
 
 import pytest
+from pydantic import ValidationError
+
+from tau_agent_core.tools.base import ExtensionToolDefinition
 
 from tau_agent_core.extensions.registry import ExtensionRegistry, ToolInfo
 
@@ -73,28 +76,56 @@ class TestRegisterAndQueryTools:
     def test_register_single_tool(self):
         """ExtensionRegistry.register_tool() adds a single tool."""
         reg = ExtensionRegistry()
-        reg.register_tool({"name": "my_tool", "description": "desc", "parameters": {}})
+        reg.register_tool(
+            {
+                "execute": lambda *_a, **_kw: None,
+                "name": "my_tool",
+                "description": "desc",
+                "parameters": {},
+            }
+        )
         tools = reg.get_all_tools()
         assert len(tools) == 1
 
     def test_register_tool_returns_tool_info(self):
         """ExtensionRegistry.get_all_tools() returns ToolInfo objects."""
         reg = ExtensionRegistry()
-        reg.register_tool({"name": "my_tool", "description": "desc", "parameters": {}})
+        reg.register_tool(
+            {
+                "execute": lambda *_a, **_kw: None,
+                "name": "my_tool",
+                "description": "desc",
+                "parameters": {},
+            }
+        )
         tools = reg.get_all_tools()
         assert isinstance(tools[0], ToolInfo)
 
     def test_register_tool_name(self):
         """ToolInfo.name matches the registered tool name."""
         reg = ExtensionRegistry()
-        reg.register_tool({"name": "my_tool", "description": "desc", "parameters": {}})
+        reg.register_tool(
+            {
+                "execute": lambda *_a, **_kw: None,
+                "name": "my_tool",
+                "description": "desc",
+                "parameters": {},
+            }
+        )
         tools = reg.get_all_tools()
         assert tools[0].name == "my_tool"
 
     def test_register_tool_description(self):
         """ToolInfo.description matches the registered tool description."""
         reg = ExtensionRegistry()
-        reg.register_tool({"name": "my_tool", "description": "desc", "parameters": {}})
+        reg.register_tool(
+            {
+                "execute": lambda *_a, **_kw: None,
+                "name": "my_tool",
+                "description": "desc",
+                "parameters": {},
+            }
+        )
         tools = reg.get_all_tools()
         assert tools[0].description == "desc"
 
@@ -102,35 +133,73 @@ class TestRegisterAndQueryTools:
         """ToolInfo.parameters matches the registered tool parameters."""
         reg = ExtensionRegistry()
         params = {"type": "object", "properties": {"path": {"type": "string"}}}
-        reg.register_tool({"name": "ls", "description": "List files", "parameters": params})
+        reg.register_tool(
+            {
+                "execute": lambda *_a, **_kw: None,
+                "name": "ls",
+                "description": "List files",
+                "parameters": params,
+            }
+        )
         tools = reg.get_all_tools()
         assert tools[0].parameters == params
 
     def test_register_tool_default_source(self):
         """ToolInfo.source defaults to 'built-in' when no _source is provided."""
         reg = ExtensionRegistry()
-        reg.register_tool({"name": "my_tool", "description": "desc", "parameters": {}})
+        reg.register_tool(
+            {
+                "execute": lambda *_a, **_kw: None,
+                "name": "my_tool",
+                "description": "desc",
+                "parameters": {},
+            }
+        )
         tools = reg.get_all_tools()
         assert tools[0].source == "built-in"
 
     def test_register_tool_custom_source(self):
         """ToolInfo.source uses _source when provided in definition."""
         reg = ExtensionRegistry()
-        reg.register_tool({
-            "name": "ext_tool",
-            "description": "From extension",
-            "parameters": {},
-            "_source": "my_extension",
-        })
+        reg.register_tool(
+            {
+                "execute": lambda *_a, **_kw: None,
+                "name": "ext_tool",
+                "description": "From extension",
+                "parameters": {},
+                "_source": "my_extension",
+            }
+        )
         tools = reg.get_all_tools()
         assert tools[0].source == "my_extension"
 
     def test_register_multiple_tools(self):
         """ExtensionRegistry.register_tool() can register multiple tools."""
         reg = ExtensionRegistry()
-        reg.register_tool({"name": "ls", "description": "List", "parameters": {}})
-        reg.register_tool({"name": "grep", "description": "Search", "parameters": {}})
-        reg.register_tool({"name": "find", "description": "Find", "parameters": {}})
+        reg.register_tool(
+            {
+                "execute": lambda *_a, **_kw: None,
+                "name": "ls",
+                "description": "List",
+                "parameters": {},
+            }
+        )
+        reg.register_tool(
+            {
+                "execute": lambda *_a, **_kw: None,
+                "name": "grep",
+                "description": "Search",
+                "parameters": {},
+            }
+        )
+        reg.register_tool(
+            {
+                "execute": lambda *_a, **_kw: None,
+                "name": "find",
+                "description": "Find",
+                "parameters": {},
+            }
+        )
         tools = reg.get_all_tools()
         assert len(tools) == 3
         names = [t.name for t in tools]
@@ -143,19 +212,29 @@ class TestRegisterAndQueryTools:
         reg = ExtensionRegistry()
         assert reg.get_all_tools() == []
 
-    def test_get_all_tools_default_parameters(self):
-        """ToolInfo.parameters defaults to {} when not provided."""
-        reg = ExtensionRegistry()
-        reg.register_tool({"name": "simple", "description": "simple tool"})
-        tools = reg.get_all_tools()
-        assert tools[0].parameters == {}
+    @pytest.mark.parametrize("missing", ["description", "parameters", "execute"])
+    def test_register_tool_refuses_an_incomplete_definition(self, missing):
+        """A field the tool cannot work without is refused at registration.
 
-    def test_get_all_tools_default_description(self):
-        """ToolInfo.description defaults to '' when not provided."""
+        The registry used to accept any dict with a ``name`` and invent the rest
+        at read time -- ``get_all_tools`` defaulted a missing description to ``""``
+        and a missing schema to ``{}``. Both defaults were fabrications: a tool
+        with no description is one the model is never told when to call, and one
+        with no schema validates every call vacuously. A missing ``execute`` was
+        worse still, surfacing as a KeyError from inside the agent loop a turn
+        later. ``ExtensionAPI.register_tool`` already required all three; only this
+        lower door was open, and the schema now closes it.
+        """
         reg = ExtensionRegistry()
-        reg.register_tool({"name": "simple", "parameters": {}})
-        tools = reg.get_all_tools()
-        assert tools[0].description == ""
+        complete = {
+            "name": "simple",
+            "description": "d",
+            "parameters": {},
+            "execute": lambda *_a, **_kw: None,
+        }
+        del complete[missing]
+        with pytest.raises(ValidationError):
+            reg.register_tool(complete)
 
     def test_register_tool_rejects_duplicate_name(self):
         """ExtensionRegistry.register_tool() RAISES on a duplicate name (H3).
@@ -171,10 +250,24 @@ class TestRegisterAndQueryTools:
         unambiguous rather than order-dependent.
         """
         reg = ExtensionRegistry()
-        reg.register_tool({"name": "tool", "description": "first", "parameters": {}})
+        reg.register_tool(
+            {
+                "execute": lambda *_a, **_kw: None,
+                "name": "tool",
+                "description": "first",
+                "parameters": {},
+            }
+        )
 
         with pytest.raises(ValueError, match="already registered"):
-            reg.register_tool({"name": "tool", "description": "second", "parameters": {}})
+            reg.register_tool(
+                {
+                    "execute": lambda *_a, **_kw: None,
+                    "name": "tool",
+                    "description": "second",
+                    "parameters": {},
+                }
+            )
 
         # The FIRST registration survives intact -- the refusal must not corrupt
         # or half-apply the existing entry.
@@ -190,9 +283,23 @@ class TestRegisterAndQueryTools:
         `AgentSession.reload_extension` drives (`_unregister_bucket` then re-import).
         """
         reg = ExtensionRegistry()
-        reg.register_tool({"name": "tool", "description": "first", "parameters": {}})
+        reg.register_tool(
+            {
+                "execute": lambda *_a, **_kw: None,
+                "name": "tool",
+                "description": "first",
+                "parameters": {},
+            }
+        )
         reg.unregister_tool("tool")
-        reg.register_tool({"name": "tool", "description": "second", "parameters": {}})
+        reg.register_tool(
+            {
+                "execute": lambda *_a, **_kw: None,
+                "name": "tool",
+                "description": "second",
+                "parameters": {},
+            }
+        )
 
         tools = reg.get_all_tools()
         assert len(tools) == 1
@@ -210,16 +317,24 @@ class TestActiveToolFiltering:
     def test_get_active_tools_all_active(self):
         """get_active_tools() returns all tools when none are set as active."""
         reg = ExtensionRegistry()
-        reg.register_tool({"name": "a", "description": "a", "parameters": {}})
-        reg.register_tool({"name": "b", "description": "b", "parameters": {}})
+        reg.register_tool(
+            {"execute": lambda *_a, **_kw: None, "name": "a", "description": "a", "parameters": {}}
+        )
+        reg.register_tool(
+            {"execute": lambda *_a, **_kw: None, "name": "b", "description": "b", "parameters": {}}
+        )
         active = reg.get_active_tools()
         assert set(active.keys()) == {"a", "b"}
 
     def test_set_active_tools_single(self):
         """set_active_tools() filters to a single active tool."""
         reg = ExtensionRegistry()
-        reg.register_tool({"name": "a", "description": "a", "parameters": {}})
-        reg.register_tool({"name": "b", "description": "b", "parameters": {}})
+        reg.register_tool(
+            {"execute": lambda *_a, **_kw: None, "name": "a", "description": "a", "parameters": {}}
+        )
+        reg.register_tool(
+            {"execute": lambda *_a, **_kw: None, "name": "b", "description": "b", "parameters": {}}
+        )
         reg.set_active_tools(["a"])
         active = reg.get_active_tools()
         assert list(active.keys()) == ["a"]
@@ -227,9 +342,15 @@ class TestActiveToolFiltering:
     def test_set_active_tools_multiple(self):
         """set_active_tools() filters to multiple active tools."""
         reg = ExtensionRegistry()
-        reg.register_tool({"name": "a", "description": "a", "parameters": {}})
-        reg.register_tool({"name": "b", "description": "b", "parameters": {}})
-        reg.register_tool({"name": "c", "description": "c", "parameters": {}})
+        reg.register_tool(
+            {"execute": lambda *_a, **_kw: None, "name": "a", "description": "a", "parameters": {}}
+        )
+        reg.register_tool(
+            {"execute": lambda *_a, **_kw: None, "name": "b", "description": "b", "parameters": {}}
+        )
+        reg.register_tool(
+            {"execute": lambda *_a, **_kw: None, "name": "c", "description": "c", "parameters": {}}
+        )
         reg.set_active_tools(["a", "c"])
         active = reg.get_active_tools()
         assert set(active.keys()) == {"a", "c"}
@@ -237,7 +358,9 @@ class TestActiveToolFiltering:
     def test_set_active_tools_empty(self):
         """set_active_tools() with empty list activates no tools."""
         reg = ExtensionRegistry()
-        reg.register_tool({"name": "a", "description": "a", "parameters": {}})
+        reg.register_tool(
+            {"execute": lambda *_a, **_kw: None, "name": "a", "description": "a", "parameters": {}}
+        )
         reg.set_active_tools([])
         active = reg.get_active_tools()
         assert active == {}
@@ -245,7 +368,9 @@ class TestActiveToolFiltering:
     def test_set_active_tools_ignores_missing(self):
         """set_active_tools() ignores tool names that don't exist in registry."""
         reg = ExtensionRegistry()
-        reg.register_tool({"name": "a", "description": "a", "parameters": {}})
+        reg.register_tool(
+            {"execute": lambda *_a, **_kw: None, "name": "a", "description": "a", "parameters": {}}
+        )
         reg.set_active_tools(["a", "nonexistent"])
         active = reg.get_active_tools()
         assert set(active.keys()) == {"a"}
@@ -253,8 +378,12 @@ class TestActiveToolFiltering:
     def test_set_active_tools_all(self):
         """set_active_tools() can activate all registered tools."""
         reg = ExtensionRegistry()
-        reg.register_tool({"name": "a", "description": "a", "parameters": {}})
-        reg.register_tool({"name": "b", "description": "b", "parameters": {}})
+        reg.register_tool(
+            {"execute": lambda *_a, **_kw: None, "name": "a", "description": "a", "parameters": {}}
+        )
+        reg.register_tool(
+            {"execute": lambda *_a, **_kw: None, "name": "b", "description": "b", "parameters": {}}
+        )
         reg.set_active_tools(["a", "b"])
         active = reg.get_active_tools()
         assert set(active.keys()) == {"a", "b"}
@@ -262,17 +391,31 @@ class TestActiveToolFiltering:
     def test_get_active_tools_returns_dict(self):
         """get_active_tools() returns a dict of name -> definition."""
         reg = ExtensionRegistry()
-        reg.register_tool({"name": "tool", "description": "desc", "parameters": {}})
+        reg.register_tool(
+            {
+                "execute": lambda *_a, **_kw: None,
+                "name": "tool",
+                "description": "desc",
+                "parameters": {},
+            }
+        )
         active = reg.get_active_tools()
         assert isinstance(active, dict)
         assert "tool" in active
-        assert active["tool"]["name"] == "tool"
+        # Attribute, not subscript: the registry stores ExtensionToolDefinition
+        # models rather than raw dicts, so the shape has a schema.
+        assert active["tool"].name == "tool"
+        assert isinstance(active["tool"], ExtensionToolDefinition)
 
     def test_get_all_tools_after_deselect_all(self):
         """After setting active tools to empty, get_active_tools returns empty dict."""
         reg = ExtensionRegistry()
-        reg.register_tool({"name": "a", "description": "a", "parameters": {}})
-        reg.register_tool({"name": "b", "description": "b", "parameters": {}})
+        reg.register_tool(
+            {"execute": lambda *_a, **_kw: None, "name": "a", "description": "a", "parameters": {}}
+        )
+        reg.register_tool(
+            {"execute": lambda *_a, **_kw: None, "name": "b", "description": "b", "parameters": {}}
+        )
         reg.set_active_tools([])
         active = reg.get_active_tools()
         assert active == {}
@@ -348,7 +491,14 @@ class TestExtensionRegistryIntegration:
         reg = ExtensionRegistry()
 
         # Tools
-        reg.register_tool({"name": "ls", "description": "List files", "parameters": {}})
+        reg.register_tool(
+            {
+                "execute": lambda *_a, **_kw: None,
+                "name": "ls",
+                "description": "List files",
+                "parameters": {},
+            }
+        )
         tools = reg.get_all_tools()
         assert len(tools) == 1
         assert tools[0].name == "ls"
@@ -360,8 +510,12 @@ class TestExtensionRegistryIntegration:
     def test_tool_filtering_with_other_features(self):
         """Tool filtering doesn't affect commands."""
         reg = ExtensionRegistry()
-        reg.register_tool({"name": "a", "description": "a", "parameters": {}})
-        reg.register_tool({"name": "b", "description": "b", "parameters": {}})
+        reg.register_tool(
+            {"execute": lambda *_a, **_kw: None, "name": "a", "description": "a", "parameters": {}}
+        )
+        reg.register_tool(
+            {"execute": lambda *_a, **_kw: None, "name": "b", "description": "b", "parameters": {}}
+        )
         reg.register_command("help", {})
 
         reg.set_active_tools(["a"])

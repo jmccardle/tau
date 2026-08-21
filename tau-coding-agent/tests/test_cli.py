@@ -23,7 +23,6 @@ from tau_coding_agent.headless import (
     run_print,
 )
 
-
 # ── a config like ~/.tau/config.json ───────────────────────────────────────
 
 
@@ -173,6 +172,9 @@ def test_resolve_uses_default_model():
 def test_resolve_no_tools_empties_tools():
     _name, mc = resolve_model_config(_config(), CLIArgs(model="gpt-4o", no_tools=True))
     assert mc["tools"] == []
+    # ...and says WHICH flag did it, which is the only thing that separates
+    # --no-tools from --no-builtin-tools downstream.
+    assert mc["no_tools"] == "all"
 
 
 def test_resolve_folds_top_level_reasoning_replay_default():
@@ -206,10 +208,26 @@ def test_resolve_tools_allowlist():
 
 def test_resolve_no_builtin_tools_empties_builtins():
     # --no-builtin-tools drops the built-in set (tools=[]); extension tools survive
-    # the later _build_turn_tools merge, so this is now distinct from --no-tools once
-    # extensions load (E5 S28). resolve_model_config only stages the built-in side.
+    # the later _build_turn_tools merge. resolve_model_config stages the built-in
+    # side AND the "builtin" policy that tells AgentSession to leave the merge alone.
     _name, mc = resolve_model_config(_config(), CLIArgs(model="gpt-4o", no_builtin_tools=True))
     assert mc["tools"] == []
+    assert mc["no_tools"] == "builtin"
+
+
+def test_resolve_no_tools_beats_no_builtin_tools_when_both_given():
+    """The stricter instruction wins; honouring the weaker one would ignore -nt."""
+    _name, mc = resolve_model_config(
+        _config(), CLIArgs(model="gpt-4o", no_tools=True, no_builtin_tools=True)
+    )
+    assert mc["no_tools"] == "all"
+
+
+def test_resolve_leaves_no_tools_absent_without_either_flag():
+    """A bare run stages no policy at all, so a direct AgentSession caller and an
+    untouched config entry both keep today's behaviour."""
+    _name, mc = resolve_model_config(_config(), CLIArgs(model="gpt-4o"))
+    assert "no_tools" not in mc
 
 
 def test_resolve_exclude_tools_reaches_run_config():
@@ -725,9 +743,10 @@ def test_main_launches_tui_with_overrides(monkeypatch):
     captured = {}
 
     class FakeParley:
-        def __init__(self, cli_overrides=None, cli_run_config=None):
+        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False):
             captured["overrides"] = cli_overrides
             captured["run_config"] = cli_run_config
+            captured["fun"] = fun
 
         def run(self):
             captured["ran"] = True
@@ -755,8 +774,102 @@ def test_main_launches_tui_with_overrides(monkeypatch):
     assert rcfg["extensions"] == ["demo.py"]
     assert rcfg["no_extensions"] is False
     assert rcfg["exclude_tools"] == ["bash", "write"]
-    assert rcfg["no_builtin_tools"] is False
+    assert rcfg["no_tools"] is None
     assert rcfg["append_system_prompt"] == ["RULE"]
+    # --fun rides as its OWN argument, never inside run_config: run_config is
+    # threaded into every backend the app builds, and a tagline flag has no
+    # business being reachable from there.
+    assert captured["fun"] is False
+    assert "fun" not in rcfg
+
+
+def test_tui_tools_allowlist_is_run_level_not_a_model_override(monkeypatch):
+    """``--tools`` rides in run_config and fabricates no model override.
+
+    Same defect and same fix as ``--no-tools`` in the test below: writing the
+    allowlist into one model ENTRY meant a ``/model`` switch walked away from it.
+    """
+    captured = {}
+
+    class FakeParley:
+        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False):
+            captured["overrides"] = cli_overrides
+            captured["run_config"] = cli_run_config
+
+        def run(self):
+            captured["ran"] = True
+
+    monkeypatch.setattr("tau_coding_agent.app.Parley", FakeParley)
+    monkeypatch.setattr(cli, "load_config", lambda: _config())
+    assert cli.main(["-t", "read,write"]) == 0
+    assert captured["run_config"]["tools"] == ["read", "write"]
+    # No --model was given, so there is no model entry to override (cli passes
+    # ``overrides or None``, so an empty dict arrives as None).
+    assert not captured["overrides"]
+
+
+def test_tui_without_the_tools_flag_carries_no_allowlist(monkeypatch):
+    """Absent flag must be None, not []. An empty list would read as "allow
+    nothing" and silently strip every model entry's own declared tools."""
+    captured = {}
+
+    class FakeParley:
+        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False):
+            captured["run_config"] = cli_run_config
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr("tau_coding_agent.app.Parley", FakeParley)
+    monkeypatch.setattr(cli, "load_config", lambda: _config())
+    assert cli.main([]) == 0
+    assert captured["run_config"]["tools"] is None
+
+
+def test_tui_no_tools_is_run_level_not_a_model_override(monkeypatch):
+    """``--no-tools`` is run-level policy and must not ride on a model ENTRY.
+
+    It used to take effect ONLY by triggering the ``resolve_model_config`` block,
+    which writes ``tools: []`` into the one entry the process started on — so a
+    mid-session ``/model`` switch selected a different entry and silently handed
+    the tools back. Every other run-level tool flag (``-xt``, ``-nbt``) already
+    rode in ``run_config`` for exactly this reason; this one now does too, and
+    with no ``--model`` it no longer fabricates a model override at all.
+    """
+    captured = {}
+
+    class FakeParley:
+        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False):
+            captured["overrides"] = cli_overrides
+            captured["run_config"] = cli_run_config
+
+        def run(self):
+            captured["ran"] = True
+
+    monkeypatch.setattr("tau_coding_agent.app.Parley", FakeParley)
+    monkeypatch.setattr(cli, "load_config", lambda: _config())
+    assert cli.main(["-nt"]) == 0
+    assert captured["run_config"]["no_tools"] == "all"
+    # No model/provider/tools/thinking flag was given, so nothing pins a model:
+    # there is no per-entry override for a ``/model`` switch to walk away from.
+    assert not captured["overrides"]
+
+
+def test_tui_no_builtin_tools_reaches_run_config_as_the_resolved_policy(monkeypatch):
+    """``-nbt`` rides the same seam, carrying the value that keeps ext tools."""
+    captured = {}
+
+    class FakeParley:
+        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False):
+            captured["run_config"] = cli_run_config
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr("tau_coding_agent.app.Parley", FakeParley)
+    monkeypatch.setattr(cli, "load_config", lambda: _config())
+    assert cli.main(["-nbt"]) == 0
+    assert captured["run_config"]["no_tools"] == "builtin"
 
 
 # ── --store / --import-session / --export-session (W12) ────────────────────
@@ -793,7 +906,7 @@ def test_store_flag_reaches_tui_run_config(monkeypatch):
     captured = {}
 
     class FakeParley:
-        def __init__(self, cli_overrides=None, cli_run_config=None):
+        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False):
             captured["run_config"] = cli_run_config
 
         def run(self):

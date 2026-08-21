@@ -7,7 +7,7 @@ Types:
 - FinalizedToolCall: A tool call after execution has completed
 - AgentLoopConfig: Configuration for the agent loop
 
-These types bridge τ-ai (Phase 1) and the agent loop (Phase 2.1).
+These types bridge τ-llm (Phase 1) and the agent loop (Phase 2.1).
 """
 
 from __future__ import annotations

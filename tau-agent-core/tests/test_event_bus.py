@@ -491,6 +491,7 @@ class TestOff:
     @pytest.mark.asyncio
     async def test_off_nonexistent_handler_is_safe(self):
         """Calling off() for a handler not on the channel does not raise."""
+
         def handler(e):
             pass
 
@@ -677,6 +678,7 @@ class TestEventBusEdgeCases:
 
         def slow_handler(e):
             import time
+
             time.sleep(0.01)  # simulate slow work
             received.append(e.type)
 

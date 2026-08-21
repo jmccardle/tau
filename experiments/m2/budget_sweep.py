@@ -68,8 +68,10 @@ def sh(cmd):
 def restart_server(budget):
     """Restart jf35 with (or without) a reasoning budget; block until healthy."""
     flag = f" --reasoning-budget {budget}" if budget else ""
-    inner = (f"export PATH=/usr/local/cuda-12.8/bin:$PATH && cd {SERVER_CWD} && "
-             f"{SERVER_BASE}{flag} > /tmp/jf35.log 2>&1")
+    inner = (
+        f"export PATH=/usr/local/cuda-12.8/bin:$PATH && cd {SERVER_CWD} && "
+        f"{SERVER_BASE}{flag} > /tmp/jf35.log 2>&1"
+    )
     sh("tmux kill-session -t jf35 2>/dev/null; true")
     time.sleep(2)
     subprocess.run(["tmux", "new-session", "-d", "-s", "jf35", inner], check=True)
@@ -82,10 +84,16 @@ def restart_server(budget):
 
 
 def score(client, text, max_tokens=6000):
-    r = client.post(f"{LLM}/v1/chat/completions", json={
-        "messages": [{"role": "user", "content": RUBRIC.format(memory=text)}],
-        "grammar": GRAMMAR, "temperature": 0, "max_tokens": max_tokens,
-    }, timeout=600.0)
+    r = client.post(
+        f"{LLM}/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": RUBRIC.format(memory=text)}],
+            "grammar": GRAMMAR,
+            "temperature": 0,
+            "max_tokens": max_tokens,
+        },
+        timeout=600.0,
+    )
     r.raise_for_status()
     m = r.json()["choices"][0]["message"]
     c = (m["content"] or "").strip()
@@ -113,6 +121,7 @@ def spearman(a, b):
                 r[order[k]] = avg
             i = j + 1
         return r
+
     ra, rb = rank(a), rank(b)
     n = len(a)
     ma, mb = sum(ra) / n, sum(rb) / n
@@ -159,23 +168,31 @@ def main() -> int:
         ref = run_cell(sample, REFERENCE)
         ref["label"] = "unrestricted"
         results.append(ref)
-        print(f"  unrestricted: entropy {ref['entropy']:.2f}  mean {ref['mean']:.2f}  "
-              f"think~{ref['mean_think_tokens']:.0f} tok  ({ref['seconds']:.0f}s)", flush=True)
+        print(
+            f"  unrestricted: entropy {ref['entropy']:.2f}  mean {ref['mean']:.2f}  "
+            f"think~{ref['mean_think_tokens']:.0f} tok  ({ref['seconds']:.0f}s)",
+            flush=True,
+        )
         for b in BUDGETS:
             cell = run_cell(sample, b)
             cell["label"] = str(b)
             cell["spearman_vs_ref"] = spearman(ref["scores"], cell["scores"])
             cell["exact_match"] = sum(
-                1 for x, y in zip(ref["scores"], cell["scores"]) if x == y) / len(sample)
+                1 for x, y in zip(ref["scores"], cell["scores"]) if x == y
+            ) / len(sample)
             results.append(cell)
-            print(f"  budget {b:>5}: entropy {cell['entropy']:.2f}  mean {cell['mean']:.2f}  "
-                  f"rho {cell['spearman_vs_ref']:.2f}  exact {cell['exact_match']:.0%}  "
-                  f"think~{cell['mean_think_tokens']:.0f} tok  ({cell['seconds']:.0f}s)",
-                  flush=True)
+            print(
+                f"  budget {b:>5}: entropy {cell['entropy']:.2f}  mean {cell['mean']:.2f}  "
+                f"rho {cell['spearman_vs_ref']:.2f}  exact {cell['exact_match']:.0%}  "
+                f"think~{cell['mean_think_tokens']:.0f} tok  ({cell['seconds']:.0f}s)",
+                flush=True,
+            )
     finally:
         print("\nrestoring llama-server to its original unrestricted invocation…")
         restart_server(None)
-        cmd = sh("tr '\\0' ' ' < /proc/$(pgrep -f build-jf-cuda/bin/llama-server | head -1)/cmdline")
+        cmd = sh(
+            "tr '\\0' ' ' < /proc/$(pgrep -f build-jf-cuda/bin/llama-server | head -1)/cmdline"
+        )
         ok = "--reasoning-budget" not in cmd
         print(f"  restored: {cmd}")
         print(f"  clean (no budget flag): {ok}")
@@ -183,14 +200,18 @@ def main() -> int:
     with open("/fast/datasets/m2/budget_sweep.json", "w") as fh:
         json.dump(results, fh)
 
-    print(f"\n{'budget':>12} {'entropy':>8} {'mean':>6} {'at1':>6} {'rho':>6} "
-          f"{'exact':>6} {'think_tok':>10} {'sec':>6}")
+    print(
+        f"\n{'budget':>12} {'entropy':>8} {'mean':>6} {'at1':>6} {'rho':>6} "
+        f"{'exact':>6} {'think_tok':>10} {'sec':>6}"
+    )
     print("-" * 68)
     for r in results:
         rho = f"{r.get('spearman_vs_ref', float('nan')):.2f}" if "spearman_vs_ref" in r else "-"
         ex = f"{r['exact_match']:.0%}" if "exact_match" in r else "-"
-        print(f"{r['label']:>12} {r['entropy']:>8.2f} {r['mean']:>6.2f} {r['frac_at_1']:>6.1%} "
-              f"{rho:>6} {ex:>6} {r['mean_think_tokens']:>10.0f} {r['seconds']:>6.0f}")
+        print(
+            f"{r['label']:>12} {r['entropy']:>8.2f} {r['mean']:>6.2f} {r['frac_at_1']:>6.1%} "
+            f"{rho:>6} {ex:>6} {r['mean_think_tokens']:>10.0f} {r['seconds']:>6.0f}"
+        )
     print("\nturn-level nothink reference: 0.29 bits, 95.5% at 1")
     print("A budget is usable if it keeps entropy AND agrees with unrestricted (rho, exact).")
     return 0

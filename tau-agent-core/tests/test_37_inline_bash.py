@@ -24,8 +24,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from tau_ai.streaming import DoneEvent
-from tau_ai.types import AssistantMessage, Model, TextContent, Usage
+from tau_llm.streaming import DoneEvent
+from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree

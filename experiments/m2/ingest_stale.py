@@ -131,7 +131,9 @@ def main() -> int:
 
         if n % 20 == 0:
             rate = docs_written / (time.time() - started)
-            print(f"  {n}/{len(corpus)} instances, {docs_written} docs, {rate:.1f} docs/s", flush=True)
+            print(
+                f"  {n}/{len(corpus)} instances, {docs_written} docs, {rate:.1f} docs/s", flush=True
+            )
 
     with open("/fast/datasets/m2/stale_manifest.json", "w") as fh:
         json.dump(manifest, fh)

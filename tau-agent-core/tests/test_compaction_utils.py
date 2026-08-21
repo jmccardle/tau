@@ -66,7 +66,9 @@ def test_compute_file_lists_dedups_and_prefers_modified():
 def test_format_file_operations_tags_and_empty():
     assert format_file_operations([], []) == ""
     out = format_file_operations(["r.py"], ["m.py"])
-    assert out == "\n\n<read-files>\nr.py\n</read-files>\n\n<modified-files>\nm.py\n</modified-files>"
+    assert (
+        out == "\n\n<read-files>\nr.py\n</read-files>\n\n<modified-files>\nm.py\n</modified-files>"
+    )
 
 
 # ── conversation serialization ────────────────────────────────────────────
@@ -89,7 +91,7 @@ def test_serialize_labels_each_role():
     assert "[User]: do the thing" in out
     assert "[Assistant thinking]: let me plan" in out
     assert "[Assistant]: on it" in out
-    assert "[Assistant tool calls]: read(path=\"x.py\")" in out
+    assert '[Assistant tool calls]: read(path="x.py")' in out
     assert "[Tool result]: file contents" in out
 
 

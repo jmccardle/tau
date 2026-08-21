@@ -1,25 +1,71 @@
 [project]
-name = "tau-agent-core"
-version = "0.0.0"
+name = "ffwf-tau-agent-core"
+# The version is not a literal here. Each distribution reads it from its own
+# package's ``__version__``, so the wheel metadata and what the code reports can
+# never disagree -- they are the same line. Bump that line to cut a release.
+dynamic = ["version"]
 description = "τ-agent-core: Agent runtime, loop, tools, sessions, extensions"
 requires-python = ">=3.11"
+readme = "README.md"
+# SPDX expression + the file itself (PEP 639), which is why build-system below
+# needs setuptools >= 77.0.3: earlier versions ignore `license-files` and the
+# wheel ships without the licence text. Each package carries its own copy of the
+# repo-root LICENSE because a wheel is built from one package directory and
+# cannot reach outside it.
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
 dependencies = [
-    "tau-ai",
+    "ffwf-tau-llm==0.9.2",
     "pydantic>=2.0",
-    "nats-py>=2.15.0",
 ]
 
 [project.optional-dependencies]
+# The message bus. nats-py is the ONLY importer of anything outside the stdlib in
+# extensions_builtin/nats_bus.py, and that file is not imported by this package --
+# it is loaded by path, through the ordinary file-extension route, and only when
+# the operator passes --bus. A capability gated behind a CLI flag should not be a
+# hard dependency of every headless install, so it lives here.
+#
+# This is also the Tectum seam: Tectum is not a Python package and never appears
+# in any dependency list. τ reaches it by publishing to NATS subjects from
+# nats_bus.py, so `[bus]` is what an integrator installs.
+bus = ["nats-py>=2.15.0"]
+# tau_agent_core.testing ships the SessionCatalog / SessionLog contract suites
+# for other projects to run against their own stores, and those modules import
+# pytest at module scope. Consumers install `ffwf-tau-agent-core[testing]`; a plain
+# install stays pytest-free.
+testing = ["pytest"]
 dev = [
-    "pytest",
+    "ffwf-tau-agent-core[bus,testing]==0.9.2",
     "pytest-asyncio",
     "ruff",
-    "mypy",
+    # Pinned, unlike every other dev tool here. mypy has no "state your rule set"
+    # knob the way ruff does, so its findings move with its version: verified on
+    # this tree, 2.1.0 reports 0 errors and 2.3.1 reports 50 across 12 files.
+    # Those 50 look like real findings that a newer mypy got better at seeing --
+    # mostly no-any-return -- so they are scheduled, not suppressed: clearing
+    # them is its own pass, and until then the gate must mean the same thing in
+    # every clone. Raise this bound WITH that pass, never to make a hook go green.
+    "mypy==2.1.*",
 ]
 
+# The PUBLIC repository only. This tree has a second, private git remote whose
+# history is unfiltered; its hostname must never reach this file or a README,
+# because both are uploaded verbatim (pyproject.toml ships inside the sdist).
+# tests/test_packaging.py enforces that.
+[project.urls]
+Homepage = "https://ffwfrobotics.github.io/tau/"
+Documentation = "https://ffwfrobotics.github.io/tau/"
+Repository = "https://github.com/jmccardle/tau"
+Issues = "https://github.com/jmccardle/tau/issues"
+
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "tau_agent_core.__version__" }

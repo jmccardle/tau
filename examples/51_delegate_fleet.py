@@ -93,7 +93,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from tau_ai import AbortSignal
+from tau_llm import AbortSignal
 
 # ``ext_kit`` lives alongside the numbered examples, not inside an installed
 # package — bootstrap ``examples/`` onto the path before importing it, whether run

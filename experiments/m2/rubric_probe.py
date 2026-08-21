@@ -138,16 +138,20 @@ def main() -> int:
                 s = stats(scores)
                 s["seconds"] = time.time() - started
                 results[cell] = s
-                print(f"{cell:>28}  mean {s['mean']:>5.2f}  at1 {s['frac_at_1']:>5.1%}  "
-                      f"distinct {s['distinct']:>2}  entropy {s['entropy_bits']:>4.2f} bits  "
-                      f"({s['seconds']:.0f}s)")
+                print(
+                    f"{cell:>28}  mean {s['mean']:>5.2f}  at1 {s['frac_at_1']:>5.1%}  "
+                    f"distinct {s['distinct']:>2}  entropy {s['entropy_bits']:>4.2f} bits  "
+                    f"({s['seconds']:.0f}s)"
+                )
                 print(f"{'':>28}  dist {s['dist']}")
 
     print("\n--- verdict inputs ---")
     print("entropy is the number that matters: a term with ~0 bits cannot reorder anything.")
     base = results["ga_poignancy/nothink"]["entropy_bits"]
     for cell, s in results.items():
-        print(f"  {cell:>28}  {s['entropy_bits']:>4.2f} bits  ({s['entropy_bits'] - base:+.2f} vs GA/nothink)")
+        print(
+            f"  {cell:>28}  {s['entropy_bits']:>4.2f} bits  ({s['entropy_bits'] - base:+.2f} vs GA/nothink)"
+        )
     return 0
 
 

@@ -14,8 +14,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
-from tau_ai.streaming import DoneEvent, TextDeltaEvent
-from tau_ai.types import AssistantMessage, ToolCall, Usage
+from tau_llm.streaming import DoneEvent, TextDeltaEvent
+from tau_llm.types import AssistantMessage, ToolCall, Usage
 
 from chess_agent import AgentGameConfig, play_agent_game
 from los_alamos import BLACK, WHITE
@@ -92,7 +92,9 @@ async def test_agent_plays_a_full_legal_game_through_the_loop() -> None:
             return _Stream([DoneEvent(final=final, usage=Usage())])
         # OBSERVE phase: no move, just text so the loop ends.
         final = _text_assistant("noted")
-        return _Stream([TextDeltaEvent(delta="noted", partial=final), DoneEvent(final=final, usage=Usage())])
+        return _Stream(
+            [TextDeltaEvent(delta="noted", partial=final), DoneEvent(final=final, usage=Usage())]
+        )
 
     config = AgentGameConfig(opponent_depth=1, max_plies=10, with_observe=True, max_turns=4)
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=fake):
@@ -100,7 +102,12 @@ async def test_agent_plays_a_full_legal_game_through_the_loop() -> None:
 
     # The game reached a real terminal state within the ply budget.
     assert record.reason in {
-        "checkmate", "stalemate", "insufficient-material", "fifty-move", "threefold", "max-plies",
+        "checkmate",
+        "stalemate",
+        "insufficient-material",
+        "fifty-move",
+        "threefold",
+        "max-plies",
     }
     assert record.winner in (WHITE, BLACK, None)
     # Plies alternate White/Black and every move is recorded with its eval.

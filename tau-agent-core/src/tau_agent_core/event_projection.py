@@ -55,7 +55,7 @@ class BlockDelta:
             Positions are NOT stable across updates within one streamed
             message: e.g. a tool call streams alone at index 0 until any text
             starts accumulating, at which point ``_consolidate_text_and_thinking``
-            (tau_ai openai.py) puts text ahead of it and the same call is now
+            (tau_llm openai.py) puts text ahead of it and the same call is now
             at index 1. Diffable blocks are tracked by ``type`` and
             non-diffable blocks by their ``id`` (see the class docstring) for
             exactly this reason — ``index`` on a :class:`BlockDelta` is
@@ -139,10 +139,10 @@ class MessageDeltaProjector:
       position alone can't disambiguate them either — and unlike the diffable
       channels they don't even stay put: once any text starts accumulating, a
       tool call that streamed alone at index 0 is pushed to index 1 by
-      ``_consolidate_text_and_thinking`` (tau_ai openai.py) putting
+      ``_consolidate_text_and_thinking`` (tau_llm openai.py) putting
       ``[thinking?, text?, toolCall...]`` in that order. These are therefore
       tracked by the block's own ``id`` field when it has one (every
-      ``tau_ai.types.ToolCall`` does — ``id: str`` is required, not optional),
+      ``tau_llm.types.ToolCall`` does — ``id: str`` is required, not optional),
       which survives both the position shift and disambiguates two distinct
       calls that land at the same index across snapshots. A block with no
       string ``id`` (there is no such kind in the agent loop's actual output

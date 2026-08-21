@@ -21,7 +21,6 @@ from tau_coding_agent.chat_widgets import (
 )
 from tau_coding_agent.app import MessageBox
 
-
 _STOCK_TIMINGS = {"predicted_n": 20, "predicted_per_second": 41.2}
 
 
@@ -225,7 +224,7 @@ async def test_nested_exchange_has_no_interior_scrollbars():
 
 
 async def test_message_box_plain_text_is_unchanged():
-    box = MessageBox("user", "hello")
+    box = MessageBox("user", "hello", source="verbatim")
     async with _Host(box).run_test() as pilot:
         await pilot.pause()
         assert box.role == "user"
@@ -238,7 +237,7 @@ async def test_reasoning_renders_when_set_before_mount_completes():
     """Regression: reasoning set on a lazily-mounted region must still RENDER,
     not just store the string. The inner Markdown update was lost in the window
     before the region's compose finished, so the content showed blank."""
-    box = MessageBox("assistant", "answer")
+    box = MessageBox("assistant", "answer", source="markdown")
     async with _Host(box).run_test() as pilot:
         await pilot.pause()
         region = box.ensure_reasoning()
@@ -251,7 +250,7 @@ async def test_reasoning_renders_when_set_before_mount_completes():
 
 
 async def test_message_box_hosts_a_reasoning_region():
-    box = MessageBox("assistant", "")
+    box = MessageBox("assistant", "", source="markdown")
     async with _Host(box).run_test() as pilot:
         await pilot.pause()
         assert box.reasoning is None
@@ -266,7 +265,7 @@ async def test_message_box_hosts_a_reasoning_region():
 
 
 async def test_message_box_hosts_tools_and_folds_results_by_id():
-    box = MessageBox("assistant", "Let me check.")
+    box = MessageBox("assistant", "Let me check.", source="markdown")
     async with _Host(box).run_test() as pilot:
         await pilot.pause()
         t1 = box.add_tool_call("read", {"path": "a.py"}, "call_1")
@@ -285,7 +284,7 @@ async def test_message_box_hosts_tools_and_folds_results_by_id():
 
 async def test_message_box_reasoning_above_text_above_tools():
     """Document order inside the box is reasoning → text → tools."""
-    box = MessageBox("assistant", "answer")
+    box = MessageBox("assistant", "answer", source="markdown")
     async with _Host(box).run_test() as pilot:
         await pilot.pause()
         box.ensure_reasoning()

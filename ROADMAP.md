@@ -4,470 +4,279 @@ Living schedule of open work. Each item cites the evidence (file:line, doc, or
 test) it came from so it can be audited against the source of truth (pi) and the
 "Fail Early" rule.
 
-**State (2026-07-14, latest):** the **constrained-decoding + JMFTS-backing-store
-workstream (W0–W15) is fully committed on `master`** (`63f686a`→`b865a42`). This
-workstream is tracked under four overlapping naming vocabularies (**W**-series
-schedule, **G**-series constrained-gen targets, **JMFTS Phases 1–6 + C1/C2**, and
-the **llama.cpp fork Phases A–D** in `turboquant_experiments`) — reconciled once, with
-audited per-item status and the debts left behind, in
-**`docs/WORKSTREAM-CROSSWALK.md`**. Open threads from it: C1 landed additive-only (3
-callers still bypass the model resolver), G4 telemetry is capture-only (no TUI/json
-readout), the `lazy-grammar-thinking` llama.cpp PR is written+tested but uncommitted,
-and JMFTS-side **CR-4 (auth/CORS)** is the one unbuilt item with a real deadline
-before conversations land on the shared instance. **G6 (jump-forward / ff-token
-constrained-decode) is now BUILT and GPU-verified (2026-07-16)** — see the
-"RESULT — BUILT and verified" block in `docs/RESEARCH-INTEGRATION-EVALUATION.md`
-(byte-equivalence holds on all 5 grammars; 8.58x forced-only / 1574 t/s effective
-on the 35B; `timings.ff_n` is the §6-metric-#7 verification signal). This build
-(`build-jf-cuda`, tmux `jf35`) now serves `local-llm` on `:8080`. Nothing is
-committed on the llama.cpp fork (branch `jump-forward`, per the no-AI-PR rule). G7
-builds on it and remains open.
+**State (2026-08-09):** this file was last edited 2026-07-18 and had drifted
+152 commits behind master. A full re-audit (5 parallel evidence passes: RPC,
+submission-lifecycle, CLI flags, extensions, session UX) found five shipped
+arcs this file never mentioned or still called unbuilt — folded into "Shipped"
+below with commit-hash evidence. Genuinely still open, confirmed against code:
+Tier 8 (context files/trust gate), Tier 9 (`--export` HTML, pi-faithful
+`--mode json`), Tier 10 (themes/templates/skills — untouched), Tier 11's M4/M5
+(deliberately deferred), Session UX Phases B/C (not started), plus two flags
+(`--list-models`, `--session-id`). See "Doc hygiene found during this audit"
+below — several spec docs' own status headers are now wrong in the same way
+this file was.
 
-**State (2026-07-04):** the **E0–E4 chain + S24** and now the **entire E5
-milestone (S25–S37) are LANDED** on `feat/extensions-e0-e4`
-(`docs/EXTENSIONS-E5-WIRING.md`). E5.1 (spine, S25–S28) loads extensions into a
-running process on BOTH paths (`tau -p -e` and the TUI); **E5.2–E5.5 (S29–S37)**
-completed the **durable-hook invariant** — a mutating hook's output is now a
-durable tree node on the active path (persisted == rendered == sent, no ephemeral
-copy):
-- **S29** (`dbacc98`): `before_agent_start` messages persist as a new
-  `customMessage` extension-origin node; the wire remaps `custom`→`user` (pi
-  `messages.ts` parity) and the node survives reload byte-identical.
-- **S30** (`f2d326f`): the ephemeral `context` hook is **eliminated** —
-  `api.on("context")` now raises (Fail-Early); `test_context_hook.py` retired and
-  replaced by `test_context_hook_removed.py` asserting the negative.
-- **S31/S32** (`c7dc4e5`, `82d215b`): the reminders + budget demos rework onto
-  durable edits (in-place `tool_result` edit / `before_agent_start`; a durable
-  warning node before `ctx.abort()`).
-- **S33** (`2d68d75`): `AgentSession.set_ui_delegate` routes `api.notify` into the
-  TUI; vetoed/blocked calls now emit `tool_execution_start` for EVERY call so a
-  blocked `is_error` node renders instead of being dropped.
-- **S34/S35** (`b39ed96`, `e913a41`): `/extensions` lists the loaded registry +
-  load errors (`summarize_extensions`); `register_command` entries appear in the
-  palette and dispatch.
-- **S36/S37** (`37cacca`, `ef07b2a`): the automated floor
-  (`test_e5_integration_floor.py`: headless smoke + Textual `Pilot` +
-  reload-invariant) and the live-procedures doc (`docs/EXTENSIONS-LIVE-PROCEDURES.md`).
-
-Suite **1652 passed / 0 failed**; ruff/ruff-format clean, mypy 0 — Tier-5 gate
-green. **Next:** merge `feat/extensions-e0-e4` to `master` (still not merged).
-
-**Prior (2026-07-03):** the **`feat/session-tree`** branch (9 commits,
-`b9303b1`→`4f80d51`) was **merged to `master`** (`--no-ff`, merge `0a839f8`) —
-**E3's tree-as-truth substrate half is DONE** (see Tier 11 below). Verified by
-eyeball in the TUI: summarizing + jumping around the tree "close to perfect."
-
-**Prior (2026-06-26):** the **`feat/streaming-ux`** branch
-(4 commits, `ea89735`→`5ed3892`) is **merged** — `master` fast-forwarded to
-`ffd1167`. New (2026-07-03): **`docs/EXTENSIONS-ORCHESTRATION-PLAN.md`** — an
-approved-in-shape plan to beeline Tier 11 (phases E0–E4) so the
-`docs/pi_orchestration_patterns.md` / `docs/pi_planning_implementing_evaluating.md`
-patterns ship as demo extensions; it carries one **decided** architecture
-change (tree-as-truth session substrate, see Tier 11 note below). Suite **1401 passed / 0 failed** (2 pre-existing "event loop is
-closed" ResourceWarnings). Static checks: **ruff clean**, **ruff format clean**
-(48 files), **mypy 0** (was 55) — the Tier-5 gate stayed green across the branch
-and is enforced by the blocking pre-commit hook (commits `5fd4c4f`, `ac6236c`).
-The phase-build (`docs/PHASE-*`) and the post-build bug/quality backlog (former
-Tiers 1–4, summarized below) are **complete**. Forward work is Tiers 5–12,
-sequenced around the committed **`docs/SESSION-UX-REDESIGN.md`** sprint — whose
-**Phase A (storage layer) is landed**; a **Streaming-UX** quality pass (live
-reasoning + cancellable generation) now sits in review (see below). Scope/
-complexity for Tiers 6–12 was established by a five-agent research pass
-(2026-06-22); each tier cites the pi parity targets it rests on.
+**State (2026-07-14, W0–W15):** the constrained-decoding + JMFTS-backing-store
+workstream is tracked under four overlapping naming vocabularies (W-series
+schedule, G-series constrained-gen targets, JMFTS Phases 1–6 + C1/C2, and the
+llama.cpp fork Phases A–D in `turboquant_experiments`), reconciled in
+**`docs/WORKSTREAM-CROSSWALK.md`** (current as of 2026-07-16, unaffected by
+this audit — trust it for that vocabulary). G6 (jump-forward decoding) is
+BUILT and GPU-verified; nothing is committed on the llama.cpp fork branch
+(`jump-forward`, per the no-AI-PR rule) — G7 builds on it and remains open.
 
 ---
 
-## Shipped (compressed — former Tiers 1–4)
+## Shipped (compressed)
+
+### Former Tiers 1–4 (unchanged from the 06-22 pass)
 
 - **API key (Tier 1):** no fabricated `sk-fake-…` default; key threaded
-  end-to-end (`AgentLoopConfig.api_key` → provider), raises
-  `No API key for provider: …` when absent. `fake_llm` fixture patches the
-  network boundary so the full loop still runs in tests.
-- **Loop/prompt quality (Tier 2/3):** restored pi-parity prompt threading
-  (`runAgentLoop` concatenates `context + prompts`); removed the fragile,
-  multimodal-blind, crash-prone loop-level dedup (`_ends_with_user_text` helper).
-  Tool-call join/parse collapsed to two intentionally-divergent sites (WONTFIX).
-- **Thinking (Tier 3 #4):** full `reasoning_effort` send-path —
-  `Model.reasoning`/`thinking_level_map`, `tau_ai/models.py` (`clampThinkingLevel`),
-  `openai.py` emits `reasoning_effort` (clamped, gated on `Model.reasoning`);
-  `--thinking {off…xhigh}` + `--model x:high`. *Caveat:* on the local llama.cpp
-  rig `reasoning_effort` is a silent no-op (tests assert the wire payload; the
-  server ignores it — the real local toggle is `chat_template_kwargs.enable_thinking`).
-- **Headless session continuation (Tier 3 #5):** `--continue`/`-c`,
-  `--session REF`, `--fork REF`, `--name`/`-n` over the **`Chat` store**;
-  `--resume`/`-r` deferred (interactive-only). **Superseded by the session
-  sprint**, which moves all of this onto the new JSONL `Session` store.
-- **Docs/cleanup (Tier 4):** `COMMAND_LINE.md` corrected (11 fixes); border-title
-  message label kept; large-message render reviewed (no action).
+  end-to-end, raises `No API key for provider: …` when absent.
+- **Loop/prompt quality (Tier 2/3):** restored pi-parity prompt threading;
+  removed the fragile loop-level dedup. Tool-call join/parse collapsed to two
+  intentionally-divergent sites (WONTFIX).
+- **Thinking (Tier 3 #4):** full `reasoning_effort` send-path. *Caveat:*
+  silent no-op on the local llama.cpp rig — real local toggle is
+  `chat_template_kwargs.enable_thinking`.
+- **Headless session continuation (Tier 3 #5):** superseded by the session
+  sprint (below).
+- **Docs/cleanup (Tier 4):** `COMMAND_LINE.md` corrected (11 fixes).
 
-**Durable caveat (not a task):** chats written before the thinking-consolidation
-fix keep hundreds of blocks/message on disk; they render fine via the reload
-normalizer but are not rewritten (Fail-Early: don't silently rewrite saved files).
-The session sprint abandons `~/.tau/chats` entirely (no migration), so this
-retires itself.
+### Quality gate (Tier 5) — shipped 2026-06-22
+
+`.githooks/pre-commit` (ruff check + ruff format --check + mypy), hard-gating
+commits. ruff 31→0, mypy 55→0, no blanket `# type: ignore`. LLM-backed
+compaction is a faithful port of pi's `compaction.ts` (no fabricated-summary
+fallback — Fail-Early). `SessionManager.summarize_branch` raises rather than
+falling back to truncated text on an LLM error.
+
+### Session UX sprint — Phase A (storage layer) — shipped 2026-06-23
+
+Append-only JSONL `Session` store, cwd partitioning, fork, `SessionInfo`
+reader, all four Phase-A seams (`session_store.py`). `headless.py`/`app.py`
+migrated off the old `Chat` store. **Phase B (picker modal) and Phase C
+(command unification + sidebar-closed default) are still open** — see "Open
+work" below; do not assume they shipped alongside Phase A.
+
+### Streaming UX — live reasoning + cancellable generation — shipped 2026-06-26
+
+HTTP body streamed instead of buffered (root-caused "no reasoning until
+complete"); one stream class (net −184 lines); `AbortSignal` threaded into
+the provider for mid-completion cancel; TUI generation runs as a
+`@work(exclusive=True)` worker, `Esc` cancels cooperatively.
+
+### Extensions epic (Tier 11) — M0–M3 done, plus an entire undocumented E6–E11 arc — shipped through 2026-07-05
+
+`feat/extensions-e0-e4` (M0–M2, S1–S23) and E5 (M3's session-lifecycle +
+Textual UI half, S24–S37) are on master, matching the prior write-up. **New
+finding:** a further arc, E6–E11 (S38–S75, `docs/EXTENSIONS-DEMO-ROADMAP.md`),
+was *also* fully merged — 13 days before this file's last edit — and this
+file never mentioned it. It ships: session-lifecycle hooks
+(`registry.py:200` `LIFECYCLE_EVENTS = ("session_start", "session_shutdown")`),
+`turn_end`/`input` mutating hooks, per-extension config, `ctx.get_model`/
+`set_model`, TUI panels/forms/status slots, runtime enable/disable/reload,
+13 base demo extensions (E9) + 5 advanced composed demos (E11: review swarm,
+delegate fleet, red-team memory, router ledger, consequence engine). The old
+two-loader contradiction is resolved (`extensions/__init__.py:9-10`: old
+`ExtensionLoader` "removed in E0/S1").
+
+Still open, **by written decision, not stalled work**: M4 (`registerProvider`
+— "provider work is tau-llm's, not an extension's,"
+`docs/EXTENSIONS-DEMO-ROADMAP.md:292`) and M5 (package manager). Zero
+`registerProvider` symbol or package-manager CLI surface exists anywhere.
+
+The remote ref `origin/feat/extensions-e6` is a **stale, fully-merged
+pointer** (0 commits ahead of master, 206 behind, merge-base = its own tip
+`e6f9543`) — safe to delete from `origin`.
+
+### RPC / remote control (Tier 12) — shipped 2026-08-01 → 08-07
+
+Reclassify: this tier was "deferred, narrow audience" as of 07-18; it is now
+built, reviewed, and tested. `--mode rpc` is wired
+(`cli.py:557` → `tau_coding_agent.rpc_mode.run_rpc`); `rpc.py` was split into
+a package (`tau-agent-core/src/tau_agent_core/rpc/`: commands, handler,
+transport, dialect, capabilities, wire_events — commit `0ea6d2d`, 2026-08-05).
+20 command verbs implemented, 7 formally declined with a stated rationale
+(`commands.py:3642-3727`) — 27 of pi's 28 accounted for. `docs/RPC-PROTOCOL.md`
+is machine-generated from `COMMAND_TABLE` (`scripts/generate_rpc_protocol_doc.py`)
+and drift-tested (`test_rpc_protocol_doc.py`). Tier B
+(`docs/RPC-TIER-B.md`) adds 6 more verbs (`set_model`, `compact`,
+`get_session_stats`, `set_auto_compaction`, `set_session_name`,
+`get_last_assistant_text`), each with its own test file. 463 RPC-scoped tests
+pass, including 28 true-subprocess conformance tests
+(`test_rpc_conformance.py`, real stdin/stdout pipes, no in-process mocking).
+Documented, deliberately-open gaps: no reverse channel (extension → host UI),
+no socket/TCP transport (stdio-only by design), no notification-payload
+schema slot in the capability doc yet.
+
+### Submission lifecycle — one door for every input source — shipped 2026-07-31 → 08-05
+
+`AgentSession.submit()` (`agent_session.py:1754`) is now the one door: TUI
+(`app.py:2438` `on_input_submitted`), headless (`headless.py:583` `run_print`,
+docstring: "Both modes reach the model through `AgentSession.submit`"), and
+SDK (`AgentSession.prompt()`) all funnel through it. `multitask_strategy`
+covers `reject`/`enqueue`/`steer`/`rollback`/`fork`. Provenance
+(`submission_id`/`source`/`submitter`/`correlation`) on every event
+(`5eff135`). `submit_threadsafe` exists (`agent_session.py:1431`) for
+cross-loop callers.
+
+### Node-addressable agents — `agent_spec` provenance + rollback — shipped 2026-07-30 → 08-01
+
+`agent_spec` is a real event type, written by `_record_agent_spec()`
+(`agent_session.py:558`) as a `customEntry`/`customType: "agent_spec"`, with
+a reload-invariance contract test
+(`session_log_contract.py:634`). Rollback (`multitask_strategy="rollback"`)
+navigates back to `_pre_turn_leaf`; bound to `ctrl+z` in the TUI
+(`app.py:2160`, `RollbackPromptModal` at `app.py:612`). Fork reuses
+`ctx.spawn_branch`/`BranchView`.
+
+### Tectum NATS bus extension (tau-006/tau-007) — shipped 2026-07-27 → 08-01 — documented 2026-08-10
+
+`tau-006` (`991d880`): extension-boundary declaration —
+`ExtensionInfo.content_hash` (sha256) + `TOUCHES_BUS`/`SUBJECTS` module
+attributes checked before `register()` runs; `bus_available=False` by default,
+raises `ExtensionCapabilityError` on an unauthorized bus-touching extension.
+`tau-007` (`4151ca9` + 2 follow-ups): a real NATS extension,
+`tau_agent_core/extensions_builtin/nats_bus.py` (843 lines), test suite
+1331 lines, real `nats-py>=2.15.0` dependency. Iterated twice against a live
+sibling project (`~/Development/tectum`) — once to fix 5 wire-format
+mismatches against tectum's actual protocol, once to fix a live-observed
+infinite loop (28 turns before `max_turns`) by making the `speak` tool set
+`terminate`. `scripts/tectum_responder.py` is the live bring-up demo (real
+NATS + tectum's `parley-nats` + this script). Documented in
+`docs/NATS-BUS-EXTENSION.md` — the strongest current source for the
+ffwfrobotics `integrations/tectum-tau.md` page (see memory
+`docs-overhaul-plan-for-ffwfrobotics-site`).
+
+### CLI parity — the shipped subset of Tier 6/7
+
+`--append-system-prompt` (`cli.py:258`), `--exclude-tools`/`-xt`
+(`cli.py:219`), `--no-builtin-tools`/`-nbt` (now genuinely
+distinct from `--no-tools`: `-nbt` drops the built-in set and keeps
+extension-registered tools, `-nt` withholds both while extensions keep
+loading — hooks, commands and injections are untouched. The two argv
+booleans collapse into one resolved `no_tools` at the argv boundary,
+`headless.resolve_no_tools`, pi `main.ts:424-428`), `--session-dir`
+(`cli.py:320-328`, threaded through TUI/print/rpc), `--no-session`
+(`cli.py:234`, `headless.py:617-628`). `docs/CLI-PLAN.md`'s §3 status tables
+still mark several of these ❌ against its own prose and the code — needs a
+resync pass (see "Doc hygiene" below).
 
 ---
 
-## The path forward (Tiers 5–12)
+## Open work
 
-### Session UX sprint — Phase A: storage layer (DONE) — *landed 2026-06-23*
+Confirmed still-unbuilt by direct code inspection (not doc-trusting) on
+2026-08-09.
 
-The append-only JSONL session store (`docs/SESSION-UX-REDESIGN.md` §5/§9 Phase A)
-replaced the chat-web `Chat` blob. Landed interface (`session_store.py`):
+- **`--list-models [search]`** (Tier 6) — no occurrence anywhere in
+  `cli.py`/`headless.py`/`backends.py`.
+- **`--session-id`** (Tier 7) — no such flag in `build_parser()`.
+- **Context-file discovery** (Tier 8) — **partial, and orphaned**: real
+  AGENTS.md/`.tau/SYSTEM.md` loading exists in
+  `sdk.py:672-735` `_build_system_prompt()`, but nothing in
+  `tau-coding-agent` calls it — `TauBackend` builds `AgentSession` straight
+  from `config.get("system_prompt", "")` (`backends.py:966,1026`). No
+  CLAUDE.md support at all. The τ CLI/TUI does not load AGENTS.md today
+  despite the code existing. Wire it in, or remove it — leaving dead code on
+  a documented-but-unreachable path is itself a Fail-Early violation.
+- **Trust gate** (Tier 8) — no `trust.json`, no `TrustGate` symbol, no
+  `--approve`/`--no-approve` flags anywhere.
+- **`--export` HTML** (Tier 9) — only `--export-session` (JMFTS→`.jsonl`
+  copy) exists; no HTML exporter.
+- **pi-faithful `--mode json`** (Tier 9) — `--mode json` works but emits τ's
+  own `AgentEvent` vocabulary, not pi's schema (doc already flags this as
+  unvalidated/divergent).
+- **Tier 10 (themes/templates/skills)** — entirely untouched: no
+  `themes/` dir, no `PromptTemplate`/`$ARGUMENTS` handling, no `SKILL.md`
+  loader, no shared resource-loader abstraction. Zero real commits reference
+  any of it.
+- **Tier 11 M4/M5** — `registerProvider`, package manager. Deliberately
+  deferred (see "Shipped" above), not stalled.
+- **Session UX sprint Phase B** (picker modal) — no session-resume picker
+  exists. `SessionTreeModal` is a different thing (branch-tree browser, not a
+  saved-session picker). `cli.py:607-611` explicitly rejects `--resume` at
+  runtime with "isn't available headlessly."
+- **Session UX sprint Phase C** (command unification + sidebar-closed
+  default) — `--resume`/`--continue`/`--session`/`--fork` remain
+  headless-only or rejected in the TUI; no palette "Resume session…" entry
+  (`app.py:3637-3743`); sidebar still defaults open
+  (`parley.tcss:9-13`, no startup override). Both decisions are already
+  recorded in `docs/SESSION-UX-REDESIGN.md` §2 Decision 4 — the design is
+  settled, only the build is missing.
 
-- **`Session`** (wraps one `.jsonl`): `messages`/`model`/`backend`/`name`/`header`
-  reconstructed views + raw `entries()` (seam 2); `append_message` /
-  `append_model_change` / `append_thinking_change` / `append_session_info` /
-  `append_compaction` (append-on-message, flush per line); `create(cwd, model,
-  backend, *, system_prompt, name, id=None, base_dir=None)`, `create_in_memory`,
-  `load`, `fork` (header `parent` = source id, copies entries, source untouched).
-- **`SessionInfo.read(path)`** — streaming picker reader (count / first / last /
-  `modified` from last entry); `None` on parse error (skip at the list edge).
-- **`session_dir_for_cwd` / `list_sessions(cwd|None) / most_recent`** — cwd
-  partitioning via pi's `--<dashed-cwd>--` slug; `base_dir` override (seam 1).
-- **Seam 3** lifecycle events (`session_start`/`before_fork`/`before_compact`/
-  `shutdown`) via `subscribe_session_events` — emit points baked in, no consumer
-  yet (→ Tier 11).
-- **Consumers migrated:** `headless.py` (`--continue`/`--session`/`--fork`/`--name`
-  now cwd-scoped, id-based selectors; `_persist_session` + the `+1.0s` collision
-  hack deleted) and `app.py` (sidebar → `SessionInfo`; TUI keeps a live working
-  `self.messages` list + the active `Session` as an append sink; clear starts a
-  fresh session; compact stays a runtime context op — the file keeps full
-  history, no rewrite). New `test_session_store.py` (15) + rewritten
-  `test_headless_resume.py`; suite 1397/0, gate green. **No migration of
-  `~/.tau/chats`** (abandoned, decision 1). **Next: Phase B** (picker modal),
-  **Phase C** (command unification + sidebar-closed default).
+---
 
-### Streaming UX — live reasoning + cancellable generation (DONE, in review) — *`feat/streaming-ux`, 2026-06-26*
+## Doc hygiene found during this audit
 
-Two live-path defects the session sprint surfaced: reasoning tokens were invisible
-until the whole turn completed, and the TUI message pump was parked for the full
-generation (no cancel). Four commits, **15 files, +650/−353**; gate green
-throughout; suite 1401/0. Not merged — awaiting maintainer review.
+Several spec docs' own status headers are now flatly wrong — written when the
+work was proposed, never updated once it shipped. Each is a one-line fix, not
+a rewrite, and is separate from the broader docs-overhaul plan already agreed
+(see memory `docs-overhaul-plan-for-ffwfrobotics-site`) — flagging here so it
+isn't lost before that pass starts:
 
-- **`f9d1e3d` — stream the HTTP body.** `tau-ai` provider switched `client.post()`
-  (buffers the entire response before the first delta) → `async with
-  client.stream("POST", …)`; non-200 reads the body via `await response.aread()`
-  before raising. Root cause of "no reasoning until complete" — fixes it for
-  **both** the TUI and headless.
-- **`ea89735` — one stream class.** Collapsed the two same-named
-  `AssistantMessageEventStream` wrappers (provider-local + `streaming.py`) into one
-  and deleted a second, never-reached OpenAI-chunk accumulator path (kept alive
-  only by 2 tests). Net −184 lines. *(Correction on the record: the initial "one
-  class is dead in the live path" read was wrong — `stream_simple` does wrap the
-  provider stream; verified by grep before cutting, and the dead thing was the
-  duplicate accumulator, not a class.)*
-- **`3faf4ba` — abort into the stream.** The `AbortSignal` existed but never
-  reached the provider; threaded via `options["abort_signal"]`, stripped from the
-  request body, polled at the top of the SSE loop → finalizes with stop_reason
-  `aborted`. Mid-completion cancel, not just turn-boundary.
-- **`5ed3892` — worker + Esc-to-cancel.** TUI generation runs in a
-  `@work(exclusive=True, group="generation")` worker so the App message pump stays
-  live; `Esc` → `Backend.abort()` → cooperative stop at the next streamed delta,
-  partial answer kept (no hard task-cancel, no `CancelledError` half-state).
-- **Scope boundary (deliberate / Fail-Early):** cancel is cooperative — a fully
-  *stalled* server won't abort until the next byte or httpx timeout. A hard
-  worker-cancel backstop would cover that but reintroduces `CancelledError`
-  handling; left out by design, easy follow-up.
-
-### Tier 5 — Quality gate (DONE) — *shipped 2026-06-22; compaction landed 2026-06-22*
-
-A tracked `.githooks/pre-commit` (`core.hooksPath .githooks`) running **ruff
-check + ruff format --check + mypy** over the three `src` trees, hard-gating
-commits ("clear debt first, then hard-gate", maintainer 2026-06-22). No new
-dependency; Fail-Early (requires the in-repo venv tools, no PATH fallback).
-
-- **ruff: DONE** (commit `5fd4c4f`). 31→0; `[tool.ruff]` in `pyproject.toml`:
-  `line-length = 100`, `target-version = "py311"`, exclude `venv`, default lint
-  rules; import-sorting (`I`) deferred.
-- **mypy: 55 → 0, DONE** (commit `5fd4c4f`, **no blanket `# type: ignore`**).
-  Notable fixes: renamed `SessionManager.list()` → `list_sessions()` (it
-  shadowed builtin `list` in this module's annotations — 17 of 21 errors);
-  updated the stale `Provider` ABC to the real contract (`Model`/`ToolDefinition`
-  params + a `StreamEventStream` Protocol return both stream impls satisfy);
-  removed a dead, unreachable `resolve_model()` registry branch that called a
-  nonexistent `Provider.resolve_model()`.
-- **`sdk._build_system_prompt` — KEPT (decision 2026-06-22).** It is *not* dead:
-  it's the **only** `AGENTS.md`/`.tau/SYSTEM.md` loader in τ, reached via the
-  public `create_agent_session` (+3 tests, `test_agent_session.py:1305-1333`).
-  It is off the live TUI/headless path (which take a literal
-  `config["system_prompt"]`, default `"You are a helpful assistant."`), so it's
-  a **stranded precursor of pi's live-path `resource-loader.ts`** — **Tier 8 is
-  its real port, not deletion**. Keep it as the working reference until Tier 8
-  supersedes it.
-- **Extension-load errors: DONE** (commit `ac6236c`). `_load_extensions_from_dir`
-  no longer swallows failures (`except (ImportError, OSError): pass`) — each
-  broken extension is logged to stderr and skipped; `_make_ext_factory` raises on
-  a missing spec/`extend()` instead of fabricating a silent no-op.
-- **Blocking hook: DONE** (commit `5fd4c4f`). Activate per-clone with
-  `git config core.hooksPath .githooks`.
-- **LLM-backed compaction: DONE** — faithful port of pi's
-  `packages/agent/.../compaction/compaction.ts`. The fabricated-summary
-  placeholder is gone; `compaction.py` is a full port (Usage-based token
-  estimation, structured summarization prompts incl. the iterative `UPDATE`
-  prompt, split-turn handling, file-op tracking) operating on τ's active-path
-  entry dicts. Supporting changes:
-    - `tau-ai`: new `complete_simple(model, context, options)` (port of pi's
-      `completeSimple`, stream.ts:67) — the non-streaming primitive the summary
-      call uses.
-    - new `compaction_utils.py` (port of pi's `utils.ts`):
-      `serialize_conversation`, file-op extraction, `format_file_operations`.
-    - `SessionManager.apply_compaction` — splices the summary entry at the
-      boundary (re-parents `first_kept` onto it) so the compacted prefix drops
-      out of the active path; `_build_active_path` now anchors on the **last**
-      compaction (pi `buildSessionContext` parity) so iterative compaction
-      actually prunes.
-    - `AgentSession.compact()` runs the real pipeline (manual `/compact`) and
-      `prompt()` auto-compacts after a turn via `should_compact`
-      (`compaction_settings`, gated so a window ≤ reserve never trips it).
-    - Errors raise `CompactionError` (Pythonic translation of pi's
-      `Result<T, CompactionError>`); **no fabricated fallback summary** — Fail-Early.
-  Replaced the placeholder-era `compaction.py` API (`CompactionConfig`,
-  `compact_session`, `build_compaction_prompt`, …) and rewrote
-  `test_phase5_subphase1.py` against the new engine. **Tier 5 is now fully
-  closed.**
-- **Follow-up (separate concern, NOT compaction) — DONE (E3, 2026-07-03).**
-  `session_manager.summarize_branch` no longer falls back to truncated raw text
-  on an LLM error: it drives `complete_simple`, threads optional custom
-  instructions into the summarizer system prompt, and **raises** on empty/failed/
-  aborted summaries (Fail-Early). Landed with E3 Part 2 (it is the engine the
-  tree-browser's "summarize branch" modes call). Merge `0a839f8`.
-
-### Tier 6 — CLI parity quick-wins + json doc-fix — *pre/parallel to the session sprint*
-
-No session-layer dependency; small, over existing plumbing (`cli.py
-build_parser`, `headless.py`, `backends.py`).
-
-- `--append-system-prompt` (repeatable; pi `args.ts:95`) — concat after the base
-  prompt.
-- `--exclude-tools`/`-xt` (denylist; pi `args.ts:125`) — `.filter` over the
-  active tool set.
-- `--no-builtin-tools`/`-nbt` (pi `args.ts:118`) — ≡ `--no-tools` in τ until an
-  extension-tool subsystem exists (Tier 11); document the equivalence, don't fake
-  a difference.
-- `--list-models [search]` (pi `args.ts:171`) — over the **`config.json` models
-  map**, *not* a bundled registry (τ has none; **do not fabricate one** —
-  Fail-Early). Reuse `textual.fuzzy.Matcher`.
-- **json doc-fix.** The `--mode json` claim in `CLI-PLAN.md §4 #11` /
-  `COMMAND_LINE.md:126` is **false**: τ emits the backend's flat `{"kind":…}`
-  events (`headless.py` / `backends.py:210-214`), not the `AgentEvent`
-  vocabulary. Correct the docs to describe reality now; the actual re-emit to
-  pi's schema is Tier 9. **Decision (locked 2026-06-22):** τ will emit **pi's**
-  json schema.
-
-### Tier 7 — Post-session CLI flags — *after session Phase A*
-
-Ride the Phase-A seams (below). pi `args.ts:104,108,112`.
-
-- `--session-dir` — threads `base_dir` through the new helpers (seam 1).
-- `--session-id` — `Session.create(id=…)` + exact-id lookup in the cwd dir (seam 1).
-- `--no-session` — `Session.create_in_memory` ephemeral mode (seam 1).
-
-### Tier 8 — Context files + trust — *security-ordered*
-
-- **Context-file discovery (S/M, low-risk, high-value).** Port pi's
-  `loadProjectContextFiles` (`resource-loader.ts:61-117`): candidate set
-  `AGENTS.md`/`CLAUDE.md` (±uppercase), global + cwd→root walk, dedupe,
-  `<project_context>` / `<project_instructions path=…>` injection
-  (`system-prompt.ts:154-161`). Unify onto the live `backends.py`/headless path,
-  **superseding** the SDK-only `sdk._build_system_prompt` stub (kept in Tier 5 as
-  the working reference — see Tier 5). Fold its `.tau/SYSTEM.md` loading in here
-  too (pi `resource-loader.ts:952-966`: project/global `SYSTEM.md` +
-  `APPEND_SYSTEM.md`). Add `--no-context-files`/`-nc`.
-- **Trust gate (M/L, security-sensitive).** Port pi's `trust.json`
-  (`~/.tau/trust.json`, cwd-canonical keys, ancestor inheritance;
-  `trust-manager.ts:27-35,42-57`), `resolve_project_trusted`
-  (`project-trust.ts:45-95`), `--approve`/`-a`/`--no-approve`/`-na`. UX: a
-  **Textual `ModalScreen`** (consistent with the session picker) registered as a
-  `trust`/`untrust` **command** in the session registry (seam 4 — one handler,
-  three surfaces). The trust store stays **separate** from the session dir
-  (different keying: raw abspath + inheritance vs. dashed slug).
-- **HARD CONSTRAINT (Fail-Early / security).** Context files are inert text and
-  may ship ungated (pi-faithful). But τ **must not** auto-load *executable*
-  project-local resources (extensions, `.tau/SYSTEM.md`) before the trust gate
-  exists. Trust (this tier) **precedes** any project-local extension/SYSTEM.md
-  loading (Tier 11).
-
-### Tier 9 — Export + json reconciliation — *after session Phase A*
-
-- **`--export` HTML (M).** Port pi's `exportFromFile` (`export-html/index.ts:288`)
-  onto the new `Session.entries()`/`header` (seam 2); a self-contained
-  `template.html`+css+js. τ **owns the template look** (personality); only the
-  embedded `SessionData` contract must match pi's exporter.
-- **pi-faithful `--mode json` (M).** Re-emit pi's `AgentSessionEvent` schema:
-  `type` discriminator (not `kind`), camelCase `toolCallId`/`toolName`, the
-  session **header line first** (`print-mode.ts:114-119`). A `tau_event → pi-json`
-  serializer behind `--mode json`, sourced from the `AgentEvent` bus
-  (`events.py`), not the backend `kind` stream. Finalize the Tier-6 doc.
-
-### Tier 10 — Themes / templates / skills — *after the session command registry*
-
-- **Shared resource loader (M).** Frontmatter parser + `~/.tau/<kind>/` &
-  `.tau/<kind>/` discovery + `--no-X`-keeps-explicit-paths. Build once; all three
-  reuse it.
-- **Themes (S) — Tau's identity divergence; ship early.** Adopt **Textual-native**
-  theming (`App.theme`/`register_theme` + a `$variable` refactor of
-  `parley.tcss`), **not** pi's 51-slot ANSI-baked JSON (tied to pi's custom
-  renderer). The one subsystem where diverging on *format* is correct; offer a
-  thin pi-theme import only if demand appears. `--theme`/`--no-themes`.
-- **Prompt templates (S/M).** Keep pi's flat-`.md`+frontmatter + `$ARGUMENTS`/`$1`
-  substitution (`prompt-templates.ts`) so pi templates port; route `/<name>`
-  through the session **command registry** (seam 4) + palette.
-- **Skills (M/L).** Match pi/Claude-Code **`SKILL.md`** exactly (ecosystem
-  interop; `~/.agents/skills/` cross-harness dir): two-tier progressive disclosure
-  (`<available_skills>` gated on `read`), `/skill:name` body inlining. Defer
-  `disable-model-invocation`/`allowed-tools` (experimental in pi).
-
-### Tier 11 — Extensions epic — *multi-sprint*
-
-The biggest frontier. τ has a **half-wired skeleton** (`extension_types.py`,
-`extensions/{loader,registry}.py`, `sdk._load_extensions`, and
-`agent_session.py:104-106` actually invokes factories) but: **no runner**
-(registered tools/commands/flags are never read back), loop hooks are no-ops
-(`agent_loop.py:898`), **two contradictory loaders** (`sdk.py` calls
-`mod.extend(api)` vs `extensions/loader.py` calls `mod.register(api)`), **no CLI
-surface** (`--extension` absent), and load errors are silently swallowed
-(`sdk.py:226` — Fail-Early).
-
-Milestones: **M0** reconcile the two loaders (→ `register(api)`, importlib +
-`importlib.metadata` entry points, Fail-Early on errors) + surface
-`--extension`/`-e`, `--no-extensions`/`-ne` → **M1** runner + tool registration
-(registered tools become live `AgentTool`s) → **M2** hooks/interceptors (the ~33
-events, return-value mutation) → **M3** session-lifecycle (consume the Phase-A
-emit seam 3) + Textual UI registration (`registerShortcut`/`registerMessageRenderer`)
-→ **M4** `registerProvider` → **M5** package manager (lean on `pip`/entry points;
-`list`/`config` over `settings.json` first; defer git/npm fetching).
-
-Faithful: factory shape, single `ExtensionAPI`, event names/semantics, interceptor
-pattern, registration verbs, discovery locations. Personality: importlib + entry
-points (no jiti), `Protocol` API, Pydantic tool schemas, Textual bindings/widgets.
-
-**Beeline (2026-07-03): `docs/EXTENSIONS-ORCHESTRATION-PLAN.md`.** M0→M2 are
-pulled forward as phases E0–E2 (plus `--exclude-tools` from Tier 6 and
-`--no-session` from Tier 7); M3's session-lifecycle half lands in E3; M3's UI
-half, M4, M5 keep this tier's order. E3 also carries the **decided
-(2026-07-03) tree-as-truth session substrate** (plan §4): the conversation
-tree — including a persisted cursor via a new `navigate` entry kind (a
-deliberate pi divergence; pi's leaf pointer is in-memory only) — is the
-genuine persisted structure over `session_store` entries (`ConversationTree`
-+ read-time splice fold); the linear message list becomes a derived view.
-Consequences: Tier 5's landed `apply_compaction` **file-rewrite is reworked**
-to pi-parity append-only + read-time splicing (the compaction engine itself
-is untouched); `SessionManager` persistence retires; seams 2+3 get their
-consumer; the trust constraint (Tier 8) is honored by loading global +
-explicit `-e` extensions only. Demo extensions (delegate/reminders/
-gatekeeper/context-surgeon/budget) land in `examples/` as E4. The E3 slice —
-tree persistence, the TUI tree-browser with three-mode subtree compaction
-("no summary" / "summarize" / "summarize with custom instructions", ported
-from pi's `showTreeSelector`), and the documented external-store seam
-(swap file persistence for a DB by UUID, no DB built) — is spec'd
-step-by-step in `docs/SESSION-TREE-IMPLEMENTATION.md`.
-
-**E3 substrate — DONE (merged `0a839f8`, 2026-07-03).** The whole substrate +
-UI half of E3 landed (9 commits on `feat/session-tree`), gate green throughout,
-suite 1471/0:
-- **`ConversationTree`** (`tau_agent_core/conversation_tree.py`) — pure, I/O-free
-  fold over `Session.entries()`: leaf→root `parentId` walk + read-time splice
-  (anchor on the last **compaction** only), `tree()`, `subtree_text()`,
-  `navigate()`. Parity battery freezes the old System-A fold as a differential
-  oracle.
-- **`navigate` + `branch_summary` entry kinds** and a **persisted cursor**
-  (`Session.append_navigate/append_branch_summary`, `Session.cursor`); a dangling
-  cursor raises (Fail-Early). **Append-only compaction** — the Tier-5
-  `apply_compaction` file-rewrite is gone (`_persist_entries` "w" deleted);
-  byte-prefix test proves append-only.
-- **`SessionLog` Protocol + `InMemorySessionLog`** in `tau_agent_core`
-  (Decision 4 opt B): the persistence facade `AgentSession` builds context
-  through; coding-agent's file `Session` satisfies it structurally. **System-A
-  persistence retired from the live path**; identity is the UUID (§4.2).
-  `SessionManager` the class is kept (no live caller; its suite stays green) —
-  physical removal is an optional follow-up.
-- **TUI tree-browser** — `SessionTreeModal` + three-mode subtree compaction
-  ("no summary" / "summarize" / "summarize with custom instructions"),
-  `TauBackend.navigate_tree` on the live session, `ctrl+g` / `/tree` / `/fork` /
-  palette. **Decision 5 fixed** (verified vs pi): `branch_summary` parents at the
-  branch point and is an **inline** node, not a splice anchor (only `compaction`
-  drops a prefix); `[A,B,S]` + mixed-path topology tests lock it.
-- **DB-by-UUID seam** documented, not built (§4; Fail-Early). **TUI + headless
-  now seed render/model context from `ConversationTree` (`Session.context`)**, not
-  the linear fold — fixes a compacted/branched session resuming to the wrong
-  history (`4f80d51`).
-
-**E3 remaining (the ExtensionContext half — needs E1):** expose
-`compact`/`fork`/`entries`/`summarize_branch` on `ExtensionContext`, turn-boundary
-deferral, the `send_user_message` queue, and route the seam-3 lifecycle events
-onto the extension bus (§7 dep: "E3's `ExtensionContext` surface needs both E1 and
-the substrate"). Blocked on E1. **Optional substrate follow-ups (non-blocking):**
-`TreeModeModal`/`TreeCustomInstructionsModal` Pilot coverage + an end-to-end
-browse→navigate chain test; the deferred `self.messages` pure-view retirement
-(intentionally not done — pi keeps a materialized list, §2.6).
-
-### Tier 12 — RPC mode — *deferred, narrow audience*
-
-`--mode rpc` (pi `args.ts:80`; pi's `modes/rpc/`: 28 command verbs, LF-only JSONL,
-extension-UI round-trips). XL, embedding-only audience → lowest priority. Gate on
-the session **command registry** (seam 4) as the dispatch table. *Note:*
-tau-agent-core already has a partial `rpc.py` (JSON-RPC 2.0 types + `RPCHandler`
-skeleton) — **distinct** from pi's `RpcCommand` protocol; reconcile here.
+- `docs/REMOTE-CONTROL.md:3` — still says "Status: design. No code written."
+  RPC is built and tested (463 passing tests). Sharpest case: this doc's own
+  last-touch commit (2026-08-06) postdates the code it's declaring nonexistent
+  by a day.
+- `docs/SUBMISSION-LIFECYCLE.md:3` — still says "Status: proposal." Phases
+  1–5 of its own phasing table are shipped.
+- `docs/NODE-ADDRESSABLE-AGENTS.md:3` — still says "Status: design. No code
+  written." `agent_spec` + rollback are shipped; most of its cited "prior
+  art" already existed when it was written.
+- `docs/EXTENSIONS-DEMO-ROADMAP.md` — still says "Status: PLANNED (no
+  implementation yet)." The entire E6–E11 arc (S38–S75) is merged.
+- `docs/CLI-PLAN.md` §3's ❌/➖/✅ tables contradict both its own prose
+  sections and the actual code for `--append-system-prompt`,
+  `--exclude-tools`, `--no-builtin-tools`, and `--no-session` — needs a
+  resync pass before anyone trusts it as a status source again.
+- `origin/feat/extensions-e6` — stale remote ref, fully merged, safe to
+  delete.
 
 ---
 
 ## Cross-cutting: the 4 Phase-A seams (approved 2026-06-22)
 
-`docs/SESSION-UX-REDESIGN.md` Phase A now bakes in four small forward-compat seams
-— cheap to add during the rewrite, expensive to retrofit — each unlocking a later
-tier with near-zero rework:
+`docs/SESSION-UX-REDESIGN.md` Phase A baked in four forward-compat seams:
 
-1. **Session API parameter slots** — `base_dir: Path|None=None` on
-   `session_dir_for_cwd`/`list_sessions`/`most_recent`/`Session.create`/`fork`;
-   `id: str|None=None` on `Session.create`; a `Session.create_in_memory` ephemeral
-   mode. → **Tier 7** (`--session-dir`/`--session-id`/`--no-session`).
-2. **Raw `entries()`/`header` accessor** on `Session` (not just the folded
-   `messages`). → **Tier 9** (`--export`, pi-faithful json).
-3. **Session-lifecycle event emission** —
-   `Session.create/load/fork/append_compaction` emit
-   `session_start`/`before_fork`/`before_compact`/`shutdown` (no consumer yet).
-   → **Tier 11** (extension hooks, no loop retrofit).
-4. **Generic/dynamic command registry** — register at runtime (not a fixed
-   `resume/new/fork` enum); one slash-parser with "unknown `/x` → pass through";
-   a "register palette entries from a list" seam. → **Tier 10** (templates/themes),
-   **Tier 8** (trust commands), **Tier 12** (rpc dispatch).
+1. **Session API parameter slots** (`base_dir`, `id`, `create_in_memory`) →
+   Tier 7. **Partially realized:** `--session-dir`/`--no-session` shipped;
+   `--session-id` still open.
+2. **Raw `entries()`/`header` accessor** on `Session` → Tier 9. **Still
+   open** — neither `--export` (HTML) nor pi-faithful `--mode json` has used
+   it yet.
+3. **Session-lifecycle event emission** (`session_start`/`before_fork`/
+   `before_compact`/`shutdown`) → Tier 11. **Realized** —
+   `registry.py:200` `LIFECYCLE_EVENTS`, consumed by the E6–E11 extension
+   arc.
+4. **Generic/dynamic command registry** → Tier 10, Tier 8, Tier 12. **The
+   Tier 12 leg is realized** — RPC's `get_commands`/`COMMAND_TABLE` dispatch
+   sits on this seam. Tier 8 (trust commands) and Tier 10
+   (templates/themes) legs are still open.
 
 ---
 
 ## Suggested order
 
-Tier 6 + the session sprint (with the 4 seams) in parallel → Tier 7 → Tier 8 →
-Tier 9 → Tier 10 → Tier 11 (epic) → Tier 12. Tier 5 is fully closed (mypy gate +
-LLM-backed compaction); the only loose thread it leaves is the `summarize_branch`
-Fail-Early follow-up noted under Tier 5, which can fill any gap.
+Highest-value remaining items, roughly by dependency:
 
-**Amended 2026-07-03 (extensions beeline):** Tier 11 E0–E3 + the two flag
-items (`--exclude-tools`, `--no-session`) jump the queue per
-`docs/EXTENSIONS-ORCHESTRATION-PLAN.md` §7; the `summarize_branch` follow-up
-is absorbed into E3. Tiers 8/9/10, session-sprint Phases B/C, and Tier 11's
-remaining milestones (M3-UI/M4/M5) keep the order above.
+1. **Wire or remove** the orphaned AGENTS.md loader in `sdk.py` (Tier 8) —
+   cheapest, and currently a live Fail-Early violation (dead code claiming to
+   be a feature).
+2. **Session UX Phase B + C** — the design is already settled
+   (`SESSION-UX-REDESIGN.md` §2 Decision 4); only the picker modal and
+   command unification remain to build.
+3. **Trust gate** (Tier 8) — security-ordered; some Tier 10 work (skills,
+   project-local extensions) is gated behind it per the original plan.
+4. **Tier 9** — `--export` HTML, pi-faithful `--mode json`. Both seams
+   (`entries()`/`header`) are already in place.
+5. **Tier 10** — shared resource loader, themes, templates, skills. Entirely
+   greenfield; no code exists yet.
+6. **Tier 11 M4/M5** — `registerProvider`, package manager. Lowest priority;
+   deliberately deferred, no user demand signal yet.
+7. ~~A doc for tau-006/tau-007~~ — **done 2026-08-10**, `docs/NATS-BUS-EXTENSION.md`.
 
-**Progress 2026-07-03 (E3 substrate merged, `0a839f8`):** E3's substrate + UI
-half is DONE (and the `summarize_branch` follow-up with it). The remaining
-beeline is the strictly-ordered extension track we parallelized past:
-**E0 (loader + flags) → E1 (connect the API) → E2 (mutating hooks) → E3's
-ExtensionContext surface** (needs E1) **→ E4 (demo extensions)**.
-
-**Planned 2026-07-03 — `docs/EXTENSIONS-IMPLEMENTATION.md`** (the directly
-executable E0–E4 spec, 23 steps S1–S23, from a 6-probe research pass; §8 is the
-build checklist). Open decisions RESOLVED (§7). Two scope shifts from that plan:
-- **Tier 9's json half is pulled forward** as **E-json** (S8) — pi-faithful
-  `--mode json` (per-message `message_end` with usage/model/stop_reason) lands
-  *before* the delegate demo so child limits/stuck-detection have real signals.
-  Tier 9's `--export` + doc-finalize remain in place.
-- **E3's ExtensionContext phase now carries the deferred TUI view refactor**
-  (`self.messages → ConversationTree` view; retire the E3-1d scratch
-  `InMemorySessionLog`; `AgentSession` becomes sole persister) — S18, the §4.5
-  endgame, because agent-callable session tools must mutate one authoritative
-  session on both paths. Session-sprint Phases B/C keep their order.
-
-**Next concrete step: E0 (S1–S2)** — one `register(api)` loader (delete the dead
-second loader; file-path importlib; `LoadExtensionsResult` with collected
-errors; explicit-`-e` failure fatal), then the flags `-e`/`-ne`/`-xt`/`-nbt`/
-`--no-session`/`--append-system-prompt`. Sized **S**.
+G7 (jump-forward branch hints) stays blocked on the llama.cpp fork server
+work (`turboquant_experiments`), tracked in `docs/WORKSTREAM-CROSSWALK.md`,
+not here.

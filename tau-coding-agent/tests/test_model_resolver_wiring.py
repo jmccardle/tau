@@ -13,7 +13,7 @@ import pytest
 
 from tau_agent_core.rpc import commands
 
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 from tau_coding_agent.backends import (
     TauBackend,

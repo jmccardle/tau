@@ -36,7 +36,7 @@ Run:  tau --store jmfts -e examples/60_retrieval_review.py    then:  /review <qu
 
 Config (`"extensions": {"60_retrieval_review": {...}}`)::
 
-    {"model": "local-llm-small", "url": "http://…:8007", "scope": "all", "limit": 8}
+    {"model": "local-llm-small", "url": "http://…:8100", "scope": "all", "limit": 8}
 
 `scope: "conversation"` restricts the search to this conversation's own subtree.
 
@@ -52,7 +52,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from tau_ai.constraints import ConstraintViolation, DecodeConstraints
+from tau_llm.constraints import ConstraintViolation, DecodeConstraints
 
 VERDICTS = ["include", "exclude"]
 
@@ -66,6 +66,7 @@ JUDGE_SYSTEM = (
     'Reply with exactly one word: "include" if the document is relevant and would help '
     'answer the query, or "exclude" if it is off-topic or would not help.'
 )
+
 
 def _retrieve(ctx: Any, url: str | None, query: str, scope: str, limit: int) -> list[dict]:
     """The candidates to judge — from the store, not from a literal in this file.
@@ -133,8 +134,9 @@ def register(api: Any) -> None:
                 api.ui.notify(f"no JMFTS hits for {query!r} (scope={scope})", level="warning")
                 return None
 
-            docs = [(h["document"]["id"], (h["document"].get("content") or "").strip())
-                    for h in hits]
+            docs = [
+                (h["document"]["id"], (h["document"].get("content") or "").strip()) for h in hits
+            ]
             api.ui.set_status("review", f"judging {len(docs)} hits…")
             # Stateless => safe to fan out. This is the whole point of C1.
             verdicts = await asyncio.gather(*(judge(ctx, query, text) for _, text in docs))

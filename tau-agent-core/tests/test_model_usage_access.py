@@ -16,8 +16,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tau_ai.streaming import DoneEvent, TextDeltaEvent
-from tau_ai.types import AssistantMessage, Model, TextContent, Usage
+from tau_llm.streaming import DoneEvent, TextDeltaEvent
+from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
@@ -136,7 +136,7 @@ class TestSetModel:
 
     def test_non_model_return_is_type_error(self):
         session = _session(resolver=lambda name: {"id": name})  # type: ignore[arg-type,return-value]
-        with pytest.raises(TypeError, match="expected a tau_ai.types.Model"):
+        with pytest.raises(TypeError, match="expected a tau_llm.types.Model"):
             _ctx(session).set_model("model-b")
 
     async def test_next_turn_effect_through_the_loop(self):

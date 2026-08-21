@@ -27,7 +27,7 @@ from typing import Any
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.extension_types import ExtensionAPI
-from tau_ai.types import Model
+from tau_llm.types import Model
 from tau_coding_agent.session_store import Session
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -177,7 +177,7 @@ async def test_extension_registers_tool_and_command(tmp_path):
 
 async def test_todos_command_reports_via_output_channel(tmp_path):
     session = _session_with_todo(tmp_path)
-    execute = session._registry._tools["todo"]["execute"]
+    execute = session._registry._tools["todo"].execute
 
     empty_report = await session.run_extension_command("todos", "")
     assert empty_report.handled is True

@@ -34,11 +34,10 @@ from tau_coding_agent.app import (
 )
 from tau_coding_agent.backends import create_backend
 
-
 # A file extension that registers a command whose handler writes a marker file
 # capturing its args, AND a ctrl+e chord shortcut bound to that command. The marker
 # proves the shortcut dispatched the real command (not that a key was merely stored).
-_SHORTCUT_EXT = '''
+_SHORTCUT_EXT = """
 import pathlib
 
 MARKER = pathlib.Path({marker!r})
@@ -50,7 +49,7 @@ def register(api):
 
     api.register_command("greet", {{"description": "greet the user", "handler": _greet}})
     api.register_shortcut("g", "greet", description="Greet")
-'''
+"""
 
 
 # ── ExtensionChordScreen (which-key menu) via a minimal modal harness ──────────

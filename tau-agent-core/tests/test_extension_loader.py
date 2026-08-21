@@ -30,7 +30,6 @@ from tau_agent_core.sdk import (
     _load_extensions,
 )
 
-
 # ---------------------------------------------------------------------------
 # Extension source fixtures
 # ---------------------------------------------------------------------------
@@ -273,9 +272,7 @@ class TestErrorPolicy:
         noreg = tmp_path / "noreg.py"
         noreg.write_text(_NO_REGISTER_EXT)
 
-        result = await _load_extensions(
-            [str(noreg)], discover=False, collect_explicit_errors=True
-        )
+        result = await _load_extensions([str(noreg)], discover=False, collect_explicit_errors=True)
 
         assert result.extensions == []
         assert len(result.errors) == 1

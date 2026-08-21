@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_log import InMemorySessionLog
@@ -51,7 +51,7 @@ def _session() -> AgentSession:
 # tool_result (appends _MARK), and records the reason it was torn down / brought up.
 # The three tokens are substituted per test (no str.format — the body is full of
 # dict braces) so reload can point the SAME path at a different _MARK.
-_EXT_TEMPLATE = '''
+_EXT_TEMPLATE = """
 import pathlib
 
 _SHUTDOWN = pathlib.Path("__SHUTDOWN__")
@@ -80,7 +80,7 @@ def register(api):
     api.on("tool_result", on_tool_result)
     api.on("session_shutdown", lambda e, c: _SHUTDOWN.write_text(str(e.get("reason", ""))))
     api.on("session_start", lambda e, c: _START.write_text(str(e.get("reason", ""))))
-'''
+"""
 
 
 def _write_ext(path: Path, shutdown: Path, start: Path, mark: str) -> Path:

@@ -25,7 +25,7 @@ from tau_agent_core.rpc import commands
 from tau_agent_core.rpc.commands import _last_compaction_state
 from tau_agent_core.rpc.handler import RPCHandler
 from tau_agent_core.session_log import InMemorySessionLog
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 
 def _model(context_window: int = 8192) -> Model:

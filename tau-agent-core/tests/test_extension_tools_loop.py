@@ -18,8 +18,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
-from tau_ai.streaming import DoneEvent, TextDeltaEvent
-from tau_ai.types import AssistantMessage, TextContent, ToolCall, Usage
+from tau_llm.streaming import DoneEvent, TextDeltaEvent
+from tau_llm.types import AssistantMessage, TextContent, ToolCall, Usage
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_log import InMemorySessionLog
@@ -115,7 +115,7 @@ def _fake_stream_calling(tool_name: str, tool_args: dict[str, Any]):
 
 
 def _make_session(*extensions) -> AgentSession:
-    from tau_ai.types import Model
+    from tau_llm.types import Model
 
     model = Model(
         id="gpt-4o",

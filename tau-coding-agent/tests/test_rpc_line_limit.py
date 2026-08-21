@@ -257,8 +257,7 @@ async def test_an_oversized_prompt_is_refused_and_the_child_keeps_serving(fake_h
         caps = await _capabilities(proc, 1)
         limit = caps["limits"]["max_request_line_bytes"]
         assert isinstance(limit, int) and limit > 64 * 1024, (
-            "the advertised bound is at or below the stdlib default this "
-            f"finding is about: {limit}"
+            f"the advertised bound is at or below the stdlib default this finding is about: {limit}"
         )
 
         await _send(proc, {"jsonrpc": "2.0", "id": 2, "method": "get_state"})

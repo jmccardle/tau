@@ -44,6 +44,7 @@ from tau_agent_core.submission import Submission
 from tau_coding_agent.app import (
     LANE_FOREIGN_CLASS,
     ChatDisplay,
+    ChatPlaceholder,
     LaneStrip,
     MessageBox,
     Parley,
@@ -132,7 +133,15 @@ async def _until(pilot, predicate, tries: int = 200) -> None:
 
 
 def _top_level(display: ChatDisplay) -> list:
-    return list(display.children)
+    """The display's top-level TRANSCRIPT boxes, in order.
+
+    ``ChatPlaceholder`` is filtered out because it is chrome, not transcript: it
+    is composed once and hidden for the whole life of a non-empty chat, so it is
+    child 0 forever and would shift every index here by one while carrying no
+    message. What this helper is asked about is what the user's conversation
+    rendered as.
+    """
+    return [c for c in display.children if not isinstance(c, ChatPlaceholder)]
 
 
 #: Roles that are NOT a submission bubble — the answer side of a span, plus the

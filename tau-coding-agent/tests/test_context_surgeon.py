@@ -33,8 +33,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tau_ai.streaming import DoneEvent, TextDeltaEvent
-from tau_ai.types import AssistantMessage, Model, TextContent, ToolCall, Usage
+from tau_llm.streaming import DoneEvent, TextDeltaEvent
+from tau_llm.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
@@ -222,7 +222,7 @@ async def test_compact_now_defers_and_applies_at_end_of_prompt(monkeypatch) -> N
 
 
 async def test_summarize_history_appends_a_branch_summary(monkeypatch) -> None:
-    monkeypatch.setattr("tau_ai.client.complete_simple", _summary_response("SURGEON-BRANCH"))
+    monkeypatch.setattr("tau_llm.client.complete_simple", _summary_response("SURGEON-BRANCH"))
     session = AgentSession(
         session_log=InMemorySessionLog(),
         model=_model(),
@@ -456,6 +456,7 @@ async def test_gatekeeper_veto_composes_with_surgeon_tools(tmp_path, monkeypatch
         extensions=[surgeon.context_surgeon_extension],
         compaction_settings=CompactionSettings(enabled=False),
     )
+
     # Wire the demo-22 veto through the PUBLIC api.on surface (S24): a small
     # extension factory calls ``api.on("tool_call", …)`` on a bucket-bound api, so
     # the veto reaches the runner via the real api.on → ExtensionRunner bridge —

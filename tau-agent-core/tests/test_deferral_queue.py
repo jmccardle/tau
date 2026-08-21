@@ -19,13 +19,12 @@ from unittest.mock import patch
 
 import pytest
 
-from tau_ai.streaming import DoneEvent, TextDeltaEvent
-from tau_ai.types import AssistantMessage, Model, TextContent, ToolCall, Usage
+from tau_llm.streaming import DoneEvent, TextDeltaEvent
+from tau_llm.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.session_log import InMemorySessionLog
-
 
 # ── fakes ────────────────────────────────────────────────────────────────────
 
@@ -197,16 +196,12 @@ async def test_deferred_compact_applies_once_at_end_of_prompt(monkeypatch) -> No
 
     # Large window keeps auto-compaction dormant; keep_recent_tokens=1 makes the
     # DEFERRED compact cut almost everything so it definitely appends.
-    session = _make_session(
-        ext, settings=CompactionSettings(enabled=True, keep_recent_tokens=1)
-    )
+    session = _make_session(ext, settings=CompactionSettings(enabled=True, keep_recent_tokens=1))
     # Seed prior turns so the compaction has an ample prefix to summarize.
     log = session.session_log
     for i in range(2):
         log.append_message({"role": "user", "content": [{"type": "text", "text": f"u{i}"}]})
-        log.append_message(
-            {"role": "assistant", "content": [{"type": "text", "text": f"a{i}"}]}
-        )
+        log.append_message({"role": "assistant", "content": [{"type": "text", "text": f"a{i}"}]})
 
     def compaction_count() -> int:
         return sum(1 for e in log.entries() if e["type"] == "compaction")

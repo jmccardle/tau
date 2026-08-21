@@ -27,7 +27,7 @@ from tau_coding_agent.app import (
     _PanelActionButton,
     render_panel_body,
 )
-
+from tau_coding_agent.testing.render import renderable_lines
 
 _FLEET_SPEC = {
     "title": "Fleet",
@@ -60,7 +60,7 @@ def app(make_app):
     return make_app()
 
 
-# ── render_panel_body: pure body → text (no widget access) ────────────────────
+# ── render_panel_body: pure body → renderable (no widget access) ──────────────
 
 
 def test_render_body_text():
@@ -77,13 +77,59 @@ def test_render_body_table_is_a_padded_grid():
         "columns": ["child", "status"],
         "rows": [["c-1", "running"], ["c-2", "done"]],
     }
-    text = render_panel_body(body)
-    lines = text.split("\n")
+    # Wide enough for every cell at its natural width, so nothing is reallocated.
+    lines = renderable_lines(render_panel_body(body), 40)
     # header, rule, then one line per row.
-    assert lines[0] == "child  status "
-    assert set(lines[1]) == {"─", " "}
-    assert lines[2] == "c-1    running"
-    assert lines[3] == "c-2    done   "
+    assert lines[0].rstrip() == "child  status"
+    assert set(lines[1].rstrip()) == {"─"}
+    assert lines[2].rstrip() == "c-1    running"
+    assert lines[3].rstrip() == "c-2    done"
+
+
+@pytest.mark.parametrize("width", [40, 24, 16, 10, 6])
+def test_render_body_table_fits_the_width_it_is_given(width):
+    """The bug this replaced: a grid padded to its widest cell has no idea how wide
+    the panel is, so the body ``Static`` soft-wrapped it mid-row into fragments."""
+    body = {
+        "kind": "table",
+        "columns": ["agent", "state", "turns"],
+        "rows": [["reviewer-1", "running", "4"], ["implementer", "done", "9"]],
+    }
+    lines = renderable_lines(render_panel_body(body), width)
+    # Header, rule, one line per row — every cell is a single word, so the columns
+    # are reallocated and elided rather than wrapped, whatever the width.
+    assert len(lines) == len(body["rows"]) + 2
+    for index, line in enumerate(lines):
+        assert len(line) <= width, f"line {index} is {len(line)} cols at width {width}"
+
+
+def test_render_body_table_marks_a_cell_it_had_to_cut():
+    """A cell too wide for its share of the row is elided, not silently truncated:
+    the reader has to be able to see that there is more text than is shown."""
+    body = {
+        "kind": "table",
+        "columns": ["agent", "state"],
+        "rows": [["supercalifragilisticexpialidocious", "running"]],
+    }
+    lines = renderable_lines(render_panel_body(body), 20)
+    assert any(len(line) <= 20 for line in lines)
+    assert "…" in "\n".join(lines)
+
+
+def test_render_body_table_wraps_a_cell_that_has_somewhere_to_wrap():
+    """Multi-word cells wrap inside their own column rather than pushing the row
+    wide — the row stays a row, it just gets taller."""
+    body = {
+        "kind": "table",
+        "columns": ["key", "value"],
+        "rows": [["note", "the quick brown fox jumps over"]],
+    }
+    lines = renderable_lines(render_panel_body(body), 20)
+    for line in lines:
+        assert len(line) <= 20
+    joined = " ".join(line.strip() for line in lines)
+    assert "the quick brown" in joined and "fox jumps over" in joined
+    assert "…" not in joined
 
 
 # ── TUI: host mount / update / clear ──────────────────────────────────────────
@@ -189,9 +235,7 @@ async def test_pressing_action_dispatches_command_through_backend(app):
         await pilot.pause()
         app.set_extension_panel("fleet", validate_panel_spec(_FLEET_SPEC))
         await pilot.pause()
-        button = next(
-            b for b in app.query(_PanelActionButton) if b.command == "abort_child"
-        )
+        button = next(b for b in app.query(_PanelActionButton) if b.command == "abort_child")
         button.press()
         await pilot.pause()
         # The action dispatched its command + args back into the extension.

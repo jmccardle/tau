@@ -237,11 +237,13 @@ class TestSessionTypesImport:
     def test_import_session_state(self):
         """SessionState imports from session module."""
         from tau_agent_core.session import SessionState
+
         assert SessionState is not None
 
     def test_import_session_info(self):
         """SessionInfo imports from session module."""
         from tau_agent_core.session import SessionInfo
+
         assert SessionInfo is not None
 
     def test_import_from_package_root(self):
@@ -251,6 +253,7 @@ class TestSessionTypesImport:
             SessionState,
             SessionInfo,
         )
+
         assert SessionEntry is not None
         assert SessionState is not None
         assert SessionInfo is not None

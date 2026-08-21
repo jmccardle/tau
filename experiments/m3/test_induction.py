@@ -27,7 +27,6 @@ from induction import (
 from los_alamos import BLACK, WHITE, Board
 from memory_store import InMemoryJmftsClient
 
-
 # --- fakes ------------------------------------------------------------------------
 
 

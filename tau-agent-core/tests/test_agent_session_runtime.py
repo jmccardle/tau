@@ -28,8 +28,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tau_ai.streaming import TextDeltaEvent
-from tau_ai.types import AssistantMessage, Model, TextContent, Usage
+from tau_llm.streaming import TextDeltaEvent
+from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.agent_session_runtime import AgentSessionRuntime
 from tau_agent_core.conversation_tree import ConversationTree
@@ -266,7 +266,7 @@ async def test_new_session_resets_the_documented_set(session: AgentSession, runt
     session.record_side_usage({"input_tokens": 3, "output_tokens": 2, "total_tokens": 5})
     session._pending_follow_up_messages.append("queued-follow-up")
     session._pending_next_turn_messages.append("queued-next-turn")
-    from tau_ai.types import UserMessage
+    from tau_llm.types import UserMessage
 
     session._pending_steer_messages.append(
         UserMessage.model_validate(
@@ -450,7 +450,7 @@ async def test_new_session_refuses_rather_than_hanging_when_the_turn_never_stops
     """Finding 1 (phase-3 review): `abort()` only ever REQUESTS a stop — a
     provider that never notices it (the reviewer's repro: "accepts the
     connection and never sends an SSE line", which never even reaches
-    `tau_ai` openai.py's `abort_signal.is_aborted()` check, since that check
+    `tau_llm` openai.py's `abort_signal.is_aborted()` check, since that check
     runs INSIDE the per-received-line loop) leaves the turn lock held
     indefinitely. `_apply_swap` must return a structured refusal within its
     bounded wait rather than hang forever — the RPC reader is strictly

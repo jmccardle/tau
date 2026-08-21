@@ -17,8 +17,9 @@ store that is not a cosmetic problem: ``Parley.__init__`` resolves a catalog
 through ``build_session_catalog``, which performs a live health check and then
 writes every session the test creates into the running JMFTS server.
 
-There are exactly three moves that isolate a ``Parley``, and this module is the
-one place they are spelled out:
+There are exactly three moves that isolate a ``Parley``. They now live in
+:mod:`tau_coding_agent.testing.sandbox` (the ``devshot`` screenshot tool needs the
+same isolation), and this docstring remains their explanation:
 
 1. ``config.CONFIG_PATH`` — the only name ``bootstrap_config`` actually reads.
 2. ``session_store.TAU_DIR`` — where the file store roots its ``sessions/`` dir.
@@ -36,44 +37,31 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 
 import pytest
 from textual.app import App
 from textual.worker import WorkerCancelled
 
 from tau_coding_agent.app import Parley
-from tau_coding_agent.session_store import FileSessionCatalog
+from tau_coding_agent.testing.sandbox import DEFAULT_CONFIG, build_parley, sandbox_tau_home
 
-# The config every hand-rolled fixture assigned, modulo an ``api_key`` that some
-# included and some did not. It is present here because a model entry without one
-# is only safe as long as nothing tries to build a real client from it.
-DEFAULT_CONFIG: dict[str, Any] = {
-    "models": {"m": {"backend": "openai", "model": "m", "api_key": "not-needed"}},
-    "default_model": "m",
-    "system_prompt": "sys",
-}
+# The three sandbox moves themselves now live in
+# ``tau_coding_agent.testing.sandbox``, because this suite is no longer their only
+# caller: the ``devshot`` screenshot tool needs the same isolation, and a second
+# hand-rolled copy is how the two would drift apart. The fixtures below stay here
+# — they are pytest plumbing — but the isolation they apply is shared.
+__all__ = ["DEFAULT_CONFIG"]
 
 
 @pytest.fixture
-def tau_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+def tau_home(tmp_path: Path) -> Iterator[Path]:
     """Redirect every ``~/.tau`` read and write into ``tmp_path``.
 
-    Patches the two names that are actually consulted at call time. Returns the
-    sandboxed home so a test can assert against what landed on disk.
+    Returns the sandboxed home so a test can assert against what landed on disk.
     """
-    import tau_coding_agent.session_store as store
-
-    monkeypatch.setattr("tau_coding_agent.config.CONFIG_PATH", tmp_path / "config.json")
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
-    # A real backend gives the app a real AgentSession, so _bind_backend_session
-    # registers a MODULE-GLOBAL session-event listener. The app never unsubscribes
-    # on shutdown (harmless in a one-shot process, a cross-test leak here), so hand
-    # every test a fresh list; monkeypatch restores the original on teardown and
-    # discards whatever this test leaked. Three modules each carried their own copy
-    # of this reasoning — it is isolation, so it is correct for all of them.
-    monkeypatch.setattr(store, "_session_listeners", [])
-    return tmp_path
+    with sandbox_tau_home(tmp_path) as home:
+        yield home
 
 
 @pytest.fixture
@@ -92,13 +80,20 @@ def make_app(monkeypatch: pytest.MonkeyPatch, tau_home: Path) -> Callable[..., P
         config: dict[str, Any] | None = None,
         discover_extensions: bool = False,
         extension_paths: Iterable[str] = (),
+        **kwargs: Any,
     ) -> Parley:
         if create_backend is not None:
             monkeypatch.setattr("tau_coding_agent.app.create_backend", create_backend)
-        app = Parley(session_catalog=FileSessionCatalog(tau_home / "sessions"))
-        app.config = {**DEFAULT_CONFIG, **(config or {})}
-        app._extension_paths = list(extension_paths)
-        app._discover_extensions = discover_extensions
+        # ``kwargs`` reaches ``Parley.__init__`` (``cli_run_config``, ``fun``, …) the
+        # same way ``build_parley``'s does, so a test needing a run-level flag does
+        # not have to drop out of the fixture to get one.
+        app: Parley = build_parley(
+            tau_home,
+            config=config,
+            discover_extensions=discover_extensions,
+            extension_paths=extension_paths,
+            **kwargs,
+        )
         return app
 
     return _make

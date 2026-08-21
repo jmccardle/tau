@@ -1,0 +1,12 @@
+# The build only needs the source trees, the pyprojects, package.sh and LICENSE.
+# Everything below is either huge, host-specific, or regenerated in the image.
+venv/
+.git/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/*.egg-info/
+tau-*.tar.gz
+docs/
+experiments/
+eval_output.json

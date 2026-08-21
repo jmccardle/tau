@@ -26,7 +26,7 @@ from tau_agent_core.run_manifest import build_run_manifest, extension_manifest_e
 from tau_agent_core.sdk import ExtensionCapabilityError, summarize_extensions
 from tau_agent_core.compaction_policy import CompactionPolicy
 from tau_agent_core.session_log import InMemorySessionLog
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 
 def _model() -> Model:
@@ -176,9 +176,7 @@ class TestCapabilityPreflightRefusesAtTheFactory:
         _write(ext_dir / "bus_ext.py", _BUS_EXT)
         session = _make_session(bus_available=False)
 
-        result = await session.load_extensions(
-            None, discover=True, user_dir=str(ext_dir)
-        )
+        result = await session.load_extensions(None, discover=True, user_dir=str(ext_dir))
 
         assert result.extensions == []
         assert len(result.errors) == 1
@@ -290,7 +288,9 @@ class TestSummarizeExtensionsNoRunnerBucketRaiseIsIntact:
 
         unbound_api = ExtensionAPI(hook_handlers=None)
         result = LoadExtensionsResult(
-            extensions=[LoadedExtension(path="/nowhere.py", register=lambda api: None, api=unbound_api)]
+            extensions=[
+                LoadedExtension(path="/nowhere.py", register=lambda api: None, api=unbound_api)
+            ]
         )
 
         with pytest.raises(RuntimeError, match="no runner bucket"):

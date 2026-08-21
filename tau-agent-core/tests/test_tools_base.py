@@ -28,6 +28,7 @@ class TestToolDefinition:
 
     def create_sample_definition(self) -> dict:
         """Create a sample tool definition dict."""
+
         async def execute(ctx):
             return "test"
 
@@ -50,6 +51,7 @@ class TestToolDefinition:
 
     def test_create_tool_definition(self):
         """ToolDefinition can be instantiated with all fields."""
+
         def execute(ctx):
             return "test"
 
@@ -72,6 +74,7 @@ class TestToolDefinition:
 
     def test_tool_definition_defaults(self):
         """ToolDefinition has sensible defaults for optional fields."""
+
         def execute(ctx):
             return "test"
 
@@ -88,6 +91,7 @@ class TestToolDefinition:
 
     def test_tool_definition_name_required(self):
         """ToolDefinition requires a name."""
+
         def execute(ctx):
             return "test"
 
@@ -101,6 +105,7 @@ class TestToolDefinition:
 
     def test_tool_definition_label_required(self):
         """ToolDefinition requires a label."""
+
         def execute(ctx):
             return "test"
 
@@ -114,6 +119,7 @@ class TestToolDefinition:
 
     def test_tool_definition_description_required(self):
         """ToolDefinition requires a description."""
+
         def execute(ctx):
             return "test"
 
@@ -127,6 +133,7 @@ class TestToolDefinition:
 
     def test_tool_definition_parameters_required(self):
         """ToolDefinition requires parameters (JSON schema)."""
+
         def execute(ctx):
             return "test"
 
@@ -151,6 +158,7 @@ class TestToolDefinition:
 
     def test_tool_definition_serialization(self):
         """ToolDefinition serializes to dict correctly."""
+
         def execute(ctx):
             return "test"
 
@@ -168,6 +176,7 @@ class TestToolDefinition:
 
     def test_tool_definition_json(self):
         """ToolDefinition serializes to JSON string (excluding callable)."""
+
         def execute(ctx):
             return "test"
 
@@ -184,6 +193,7 @@ class TestToolDefinition:
 
     def test_tool_definition_equality(self):
         """Two ToolDefinitions with the same name are equal."""
+
         def execute(ctx):
             return "test"
 
@@ -205,6 +215,7 @@ class TestToolDefinition:
 
     def test_tool_definition_hashable(self):
         """ToolDefinition is hashable (can be used in sets/dicts)."""
+
         def execute(ctx):
             return "test"
 
@@ -220,6 +231,7 @@ class TestToolDefinition:
 
     def test_tool_definition_execution_modes(self):
         """ToolDefinition supports sequential and parallel modes."""
+
         def execute(ctx):
             return "test"
 
@@ -249,6 +261,7 @@ class TestAgentTool:
 
     def create_sample_definition(self) -> ToolDefinition:
         """Create a sample ToolDefinition for testing."""
+
         def execute(ctx):
             return "test"
 
@@ -290,6 +303,7 @@ class TestAgentTool:
         wrapped ToolDefinition's value or that lookup would silently see
         None (never "sequential") for every extension-supplied AgentTool.
         """
+
         def execute(ctx):
             return "test"
 
@@ -314,8 +328,10 @@ class TestAgentTool:
     def test_agent_tool_equality(self):
         """Two AgentTools with the same name are equal."""
         d1 = self.create_sample_definition()
+
         def execute2(ctx):
             return "test2"
+
         d2 = ToolDefinition(
             name="ls",
             label="List",
@@ -491,6 +507,7 @@ class TestToolsBaseImport:
             ToolBatchResult,
             ToolDefinition,
         )
+
         assert AgentTool is not None
         assert AgentToolResult is not None
         assert ToolBatchResult is not None
@@ -504,6 +521,7 @@ class TestToolsBaseImport:
             ToolBatchResult,
             ToolDefinition,
         )
+
         assert AgentTool is not None
         assert AgentToolResult is not None
         assert ToolBatchResult is not None

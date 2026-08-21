@@ -54,7 +54,7 @@ DEFAULT_OUTPUT_QUEUE_EVENT_BOUND = 64
 
 #: How often `_acquire_event_credit` re-checks the current turn's abort
 #: signal while it is genuinely waiting on a full queue (see that method).
-#: `tau_ai.abort.AbortSignal`'s own docstring suggests "every 100ms" as the
+#: `tau_llm.abort.AbortSignal`'s own docstring suggests "every 100ms" as the
 #: cooperative-check cadence; this reuses that number rather than inventing
 #: a second one.
 _EVENT_CREDIT_POLL_INTERVAL_S = 0.1
@@ -695,7 +695,7 @@ class RPCHandler:
 
         **Why this needs its own poll loop at all, not just `await self
         ._event_credits.add_waiter()` straight through:** an `AbortSignal`
-        is a plain polled flag (`tau_ai.abort.AbortSignal` — no async wakeup
+        is a plain polled flag (`tau_llm.abort.AbortSignal` — no async wakeup
         primitive), checked today only inside `AgentLoop`'s own
         turn-start/per-received-line points (`f1e762e`'s commit message). A
         turn that is stalled INSIDE an `_emit` call — which is exactly what

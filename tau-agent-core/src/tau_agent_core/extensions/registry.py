@@ -30,6 +30,8 @@ persisted onto the session tree as a ``customEntry`` node via
 
 from __future__ import annotations
 
+from tau_agent_core.tools.base import ExtensionToolDefinition
+
 
 class ToolInfo:
     """Read-only tool information."""
@@ -61,13 +63,24 @@ class ExtensionRegistry:
 
     def __init__(self) -> None:
         """Initialize the registry with empty collections."""
-        self._tools: dict[str, dict] = {}  # name -> definition
+        # Models, not dicts, since the tool shape gained a schema
+        # (tools.base.ExtensionToolDefinition). register_tool still ACCEPTS a
+        # plain dict and validates it here, so extensions are unaffected; what
+        # changed is that every reader downstream gets attributes with known
+        # types instead of a mapping it has to guess the keys of.
+        self._tools: dict[str, ExtensionToolDefinition] = {}  # name -> definition
         self._commands: dict[str, dict] = {}  # name -> command def
         self._shortcuts: dict[str, dict] = {}  # chord-tail key -> shortcut def
         self._active_tools: set[str] | None = None  # None = all active
 
-    def register_tool(self, definition: dict) -> None:
+    def register_tool(self, definition: dict | ExtensionToolDefinition) -> None:
         """Register a tool definition. A duplicate name **raises** (H3).
+
+        Accepts the historical plain dict or an
+        :class:`~tau_agent_core.tools.base.ExtensionToolDefinition`. A dict is
+        validated into the model HERE, at the boundary, so a malformed
+        registration fails where it was made rather than as a ``KeyError`` from
+        inside the agent loop one turn later.
 
         This used to log a warning and overwrite. Last-write-wins with no signal is
         the failure to close: this registry is one flat, unattributed map shared by
@@ -98,7 +111,9 @@ class ExtensionRegistry:
         Raises:
             ValueError: if a tool of this name is already registered.
         """
-        name = definition["name"]
+        if not isinstance(definition, ExtensionToolDefinition):
+            definition = ExtensionToolDefinition.model_validate(definition)
+        name = definition.name
         if name in self._tools:
             raise ValueError(
                 f"Tool '{name}' is already registered. Two tools cannot share a name: "
@@ -114,9 +129,9 @@ class ExtensionRegistry:
             result.append(
                 ToolInfo(
                     name=name,
-                    description=defn.get("description", ""),
-                    parameters=defn.get("parameters", {}),
-                    source=defn.get("_source", "built-in"),
+                    description=defn.description,
+                    parameters=defn.parameters,
+                    source=defn.source,
                 )
             )
         return result
@@ -125,7 +140,7 @@ class ExtensionRegistry:
         """Enable/disable tools by name."""
         self._active_tools = set(names)
 
-    def get_active_tools(self) -> dict[str, dict]:
+    def get_active_tools(self) -> dict[str, ExtensionToolDefinition]:
         """Get currently active tools."""
         if self._active_tools is None:
             return self._tools

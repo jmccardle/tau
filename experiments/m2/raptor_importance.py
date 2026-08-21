@@ -118,13 +118,18 @@ def build_raptor(root_ids):
                 print(f"  root {root_id}: summaries already present, skipping", flush=True)
                 continue
             started = time.time()
-            resp = client.post(f"{API}/documents/{root_id}/raptor", json={"max_depth": 3}, timeout=1800.0)
+            resp = client.post(
+                f"{API}/documents/{root_id}/raptor", json={"max_depth": 3}, timeout=1800.0
+            )
             resp.raise_for_status()
             body = resp.json()
             layers = body.get("layers", [])
             made = sum(len(x.get("summary_ids", []) or []) for x in layers) if layers else "?"
-            print(f"  root {root_id}: {len(layers)} layers, {made} summaries "
-                  f"({time.time() - started:.0f}s)", flush=True)
+            print(
+                f"  root {root_id}: {len(layers)} layers, {made} summaries "
+                f"({time.time() - started:.0f}s)",
+                flush=True,
+            )
 
 
 def main() -> int:
@@ -153,12 +158,13 @@ def main() -> int:
     if not summaries:
         raise RuntimeError("no summaries found — RAPTOR produced nothing to score")
 
-    print(f"\nscoring {len(summaries)} summaries "
-          f"(rubric={args.rubric}, thinking={args.thinking})")
+    print(f"\nscoring {len(summaries)} summaries (rubric={args.rubric}, thinking={args.thinking})")
     started = time.time()
     with httpx.Client() as client:
+
         def work(row):
             return row[0], score_one(client, template.format(memory=row[1]), args.thinking)
+
         with ThreadPoolExecutor(max_workers=SLOTS) as pool:
             scored = dict(pool.map(work, summaries))
     print(f"  scored in {time.time() - started:.0f}s")
@@ -166,8 +172,10 @@ def main() -> int:
     vals = list(scored.values())
     dist = Counter(vals)
     ent = entropy(vals)
-    print(f"\nsummary-level distribution: mean {sum(vals)/len(vals):.2f}  "
-          f"at1 {dist[1]/len(vals):.1%}  distinct {len(dist)}  entropy {ent:.2f} bits")
+    print(
+        f"\nsummary-level distribution: mean {sum(vals) / len(vals):.2f}  "
+        f"at1 {dist[1] / len(vals):.1%}  distinct {len(dist)}  entropy {ent:.2f} bits"
+    )
     for r in sorted(dist):
         print(f"  {r:>2}: {dist[r]:>4}  {'#' * int(50 * dist[r] / max(dist.values()))}")
     print("\n(turn-level GA/nothink baseline was ~0.29 bits, 96.1% at 1)")
@@ -185,9 +193,8 @@ def main() -> int:
     with factory() as db:
         # Only turns carry the propagated value; summaries keep their own.
         turn_ids = [
-            r[0] for r in db.execute(
-                select(Document.id).where(Document.usetype == "locomo_turn")
-            ).all()
+            r[0]
+            for r in db.execute(select(Document.id).where(Document.usetype == "locomo_turn")).all()
         ]
         # CLEAR FIRST. The turns still hold the previous turn-level GA/nothink scores
         # (96% at 1). Writing propagated values over the top would leave every turn RAPTOR
@@ -212,16 +219,25 @@ def main() -> int:
             hit += 1
         db.commit()
     coverage = hit / max(len(turn_ids), 1)
-    print(f"cleared stale importance from {len(turn_ids)} turns, then wrote propagated "
-          f"importance to {hit} ({coverage:.1%} coverage)")
+    print(
+        f"cleared stale importance from {len(turn_ids)} turns, then wrote propagated "
+        f"importance to {hit} ({coverage:.1%} coverage)"
+    )
     if coverage < 0.5:
-        print(f"  WARNING: {1 - coverage:.1%} of turns are outside any scored observation "
-              f"and score neutral. Read the ablation with that in mind.")
+        print(
+            f"  WARNING: {1 - coverage:.1%} of turns are outside any scored observation "
+            f"and score neutral. Read the ablation with that in mind."
+        )
 
     with open("/fast/datasets/m2/raptor_importance.json", "w") as fh:
-        json.dump({"summary_scores": {str(k): v for k, v in scored.items()},
-                   "entropy_bits": ent,
-                   "propagated": {str(k): v for k, v in propagated.items()}}, fh)
+        json.dump(
+            {
+                "summary_scores": {str(k): v for k, v in scored.items()},
+                "entropy_bits": ent,
+                "propagated": {str(k): v for k, v in propagated.items()},
+            },
+            fh,
+        )
     print("\nnow re-run: locomo_recall.py --eval-only")
     return 0
 

@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from tau_agent_core.agent_session import AgentSession
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 from tau_coding_agent.session_store import Session
 

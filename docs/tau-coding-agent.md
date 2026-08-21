@@ -1,286 +1,114 @@
-# τ-coding-agent Design — TUI (Fork of Parley)
+# τ-coding-agent Design — TUI (fork of Parley)
 
 ## Scope
 
-τ-coding-agent is the interactive terminal interface. It's built on **Parley's foundation** (Textual app, 30Hz throttle, incremental mounting, catppuccin theme) but extended with τ's agent-specific features.
+τ-coding-agent is the interactive terminal interface, plus the `tau` CLI
+that also drives headless (`-p`) and RPC (`--mode rpc`) runs. It's a fork
+of a prior Textual app called Parley, kept where Parley's design already
+fit and replaced where τ's agent model needed something Parley didn't have.
 
-## What Parley Gives Us (Reused As-Is)
+## What's genuinely still Parley
 
-| Component | Lines | Status |
-|-----------|-------|--------|
-| Textual App shell | ~500 | ✅ Direct port of parley.py |
-| 30Hz streaming throttle | ~10 | ✅ Direct port |
-| Chat sidebar with history | ~100 | ✅ Keep, enhance with tree |
-| Command palette (Ctrl+P) | ~20 | ✅ Textual built-in |
-| Catppuccin-mocha theme | ~150 | ✅ Direct port |
-| Config system | ~30 | ✅ Keep, enhance |
-| Chat persistence (JSON) | ~60 | ✅ Keep, extend to JSONL |
+- **30Hz streaming throttle** — carried forward as-is; still the right
+  answer for not thrashing the terminal on token-by-token deltas.
+- **Catppuccin Mocha palette** — real, hardcoded hex values throughout the
+  single stylesheet `parley.tcss` (e.g. `#1e1e2e` base, `#89dceb` on
+  user-message borders, `#f38ba8` on errors). This is true at the color
+  level; it is **not** a swappable theme system — there is no `themes/`
+  directory and no second theme anywhere in the source.
+- **Command palette (Ctrl+P)** — Textual's built-in, listing τ's own
+  commands (`app.py`'s `get_system_commands`).
 
-## What Changes from Parley
+## What τ actually built instead of the original plan
 
-### 1. Backend → τ-agent-core
+An early design sketched a `widgets/` directory with ten small files
+(`tool_call_widget.py`, `session_tree.py`, `footer.py`, an `@`-file-ref /
+`!bash` input bar, and so on). None of that file layout exists. What's
+real:
 
-**Parley**: `backends.py` — `Backend` ABC with `chat()` and `stream_chat()`
-**τ**: No more `Backend`. Instead, τ-coding-agent uses `AgentSession` from τ-agent-core.
+- **Rendering** lives in a flat `chat_widgets.py` (three classes:
+  `ReasoningRegion`, `ToolBox`, `ExchangeBox`) plus a large set of widget
+  and modal classes defined directly in `app.py` — `ExtensionStatusBar`,
+  `LaneStrip`, `ExtensionPanel`, `SessionTreeModal`, `ChatSidebar`,
+  `ChatDisplay`, `ChatInput`.
+- **Input** is a plain `textual.widgets.TextArea` (`ChatInput`) with
+  up/down history navigation and `Ctrl+Enter` to submit. There is no `@`
+  fuzzy file reference, no `!command`/`!!command` bash escape, and no tab
+  completion for paths — none of these were built. Multi-line entry is
+  just `TextArea`'s own default Enter-inserts-newline behavior, not a
+  τ-specific Shift+Enter feature.
+- **Session browsing is two distinct, unrelated things** — an earlier
+  design conflated them into one "session tree":
+  - `ChatSidebar` picks *which session to open*. It's still a flat list
+    grouped by date ("Today"/"Yesterday"/"Older"), exactly like Parley's
+    original — never replaced by a tree.
+  - `SessionTreeModal` (opened with `Ctrl+G`) is a real `Tree` widget, but
+    it browses the **branch structure inside the current conversation** —
+    message/compaction/branch/navigate nodes, with a `◀ current` marker
+    on the active leaf — to pick a point for a follow-up action
+    (`TreeModeModal`: navigate, summarize a branch, summarize with custom
+    instructions, or elide a span). It has no bookmarks/labels, doesn't
+    show compaction summaries inline (only after you pick a node), and
+    isn't where fork/clone live — `/fork` is a separate command, dispatched
+    through `AgentSession.submit()`, not reachable from this modal.
+- **Status display** is the window `Header`'s subtitle — model name plus
+  one aggregate label (`"{N} tools · {tokens} tok"`, a single summed token
+  count). There is no separate footer widget, no context-window
+  percentage anywhere, and no session-name or thinking-level indicator in
+  any status area. `ExtensionStatusBar` and `LaneStrip` exist but serve
+  different purposes (extension-declared status slots; which forked/bus
+  lanes are currently streaming), not session stats.
 
-```python
-# OLD (Parley)
-backend = create_backend(config)
-content, usage = await backend.stream_chat(messages, display.update_streaming_message)
+## Event flow
 
-# NEW (τ)
-session = AgentSession(...)
-session.subscribe(lambda event: display.handle_event(event))
-await session.prompt(user_input)
-```
+`ChatInput` submit → `app.py`'s `on_input_submitted` → `TauBackend`'s
+`submit_turn` → `AgentSession.submit()` (the same one door every other
+input source uses) → a persistent render subscription
+(`subscribe_render`/`RenderRouter`) turns backend events into widget
+updates. The shape an earlier sketch drew (submit → agent loop → event
+handler → widget) still holds; only the exact names changed.
 
-### 2. Message Rendering → Agent-Aware Widgets
+## Modes
 
-**Parley**: Single `ChatMessage` widget (Markdown border for all messages)
-**τ**: Distinct widgets for each message type
+Interactive (default), headless print (`-p`/`--print`), headless JSON
+(`--mode json`), and RPC (`--mode rpc`, a persistent JSON-RPC 2.0 server
+over stdio — see `docs/REMOTE-CONTROL.md`).
 
-```
-τ-coding-agent/src/tau_coding_agent/widgets/
-├── __init__.py
-├── chat_display.py         # ChatDisplay (scrollable message container)
-├── user_message_widget.py  # Render user messages
-├── assistant_message.py    # Render assistant text + thinking blocks
-├── tool_call_widget.py     # NEW: Collapsible tool call display
-├── tool_result_widget.py   # NEW: Tool result rendering (diff, output, file)
-├── thinking_block.py       # NEW: Collapsible thinking/reasoning blocks
-├── session_tree.py         # NEW: Tree sidebar (vs Parley's flat list)
-├── footer.py               # NEW: Token/cost/context usage bar
-├── input_bar.py            # Enhanced input (file references @, !bash)
-└── model_bar.py            # Model selector in footer
-```
+## CLI flags
 
-### 3. Session Model → JSONL with Tree
+`tau --help` is the authoritative source — this table is a snapshot and
+*will* drift if hand-maintained separately, the same way an earlier
+version of this reference did (three of its flag claims were wrong: a
+missing `--thinking` level, a `-r`/`--resume` description that doesn't
+hold headlessly, and a `-v` alias claimed for two different flags). Treat
+disagreements between this table and `tau --help` as this table being
+stale.
 
-**Parley**: `Chat` dataclass with flat message list, saved as single JSON
-**τ**: JSONL file with tree structure (entries with parent_id)
-
-### 4. Input Bar → Agent Input
-
-**Parley**: TextArea with Ctrl+Enter, up/down history
-**τ**: Same, plus:
-- `@` fuzzy file reference (search project files)
-- `!command` runs bash, sends output to LLM
-- `!!command` runs bash silently
-- Tab completion for file paths
-- Multi-line Shift+Enter
-
-### 5. Sidebar → Session Tree
-
-**Parley**: Flat list of chats grouped by date
-**τ**: Tree-structured navigation with:
-- Branch indicators
-- Labels/bookmarks on entries
-- Compaction summary display
-- Fork/clone capability
-- Collapse/expand branches
-
-### 6. Footer → Token/Cost Bar
-
-**Parley**: Simple Footer widget
-**τ**: Custom footer showing:
-- Current model name
-- Token count (input/output/total)
-- Context usage percentage
-- Session name
-- Thinking level indicator
-
-## Widget Designs
-
-### ToolCallWidget (NEW)
-
-```python
-class ToolCallWidget(Container):
-    """Display a tool call with status and arguments preview."""
-
-    def __init__(self, tool_call, status="pending"):
-        super().__init__()
-        self.tool_call = tool_call
-        self.status = status  # "pending", "running", "done", "error"
-
-    def compose(self):
-        # Header: tool name + status icon
-        yield Label(f"🔧 {self.tool_call.name}", classes="tool-call-header")
-
-        # Collapsible argument preview
-        args_text = json.dumps(self.tool_call.arguments, indent=2)
-        yield Collapsible(
-            Markdown(args_text[:500]),
-            title="Arguments",
-            expanded=False,
-        )
-
-        # Status indicator
-        if self.status == "running":
-            yield Loader()
-        elif self.status == "error":
-            yield Label("❌ Failed", classes="tool-error")
-
-    def update_status(self, status, result=None):
-        self.status = status
-        self.refresh()
-```
-
-### ToolResultWidget (NEW)
-
-```python
-class ToolResultWidget(Container):
-    """Display tool execution results."""
-
-    def render_tool_result(self, result, tool_name):
-        if tool_name == "read":
-            return self._render_read_result(result)
-        elif tool_name == "write":
-            return self._render_write_result(result)
-        elif tool_name == "edit":
-            return self._render_edit_result(result)
-        elif tool_name == "bash":
-            return self._render_bash_result(result)
-        else:
-            return Markdown(result)
-
-    def _render_bash_result(self, result):
-        """Bash output with tail truncation display."""
-        output = result.get("content", "")
-        truncation = result.get("details", {}).get("truncation")
-
-        if truncation and truncation.get("truncated"):
-            # Show last N lines
-            lines = output.split("\n")
-            preview_lines = lines[-5:]
-            return Markdown("```\n" + "\n".join(preview_lines) + "\n```\n\n[... truncated]")
-        return Markdown("```\n" + output + "\n```")
-
-    def _render_edit_result(self, result):
-        """File edit result with diff preview."""
-        # Could integrate with difflib for unified diff display
-        ...
-```
-
-### ThinkingBlockWidget (NEW)
-
-```python
-class ThinkingBlockWidget(Container):
-    """Collapsible thinking/reasoning block."""
-
-    def __init__(self, thinking_text):
-        super().__init__()
-        self.thinking_text = thinking_text
-        self._collapsed = True
-
-    def compose(self):
-        yield Label(
-            "💭 [click to expand]",
-            classes="thinking-header",
-            id="thinking-toggle",
-        )
-        self._content = Markdown(self.thinking_text)
-        self._content.styles.display = "none"
-
-    def on_click(self):
-        self._collapsed = not self._collapsed
-        self._content.styles.display = "block" if not self._collapsed else "none"
-        self.query_one("#thinking-toggle").update(
-            "💭 [click to collapse]" if not self._collapsed else "💭 [click to expand]"
-        )
-```
-
-### SessionTreeWidget (NEW — replaces flat list)
-
-```python
-class SessionTreeWidget(Tree):
-    """Tree-based session navigation."""
-
-    def __init__(self, session_manager):
-        super().__init__()
-        self.session_manager = session_manager
-        self._refresh()
-
-    def _refresh(self):
-        """Load sessions and build tree."""
-        self.clear()
-        for session in self.session_manager.list():
-            root = self.add_root(f"📁 {session.cwd}")
-            for entry in session.entries:
-                if entry.type == "message" and entry.message.role == "user":
-                    label = entry.message.content[:40]
-                    self.add_child(root, label, data=entry)
-
-    def on_tree_selected(self, node):
-        """Navigate to selected entry."""
-        entry = node.data
-        self.app.navigate_to_entry(entry.id)
-```
-
-### FooterWidget (NEW)
-
-```python
-class FooterWidget(Static):
-    """Session info bar with model, tokens, context usage."""
-
-    def update_session_info(self, model, usage, context_percent, thinking_level, session_name):
-        parts = [
-            f"🤖 {model}",
-            f"📊 {context_percent}% context",
-            f"💭 {thinking_level}",
-            f"📝 {session_name or 'unnamed'}",
-        ]
-        if usage:
-            parts.append(f"🔢 {usage.total_tokens} tokens")
-        self.update(" | ".join(parts))
-```
-
-## TUI Event Flow
-
-```
-User types in ChatInput (TextArea)
-         │
-         ├─ Enter      → emit Submitted(text)
-         ├─ Ctrl+Enter  → emit MultiLineSubmitted(text)
-         ├─ @           → trigger fuzzy file search → show completions
-         ├─ !command    → execute bash → send output to LLM
-         │
-         └─ Submit(text)
-               │
-               ▼
-ParleyApp.on_input_submitted(text)
-               │
-               ├─ session.prompt(text)
-               │     │
-               │     └─ τ-agent-core agent loop
-               │           │
-               │           └─ emits AgentEvents
-               │
-               └─ session.subscribe(event_handler)
-                     │
-                     ├─ message_update → ChatDisplay.update_streaming_message(delta)
-                     ├─ tool_execution_start → ToolCallWidget(status="running")
-                     ├─ tool_execution_end → ToolCallWidget(status="done", result=...)
-                     └─ agent_end → update footer, re-enable input
-```
-
-## Key Differences from Parley — Summary
-
-| Aspect | Parley | τ |
-|--------|--------|---|
-| Backend | `Backend` ABC (chat/stream_chat) | τ-agent-core `AgentSession` |
-| Messages | Simple text dict | Structured (text, thinking, tool calls, tool results) |
-| Persistence | Single JSON per chat | JSONL tree with session manager |
-| Session nav | Flat list by date | Tree with branches, compaction |
-| Input | TextArea | TextArea + @ file ref + !bash + tab complete |
-| Rendering | Markdown widget | Typed widgets (user/assistant/tool/thinking) |
-| Footer | Textual Footer | Custom: model, tokens, context, session |
-| Tools | None | Full built-in tool suite |
-| Extensions | None | Python extension system |
-| Modes | Only interactive | Interactive + print + RPC |
+| Flag | Short | Notes |
+|---|---|---|
+| `--print` | `-p` | run one turn headlessly, print, exit |
+| `--mode {text,json,rpc}` | | headless output format; `rpc` doesn't combine with `--print` |
+| `--model` | `-m` | config key or `provider/id` shorthand |
+| `--provider` | | long-only |
+| `--tools`/`--no-tools` | `-t`/`-nt` | allowlist / offer the model **zero** tools — built-ins *and* extension-registered ones. Extensions still load: hooks, commands, injections and subscriptions are untouched, only callable tools are withheld |
+| `--exclude-tools` | `-xt` | denylist (built-ins only) |
+| `--no-builtin-tools` | `-nbt` | drops the built-in set; extension-registered tools survive and are offered |
+| `--extension PATH` (repeatable) | `-e` | explicit load, always runs even under `--no-extensions` |
+| `--no-extensions` | `-ne` | disables discovery only |
+| `--bus` | | declare this run may reach a message bus, so `TOUCHES_BUS` extensions (e.g. `nats_bus`) are allowed to load |
+| `--ext-config NAME.KEY=VALUE` (repeatable) | | per-extension config override, CLI > `config.json` |
+| `--ui-defaults METHOD=ANSWER,...` | | headless dialog auto-answers; otherwise a headless dialog raises. `--print` only |
+| `--system-prompt` / `--append-system-prompt` (repeatable) | | |
+| `--continue` / `--resume` / `--session REF` / `--fork REF` | `-c` / `-r` | mutually exclusive. **`--resume` is TUI-sidebar-only — it raises at the CLI, it does not open a picker headlessly** |
+| `--name` | `-n` | session display title |
+| `--no-session` | | ephemeral, no persistence |
+| `--thinking {off,minimal,low,medium,high,xhigh}` | | requires a reasoning-capable model |
+| `--store {file,jmfts}` | | session backend for this run |
+| `--session-dir DIR` | | file store only; default differs by mode (`~/.tau/sessions` vs. a private RPC temp dir) |
+| `--import-session PATH` / `--export-session REF PATH` | | JMFTS store transfer, then exit |
+| `--verbose` | | long-only — **`-v` is `--version`**, not verbose |
+| `--help` / `--version` | `-h` / `-v` | |
 
 ## Dependencies
 
-- `textual >= 0.47.0`
-- `tau-agent-core` (local dependency)
-- `typer` or `argparse` (CLI)
-- Standard library only
+`textual>=0.47`, `tau-agent-core` (local), `typer`.

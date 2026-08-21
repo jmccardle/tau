@@ -650,7 +650,7 @@ class SessionLogContractTests:
                 "system_prompt_digest": "deadbeef" * 8,  # a sha256 hex digest, never text
                 "tools": ["read", "grep"],
                 "extensions": ["ext_kit.steer"],
-                "cwd": "/home/john/Development/agent-harness-py",
+                "cwd": "/srv/project",
             },
         )
         log.append_message(_msg("assistant", "yo"))

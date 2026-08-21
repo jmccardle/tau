@@ -26,8 +26,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tau_ai.streaming import DoneEvent, TextDeltaEvent
-from tau_ai.types import AssistantMessage, Model, TextContent, ToolCall, Usage
+from tau_llm.streaming import DoneEvent, TextDeltaEvent
+from tau_llm.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree
@@ -41,7 +41,6 @@ if _EXAMPLES not in sys.path:
     sys.path.insert(0, _EXAMPLES)
 
 from ext_kit import steer  # noqa: E402  (path insertion must precede the import)
-
 
 # ── ReminderBank: registration + Fail-Early ──────────────────────────────────
 

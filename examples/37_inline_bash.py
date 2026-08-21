@@ -8,7 +8,7 @@ Reference: docs/EXTENSIONS-DEMO-ROADMAP.md §5 S62. Pi original:
 The ``input`` mutating hook (E6 §2 / S42) rewriting a user's prompt BEFORE the
 turn's user node is created. ``!{command}`` patterns anywhere in the prompt
 text are executed via a subshell and replaced with their (trimmed) stdout —
-so ``What's in !{pwd}?`` becomes ``What's in /home/john/project?`` and *that*
+so ``What's in !{pwd}?`` becomes ``What's in /srv/project?`` and *that*
 rewritten text is the one and only copy that reaches the model, gets rendered,
 and is persisted on the active path (the S42 pre-node invariant: an ``input``
 transform is legal precisely because it runs before any node exists to
@@ -43,13 +43,24 @@ still gets it left alone rather than silently mangled.
 ## Usage
 
 ```python
+import importlib.util
+import sys
+
 from tau_agent_core.sdk import create_agent_session
-from examples.inline_bash import inline_bash_extension
+
+# examples/ is not an importable package: there is no __init__.py and every
+# filename starts with a digit. Load the file by path, as `tau -e` does.
+_spec = importlib.util.spec_from_file_location("ext", "examples/37_inline_bash.py")
+ext = importlib.util.module_from_spec(_spec)
+# Register BEFORE exec_module: a module using `from __future__ import
+# annotations` resolves its own dataclass annotations through sys.modules.
+sys.modules[_spec.name] = ext
+_spec.loader.exec_module(ext)
 
 session = create_agent_session(
     model="gpt-4o",
     tools=["read"],
-    extensions=[inline_bash_extension],
+    extensions=[ext.register],
 )
 await session.prompt("The current branch is !{git branch --show-current}")
 ```

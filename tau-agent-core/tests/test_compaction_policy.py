@@ -46,7 +46,7 @@ from tau_agent_core.run_manifest import (
     write_run_manifest,
 )
 from tau_agent_core.session_log import InMemorySessionLog
-from tau_ai.types import AssistantMessage, Model, TextContent, Usage
+from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 
 # ── shared fakes ──────────────────────────────────────────────────────────
 #
@@ -103,7 +103,7 @@ class _Stream:
         return _EventIterator(self._events)
 
     async def result(self):
-        from tau_ai.streaming import DoneEvent
+        from tau_llm.streaming import DoneEvent
 
         for event in self._events:
             if isinstance(event, DoneEvent):
@@ -116,7 +116,7 @@ class _Stream:
 
 def _stream_stub(reply: str = "ok", record: list | None = None):
     async def fake_stream_simple(model, context, options=None):
-        from tau_ai.streaming import DoneEvent, TextDeltaEvent
+        from tau_llm.streaming import DoneEvent, TextDeltaEvent
 
         if record is not None:
             record.append(model)

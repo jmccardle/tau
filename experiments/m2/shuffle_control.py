@@ -71,8 +71,10 @@ def main() -> int:
             for doc_id, ts in zip(ids, shuffled):
                 db.get(Document, doc_id).event_time = ts
         db.commit()
-    print(f"permuted event_time within {len(manifest)} instances "
-          f"({len(original)} docs); timestamp multiset per instance unchanged")
+    print(
+        f"permuted event_time within {len(manifest)} instances "
+        f"({len(original)} docs); timestamp multiset per instance unchanged"
+    )
 
     # --- re-run the recency arm against the shuffled clock ---
     tallies = defaultdict(lambda: defaultdict(float))
@@ -85,12 +87,21 @@ def main() -> int:
                     query = inst["probing_queries"][dim]
                     for label, kw in (
                         ("baseline", {}),
-                        ("recency", {"recency_weight": ALPHA,
-                                     "recency_halflife_days": HALFLIFE, "now": now}),
+                        (
+                            "recency",
+                            {
+                                "recency_weight": ALPHA,
+                                "recency_halflife_days": HALFLIFE,
+                                "now": now,
+                            },
+                        ),
                     ):
                         results = repo.hybrid_search(
-                            query, limit=50, methods=["vector"],
-                            parent_id=inst["root_id"], **kw,
+                            query,
+                            limit=50,
+                            methods=["vector"],
+                            parent_id=inst["root_id"],
+                            **kw,
                         )
                         ranks = {r.document.id: i for i, r in enumerate(results, 1)}
                         rn, ro = ranks.get(inst["new_doc_id"]), ranks.get(inst["old_doc_id"])
@@ -115,10 +126,14 @@ def main() -> int:
     print("-" * 42)
     for (label, dim), t in sorted(tallies.items()):
         n = t["n"] or 1
-        print(f"{label:>10} {dim.replace('_query',''):>5} {int(t['n']):>5} "
-              f"{t['win']/n:>9.3f} {t['new_at_5']/n:>8.3f}")
-    print("\nreference (true clock): baseline new>old ~0.11/0.09/0.44, "
-          "recency a=1/365d ~0.91/0.95/0.92")
+        print(
+            f"{label:>10} {dim.replace('_query', ''):>5} {int(t['n']):>5} "
+            f"{t['win'] / n:>9.3f} {t['new_at_5'] / n:>8.3f}"
+        )
+    print(
+        "\nreference (true clock): baseline new>old ~0.11/0.09/0.44, "
+        "recency a=1/365d ~0.91/0.95/0.92"
+    )
     print("expected here if the finding is real: recency ~0.50, NOT ~0.91")
     return 0
 

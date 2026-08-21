@@ -1,0 +1,244 @@
+# Release pipeline for the four τ distributions.
+#
+# The four projects are released in LOCKSTEP at one version: ffwf-tau-llm,
+# ffwf-tau-agent-core, ffwf-tau-coding-agent, ffwf-tau-jmfts. Each is its own
+# project directory with its own pyproject.toml, and each reads its version from
+# its package's ``__version__`` (see [tool.setuptools.dynamic] in each file).
+#
+# Shape: test -> build -> publish. The publish jobs consume ONLY the artifact
+# produced by `build`; they never see the source tree and never build anything.
+#
+# Authentication is PyPI Trusted Publishing (OIDC). There is no API token in
+# repository secrets: the publish job requests an OIDC identity token
+# (`permissions: id-token: write`) and pypa/gh-action-pypi-publish exchanges it
+# for a short-lived, project-scoped upload token. A single exchange covers all
+# four projects because all four register the same publisher identity
+# (owner / repo / workflow filename / environment).
+#
+# "Fail Early" (see CLAUDE.md): there is no `continue-on-error`, no `|| true`,
+# and no step that turns a failure into a warning anywhere in this file. Shell
+# steps run under `set -euo pipefail`. A half-finished release must fail loudly.
+
+name: Publish τ to PyPI
+
+on:
+  push:
+    # Release tags only. A tag push always targets real PyPI.
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which index to publish to"
+        required: true
+        default: testpypi
+        type: choice
+        options:
+          - testpypi
+          - pypi
+
+# Never let two releases upload concurrently. `cancel-in-progress: false` is
+# deliberate: cancelling a run mid-upload is exactly the half-published state
+# this pipeline exists to avoid.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Every dist for every project lands here, so `twine check` and the publish
+  # action each see one flat directory.
+  DIST_DIR: dist
+
+jobs:
+  test:
+    name: Tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Fail the whole release the moment any interpreter fails. Do not weaken.
+      fail-fast: true
+      matrix:
+        # 3.11 is the ONLY verified version so far. 3.13 and 3.14 are being
+        # measured separately; when a result lands, add the string to this list
+        # and nothing else in this file needs to change.
+        python-version: ["3.11"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the four packages (editable, with dev extras)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          # Installed bottom-up, one command each, because the packages pin each
+          # other EXACTLY (e.g. ffwf-tau-agent-core==0.9.2). Installing a
+          # dependent before its dependency would send pip to PyPI looking for a
+          # version that has not been published yet. In this order every pin is
+          # already satisfied by the editable install made one step earlier.
+          pip install -e ./tau-llm
+          pip install -e './tau-agent-core[dev]'
+          pip install -e './tau-jmfts[dev]'
+          pip install -e './tau-coding-agent[dev]'
+
+      - name: pytest
+        shell: bash
+        # pytest config (testpaths, asyncio_mode, addopts) lives in the ROOT
+        # pyproject.toml, so this must run from the repo root. No `-m` override:
+        # the root config already deselects the `llama` live suite, and the
+        # `jmfts` live tests skip themselves when no server is reachable (they
+        # fail, by design, on a server error -- that is not a swallowed failure).
+        run: |
+          set -euo pipefail
+          pytest
+
+  build:
+    name: Build all four distributions
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Build on the verified interpreter. The wheels are pure-Python and
+          # py3-none-any, so one build serves every supported version.
+          python-version: "3.11"
+
+      - name: Install build tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Check the four versions agree, and match the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          read_version() {
+            local file="$1"
+            local v
+            v="$(sed -n 's/^__version__ = "\([^"]*\)"/\1/p' "$file")"
+            if [ -z "$v" ]; then
+              echo "could not read __version__ from $file" >&2
+              exit 1
+            fi
+            printf '%s' "$v"
+          }
+          LLM="$(read_version tau-llm/src/tau_llm/__init__.py)"
+          CORE="$(read_version tau-agent-core/src/tau_agent_core/__init__.py)"
+          TUI="$(read_version tau-coding-agent/src/tau_coding_agent/__init__.py)"
+          JMFTS="$(read_version tau-jmfts/src/tau_jmfts/__init__.py)"
+          echo "tau-llm=$LLM tau-agent-core=$CORE tau-coding-agent=$TUI tau-jmfts=$JMFTS"
+          if [ "$LLM" != "$CORE" ] || [ "$LLM" != "$TUI" ] || [ "$LLM" != "$JMFTS" ]; then
+            echo "the four packages are released in lockstep but their versions differ" >&2
+            exit 1
+          fi
+          # On a tag push the tag IS the release name; a mismatch would publish a
+          # version nobody asked for, and PyPI versions cannot be reused.
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            if [ "$TAG_VERSION" != "$LLM" ]; then
+              echo "tag ${GITHUB_REF_NAME} does not match package version ${LLM}" >&2
+              exit 1
+            fi
+          fi
+          echo "RELEASE_VERSION=$LLM" >> "$GITHUB_ENV"
+
+      - name: Build wheel + sdist for each project
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$DIST_DIR"
+          for pkg in tau-llm tau-agent-core tau-coding-agent tau-jmfts; do
+            echo "::group::build $pkg"
+            python -m build --sdist --wheel --outdir "$DIST_DIR" "./$pkg"
+            echo "::endgroup::"
+          done
+
+      - name: Verify all eight artifacts are present
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -la "$DIST_DIR"
+          count="$(find "$DIST_DIR" -maxdepth 1 -type f \( -name '*.whl' -o -name '*.tar.gz' \) | wc -l)"
+          # Four projects x (wheel + sdist). Anything else means a build silently
+          # produced nothing, or produced something unexpected.
+          if [ "$count" -ne 8 ]; then
+            echo "expected 8 artifacts (4 wheels + 4 sdists), found $count" >&2
+            exit 1
+          fi
+
+      - name: twine check (strict)
+        shell: bash
+        # --strict turns metadata/README rendering WARNINGS into failures. A dist
+        # whose long_description does not render is a broken PyPI page, and PyPI
+        # will not let the version be re-uploaded once it is taken.
+        run: |
+          set -euo pipefail
+          twine check --strict "$DIST_DIR"/*
+
+      - name: Upload dists as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tau-dists
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    # Rehearsal path only: manual runs that explicitly ask for it.
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/ffwf-tau-coding-agent/
+    permissions:
+      # The whole point: OIDC instead of a stored API token.
+      id-token: write
+    steps:
+      - name: Download the built dists
+        uses: actions/download-artifact@v4
+        with:
+          name: tau-dists
+          path: dist/
+
+      - name: Publish to TestPyPI (Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/
+          # Defaults kept on purpose: skip-existing stays FALSE, so re-uploading
+          # a version that already exists is an error rather than a quiet no-op.
+
+  publish-pypi:
+    name: Publish to PyPI
+    # Tag pushes always go to real PyPI; a manual run can too, if asked.
+    if: github.event_name == 'push' || inputs.target == 'pypi'
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/ffwf-tau-coding-agent/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download the built dists
+        uses: actions/download-artifact@v4
+        with:
+          name: tau-dists
+          path: dist/
+
+      - name: Publish to PyPI (Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          # skip-existing left at its default (false) deliberately.

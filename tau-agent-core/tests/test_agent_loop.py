@@ -25,14 +25,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tau_ai.abort import AbortSignal
-from tau_ai.streaming import (
+from tau_llm.abort import AbortSignal
+from tau_llm.streaming import (
     DoneEvent,
     ErrorEvent,
     TextDeltaEvent,
     ToolCallDeltaEvent,
 )
-from tau_ai.types import (
+from tau_llm.types import (
     AssistantMessage,
     TextContent,
     ToolCall as TauToolCall,
@@ -56,7 +56,6 @@ from tau_agent_core.tools.base import (
     ToolBatchResult,
     ToolDefinition,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -246,13 +245,9 @@ class TestTextOnlyResponse:
             ]
         )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", return_value=mock_stream
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", return_value=mock_stream):
             messages = await loop.run(
-                prompts=[
-                    UserMessage(content=[TextContent(text="hi")], timestamp=0)
-                ],
+                prompts=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
                 context=[],
             )
 
@@ -294,13 +289,9 @@ class TestTextOnlyResponse:
             ]
         )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", return_value=mock_stream
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", return_value=mock_stream):
             await loop.run(
-                prompts=[
-                    UserMessage(content=[TextContent(text="hello")], timestamp=0)
-                ],
+                prompts=[UserMessage(content=[TextContent(text="hello")], timestamp=0)],
                 context=[],
             )
 
@@ -374,13 +365,9 @@ class TestSingleToolCallSequential:
                     ]
                 )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
             messages = await loop.run(
-                prompts=[
-                    UserMessage(content=[TextContent(text="run ls")], timestamp=0)
-                ],
+                prompts=[UserMessage(content=[TextContent(text="run ls")], timestamp=0)],
                 context=[],
             )
 
@@ -411,9 +398,7 @@ class TestSingleToolCallSequential:
                 return _make_mock_stream(
                     [
                         DoneEvent(
-                            final=_make_tool_call_assistant(
-                                "call_abc", "ls", {"path": "."}
-                            ),
+                            final=_make_tool_call_assistant("call_abc", "ls", {"path": "."}),
                             usage=Usage(),
                         ),
                     ]
@@ -429,13 +414,9 @@ class TestSingleToolCallSequential:
                     ]
                 )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
             await loop.run(
-                prompts=[
-                    UserMessage(content=[TextContent(text="ls")], timestamp=0)
-                ],
+                prompts=[UserMessage(content=[TextContent(text="ls")], timestamp=0)],
                 context=[],
             )
 
@@ -527,15 +508,9 @@ class TestParallelToolCalls:
                     ]
                 )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
             messages = await loop.run(
-                prompts=[
-                    UserMessage(
-                        content=[TextContent(text="list and read")], timestamp=0
-                    )
-                ],
+                prompts=[UserMessage(content=[TextContent(text="list and read")], timestamp=0)],
                 context=[],
             )
 
@@ -590,9 +565,7 @@ class TestEarlyTermination:
             )
         )
 
-        loop = AgentLoop(
-            config=config, emit=lambda e: async_emit(events, e), tools=[term_tool]
-        )
+        loop = AgentLoop(config=config, emit=lambda e: async_emit(events, e), tools=[term_tool])
 
         call_count = [0]
 
@@ -602,9 +575,7 @@ class TestEarlyTermination:
                 return _make_mock_stream(
                     [
                         DoneEvent(
-                            final=_make_tool_call_assistant(
-                                "call_term", "terminate", {}
-                            ),
+                            final=_make_tool_call_assistant("call_term", "terminate", {}),
                             usage=Usage(),
                         ),
                     ]
@@ -612,15 +583,9 @@ class TestEarlyTermination:
             # Should NOT reach here — loop should terminate
             raise RuntimeError("Agent loop should not make a second LLM call")
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
             messages = await loop.run(
-                prompts=[
-                    UserMessage(
-                        content=[TextContent(text="terminate")], timestamp=0
-                    )
-                ],
+                prompts=[UserMessage(content=[TextContent(text="terminate")], timestamp=0)],
                 context=[],
             )
 
@@ -714,15 +679,9 @@ class TestEarlyTermination:
                 ]
             )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
             await loop.run(
-                prompts=[
-                    UserMessage(
-                        content=[TextContent(text="terminate")], timestamp=0
-                    )
-                ],
+                prompts=[UserMessage(content=[TextContent(text="terminate")], timestamp=0)],
                 context=[],
             )
 
@@ -746,9 +705,7 @@ class TestToolErrorHandling:
         events: list[AgentEvent] = []
         config = AgentLoopConfig(model="gpt-4o")
         fail_tool = _make_failing_tool("failing_tool", "simulated failure")
-        loop = AgentLoop(
-            config=config, emit=lambda e: async_emit(events, e), tools=[fail_tool]
-        )
+        loop = AgentLoop(config=config, emit=lambda e: async_emit(events, e), tools=[fail_tool])
 
         call_count = [0]
 
@@ -758,9 +715,7 @@ class TestToolErrorHandling:
                 return _make_mock_stream(
                     [
                         DoneEvent(
-                            final=_make_tool_call_assistant(
-                                "call_err", "failing_tool", {}
-                            ),
+                            final=_make_tool_call_assistant("call_err", "failing_tool", {}),
                             usage=Usage(),
                         ),
                     ]
@@ -779,22 +734,13 @@ class TestToolErrorHandling:
                 ]
             )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
             messages = await loop.run(
-                prompts=[
-                    UserMessage(
-                        content=[TextContent(text="fail")], timestamp=0
-                    )
-                ],
+                prompts=[UserMessage(content=[TextContent(text="fail")], timestamp=0)],
                 context=[],
             )
 
-        error_events = [
-            e for e in events
-            if e.type == "tool_execution_end" and e.is_error
-        ]
+        error_events = [e for e in events if e.type == "tool_execution_end" and e.is_error]
         assert len(error_events) == 1
         assert error_events[0].tool_name == "failing_tool"
         assert "simulated failure" in str(error_events[0].result)
@@ -854,21 +800,13 @@ class TestToolErrorHandling:
                         delta="Recovery",
                         partial=_make_text_assistant("", model="gpt-4o"),
                     ),
-                    DoneEvent(
-                        final=_make_text_assistant("Recovery"), usage=Usage()
-                    ),
+                    DoneEvent(final=_make_text_assistant("Recovery"), usage=Usage()),
                 ]
             )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
             await loop.run(
-                prompts=[
-                    UserMessage(
-                        content=[TextContent(text="test")], timestamp=0
-                    )
-                ],
+                prompts=[UserMessage(content=[TextContent(text="test")], timestamp=0)],
                 context=[],
             )
 
@@ -931,25 +869,17 @@ class TestAbortDuringToolExecution:
                 return _make_mock_stream(
                     [
                         DoneEvent(
-                            final=_make_tool_call_assistant(
-                                "call_slow", "slow_tool", {}
-                            ),
+                            final=_make_tool_call_assistant("call_slow", "slow_tool", {}),
                             usage=Usage(),
                         ),
                     ]
                 )
             raise RuntimeError("Should not make second LLM call after abort")
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
             task = asyncio.create_task(
                 loop.run(
-                    prompts=[
-                        UserMessage(
-                            content=[TextContent(text="slow")], timestamp=0
-                        )
-                    ],
+                    prompts=[UserMessage(content=[TextContent(text="slow")], timestamp=0)],
                     context=[],
                 )
             )
@@ -995,16 +925,10 @@ class TestAbortDuringToolExecution:
                 )
             raise RuntimeError("Should not make second LLM call")
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
             task = asyncio.create_task(
                 loop.run(
-                    prompts=[
-                        UserMessage(
-                            content=[TextContent(text="hello")], timestamp=0
-                        )
-                    ],
+                    prompts=[UserMessage(content=[TextContent(text="hello")], timestamp=0)],
                     context=[],
                 )
             )
@@ -1046,9 +970,7 @@ class TestMultipleTurns:
                 return _make_mock_stream(
                     [
                         DoneEvent(
-                            final=_make_tool_call_assistant(
-                                "call_001", "ls", {"path": "."}
-                            ),
+                            final=_make_tool_call_assistant("call_001", "ls", {"path": "."}),
                             usage=Usage(),
                         ),
                     ]
@@ -1057,9 +979,7 @@ class TestMultipleTurns:
                 return _make_mock_stream(
                     [
                         DoneEvent(
-                            final=_make_tool_call_assistant(
-                                "call_002", "ls", {"path": ".."}
-                            ),
+                            final=_make_tool_call_assistant("call_002", "ls", {"path": ".."}),
                             usage=Usage(),
                         ),
                     ]
@@ -1079,15 +999,9 @@ class TestMultipleTurns:
                     ]
                 )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
             messages = await loop.run(
-                prompts=[
-                    UserMessage(
-                        content=[TextContent(text="explore")], timestamp=0
-                    )
-                ],
+                prompts=[UserMessage(content=[TextContent(text="explore")], timestamp=0)],
                 context=[],
             )
 
@@ -1112,9 +1026,7 @@ class TestRunContinue:
         """run_continue runs another turn with existing context."""
         events: list[AgentEvent] = []
         config = AgentLoopConfig(model="gpt-4o")
-        loop = AgentLoop(
-            config=config, emit=lambda e: async_emit(events, e)
-        )
+        loop = AgentLoop(config=config, emit=lambda e: async_emit(events, e))
 
         call_count = [0]
 
@@ -1133,16 +1045,10 @@ class TestRunContinue:
                 ]
             )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
             # First run
             messages1 = await loop.run(
-                prompts=[
-                    UserMessage(
-                        content=[TextContent(text="hello")], timestamp=0
-                    )
-                ],
+                prompts=[UserMessage(content=[TextContent(text="hello")], timestamp=0)],
                 context=[],
             )
             assert len(messages1) == 1
@@ -1166,9 +1072,7 @@ class TestTokenUsageTracking:
         """Token usage from the LLM response is captured."""
         events: list[AgentEvent] = []
         config = AgentLoopConfig(model="gpt-4o")
-        loop = AgentLoop(
-            config=config, emit=lambda e: async_emit(events, e)
-        )
+        loop = AgentLoop(config=config, emit=lambda e: async_emit(events, e))
 
         usage = Usage(input_tokens=100, output_tokens=50, total_tokens=150)
 
@@ -1181,15 +1085,9 @@ class TestTokenUsageTracking:
             ]
         )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", return_value=mock_stream
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", return_value=mock_stream):
             messages = await loop.run(
-                prompts=[
-                    UserMessage(
-                        content=[TextContent(text="hi")], timestamp=0
-                    )
-                ],
+                prompts=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
                 context=[],
             )
 
@@ -1256,23 +1154,14 @@ class TestToolArgumentValidation:
                     ]
                 )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
             messages = await loop.run(
-                prompts=[
-                    UserMessage(
-                        content=[TextContent(text="ls")], timestamp=0
-                    )
-                ],
+                prompts=[UserMessage(content=[TextContent(text="ls")], timestamp=0)],
                 context=[],
             )
 
         # Should have a tool_execution_end with is_error=True
-        error_ends = [
-            e for e in events
-            if e.type == "tool_execution_end" and e.is_error
-        ]
+        error_ends = [e for e in events if e.type == "tool_execution_end" and e.is_error]
         assert len(error_ends) == 1
         assert error_ends[0].tool_name == "ls"
 
@@ -1356,9 +1245,7 @@ class TestExecuteTool:
         ls_tool = _make_simple_tool(name="ls", result="file1.txt", path=".")
         loop = AgentLoop(config=config, tools=[ls_tool])
 
-        prepared = PreparedToolCall(
-            id="call_001", name="ls", arguments={"path": "."}
-        )
+        prepared = PreparedToolCall(id="call_001", name="ls", arguments={"path": "."})
         result = await loop._execute_tool(prepared)
 
         assert isinstance(result, AgentToolResult)
@@ -1372,9 +1259,7 @@ class TestExecuteTool:
         config = AgentLoopConfig(model="gpt-4o")
         loop = AgentLoop(config=config)
 
-        prepared = PreparedToolCall(
-            id="call_001", name="nonexistent", arguments={}
-        )
+        prepared = PreparedToolCall(id="call_001", name="nonexistent", arguments={})
         result = await loop._execute_tool(prepared)
 
         assert isinstance(result, AgentToolResult)
@@ -1388,9 +1273,7 @@ class TestExecuteTool:
         fail_tool = _make_failing_tool("bad_tool", "something broke")
         loop = AgentLoop(config=config, tools=[fail_tool])
 
-        prepared = PreparedToolCall(
-            id="call_001", name="bad_tool", arguments={}
-        )
+        prepared = PreparedToolCall(id="call_001", name="bad_tool", arguments={})
         result = await loop._execute_tool(prepared)
 
         assert isinstance(result, AgentToolResult)
@@ -1411,9 +1294,7 @@ class TestEventEmission:
         """agent_start is always emitted first."""
         events: list[AgentEvent] = []
         config = AgentLoopConfig(model="gpt-4o")
-        loop = AgentLoop(
-            config=config, emit=lambda e: async_emit(events, e)
-        )
+        loop = AgentLoop(config=config, emit=lambda e: async_emit(events, e))
 
         mock_stream = _make_mock_stream(
             [
@@ -1424,15 +1305,9 @@ class TestEventEmission:
             ]
         )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", return_value=mock_stream
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", return_value=mock_stream):
             await loop.run(
-                prompts=[
-                    UserMessage(
-                        content=[TextContent(text="hi")], timestamp=0
-                    )
-                ],
+                prompts=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
                 context=[],
             )
 
@@ -1443,9 +1318,7 @@ class TestEventEmission:
         """agent_end is always emitted last."""
         events: list[AgentEvent] = []
         config = AgentLoopConfig(model="gpt-4o")
-        loop = AgentLoop(
-            config=config, emit=lambda e: async_emit(events, e)
-        )
+        loop = AgentLoop(config=config, emit=lambda e: async_emit(events, e))
 
         mock_stream = _make_mock_stream(
             [
@@ -1456,15 +1329,9 @@ class TestEventEmission:
             ]
         )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", return_value=mock_stream
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", return_value=mock_stream):
             await loop.run(
-                prompts=[
-                    UserMessage(
-                        content=[TextContent(text="hi")], timestamp=0
-                    )
-                ],
+                prompts=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
                 context=[],
             )
 
@@ -1491,9 +1358,7 @@ class TestEventEmission:
                 return _make_mock_stream(
                     [
                         DoneEvent(
-                            final=_make_tool_call_assistant(
-                                "call_001", "ls", {"path": "."}
-                            ),
+                            final=_make_tool_call_assistant("call_001", "ls", {"path": "."}),
                             usage=Usage(),
                         ),
                     ]
@@ -1508,15 +1373,9 @@ class TestEventEmission:
                 ]
             )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
             await loop.run(
-                prompts=[
-                    UserMessage(
-                        content=[TextContent(text="go")], timestamp=0
-                    )
-                ],
+                prompts=[UserMessage(content=[TextContent(text="go")], timestamp=0)],
                 context=[],
             )
 
@@ -1561,15 +1420,9 @@ class TestMaxTurnsLimit:
                 ]
             )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
             messages = await loop.run(
-                prompts=[
-                    UserMessage(
-                        content=[TextContent(text="go")], timestamp=0
-                    )
-                ],
+                prompts=[UserMessage(content=[TextContent(text="go")], timestamp=0)],
                 context=[],
             )
 
@@ -1609,9 +1462,7 @@ class TestToolCallIdTracking:
                 return _make_mock_stream(
                     [
                         DoneEvent(
-                            final=_make_tool_call_assistant(
-                                expected_id, "ls", {"path": "."}
-                            ),
+                            final=_make_tool_call_assistant(expected_id, "ls", {"path": "."}),
                             usage=Usage(),
                         ),
                     ]
@@ -1631,29 +1482,19 @@ class TestToolCallIdTracking:
                     ]
                 )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
             await loop.run(
-                prompts=[
-                    UserMessage(
-                        content=[TextContent(text="ls")], timestamp=0
-                    )
-                ],
+                prompts=[UserMessage(content=[TextContent(text="ls")], timestamp=0)],
                 context=[],
             )
 
         # Check tool_execution_start has the correct tool_call_id
-        start_events = [
-            e for e in events if e.type == "tool_execution_start"
-        ]
+        start_events = [e for e in events if e.type == "tool_execution_start"]
         assert len(start_events) == 1
         assert start_events[0].tool_call_id == expected_id
 
         # Check tool_execution_end has the same tool_call_id
-        end_events = [
-            e for e in events if e.type == "tool_execution_end"
-        ]
+        end_events = [e for e in events if e.type == "tool_execution_end"]
         assert len(end_events) == 1
         assert end_events[0].tool_call_id == expected_id
 
@@ -1704,12 +1545,8 @@ class TestAddTool:
         config = AgentLoopConfig(model="gpt-4o")
         loop = AgentLoop(config=config)
 
-        loop.add_tool(
-            _make_simple_tool(name="ls", result="files", path=".")
-        )
-        loop.add_tool(
-            _make_simple_tool(name="read", result="content", path=".")
-        )
+        loop.add_tool(_make_simple_tool(name="ls", result="files", path="."))
+        loop.add_tool(_make_simple_tool(name="read", result="content", path="."))
 
         assert "ls" in loop._tools
         assert "read" in loop._tools
@@ -1839,15 +1676,9 @@ class TestSequentialTermination:
                 ]
             )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
             await loop.run(
-                prompts=[
-                    UserMessage(
-                        content=[TextContent(text="go")], timestamp=0
-                    )
-                ],
+                prompts=[UserMessage(content=[TextContent(text="go")], timestamp=0)],
                 context=[],
             )
 
@@ -1868,9 +1699,7 @@ class TestRunContinueContext:
         """run_continue continues from existing message history."""
         events: list[AgentEvent] = []
         config = AgentLoopConfig(model="gpt-4o")
-        loop = AgentLoop(
-            config=config, emit=lambda e: async_emit(events, e)
-        )
+        loop = AgentLoop(config=config, emit=lambda e: async_emit(events, e))
 
         call_count = [0]
 
@@ -1885,16 +1714,10 @@ class TestRunContinueContext:
                 ]
             )
 
-        with patch(
-            "tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func
-        ):
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
             # Initial run
             messages = await loop.run(
-                prompts=[
-                    UserMessage(
-                        content=[TextContent(text="first")], timestamp=0
-                    )
-                ],
+                prompts=[UserMessage(content=[TextContent(text="first")], timestamp=0)],
                 context=[],
             )
             assert len(messages) == 1
@@ -2316,3 +2139,144 @@ class TestLoopRegistryIsUniformlyAgentTool:
         # And the definition-level read works across both sources.
         assert loop._tools["bash"].definition.execution_mode == "sequential"
         assert loop._tools["ext_tool"].definition.execution_mode == "parallel"
+
+
+# ---------------------------------------------------------------------------
+# The assistant tool-call message must reach the wire
+# ---------------------------------------------------------------------------
+
+
+def _field(message: Any, name: str, default: Any = None) -> Any:
+    """One field of a wire message, whichever shape it arrived in.
+
+    The loop's context is deliberately mixed: user/assistant messages stay
+    pydantic, tool results are appended as plain dicts. A helper that reads only
+    one of the two silently skips the other — which is how the first version of
+    the tool-call-ordering assertion below passed against the very bug it was
+    written to catch.
+    """
+    if isinstance(message, dict):
+        return message.get(name, default)
+    return getattr(message, name, default)
+
+
+def _wire_roles(context: dict[str, Any]) -> list[str]:
+    """The role of every message in one captured ``stream_simple`` context."""
+    return [_field(message, "role", "") for message in context["messages"]]
+
+
+def _capture_contexts(responses: list[Any]) -> tuple[Any, list[dict[str, Any]]]:
+    """A ``stream_simple`` stand-in that returns ``responses`` in order and
+    records the context dict it was handed on each call."""
+    captured: list[dict[str, Any]] = []
+
+    async def mock_stream_func(model, context, options):
+        captured.append(context)
+        return _make_mock_stream([DoneEvent(final=responses[len(captured) - 1], usage=Usage())])
+
+    return mock_stream_func, captured
+
+
+class TestAssistantToolCallReachesTheWire:
+    """Every ``toolResult`` on the wire is preceded by the assistant message
+    that requested it.
+
+    A ``toolResult`` names a ``tool_call_id``. A provider that validates its
+    input — several cloud providers do — rejects the whole request when that id
+    has no matching tool call in an earlier assistant message. The loop used to
+    append the assistant message to ``final_messages`` (what the caller persists)
+    but not to ``messages`` (what the NEXT LLM call is built from), so the second
+    call in any tool-using turn sent results for calls the transcript never made.
+    """
+
+    @pytest.mark.asyncio
+    async def test_run_sends_the_assistant_message_before_its_tool_result(self):
+        events: list[AgentEvent] = []
+        loop = AgentLoop(
+            config=AgentLoopConfig(model="gpt-4o", max_turns=10),
+            emit=lambda e: async_emit(events, e),
+            tools=[_make_simple_tool(name="ls", result="files", path=".")],
+        )
+        mock_stream_func, captured = _capture_contexts(
+            [
+                _make_tool_call_assistant("call_001", "ls", {"path": "."}),
+                _make_text_assistant("All done!"),
+            ]
+        )
+
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
+            await loop.run(
+                prompts=[UserMessage(content=[TextContent(text="explore")], timestamp=0)],
+                context=[],
+            )
+
+        assert len(captured) == 2, "the tool call should have driven a second LLM call"
+        assert _wire_roles(captured[0]) == ["user"]
+        assert _wire_roles(captured[1]) == ["user", "assistant", "toolResult"]
+
+    @pytest.mark.asyncio
+    async def test_run_continue_sends_the_assistant_message_before_its_tool_result(self):
+        events: list[AgentEvent] = []
+        loop = AgentLoop(
+            config=AgentLoopConfig(model="gpt-4o", max_turns=10),
+            emit=lambda e: async_emit(events, e),
+            tools=[_make_simple_tool(name="ls", result="files", path=".")],
+        )
+        mock_stream_func, captured = _capture_contexts(
+            [
+                _make_tool_call_assistant("call_001", "ls", {"path": "."}),
+                _make_text_assistant("All done!"),
+            ]
+        )
+
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
+            await loop.run_continue(
+                context=[UserMessage(content=[TextContent(text="explore")], timestamp=0)],
+            )
+
+        assert len(captured) == 2
+        assert _wire_roles(captured[1]) == ["user", "assistant", "toolResult"]
+
+    @pytest.mark.asyncio
+    async def test_every_tool_result_id_has_a_preceding_tool_call(self):
+        """The provider-side rule, asserted directly, over three turns."""
+        events: list[AgentEvent] = []
+        loop = AgentLoop(
+            config=AgentLoopConfig(model="gpt-4o", max_turns=10),
+            emit=lambda e: async_emit(events, e),
+            tools=[_make_simple_tool(name="ls", result="files", path=".")],
+        )
+        mock_stream_func, captured = _capture_contexts(
+            [
+                _make_tool_call_assistant("call_001", "ls", {"path": "."}),
+                _make_tool_call_assistant("call_002", "ls", {"path": ".."}),
+                _make_text_assistant("All done!"),
+            ]
+        )
+
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
+            await loop.run(
+                prompts=[UserMessage(content=[TextContent(text="explore")], timestamp=0)],
+                context=[],
+            )
+
+        assert len(captured) == 3
+        assert _wire_roles(captured[2]) == [
+            "user",
+            "assistant",
+            "toolResult",
+            "assistant",
+            "toolResult",
+        ]
+        for index, context in enumerate(captured):
+            offered: set[str] = set()
+            for message in context["messages"]:
+                role = _field(message, "role")
+                if role == "assistant":
+                    offered.update(call.id for call in message.get_tool_calls())
+                elif role == "toolResult":
+                    call_id = _field(message, "tool_call_id")
+                    assert call_id in offered, (
+                        f"call {index}: toolResult {call_id!r} has no preceding tool call "
+                        f"(offered: {sorted(offered)})"
+                    )

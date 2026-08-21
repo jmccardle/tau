@@ -10,6 +10,10 @@ Public API:
 Reference: SUBPHASE-0.0.md
 """
 
+# This distribution's version, read at build time by pyproject.toml's
+# [tool.setuptools.dynamic]. Kept in lockstep with the other three packages.
+__version__ = "0.9.2"
+
 from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.session import (
     SessionEntry,
@@ -38,6 +42,7 @@ from tau_agent_core.agent_loop_types import (
 )
 from tau_agent_core.tools.base import (
     ToolDefinition,
+    ExtensionToolDefinition,
     AgentTool,
     AgentToolResult,
     ToolBatchResult,
@@ -87,6 +92,7 @@ from tau_agent_core.export import (
 )
 
 __all__ = [
+    "__version__",
     # Core types
     "AgentSession",
     "ExtensionCommandResult",
@@ -117,6 +123,7 @@ __all__ = [
     "FinalizedToolCall",
     "AgentLoopConfig",
     "ToolDefinition",
+    "ExtensionToolDefinition",
     "AgentTool",
     "AgentToolResult",
     "ToolBatchResult",

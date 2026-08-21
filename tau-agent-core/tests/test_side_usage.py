@@ -2,7 +2,7 @@
 
 The bug these pin: the agent loop attaches usage to the ``message_end`` event it emits
 per completion, and every meter sums those events. But compaction, branch summaries,
-and ``ctx.complete()`` go through ``tau_ai.complete_simple``, which takes no event bus
+and ``ctx.complete()`` go through ``tau_llm.complete_simple``, which takes no event bus
 and emits NOTHING. Their tokens were spent and then forgotten.
 
 That made the cost τ displays **understated** — the direction that lets a session look
@@ -24,7 +24,7 @@ from tau_agent_core.compaction import compact as run_compaction
 from tau_agent_core.compaction_utils import create_file_ops
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.usage import add_usage, usage_of, zero_usage
-from tau_ai.types import AssistantMessage, Model, TextContent, Usage
+from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 
 
 def _model() -> Model:
@@ -176,7 +176,7 @@ async def test_ctx_complete_bills_its_tokens_to_the_session(monkeypatch):
     async def _fake(model, context, options=None):
         return _reply("include", input_tokens=120, output_tokens=1)
 
-    monkeypatch.setattr("tau_ai.client.complete_simple", _fake)
+    monkeypatch.setattr("tau_llm.client.complete_simple", _fake)
 
     await session._extension_api.context.complete(
         [{"role": "user", "content": [{"type": "text", "text": "include this doc?"}]}]
@@ -192,7 +192,7 @@ async def test_a_constrained_fan_out_accumulates_every_verdict(monkeypatch):
     async def _fake(model, context, options=None):
         return _reply("include", input_tokens=100, output_tokens=1)
 
-    monkeypatch.setattr("tau_ai.client.complete_simple", _fake)
+    monkeypatch.setattr("tau_llm.client.complete_simple", _fake)
 
     import asyncio
 
@@ -230,7 +230,7 @@ async def test_a_truncated_completion_is_still_billed(monkeypatch):
             usage=Usage(input_tokens=500, output_tokens=256, total_tokens=756),
         )
 
-    monkeypatch.setattr("tau_ai.client.complete_simple", _fake)
+    monkeypatch.setattr("tau_llm.client.complete_simple", _fake)
 
     with pytest.raises(RuntimeError, match="truncated PREFIX"):
         await session._extension_api.context.complete(
@@ -258,7 +258,7 @@ async def test_a_failed_completion_bills_exactly_what_the_provider_reported(monk
             usage=Usage(input_tokens=99, output_tokens=0, total_tokens=99),
         )
 
-    monkeypatch.setattr("tau_ai.client.complete_simple", _fake)
+    monkeypatch.setattr("tau_llm.client.complete_simple", _fake)
 
     with pytest.raises(RuntimeError, match="boom"):
         await session._extension_api.context.complete(

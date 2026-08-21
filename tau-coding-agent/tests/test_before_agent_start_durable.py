@@ -27,9 +27,9 @@ from unittest.mock import patch
 
 import pytest
 
-from tau_ai.providers.openai import OpenAICompletionsProvider
-from tau_ai.streaming import DoneEvent, TextDeltaEvent
-from tau_ai.types import AssistantMessage, Model, TextContent, Usage
+from tau_llm.providers.openai import OpenAICompletionsProvider
+from tau_llm.streaming import DoneEvent, TextDeltaEvent
+from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree, TreeNode
 from tau_agent_core.messages import convert_to_llm
@@ -94,7 +94,9 @@ def _capturing_stream(captured: dict[str, Any]):
         return _Stream(
             [
                 TextDeltaEvent(delta="ok", partial=final),
-                DoneEvent(final=final, usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2)),
+                DoneEvent(
+                    final=final, usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2)
+                ),
             ]
         )
 
@@ -218,7 +220,8 @@ async def test_before_agent_start_message_is_a_durable_node(tmp_path) -> None:
         m
         for m in openai_messages
         if m["role"] == "user"
-        and "INJECTED" in "".join(
+        and "INJECTED"
+        in "".join(
             b.get("text", "") for b in (m["content"] if isinstance(m["content"], list) else [])
         )
     ]

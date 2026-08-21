@@ -82,7 +82,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 from tau_agent_core.compaction import DEFAULT_COMPACTION_SETTINGS, CompactionSettings
 

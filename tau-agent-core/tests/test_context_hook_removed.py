@@ -32,7 +32,7 @@ from typing import Any
 
 import pytest
 
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.extension_types import _RETIRED_HOOKS
@@ -41,7 +41,7 @@ from tau_agent_core.session_log import InMemorySessionLog
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SRC_TREES = (
-    _REPO_ROOT / "tau-ai" / "src",
+    _REPO_ROOT / "tau-llm" / "src",
     _REPO_ROOT / "tau-agent-core" / "src",
     _REPO_ROOT / "tau-coding-agent" / "src",
 )

@@ -1,6 +1,6 @@
 # Provider & HTTP-client lifetime — a prerequisite for W14 (C2 branch sub-agents)
 
-**Status: RESOLVED (2026-07-12).** Fixed by the provider pool in `tau-ai/src/tau_ai/client.py`;
+**Status: RESOLVED (2026-07-12).** Fixed by the provider pool in `tau-llm/src/tau_llm/client.py`;
 **W14 is unblocked.** See [§8](#8-what-was-actually-built) for what shipped and how each
 acceptance criterion was met.
 **Found:** 2026-07-12, while reviewing W9's prefix-stability work.
@@ -14,11 +14,11 @@ the pool key without reading §5 first.
 
 ## 1. The finding
 
-`tau_ai.client.stream_simple` — *the* single entry point τ-agent-core uses to talk
-to τ-ai — constructs a **brand-new `ProviderRegistry` on every call**:
+`tau_llm.client.stream_simple` — *the* single entry point τ-agent-core uses to talk
+to τ-llm — constructs a **brand-new `ProviderRegistry` on every call**:
 
 ```python
-# tau-ai/src/tau_ai/client.py:58-69
+# tau-llm/src/tau_llm/client.py:58-69
 provider_name = getattr(model, "provider", "openai")
 registry = Registry()                      # <-- fresh, EMPTY, every call
 try:
@@ -148,7 +148,7 @@ cross-routing demo (the trap).
 
 ## 8. What was actually built (2026-07-12)
 
-A **provider pool** in `tau-ai/src/tau_ai/client.py`. `stream_simple` no longer constructs
+A **provider pool** in `tau-llm/src/tau_llm/client.py`. `stream_simple` no longer constructs
 anything; it calls `_get_or_create_provider(provider_name, base_url, api_key)`.
 
 - **Key = `(provider_name, resolved_base_url, sha256(api_key))`.** This is the whole answer to
@@ -164,7 +164,7 @@ anything; it calls `_get_or_create_provider(provider_name, base_url, api_key)`.
   begins — which is precisely what the test suite does, once per test. A loop's pool entry now
   dies with the loop.
 - **Explicit teardown.** `OpenAICompletionsProvider.aclose()` (idempotent) plus
-  `tau_ai.client.aclose_providers()`, which closes and drops every provider for the current
+  `tau_llm.client.aclose_providers()`, which closes and drops every provider for the current
   loop. Wired into the two *pre-existing* shutdown paths — `Parley.on_unmount` (TUI) and
   `run_print`'s `finally` (headless) — in both cases **after** `emit_session_shutdown`, since a
   shutdown hook may itself make one last LLM call.

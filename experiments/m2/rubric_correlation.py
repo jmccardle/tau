@@ -64,10 +64,16 @@ RUBRIC_RETRIEVAL = (
 
 
 def score(client, prompt):
-    r = client.post(LLM, json={
-        "messages": [{"role": "user", "content": prompt}],
-        "grammar": GRAMMAR, "temperature": 0, "max_tokens": 6000,
-    }, timeout=600.0)
+    r = client.post(
+        LLM,
+        json={
+            "messages": [{"role": "user", "content": prompt}],
+            "grammar": GRAMMAR,
+            "temperature": 0,
+            "max_tokens": 6000,
+        },
+        timeout=600.0,
+    )
     r.raise_for_status()
     c = (r.json()["choices"][0]["message"]["content"] or "").strip()
     if not c:
@@ -89,6 +95,7 @@ def spearman(a, b):
                 r[order[k]] = avg
             i = j + 1
         return r
+
     ra, rb = rank(a), rank(b)
     n = len(a)
     ma, mb = sum(ra) / n, sum(rb) / n
@@ -121,9 +128,14 @@ def main() -> int:
         for name, tmpl in (("ga_poignancy", RUBRIC_GA), ("retrievability", RUBRIC_RETRIEVAL)):
             t0 = time.time()
             with ThreadPoolExecutor(max_workers=SLOTS) as pool:
-                out[name] = list(pool.map(lambda r: score(client, tmpl.format(memory=r[1])), sample))
-            print(f"  {name:>16}: entropy {entropy(out[name]):.2f}  "
-                  f"mean {sum(out[name])/len(sample):.2f}  ({time.time()-t0:.0f}s)", flush=True)
+                out[name] = list(
+                    pool.map(lambda r: score(client, tmpl.format(memory=r[1])), sample)
+                )
+            print(
+                f"  {name:>16}: entropy {entropy(out[name]):.2f}  "
+                f"mean {sum(out[name]) / len(sample):.2f}  ({time.time() - t0:.0f}s)",
+                flush=True,
+            )
 
     a, b = out["ga_poignancy"], out["retrievability"]
     rho = spearman(a, b)
@@ -133,23 +145,40 @@ def main() -> int:
     print(f"\nspearman rho          {rho:.2f}")
     print(f"exact agreement       {exact:.0%}")
     print(f"within +/-1           {within1:.0%}")
-    print(f"noise floor (rho)     {NOISE_FLOOR[0]:.2f}-{NOISE_FLOOR[1]:.2f}  "
-          f"(same config vs itself, from budget_sweep)")
+    print(
+        f"noise floor (rho)     {NOISE_FLOOR[0]:.2f}-{NOISE_FLOOR[1]:.2f}  "
+        f"(same config vs itself, from budget_sweep)"
+    )
     if rho >= NOISE_FLOOR[0]:
-        print("\n=> AT/ABOVE the noise floor: the two rubrics recover the same ordering, so the\n"
-              "   2.45-bit spread is a property of the turns, not of the prompt. Signal, not\n"
-              "   spread-noise. Consistent with the rubric being worth only +0.11 bits.")
+        print(
+            "\n=> AT/ABOVE the noise floor: the two rubrics recover the same ordering, so the\n"
+            "   2.45-bit spread is a property of the turns, not of the prompt. Signal, not\n"
+            "   spread-noise. Consistent with the rubric being worth only +0.11 bits."
+        )
     elif rho >= 0.5:
-        print("\n=> BELOW the noise floor but positive: the rubrics partly agree. The spread is\n"
-              "   not pure noise, but rubric choice does move the ordering — so 'use thinking'\n"
-              "   is safe guidance while 'the rubric does not matter' is NOT.")
+        print(
+            "\n=> BELOW the noise floor but positive: the rubrics partly agree. The spread is\n"
+            "   not pure noise, but rubric choice does move the ordering — so 'use thinking'\n"
+            "   is safe guidance while 'the rubric does not matter' is NOT."
+        )
     else:
-        print("\n=> LOW: the rubrics disagree. At most one tracks anything real, and the\n"
-              "   'thinking finds signal' claim is UNSUPPORTED by this evidence.")
+        print(
+            "\n=> LOW: the rubrics disagree. At most one tracks anything real, and the\n"
+            "   'thinking finds signal' claim is UNSUPPORTED by this evidence."
+        )
 
     with open("/fast/datasets/m2/rubric_correlation.json", "w") as fh:
-        json.dump({"ids": [r[0] for r in sample], "ga": a, "retrieval": b,
-                   "rho": rho, "exact": exact, "within1": within1}, fh)
+        json.dump(
+            {
+                "ids": [r[0] for r in sample],
+                "ga": a,
+                "retrieval": b,
+                "rho": rho,
+                "exact": exact,
+                "within1": within1,
+            },
+            fh,
+        )
     return 0
 
 

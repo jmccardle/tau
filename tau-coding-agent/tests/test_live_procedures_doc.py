@@ -45,8 +45,8 @@ from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.messages import convert_to_llm
 from tau_agent_core.sdk import _load_extensions, summarize_extensions
 from tau_agent_core.session_log import InMemorySessionLog
-from tau_ai.streaming import DoneEvent, TextDeltaEvent
-from tau_ai.types import AssistantMessage, Model, TextContent, ToolCall, Usage
+from tau_llm.streaming import DoneEvent, TextDeltaEvent
+from tau_llm.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 from tau_coding_agent.session_store import Session
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -136,9 +136,13 @@ _DEMO_EXPECTATIONS = {
 
 async def test_doc_lists_a_procedure_per_demo_plus_reload() -> None:
     sections = _sections()
-    assert set(sections) == {"gatekeeper", "reminders", "budget", "delegate", "reload"}, (
-        "the doc must document all four demos plus the reload check"
-    )
+    assert set(sections) == {
+        "gatekeeper",
+        "reminders",
+        "budget",
+        "delegate",
+        "reload",
+    }, "the doc must document all four demos plus the reload check"
 
     for slug, expect in _DEMO_EXPECTATIONS.items():
         section = sections[slug]
@@ -301,9 +305,7 @@ async def test_gatekeeper_blocked_node_is_durable_in_transcript_and_tree(tmp_pat
     assert not result.errors
     assert session._extension_runner.has_handlers("tool_call")
 
-    with patch(
-        "tau_agent_core.agent_loop.stream_simple", side_effect=_fake_stream_write(outside)
-    ):
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_fake_stream_write(outside)):
         transcript = await session.prompt("write outside the scope")
 
     # Transcript guise: the returned turn carries the blocked is_error toolResult.

@@ -1,9 +1,9 @@
 """70 — Telemetry: llama.cpp `timings` + JSON-repair count on the status strip (W8/G4).
 
 llama.cpp emits a per-completion ``timings`` block as a TOP-LEVEL sibling of
-``usage`` on the final SSE chunk (``tau_ai.providers.openai._usage_from_openai``
+``usage`` on the final SSE chunk (``tau_llm.providers.openai._usage_from_openai``
 folds it onto ``Usage.extra["timings"]`` verbatim — server-reported keys, never
-filtered or renamed). ``tau_ai.providers.openai._build_final_message`` separately
+filtered or renamed). ``tau_llm.providers.openai._build_final_message`` separately
 counts, per completion, how many complete tool-call argument buffers needed a
 JSON repair and folds that onto ``Usage.extra["repairs"]`` (only when the message
 had at least one tool call with a non-empty argument buffer — a message with no

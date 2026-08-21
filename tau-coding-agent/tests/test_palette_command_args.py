@@ -24,7 +24,7 @@ from tau_coding_agent.backends import create_backend
 
 # A command declaring an ``args`` placeholder; its handler writes a marker capturing
 # the args it was dispatched with — proving the collected string reached the handler.
-_ARGS_EXT = '''
+_ARGS_EXT = """
 import pathlib
 
 MARKER = pathlib.Path({marker!r})
@@ -38,10 +38,10 @@ def register(api):
         "search",
         {{"description": "search the corpus", "args": "<query>", "handler": _search}},
     )
-'''
+"""
 
 # A command WITHOUT ``args`` — its palette entry must dispatch directly, no modal.
-_PLAIN_EXT = '''
+_PLAIN_EXT = """
 import pathlib
 
 MARKER = pathlib.Path({marker!r})
@@ -52,7 +52,7 @@ def register(api):
         MARKER.write_text("ran:" + args)
 
     api.register_command("now", {{"description": "print now", "handler": _now}})
-'''
+"""
 
 
 @pytest.fixture

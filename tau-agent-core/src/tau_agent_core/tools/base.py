@@ -3,7 +3,7 @@
 Reference: SUBPHASE-0.0.md, "2. Tool Definitions" section.
 
 Types:
-- ToolDefinition: Raw tool definition (from tau-ai or extensions)
+- ToolDefinition: Raw tool definition (from tau-llm or extensions)
 - AgentTool: Validated tool wrapper used by the agent loop
 - AgentToolResult: Result from a single tool execution
 - ToolBatchResult: Result from a batch of tool executions
@@ -17,33 +17,32 @@ from __future__ import annotations
 
 from typing import Any, Callable, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from tau_llm.tools import ToolDefinition as LlmToolDefinition
 
 
-class ToolDefinition(BaseModel):
-    """Raw tool definition from tau-ai or extensions.
+class ToolDefinition(LlmToolDefinition):
+    """The runtime tool definition: :class:`tau_llm.tools.ToolDefinition` plus
+    name-based identity.
+
+    It SUBCLASSES the tau-llm model rather than restating its fields. It used to
+    restate them — eight fields duplicated verbatim in two packages — and the copy
+    was not harmless: ``define_tool()`` returns the tau-llm class, and pydantic
+    compares by class identity, so the value τ's own public builder produced could
+    not be handed to :class:`AgentTool`. Two identical shapes that refuse each
+    other is a worse failure than one shape, because it looks like it should work.
+
+    pi has the same layering and expresses it the same way -- ``AgentTool extends
+    Tool`` (``packages/agent/src/types.ts:366``) over ``packages/ai``'s ``Tool``.
+    τ had copied the fields instead of the relationship.
+
+    Adds only identity: two definitions with one name ARE the same tool, because
+    the name is what the model calls and what the registry keys on. Field-by-field
+    equality (pydantic's default, which the base keeps) would call two wrappers
+    around the same tool different whenever a closure differs.
 
     Reference: SUBPHASE-0.0.md, "2. Tool Definitions" section.
-
-    Attributes:
-        name: Unique, snake_case tool name
-        label: Human-readable name (for TUI)
-        description: Tool description sent to LLM
-        parameters: JSON Schema dict for argument validation
-        execute: Async callable for tool execution
-        prompt_snippet: One-line summary for system prompt
-        prompt_guidelines: Guidelines for LLM usage
-        execution_mode: "sequential" or "parallel"
     """
-
-    name: str
-    label: str
-    description: str
-    parameters: dict[str, Any]
-    execute: Callable[..., Any]
-    prompt_snippet: str | None = None
-    prompt_guidelines: list[str] | None = None
-    execution_mode: Literal["sequential", "parallel"] = "parallel"
 
     def __hash__(self) -> int:
         return hash(self.name)
@@ -52,6 +51,63 @@ class ToolDefinition(BaseModel):
         if not isinstance(other, ToolDefinition):
             return False
         return self.name == other.name
+
+
+class ExtensionToolDefinition(ToolDefinition):
+    """A tool an extension registered, as the registry holds it.
+
+    Third and last member of the hierarchy. It used to be a bare ``dict`` passed
+    to ``api.register_tool()`` and stored as a dict, which meant the one shape
+    crossing the extension boundary was the one shape with no schema — nothing to
+    validate against, nothing to generate documentation from, and four separate
+    ``defn["key"]`` / ``defn.get("key", default)`` readers each deciding for
+    themselves what was required. A missing key surfaced as a ``KeyError`` from
+    inside the agent loop, one turn after the mistake.
+
+    ``api.register_tool()`` still accepts the plain dict, so pi parity and every
+    existing extension are unaffected; the dict is validated into this model at
+    the boundary instead of being carried raw.
+
+    Two differences from the parent, both real rather than cosmetic:
+
+    ``source`` — who registered it, for the ``/extensions`` surface. Default
+    ``"built-in"``, matching what :meth:`ExtensionRegistry.get_all_tools` reported
+    before; ``ExtensionAPI.register_tool`` sets ``"extension"``. Accepted under
+    its historical ``_source`` spelling too, because that is the key extensions
+    and tests already write.
+
+    ``execute`` — the EXTENSION signature, ``execute(tool_call_id, params, signal,
+    on_update, ctx)``, five arguments with the bound ``ExtensionContext`` last. The
+    parent's is the loop's four-argument form. Nothing here can enforce that
+    difference — both are ``Callable`` and a decorated or ``*args`` wrapper has no
+    inspectable arity — so ``AgentSession._resolve_extension_tools`` adapts one to
+    the other, and this docstring is where the difference is stated.
+    """
+
+    source: str = Field(
+        default="built-in",
+        validation_alias=AliasChoices("source", "_source"),
+        serialization_alias="_source",
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _label_defaults_to_name(cls, data: Any) -> Any:
+        """``label`` is optional here and only here.
+
+        The parent requires it, and ``define_tool()`` deliberately refuses to
+        derive it — a human label invented from a wire identifier is exactly the
+        fabricated default the house rule forbids. This is not that: defaulting
+        ``label`` to ``name`` is ``register_tool``'s own documented contract and
+        pi's behaviour (``coding-agent/src/core/extensions/types.ts``), so an
+        extension written against either already relies on it. Removing it would
+        break every existing extension to enforce a rule its API never made.
+        """
+        if isinstance(data, dict) and "label" not in data and "name" in data:
+            data = {**data, "label": data["name"]}
+        return data
 
 
 class AgentTool(BaseModel):
@@ -63,6 +119,14 @@ class AgentTool(BaseModel):
     The agent loop works with AgentTool (validated, wrapped),
     while extensions register with ToolDefinition (raw, unvalidated).
 
+    ``definition`` is annotated with the tau-llm BASE class deliberately, so every
+    member of the hierarchy fits: the runtime :class:`ToolDefinition`, an
+    :class:`ExtensionToolDefinition`, and a bare
+    :class:`tau_llm.tools.ToolDefinition` straight out of ``define_tool()``.
+    Narrowing it to the subclass is what made ``AgentTool(definition=define_tool(
+    ...))`` raise "Input should be a valid dictionary or instance of
+    ToolDefinition" against a value of an identically-shaped class.
+
     Attributes:
         definition: The underlying ToolDefinition
         name: Alias for definition.name
@@ -72,7 +136,7 @@ class AgentTool(BaseModel):
         execution_mode: Alias for definition.execution_mode
     """
 
-    definition: ToolDefinition
+    definition: LlmToolDefinition
 
     @property
     def name(self) -> str:

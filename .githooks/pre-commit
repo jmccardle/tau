@@ -30,12 +30,12 @@ for tool in "$RUFF" "$MYPY"; do
         echo "[pre-commit] ERROR: '$tool' not found or not executable." >&2
         echo "[pre-commit] Create/activate the in-repo venv first (see CLAUDE.md):" >&2
         echo "[pre-commit]   python -m venv venv && source venv/bin/activate" >&2
-        echo "[pre-commit]   pip install -e ./tau-ai -e ./tau-agent-core -e ./tau-coding-agent" >&2
+        echo "[pre-commit]   pip install -e ./tau-llm -e './tau-agent-core[dev]' -e './tau-coding-agent[dev]' -e ./tau-jmfts" >&2
         exit 1
     fi
 done
 
-SRC=(tau-ai/src tau-agent-core/src tau-coding-agent/src tau-jmfts/src)
+SRC=(tau-llm/src tau-agent-core/src tau-coding-agent/src tau-jmfts/src)
 
 echo "[pre-commit] ruff check…"
 "$RUFF" check "${SRC[@]}"

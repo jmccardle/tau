@@ -21,7 +21,7 @@ ShutdownEvent), examples/extensions/auto-commit-on-exit.ts.
 
 from __future__ import annotations
 
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.extensions.runner import ExtensionError

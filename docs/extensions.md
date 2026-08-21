@@ -2,460 +2,236 @@
 
 ## Overview
 
-τ's extension system is its killer feature. Users write Python modules that:
-1. Register custom tools callable by the LLM
-2. Intercept agent events (tool calls, messages, lifecycle)
-3. Add commands and keyboard shortcuts
-4. Modify session state
-5. Interact with the user via the TUI
+τ's extension system is Python modules, loaded at runtime, that register
+tools, intercept/veto/modify events, add commands and shortcuts, persist
+state, and talk to the user. `importlib`, no compile step, no manifest
+language — this is the one design goal from day one that held up
+unchanged.
 
-Extensions are loaded at runtime from configured directories, just like pi's TypeScript extensions.
+This is the canonical doc for the `ExtensionAPI` surface. Earlier drafts
+described overlapping, slowly-diverging versions of this same API in three
+different places (`ARCHITECTURE.md`, this file, `tau-api-reference.md`);
+`tau-agent-core.md` and the README now just point here instead.
 
-## Why Python Extensions Are Easier Than TypeScript
-
-| Concern | pi (TypeScript/jiti) | τ (Python) |
-|---------|---------------------|------------|
-| Module loading | jiti transpiler | `importlib` — native |
-| Hot reload | File system watch + cache bust | `importlib.reload()` — built-in |
-| Dependencies | npm packages per extension | `requirements.txt` per extension |
-| Type safety | TypeBox schemas | pydantic — native Python |
-| Async | Native | `asyncio` — native |
-
-## Extension File Structure
-
-### Single File Extension
-
-```
-~/.tau/extensions/
-└── my_tool.py
-```
+## Registration convention
 
 ```python
-# ~/.tau/extensions/my_tool.py
-from tau_agent_core import ExtensionAPI, define_tool
-from pydantic import BaseModel
-
-class GreetParams(BaseModel):
-    name: str = "world"
-
-greet_tool = define_tool({
-    "name": "greet",
-    "label": "Greet",
-    "description": "Greet someone by name",
-    "parameters": GreetParams.model_json_schema(),
-    "execute": greet_execute,
-})
-
-async def greet_execute(tool_call_id, params, signal, on_update, ctx):
-    return {
-        "content": [{"type": "text", "text": f"Hello, {params.name}!"}],
-        "details": {"greeted": params.name},
-    }
-
-def register(pi: ExtensionAPI):
-    pi.register_tool(greet_tool)
-
-    pi.on("tool_call", async def(event, ctx):
-        if event.tool_name == "bash":
-            print(f"🔧 Bash tool called: {event.input.command[:80]}")
+def register(api):
+    api.register_tool(my_tool_def)
+    api.on("tool_call", my_handler)
 ```
 
-### Directory Extension
+The parameter is named `api`, not `pi` — every real extension in
+`examples/` and `tau_agent_core/extensions_builtin/` uses this convention.
 
-```
-~/.tau/extensions/my_extension/
-├── __init__.py        # Entry point (calls register())
-├── tools.py           # Tool definitions
-├── handlers.py        # Event handlers
-└── utils.py           # Helper functions
-```
+## Discovery
 
-### Package Extension (with dependencies)
+Two sources, in this order, deduped by resolved path (first occurrence
+wins): the global directory `~/.tau/extensions/` (bare `*.py` files or
+`<dir>/__init__.py` packages, loaded alphabetically), then every explicit
+`-e`/`--extension PATH` (repeatable; still loads under `--no-extensions`,
+which suppresses discovery only). **There is no project-local
+`<cwd>/.tau/extensions/` discovery** — deliberately deferred pending the
+Tier-8 trust gate, not an oversight. There is also no dependency-manifest
+convention (`requirements.txt`, `package.json`) inside an extension
+directory — dependency management is the operator's own venv; a missing
+import surfaces as a load error (raises for an explicit `-e` path,
+collected into an errors list for a discovered one).
 
-```
-~/.tau/extensions/my_package/
-├── __init__.py
-├── requirements.txt   # pip installable
-├── package.json       # Optional: for npm-equivalent metadata
-└── my_tool.py
-```
+Collision handling differs by what's colliding, and is not "later wins"
+uniformly:
 
-## Extension API (`tau_agent_core.extensions.types`)
+- **Tools** — a duplicate name **raises** `ValueError` at load time
+  (a deliberate divergence: silent first-wins was pi's answer, τ's is not).
+- **Commands** — silent last-write-wins.
+- **Shortcuts** — last-write-wins, with a logged warning.
+- **Hook chains** — first `block: True` wins for `tool_call`; `before_agent_start`'s
+  `system_prompt` contribution is last-wins.
+
+## Hook and event vocabulary
+
+**Mutating hooks** (subscribe via `api.on(name, handler)`; handler return
+value is applied) — `tool_call` (veto/patch args before execution),
+`tool_result` (modify content/details/terminate after execution),
+`before_agent_start` (contribute to the system prompt), `input` (transform
+the user prompt pre-node), `turn_end`, `user_turn_end`,
+`session_before_switch` (veto a session new/fork/switch operation).
+
+**Lifecycle hooks** — `session_start`, `session_shutdown` (each carries a
+`reason`, e.g. `"reload"`).
+
+**Notify-only events** — `agent_start`, `agent_end`, `turn_start`,
+`message_start`/`message_update`/`message_end`,
+`tool_execution_start`/`tool_execution_update`/`tool_execution_end`, plus
+the wildcard `"all"`. These are observer-only, reached through the same
+`api.on(...)` call.
+
+**The two vocabularies take different handlers**, and `api.on` routes by
+name, so the name you subscribe to decides which contract you owe:
+
+| Kind | Handler | `event` is |
+|---|---|---|
+| mutating hook + lifecycle hook | `handler(event, ctx)` | a plain **dict** |
+| notify-only event | `handler(event)` | an `AgentEvent` **object** |
+
+A one-argument handler on a hook raises `TypeError` the first time that hook
+fires, which for `session_shutdown` is at the very end of a session and for
+`tool_call` is in the fail-closed path, where a raising handler blocks the
+call. `tau-agent-core/tests/test_examples_contract.py` holds every shipped
+example to this.
+
+**Choose the turn-boundary hook by cadence.** `turn_end` fires once per
+*agent-loop* turn, so one user request resolved in six tool round-trips fires
+it six times; `user_turn_end` fires once per `prompt()`. Anything that should
+happen once per thing-the-user-asked-for wants the latter.
+
+**The one sharp edge:** `api.on("turn_end", ...)` always resolves to the
+*mutating* hook, never the notify event of the same name — there is no way
+to observe the plain notify-grade `turn_end` via `api.on`. Use `"all"` or
+`AgentSession.subscribe()` for pure observation instead. `context` was a
+hook in an earlier design and is now retired — calling `api.on("context",
+...)` raises.
+
+## The `ExtensionAPI` surface
+
+Grouped by purpose, with real signatures from `extension_types.py`:
 
 ```python
-class ExtensionAPI:
-    """Public API exposed to all extension modules."""
+# Events
+api.on(event: str, handler: Callable) -> Callable[[], None]
 
-    # ── Event Subscription ─────────────────────────────────────
+# Tools
+api.register_tool(definition: dict | ExtensionToolDefinition) -> None
+api.get_all_tools() -> list[Any]
+api.set_active_tools(names: list[str]) -> None
 
-    def on(self, event: str, handler: Callable) -> None:
-        """Subscribe to an event.
+# Commands and shortcuts
+api.register_command(name: str, command: dict) -> None
+api.register_shortcut(...)                         # guarded ctrl+e namespace
 
-        Events:
-            agent_start / agent_end
-            turn_start / turn_end
-            message_start / message_update / message_end
-            tool_execution_start / tool_execution_update / tool_execution_end
-            tool_call (before execution, can block)
-            tool_result (after execution, can modify)
-            session_start / session_shutdown
-            resources_discover
-        """
-        ...
+# Session state
+api.append_entry(custom_type: str, data: dict) -> None   # durable customEntry (not RAM-only)
+api.set_session_name(name: str) -> None
+api.get_session_name() -> str | None
 
-    # ── Tool Registration ──────────────────────────────────────
+# Messaging
+api.send_user_message(content: str, deliver_as: str = "followUp") -> None
+api.send_message(message: dict, options: dict | None = None) -> None
 
-    def register_tool(self, definition: ToolDefinition) -> None:
-        """Register a tool callable by the LLM.
+# Turn origination (attributed submissions — the "one door" for extensions)
+await api.submit(...)
+api.submit_threadsafe(...)
 
-        Can be called at module load time or from event handlers
-        (for dynamic tools registered at runtime).
-        """
-        ...
+# Inter-extension pub/sub
+await api.emit(topic: str, payload: Any) -> None    # ext:<name>:<topic> channels
 
-    def get_all_tools(self) -> list[ToolInfo]:
-        """Get all registered tools (built-in + extension)."""
-        ...
+# Per-extension config — replaces the deleted register_flag/get_flag
+api.config -> dict[str, Any]     # from ~/.tau/config.json "extensions.<name>", or --ext-config
 
-    def set_active_tools(self, names: list[str]) -> None:
-        """Enable/disable tools by name."""
-        ...
-
-    # ── Command Registration ───────────────────────────────────
-
-    def register_command(self, name: str, command: CommandDefinition) -> None:
-        """Register a slash command (e.g., /mycommand)."""
-        ...
-
-    # ── Session State ──────────────────────────────────────────
-
-    def append_entry(self, custom_type: str, data: dict) -> None:
-        """Persist extension state (does not appear in LLM context)."""
-        ...
-
-    def set_session_name(self, name: str) -> None:
-        """Set the session display name."""
-        ...
-
-    # ── Messaging ──────────────────────────────────────────────
-
-    def send_user_message(self, content: str, deliver_as: str = "steer") -> None:
-        """Send a user message to the agent.
-
-        deliver_as: "steer" (while streaming), "followUp" (after finish)
-        """
-        ...
-
-    def send_message(self, message: dict, options: dict) -> None:
-        """Send a custom message into the session."""
-        ...
-
-    # ── CLI Flags ──────────────────────────────────────────────
-
-    def register_flag(self, name: str, options: dict) -> None:
-        """Register a CLI flag (e.g., --my-flag)."""
-        ...
-
-    def get_flag(self, name: str) -> Any:
-        """Get the value of a CLI flag."""
-        ...
-
-    # ── UI Methods (TUI-only, no-ops in headless mode) ────────
-
-    @property
-    def ui(self) -> ExtensionUI:
-        ...
-
-
-class ExtensionContext:
-    """Context passed to event handlers and tools."""
-
-    @property
-    def cwd(self) -> str:
-        """Current working directory."""
-        ...
-
-    @property
-    def session_manager(self) -> SessionManager:
-        """Access to session state."""
-        ...
-
-    @property
-    def signal(self) -> AbortSignal | None:
-        """Abort signal for the current turn (None when idle)."""
-        ...
-
-    @property
-    def is_idle(self) -> bool:
-        """Whether the agent is currently idle."""
-        ...
-
-    def abort(self) -> None:
-        """Abort the current agent turn."""
-        ...
-
-    def shutdown(self) -> None:
-        """Request graceful shutdown."""
-        ...
-
-    def get_context_usage(self) -> dict:
-        """Get current context window usage."""
-        ...
-
-
-class ExtensionUI:
-    """User interaction methods (TUI only)."""
-
-    async def confirm(self, title: str, message: str) -> bool:
-        """Show confirmation dialog. Returns True if confirmed."""
-        ...
-
-    async def select(self, title: str, items: list[str]) -> str | None:
-        """Show selection dialog. Returns selected item or None."""
-        ...
-
-    async def input(self, title: str, default: str = "") -> str:
-        """Show input dialog. Returns user input."""
-        ...
-
-    def notify(self, message: str, level: str = "info") -> None:
-        """Show a non-modal notification."""
-        ...
+api.ui -> ExtensionUI
+api.context -> ExtensionContext
 ```
 
-## Tool Definition
+`register_flag`/`get_flag` (an earlier CLI-flag registration idea) were
+deleted, not deprecated — they never populated a value. `api.config` is
+the real replacement: sourced from `~/.tau/config.json`'s
+`extensions.<name>` block (keyed by file stem), overridable per-run with
+`--ext-config NAME.KEY=VALUE` (CLI wins over config.json).
+`send_user_message`'s default is `"followUp"`, not `"steer"` — the other
+valid values are `"nextTurn"` and `"steer"`. `send_message` used to be
+inert (called a method that didn't exist); it's wired now.
+`register_tool` takes a **plain dict**, matching every real example below —
+not a `ToolDefinition`. `tau_llm.define_tool()` exists and is validated, but
+it builds the *other* tool shape: its `execute` takes the tool's own
+parameters, while an extension tool's `execute` is
+`execute(tool_call_id, params, signal, on_update, ctx)` and receives the
+bound `ExtensionContext`. `register_tool` will not accept a `ToolDefinition`,
+and that is deliberate; the two contracts are not interchangeable.
+
+## `ExtensionContext`
 
 ```python
-def define_tool(definition: dict) -> AgentTool:
-    """Define a tool for the LLM to call.
-
-    Returns a tool definition compatible with the agent loop.
-
-    Args:
-        definition: Dict with keys:
-            name: str - Tool name (called by LLM)
-            label: str - Human-readable label for UI
-            description: str - Tool description (sent to LLM)
-            parameters: dict - JSON Schema (pydantic model_json_schema())
-            execute: Callable - Async function to run when tool is called
-            prompt_snippet: str | None - One-line summary for system prompt
-            prompt_guidelines: list[str] | None - Guidelines for using this tool
-            execution_mode: str - "sequential" or "parallel"
-
-    Returns:
-        AgentTool instance
-
-    Example:
-        tool = define_tool({
-            "name": "greet",
-            "label": "Greet",
-            "description": "Greet someone by name",
-            "parameters": GreetParams.model_json_schema(),
-            "execute": greet_execute,
-        })
-    """
-    ...
-
-
-# execute signature
-async def execute(
-    tool_call_id: str,
-    params: object,                    # pydantic model instance or dict
-    signal: AbortSignal | None,        # For abort-aware async work
-    on_update: Callable | None,        # Call to stream partial results
-    ctx: ExtensionContext,             # Session/state context
-) -> dict:
-    """
-    Returns:
-        {
-            "content": [{"type": "text", "text": "..."}],
-            "details": {"key": "value"},   # Arbitrary metadata
-            "terminate": False,            # Hint to stop after this batch
-        }
-    """
+ctx.cwd -> str
+ctx.signal -> AbortSignal | None
+ctx.is_idle -> bool
+ctx.abort() -> None
+ctx.shutdown() -> None
+ctx.shutdown_requested -> bool
+ctx.get_context_usage() -> dict | None
+ctx.get_model() -> dict
+ctx.set_model(name: str) -> dict
+ctx.get_usage() -> dict | None
+await ctx.compact(custom_instructions: str | None = None, defer: bool = False)
+ctx.entries() -> list[dict]
+ctx.resolve_model(model: Any = None) -> Any
+await ctx.complete(...)          # constrained-decoding completion
+await ctx.spawn_branch(...)
+await ctx.summarize_branch(...)
+await ctx.navigate(...)
+await ctx.fork(...)
 ```
 
-## Event Handlers
-
-### Tool Call Interception (Blocking)
+## `ExtensionUI`
 
 ```python
-# Block destructive bash commands
-def register(pi: ExtensionAPI):
-    pi.on("tool_call", async def(event, ctx):
-        if event.tool_name == "bash":
-            cmd = event.input.command
-            dangerous = ["rm -rf", "sudo", "dd if=", "mkfs"]
-            if any(d in cmd for d in dangerous):
-                ok = await ctx.ui.confirm(
-                    "Destructive Command",
-                    f"Allow: {cmd[:100]}...",
-                )
-                if not ok:
-                    return {"block": True, "reason": "User denied"}
+await ctx.ui.confirm(title: str, message: str) -> bool
+await ctx.ui.select(title: str, items: list[str]) -> str | None
+await ctx.ui.input(title: str, default: str = "") -> str
+await ctx.ui.form(spec: dict) -> dict | None
+ctx.ui.notify(message: str, level: str = "info", *, source: str | None = None) -> None
+ctx.ui.set_status(key: str, text: str | None, *, source: str | None = None) -> None
+ctx.ui.panel(key: str, spec: dict | None, *, source: str | None = None) -> None
 ```
 
-### Tool Result Modification
+All four dialog methods are genuinely implemented in the TUI today (an
+earlier version of the TUI delegates raised `NotImplementedError`). In
+headless mode, a dialog call **raises `HeadlessDialogError`** unless a
+policy is configured (`--ui-defaults METHOD=ANSWER,...` or `config.json`'s
+`ui_defaults`) — this replaced an earlier silent auto-resolve (confirm→
+True, select→first) with a Fail-Early default, deliberately the stricter
+direction, not the convenient one.
 
-```python
-# Summarize large bash outputs
-def register(pi: ExtensionAPI):
-    pi.on("tool_result", async def(event, ctx):
-        if event.tool_name == "bash" and len(event.content) > 10000:
-            # Summarize with LLM or truncate
-            return {
-                "content": [{"type": "text", "text": "[Output truncated: ...]"}],
-            }
-```
+## Hot reload
 
-### Session State Management
+`/extensions reload <target>` (one named extension, not a bulk
+"reload all") fires `session_shutdown(reason="reload")` for that
+extension's bucket, unregisters its tools/commands/shortcuts, does a full
+**from-scratch re-import** (not stdlib `importlib.reload()` — a fresh
+module object via `importlib.util.spec_from_file_location`), then fires
+`session_start(reason="reload")`. `enable`/`disable` (also per-target) are
+siblings of the same command.
 
-```python
-# Persist a counter across reloads
-def register(pi: ExtensionAPI):
-    state = {"count": 0}
+## Real example extensions
 
-    pi.on("session_start", async def(event, ctx):
-        # Restore state from session entries
-        for entry in ctx.session_manager.get_entries():
-            if entry.custom_type == "my_counter":
-                state["count"] = entry.data.get("count", 0)
+Prefer reading these over hand-sketched pseudocode — they're real, and every
+one of them is loaded, registered and signature-checked by
+`tau-agent-core/tests/test_examples_contract.py`, so they cannot drift the way
+embedded examples in a design doc do. (That guard is new. Before it existed,
+examples 02–05 had rotted: two registered a tool dict with no `execute`, one
+used a one-argument hook handler, and four had no module-level `register`, so
+`tau -e` could not load them at all.)
 
-    pi.on("turn_end", async def(event, ctx):
-        state["count"] += 1
-        pi.append_entry("my_counter", {"count": state["count"]})
-```
-
-## Extension Discovery Order
-
-1. Global extensions (`~/.tau/extensions/`) — loaded first
-2. Project extensions (`<cwd>/.tau/extensions/`) — loaded second
-
-This means project extensions can override global extension behavior via event ordering.
-
-## Extension Lifecycle
-
-```
-τ starts
-  │
-  ├─ load global extensions
-  ├─ load project extensions
-  ├─ register all tools
-  │
-  ▼
-session_start → extensions initialize
-  │
-  ├─ user sends prompt
-  │     │
-  │     ├─ tool_call (can block)
-  │     ├─ tool execution
-  │     ├─ tool_result (can modify)
-  │     └─ agent_end
-  │
-  ├─ /reload → session_shutdown → reload extensions → session_start
-  │
-  └─ quit → session_shutdown
-```
-
-## Example Extensions
-
-### Permission Gate
-
-```python
-# ~/.tau/extensions/permission_gate.py
-from tau_agent_core import ExtensionAPI
-
-def register(pi: ExtensionAPI):
-    # List of patterns that trigger confirmation
-    DANGEROUS_PATTERNS = [
-        "rm -rf /",
-        "sudo",
-        "mkfs",
-        "dd if=/dev/zero",
-        "wget | sh",
-        "curl | sh",
-    ]
-
-    pi.on("tool_call", async def(event, ctx):
-        if event.tool_name == "bash":
-            cmd = event.input.get("command", "")
-            for pattern in DANGEROUS_PATTERNS:
-                if pattern in cmd:
-                    ok = await ctx.ui.confirm(
-                        "⚠️  Destructive Command",
-                        f"Block pattern: {pattern}\nCommand: {cmd[:200]}\n\nAllow?",
-                    )
-                    if not ok:
-                        return {"block": True, "reason": f"Blocked dangerous pattern: {pattern}"}
-
-    # Also block writes to sensitive files
-    SENSITIVE_PATHS = [".env", ".git/", "node_modules/", "venv/"]
-
-    pi.on("tool_call", async def(event, ctx):
-        if event.tool_name == "write":
-            path = event.input.get("path", "")
-            for sensitive in SENSITIVE_PATHS:
-                if sensitive in path:
-                    ok = await ctx.ui.confirm(
-                        "⚠️  Sensitive File",
-                        f"Writing to: {path}\n\nAllow?",
-                    )
-                    if not ok:
-                        return {"block": True, "reason": f"Blocked write to sensitive path: {path}"}
-```
-
-### Git Checkpoint
-
-```python
-# ~/.tau/extensions/git_checkpoint.py
-from tau_agent_core import ExtensionAPI
-import asyncio
-
-def register(pi: ExtensionAPI):
-    pi.on("agent_end", async def(event, ctx):
-        # Auto-commit after each successful agent turn
-        result = await asyncio.create_subprocess_exec(
-            "git", "status", "--porcelain",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=ctx.cwd,
-        )
-        stdout, _ = await result.communicate()
-        if stdout.strip():  # Only commit if there are changes
-            await asyncio.create_subprocess_exec(
-                "git", "add", ".",
-                cwd=ctx.cwd,
-            )
-            await asyncio.create_subprocess_exec(
-                "git", "commit", "-m", f"τ checkpoint: {ctx.session_manager.get_session_name()}",
-                cwd=ctx.cwd,
-            )
-```
-
-### Dynamic Tool Registration
-
-```python
-# ~/.tau/extensions/dynamic_env_tool.py
-from tau_agent_core import ExtensionAPI, define_tool
-from pydantic import BaseModel
-import os
-
-class EnvParams(BaseModel):
-    name: str
-
-env_tool = define_tool({
-    "name": "get_env",
-    "label": "Get Environment Variable",
-    "description": "Read an environment variable from the process environment",
-    "parameters": EnvParams.model_json_schema(),
-    "execute": async def(tool_call_id, params, signal, on_update, ctx):
-        value = os.environ.get(params.name, "<not set>")
-        return {
-            "content": [{"type": "text", "text": f"{params.name}={value}"}],
-            "details": {},
-        }
-})
-
-def register(pi: ExtensionAPI):
-    pi.register_tool(env_tool)
-```
+- `examples/01_permission_gate.py` — blocks dangerous bash patterns via a
+  genuine `tool_call` veto. Its own docstring documents a real bug it once
+  had (subscribing to a notify-only event that can't block anything) and
+  how it was fixed — worth reading as a cautionary tale about the
+  mutating-vs-notify distinction above.
+- `examples/30_permission_gate.py` — the human-in-the-loop variant:
+  `ctx.ui.confirm`-gated instead of a hard block.
+- `examples/31_protected_paths.py` — vetoes writes/edits to paths sourced
+  from `api.config`, not a hardcoded list.
+- `examples/05_custom_tool.py` — the smallest complete `register_tool`: one
+  schema, one five-argument `execute`, one result dict. Start here before any
+  of the tool-registering demos below.
+- `examples/02_git_checkpoint.py` — commits the working tree on
+  `user_turn_end`, and its docstring explains why not `turn_end` (six
+  round-trips would mean six commits for one request).
+- `examples/03_dynamic_env_tool.py` — registers a tool (`env_vars`) that
+  reads `os.environ`, masking values whose name looks like a credential and
+  bounding its own output so a large environment cannot flood the context.
+- `examples/04_session_logger.py` — the notify side of the same coin:
+  `api.on("all", ...)` with a one-argument handler, writing JSONL.
+- `tau_agent_core/extensions_builtin/nats_bus.py` — the largest real
+  extension (843 lines): a NATS bus bridge, `TOUCHES_BUS`-gated, iterated
+  against a live sibling project. See the README's "Where τ diverges from
+  pi" and `docs/REMOTE-CONTROL.md`.

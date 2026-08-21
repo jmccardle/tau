@@ -14,7 +14,7 @@ loop — and blind to everything else.
 * **every** ``ctx.complete()`` — and the constrained fan-out that motivated it
   spends N of them per invocation.
 
-All three go through ``tau_ai.complete_simple``, which takes no event bus and emits
+All three go through ``tau_llm.complete_simple``, which takes no event bus and emits
 nothing, so none of their tokens could ever reach the meter. The displayed cost was
 not merely incomplete, it was *understated* — the direction that lets a session look
 cheaper than it is. A cost readout that silently omits the most expensive automatic
@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import Any
 
-# The Usage fields τ carries end to end (tau_ai.types.Usage). ``total_tokens`` is
+# The Usage fields τ carries end to end (tau_llm.types.Usage). ``total_tokens`` is
 # provider-reported and NOT recomputed from the others: providers differ on whether
 # cache reads count toward the input total, and second-guessing them here would
 # fabricate a number that disagrees with the bill.

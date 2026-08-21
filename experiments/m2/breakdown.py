@@ -49,7 +49,9 @@ def main() -> int:
     print("=" * 74)
     print("STALE: does the recency trade split by TYPE (T1/T2) or by QUERY DIM?")
     print("=" * 74)
-    print(f"{'config':>14} {'type':>5} {'dim':>5} {'n':>4} {'new>old':>9} {'new@5':>8} {'rank_new':>9}")
+    print(
+        f"{'config':>14} {'type':>5} {'dim':>5} {'n':>4} {'new>old':>9} {'new@5':>8} {'rank_new':>9}"
+    )
     print("-" * 74)
     for alpha, hl in configs:
         label = "baseline" if alpha == 0 else f"a={alpha:g}/{hl:g}d"
@@ -57,8 +59,10 @@ def main() -> int:
             for dim in ("dim1_query", "dim2_query", "dim3_query"):
                 t = agg[(alpha, hl, typ, dim)]
                 n = t["n"] or 1
-                print(f"{label:>14} {typ:>5} {dim.replace('_query',''):>5} {int(t['n']):>4} "
-                      f"{t['win']/n:>9.3f} {t['new_at_5']/n:>8.3f} {t['rank_new']/n:>9.2f}")
+                print(
+                    f"{label:>14} {typ:>5} {dim.replace('_query', ''):>5} {int(t['n']):>4} "
+                    f"{t['win'] / n:>9.3f} {t['new_at_5'] / n:>8.3f} {t['rank_new'] / n:>9.2f}"
+                )
         print("-" * 74)
 
     # --- variance decomposition: which factor moves the number more? ---
@@ -85,8 +89,9 @@ def main() -> int:
                 base[key].append(win)
             elif r["alpha"] == 1.0 and r["halflife"] == 365.0:
                 best[key].append(win)
-        lifts = {k: round(sum(best[k]) / len(best[k]) - sum(base[k]) / len(base[k]), 3)
-                 for k in base}
+        lifts = {
+            k: round(sum(best[k]) / len(best[k]) - sum(base[k]) / len(base[k]), 3) for k in base
+        }
         spread = max(lifts.values()) - min(lifts.values())
         print(f"  by {factor:>4}: {lifts}   spread={spread:.3f}")
 

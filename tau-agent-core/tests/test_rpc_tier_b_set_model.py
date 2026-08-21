@@ -34,7 +34,7 @@ import pytest
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.rpc import RPCHandler, commands, dialect
 from tau_agent_core.session_log import InMemorySessionLog
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 
 def _model(name: str = "m1", provider: str = "openai") -> Model:
@@ -66,7 +66,9 @@ def _resolver(name: str) -> Model:
     try:
         return _MODELS[name]
     except KeyError:
-        raise KeyError(f"unknown model {name!r}; configured models: {', '.join(sorted(_MODELS))}") from None
+        raise KeyError(
+            f"unknown model {name!r}; configured models: {', '.join(sorted(_MODELS))}"
+        ) from None
 
 
 class _LogWithModelChange:

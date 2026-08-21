@@ -35,8 +35,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tau_ai.streaming import TextDeltaEvent
-from tau_ai.types import AssistantMessage, Model, TextContent, Usage
+from tau_llm.streaming import TextDeltaEvent
+from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.commands import FRONTEND_COMMANDS, CommandOutcome
 from tau_agent_core.events import AgentEvent
@@ -885,9 +885,7 @@ async def test_abort_delegates_and_is_idempotent(handler, session):
     # its absence legal while every real response still carried it.
     assert all(r["result"]["compaction_id"] is None for r in responses)
     assert commands.validate_params(commands.ABORT_RESULT_SCHEMA, responses[0]["result"]) is None
-    assert (
-        commands.validate_params(commands.ABORT_RESULT_SCHEMA, {"status": "aborted"}) is not None
-    )
+    assert commands.validate_params(commands.ABORT_RESULT_SCHEMA, {"status": "aborted"}) is not None
 
 
 def test_prepare_outbound_stamps_the_cursor_only_onto_agent_end(handler, session):

@@ -62,8 +62,10 @@ def main() -> int:
     ids = corr["ids"]
     labels = [doc_id in evidence_ids for doc_id in ids]
     n_pos = sum(labels)
-    print(f"{len(ids)} scored turns; {n_pos} are evidence for at least one question "
-          f"({n_pos/len(ids):.0%}), {len(ids)-n_pos} are not")
+    print(
+        f"{len(ids)} scored turns; {n_pos} are evidence for at least one question "
+        f"({n_pos / len(ids):.0%}), {len(ids) - n_pos} are not"
+    )
     if n_pos == 0 or n_pos == len(ids):
         raise RuntimeError("degenerate labels — cannot compute AUC")
 
@@ -74,13 +76,14 @@ def main() -> int:
         a = auc(scores, labels)
         me = sum(s for s, y in zip(scores, labels) if y) / n_pos
         mn = sum(s for s, y in zip(scores, labels) if not y) / (len(ids) - n_pos)
-        print(f"{name:>16} {a:>6.3f} {me:>15.2f} {mn:>13.2f} {me-mn:>+7.2f}")
+        print(f"{name:>16} {a:>6.3f} {me:>15.2f} {mn:>13.2f} {me - mn:>+7.2f}")
 
-    print("\nreference: AUC 0.5 = the rating tells you nothing about whether a turn is "
-          "evidence.")
-    print("If both sit at ~0.5, importance is measurably orthogonal to the retrieval task —\n"
-          "which is the random-importance control, obtained by measurement rather than\n"
-          "by assuming the mechanism.")
+    print("\nreference: AUC 0.5 = the rating tells you nothing about whether a turn is evidence.")
+    print(
+        "If both sit at ~0.5, importance is measurably orthogonal to the retrieval task —\n"
+        "which is the random-importance control, obtained by measurement rather than\n"
+        "by assuming the mechanism."
+    )
 
     for name, key in (("ga_poignancy", "ga"), ("retrievability", "retrieval")):
         d = Counter(corr[key])

@@ -22,7 +22,6 @@ from tau_coding_agent.app import SessionTreeModal
 from tau_coding_agent.backends import TauBackend
 from tau_coding_agent.session_store import Session
 
-
 # --- synthetic tree helpers -------------------------------------------------
 
 
@@ -56,8 +55,8 @@ class _ModalHarness(App):
 
 async def test_tree_modal_enter_returns_current_leaf(tmp_path):
     session = _linear_session(tmp_path)
-    roots = ConversationTree(session.entries(), session.cursor).tree()
-    harness = _ModalHarness(SessionTreeModal(roots))
+    tree = ConversationTree(session.entries(), session.cursor)
+    harness = _ModalHarness(SessionTreeModal(tree.tree(), resolve_entry=tree.entry))
     async with harness.run_test() as pilot:
         await pilot.pause()
         # The current leaf is highlighted; Enter selects it.
@@ -68,8 +67,8 @@ async def test_tree_modal_enter_returns_current_leaf(tmp_path):
 
 async def test_tree_modal_escape_returns_none(tmp_path):
     session = _linear_session(tmp_path)
-    roots = ConversationTree(session.entries(), session.cursor).tree()
-    harness = _ModalHarness(SessionTreeModal(roots))
+    tree = ConversationTree(session.entries(), session.cursor)
+    harness = _ModalHarness(SessionTreeModal(tree.tree(), resolve_entry=tree.entry))
     async with harness.run_test() as pilot:
         await pilot.pause()
         await pilot.press("escape")
@@ -86,8 +85,8 @@ async def test_tree_modal_navigates_and_selects_interior_node(tmp_path):
         for e in entries
         if e.get("type") == "message" and e["message"].get("role") == "user"
     )
-    roots = ConversationTree(entries, session.cursor).tree()
-    harness = _ModalHarness(SessionTreeModal(roots))
+    tree_view = ConversationTree(entries, session.cursor)
+    harness = _ModalHarness(SessionTreeModal(tree_view.tree(), resolve_entry=tree_view.entry))
     async with harness.run_test() as pilot:
         await pilot.pause()
         tree = harness.screen.query_one("#tree-browser-tree", Tree)
@@ -196,7 +195,7 @@ async def test_navigate_summarize_appends_branch_summary_inline(tmp_path):
         captured["context"] = context
         return _fake_assistant("SUMMARY OF THE BRANCH")
 
-    with patch("tau_ai.client.complete_simple", fake_complete):
+    with patch("tau_llm.client.complete_simple", fake_complete):
         new_messages = await backend.navigate_tree(session, target, summarize=True)
 
     entries = session.entries()
@@ -224,7 +223,7 @@ async def test_navigate_summarize_custom_instructions_reach_system_prompt(tmp_pa
         captured["context"] = context
         return _fake_assistant("custom summary")
 
-    with patch("tau_ai.client.complete_simple", fake_complete):
+    with patch("tau_llm.client.complete_simple", fake_complete):
         await backend.navigate_tree(
             session,
             target,
@@ -247,7 +246,7 @@ async def test_navigate_summarize_raises_on_empty_llm_response(tmp_path):
     async def fake_complete(model, context, options=None):
         return _fake_assistant("")
 
-    with patch("tau_ai.client.complete_simple", fake_complete):
+    with patch("tau_llm.client.complete_simple", fake_complete):
         with pytest.raises(RuntimeError, match="empty summary"):
             await backend.navigate_tree(session, target, summarize=True)
     # Nothing persisted for the failed call.
@@ -270,17 +269,13 @@ async def test_reload_messages_shows_post_navigate_context(make_app):
         session.append_message({"role": "assistant", "content": "abandon"})
         target = _branch_point(session)
 
-        new_messages = await app.current_backend.navigate_tree(
-            session, target, summarize=False
-        )
+        new_messages = await app.current_backend.navigate_tree(session, target, summarize=False)
         app.messages = new_messages
         await app.query_one(ChatDisplay).reload_messages(app.messages)
         await pilot.pause()
 
         assert session.cursor == target
-        assert new_messages == ConversationTree(
-            session.entries(), session.cursor
-        ).context_for()
+        assert new_messages == ConversationTree(session.entries(), session.cursor).context_for()
 
 
 # --- shared fakes -----------------------------------------------------------
@@ -296,7 +291,7 @@ def _text(message: dict) -> str:
 
 
 def _fake_assistant(text: str):
-    from tau_ai.types import AssistantMessage, TextContent, Usage
+    from tau_llm.types import AssistantMessage, TextContent, Usage
 
     return AssistantMessage(
         content=[TextContent(text=text)] if text else [],

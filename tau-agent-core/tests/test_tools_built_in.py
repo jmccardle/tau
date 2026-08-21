@@ -39,12 +39,12 @@ from tau_agent_core.tools import (
     create_coding_tools,
     create_read_only_tools,
 )
-from tau_ai.abort import AbortSignal
-
+from tau_llm.abort import AbortSignal
 
 # ============================================================================
 # Test 1: Tool creation
 # ============================================================================
+
 
 class TestToolCreation:
     """Test 1: Tool creation via factory functions."""
@@ -86,6 +86,7 @@ class TestToolCreation:
 # ============================================================================
 # Test 2: Read tool — text file
 # ============================================================================
+
 
 class TestReadToolText:
     """Test 2: Read tool — text file."""
@@ -205,6 +206,7 @@ class TestReadToolText:
 # Test 3: Read tool — large file truncation
 # ============================================================================
 
+
 class TestReadToolTruncation:
     """Test 3: Read tool — large file truncation."""
 
@@ -243,13 +245,16 @@ class TestReadToolTruncation:
 # Test 4: Write tool
 # ============================================================================
 
+
 class TestWriteTool:
     """Test 4: Write tool."""
 
     async def test_write_file(self, tmp_path):
         """Write tool creates files with correct content."""
         tool = WriteTool(cwd=str(tmp_path))
-        result = await tool.execute("tc1", {"path": "output.txt", "content": "hello world"}, None, None)
+        result = await tool.execute(
+            "tc1", {"path": "output.txt", "content": "hello world"}, None, None
+        )
         assert (tmp_path / "output.txt").exists()
         assert (tmp_path / "output.txt").read_text() == "hello world"
         assert result["details"]["lines"] == 1
@@ -265,7 +270,9 @@ class TestWriteTool:
     async def test_write_creates_parent_directories(self, tmp_path):
         """Write tool creates parent directories."""
         tool = WriteTool(cwd=str(tmp_path))
-        result = await tool.execute("tc1", {"path": "sub/deep/file.txt", "content": "nested"}, None, None)
+        result = await tool.execute(
+            "tc1", {"path": "sub/deep/file.txt", "content": "nested"}, None, None
+        )
         assert (tmp_path / "sub" / "deep" / "file.txt").read_text() == "nested"
 
     async def test_write_overwrites_existing_file(self, tmp_path):
@@ -274,7 +281,9 @@ class TestWriteTool:
         test_file.write_text("old content")
 
         tool = WriteTool(cwd=str(tmp_path))
-        result = await tool.execute("tc1", {"path": "existing.txt", "content": "new content"}, None, None)
+        result = await tool.execute(
+            "tc1", {"path": "existing.txt", "content": "new content"}, None, None
+        )
         assert test_file.read_text() == "new content"
 
     async def test_write_missing_path_arg(self, tmp_path):
@@ -297,7 +306,8 @@ class TestWriteTool:
         result = await tool.execute(
             "tc1",
             {"path": "utf16.txt", "content": "Hello 世界", "encoding": "utf-16"},
-            None, None,
+            None,
+            None,
         )
         content = (tmp_path / "utf16.txt").read_text(encoding="utf-16")
         assert "世界" in content
@@ -315,13 +325,17 @@ class TestWriteTool:
         """Write tool handles absolute paths."""
         tool = WriteTool(cwd="/tmp")
         test_file = tmp_path / "abs_write.txt"
-        result = await tool.execute("tc1", {"path": str(test_file), "content": "absolute"}, None, None)
+        result = await tool.execute(
+            "tc1", {"path": str(test_file), "content": "absolute"}, None, None
+        )
         assert test_file.read_text() == "absolute"
 
     async def test_write_atomicity(self, tmp_path):
         """Write tool uses atomic writes (no partial files on error)."""
         tool = WriteTool(cwd=str(tmp_path))
-        result = await tool.execute("tc1", {"path": "atomic.txt", "content": "test content"}, None, None)
+        result = await tool.execute(
+            "tc1", {"path": "atomic.txt", "content": "test content"}, None, None
+        )
         # File should exist and have correct content
         assert (tmp_path / "atomic.txt").read_text() == "test content"
 
@@ -329,6 +343,7 @@ class TestWriteTool:
 # ============================================================================
 # Test 5: Edit tool
 # ============================================================================
+
 
 class TestEditTool:
     """Test 5: Edit tool."""
@@ -339,11 +354,16 @@ class TestEditTool:
         test_file = tmp_path / "test.txt"
         test_file.write_text("hello world")
 
-        result = await tool.execute("tc1", {
-            "path": "test.txt",
-            "old_string": "world",
-            "new_string": "universe",
-        }, None, None)
+        result = await tool.execute(
+            "tc1",
+            {
+                "path": "test.txt",
+                "old_string": "world",
+                "new_string": "universe",
+            },
+            None,
+            None,
+        )
         assert test_file.read_text() == "hello universe"
         assert result["details"]["replacements"] == 1
 
@@ -353,11 +373,16 @@ class TestEditTool:
         test_file = tmp_path / "test.txt"
         test_file.write_text("hello world")
 
-        result = await tool.execute("tc1", {
-            "path": "test.txt",
-            "old_string": "notfound",
-            "new_string": "replacement",
-        }, None, None)
+        result = await tool.execute(
+            "tc1",
+            {
+                "path": "test.txt",
+                "old_string": "notfound",
+                "new_string": "replacement",
+            },
+            None,
+            None,
+        )
         assert result["is_error"] is True
         assert "not found" in result["content"][0]["text"].lower()
 
@@ -367,11 +392,16 @@ class TestEditTool:
         test_file = tmp_path / "test.txt"
         test_file.write_text("foo bar foo baz foo")
 
-        result = await tool.execute("tc1", {
-            "path": "test.txt",
-            "old_string": "foo",
-            "new_string": "replacement",
-        }, None, None)
+        result = await tool.execute(
+            "tc1",
+            {
+                "path": "test.txt",
+                "old_string": "foo",
+                "new_string": "replacement",
+            },
+            None,
+            None,
+        )
         assert result["is_error"] is True
         assert "occurrences" in result["content"][0]["text"].lower()
 
@@ -381,23 +411,33 @@ class TestEditTool:
         test_file = tmp_path / "test.txt"
         test_file.write_text("foo bar foo baz foo")
 
-        result = await tool.execute("tc1", {
-            "path": "test.txt",
-            "old_string": "foo",
-            "new_string": "replacement",
-            "replace_all": True,
-        }, None, None)
+        result = await tool.execute(
+            "tc1",
+            {
+                "path": "test.txt",
+                "old_string": "foo",
+                "new_string": "replacement",
+                "replace_all": True,
+            },
+            None,
+            None,
+        )
         assert test_file.read_text() == "replacement bar replacement baz replacement"
         assert result["details"]["replacements"] == 3
 
     async def test_edit_nonexistent_file(self, tmp_path):
         """Edit tool returns error for nonexistent file."""
         tool = EditTool(cwd=str(tmp_path))
-        result = await tool.execute("tc1", {
-            "path": "nonexistent.txt",
-            "old_string": "foo",
-            "new_string": "bar",
-        }, None, None)
+        result = await tool.execute(
+            "tc1",
+            {
+                "path": "nonexistent.txt",
+                "old_string": "foo",
+                "new_string": "bar",
+            },
+            None,
+            None,
+        )
         assert result["is_error"] is True
 
     async def test_edit_missing_args(self, tmp_path):
@@ -413,11 +453,16 @@ class TestEditTool:
         test_file.write_text("original content")
 
         tool = EditTool(cwd=str(tmp_path))
-        result = await tool.execute("tc1", {
-            "path": "test.txt",
-            "old_string": "notfound",
-            "new_string": "replacement",
-        }, None, None)
+        result = await tool.execute(
+            "tc1",
+            {
+                "path": "test.txt",
+                "old_string": "notfound",
+                "new_string": "replacement",
+            },
+            None,
+            None,
+        )
 
         # File should be unchanged
         assert test_file.read_text() == "original content"
@@ -429,11 +474,16 @@ class TestEditTool:
         test_file = tmp_path / "test.txt"
         test_file.write_text("hello world")
 
-        result = await tool.execute("tc1", {
-            "path": "test.txt",
-            "old_string": "world",
-            "new_string": "universe",
-        }, None, None)
+        result = await tool.execute(
+            "tc1",
+            {
+                "path": "test.txt",
+                "old_string": "world",
+                "new_string": "universe",
+            },
+            None,
+            None,
+        )
         assert "diff" in result["details"]
         assert "world" in result["details"]["diff"]
         assert "universe" in result["details"]["diff"]
@@ -444,11 +494,16 @@ class TestEditTool:
         test_file = tmp_path / "test.txt"
         test_file.write_text("hello world")
 
-        result = await tool.execute("tc1", {
-            "path": "test.txt",
-            "old_string": "world",
-            "new_string": "world",
-        }, None, None)
+        result = await tool.execute(
+            "tc1",
+            {
+                "path": "test.txt",
+                "old_string": "world",
+                "new_string": "world",
+            },
+            None,
+            None,
+        )
         assert test_file.read_text() == "hello world"
         assert result["details"]["replacements"] == 1
 
@@ -456,6 +511,7 @@ class TestEditTool:
 # ============================================================================
 # Test 6: Bash tool
 # ============================================================================
+
 
 class TestBashTool:
     """Test 6: Bash tool."""
@@ -526,7 +582,9 @@ class TestBashTool:
         """Bash tool handles commands with long output."""
         tool = BashTool(cwd=str(tmp_path))
         # Generate lots of output
-        result = await tool.execute("tc1", {"command": "python3 -c 'for i in range(5000): print(i)'"}, None, None)
+        result = await tool.execute(
+            "tc1", {"command": "python3 -c 'for i in range(5000): print(i)'"}, None, None
+        )
         assert result["details"]["exit_code"] == 0
         # Output should be truncated
         assert result["details"]["truncated"] is True
@@ -535,6 +593,7 @@ class TestBashTool:
 # ============================================================================
 # Test 7: Bash tool — abort
 # ============================================================================
+
 
 class TestBashToolAbort:
     """Test 7: Bash tool — abort."""
@@ -545,9 +604,7 @@ class TestBashToolAbort:
         signal = AbortSignal()
 
         # Start bash
-        task = asyncio.create_task(
-            tool.execute("tc1", {"command": "sleep 10"}, signal, None)
-        )
+        task = asyncio.create_task(tool.execute("tc1", {"command": "sleep 10"}, signal, None))
         await asyncio.sleep(0.05)
         signal.abort()
         # Wait for the task to complete (should be aborted)
@@ -578,6 +635,7 @@ class TestBashToolAbort:
 # Test 7b: Bash tool — process-group kill leaves no orphans (R-T4)
 # ============================================================================
 
+
 def _process_is_alive(pid: int) -> bool:
     """True if `pid` refers to a live process, checked without side effects."""
     try:
@@ -590,7 +648,9 @@ def _process_is_alive(pid: int) -> bool:
     return True
 
 
-async def _wait_for_process_death(pid: int, timeout: float = 5.0, poll_interval: float = 0.02) -> None:
+async def _wait_for_process_death(
+    pid: int, timeout: float = 5.0, poll_interval: float = 0.02
+) -> None:
     """Poll for real process death; raise if `pid` outlives `timeout` seconds.
 
     This is a real assertion (repeated os.kill(pid, 0) probes), not a
@@ -705,9 +765,7 @@ class TestBashToolProcessGroupKill:
         pid = None
         shell_pid = None
 
-        task = asyncio.create_task(
-            tool.execute("tc1", {"command": command}, abort_signal, None)
-        )
+        task = asyncio.create_task(tool.execute("tc1", {"command": command}, abort_signal, None))
         try:
             pid = await _read_pid_file(pidfile)
             shell_pid = await _read_pid_file(shell_pidfile)
@@ -744,6 +802,7 @@ class TestBashToolProcessGroupKill:
 # ============================================================================
 # Test 8: Grep tool
 # ============================================================================
+
 
 class TestGrepTool:
     """Test 8: Grep tool."""
@@ -802,7 +861,8 @@ class TestGrepTool:
         result = await tool.execute(
             "tc1",
             {"pattern": "hello", "files": ["file1.txt"]},
-            None, None,
+            None,
+            None,
         )
         assert "file1.txt" in result["content"][0]["text"]
         assert "file2.txt" not in result["content"][0]["text"]
@@ -828,6 +888,7 @@ class TestGrepTool:
 # ============================================================================
 # Test 9: Find tool
 # ============================================================================
+
 
 class TestFindTool:
     """Test 9: Find tool."""
@@ -912,6 +973,7 @@ class TestFindTool:
 # Test 10: Ls tool
 # ============================================================================
 
+
 class TestLsTool:
     """Test 10: Ls tool."""
 
@@ -991,6 +1053,7 @@ class TestLsTool:
 # Test 11: Read-only tools
 # ============================================================================
 
+
 class TestReadOnlyTools:
     """Test 11: Read-only tools factory."""
 
@@ -1022,6 +1085,7 @@ class TestReadOnlyTools:
 # ============================================================================
 # Test 12: Invalid arguments
 # ============================================================================
+
 
 class TestInvalidArguments:
     """Test 12: Invalid arguments handling.
@@ -1095,14 +1159,19 @@ class TestInvalidArguments:
             result = await tool.execute("tc1", bad_args, None, None)
             assert isinstance(result, dict), f"{name} tool did not return dict"
             assert "content" in result, f"{name} tool result missing 'content'"
-            assert "is_error" in result or "details" in result, f"{name} tool result missing 'details' or 'is_error'"
+            assert "is_error" in result or "details" in result, (
+                f"{name} tool result missing 'details' or 'is_error'"
+            )
 
     async def test_all_tools_return_content_array(self, tmp_path):
         """All tool results have a 'content' list with at least one block."""
         test_cases = [
             (ReadTool(cwd=str(tmp_path)), {"path": "nonexistent.txt"}),
             (WriteTool(cwd=str(tmp_path)), {}),
-            (EditTool(cwd=str(tmp_path)), {"path": "nonexistent.txt", "old_string": "x", "new_string": "y"}),
+            (
+                EditTool(cwd=str(tmp_path)),
+                {"path": "nonexistent.txt", "old_string": "x", "new_string": "y"},
+            ),
             (BashTool(cwd=str(tmp_path)), {}),
             (GrepTool(cwd=str(tmp_path)), {}),
             (FindTool(cwd=str(tmp_path)), {}),
@@ -1119,6 +1188,7 @@ class TestInvalidArguments:
 # ============================================================================
 # Test 13: Tool attributes
 # ============================================================================
+
 
 class TestToolAttributes:
     """Additional tests for tool structure and attributes."""

@@ -1,159 +1,136 @@
-# τ-coding-agent
+# ffwf-tau-coding-agent
 
-> The terminal UI for τ — a coding agent with real-time streaming, tool execution, and session management.
+The interface of **Tau**, a programmable coding agent harness: the `tau`
+command, its Textual terminal UI, and the headless run paths behind `tau -p` and
+`tau --mode rpc`.
 
-## Overview
+Tau began as a Python port of the TypeScript project
+[pi-mono](https://github.com/badlogic/pi-mono), which is still read as the
+reference implementation when porting or debugging; it now diverges from pi
+deliberately in several places.
 
-`tau-coding-agent` is the terminal user interface (TUI) for the τ system. Built on [Textual](https://textual.textualize.io/), it provides:
-
-- **Real-time chat**: Streamed responses from the LLM, displayed token by token
-- **Tool execution display**: Visual representation of tool calls and results
-- **Session tree**: Browse, fork, clone, and switch between sessions
-- **Input bar**: Command-line style input with history navigation
-- **Footer**: Status indicators for streaming, tool calls, and session info
-- **Extension integration**: Extensions can hook into the event bus
-- **RPC mode**: Headless operation via RPC protocol
-
-## Quick Start
+## Install
 
 ```bash
-# Run the τ coding agent
-tau
+pip install ffwf-tau-coding-agent            # headless: the CLI, `tau -p`, `--mode rpc`
+pip install 'ffwf-tau-coding-agent[tui]'     # add the interactive TUI
 ```
 
-```python
-# Use programmatically
-from tau_agent_core.sdk import create_agent_session
+Python 3.11 or newer. Pulls in `ffwf-tau-agent-core`, and through it
+`ffwf-tau-llm`. Note the `ffwf-` prefix: `tau-llm` and `tau-ai` on PyPI are
+unrelated projects.
 
-session = create_agent_session(
-    model="gpt-4o",
-    tools=["read", "write", "bash"],
-)
-messages = await session.prompt("Write a Python function")
-```
+| Extra | Adds | Needed for |
+|---|---|---|
+| `ffwf-tau-coding-agent[tui]` | `textual`, `rich` | the interactive TUI. `tau -p` runs a full turn without it |
+| `ffwf-tau-coding-agent[jmfts]` | `ffwf-tau-jmfts` | `--store jmfts` session storage |
 
-## Architecture
+**The interface is an extra, not a base dependency.** A headless install is 15
+packages and 13 MB; adding `[tui]` makes it 27 packages and 31 MB. Both extras
+report their own absence — asking for the TUI or for `--store jmfts` without the
+matching extra fails with the install command you need, not a traceback.
 
-```
-tau-coding-agent/
-├── src/tau_coding_agent/
-│   ├── __init__.py          # Package init
-│   ├── app.py               # Main Textual application
-│   ├── cli.py               # CLI argument parser
-│   ├── config.py            # Configuration management
-│   └── widgets/
-│       ├── __init__.py
-│       ├── chat_display.py       # Chat message display
-│       ├── chat_display_data.py  # Message data structures
-│       ├── tool_call_widget.py   # Tool call display
-│       ├── tool_result_widget.py # Tool result display
-│       ├── session_tree.py       # Session browser
-│       ├── input_bar.py          # Input field with history
-│       └── footer.py             # Status bar
-```
+### Two names for one command
 
-## Package Boundaries
+The install puts **both `tau` and `ffwf-tau`** on your PATH. They are the same
+entry point, not a link: each is a wrapper pip owns and removes on uninstall.
 
-- **τ-coding-agent** imports from τ-agent-core:
-  - `tau_agent_core.AgentSession` — the ONLY import for core logic
-  - `tau_agent_core.SessionManager` — session management
-  - `tau_agent_core.AgentEvent` — event types for subscription
-- **τ-coding-agent** does NOT import from τ-agent-core:
-  - `tau_agent_core.agent_loop.*` — internal implementation
-  - `tau_agent_core.tools.*` — tools registered via AgentSession
-  - `tau_agent_core.extensions.*` — loaded via AgentSession
+Type `tau`. PyPI reserves distribution names but not command names, and at least
+one unrelated project ships its own `tau`; in an environment holding both,
+whichever installed last owns the name and neither pip nor uv says a word.
+`ffwf-tau` cannot be taken, which makes it the right name inside scripts,
+systemd units, and Dockerfiles. If `tau --version` does not report τ,
+`ffwf-tau --version` will.
 
-## Widgets
-
-### Chat Display
-
-The primary widget for displaying conversation. Supports:
-- Token-by-token streaming updates
-- Tool call blocks with expand/collapse
-- Tool result blocks with syntax highlighting
-- Clear and reset functionality
-
-```python
-from tau_coding_agent.widgets.chat_display import ChatDisplay
-from tau_coding_agent.widgets.chat_display_data import ChatMessageData
-
-display = ChatDisplay()
-display.append_message(ChatMessageData(
-    role="user",
-    content=[{"type": "text", "text": "Hello"}]
-))
-display.append_message(ChatMessageData(
-    role="assistant",
-    content=[{"type": "text", "text": "Hi there!"}]
-))
-```
-
-### Session Tree
-
-Browse and manage sessions:
-- List all sessions
-- Fork/clone sessions
-- Delete sessions
-- Switch between sessions
-
-### Input Bar
-
-Command-line style input:
-- Arrow key history navigation
-- Tab completion
-- Custom command support
-
-## Writing a TUI Extension
-
-```python
-# my_tui_extension.py
-def my_tui_extension(api):
-    """Register extension handlers for the TUI."""
-
-    # Listen to agent events
-    def on_tool_call(event):
-        print(f"Tool called: {event.tool_name}")
-
-    api.on("tool_execution_start", on_tool_call)
-
-    # Register a custom tool
-    api.register_tool({
-        "name": "my_tool",
-        "label": "My Tool",
-        "description": "A custom tool",
-        "parameters": {"type": "object", "properties": {}},
-    })
-```
-
-## CLI Options
+## Run
 
 ```bash
-tau --model gpt-4o --tools read,write,bash --cwd /path/to/project
-tau --rpc --port 8080          # Start RPC server
-tau --headless --prompt "Hello"  # Run single prompt and exit
+tau                                 # interactive TUI
+tau -p "list the files here"        # headless: print a transcript, exit
+tau -p --mode json "..."            # headless: JSONL lifecycle events instead of text
+tau --mode rpc                      # drive τ as a subprocess over stdio (JSON-RPC 2.0)
+tau -e permission_gate.py           # load an extension from a path
+tau --help                          # the exact contract; treat this page as the stale one
 ```
 
-## Keyboard Shortcuts
+`tau -p` and `tau --mode rpc` both write and resume real sessions under
+`~/.tau/sessions/`, so a headless run appears in the TUI's sidebar and can be
+picked up interactively later. `--no-session` means nothing is persisted.
+
+Flags worth knowing: `-m/--model`, `-t/--tools` and `-nt/--no-tools`,
+`-e/--extension PATH`, `--thinking {off,minimal,low,medium,high,xhigh}`,
+`-c/--continue`, `--session REF`, `--fork REF`, `--store {file,jmfts}`.
+
+## Configure
+
+On first run τ writes `~/.tau/config.json` from a default shipped inside the
+package. It holds the `models` map that `--model` resolves names against, plus
+per-extension config and the `session_store` block. A model entry names the
+provider, the base URL, and the context window, so pointing τ at a local
+OpenAI-compatible server (vLLM, llama.cpp, Ollama) is a config edit rather than
+a code change.
+
+## The TUI
+
+Built on [Textual](https://textual.textualize.io/). Streamed text renders at
+30 Hz; tool calls and their results appear as their own blocks.
 
 | Key | Action |
-|-----|--------|
-| `↑/↓` | Navigate session tree |
-| `Enter` | Confirm selection |
-| `Ctrl+C` | Abort current prompt |
-| `/` | Focus input bar |
-| `q` | Quit |
-| `n` | New session |
-| `f` | Fork session |
-| `c` | Clone session |
-| `d` | Delete session |
+|---|---|
+| `Ctrl+Enter` | send the message |
+| `Ctrl+B` | toggle the session sidebar |
+| `Ctrl+N` | new chat |
+| `Ctrl+G` | browse the conversation tree |
+| `Ctrl+Z` | roll back the last turn |
+| `Ctrl+R` / `Ctrl+T` | show or hide reasoning / tool blocks |
+| `Ctrl+E` | extensions |
+| `Ctrl+P` | command palette |
+| `Escape` | cancel the current generation |
 
-## Error Handling
+**The sidebar and the tree browser are two different things.** The sidebar picks
+*which session to open* — a flat list grouped by date. `Ctrl+G` opens a browser
+over the branch structure *inside the current conversation*, where you navigate
+to an earlier node, summarise a branch, or elide a span. Typed commands cover
+the rest: `/compact`, `/tree`, `/fork`, `/extensions`.
 
-- Provider errors are displayed in the chat
-- Tool errors show with an error indicator
-- Extension errors are logged, UI continues
-- Network errors are retried automatically
+## Why it is a separate package
 
-## License
+Everything here is presentation and process management. The agent lives in
+`ffwf-tau-agent-core`, which has no Textual dependency and never imports this
+package. `ffwf-tau-jmfts` is a peer rather than a dependency: `--store jmfts`
+imports it lazily and fails at startup if it is absent, never falling back to
+files without saying so.
 
-MIT
+If you want the agent rather than the interface, use the runtime directly:
+
+```python
+import asyncio
+from tau_agent_core import create_agent_session
+
+
+async def main():
+    session = create_agent_session(model="gpt-4o", tools=["read", "bash"])
+    print(await session.prompt("What is in this directory?"))
+
+
+asyncio.run(main())
+```
+
+## Docs
+
+- `docs/tau-coding-agent.md` — design notes for this package.
+- `docs/CLI-PLAN.md` — the flag set and its status.
+- `docs/REMOTE-CONTROL.md`, `docs/RPC-PROTOCOL.md` — `--mode rpc`.
+- `docs/EXTENSIONS-WALKTHROUGH.md` — writing an extension to load with `-e`.
+
+Repository: <https://github.com/jmccardle/tau>
+
+## The rest of Tau
+
+| Distribution | Imports as | What it is |
+|---|---|---|
+| `ffwf-tau-llm` | `tau_llm` | the provider and streaming layer |
+| `ffwf-tau-agent-core` | `tau_agent_core` | the agent loop, tools, sessions, extensions |
+| `ffwf-tau-jmfts` | `tau_jmfts` | a JMFTS-backed session store |
+
+MIT © Fight Fire with Fire Robotics, LLC

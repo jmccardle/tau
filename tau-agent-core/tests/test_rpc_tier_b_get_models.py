@@ -41,7 +41,7 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.rpc import commands, dialect
 from tau_agent_core.rpc.handler import RPCHandler
 from tau_agent_core.session_log import InMemorySessionLog
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 
 def _model(name: str, provider: str = "openai", context_window: int = 8192) -> Model:
@@ -168,7 +168,10 @@ async def test_lists_every_configured_name_sorted_with_get_state_s_projection(
 
     assert "error" not in response
     assert response["result"]["models"] == [
-        {"name": "alpha", "model": {"id": "alpha-id", "provider": "openai", "context_window": 8192}},
+        {
+            "name": "alpha",
+            "model": {"id": "alpha-id", "provider": "openai", "context_window": 8192},
+        },
         {"name": "mid", "model": {"id": "mid-id", "provider": "gemini", "context_window": 100000}},
         {
             "name": "zeta",
@@ -215,7 +218,7 @@ async def test_a_listed_name_is_one_set_model_accepts(session, handler) -> None:
 
 
 async def test_an_empty_config_lists_nothing_and_is_not_an_error(session, handler) -> None:
-    """"This child has no configured models" is a real answer with a real
+    """ "This child has no configured models" is a real answer with a real
     (empty) list — the refusals below are for the case where nobody can be
     asked at all. Conflating the two is what would make a host stop."""
     session.set_model_resolver(_Resolver({}))

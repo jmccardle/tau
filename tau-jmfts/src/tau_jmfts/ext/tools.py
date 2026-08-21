@@ -10,7 +10,7 @@ session, and it says so rather than quietly searching everything.
 
 Configuration (``"extensions": {"tools": {...}}``)::
 
-    {"url": "http://…:8007", "index": "tau", "default_scope": "conversation"}
+    {"url": "http://…:8100", "index": "tau", "default_scope": "conversation"}
 
 ``url`` may be omitted when the active session is JMFTS-backed: the tools then reuse
 that session's own client, so they cannot end up querying a *different* instance than

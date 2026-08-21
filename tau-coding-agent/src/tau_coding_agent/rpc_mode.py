@@ -380,13 +380,13 @@ async def run_rpc(args: "CLIArgs", config: dict[str, Any]) -> int:
                 if emit_session_shutdown is not None:
                     await emit_session_shutdown("quit")
 
-            # Close the pooled τ-ai providers' HTTP clients for this loop
+            # Close the pooled τ-llm providers' HTTP clients for this loop
             # (docs/PROVIDER-LIFETIME.md §6.3), same placement/reasoning as
             # run_print's own finally: after session_shutdown (a handler may
             # itself make a final LLM call), inside the same asyncio.run()
             # that drove the server, the last point the loop is guaranteed
             # still alive to close on.
-            from tau_ai.client import aclose_providers
+            from tau_llm.client import aclose_providers
 
             await aclose_providers()
 

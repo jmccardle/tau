@@ -42,15 +42,18 @@ from typing import Optional
 REPO_ROOT = Path(__file__).resolve().parent
 DOCS_DIR = REPO_ROOT / "docs"
 SRC_DIRS = [
-    REPO_ROOT / "tau-ai",
+    REPO_ROOT / "tau-llm",
     REPO_ROOT / "tau-agent-core",
     REPO_ROOT / "tau-coding-agent",
 ]
 PI_TIMEOUT = int(os.environ.get("PI_TIMEOUT", "600"))  # seconds per pi session
 
+
 class Config:
     """Mutable config shared across functions."""
+
     timeout: int = PI_TIMEOUT
+
 
 config = Config()
 DEFAULT_ITERATIONS = 4
@@ -65,15 +68,13 @@ JSON_END = "</JSON_OUTPUT>"
 # ──────────────────────────────────────────────
 
 SUBPHASE_FILES = sorted(
-    f.name
-    for f in DOCS_DIR.glob("PHASE-*-SUBPHASE*.md")
-    if f.suffix == ".md" and f.stem != "INDEX"
+    f.name for f in DOCS_DIR.glob("PHASE-*-SUBPHASE*.md") if f.suffix == ".md" and f.stem != "INDEX"
 )
 
 
 def parse_subphase_filename(filename: str) -> Optional[tuple[int, int]]:
     """Extract (phase, subphase) from a subphase doc filename.
-    
+
     Handles both PHASE-0-SUBPHASE.md (Phase 0 has no sub-number)
     and PHASE-X-SUBPHASE-Y.md (standard pattern).
     """
@@ -107,14 +108,14 @@ def subphase_filename(phase: int, sub: int) -> str:
 
 def parse_target(target: str) -> Optional[list[tuple[int, int, str]]]:
     """Parse a target like '4.2', '4', or '6.0' into subphase entries.
-    
+
     Returns None to indicate 'all'.
     """
     all_subphases = get_all_subphases()
-    
+
     if target == "":
         return all_subphases
-    
+
     if "." in target:
         phase, sub = target.split(".", 1)
         try:
@@ -141,6 +142,7 @@ def parse_target(target: str) -> Optional[list[tuple[int, int, str]]]:
 # Utility Functions
 # ──────────────────────────────────────────────
 
+
 def log(msg: str, prefix: str = ""):
     """Print a log message."""
     ts = datetime.now().strftime("%H:%M:%S")
@@ -149,7 +151,7 @@ def log(msg: str, prefix: str = ""):
 
 def read_subphase_doc(phase: int, sub: int) -> Path:
     """Return the path to a subphase doc.
-    
+
     Phase 0 uses the special filename PHASE-0-SUBPHASE.md (no sub-number).
     """
     if phase == 0 and sub == 0:
@@ -162,17 +164,17 @@ def read_subphase_feedback(doc: Path) -> str:
     if not doc.exists():
         return ""
     content = doc.read_text()
-    
+
     # Extract feedback sections
     qc_match = re.search(r"## QC Feedback\n(.*?)(?=## Evaluator Feedback|$)", content, re.DOTALL)
     eval_match = re.search(r"## Evaluator Feedback\n(.*?)(?=\Z)", content, re.DOTALL)
-    
+
     feedback = ""
     if qc_match:
         feedback += "### QC Feedback\n" + qc_match.group(1).strip() + "\n\n"
     if eval_match:
         feedback += "### Evaluator Feedback\n" + eval_match.group(1).strip() + "\n"
-    
+
     return feedback.strip()
 
 
@@ -181,15 +183,15 @@ def append_feedback(doc: Path, role: str, feedback: str):
     if not doc.exists():
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("")
-    
+
     content = doc.read_text()
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
     entry = f"\n- **{ts}** {role}: {feedback}"
-    
+
     # Ensure feedback sections exist
     qc_section = f"## QC Feedback\n"
     eval_section = f"## Evaluator Feedback\n"
-    
+
     if f"{role}:" not in content:
         # Append at end
         if content:
@@ -201,21 +203,13 @@ def append_feedback(doc: Path, role: str, feedback: str):
             if qc_section not in content:
                 content += f"\n\n{qc_section}{entry}"
             else:
-                content = content.replace(
-                    qc_section,
-                    qc_section + entry,
-                    1
-                )
+                content = content.replace(qc_section, qc_section + entry, 1)
         else:
             if eval_section not in content:
                 content += f"\n\n{eval_section}{entry}"
             else:
-                content = content.replace(
-                    eval_section,
-                    eval_section + entry,
-                    1
-                )
-    
+                content = content.replace(eval_section, eval_section + entry, 1)
+
     doc.write_text(content)
 
 
@@ -224,23 +218,23 @@ def find_source_files(phase: int, sub: int) -> list[Path]:
     doc = read_subphase_doc(phase, sub)
     if not doc.exists():
         return []
-    
+
     content = doc.read_text()
     # Look for file paths mentioned in the doc
     file_patterns = [
-        r'`tau_?ai[/\\].*?\.(?:py|toml|json|md)`,',
-        r'`tau_?agent.?core[/\\].*?\.(?:py|toml|json|md)`,',
-        r'`tau_?coding.?agent[/\\].*?\.(?:py|toml|json|md)`,',
+        r"`tau_?ai[/\\].*?\.(?:py|toml|json|md)`,",
+        r"`tau_?agent.?core[/\\].*?\.(?:py|toml|json|md)`,",
+        r"`tau_?coding.?agent[/\\].*?\.(?:py|toml|json|md)`,",
         r'"tau_?ai[/\\].*?\.(?:py|toml|json|md)"',
         r'"tau_?agent.?core[/\\].*?\.(?:py|toml|json|md)"',
         r'"tau_?coding.?agent[/\\].*?\.(?:py|toml|json|md)"',
     ]
-    
+
     found_paths = set()
     for pattern in file_patterns:
         for m in re.finditer(pattern, content):
-            found_paths.add(m.group(0).strip('`,'))
-    
+            found_paths.add(m.group(0).strip("`,"))
+
     results = []
     for path_str in found_paths:
         # Normalize path separators
@@ -249,19 +243,19 @@ def find_source_files(phase: int, sub: int) -> list[Path]:
             candidate = src_dir / normalized
             if candidate.exists():
                 results.append(candidate)
-    
+
     # Always include test files
     for src_dir in SRC_DIRS:
         test_dir = src_dir / "tests"
         if test_dir.exists():
             results.extend(test_dir.glob("**/*.py"))
-    
+
     # If no files found, include the expected structure
     if not results and phase > 0:
         expected = [
             f"tau_{'ai' if phase <= 1 else 'agent-core' if phase <= 3 else 'coding-agent'}",
         ]
-    
+
     return results
 
 
@@ -271,11 +265,11 @@ def run_pi(prompt: str, timeout: int | None = None) -> tuple[str, bool]:
         timeout = Config.timeout
     log(f"Running pi (timeout={timeout}s)...")
     start = time.time()
-    
+
     # Escape single quotes in the prompt
     escaped_prompt = prompt.replace("'", "'\\''")
     cmd = f"cd '{REPO_ROOT}' && timeout {timeout} pi -p '{escaped_prompt}'"
-    
+
     try:
         result = subprocess.run(
             cmd,
@@ -302,17 +296,17 @@ def extract_json(output: str) -> Optional[dict]:
     start = output.find(JSON_START)
     end = output.rfind(JSON_END)
     if start >= 0 and end >= 0 and end > start:
-        json_str = output[start + len(JSON_START):end].strip()
+        json_str = output[start + len(JSON_START) : end].strip()
     else:
         # Try to find JSON object anywhere
         json_str = output
-    
+
     # Find the first { and last } to extract JSON
     brace_start = json_str.find("{")
     brace_end = json_str.rfind("}")
     if brace_start >= 0 and brace_end > brace_start:
-        json_str = json_str[brace_start:brace_end + 1]
-    
+        json_str = json_str[brace_start : brace_end + 1]
+
     try:
         return json.loads(json_str)
     except json.JSONDecodeError:
@@ -353,10 +347,11 @@ def get_recent_diff() -> str:
 # Role Prompts
 # ──────────────────────────────────────────────
 
+
 def build_tester_prompt(phase: int, sub: int, feedback: str) -> str:
     """Build the prompt for the Tester role."""
     doc_path = f"docs/PHASE-{phase}-SUBPHASE-{sub}.md"
-    
+
     prompt = f"""You are the **Tester** for the τ (tau-agent-core) implementation.
 
 ## Your Task
@@ -389,7 +384,7 @@ Report what you created/changed and whether the tests pass.
 def build_implementer_prompt(phase: int, sub: int, feedback: str) -> str:
     """Build the prompt for the Implementer role."""
     doc_path = f"docs/PHASE-{phase}-SUBPHASE-{sub}.md"
-    
+
     prompt = f"""You are the **Implementer** for the τ (tau-agent-core) implementation.
 
 ## Your Task
@@ -424,7 +419,7 @@ def build_qc_prompt(phase: int, sub: int) -> str:
     """Build the prompt for the Quality Control role."""
     changes = get_uncommitted_changes()
     diff = get_recent_diff()
-    
+
     prompt = f"""You are the **Quality Control** agent for the τ (tau-agent-core) implementation.
 
 ## Your Task
@@ -476,7 +471,7 @@ Be specific in your feedback.
 def build_evaluator_prompt(phase: int, sub: int, feedback: str) -> str:
     """Build the prompt for the Evaluator role."""
     doc_path = f"docs/PHASE-{phase}-SUBPHASE-{sub}.md"
-    
+
     prompt = f"""You are the **Evaluator** agent for the τ (tau-agent-core) implementation.
 
 ## Your Task
@@ -524,29 +519,30 @@ Be very specific about what's missing if you return false.
 # Core Loop
 # ──────────────────────────────────────────────
 
+
 def run_subphase(phase: int, sub: int, max_iterations: int, dry_run: bool) -> bool:
     """Run the agent loop for one subphase.
-    
+
     Returns True if the subphase completed successfully.
     """
     doc = read_subphase_doc(phase, sub)
     if not doc.exists():
         log(f"⚠️  Subphase doc not found: {doc}", "⚠️  ")
         return False
-    
+
     log(f"▶️  Phase {phase}.{sub}: Starting loop (max {max_iterations} iterations)")
     log(f"   Doc: {doc}")
-    
+
     for iteration in range(1, max_iterations + 1):
-        log(f"\n{'='*60}")
+        log(f"\n{'=' * 60}")
         log(f"Phase {phase}.{sub} — Iteration {iteration}/{max_iterations}")
-        log(f"{'='*60}")
-        
+        log(f"{'=' * 60}")
+
         # Read accumulated feedback
         feedback = read_subphase_feedback(doc)
         if feedback:
             log(f"   Previous feedback:\n{feedback[:500]}...")
-        
+
         # ── Step 1: Tester ──
         if not dry_run:
             tester_prompt = build_tester_prompt(phase, sub, feedback)
@@ -556,7 +552,7 @@ def run_subphase(phase: int, sub: int, max_iterations: int, dry_run: bool) -> bo
                 log("   ⚠️  Tester failed (timeout/error)", "⚠️  ")
         else:
             log("   → [DRY-RUN] Would run Tester")
-        
+
         # ── Step 2: Implementer ──
         if not dry_run:
             impl_prompt = build_implementer_prompt(phase, sub, feedback)
@@ -566,61 +562,61 @@ def run_subphase(phase: int, sub: int, max_iterations: int, dry_run: bool) -> bo
                 log("   ⚠️  Implementer failed (timeout/error)", "⚠️  ")
         else:
             log("   → [DRY-RUN] Would run Implementer")
-        
+
         # ── Step 3: Quality Control ──
         if not dry_run:
             qc_prompt = build_qc_prompt(phase, sub)
             log("   → Running Quality Control...")
             qc_output, qc_ok = run_pi(qc_prompt)
-            
+
             if not qc_ok:
                 log("   ⚠️  QC failed (timeout/error)", "⚠️  ")
                 append_feedback(doc, "QC", f"Session failed (timeout/error)")
                 continue
-            
+
             qc_result = extract_json(qc_output)
             if not qc_result:
                 log("   ⚠️  QC output doesn't contain valid JSON", "⚠️  ")
                 append_feedback(doc, "QC", "Failed to parse JSON output")
                 continue
-            
+
             qc_success = qc_result.get("success", False)
             qc_feedback = qc_result.get("feedback", "No feedback")
             log(f"   QC: {'✅ PASS' if qc_success else '❌ REJECT'} — {qc_feedback}")
-            
+
             if not qc_success:
                 append_feedback(doc, "QC", qc_feedback)
                 continue  # Restart loop
-        
+
         # ── Step 4: Evaluator ──
         if not dry_run:
             eval_prompt = build_evaluator_prompt(phase, sub, feedback)
             log("   → Running Evaluator...")
             eval_output, eval_ok = run_pi(eval_prompt)
-            
+
             if not eval_ok:
                 log("   ⚠️  Evaluator failed (timeout/error)", "⚠️  ")
                 append_feedback(doc, "Evaluator", f"Session failed (timeout/error)")
                 continue
-            
+
             eval_result = extract_json(eval_output)
             if not eval_result:
                 log("   ⚠️  Evaluator output doesn't contain valid JSON", "⚠️  ")
                 append_feedback(doc, "Evaluator", "Failed to parse JSON output")
                 continue
-            
+
             eval_success = eval_result.get("success", False)
             eval_feedback = eval_result.get("feedback", "No feedback")
             log(f"   Evaluator: {'✅ PASS' if eval_success else '❌ REJECT'} — {eval_feedback}")
-            
+
             if not eval_success:
                 append_feedback(doc, "Evaluator", eval_feedback)
                 continue  # Restart loop
-        
+
         # ── Both passed! Commit and proceed ──
         if not dry_run:
             log(f"\n✅ Phase {phase}.{sub} APPROVED! Committing changes...")
-            
+
             # Git add, commit, and optionally push
             try:
                 subprocess.run(
@@ -634,7 +630,7 @@ def run_subphase(phase: int, sub: int, max_iterations: int, dry_run: bool) -> bo
                 # Add QC and evaluator feedback summary
                 if feedback:
                     commit_msg += f"Feedback addressed:\n{feedback[-200:]}\n"
-                
+
                 subprocess.run(
                     f"cd '{REPO_ROOT}' && git commit -m '{commit_msg}' --allow-empty",
                     shell=True,
@@ -647,10 +643,10 @@ def run_subphase(phase: int, sub: int, max_iterations: int, dry_run: bool) -> bo
                 log("   But subphase is still considered complete.")
         else:
             log(f"\n✅ Phase {phase}.{sub} would be approved!")
-        
+
         log(f"\n🎉 Phase {phase}.{sub} COMPLETE!")
         return True
-    
+
     # Exhausted all iterations
     log(f"\n❌ Phase {phase}.{sub} FAILED: exhausted {max_iterations} iterations", "❌  ")
     log(f"   Final feedback appended to {doc}")
@@ -702,12 +698,12 @@ def main():
         action="store_true",
         help="List all subphases and exit",
     )
-    
+
     args = parser.parse_args()
-    
+
     # Set timeout (use module-level mutable wrapper)
     config.timeout = args.timeout
-    
+
     # List mode
     if args.list:
         print("τ Subphases:")
@@ -725,14 +721,18 @@ def main():
             print(f"  {marker}{phase}.{sub:1d}  {filename:40s}  {scope}")
         print(f"\n  Total: {len(get_all_subphases())} subphases")
         return
-    
+
     # Determine target subphases
     if args.from_target:
         subphases = get_all_subphases()
         from_parsed = parse_target(args.from_target)
         if from_parsed:
             from_idx = next(
-                (i for i, (p, s, _) in enumerate(subphases) if p == from_parsed[0][0] and s == from_parsed[0][1]),
+                (
+                    i
+                    for i, (p, s, _) in enumerate(subphases)
+                    if p == from_parsed[0][0] and s == from_parsed[0][1]
+                ),
                 len(subphases),
             )
             subphases = subphases[from_idx:]
@@ -744,58 +744,58 @@ def main():
             subphases = get_all_subphases()
     else:
         subphases = get_all_subphases()
-    
+
     # Filter skips
     skip_set = set()
     for s in args.skip:
         parsed = parse_target(s)
         if parsed:
             skip_set.add((parsed[0][0], parsed[0][1]))
-    
+
     subphases = [(p, s, f) for p, s, f in subphases if (p, s) not in skip_set]
-    
+
     if not subphases:
         print("No subphases to run.")
         return
-    
+
     # Summary
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  τ Agent Loop Orchestrator")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"  Subphases: {len(subphases)}")
     print(f"  Max iterations/subphase: {args.iterations}")
     print(f"  Timeout per pi session: {args.timeout}s")
     print(f"  Dry run: {args.dry_run}")
-    print(f"{'='*60}\n")
-    
+    print(f"{'=' * 60}\n")
+
     # Run loop
     results = {}
     for phase, sub, filename in subphases:
-        log(f"\n{'#'*60}")
+        log(f"\n{'#' * 60}")
         log(f"Phase {phase}.{sub}")
-        log(f"{'#'*60}\n")
-        
+        log(f"{'#' * 60}\n")
+
         success = run_subphase(phase, sub, args.iterations, args.dry_run)
         results[(phase, sub)] = success
-    
+
     # Summary
     total = len(results)
     passed = sum(1 for v in results.values() if v)
     failed = total - passed
-    
-    print(f"\n{'='*60}")
+
+    print(f"\n{'=' * 60}")
     print(f"  τ Agent Loop Summary")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"  Total:  {total}")
     print(f"  Passed: {passed}")
     print(f"  Failed: {failed}")
-    print(f"{'='*60}")
-    
+    print(f"{'=' * 60}")
+
     # Show failures
     for (p, s), success in results.items():
         status = "✅" if success else "❌"
         print(f"  {status} Phase {p}.{s}")
-    
+
     if failed > 0:
         sys.exit(1)
     else:

@@ -36,8 +36,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tau_ai.streaming import DoneEvent, TextDeltaEvent
-from tau_ai.types import AssistantMessage, Model, TextContent, Usage
+from tau_llm.streaming import DoneEvent, TextDeltaEvent
+from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.rpc import RPCHandler, commands
@@ -138,7 +138,9 @@ def real_session() -> AgentSession:
         session_log=InMemorySessionLog(),
         model=_model(),
         tools=[],
-        compaction_settings=CompactionSettings(enabled=False, reserve_tokens=100, keep_recent_tokens=1),
+        compaction_settings=CompactionSettings(
+            enabled=False, reserve_tokens=100, keep_recent_tokens=1
+        ),
     )
 
 
@@ -147,7 +149,9 @@ def real_handler(real_session: AgentSession) -> RPCHandler:
     return RPCHandler(real_session)
 
 
-async def _drain_until_two_agent_ends(handler: RPCHandler, *, limit: int = 500, timeout: float = 5.0):
+async def _drain_until_two_agent_ends(
+    handler: RPCHandler, *, limit: int = 500, timeout: float = 5.0
+):
     """Pop everything off the output queue up to and including the SECOND
     ``agent_end`` event — the turn's own stamped one, then (if compaction
     fired) ``_maybe_auto_compact``'s orphan one. Returns every item seen, in

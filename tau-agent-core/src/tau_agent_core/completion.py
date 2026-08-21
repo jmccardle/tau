@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
 
-from tau_ai.types import AssistantMessage, Model
+from tau_llm.types import AssistantMessage, Model
 
 
 class CompletionFailed(RuntimeError):
@@ -80,8 +80,8 @@ async def resolved_complete(
             ``max_tokens`` budget keeps it, and one that passes ``None`` keeps that.
         resolver: maps a model name to a ``Model`` (the session's model registry).
         complete_fn: the completion callable. Defaults to
-            ``tau_ai.client.complete_simple``, imported *at call time* so a test
-            that patches ``tau_ai.client.complete_simple`` is honored. The
+            ``tau_llm.client.complete_simple``, imported *at call time* so a test
+            that patches ``tau_llm.client.complete_simple`` is honored. The
             compaction path passes its own module-level ``complete_simple`` instead,
             so a patch of ``tau_agent_core.compaction.complete_simple`` is honored
             there — the two patch sites the suite relies on both keep working.
@@ -104,7 +104,7 @@ async def resolved_complete(
 
     fn = complete_fn
     if fn is None:
-        from tau_ai.client import complete_simple
+        from tau_llm.client import complete_simple
 
         fn = complete_simple
 

@@ -58,8 +58,8 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from tau_ai.streaming import DoneEvent, TextDeltaEvent
-from tau_ai.types import AssistantMessage, Model, TextContent, ToolCall, Usage
+from tau_llm.streaming import DoneEvent, TextDeltaEvent
+from tau_llm.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.extensions_builtin import nats_bus
@@ -230,7 +230,7 @@ class TestDeclarationAndPreflightNoNetworkNeeded:
         assert "workspace_effector" not in info.tools
 
         schema = session._registry.get_active_tools()["speak"]
-        assert schema["parameters"]["required"] == ["text"]
+        assert schema.parameters["required"] == ["text"]
 
 
 # ── two producers, one wire (2026-08-01) ────────────────────────────────────
@@ -271,14 +271,14 @@ class TestWorldVerbs:
         assert len(result.errors) == 0
 
         tools = session._registry.get_active_tools()
-        move = tools["move_to"]["parameters"]
+        move = tools["move_to"].parameters
         assert sorted(move["required"]) == ["x", "y"]
         assert move["properties"]["x"]["type"] == "integer"
         assert move["properties"]["y"]["type"] == "integer"
         assert "text" not in move["properties"]
 
-        assert tools["wait"]["parameters"]["properties"]["turns"]["type"] == "integer"
-        assert tools["note"]["parameters"]["required"] == ["text"]
+        assert tools["wait"].parameters["properties"]["turns"]["type"] == "integer"
+        assert tools["note"].parameters["required"] == ["text"]
 
     @pytest.mark.parametrize("verb", sorted(nats_bus.VERBS))
     async def test_every_verbs_schema_is_internally_consistent(self, verb):
@@ -1319,7 +1319,7 @@ class TestTau002ZeroOrphans:
             tool = session._registry.get_active_tools()["speak"]
             started = time.time()
             with pytest.raises(asyncio.CancelledError):
-                await tool["execute"]("call_1", {"text": "hi"}, _AbortedSignal(), None, None)
+                await tool.execute("call_1", {"text": "hi"}, _AbortedSignal(), None, None)
             # Nothing acked and ack_timeout_s is 30s: returning fast is the proof.
             assert time.time() - started < 5
         finally:

@@ -10,7 +10,7 @@ append when ``replace`` is False, RESET to ``delta`` when ``replace`` is True
 
 from __future__ import annotations
 
-from tau_ai.types import ThinkingContent, ToolCall
+from tau_llm.types import ThinkingContent, ToolCall
 
 from tau_agent_core.event_projection import BlockDelta, MessageDeltaProjector
 
@@ -207,7 +207,12 @@ class TestNonDiffableBlockPassthrough:
 
         first = projector.project(message)
         assert len(first) == 1
-        assert first[0].block == {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {"p": "."}}
+        assert first[0].block == {
+            "type": "toolCall",
+            "id": "c1",
+            "name": "ls",
+            "arguments": {"p": "."},
+        }
 
         # No change -> nothing, as usual.
         assert projector.project(message) == []
@@ -218,7 +223,12 @@ class TestNonDiffableBlockPassthrough:
         block["arguments"] = {"p": "/etc"}
         second = projector.project(message)
         assert len(second) == 1, "a real change must still be reported, not swallowed"
-        assert second[0].block == {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {"p": "/etc"}}
+        assert second[0].block == {
+            "type": "toolCall",
+            "id": "c1",
+            "name": "ls",
+            "arguments": {"p": "/etc"},
+        }
 
     def test_emitted_block_is_independent_of_later_caller_mutation(self):
         """The BlockDelta.block payload handed back must be a snapshot, not a
@@ -231,7 +241,12 @@ class TestNonDiffableBlockPassthrough:
 
         block["arguments"]["p"] = "/etc"  # mutate the producer's own dict after emission
 
-        assert emitted.block == {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {"p": "."}}
+        assert emitted.block == {
+            "type": "toolCall",
+            "id": "c1",
+            "name": "ls",
+            "arguments": {"p": "."},
+        }
 
     def test_tool_call_shifted_from_index_0_to_1_by_arriving_text_is_not_re_emitted_whole(self):
         """Mirrors _consolidate_text_and_thinking's real ordering: a tool call
@@ -345,8 +360,7 @@ class TestRT6FullTurnByteExact:
             msg("Let me check the directory.", "", tool_args='{"path": "."}'),
             msg("Let me check the directory.", "Here are the "),
             msg("Let me check the directory.", "Here are the results: a.py, "),
-            msg("Let me check the directory.", "Here are the results: a.py, ")  # no-change
-            ,
+            msg("Let me check the directory.", "Here are the results: a.py, "),  # no-change
             msg("Let me check the directory.", "Here are the results: a.py, b.py. All good!"),
         ]
 
@@ -397,7 +411,7 @@ class TestRealisticAgentLoopMessageShapes:
     """Drives the projector with the ACTUAL block shapes agent_loop.py builds
     (agent_loop.py:598-659), not a hand-rolled approximation:
 
-    - toolCall blocks are built via ``tau_ai.types.ToolCall(...).model_dump()``,
+    - toolCall blocks are built via ``tau_llm.types.ToolCall(...).model_dump()``,
       so ``arguments`` is a DICT (as ``parse_streaming_json`` always returns),
       never the string the rest of this file's toolCall tests use for brevity.
     - A ``ToolCallDeltaEvent`` snapshot's content list is
@@ -424,7 +438,10 @@ class TestRealisticAgentLoopMessageShapes:
         # Pure ThinkingDeltaEvent stretch: single-block message, index 0.
         thinking_acc = ""
         for delta in projector.project(
-            {"role": "assistant", "content": [ThinkingContent(thinking="Let me check").model_dump()]}
+            {
+                "role": "assistant",
+                "content": [ThinkingContent(thinking="Let me check").model_dump()],
+            }
         ):
             assert delta.type == "thinking"
             thinking_acc = _apply(thinking_acc, delta)
@@ -451,13 +468,15 @@ class TestRealisticAgentLoopMessageShapes:
                 assert delta.type == "toolCall"
                 assert isinstance(delta.block["arguments"], dict), (
                     "arguments must be a dict, matching what agent_loop.py "
-                    "actually emits (model_dump of tau_ai.types.ToolCall) -- "
+                    "actually emits (model_dump of tau_llm.types.ToolCall) -- "
                     "not the string shape used elsewhere in this file"
                 )
                 tool_blocks.append(delta.block)
 
         assert [b["arguments"] for b in tool_blocks] == arg_fragments
-        assert all(b["id"] == "c0" for b in tool_blocks), "one call throughout -- must stay one identity"
+        assert all(b["id"] == "c0" for b in tool_blocks), (
+            "one call throughout -- must stay one identity"
+        )
 
         # Re-sending the exact same last snapshot again (e.g. a duplicate
         # provider chunk) must suppress both blocks -- no actual change.

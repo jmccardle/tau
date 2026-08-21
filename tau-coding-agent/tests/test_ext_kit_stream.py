@@ -35,7 +35,6 @@ if _EXAMPLES not in sys.path:
 
 from ext_kit import spawn, stream  # noqa: E402  (path insertion must precede the import)
 
-
 # ── synthetic event builders ─────────────────────────────────────────────────
 
 

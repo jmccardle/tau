@@ -19,24 +19,32 @@ async def main():
 
     # 1. Subscribe to all events
     def on_all_events(event: AgentEvent):
-        print(f"[{event.type}] turn={event.turn_index}, "
-              f"tool={event.tool_name}, error={event.is_error}")
+        print(
+            f"[{event.type}] turn={event.turn_index}, "
+            f"tool={event.tool_name}, error={event.is_error}"
+        )
 
     unsub = session.subscribe(on_all_events)
 
     # 2. Send a prompt — events will be printed in real-time
     print("Sending prompt...")
-    messages = await session.prompt("Write a file called hello.txt")
+    first_turn = await session.prompt("Write a file called hello.txt")
+    print(f"First turn produced {len(first_turn)} message(s)")
 
     # 3. Unsubscribe when done
     unsub()
 
     # 4. Send another prompt without events
     print("\nSending second prompt (no events)...")
-    messages = await session.prompt("Read hello.txt")
+    second_turn = await session.prompt("Read hello.txt")
+    print(f"Second turn produced {len(second_turn)} message(s)")
 
+    # 5. prompt() returns only THIS turn's messages, not the whole conversation.
+    #    session.messages is the running transcript, so this total is larger than
+    #    either turn above. Mixing the two up is the usual way a caller ends up
+    #    re-sending history the session already holds.
     print("\nDone!")
-    print(f"Total messages: {len(session.messages)}")
+    print(f"Total messages in the session: {len(session.messages)}")
 
 
 if __name__ == "__main__":

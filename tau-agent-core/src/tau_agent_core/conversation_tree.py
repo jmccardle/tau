@@ -402,6 +402,21 @@ class ConversationTree:
 
     # --- UI + subtree ops --------------------------------------------------
 
+    def entry(self, entry_id: str) -> dict[str, Any]:
+        """The raw log entry ``entry_id`` names.
+
+        Exists for the tree browser's detail pane, which renders a node's FULL
+        body while :class:`TreeNode` carries only the one-line ``preview`` the
+        browser row needs. Widening ``TreeNode`` instead would push the whole
+        message onto every consumer of :meth:`tree` — the RPC surface included —
+        to serve one pane.
+
+        Raises:
+            KeyError: no entry has that id. The browser builds its rows from these
+                same entries, so a miss is a broken index, not a missing body.
+        """
+        return self._by_id[entry_id]
+
     def tree(self) -> list[TreeNode]:
         """Parent/child ``TreeNode`` roots for the browser (pi ``getTree``).
 

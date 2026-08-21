@@ -316,7 +316,7 @@ async def test_tui_floor_extensions_listing_and_veto(app, tmp_path):
         # ── veto render — a tool_call + is_error tool_result (the veto shape),
         # exactly the events TauBackend.stream_chat normalizes for a blocked call ──
         display = app.query_one(ChatDisplay)
-        display.add_message("user", "write outside scope")
+        display.add_message("user", "write outside scope", source="verbatim")
         await display.begin_exchange()
         await display.handle_stream_event({"kind": "turn_start", "turn_index": 0})
         await pilot.pause()

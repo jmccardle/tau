@@ -1,182 +1,164 @@
-# τ-agent-core
+# ffwf-tau-agent-core
 
-> The agent orchestration core of the τ (tau-agent-core) system.
+The runtime of **Tau**, a programmable coding agent harness. `tau_agent_core` is
+the loop that drives a conversation: it calls the model, executes tools, appends
+entries to a session, dispatches extension hooks, and compacts context when it
+grows too large.
 
-## Overview
+It is headless. No Textual, no stdout assumptions, and `tau_agent_core` never
+imports `tau_coding_agent`. Embed it in your own program, drive it as a
+subprocess over RPC, or run it under Tau's TUI.
 
-`tau-agent-core` is the central orchestration layer of τ. It provides:
+Tau began as a Python port of the TypeScript project
+[pi-mono](https://github.com/badlogic/pi-mono), which is still read as the
+reference implementation when porting or debugging; it now diverges from pi
+deliberately in several places.
 
-- **AgentSession**: High-level session API combining agent loop, session manager, and events
-- **AgentLoop**: Core loop that drives the conversation (LLM calls → tool execution → streaming)
-- **SessionManager**: Persistent session storage (JSONL-based)
-- **EventBus**: Event dispatch for TUI widgets and extensions
-- **Extension System**: Plugin architecture for custom behavior
-- **Built-in Tools**: `read`, `write`, `edit`, `bash`, `ls`, `grep`, `find`
-- **RPC Protocol**: Remote procedure calls for headless operation
-- **SDK**: `create_agent_session()` factory for easy setup
+## What is in it
 
-## Quick Start
+- **`AgentSession`** — the object you hold. **The one door:** every input source
+  — TUI keystrokes, `tau -p`, the SDK, an extension, an RPC client — funnels
+  through `AgentSession.submit()`. `prompt()` is a thin wrapper that builds a
+  `Submission` and calls `submit()`, not a second door. Concurrent submissions
+  have a stated policy (`multitask_strategy`: reject, enqueue, steer, rollback,
+  fork) rather than an answer improvised per caller.
+- **`create_agent_session()`** — the SDK factory. Resolves a model name, built-in
+  tool names, and extension callables into a working session.
+- **Built-in tools** — `read`, `write`, `edit`, `bash`, `ls`, `grep`, `find`.
+- **Sessions are a tree, not a chat log.** Entries are append-only;
+  `ConversationTree` walks `parent_id` chains to build model input for the
+  active leaf. Fork, branch, rollback, and running a second agent from an
+  earlier point in the conversation all fall out of that structure instead of
+  being bolted on.
+- **Storage is a seam.** `SessionLog` and `SessionCatalog` are protocols. An
+  in-memory log ships here, a file store ships with `ffwf-tau-coding-agent`, and
+  a JMFTS-backed store ships with `ffwf-tau-jmfts`.
+- **Extensions are plain Python modules** — `importlib`, no compile step, no
+  manifest language. They register tools and commands, subscribe to lifecycle
+  events, mutate what the loop is about to do, carry per-extension config, and
+  can veto a tool call.
+- **Compaction is LLM-backed with no fabricated-summary fallback.** A compaction
+  error raises rather than silently truncating the conversation.
+- **RPC** — a versioned JSON-RPC 2.0 command surface, so τ can be driven as a
+  process rather than imported.
+- **Export** — a session to Markdown or HTML.
+
+## Why it is a separate package
+
+The runtime and the terminal interface are different concerns with different
+dependency footprints. Keeping them apart is what lets a server, a bot, or a
+test harness run the same agent without a UI toolkit in sight.
+
+## Install
+
+```bash
+pip install ffwf-tau-agent-core
+```
+
+Python 3.11 or newer. Pulls in `ffwf-tau-llm`.
+
+Two extras, both off by default:
+
+| Extra | Adds | Needed for |
+|---|---|---|
+| `ffwf-tau-agent-core[bus]` | `nats-py` | the built-in `nats_bus` extension, which publishes to NATS subjects |
+| `ffwf-tau-agent-core[testing]` | `pytest` | importing `tau_agent_core.testing`, the store contract suites |
+
+A plain install stays pytest-free and NATS-free.
+
+## Example
 
 ```python
-from tau_agent_core.sdk import create_agent_session
+import asyncio
+from tau_agent_core import create_agent_session
 
-# Create a session
-session = create_agent_session(
-    model="gpt-4o",
-    tools=["read", "write", "bash"],
-)
 
-# Send a prompt
-messages = await session.prompt("Write a Python function that sorts a list")
+async def main():
+    session = create_agent_session(
+        model="gpt-4o",
+        tools=["read", "grep", "bash"],
+    )
+    session.subscribe(lambda event: print(event.type))
 
-# Subscribe to events
-session.subscribe(lambda event: print(event.type))
+    messages = await session.prompt("What files are in this directory?")
+    for message in messages:
+        print(message.get("role"), message.get("content"))
 
-# Abort if needed
-session.abort()
+
+asyncio.run(main())
 ```
 
-## Architecture
+`prompt()` returns the messages produced by **this turn**, not the whole
+conversation. The full history lives in the session's `SessionLog`.
 
-```
-tau-agent-core/
-├── src/tau_agent_core/
-│   ├── __init__.py          # Public exports
-│   ├── sdk.py               # create_agent_session() — main SDK entry
-│   ├── agent_session.py     # AgentSession — public session API
-│   ├── agent_loop.py        # AgentLoop — conversation loop
-│   ├── agent_loop_types.py  # AgentLoop type definitions
-│   ├── session.py           # SessionState
-│   ├── session_manager.py   # SessionManager — JSONL persistence
-│   ├── events.py            # EventBus, AgentEvent
-│   ├── extension_types.py   # ExtensionAPI, ExtensionContext, ExtensionUI
-│   ├── extensions/          # Extension loader and registry
-│   │   ├── __init__.py
-│   │   ├── loader.py
-│   │   ├── registry.py
-│   │   └── events.py
-│   ├── tools/               # Built-in tools
-│   │   ├── __init__.py
-│   │   ├── base.py          # AgentTool, ToolDefinition, ToolBatchResult
-│   │   ├── read.py          # ReadTool
-│   │   ├── write.py         # WriteTool
-│   │   ├── edit.py          # EditTool
-│   │   ├── bash.py          # BashTool
-│   │   ├── ls.py            # LsTool
-│   │   ├── grep.py          # GrepTool
-│   │   └── find.py          # FindTool
-│   ├── rpc.py               # RPC server/client protocol
-│   ├── compaction.py        # Context compaction
-│   ├── system_prompt.py     # System prompt builder
-│   └── settings.py          # Settings management
-```
+`tools=` takes built-in name strings only, and raises on a name it does not
+recognise. A custom `AgentTool` goes through the `AgentSession` constructor
+directly, or is registered by an extension.
 
-## Package Boundaries
+## Writing an extension
 
-- **τ-coding-agent** imports from τ-agent-core:
-  - `tau_agent_core.AgentSession`
-  - `tau_agent_core.SessionManager`
-  - `tau_agent_core.AgentEvent`
-- **τ-coding-agent** does NOT import from τ-agent-core:
-  - `tau_agent_core.agent_loop.*` — internal implementation
-  - `tau_agent_core.tools.*` — tools are registered via AgentSession
-  - `tau_agent_core.extensions.*` — loaded via AgentSession
-  - `tau_agent_core.compaction.*` — triggered via AgentSession
-
-## Writing an Extension
+An extension is a module with a `register` callable that receives an
+`ExtensionAPI`. This one refuses a destructive shell command before it runs:
 
 ```python
-# my_extension.py
-def my_extension(api):
-    """Register extension handlers."""
+def permission_gate_tool_call(event, ctx):
+    command = (event.get("input") or {}).get("command", "")
+    if event["tool_name"] == "bash" and "rm -rf /" in command:
+        return {"block": True, "reason": "destructive command refused"}
+    return None
 
-    # Listen to agent events
-    def on_agent_start(event):
-        print(f"Agent starting, turn {event.turn_index}")
 
-    api.on("agent_start", on_agent_start)
-
-    # Register a custom tool
-    api.register_tool({
-        "name": "greet",
-        "label": "Greet",
-        "description": "Greet someone by name",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "Name to greet"}
-            },
-            "required": ["name"],
-        },
-    })
-
-    # Use the TUI API (in TUI mode)
-    async def on_confirm(event):
-        confirmed = await api.ui.confirm(
-            "Confirm deletion", "Are you sure?"
-        )
-        return confirmed
+def register(api):
+    api.on("tool_call", permission_gate_tool_call)
 ```
 
-## Session Manager
+**`tool_call` is a mutating hook, not a notification.** Its return value is
+honoured, and a `block` becomes an error tool result the model can react to.
+Notify-only events such as `tool_execution_start` have their return value
+discarded and cannot stop anything — a gate written against one prints a warning
+and then lets the command run.
+
+A module written this way loads from a path: `tau -e permission_gate.py`. The
+repository's `examples/` directory holds around thirty working extensions.
+
+## Testing your own store
+
+`tau_agent_core.testing` ships the conformance suites for the two storage seams,
+so a store written elsewhere can be held to the same contract. The contract is
+the code, not a document.
 
 ```python
-from tau_agent_core.session_manager import SessionManager
+from tau_agent_core.testing import SessionCatalogContractTests, SessionLogContractTests
 
-# Create a file-based session manager
-mgr = SessionManager(cwd="/path/to/project")
 
-# Create a new session
-session_path = mgr.new_session()
+class TestMyLog(SessionLogContractTests):
+    def make_log(self):
+        return MyStore(...)
 
-# Append entries
-mgr.append_entry({
-    "session_id": session_path,
-    "type": "message",
-    "message": {"role": "user", "content": [{"type": "text", "text": "Hello"}]}
-})
 
-# List all sessions
-for session_info in mgr.list():
-    print(session_info.session_path, session_info.message_count)
-
-# Fork a session
-fork_path = mgr.fork(session_path)
-
-# Clone a session
-clone_path = mgr.clone(session_path)
+class TestMyCatalog(SessionCatalogContractTests):
+    def make_catalog(self):
+        return MyCatalog(...)
 ```
 
-## In-Memory Mode (for testing)
+Install `ffwf-tau-agent-core[testing]` to import that module.
 
-```python
-from tau_agent_core.session_manager import SessionManager
+## Docs
 
-# In-memory session manager for tests
-mgr = SessionManager.in_memory()
+- `docs/tau-agent-core.md` — design notes for this package.
+- `docs/SUBMISSION-LIFECYCLE.md` — `submit()` and the concurrency strategies.
+- `docs/NODE-ADDRESSABLE-AGENTS.md` — the session-tree invariants.
+- `docs/extensions.md`, `docs/EXTENSIONS-WALKTHROUGH.md` — the extension API.
+- `docs/REMOTE-CONTROL.md`, `docs/RPC-PROTOCOL.md` — driving τ as a subprocess.
 
-from tau_agent_core.sdk import create_agent_session
-session = create_agent_session(
-    model="gpt-4o",
-    session_manager=mgr,
-)
+Repository: <https://github.com/jmccardle/tau>
 
-await session.prompt("Hello, world!")
-```
+## The rest of Tau
 
-## Error Handling
+| Distribution | Imports as | What it is |
+|---|---|---|
+| `ffwf-tau-llm` | `tau_llm` | the provider and streaming layer this sits on |
+| `ffwf-tau-coding-agent` | `tau_coding_agent` | the `tau` command and the Textual TUI |
+| `ffwf-tau-jmfts` | `tau_jmfts` | a JMFTS-backed session store |
 
-- **Provider errors**: Converted to `ErrorEvent`, shown in chat
-- **Tool errors**: Wrapped in `ToolResultMessage` with `is_error=True`
-- **Extension errors**: Logged by EventBus, agent loop continues
-- **Network errors**: Retried by the SDK, `ErrorEvent` on failure
-
-## Performance
-
-- **30Hz throttle**: Chat display updates at most 30 times/second
-- **Large file handling**: Files >1MB are read with offset/limit
-- **Memory efficient**: Lazy loading for sessions with >1000 messages
-
-## License
-
-MIT
+MIT © Fight Fire with Fire Robotics, LLC

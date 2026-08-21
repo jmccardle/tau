@@ -12,3 +12,16 @@ tau-*/build/
 
 # pytest-cov database
 .coverage
+
+# `python -m tau_coding_agent.devshot` output (TUI screenshots, layout dumps).
+# Regenerated on demand; the committed visual baselines are the snapshot SVGs
+# under tau-coding-agent/tests/__snapshots__/, not these.
+shots/
+
+# The failure report pytest-textual-snapshot writes into the working directory,
+# and only when a snapshot mismatches. Deliberately NOT accompanied by a rule
+# for tau-coding-agent/tests/__snapshots__/: those SVGs are the references the
+# report compares against, they are tracked on purpose, and nothing in this file
+# may come to exclude them. `git status` after `--snapshot-update` is how you
+# check that — a reference that stops showing up as modified has been ignored.
+snapshot_report.html

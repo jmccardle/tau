@@ -15,7 +15,7 @@ import pytest
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.extension_types import ExtensionAPI
-from tau_ai.types import Model
+from tau_llm.types import Model
 from tau_jmfts.catalog import JmftsSessionCatalog
 from tau_jmfts.client import JmftsClient
 from tau_jmfts.ext import tools as tools_ext
@@ -89,9 +89,7 @@ def _bound(catalog: JmftsSessionCatalog, run_id: str) -> tuple[AgentSession, Any
     log = catalog.create(
         f"/tmp/{TEST_PREFIX}-{run_id}", "test-model", "test-backend", system_prompt="sys"
     )
-    session = AgentSession(
-        session_log=log, model=_model(), system_prompt="", tools=[], api_key="k"
-    )
+    session = AgentSession(session_log=log, model=_model(), system_prompt="", tools=[], api_key="k")
     return session, log
 
 
@@ -109,9 +107,7 @@ async def test_the_agent_can_search_its_own_conversation_and_cite_the_hit(
     session, log = _bound(catalog, run_id)
     try:
         log.append_message(_msg("user", "What did we decide about the Redis pool?"))
-        log.append_message(
-            _msg("assistant", "We raised maxTotal to 128 and enabled testOnBorrow.")
-        )
+        log.append_message(_msg("assistant", "We raised maxTotal to 128 and enabled testOnBorrow."))
         enrich_conversation(client, log.root_doc_id)
 
         api = _wire(session)

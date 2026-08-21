@@ -11,15 +11,15 @@ across the N requests, the server sees N unrelated prompts and forks nothing.
 This drives the REAL ``ctx.complete()`` (tau_agent_core/extension_types.py) —
 not a stubbed ``complete_simple`` — through a real ``AgentSession``, with only
 the HTTP client faked (the same ``_CapturingClient`` pattern as
-``tau-ai/tests/test_reasoning_effort.py`` and
-``tau-ai/tests/test_prefix_stability.py``, replicated here rather than
-imported: tau-agent-core may depend on tau-ai, never the reverse, and tau-ai's
+``tau-llm/tests/test_reasoning_effort.py`` and
+``tau-llm/tests/test_prefix_stability.py``, replicated here rather than
+imported: tau-agent-core may depend on tau-llm, never the reverse, and tau-llm's
 tests are not an importable package). Faking ``complete_simple`` instead would
 bypass ``_convert_messages_to_openai`` entirely and prove nothing about the
 wire payload.
 
 The within-turn and reasoning_replay tests for the OTHER two §7.1 threats live
-in ``tau-ai/tests/test_prefix_stability.py`` (no ``AgentSession`` needed there).
+in ``tau-llm/tests/test_prefix_stability.py`` (no ``AgentSession`` needed there).
 """
 
 from __future__ import annotations
@@ -34,12 +34,12 @@ import pytest
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.extension_types import ExtensionContext
 from tau_agent_core.session_log import InMemorySessionLog
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 # ──────────────────────────────────────────────────────────────────────────
 # Capturing-client harness — see test_prefix_stability.py's copy for the full
 # rationale. Every concurrent ``ctx.complete()`` call gets its OWN
-# OpenAICompletionsProvider + httpx client instance (tau_ai.client.stream_simple
+# OpenAICompletionsProvider + httpx client instance (tau_llm.client.stream_simple
 # builds a fresh, unregistered ``Registry()`` per call — see client.py), so
 # payload capture is a CLASS attribute shared across every fake-client
 # instance, appended to under whatever interleaving asyncio.gather() produces.
@@ -113,7 +113,7 @@ def _reset_capture() -> None:
 
 
 def _patch_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("tau_ai.providers.openai.httpx.AsyncClient", _CapturingClient)
+    monkeypatch.setattr("tau_llm.providers.openai.httpx.AsyncClient", _CapturingClient)
 
 
 def _model() -> Model:
@@ -183,7 +183,9 @@ async def test_n_way_fan_out_shares_a_byte_identical_prefix(monkeypatch):
     # 3. The one diverging (per-item) message is genuinely per-item distinct —
     #    otherwise "the prefix matches" would be vacuous (all N requests
     #    identical, not merely prefix-sharing).
-    suffixes = {json.dumps(p["messages"][SHARED_PREFIX_LEN], separators=(",", ":")) for p in captured}
+    suffixes = {
+        json.dumps(p["messages"][SHARED_PREFIX_LEN], separators=(",", ":")) for p in captured
+    }
     assert len(suffixes) == n, "the diverging suffix must differ per fan-out branch"
 
 

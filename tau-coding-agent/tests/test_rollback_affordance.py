@@ -30,7 +30,6 @@ from tau_agent_core.submission import SubmissionResult
 from tau_coding_agent.app import Parley, RollbackPromptModal, TreeModeModal
 from tau_coding_agent.backends import TauBackend
 
-
 # --- doubles ----------------------------------------------------------------
 
 
@@ -147,7 +146,7 @@ async def test_backend_rollback_turn_submits_the_rollback_strategy():
     result = await backend.rollback_turn("try that again, but read the tests first")
 
     assert result.accepted is True
-    (sub, kwargs) = seen[0]
+    sub, kwargs = seen[0]
     assert sub.multitask_strategy == "rollback"
     assert sub.text == "try that again, but read the tests first"
     assert (sub.source, sub.submitter) == ("interactive", "human")

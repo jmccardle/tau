@@ -25,7 +25,7 @@ from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.messages import convert_to_llm
 from tau_agent_core.session_log import InMemorySessionLog
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 
 def _model() -> Model:
@@ -68,7 +68,9 @@ def test_append_entry_persists_a_custom_entry_node() -> None:
     # NODE-ADDRESSABLE-AGENTS.md), so "customEntry" alone is no longer unique to
     # this test's own append.
     entries = session._session_log.entries()
-    custom = [e for e in entries if e.get("type") == "customEntry" and e.get("customType") == "todo"]
+    custom = [
+        e for e in entries if e.get("type") == "customEntry" and e.get("customType") == "todo"
+    ]
     assert len(custom) == 1
     assert custom[0]["customType"] == "todo"
     assert custom[0]["data"] == {"text": "buy milk", "done": False}

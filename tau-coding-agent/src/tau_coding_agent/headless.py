@@ -30,7 +30,7 @@ import os
 import signal
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 # The submission lifecycle (docs/SUBMISSION-LIFECYCLE.md phase 3, part 3). Print
@@ -63,11 +63,11 @@ from tau_agent_core.submission import Submission
 from tau_coding_agent.config import ConfigError
 from tau_coding_agent.store_factory import build_session_catalog
 
-# Canonical thinking levels live in τ-ai (single source of truth); pi: the same
+# Canonical thinking levels live in τ-llm (single source of truth); pi: the same
 # set in ``args.ts:57``. A ``model:level`` suffix or the ``--thinking`` flag is
 # carried into the model config as ``thinking`` and threaded to the provider as
 # ``reasoning_effort``.
-from tau_ai.models import is_valid_thinking_level
+from tau_llm.models import is_valid_thinking_level
 
 if TYPE_CHECKING:  # avoid importing the dataclass module at runtime cost
     from tau_coding_agent.cli import CLIArgs
@@ -79,6 +79,33 @@ class CLIError(ConfigError):
     Subclasses ``ConfigError`` so the one handler in ``main()`` catches both a bad
     flag and a malformed ``config.json``.
     """
+
+
+def resolve_no_tools(args: "CLIArgs") -> Literal["all", "builtin"] | None:
+    """Collapse ``--no-tools`` + ``--no-builtin-tools`` into ONE resolved policy.
+
+    pi does this at its own argv boundary (``main.ts:424-428``) and everything
+    downstream reads the single value (``sdk.ts:59``). τ now does the same, and
+    for the same reason: the two flags have no meaning apart from each other, so
+    threading them separately leaves every consumer to re-derive the interaction —
+    which is how they silently became the same flag.
+
+    - ``"all"`` (``--no-tools``/``-nt``) — the model is offered zero tools:
+      no built-ins, and no extension-registered tools either. Extensions still
+      LOAD; hooks, event subscriptions, slash commands, message injections and
+      per-extension config are untouched. Only callable tools are withheld.
+    - ``"builtin"`` (``--no-builtin-tools``/``-nbt``) — built-ins only.
+      Extension-registered tools survive and are offered.
+    - ``None`` — no suppression.
+
+    ``--no-tools`` wins when both are given: it is the strictly stronger claim,
+    so honouring the weaker one would ignore an explicit instruction.
+    """
+    if args.no_tools:
+        return "all"
+    if args.no_builtin_tools:
+        return "builtin"
+    return None
 
 
 def resolve_model_config(
@@ -141,13 +168,18 @@ def resolve_model_config(
     # Per-invocation overrides (CLI > config).
     if args.provider:
         model_config["backend"] = args.provider
-    # Tool selection. --no-tools disables everything; --no-builtin-tools drops the
-    # built-in set (``tools=[]``) but extension-registered tools survive, because
-    # they merge in later (AgentSession._build_turn_tools) independent of this key —
-    # so the two now read distinctly once extensions load (E5 S28), matching pi's
-    # noTools "all" vs "builtin" (args.ts:104-142). ``tools=[]`` here means
-    # "no built-ins"; a bare-model run with an extension tool still exposes it.
-    if args.no_tools or args.no_builtin_tools:
+    # Tool selection. Both flags empty the BUILT-IN set, so both write
+    # ``tools=[]``; what separates them is carried by ``no_tools``, the single
+    # resolved policy (see :func:`resolve_no_tools`), which ``TauBackend`` hands
+    # to ``AgentSession`` and which alone decides whether extension-registered
+    # tools are also withheld (``AgentSession._build_turn_tools``).
+    #
+    # The two keys do not overlap: ``tools`` is the built-in allowlist, and
+    # ``no_tools`` is the run-level policy — nothing derives one from the other,
+    # so there is no second source of truth to drift.
+    no_tools = resolve_no_tools(args)
+    if no_tools is not None:
+        model_config["no_tools"] = no_tools
         model_config["tools"] = []
     elif args.tools:
         names = [t.strip() for t in args.tools.split(",") if t.strip()]
@@ -931,11 +963,11 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
         if emit_session_shutdown is not None:
             await emit_session_shutdown("quit")
 
-        # Close the pooled τ-ai providers' HTTP clients for this loop
+        # Close the pooled τ-llm providers' HTTP clients for this loop
         # (docs/PROVIDER-LIFETIME.md §6.3) — AFTER session_shutdown, since a
         # handler may itself make a final LLM call. This runs inside the same
         # asyncio.run() that drove the turn (cli.py), so it is the last point
         # the loop is guaranteed still alive to close on.
-        from tau_ai.client import aclose_providers
+        from tau_llm.client import aclose_providers
 
         await aclose_providers()

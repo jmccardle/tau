@@ -64,15 +64,23 @@ RUBRIC_RETRIEVAL = (
 
 
 def score(client, text):
-    r = client.post(LLM, json={
-        "messages": [{"role": "user", "content": RUBRIC_RETRIEVAL.format(memory=text)}],
-        "grammar": GRAMMAR, "temperature": 0, "max_tokens": 6000,
-    }, timeout=600.0)
+    r = client.post(
+        LLM,
+        json={
+            "messages": [{"role": "user", "content": RUBRIC_RETRIEVAL.format(memory=text)}],
+            "grammar": GRAMMAR,
+            "temperature": 0,
+            "max_tokens": 6000,
+        },
+        timeout=600.0,
+    )
     r.raise_for_status()
     c = (r.json()["choices"][0]["message"]["content"] or "").strip()
     if not c:
-        raise RuntimeError("empty content — run the server with --reasoning-budget so the "
-                           "end-of-thinking tag is forced")
+        raise RuntimeError(
+            "empty content — run the server with --reasoning-budget so the "
+            "end-of-thinking tag is forced"
+        )
     return int(c)
 
 
@@ -85,8 +93,10 @@ def main() -> int:
         manifest = json.load(fh)
     conv = manifest[args.conv]
     root_id = conv["root_id"]
-    print(f"pilot on {conv['sample_id']} (root {root_id}), "
-          f"{len(conv['questions'])} scorable questions")
+    print(
+        f"pilot on {conv['sample_id']} (root {root_id}), "
+        f"{len(conv['questions'])} scorable questions"
+    )
 
     factory = get_session_factory()
     with factory() as db:
@@ -100,10 +110,13 @@ def main() -> int:
     started = time.time()
     with httpx.Client() as client:
         with ThreadPoolExecutor(max_workers=SLOTS) as pool:
-            scores = dict(zip([t[0] for t in turns],
-                              pool.map(lambda t: score(client, t[1]), turns)))
-    print(f"  scored in {time.time() - started:.0f}s; "
-          f"distribution {dict(sorted(Counter(scores.values()).items()))}")
+            scores = dict(
+                zip([t[0] for t in turns], pool.map(lambda t: score(client, t[1]), turns))
+            )
+    print(
+        f"  scored in {time.time() - started:.0f}s; "
+        f"distribution {dict(sorted(Counter(scores.values()).items()))}"
+    )
 
     # Overwrite this conversation's importance with the retrievability scores. Other
     # conversations keep whatever they have; we only evaluate this one.
@@ -121,8 +134,11 @@ def main() -> int:
             for beta in BETAS:
                 kw = {"importance_weight": beta} if beta else {}
                 results = repo.hybrid_search(
-                    q["question"], limit=max(KS), methods=["vector"],
-                    parent_id=root_id, **kw,
+                    q["question"],
+                    limit=max(KS),
+                    methods=["vector"],
+                    parent_id=root_id,
+                    **kw,
                 )
                 got = [r.document.id for r in results]
                 want = set(q["evidence_doc_ids"])
@@ -130,27 +146,35 @@ def main() -> int:
                 for k in KS:
                     tallies[beta][f"recall@{k}"] += len(want & set(got[:k])) / len(want)
 
-    print(f"\n{'beta':>6} {'n':>5} " + " ".join(f"{'R@'+str(k):>9}" for k in KS))
+    print(f"\n{'beta':>6} {'n':>5} " + " ".join(f"{'R@' + str(k):>9}" for k in KS))
     print("-" * (13 + 10 * len(KS)))
     base = None
     for beta in BETAS:
         t = tallies[beta]
         n = t["n"] or 1
-        cells = " ".join(f"{t['recall@'+str(k)]/n:>9.3f}" for k in KS)
+        cells = " ".join(f"{t['recall@' + str(k)] / n:>9.3f}" for k in KS)
         print(f"{beta:>6.1f} {int(t['n']):>5} {cells}")
         if beta == 0.0:
             base = t["recall@5"] / n
     best = max((tallies[b]["recall@5"] / (tallies[b]["n"] or 1)) for b in BETAS if b)
-    print(f"\nbaseline R@5 {base:.3f} | best importance R@5 {best:.3f} | "
-          f"delta {best - base:+.3f}")
-    print("GA-poignancy importance on the full corpus was: R@5 0.602 -> 0.593 (beta=1), "
-          "i.e. it never helped.")
+    print(f"\nbaseline R@5 {base:.3f} | best importance R@5 {best:.3f} | delta {best - base:+.3f}")
+    print(
+        "GA-poignancy importance on the full corpus was: R@5 0.602 -> 0.593 (beta=1), "
+        "i.e. it never helped."
+    )
     print("If delta is positive here, determination (a) needs re-running with this rubric.")
 
     with open(f"/fast/datasets/m2/pilot_retrievability_{args.conv}.json", "w") as fh:
-        json.dump({"scores": {str(k): v for k, v in scores.items()},
-                   "recall": {str(b): {k: tallies[b][f"recall@{k}"] / (tallies[b]["n"] or 1)
-                                       for k in KS} for b in BETAS}}, fh)
+        json.dump(
+            {
+                "scores": {str(k): v for k, v in scores.items()},
+                "recall": {
+                    str(b): {k: tallies[b][f"recall@{k}"] / (tallies[b]["n"] or 1) for k in KS}
+                    for b in BETAS
+                },
+            },
+            fh,
+        )
     return 0
 
 

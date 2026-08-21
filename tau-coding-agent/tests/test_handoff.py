@@ -32,7 +32,7 @@ from typing import Any
 
 import pytest
 
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
@@ -69,7 +69,7 @@ def _msg(role: str, text: str) -> dict:
 
 def _summary_response(text: str):
     async def _impl(model, context, options=None):
-        from tau_ai.types import AssistantMessage, TextContent
+        from tau_llm.types import AssistantMessage, TextContent
 
         return AssistantMessage(
             content=[TextContent(text=text)],
@@ -121,7 +121,7 @@ def _text_of(messages: list[Any]) -> str:
 
 
 async def test_handoff_reports_new_session_and_summary(monkeypatch, isolate_tau_dir) -> None:
-    monkeypatch.setattr("tau_ai.client.complete_simple", _summary_response("HANDOFF-SUMMARY"))
+    monkeypatch.setattr("tau_llm.client.complete_simple", _summary_response("HANDOFF-SUMMARY"))
     tmp_path = isolate_tau_dir
     agent, live = _file_session(tmp_path)
     live.append_message(_msg("user", "let's refactor auth"))
@@ -146,7 +146,7 @@ async def test_handoff_reports_new_session_and_summary(monkeypatch, isolate_tau_
 async def test_handoff_condenses_the_source_session(monkeypatch, isolate_tau_dir) -> None:
     """The SOURCE session's active path collapses to the summary (summarize_branch
     mutates the live log — the same tradeoff ``ctx.compact`` makes)."""
-    monkeypatch.setattr("tau_ai.client.complete_simple", _summary_response("HANDOFF-SUMMARY"))
+    monkeypatch.setattr("tau_llm.client.complete_simple", _summary_response("HANDOFF-SUMMARY"))
     tmp_path = isolate_tau_dir
     agent, live = _file_session(tmp_path)
     live.append_message(_msg("user", "u0"))
@@ -164,7 +164,7 @@ async def test_handoff_condenses_the_source_session(monkeypatch, isolate_tau_dir
 
 async def test_handoff_new_session_survives_reload(monkeypatch, isolate_tau_dir) -> None:
     """Reload-invariance: the exported file's summary is durable, not RAM-only."""
-    monkeypatch.setattr("tau_ai.client.complete_simple", _summary_response("HANDOFF-SUMMARY"))
+    monkeypatch.setattr("tau_llm.client.complete_simple", _summary_response("HANDOFF-SUMMARY"))
     tmp_path = isolate_tau_dir
     agent, live = _file_session(tmp_path)
     live.append_message(_msg("user", "u0"))

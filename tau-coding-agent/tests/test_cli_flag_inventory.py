@@ -16,7 +16,7 @@ that ``--mode rpc`` ignores a field would require following it through
 ``resolve_model_config``, ``create_backend`` and the extension loader, which is
 real dataflow analysis and would be a worse thing to maintain than the bug. It
 instead forces a DECLARATION: every field of ``CLIArgs`` appears in exactly one
-of the four sets below, and a newly added flag makes this file red until
+of the five sets below, and a newly added flag makes this file red until
 somebody writes down what ``--mode rpc`` does with it. That moves the question
 to the moment the flag is added, which is when answering it is cheap and when
 the person answering still knows.
@@ -86,6 +86,23 @@ TERMINAL_BEFORE_RPC = {
     "export_session",
 }
 
+#: Flags that configure the interactive TUI's appearance and reach no run at all.
+#: ``--mode rpc`` and ``--print`` render no TUI, so there is nothing for these to
+#: be ignored *by* — the surface they address does not exist in those modes.
+#:
+#: This is a distinct disposition from :data:`GLOBAL_UNDER_RPC`, not a softer
+#: spelling of it: a global flag still does something in RPC mode, and one of
+#: these provably cannot. It is also distinct from :data:`REJECTED_UNDER_RPC`,
+#: where ``--resume`` sits — that flag names a workflow ``--mode rpc`` replaces
+#: with a wire verb, so passing it means the caller misunderstood the mode.
+#: Passing ``--fun`` to an RPC server means nothing of the sort, and exiting 2
+#: over a tagline would be a worse answer than doing nothing.
+TUI_ONLY = {
+    # tau_coding_agent.tagline: picks the startup tagline at random. Reaches one
+    # string on one widget on the empty chat pane, and stops there.
+    "fun",
+}
+
 
 def test_every_cli_field_has_a_stated_disposition_under_mode_rpc():
     """The whole point of the file: no field may be silently unclassified.
@@ -95,15 +112,17 @@ def test_every_cli_field_has_a_stated_disposition_under_mode_rpc():
     checking that the answer is true, which is the step ``--no-session``
     skipped.
     """
-    declared = REJECTED_UNDER_RPC | HONORED_UNDER_RPC | GLOBAL_UNDER_RPC | TERMINAL_BEFORE_RPC
+    declared = (
+        REJECTED_UNDER_RPC | HONORED_UNDER_RPC | GLOBAL_UNDER_RPC | TERMINAL_BEFORE_RPC | TUI_ONLY
+    )
     fields = {f.name for f in dataclasses.fields(CLIArgs)}
 
     unclassified = fields - declared
     assert unclassified == set(), (
         "these CLIArgs fields have no stated disposition under --mode rpc: "
         f"{sorted(unclassified)}. Add each to REJECTED_UNDER_RPC, "
-        "HONORED_UNDER_RPC, GLOBAL_UNDER_RPC or TERMINAL_BEFORE_RPC in this "
-        "file — and verify the answer against rpc_mode.py before writing it "
+        "HONORED_UNDER_RPC, GLOBAL_UNDER_RPC, TERMINAL_BEFORE_RPC or TUI_ONLY "
+        "in this file — and verify the answer against rpc_mode.py before writing it "
         "down. A flag that --mode rpc accepts and ignores is the defect this "
         "test exists to catch."
     )
@@ -118,6 +137,7 @@ def test_no_field_is_classified_twice():
         "HONORED_UNDER_RPC": HONORED_UNDER_RPC,
         "GLOBAL_UNDER_RPC": GLOBAL_UNDER_RPC,
         "TERMINAL_BEFORE_RPC": TERMINAL_BEFORE_RPC,
+        "TUI_ONLY": TUI_ONLY,
     }
     overlaps = {
         f"{a} ∩ {b}": sorted(sets[a] & sets[b])
@@ -131,7 +151,9 @@ def test_no_field_is_classified_twice():
 def test_no_set_names_a_field_that_no_longer_exists():
     """The inverse drift: a flag is removed from ``CLIArgs`` and its entry here
     outlives it, quietly shrinking what the first test checks."""
-    declared = REJECTED_UNDER_RPC | HONORED_UNDER_RPC | GLOBAL_UNDER_RPC | TERMINAL_BEFORE_RPC
+    declared = (
+        REJECTED_UNDER_RPC | HONORED_UNDER_RPC | GLOBAL_UNDER_RPC | TERMINAL_BEFORE_RPC | TUI_ONLY
+    )
     fields = {f.name for f in dataclasses.fields(CLIArgs)}
 
     phantom = declared - fields

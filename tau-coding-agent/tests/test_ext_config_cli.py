@@ -22,7 +22,6 @@ from tau_coding_agent.headless import (
     resolve_extensions_config,
 )
 
-
 # ── the flag parses (repeatable, normalized to a list) ──────────────────────
 
 

@@ -208,7 +208,7 @@ if TYPE_CHECKING:
 #: docstring, and the module docstring's H4 section above). The degenerate
 #: case has no bound at all: a provider that accepts the connection and never
 #: sends a line never reaches the cooperative-cancellation check at all
-#: (``tau_ai``'s ``openai.py`` checks ``abort_signal.is_aborted()`` INSIDE
+#: (``tau_llm``'s ``openai.py`` checks ``abort_signal.is_aborted()`` INSIDE
 #: ``async for line in response.aiter_lines()`` — no line, no check), so the
 #: turn only unwinds once the transport's OWN read timeout finally fires
 #: (``openai.py``'s ``httpx.Timeout(300.0, connect=10.0)``). No finite value
@@ -284,7 +284,7 @@ class AgentSessionRuntime:
                 the process's whole life on the RPC path).
             model: Opaque metadata string stored on a NEW session's header by
                 ``session_catalog.create``/``create_ephemeral`` — this class
-                never interprets it (it is not the ``tau_ai.types.Model``
+                never interprets it (it is not the ``tau_llm.types.Model``
                 the loop actually uses, which lives on ``agent_session``
                 already and is untouched by this class).
             backend: Same opaque-metadata treatment as ``model`` (the

@@ -36,7 +36,6 @@ if _EXAMPLES not in sys.path:
 
 from ext_kit import ledger  # noqa: E402  (path insertion must precede the import)
 
-
 # ── event stand-in (mirrors the notify AgentEvent .message shape) ────────────
 
 

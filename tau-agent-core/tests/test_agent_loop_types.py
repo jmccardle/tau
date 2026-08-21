@@ -295,6 +295,7 @@ class TestAgentLoopTypesImport:
             FinalizedToolCall,
             AgentLoopConfig,
         )
+
         assert PreparedToolCall is not None
         assert FinalizedToolCall is not None
         assert AgentLoopConfig is not None
@@ -306,6 +307,7 @@ class TestAgentLoopTypesImport:
             FinalizedToolCall,
             AgentLoopConfig,
         )
+
         assert PreparedToolCall is not None
         assert FinalizedToolCall is not None
         assert AgentLoopConfig is not None

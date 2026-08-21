@@ -23,7 +23,7 @@ import asyncio
 
 import pytest
 
-from tau_ai.types import Model
+from tau_llm.types import Model
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.sdk import create_agent_session

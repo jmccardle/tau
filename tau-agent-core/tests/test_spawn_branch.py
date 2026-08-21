@@ -15,7 +15,7 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_log import LANE_KEY, InMemorySessionLog
 from tau_agent_core.tools.base import AgentToolResult
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 
 def _model() -> Model:

@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import pytest
 
-from tau_ai.streaming import DoneEvent, TextDeltaEvent
-from tau_ai.types import AssistantMessage, TextContent, Usage
+from tau_llm.streaming import DoneEvent, TextDeltaEvent
+from tau_llm.types import AssistantMessage, TextContent, Usage
 
 
 def _assistant(text: str) -> AssistantMessage:

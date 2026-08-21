@@ -24,7 +24,6 @@ from plot_results import (
     summarize,
 )
 
-
 # --- Synthetic fixtures -----------------------------------------------------
 
 

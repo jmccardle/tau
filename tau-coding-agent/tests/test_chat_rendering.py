@@ -35,7 +35,6 @@ from tau_agent_core.submission import SubmissionResult
 from tau_coding_agent.app import ChatDisplay, MessageBox
 from tau_coding_agent.chat_widgets import ExchangeBox, ToolBox
 
-
 # ---------------------------------------------------------------------------
 # Test harness app: embeds the real ChatDisplay, nothing else.
 # ---------------------------------------------------------------------------
@@ -96,7 +95,7 @@ async def _fresh_parse_blocks(pilot, text: str) -> list[str]:
 #     turn 0: preamble text -> tool call -> result   (a step inside the exchange)
 #     turn 1: final answer text                       (snaps OUT below the summary)
 async def _replay_tool_turn(display: ChatDisplay, pilot) -> None:
-    display.add_message("user", "list the files")
+    display.add_message("user", "list the files", source="verbatim")
     await display.begin_exchange()
 
     await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
@@ -193,7 +192,7 @@ async def test_trivial_exchange_unwrapped_to_plain_answer():
     async with _Harness().run_test() as pilot:
         await pilot.pause()
         display = pilot.app.query_one(ChatDisplay)
-        display.add_message("user", "hi")
+        display.add_message("user", "hi", source="verbatim")
         await display.begin_exchange()
         await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
         await _send(display, pilot, {"kind": "text_delta", "delta": "hello"})
@@ -249,8 +248,7 @@ async def test_streamed_rendering_matches_full_parse_across_awkward_deltas():
     widget itself were never touched.
 
     Deltas are split on deliberately awkward boundaries — mid multi-newline
-    run, mid-word — since ``MessageBox._format()`` doubles every ``"\\n"``
-    (paragraph breaks) and a delta that splits a run of newlines is exactly
+    run, mid-word — because a delta that splits a run of newlines is exactly
     where an incremental append could diverge from a whole-text parse.
     """
     reasoning_full = "Step one.\nStep two.\n\nStep three, a longer line.\nFinal step."
@@ -287,26 +285,22 @@ async def test_streamed_rendering_matches_full_parse_across_awkward_deltas():
         assert step.reasoning.text == reasoning_full
         assert step.content_text == answer_full
 
-        streamed_reasoning_blocks = [
-            b._content.plain for b in step.reasoning.query(MarkdownBlock)
-        ]
+        streamed_reasoning_blocks = [b._content.plain for b in step.reasoning.query(MarkdownBlock)]
         # Scoped to the answer's OWN Markdown widget: step.query(MarkdownBlock)
         # would also pick up the reasoning region's blocks (a child of the same
         # box), which live under a *different* Markdown widget entirely.
         streamed_answer_blocks = [b._content.plain for b in step._md_widget.query(MarkdownBlock)]
-        # Only the answer body goes through _format (reasoning is rendered raw).
+        # An assistant answer's source is "markdown", so _format passes it
+        # through and the widget must match a plain whole-text parse.
         assert streamed_reasoning_blocks == await _fresh_parse_blocks(pilot, reasoning_full)
-        assert streamed_answer_blocks == await _fresh_parse_blocks(
-            pilot, answer_full.replace("\n", "\n\n")
-        )
+        assert streamed_answer_blocks == await _fresh_parse_blocks(pilot, answer_full)
         # Non-trivial: an awkward split that silently dropped/duplicated a
         # paragraph break would still leave the accumulators right but collapse
-        # or duplicate a block here. Reasoning has no "\n\n" doubling, so its
-        # single "\n"s are markdown SOFT breaks (same paragraph): 2 blocks
-        # ("Step one. Step two." / "Step three... Final step."). The answer's
-        # "\n"->"\n\n" doubling turns every line into its own paragraph: 3.
+        # or duplicate a block here. Both bodies are read as markdown, so their
+        # single "\n"s are SOFT breaks (same paragraph) and only the "\n\n" run
+        # starts a new one: 2 blocks each.
         assert len(streamed_reasoning_blocks) == 2
-        assert len(streamed_answer_blocks) == 3
+        assert len(streamed_answer_blocks) == 2
 
         await display.finalize_exchange(tokens=5, seconds=1)
         await pilot.pause()

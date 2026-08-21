@@ -21,10 +21,9 @@ from unittest.mock import patch
 
 import pytest
 
-from tau_ai.streaming import DoneEvent, TextDeltaEvent
-from tau_ai.types import AssistantMessage, TextContent, Usage
+from tau_llm.streaming import DoneEvent, TextDeltaEvent
+from tau_llm.types import AssistantMessage, TextContent, Usage
 from tau_coding_agent.backends import TauBackend, compute_cost_usd
-
 
 # --- the pure port of pi calculateCost, collapsed --------------------------
 

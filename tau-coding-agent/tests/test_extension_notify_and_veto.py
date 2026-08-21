@@ -36,6 +36,7 @@ def app(make_app):
 # 1. api.notify is wired into the TUI
 # ---------------------------------------------------------------------------
 
+
 async def test_new_chat_calls_set_ui_delegate(app, monkeypatch):
     """The app calls ``backend.set_ui_delegate`` after creating a backend."""
     from tau_coding_agent.backends import TauBackend
@@ -113,7 +114,7 @@ async def test_veto_renders_as_blocked_toolbox():
         await pilot.pause()
         display = pilot.app.query_one(ChatDisplay)
 
-        display.add_message("user", "write outside scope")
+        display.add_message("user", "write outside scope", source="verbatim")
         await display.begin_exchange()
         await display.handle_stream_event({"kind": "turn_start", "turn_index": 0})
         await pilot.pause()
@@ -156,7 +157,7 @@ async def test_extension_veto_renders_blocked_by_extension():
         await pilot.pause()
         display = pilot.app.query_one(ChatDisplay)
 
-        display.add_message("user", "write outside scope")
+        display.add_message("user", "write outside scope", source="verbatim")
         await display.begin_exchange()
         await display.handle_stream_event({"kind": "turn_start", "turn_index": 0})
         await pilot.pause()

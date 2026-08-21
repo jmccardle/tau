@@ -84,7 +84,7 @@ from tau_agent_core.rpc import commands
 from tau_agent_core.rpc.commands import RPCError
 from tau_agent_core.rpc.dialect import SESSION_NOT_PERSISTED, TURN_STILL_RUNNING
 from tau_agent_core.session_log import InMemorySessionLog
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 
 def _model(context_window: int = 128000) -> Model:
@@ -137,7 +137,7 @@ def _fake_complete_simple(text: str):
     """A monkeypatch replacement for compaction.complete_simple that succeeds
     with a fixed summary (mirrors test_compaction_engine.py's `_fake_complete`,
     trimmed to what this file needs)."""
-    from tau_ai.types import AssistantMessage, TextContent, Usage
+    from tau_llm.types import AssistantMessage, TextContent, Usage
 
     async def _impl(model, context, options=None):
         return AssistantMessage(
@@ -877,9 +877,10 @@ async def test_an_aborted_compaction_writes_nothing(
         for i in items
         if i.get("method") == "event" and i["params"]["type"] in ("agent_start", "agent_end")
     ]
-    assert lifecycle == ["agent_start", "agent_end"], (
-        f"compact's lifecycle bracket did not close on cancellation: {lifecycle}"
-    )
+    assert lifecycle == [
+        "agent_start",
+        "agent_end",
+    ], f"compact's lifecycle bracket did not close on cancellation: {lifecycle}"
 
 
 async def test_abort_with_no_compaction_running_reports_null(

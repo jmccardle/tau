@@ -140,8 +140,9 @@ def build_jmfts_client(config: dict[str, Any], *, health_check: bool = True) -> 
         from tau_jmfts.client import JmftsClient, JmftsError
     except ImportError as exc:
         raise StoreError(
-            "session_store backend is 'jmfts' but the tau-jmfts package is not "
-            "installed; run `pip install -e ./tau-jmfts` (see "
+            "session_store backend is 'jmfts' but the ffwf-tau-jmfts package is "
+            "not installed; run `pip install 'ffwf-tau-coding-agent[jmfts]'` (or "
+            "`pip install -e ./tau-jmfts` from a checkout; see "
             "docs/JMFTS-INTEGRATION-PLAN.md §3)"
         ) from exc
 

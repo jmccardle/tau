@@ -129,9 +129,7 @@ def test_the_error_table_covers_exactly_the_codes_dialect_exports():
     exported = {
         value
         for name, value in vars(dialect).items()
-        if not name.startswith("_")
-        and type(value) is int
-        and -32768 <= value <= -32000
+        if not name.startswith("_") and type(value) is int and -32768 <= value <= -32000
     }
     assert exported, "no error-code constants found on dialect — this test stopped testing"
 

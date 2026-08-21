@@ -5,18 +5,37 @@ Screen {
     background: #1e1e2e;  /* Deep blue-gray, easy on eyes */
 }
 
+/* Every dialog sits in the middle of the terminal, not in its top-left corner.
+   Textual gives a ModalScreen no alignment of its own, so a dialog narrower than
+   the screen anchors at 0,0 and reads as a rendering accident rather than an
+   overlay. One rule rather than one per screen: the type selector matches every
+   ModalScreen subclass, so a new dialog is centred the day it is written. */
+ModalScreen {
+    align: center middle;
+}
+
 /* === Sidebar === */
+/* A share of the width, not a fixed 30 columns. 30 is 37.5% of an 80-column
+   terminal — more than a third of the screen spent on a list that is often
+   nothing but "No sessions yet". A quarter instead, floored at 24 (below that an
+   elided session name is shorter than the words in it) and capped at 32 (one row
+   per session; columns past a full title show nothing more). At 120 columns that
+   is the same 30 it always was, so the wide-terminal look is unchanged. */
 #sidebar {
-    width: 30;
+    width: 25%;
+    min-width: 24;
+    max-width: 32;
     background: #181825;  /* Slightly darker than main */
     border-right: solid #45475a;  /* Subtle gray border */
 }
 
+/* One line, not three: the title says which program this is and nothing else,
+   so it does not need two blank rows of its own. */
 .sidebar-title {
     text-align: center;
     text-style: bold;
     color: #cdd6f4;  /* Soft lavender for titles */
-    padding: 1;
+    padding: 0 1;
     background: #11111b;
 }
 
@@ -39,10 +58,21 @@ Screen {
     text-style: italic;
 }
 
+/* One row per session, cut visibly, with a rule under it.
+   A session name is a sentence and the column is ~20 columns wide, so the
+   default wrap spent two or three rows on a single entry and — with no boundary
+   between entries — the list stopped reading as a list at all. `text-wrap:
+   nowrap` holds each name to its own row and `text-overflow: ellipsis` marks
+   where it was cut (same contract as the tree browser's `_elide`: a reader can
+   see that there is more). The bottom rule is the entry boundary, in the same
+   quiet gray the panel host divides itself from the chat with. */
 .chat-list-item {
-    padding: 0 2;
+    padding: 0 1;
     margin: 0;
     color: #bac2de;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+    border-bottom: solid #313244;
 }
 
 .chat-list-item:hover {
@@ -56,9 +86,13 @@ Screen {
     text-style: italic;
 }
 
+/* Vertical padding only. The horizontal column is the scarce one — 24 columns of
+   sidebar already spend 1 on the border, 2 on the scroll gutter, 2 on the item's
+   own padding and 2 on its bullet — and an inset that only shortens the session
+   names buys nothing the item padding does not already give. */
 #chat-list {
     height: 1fr;
-    padding: 1;
+    padding: 1 0;
 }
 
 #chat-list-content {
@@ -72,6 +106,17 @@ Screen {
     background: #1e1e2e;
 }
 
+/* The empty-state pane (handoff §4.4). One color, because the label/value
+   hierarchy inside it is drawn with Rich's `dim` — a RELATIVE style that
+   composes with whatever color lands here, so a future FFwF theme restyles this
+   pane by changing this one line and nothing in app.py. `height: auto` keeps it
+   out of the way: it is a child of the scrolling chat column, not an overlay,
+   and ChatDisplay hides it the moment the first message box mounts. */
+#chat-placeholder {
+    height: auto;
+    color: #cdd6f4;
+}
+
 /* === Message Styling === */
 /* ONE universal widget (MessageBox) renders every message. The role selects a
    border color + label on the BOX ITSELF, so an assistant's reasoning + answer
@@ -79,7 +124,11 @@ Screen {
 .chat-message {
     margin: 1 0;
     height: auto;
-    padding: 1;
+    /* No VERTICAL padding: the border already separates the box from its
+       neighbours, and a padding row above and below every message cost two rows
+       per message for nothing. One column left and right stays, so text does not
+       sit against the border glyph. */
+    padding: 0 1;
     border: solid #45475a;  /* default; per-role rules below recolor */
 }
 
@@ -89,8 +138,78 @@ Screen {
     height: auto;
 }
 
+/* Textual's Markdown default is `padding: 0 2`, which sat inside the box's own
+   padding and border — six columns of chrome per side before a character of
+   text. The box supplies the inset now. */
 .message-content {
     color: #cdd6f4;
+    padding: 0;
+}
+
+/* === Markdown block spacing ===
+   Textual's markdown block widgets each carry vertical spacing of their own:
+   MarkdownHeader `margin: 2 0 1 0` (H3-H6 `margin: 1 0`), MarkdownParagraph
+   `margin: 0 0 1 0`, MarkdownFence `margin: 1 0` plus `padding: 1 2` on its inner
+   Label, MarkdownBlockQuote `margin: 1 0`, the bullet/ordered lists `margin:
+   0 0 1 0`, MarkdownTable `margin-bottom: 1`, MarkdownHorizontalRule
+   `padding-top: 1; margin-bottom: 1`. After the message box's own padding was
+   zeroed those are the ONLY remaining blank rows in a message — a blank row above
+   and below every code block, one after every paragraph, three around a heading.
+   On a 24-row terminal a four-block answer spent a quarter of the screen on them.
+
+   Every vertical value goes to zero; every horizontal value is left exactly as it
+   was (the blockquote's `padding: 0 1`, the fence Label's 2 columns, the list
+   items' `margin-right: 1`), because the horizontal inset is what keeps a fence
+   or a quote legible as a block and costs no rows.
+
+   CONSEQUENCE, deliberately accepted: paragraph breaks in an assistant answer are
+   now carried by nothing but the sentence ending short of the right margin — two
+   consecutive paragraphs abut. Headings, fences, lists and quotes still separate
+   themselves visually (they are styled), so the loss is confined to prose
+   paragraph against prose paragraph.
+
+   Scoped under `.chat-message` — the MessageBox — so it covers all four Markdown
+   widgets τ mounts (the message body, a reasoning region, a tool box's args and
+   result, all of which live inside a MessageBox) and reaches no Markdown widget
+   outside the transcript. */
+.chat-message MarkdownH1,
+.chat-message MarkdownH2,
+.chat-message MarkdownH3,
+.chat-message MarkdownH4,
+.chat-message MarkdownH5,
+.chat-message MarkdownH6,
+.chat-message MarkdownParagraph,
+.chat-message MarkdownBlockQuote,
+.chat-message MarkdownBulletList,
+.chat-message MarkdownOrderedList,
+.chat-message MarkdownList,
+.chat-message MarkdownListItem,
+.chat-message MarkdownTable,
+.chat-message MarkdownFence {
+    margin-top: 0;
+    margin-bottom: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+}
+
+/* The fence's inner Label is where its `padding: 1 2` lives — a blank row above
+   and below the code itself, on top of the fence's own margin. Two columns of
+   left/right inset stay. */
+.chat-message MarkdownFence > Label {
+    padding: 0 2;
+}
+
+/* A blockquote's inner BlockQuote carries `margin-top: 1` (its `margin-left: 2`
+   is the horizontal inset that makes it read as a quote — kept). */
+.chat-message MarkdownBlockQuote > BlockQuote {
+    margin-top: 0;
+}
+
+/* A rule is a one-row border-bottom with a row of padding above it and a row of
+   margin below; the line itself is the separator. */
+.chat-message MarkdownHorizontalRule {
+    padding-top: 0;
+    margin-bottom: 0;
 }
 
 /* Pending placeholder — muted, until it resolves into a real role */
@@ -123,9 +242,33 @@ Screen {
     color: #bac2de;
 }
 
+/* === Collapsible density (reasoning regions, tool boxes, exchanges) ===
+   Textual's Collapsible spends three rows on a COLLAPSED one: a `border-top:
+   hkey` rule, the title, and a `padding-bottom: 1`. Stacked — an exchange
+   holding a step holding two tool calls — that is most of a screen of chrome
+   around a handful of title lines. Every collapsed collapsible is one row here,
+   and an expanded one puts its content flush against the box. */
+.reasoning-region, .tool-box, .exchange-box {
+    padding: 0;
+    border: none;
+}
+
+/* ONE column of left indent inside an expanded collapsible, and nothing on the
+   other three sides. Nesting is otherwise conveyed only by the enclosing border,
+   so a `▼ Thought` nested inside an answer and a `▼ ✓ read(…)` that is a SIBLING
+   of that answer sat at the same left offset and read as siblings. The signal a
+   reader actually uses is the vertical alignment of the `▼` markers; one column
+   is enough to break it, and on an 80-column terminal it costs 1.25% of the line
+   — cheap next to the two rows Textual's own Collapsible padding used to cost. */
+.reasoning-region > Contents,
+.tool-box > Contents,
+.exchange-box > Contents {
+    padding: 0 0 0 1;
+}
+
 /* === Reasoning / thinking regions (collapsible, dim+italic like pi) === */
 .reasoning-region {
-    margin: 0 0 1 0;
+    margin: 0;
 }
 
 .reasoning-region > CollapsibleTitle {
@@ -140,7 +283,7 @@ Screen {
 
 /* === Tool call + result boxes (one collapsible per call) === */
 .tool-box {
-    margin: 0 0 1 0;
+    margin: 0;
 }
 
 .tool-box > CollapsibleTitle {
@@ -188,9 +331,16 @@ Screen {
 }
 
 /* === System Prompt Editor Modal === */
+/* 80x25 flat, which is one row taller than an 80x24 terminal and one column wider
+   than its usable width: the buttons rendered off the bottom edge, where they
+   cannot be clicked. The preferred size is kept — an editor wants room — but it is
+   now a ceiling rather than a demand, and the `1fr` textarea absorbs whatever the
+   clamp takes away. */
 #prompt-editor-dialog {
     width: 80;
+    max-width: 100%;
     height: 25;
+    max-height: 100%;
     background: #181825;
     border: thick #45475a;
     padding: 1;
@@ -240,12 +390,16 @@ Screen {
 }
 
 /* === Session Tree Browser Modal === */
+/* Fills the screen. It was 90x30 regardless of terminal size, which left a dead
+   band on a wide terminal and rendered off-screen (clipped top and bottom) on an
+   80x24 one. The tree is the widest thing in the app — every row is a preview
+   sentence — so it gets the whole width there is. */
 #tree-browser-dialog {
-    width: 90;
-    height: 30;
+    width: 100%;
+    height: 100%;
     background: #181825;
     border: thick #45475a;
-    padding: 1;
+    padding: 0 1;
 }
 
 #tree-browser-title {
@@ -255,7 +409,21 @@ Screen {
     margin-bottom: 1;
 }
 
+/* Rows on top, the highlighted node in full below — STACKED, not side by side.
+   A column split gave both halves about half the terminal's width, and both of
+   them are text that has to wrap: the tree rows elided down to a few characters
+   and the pane's prose broke every five or six words. Stacking spends rows
+   instead, which is the cheaper currency here — a tree row is one line whatever
+   its width, so the tree loses only the count of nodes it can show at once,
+   while the pane gets the full width its markdown wants. `1fr`/`1fr`: even
+   halves. Below `SessionTreeModal.DETAIL_MIN_HEIGHT` there are not enough rows
+   to halve, and the pane hides. */
+#tree-browser-body {
+    height: 1fr;
+}
+
 #tree-browser-tree {
+    width: 100%;
     height: 1fr;
     background: #1e1e2e;
     border: solid #45475a;
@@ -266,6 +434,45 @@ Screen {
     border: solid #cba6f7;
 }
 
+#tree-detail {
+    width: 100%;
+    height: 1fr;
+    background: #1e1e2e;
+    border: solid #45475a;
+    padding: 0 1;
+}
+
+#tree-detail:focus {
+    border: solid #cba6f7;
+}
+
+/* "⋯ 3 earlier" / "⋯ 2 branches from here, 5 later" — the rows that keep the
+   pane from reading as a three-message conversation. Muted and centered so they
+   read as a fold marker rather than as another message. */
+#tree-detail .detail-fold {
+    color: #6c7086;
+    text-align: center;
+    text-style: italic;
+}
+
+/* === Detail-pane context messages === */
+/* The neighbours of the selected node, which must recede without becoming
+   unidentifiable — the reader still tells a user turn from an assistant one at a
+   glance, so the role hue is KEPT and only its strength drops.
+
+   `opacity`, not a second table of hand-picked dim hex values, and not
+   `color`/`text-opacity`. A box's body is not all plain text: a tool call's
+   arguments and a tool result are syntax-highlighted by Rich, which writes
+   per-token colors no CSS `color` can reach, and neither `color` nor
+   `text-opacity` reaches a CHILD widget (the Markdown blocks, the tool boxes)
+   because neither is an inherited property. `opacity` composites the whole
+   subtree against the background, so border, title, prose and highlighted code
+   all fade by the same amount and every `.box-*` rule above keeps working
+   unchanged. */
+.chat-message.detail-context {
+    opacity: 55%;
+}
+
 #tree-browser-help {
     text-align: center;
     color: #6c7086;
@@ -273,9 +480,20 @@ Screen {
 }
 
 /* === Tree three-mode chooser Modal === */
+/* `height: auto` alone is not a fit: five 3-row buttons plus their margins, the
+   title and the chrome come to 26 rows, two more than an 80x24 terminal has, and
+   the last two modes rendered off the bottom. Auto still picks the height on a
+   terminal that can hold the list — dropping the inter-button margin below brings
+   that to 21, so 80x24 is now a terminal that can. `max-height` caps it on one
+   that cannot (a sixth mode, or a 15-row window), and `overflow-y: auto`
+   (Container defaults to `hidden`, i.e. clip and say nothing) turns what no longer
+   fits into something the reader can scroll to rather than lose. */
 #tree-mode-dialog {
     width: 60;
+    max-width: 100%;
     height: auto;
+    max-height: 100%;
+    overflow-y: auto;
     background: #181825;
     border: thick #45475a;
     padding: 1;
@@ -293,9 +511,11 @@ Screen {
     align: center middle;
 }
 
+/* No margin between the buttons: each already carries its own border, so the
+   blank row between them bought separation that was already there and cost five
+   rows — the five that pushed the dialog past an 80x24 screen. */
 #tree-mode-buttons Button {
     width: 100%;
-    margin-bottom: 1;
     background: #313244;
     border: solid #45475a;
     color: #cdd6f4;
@@ -306,9 +526,15 @@ Screen {
 }
 
 /* === Extension dialogs (confirm / select / input) — E7 §3 / S47 === */
+/* Same ceiling the two tree dialogs learned to keep: a fixed 70 columns is wider
+   than a 60-column terminal and the select list's fixed 30 rows are taller than an
+   80x24 one, and an off-screen dialog is not a dialog. These are not scenes, so
+   test_tui_appearance's modal guard cannot see them — the bound is the guard. */
 #ext-confirm-dialog, #ext-select-dialog, #ext-input-dialog {
     width: 70;
+    max-width: 100%;
     height: auto;
+    max-height: 100%;
     background: #181825;
     border: thick #45475a;
     padding: 1;
@@ -377,6 +603,7 @@ Screen {
 /* === Extension shortcut chord (which-key menu) — E10 §6 / S69 === */
 #ext-chord-dialog {
     width: 70;
+    max-width: 100%;
     height: auto;
     max-height: 90%;
     background: #181825;
@@ -398,6 +625,7 @@ Screen {
 /* === Extension form (declarative fields) — E10 §6 / S66 === */
 #ext-form-dialog {
     width: 70;
+    max-width: 100%;
     height: auto;
     max-height: 90%;
     background: #181825;
@@ -481,9 +709,24 @@ Screen {
 
 /* === Extension panel host (E10 §6 / S68) === */
 /* Persistent keyed panels from ctx.ui.panel(), docked to the right of the main
-   area. Hidden (display:none, set in code) until an extension opens a panel. */
+   area. Hidden (display:none, set in code) until an extension opens a panel.
+
+   A share of the width, not a fixed 40 columns. At 80 columns a fixed 40 left
+   the chat 8 columns, 4 of them ChatDisplay padding — the primary content
+   reduced to four usable columns by a secondary surface. 30% instead, floored at
+   26 (a panel's table wants four short columns inside a round border and a
+   column of host padding per side) and capped at 44 (past that a keyed status
+   panel is mostly whitespace, and the chat should have the rest).
+
+   Together with #sidebar this leaves the chat 45% of the width in the middle of
+   the range, less 2 columns of scrollbar gutter and 4 of ChatDisplay padding.
+   Where that stops clearing the 40-column floor asserted in
+   tests/test_tui_appearance.py is Parley.SIDE_COLUMNS_MIN_WIDTH, below which the
+   sidebar yields rather than the chat. */
 #ext-panel-host {
-    width: 40;
+    width: 30%;
+    min-width: 26;
+    max-width: 44;
     height: 100%;
     padding: 0 1;
     background: #181825;
@@ -512,7 +755,26 @@ Screen {
     margin-top: 1;
 }
 
+/* An equal share of the row each, rather than each sizing to its own label.
+   A Button defaults to `width: auto`, which here is 16 columns; two of them plus
+   the margin want 33, and since the panel became a share of the terminal
+   (`#ext-panel-host: 30%`, floor 26) its content row is about 30 columns at
+   120x40 and 19 at 80x24. The Horizontal does not wrap — it clips — so the
+   second button was cut in half on a wide terminal and off the screen entirely
+   on a narrow one, silently, because a clipped widget still reports its full
+   size. `1fr` makes the row divide by however many actions a panel declares,
+   which is a number this stylesheet does not get to know.
+
+   `min-width: 0` is the load-bearing half. Textual's Button carries
+   `width: auto; min-width: 16`, and the floor outranks the share — with `1fr`
+   alone each button still measured 17 columns in a 19-column row, i.e. exactly
+   the bug, because a min-width a container cannot honour is not reported as an
+   error, it is just drawn past the edge. */
 .ext-panel-action {
+    width: 1fr;
+    min-width: 0;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
     margin: 0 1 0 0;
     background: #313244;
     border: none;

@@ -422,8 +422,13 @@ async def test_tree_mode_modal_has_an_elide_button():
 
 async def test_tree_modal_shows_the_caption_it_was_given():
     log, _ids = _linear_log()
-    roots = ConversationTree(log.entries(), log.cursor).tree()
-    modal = SessionTreeModal(roots, title="Elide: pick the resume point", help_text="H")
+    view = ConversationTree(log.entries(), log.cursor)
+    modal = SessionTreeModal(
+        view.tree(),
+        resolve_entry=view.entry,
+        title="Elide: pick the resume point",
+        help_text="H",
+    )
     harness = _ModalHarness(modal)
     async with harness.run_test() as pilot:
         await pilot.pause()
@@ -435,8 +440,8 @@ async def test_tree_modal_shows_the_caption_it_was_given():
 
 async def test_tree_modal_default_caption_is_unchanged():
     log, _ids = _linear_log()
-    roots = ConversationTree(log.entries(), log.cursor).tree()
-    harness = _ModalHarness(SessionTreeModal(roots))
+    view = ConversationTree(log.entries(), log.cursor)
+    harness = _ModalHarness(SessionTreeModal(view.tree(), resolve_entry=view.entry))
     async with harness.run_test() as pilot:
         await pilot.pause()
         title = harness.screen.query_one("#tree-browser-title", Static)

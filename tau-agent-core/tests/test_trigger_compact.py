@@ -24,7 +24,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
-from tau_ai.types import AssistantMessage, Model, TextContent
+from tau_llm.types import AssistantMessage, Model, TextContent
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings

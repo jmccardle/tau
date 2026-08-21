@@ -1,35 +1,107 @@
 [project]
-name = "tau-coding-agent"
-version = "0.0.0"
+name = "ffwf-tau-coding-agent"
+# The version is not a literal here. Each distribution reads it from its own
+# package's ``__version__``, so the wheel metadata and what the code reports can
+# never disagree -- they are the same line. Bump that line to cut a release.
+dynamic = ["version"]
 description = "τ-coding-agent: Interactive TUI (Textual) + CLI"
 requires-python = ">=3.11"
+readme = "README.md"
+# SPDX expression + the file itself (PEP 639), which is why build-system below
+# needs setuptools >= 77.0.3: earlier versions ignore `license-files` and the
+# wheel ships without the licence text. Each package carries its own copy of the
+# repo-root LICENSE because a wheel is built from one package directory and
+# cannot reach outside it.
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
 dependencies = [
-    "tau-agent-core",
-    "textual>=0.47",
-    "typer",
+    "ffwf-tau-agent-core==0.9.2",
 ]
 
 [project.optional-dependencies]
+# The interface. `tau -p` (cli.py -> headless.py) never imports textual: the only
+# entry into the Textual app is a lazy `from tau_coding_agent.app import Parley`
+# inside cli._launch_tui, so a headless install runs a full turn -- extensions and
+# all -- with neither library present. Measured: 15 packages / 13 MB without this
+# extra, 27 packages / 31 MB with it.
+#
+# rich belongs here rather than in the base: its importers are app.py,
+# chat_widgets.py and testing/render.py, and every one of them imports textual at
+# module scope too. tau_coding_agent.testing is therefore TUI-side as a whole --
+# testing/__init__.py re-exports render -- and needs this extra.
+tui = [
+    "textual>=0.47",
+    "rich",
+]
+# The session store. tau-jmfts is a separate distribution and stays that way; this
+# extra is only a convenience spelling for it. store_factory.py imports it lazily
+# and converts a missing package into a StoreError that names this extra, so
+# `--store jmfts` without it fails with an instruction rather than a traceback.
+jmfts = ["ffwf-tau-jmfts==0.9.2"]
 dev = [
+    "ffwf-tau-coding-agent[tui,jmfts]==0.9.2",
     "pytest",
     "pytest-asyncio",
     "ruff",
-    "mypy",
+    # Pinned, unlike every other dev tool here. mypy has no "state your rule set"
+    # knob the way ruff does, so its findings move with its version: verified on
+    # this tree, 2.1.0 reports 0 errors and 2.3.1 reports 50 across 12 files.
+    # Those 50 look like real findings that a newer mypy got better at seeing --
+    # mostly no-any-return -- so they are scheduled, not suppressed: clearing
+    # them is its own pass, and until then the gate must mean the same thing in
+    # every clone. Raise this bound WITH that pass, never to make a hook go green.
+    "mypy==2.1.*",
+    # TUI visual inspection (see docs/textual-headless-testing.md):
+    #   textual-dev            -> `textual run --dev` live CSS editing, `textual console`
+    #   pytest-textual-snapshot -> SVG visual-regression tests
+    #   cairosvg               -> rasterize an exported SVG so a human can look at it
+    "textual-dev",
+    "pytest-textual-snapshot",
+    "cairosvg",
 ]
 
+# The PUBLIC repository only. This tree has a second, private git remote whose
+# history is unfiltered; its hostname must never reach this file or a README,
+# because both are uploaded verbatim (pyproject.toml ships inside the sdist).
+# tests/test_packaging.py enforces that.
+[project.urls]
+Homepage = "https://ffwfrobotics.github.io/tau/"
+Documentation = "https://ffwfrobotics.github.io/tau/"
+Repository = "https://github.com/jmccardle/tau"
+Issues = "https://github.com/jmccardle/tau/issues"
+
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# bootstrap_config() reads tau_default_config.json out of the installed package on
-# first run. Without this it is source-tree-only and `pip install tau-coding-agent`
-# ships a τ that dies with FileNotFoundError before it can print a prompt.
-# Covered by tests/test_config.py::test_the_packaged_template_is_shipped_and_valid.
-[tool.setuptools.package-data]
-tau_coding_agent = ["tau_default_config.json"]
+[tool.setuptools.dynamic]
+version = { attr = "tau_coding_agent.__version__" }
 
+# Non-.py files the installed package reads at runtime. Both are load-bearing:
+# bootstrap_config() reads tau_default_config.json out of the installed package on
+# first run (without it, `pip install tau-coding-agent` ships a τ that dies with
+# FileNotFoundError before it can print a prompt), and Parley.CSS_PATH resolves
+# parley.tcss next to app.py (without it, the TUI raises on startup with no
+# stylesheet). Covered by tests/test_packaging.py.
+[tool.setuptools.package-data]
+tau_coding_agent = ["tau_default_config.json", "parley.tcss"]
+
+# Two names for one entry point, not a symlink. A wheel cannot portably express a
+# symlink, and pip generates each console script as an independent wrapper it owns
+# in its RECORD -- so two entries uninstall as cleanly as one, on Windows too.
+#
+# `tau` is the name to type. It is also the name PyPI cannot reserve: console
+# script names have no registry, and at least one active project (`tau-ai`, an
+# unrelated pi-style harness) already ships its own `tau`. In an environment
+# holding both, whichever installed last owns the name, silently.
+#
+# `ffwf-tau` is the name that cannot be taken. It is the fallback when `tau` is
+# not ours, and the stable name for scripts, systemd units and Dockerfiles, where
+# ergonomics do not matter and being the right program does.
 [project.scripts]
 tau = "tau_coding_agent.cli:main"
+ffwf-tau = "tau_coding_agent.cli:main"

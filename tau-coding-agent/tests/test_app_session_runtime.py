@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import pytest
 
-from tau_ai.types import Usage
+from tau_llm.types import Usage
 from tau_coding_agent.backends import create_backend
 
 

@@ -9,7 +9,7 @@ at 43%. Almost none of that was its own: every ``AgentToolResult`` /
 ``ToolBatchResult`` / ``ToolResultMessage`` / ``validate_tool_arguments`` /
 ``ExtensionContext`` / ``ExtensionUI`` / ``ExtensionAPI`` behaviour it asserted is
 independently and more thoroughly tested in ``test_tools_base.py``,
-``tau-ai/tests/test_subphase1.py``, ``tau-ai/tests/test_tools.py``,
+``tau-llm/tests/test_subphase1.py``, ``tau-llm/tests/test_tools.py``,
 ``test_extension_types.py``, and ``test_ui_delegate.py`` — none of which import
 ``agent_loop`` or ``agent_session`` at all. Its ``TestExtensionErrorHandling``
 "doesn't crash" checks are a strict subset of ``test_extension_error_visibility.py``
@@ -77,8 +77,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tau_ai.streaming import DoneEvent, ErrorEvent, TextDeltaEvent
-from tau_ai.types import AssistantMessage, TextContent, ToolCall as TauToolCall, Usage, UserMessage
+from tau_llm.streaming import DoneEvent, ErrorEvent, TextDeltaEvent
+from tau_llm.types import AssistantMessage, TextContent, ToolCall as TauToolCall, Usage, UserMessage
 from tau_agent_core.agent_loop import AgentLoop
 from tau_agent_core.agent_loop_types import AgentLoopConfig
 from tau_agent_core.agent_session import AgentSession
@@ -92,7 +92,7 @@ from tau_agent_core.tools.base import AgentTool, ToolDefinition
 
 
 def _model():
-    from tau_ai.types import Model
+    from tau_llm.types import Model
 
     return Model(
         id="gpt-4o",

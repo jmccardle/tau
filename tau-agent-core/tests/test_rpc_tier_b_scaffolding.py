@@ -57,7 +57,7 @@ from tau_agent_core.rpc.commands import (
 )
 from tau_agent_core.rpc.dialect import SESSION_NOT_PERSISTED, TURN_STILL_RUNNING
 from tau_agent_core.session_log import InMemorySessionLog
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 
 def _model() -> Model:

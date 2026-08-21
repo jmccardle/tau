@@ -25,7 +25,7 @@ import asyncio
 
 import pytest
 
-from tau_ai.types import Model
+from tau_llm.types import Model
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.session_log import InMemorySessionLog
@@ -148,17 +148,13 @@ def test_session_routes_mutating_hook_error_to_tui_delegate():
     def ext(api):
         api.on("tool_result", _raise(ValueError("hook boom")))
 
-    session = AgentSession(
-        session_log=InMemorySessionLog(), model=_make_model(), extensions=[ext]
-    )
+    session = AgentSession(session_log=InMemorySessionLog(), model=_make_model(), extensions=[ext])
     delegate = _CapturingDelegate()
     session.set_ui_delegate(delegate)
 
     # The runner catches the handler exception and surfaces it; the patch result is
     # still None (nothing modified), and the loop would pass the original through.
-    result = asyncio.run(
-        session._extension_runner.emit_tool_result({"content": "x"})
-    )
+    result = asyncio.run(session._extension_runner.emit_tool_result({"content": "x"}))
     assert result is None
 
     assert len(delegate.notifications) == 1
@@ -174,9 +170,7 @@ def test_session_routes_mutating_hook_error_to_headless_stderr(capsys):
     def ext(api):
         api.on("before_agent_start", _raise(RuntimeError("prompt-hook boom")))
 
-    session = AgentSession(
-        session_log=InMemorySessionLog(), model=_make_model(), extensions=[ext]
-    )
+    session = AgentSession(session_log=InMemorySessionLog(), model=_make_model(), extensions=[ext])
     # No set_ui_delegate → ctx.ui stays in headless (stderr) mode.
     asyncio.run(session._extension_runner.emit_before_agent_start("hi", None, "SYS"))
 
@@ -192,9 +186,7 @@ def test_session_routes_lifecycle_hook_error():
     def ext(api):
         api.on("session_shutdown", _raise(ValueError("teardown boom")))
 
-    session = AgentSession(
-        session_log=InMemorySessionLog(), model=_make_model(), extensions=[ext]
-    )
+    session = AgentSession(session_log=InMemorySessionLog(), model=_make_model(), extensions=[ext])
     delegate = _CapturingDelegate()
     session.set_ui_delegate(delegate)
 
@@ -213,9 +205,7 @@ def test_notify_handler_error_surfaces_during_prompt():
     def ext(api):
         api.on("agent_start", _raise(ValueError("observer boom")))
 
-    session = AgentSession(
-        session_log=InMemorySessionLog(), model=_make_model(), extensions=[ext]
-    )
+    session = AgentSession(session_log=InMemorySessionLog(), model=_make_model(), extensions=[ext])
     delegate = _CapturingDelegate()
     session.set_ui_delegate(delegate)
 

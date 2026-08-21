@@ -37,7 +37,6 @@ from tau_coding_agent.store_factory import (
     resolve_session_dir,
 )
 
-
 # ── 1. cli.py ────────────────────────────────────────────────────────────────
 
 
@@ -55,7 +54,7 @@ def test_session_dir_reaches_the_tui_run_config(monkeypatch, tmp_path):
     captured: dict = {}
 
     class _FakeParley:
-        def __init__(self, *, cli_overrides=None, cli_run_config=None):
+        def __init__(self, *, cli_overrides=None, cli_run_config=None, fun=False):
             captured["run_config"] = cli_run_config
 
         def run(self):
@@ -243,9 +242,7 @@ def test_two_users_sharing_one_temp_dir_do_not_contend_for_one_entry(
     assert (first / "a-real-session.jsonl").read_text() == "{}\n"
 
 
-def test_the_hostile_squat_on_our_own_name_is_still_refused(
-    temp_root, tmp_path, monkeypatch
-):
+def test_the_hostile_squat_on_our_own_name_is_still_refused(temp_root, tmp_path, monkeypatch):
     """The uid in the name retires the COLLISION, not the ATTACK.
 
     An attacker who knows the target's uid can still pre-create the entry that

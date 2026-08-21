@@ -23,15 +23,14 @@ from typing import Any
 
 import pytest
 
-from tau_ai.streaming import DoneEvent, TextDeltaEvent
-from tau_ai.types import AssistantMessage, Model, TextContent, ToolCall, Usage
+from tau_llm.streaming import DoneEvent, TextDeltaEvent
+from tau_llm.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.events import EventBus
 from tau_agent_core.extension_types import ExtensionAPI, ext_channel
 from tau_agent_core.extensions.runner import ExtensionRunner
 from tau_agent_core.session_log import InMemorySessionLog
-
 
 # ── unit level: two apis sharing ONE bus, each with its own bucket ────────────
 
@@ -344,7 +343,10 @@ class TestTwoLoadedExtensions:
         assert _PAYLOAD_MARKER not in entries_blob, "payload leaked onto the session log"
 
         messages_blob = json.dumps(
-            [m if isinstance(m, dict) else getattr(m, "model_dump", lambda: str(m))() for m in messages],
+            [
+                m if isinstance(m, dict) else getattr(m, "model_dump", lambda: str(m))()
+                for m in messages
+            ],
             default=str,
         )
         assert _PAYLOAD_MARKER not in messages_blob, "payload leaked into the model context"

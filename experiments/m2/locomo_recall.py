@@ -118,22 +118,29 @@ def ingest(corpus, factory):
                 doc_ids = [dia_to_doc[e] for e in evidence if e in dia_to_doc]
                 if not doc_ids:
                     continue
-                questions.append({
-                    "question": q["question"],
-                    "category": q["category"],
-                    "evidence": evidence,
-                    "evidence_doc_ids": doc_ids,
-                    "unresolved_evidence": [e for e in evidence if e not in dia_to_doc],
-                })
-            manifest.append({
-                "sample_id": conv["sample_id"],
-                "root_id": root.id,
-                "questions": questions,
-                "now": last_ts.isoformat(),
-            })
+                questions.append(
+                    {
+                        "question": q["question"],
+                        "category": q["category"],
+                        "evidence": evidence,
+                        "evidence_doc_ids": doc_ids,
+                        "unresolved_evidence": [e for e in evidence if e not in dia_to_doc],
+                    }
+                )
+            manifest.append(
+                {
+                    "sample_id": conv["sample_id"],
+                    "root_id": root.id,
+                    "questions": questions,
+                    "now": last_ts.isoformat(),
+                }
+            )
             db.commit()
-        print(f"  ingested {conv['sample_id']}: {len(dia_to_doc)} turns, "
-              f"{len(questions)} scorable questions", flush=True)
+        print(
+            f"  ingested {conv['sample_id']}: {len(dia_to_doc)} turns, "
+            f"{len(questions)} scorable questions",
+            flush=True,
+        )
     with open(MANIFEST, "w") as fh:
         json.dump(manifest, fh)
     return manifest
@@ -154,12 +161,19 @@ def evaluate(manifest, factory):
                 for alpha, halflife, beta in GRID:
                     kwargs = {}
                     if alpha:
-                        kwargs = {"recency_weight": alpha, "recency_halflife_days": halflife, "now": now}
+                        kwargs = {
+                            "recency_weight": alpha,
+                            "recency_halflife_days": halflife,
+                            "now": now,
+                        }
                     if beta:
                         kwargs["importance_weight"] = beta
                     results = repo.hybrid_search(
-                        q["question"], limit=max(KS), methods=["vector"],
-                        parent_id=conv["root_id"], **kwargs,
+                        q["question"],
+                        limit=max(KS),
+                        methods=["vector"],
+                        parent_id=conv["root_id"],
+                        **kwargs,
                     )
                     got = [r.document.id for r in results]
                     want = set(q["evidence_doc_ids"])
@@ -181,19 +195,21 @@ def evaluate(manifest, factory):
 
     print("\n--- by LoCoMo question category (baseline vs best recency vs importance) ---")
     cats = sorted({k[3] for k in by_cat})
-    print(f"{'config':>14} " + " ".join(f"{'cat'+str(c):>10}" for c in cats))
+    print(f"{'config':>14} " + " ".join(f"{'cat' + str(c):>10}" for c in cats))
     print("-" * (15 + 11 * len(cats)))
     for alpha, hl, beta in [(0.0, None, 0.0), (1.0, 365.0, 0.0), (0.0, None, 1.0)]:
-        label = "baseline" if not alpha and not beta else (
-            f"a={alpha:g}/{hl:g}d" if alpha else f"b={beta:g}")
+        label = (
+            "baseline"
+            if not alpha and not beta
+            else (f"a={alpha:g}/{hl:g}d" if alpha else f"b={beta:g}")
+        )
         cells = []
         for c in cats:
             t = by_cat[(alpha, hl, beta, c)]
             n = t["n"] or 1
-            cells.append(f"{t['recall@5']/n:>10.3f}")
+            cells.append(f"{t['recall@5'] / n:>10.3f}")
         print(f"{label:>14} " + " ".join(cells))
-    print(f"{'n':>14} " + " ".join(
-        f"{int(by_cat[(0.0, None, 0.0, c)]['n']):>10}" for c in cats))
+    print(f"{'n':>14} " + " ".join(f"{int(by_cat[(0.0, None, 0.0, c)]['n']):>10}" for c in cats))
     print("(R@5. If any category prefers recency, 'recency hurts recall' is too coarse.)")
     return rows
 
@@ -220,13 +236,14 @@ def main() -> int:
         json.dump(rows, fh)
 
     print()
-    header = (f"{'alpha':>6} {'half-life':>10} {'beta':>6} {'n':>5} "
-              + " ".join(f"{'R@'+str(k):>9}" for k in KS))
+    header = f"{'alpha':>6} {'half-life':>10} {'beta':>6} {'n':>5} " + " ".join(
+        f"{'R@' + str(k):>9}" for k in KS
+    )
     print(header)
     print("-" * len(header))
     for r in rows:
         hl = "-" if r["halflife"] is None else f"{r['halflife']:.0f}d"
-        cells = " ".join(f"{r['recall@'+str(k)]:>9.3f}" for k in KS)
+        cells = " ".join(f"{r['recall@' + str(k)]:>9.3f}" for k in KS)
         print(f"{r['alpha']:>6.1f} {hl:>10} {r['beta']:>6.1f} {r['n']:>5} {cells}")
     print(f"\nfull results: {OUT}")
     return 0

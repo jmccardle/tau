@@ -1,0 +1,64 @@
+[project]
+name = "ffwf-tau-llm"
+# The version is not a literal here. Each distribution reads it from its own
+# package's ``__version__``, so the wheel metadata and what the code reports can
+# never disagree -- they are the same line. Bump that line to cut a release.
+dynamic = ["version"]
+description = "τ-llm: Unified LLM provider abstraction (OpenAI-first)"
+requires-python = ">=3.11"
+readme = "README.md"
+# SPDX expression + the file itself (PEP 639), which is why build-system below
+# needs setuptools >= 77.0.3: earlier versions ignore `license-files` and the
+# wheel ships without the licence text. Each package carries its own copy of the
+# repo-root LICENSE because a wheel is built from one package directory and
+# cannot reach outside it.
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
+# httpx is what the provider actually speaks: tau_llm/providers/openai.py imports
+# it at module scope and tau_llm/__init__.py imports that, so every install needs
+# it. It was undeclared until a clean-container install failed on `import tau_llm`.
+#
+# The `openai` SDK is deliberately NOT here. τ talks to the /chat/completions
+# wire format directly (that is what "OpenAI-compatible provider" means in this
+# tree); nothing imports the package, and declaring it pulled a large unused
+# dependency chain into every install.
+dependencies = [
+    "pydantic>=2.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    # Pinned, unlike every other dev tool here. mypy has no "state your rule set"
+    # knob the way ruff does, so its findings move with its version: verified on
+    # this tree, 2.1.0 reports 0 errors and 2.3.1 reports 50 across 12 files.
+    # Those 50 look like real findings that a newer mypy got better at seeing --
+    # mostly no-any-return -- so they are scheduled, not suppressed: clearing
+    # them is its own pass, and until then the gate must mean the same thing in
+    # every clone. Raise this bound WITH that pass, never to make a hook go green.
+    "mypy==2.1.*",
+]
+
+# The PUBLIC repository only. This tree has a second, private git remote whose
+# history is unfiltered; its hostname must never reach this file or a README,
+# because both are uploaded verbatim (pyproject.toml ships inside the sdist).
+# tests/test_packaging.py enforces that.
+[project.urls]
+Homepage = "https://ffwfrobotics.github.io/tau/"
+Documentation = "https://ffwfrobotics.github.io/tau/"
+Repository = "https://github.com/jmccardle/tau"
+Issues = "https://github.com/jmccardle/tau/issues"
+
+[build-system]
+requires = ["setuptools>=77.0.3", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "tau_llm.__version__" }

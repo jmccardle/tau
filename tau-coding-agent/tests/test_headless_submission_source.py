@@ -37,8 +37,8 @@ import tau_coding_agent.session_store as store
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.commands import UnsupportedCommandError
 from tau_agent_core.submission import Submission
-from tau_ai.streaming import DoneEvent, TextDeltaEvent
-from tau_ai.types import AssistantMessage, TextContent, Usage
+from tau_llm.streaming import DoneEvent, TextDeltaEvent
+from tau_llm.types import AssistantMessage, TextContent, Usage
 from tau_coding_agent.cli import CLIArgs
 from tau_coding_agent.headless import build_print_submission, run_print
 

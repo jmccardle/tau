@@ -35,7 +35,8 @@ argparse-based (`build_parser()` in `cli.py`); `--print` runs headless via
 | `--model` | `-m` | ✅ wired | config `models` key, or `provider/id[:thinking]` shorthand. `-m` is a documented **tau-only** convenience (pi has no `-m`). |
 | `--provider` | — | ✅ wired | long-only (pi-aligned). |
 | `--tools` | `-t` | ✅ wired | comma-separated allowlist over the 7 built-ins. |
-| `--no-tools` | `-nt` | ✅ wired | read-only agent (empty tool list). |
+| `--no-tools` | `-nt` | ✅ wired | the model is offered **zero** tools: no built-ins and no extension-registered ones. Extensions still load — hooks, commands, injections and subscriptions all keep working; only callable tools are withheld. |
+| `--no-builtin-tools` | `-nbt` | ✅ wired | drops the **built-in** set only; extension-registered tools are still offered. |
 | `--system-prompt` | — | ✅ wired | replace the system prompt for this run. |
 | `--thinking {off…xhigh}` | — | ✅ wired | sends `reasoning_effort` (clamped, gated on `Model.reasoning`). See "Thinking" below. |
 | `--continue` | `-c` | ✅ wired (headless) | continue the most recent `~/.tau/chats` session. |
@@ -52,6 +53,23 @@ argparse-based (`build_parser()` in `cli.py`); `--print` runs headless via
 colliding alias): `--output`/`-o` (pi expresses output as `--mode`), `-s`
 (`--session` is long-only), `--config`, `--cwd`, `--context-window`,
 `--max-tokens`, and the `-p`=provider / `-v`=verbose short-alias collisions.
+
+### `--no-tools` changed meaning: check your callers
+
+`-nbt` used to **degenerate to** `--no-tools` — both dropped the built-ins and
+both left extension-registered tools in place. They are now genuinely distinct,
+resolved into one `no_tools` tri-state at the argv boundary
+(`headless.resolve_no_tools`, pi `main.ts:424-428`).
+
+A caller that passes `--no-tools` *and* registers its capability through
+extensions was getting `-nbt` behaviour by accident and now gets zero tools. The
+tell is a comment near the flag to the effect of "the extensions are the
+capability" — that is the `-nbt` intent, written against the old degenerate
+behaviour. **Such a caller should now pass `--no-builtin-tools`.**
+
+`--no-tools` remains correct for its literal meaning: offer the model no callable
+tools at all. Extensions still load either way — hooks, commands, injections and
+subscriptions are untouched by both flags.
 
 ## Mapping to pi (corrected)
 
@@ -90,7 +108,7 @@ pi levels: `off | minimal | low | medium | high | xhigh`
 reasoning param". The earlier `THINKING_MAP` that collapsed `minimal→low` and
 `xhigh→high` was lossy and wrong.
 
-τ's actual behavior (shipped): `tau_ai/models.py` ports pi's `clampThinkingLevel`
+τ's actual behavior (shipped): `tau_llm/models.py` ports pi's `clampThinkingLevel`
 (`models.ts:64`) and clamps per-model via `thinking_level_map`; `openai.py` emits
 `reasoning_effort` for the default OpenAI-compatible path (`types.ts:406`), gated
 on `Model.reasoning` so it's never sent to a non-reasoning model. Default level

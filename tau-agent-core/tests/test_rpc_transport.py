@@ -40,7 +40,6 @@ import pytest
 from tau_agent_core import rpc
 from tau_agent_core.rpc import RPCHandler, capabilities, dialect, transport
 
-
 # =============================================================================
 # Helpers
 # =============================================================================

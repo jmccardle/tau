@@ -36,7 +36,6 @@ import pytest
 from tau_agent_core.rpc import RPCHandler, commands
 from tau_agent_core.session import SessionState
 
-
 # ─────────────────────────────────────────────────────────────────────────
 # Layer 1 — `commands._last_assistant_text`, the pure decision function.
 # ─────────────────────────────────────────────────────────────────────────
@@ -121,7 +120,7 @@ def test_unknown_block_type_with_a_text_key_is_still_excluded():
     """The test that actually distinguishes a `type == "text"` WHITELIST
     from a `type != "thinking"` BLACKLIST: an invented block type that
     happens to carry a `text` field. Every real block type in
-    `tau_ai.types` either IS `"text"` or has no `text` key, so this is the
+    `tau_llm.types` either IS `"text"` or has no `text` key, so this is the
     only shape that can tell the two filters apart.
 
     Mutation this kills: `if block.get("type") != "thinking"` in place of

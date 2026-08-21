@@ -18,7 +18,7 @@ from tau_agent_core.conversation_tree import ConversationTree
 
 from tau_coding_agent.session_store import Session
 
-CWD = "/home/john/proj"
+CWD = "/srv/proj"
 
 
 def _session_with_history(base_dir) -> tuple[Session, str, str]:

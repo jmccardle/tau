@@ -21,7 +21,7 @@ from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.messages import convert_to_llm
 from tau_agent_core.session_log import InMemorySessionLog
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 
 def _make_session() -> AgentSession:
@@ -73,7 +73,9 @@ def test_send_message_display_only_by_default_off_the_wire() -> None:
 
     api.send_message({"customType": "gate-note", "content": "secret to the model"})
 
-    path = ConversationTree(session._session_log.entries(), session._session_log.cursor).context_for()
+    path = ConversationTree(
+        session._session_log.entries(), session._session_log.cursor
+    ).context_for()
     # On the rendered path…
     assert "secret to the model" in _text_blob(path)
     # …but NOT on the wire — the display-only custom node is dropped.
@@ -92,7 +94,9 @@ def test_send_message_visible_to_model_opt_in_reaches_the_wire() -> None:
         {"visible_to_model": True},
     )
 
-    path = ConversationTree(session._session_log.entries(), session._session_log.cursor).context_for()
+    path = ConversationTree(
+        session._session_log.entries(), session._session_log.cursor
+    ).context_for()
     wire = convert_to_llm(path)
     assert "the model should read this" in _text_blob(wire)
     # Remapped to a real user message the provider accepts.

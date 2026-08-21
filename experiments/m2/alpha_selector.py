@@ -65,8 +65,10 @@ def restart_server(budget):
     """Restart jf35 with (budget) or without (None=restore) a reasoning budget; block
     until healthy. budget=None reproduces the canonical live invocation exactly."""
     flag = f" --reasoning-budget {budget}" if budget else ""
-    inner = (f"export PATH=/usr/local/cuda-12.8/bin:$PATH && cd {SERVER_CWD} && "
-             f"{SERVER_BASE}{flag} > /tmp/jf35.log 2>&1")
+    inner = (
+        f"export PATH=/usr/local/cuda-12.8/bin:$PATH && cd {SERVER_CWD} && "
+        f"{SERVER_BASE}{flag} > /tmp/jf35.log 2>&1"
+    )
     sh("tmux kill-session -t jf35 2>/dev/null; true")
     time.sleep(2)
     subprocess.run(["tmux", "new-session", "-d", "-s", "jf35", inner], check=True)
@@ -83,8 +85,12 @@ def verify_restored():
     live = sh("pgrep -af 'llama-server.*8080' | grep -v reasoning-budget || true")
     has_budget = "reasoning-budget" in sh("pgrep -af 'llama-server.*8080'")
     if not healthy or has_budget or not live:
-        raise RuntimeError(f"RESTORE FAILED: healthy={healthy} has_budget={has_budget} live={live!r}")
+        raise RuntimeError(
+            f"RESTORE FAILED: healthy={healthy} has_budget={has_budget} live={live!r}"
+        )
     print(f"jf35 restored + verified: {live.splitlines()[-1] if live else '?'}", flush=True)
+
+
 STALE_MANIFEST = "/fast/datasets/m2/stale_manifest.json"
 LOCOMO_MANIFEST = "/fast/datasets/m2/locomo_manifest.json"
 CLASSES = "/fast/datasets/m2/alpha_selector_classes.json"
@@ -128,11 +134,16 @@ FEWSHOT_EXAMPLES = [
     # 2: explicit staleness marker, OR a premise the query conditions on (a newer memory
     #    could overturn it, so retrieval must surface the freshest value)
     ("Based on the conversation history, is the user still working as a nurse?", 2),
-    ("Since the user says they live right by the coast, can you suggest a few weekend "
-     "activities that make the most of being near the water?", 2),
+    (
+        "Since the user says they live right by the coast, can you suggest a few weekend "
+        "activities that make the most of being near the water?",
+        2,
+    ),
     # 1: state / habit / preference with NO staleness marker and no conditioning premise
-    ("Could you help me draft a short email suggesting a good place to meet a friend "
-     "this week?", 1),
+    (
+        "Could you help me draft a short email suggesting a good place to meet a friend this week?",
+        1,
+    ),
     ("What does the user usually do for work?", 1),
     # 0: recall of a specific past event or fact the person mentioned
     ("When did the user first mention adopting their dog?", 0),
@@ -170,10 +181,16 @@ SEARCH_CONFIGS = [(0.0, None), (0.5, HALFLIFE), (1.0, HALFLIFE)]
 
 
 def classify_one(client, text, template=CLASSIFY):
-    r = client.post(LLM, json={
-        "messages": [{"role": "user", "content": template.format(q=text)}],
-        "grammar": GRAMMAR, "temperature": 0, "max_tokens": 4000,
-    }, timeout=600.0)
+    r = client.post(
+        LLM,
+        json={
+            "messages": [{"role": "user", "content": template.format(q=text)}],
+            "grammar": GRAMMAR,
+            "temperature": 0,
+            "max_tokens": 4000,
+        },
+        timeout=600.0,
+    )
     r.raise_for_status()
     c = (r.json()["choices"][0]["message"]["content"] or "").strip()
     if not c:
@@ -202,12 +219,18 @@ def load_queries(stale, locomo):
         for dim in DIMS:
             # oracle: dim1/dim2 restate the premise (expect 2), dim3 does not (expect 1)
             oracle = 2 if dim in ("dim1_query", "dim2_query") else 1
-            q[f"stale:{inst['uid']}:{dim}"] = {"text": inst["probing_queries"][dim],
-                                               "corpus": "stale", "oracle": oracle}
+            q[f"stale:{inst['uid']}:{dim}"] = {
+                "text": inst["probing_queries"][dim],
+                "corpus": "stale",
+                "oracle": oracle,
+            }
     for conv in locomo:
         for i, question in enumerate(conv["questions"]):
-            q[f"locomo:{conv['sample_id']}:{i}"] = {"text": question["question"],
-                                                    "corpus": "locomo", "oracle": 0}
+            q[f"locomo:{conv['sample_id']}:{i}"] = {
+                "text": question["question"],
+                "corpus": "locomo",
+                "oracle": 0,
+            }
     return q
 
 
@@ -225,20 +248,27 @@ def classify(queries, template=CLASSIFY, cache_path=CLASSES):
     done = 0
     with httpx.Client() as client:
         with ThreadPoolExecutor(max_workers=SLOTS) as pool:
-            for (qid, _), cls in zip(todo, pool.map(
-                    lambda t: classify_one(client, t[1], template), todo)):
+            for (qid, _), cls in zip(
+                todo, pool.map(lambda t: classify_one(client, t[1], template), todo)
+            ):
                 cache[qid] = cls
                 done += 1
                 if done % 100 == 0:
                     rate = done / (time.time() - started)
-                    print(f"  {done}/{len(todo)} classified ({rate:.1f}/s, "
-                          f"~{(len(todo)-done)/rate/60:.0f}m left)", flush=True)
+                    print(
+                        f"  {done}/{len(todo)} classified ({rate:.1f}/s, "
+                        f"~{(len(todo) - done) / rate / 60:.0f}m left)",
+                        flush=True,
+                    )
                     with open(cache_path, "w") as fh:
                         json.dump(cache, fh)
     with open(cache_path, "w") as fh:
         json.dump(cache, fh)
-    print(f"  classified {len(todo)} in {time.time()-started:.0f}s; "
-          f"distribution {dict(sorted(Counter(cache[q] for q in queries).items()))}", flush=True)
+    print(
+        f"  classified {len(todo)} in {time.time() - started:.0f}s; "
+        f"distribution {dict(sorted(Counter(cache[q] for q in queries).items()))}",
+        flush=True,
+    )
     return cache
 
 
@@ -266,10 +296,17 @@ def eval_stale(stale, classes, repo):
             ranks = {}
             for w, hl in SEARCH_CONFIGS:
                 kw = {"recency_weight": w, "recency_halflife_days": hl, "now": now} if w else {}
-                res = repo.hybrid_search(inst["probing_queries"][dim], limit=50,
-                                         methods=["vector"], parent_id=inst["root_id"], **kw)
-                ranks[(w, hl)] = (rank_of(res, inst["new_doc_id"]),
-                                  rank_of(res, inst["old_doc_id"]))
+                res = repo.hybrid_search(
+                    inst["probing_queries"][dim],
+                    limit=50,
+                    methods=["vector"],
+                    parent_id=inst["root_id"],
+                    **kw,
+                )
+                ranks[(w, hl)] = (
+                    rank_of(res, inst["new_doc_id"]),
+                    rank_of(res, inst["old_doc_id"]),
+                )
             for name, fn in POLICIES.items():
                 r_new, r_old = ranks[fn(cls)]
                 if r_new is None or r_old is None:
@@ -293,8 +330,13 @@ def eval_locomo(locomo, classes, repo):
             got = {}
             for w, hl in SEARCH_CONFIGS:
                 kw = {"recency_weight": w, "recency_halflife_days": hl, "now": now} if w else {}
-                res = repo.hybrid_search(q["question"], limit=max(KS), methods=["vector"],
-                                         parent_id=conv["root_id"], **kw)
+                res = repo.hybrid_search(
+                    q["question"],
+                    limit=max(KS),
+                    methods=["vector"],
+                    parent_id=conv["root_id"],
+                    **kw,
+                )
                 got[(w, hl)] = [r.document.id for r in res]
             for name, fn in POLICIES.items():
                 ids = got[fn(cls)]
@@ -306,19 +348,35 @@ def eval_locomo(locomo, classes, repo):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--limit", type=int, default=None, help="first N stale instances / locomo convs")
+    ap.add_argument(
+        "--limit", type=int, default=None, help="first N stale instances / locomo convs"
+    )
     ap.add_argument("--eval-only", action="store_true", help="re-score from cached classes")
     ap.add_argument("--classify-only", action="store_true", help="classify, skip retrieval eval")
-    ap.add_argument("--budget", type=int, default=None,
-                    help="restart jf35 with --reasoning-budget N for classification, restore after")
-    ap.add_argument("--oracle-ceiling", action="store_true",
-                    help="also route by the KNOWN oracle group — the perfect-classifier ceiling, "
-                         "which isolates classifier-error from policy-error")
-    ap.add_argument("--fewshot", action="store_true",
-                    help="classify with the few-shot prompt + its own cache (full run)")
-    ap.add_argument("--sample", type=int, default=None,
-                    help="A/B ONLY: few-shot-classify a stratified sample of ~N and compare "
-                         "retrieval-relevant binary accuracy to the zero-shot cache; no retrieval")
+    ap.add_argument(
+        "--budget",
+        type=int,
+        default=None,
+        help="restart jf35 with --reasoning-budget N for classification, restore after",
+    )
+    ap.add_argument(
+        "--oracle-ceiling",
+        action="store_true",
+        help="also route by the KNOWN oracle group — the perfect-classifier ceiling, "
+        "which isolates classifier-error from policy-error",
+    )
+    ap.add_argument(
+        "--fewshot",
+        action="store_true",
+        help="classify with the few-shot prompt + its own cache (full run)",
+    )
+    ap.add_argument(
+        "--sample",
+        type=int,
+        default=None,
+        help="A/B ONLY: few-shot-classify a stratified sample of ~N and compare "
+        "retrieval-relevant binary accuracy to the zero-shot cache; no retrieval",
+    )
     args = ap.parse_args()
 
     with open(STALE_MANIFEST) as fh:
@@ -365,8 +423,10 @@ def main() -> int:
                 dist = dict(sorted(Counter(pred[q] for q in qs).items()))
                 ok = sum(1 for q in qs if (pred[q] >= 1) == (o >= 1)) / (len(qs) or 1)
                 print(f"    {name:>15}: {dist}  ok={ok:.3f} (n={len(qs)})")
-        print("\nRun the full few-shot eval only if BOTH columns rise (state->recency is the "
-              "pure-gain\ndirection — those are all STALE queries, so lifting it costs no recall).")
+        print(
+            "\nRun the full few-shot eval only if BOTH columns rise (state->recency is the "
+            "pure-gain\ndirection — those are all STALE queries, so lifting it costs no recall)."
+        )
         return 0
 
     template = CLASSIFY_FEWSHOT if args.fewshot else CLASSIFY
@@ -378,7 +438,7 @@ def main() -> int:
         try:
             classes = classify(queries, template, cache_path)
         finally:
-            restart_server(None)   # restore: canonical invocation, no reasoning budget
+            restart_server(None)  # restore: canonical invocation, no reasoning budget
             verify_restored()
     else:
         classes = classify(queries, template, cache_path)
@@ -419,12 +479,17 @@ def main() -> int:
 
     def stale_row(name, t):
         n = t["n"] or 1
-        print(f"{name:>17} {int(t['n']):>5} {t['new_over_old']/n:>8.3f} {t['new_at_1']/n:>7.3f} "
-              f"{t['new_at_5']/n:>7.3f} {t['sum_rank_new']/n:>9.2f}")
+        print(
+            f"{name:>17} {int(t['n']):>5} {t['new_over_old'] / n:>8.3f} {t['new_at_1'] / n:>7.3f} "
+            f"{t['new_at_5'] / n:>7.3f} {t['sum_rank_new'] / n:>9.2f}"
+        )
 
     def locomo_row(name, t):
         n = t["n"] or 1
-        print(f"{name:>17} {int(t['n']):>5} " + " ".join(f"{t['recall@'+str(k)]/n:>8.3f}" for k in KS))
+        print(
+            f"{name:>17} {int(t['n']):>5} "
+            + " ".join(f"{t['recall@' + str(k)] / n:>8.3f}" for k in KS)
+        )
 
     print(f"\n{'STALE':>17} {'n':>5} {'new>old':>8} {'new@1':>7} {'new@5':>7} {'rank_new':>9}")
     print("-" * 57)
@@ -434,7 +499,7 @@ def main() -> int:
         for name in ("selector_binary", "selector_ordinal"):
             stale_row("oracle_" + name.split("_")[1], st_oracle[name])
 
-    print(f"\n{'LoCoMo':>17} {'n':>5} " + " ".join(f"{'R@'+str(k):>8}" for k in KS))
+    print(f"\n{'LoCoMo':>17} {'n':>5} " + " ".join(f"{'R@' + str(k):>8}" for k in KS))
     print("-" * 49)
     for name in POLICIES:
         locomo_row(name, lc[name])
@@ -442,21 +507,26 @@ def main() -> int:
         for name in ("selector_binary", "selector_ordinal"):
             locomo_row("oracle_" + name.split("_")[1], lc_oracle[name])
 
-    print("\nTARGET: a selector row with STALE new>old well above baseline AND LoCoMo R@1 "
-          "at ~baseline.\nThe 'global' row is the M2 trade (best STALE, worst LoCoMo); "
-          "beating it on LoCoMo\nwhile keeping most of its STALE gain is the whole point. "
-          "The oracle_* rows are the\nperfect-routing ceiling: selector-vs-oracle gap = "
-          "classifier cost; oracle-vs-baseline = policy ceiling.")
+    print(
+        "\nTARGET: a selector row with STALE new>old well above baseline AND LoCoMo R@1 "
+        "at ~baseline.\nThe 'global' row is the M2 trade (best STALE, worst LoCoMo); "
+        "beating it on LoCoMo\nwhile keeping most of its STALE gain is the whole point. "
+        "The oracle_* rows are the\nperfect-routing ceiling: selector-vs-oracle gap = "
+        "classifier cost; oracle-vs-baseline = policy ceiling."
+    )
 
     out_path = OUT.replace(".json", "_fewshot.json") if args.fewshot else OUT
     with open(out_path, "w") as fh:
-        json.dump({
-            "stale": {k: dict(v) for k, v in st.items()},
-            "locomo": {k: dict(v) for k, v in lc.items()},
-            "stale_oracle": {k: dict(v) for k, v in st_oracle.items()} if st_oracle else None,
-            "locomo_oracle": {k: dict(v) for k, v in lc_oracle.items()} if lc_oracle else None,
-            "oracle_confusion": {str(o): dict(c) for o, c in by_oracle.items()},
-        }, fh)
+        json.dump(
+            {
+                "stale": {k: dict(v) for k, v in st.items()},
+                "locomo": {k: dict(v) for k, v in lc.items()},
+                "stale_oracle": {k: dict(v) for k, v in st_oracle.items()} if st_oracle else None,
+                "locomo_oracle": {k: dict(v) for k, v in lc_oracle.items()} if lc_oracle else None,
+                "oracle_confusion": {str(o): dict(c) for o, c in by_oracle.items()},
+            },
+            fh,
+        )
     print(f"\nfull results: {out_path}")
     return 0
 

@@ -15,12 +15,17 @@ Public API (see docs/JMFTS-INTEGRATION-PLAN.md Sec3):
 Reference: docs/JMFTS-INTEGRATION-PLAN.md
 """
 
+# This distribution's version, read at build time by pyproject.toml's
+# [tool.setuptools.dynamic]. Kept in lockstep with the other three packages.
+__version__ = "0.9.2"
+
 from tau_jmfts.catalog import JmftsSessionCatalog
 from tau_jmfts.client import DocumentDict, JmftsClient, JmftsError
 from tau_jmfts.importer import export_session, import_session
 from tau_jmfts.store import JmftsSessionLog
 
 __all__ = [
+    "__version__",
     "JmftsClient",
     "JmftsError",
     "DocumentDict",

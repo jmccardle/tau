@@ -26,7 +26,7 @@ from dataclasses import asdict, dataclass, field
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_log import InMemorySessionLog
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 import chess_agent_tools as cat
 from driver import PlyEval, _render_board
@@ -128,12 +128,14 @@ def _move_prompt(board: Board, last_black: str | None) -> str:
 
 
 def _observe_prompt(board: Board, black_move: str) -> str:
-    return "\n".join([
-        f"Black replied {black_move}. New position:",
-        _render_board(board),
-        "Briefly assess the position using your tools: are any of your pieces now "
-        "attacked or hanging? Do not move; just report what changed.",
-    ])
+    return "\n".join(
+        [
+            f"Black replied {black_move}. New position:",
+            _render_board(board),
+            "Briefly assess the position using your tools: are any of your pieces now "
+            "attacked or hanging? Do not move; just report what changed.",
+        ]
+    )
 
 
 async def play_agent_game(
@@ -169,8 +171,11 @@ async def play_agent_game(
         over, winner, reason = _terminal(board, plies, config.max_plies)
         if over:
             return AgentGameRecord(
-                winner=winner, reason=reason, moves=moves,
-                ply_evals=ply_evals, move_tool_calls=move_tool_calls,
+                winner=winner,
+                reason=reason,
+                moves=moves,
+                ply_evals=ply_evals,
+                move_tool_calls=move_tool_calls,
             )
 
         # --- MOVE phase (agent, White) ---
@@ -192,8 +197,11 @@ async def play_agent_game(
         over, winner, reason = _terminal(board, plies, config.max_plies)
         if over:
             return AgentGameRecord(
-                winner=winner, reason=reason, moves=moves,
-                ply_evals=ply_evals, move_tool_calls=move_tool_calls,
+                winner=winner,
+                reason=reason,
+                moves=moves,
+                ply_evals=ply_evals,
+                move_tool_calls=move_tool_calls,
             )
 
         # --- engine reply (Black) ---

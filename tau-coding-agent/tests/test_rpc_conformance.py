@@ -47,7 +47,6 @@ from tau_agent_core.rpc import DEFAULT_OUTPUT_QUEUE_EVENT_BOUND, dialect
 from tau_agent_core.rpc import commands as rpc_commands
 from tau_coding_agent.session_store import Session, rpc_tmp_dirname, session_dir_for_cwd
 
-
 # ── fake OpenAI-compatible provider (real HTTP server the child talks to) ────
 
 
@@ -1514,9 +1513,7 @@ async def test_tier_b_results_match_their_published_schemas_and_set_model_persis
     # resumed process uses (Session.load), not through the RPC wire at all
     # -- proving the model_change entry set_model appended is durable, not
     # merely reflected in the response this same call already returned.
-    session_dir = session_dir_for_cwd(
-        os.getcwd(), base_dir=rpc_session_base(fake_home_two_models)
-    )
+    session_dir = session_dir_for_cwd(os.getcwd(), base_dir=rpc_session_base(fake_home_two_models))
     matches = list(session_dir.glob(f"*_{session_id}.jsonl"))
     assert len(matches) == 1, f"expected exactly one session file for {session_id}, found {matches}"
     reloaded = Session.load(matches[0])
@@ -1600,9 +1597,7 @@ async def test_the_startup_session_itself_survives_with_both_entries(fake_home_t
     finally:
         await _shutdown(proc)
 
-    session_dir = session_dir_for_cwd(
-        os.getcwd(), base_dir=rpc_session_base(fake_home_two_models)
-    )
+    session_dir = session_dir_for_cwd(os.getcwd(), base_dir=rpc_session_base(fake_home_two_models))
     on_disk = sorted(session_dir.glob("*.jsonl")) if session_dir.is_dir() else []
     assert [p.name for p in on_disk if startup_id in p.name], (
         "the startup session left NO file on disk, so the cursors "
@@ -2162,9 +2157,7 @@ async def test_abort_stops_a_slow_compaction_and_the_host_is_told(fake_home, fak
             "cannot correlate the compaction_end that follows"
         )
 
-        end = await _recv_notification(
-            proc, "compaction_end", timeout=_SLOW_COMPACTION_S + 10.0
-        )
+        end = await _recv_notification(proc, "compaction_end", timeout=_SLOW_COMPACTION_S + 10.0)
         outcome_at = loop.time() - started
         assert end["params"]["compaction_id"] == compaction_id
         assert end["params"]["cancelled"] is True
@@ -2181,8 +2174,7 @@ async def test_abort_stops_a_slow_compaction_and_the_host_is_told(fake_home, fak
         await _send(proc, {"jsonrpc": "2.0", "id": compact_id + 2, "method": "get_session_stats"})
         stats, _ = await _recv_response(proc, compact_id + 2, timeout=30.0)
         assert stats["result"]["last_compaction"] is None, (
-            "a compaction entry landed for a compaction that was cancelled "
-            "before it finished"
+            "a compaction entry landed for a compaction that was cancelled before it finished"
         )
     finally:
         fake_state.delay_s = 0.0

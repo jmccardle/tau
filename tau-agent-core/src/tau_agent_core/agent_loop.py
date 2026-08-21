@@ -4,7 +4,7 @@ Reference: PHASE-2-SUBPHASE-1.md — Agent Loop.
 Reference: SUBPHASE-0.0.md, "5. Agent Events (tau-agent-core)" section.
 
 Implements AgentLoop — the direct port of pi's agent-loop.js logic.
-It takes messages + context, calls the LLM via τ-ai, parses assistant
+It takes messages + context, calls the LLM via τ-llm, parses assistant
 responses for text and tool calls, executes tool calls (sequential or
 parallel), feeds results back to the LLM, and repeats until no more
 tool calls or termination.
@@ -20,17 +20,17 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from tau_ai.abort import AbortSignal
-from tau_ai.client import stream_simple
-from tau_ai.streaming import (
+from tau_llm.abort import AbortSignal
+from tau_llm.client import stream_simple
+from tau_llm.streaming import (
     DoneEvent,
     ErrorEvent,
     TextDeltaEvent,
     ThinkingDeltaEvent,
     ToolCallDeltaEvent,
 )
-from tau_ai.tools import validate_tool_arguments
-from tau_ai.types import (
+from tau_llm.tools import validate_tool_arguments
+from tau_llm.types import (
     AssistantMessage,
     TextContent,
     ThinkingContent,
@@ -230,6 +230,14 @@ class AgentLoop:
                 # Stream response from LLM
                 assistant = await self._stream_response(messages)
                 final_messages.append(assistant)
+                # …and onto the running context the NEXT LLM call is built from.
+                # These are two different lists: `final_messages` is what the
+                # caller persists, `messages` is the wire. Appending only to the
+                # first sent the tool RESULTS below without the assistant message
+                # that requested them — a `tool_call_id` referring to a call the
+                # transcript never made, which a validating provider rejects
+                # outright.
+                messages.append(assistant)
 
                 tool_calls = assistant.get_tool_calls()
 
@@ -384,6 +392,9 @@ class AgentLoop:
 
                 assistant = await self._stream_response(messages)
                 final_messages.append(assistant)
+                # Onto the wire as well as the persisted list — see run() for why
+                # appending to only one of them corrupts the next request.
+                messages.append(assistant)
 
                 tool_calls = assistant.get_tool_calls()
                 if not tool_calls:

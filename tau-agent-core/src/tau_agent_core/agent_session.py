@@ -25,8 +25,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal
 from uuid import uuid4
 
-from tau_ai.abort import AbortSignal
-from tau_ai.types import Model, UserMessage
+from tau_llm.abort import AbortSignal
+from tau_llm.types import Model, UserMessage
 
 from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.extension_types import ExtensionAPI
@@ -308,6 +308,7 @@ class AgentSession:
         max_turns: int | None = None,
         tool_execution_mode: Literal["sequential", "parallel"] = "parallel",
         bus_available: bool = False,
+        no_tools: Literal["all", "builtin"] | None = None,
     ) -> None:
         # H8 (SIM_SPEC_v2 §16.10): whether this session has a bus transport a
         # loaded extension may declare TOUCHES_BUS against. Read by
@@ -323,6 +324,32 @@ class AgentSession:
         # "List of AgentTool instances" is now a fact rather than an aspiration, and
         # `AgentLoop`'s `dict[str, AgentTool]` finally has a typed edge behind it.
         self._tools: list[AgentTool] = tools or []
+        # The run's resolved tool-suppression policy (pi ``noTools``, sdk.ts:59).
+        # ONE tri-state rather than two booleans, and it is resolved at the argv
+        # boundary (``headless.resolve_no_tools``) exactly as pi resolves it in
+        # main.ts:424-428 — because ``--no-tools`` and ``--no-builtin-tools``
+        # only mean anything *together*, and two independently-threaded booleans
+        # put that meaning nowhere, which is how they came to be identical.
+        #
+        # - ``"all"``   — offer the model ZERO tools. Built-ins are already gone
+        #   (the caller passes ``tools=[]``); this value is what additionally
+        #   suppresses EXTENSION-registered tools in :meth:`_build_turn_tools`.
+        #   Extensions still load and everything that is not a callable tool —
+        #   lifecycle hooks, the mutating ``tool_call`` hook, event
+        #   subscriptions, slash commands, message injections — keeps working.
+        # - ``"builtin"`` — built-ins only; extension tools survive. Nothing in
+        #   THIS class acts on it: dropping the built-ins is the caller's
+        #   ``tools=[]``. It is carried so the value has one vocabulary end to
+        #   end and a reader here can see that the case was considered.
+        # - ``None`` — no suppression (the default; a direct ``AgentSession``
+        #   caller is unaffected by any of this).
+        if no_tools not in (None, "all", "builtin"):
+            raise ValueError(
+                f"no_tools must be 'all', 'builtin' or None, got {no_tools!r} — "
+                "this is a resolved policy, not free text; an unrecognised value "
+                "would silently mean 'no suppression'."
+            )
+        self._no_tools = no_tools
         # Turn cap for THIS session's loop (C2/W14: a branch sub-agent is bounded, so a
         # looping sub-agent cannot burn the primary run's budget). ``None`` = the
         # AgentLoopConfig default; the loop, not this class, owns that number.
@@ -820,7 +847,7 @@ class AgentSession:
         if not isinstance(model, Model):
             raise TypeError(
                 f"set_model({name!r}): resolver returned {type(model).__name__}, "
-                "expected a tau_ai.types.Model"
+                "expected a tau_llm.types.Model"
             )
         if self._compaction_policy is not None:
             # A declared policy was proven against the OLD model's context window
@@ -2735,7 +2762,7 @@ class AgentSession:
         """
         queued = queued or []
 
-        # Create UserMessage for tau-ai
+        # Create UserMessage for tau-llm
         content: list[dict[str, Any]] = [{"type": "text", "text": text}]
         if images:
             content.extend(images)
@@ -3441,7 +3468,7 @@ class AgentSession:
         ctx = self._extension_api.context
         resolved: list[AgentTool] = []
         for name, defn in self._registry.get_active_tools().items():
-            ext_execute = defn["execute"]
+            ext_execute = defn.execute
 
             def _make_adapter(ext_execute: Callable = ext_execute) -> Callable:
                 async def _adapter(
@@ -3459,15 +3486,15 @@ class AgentSession:
 
             resolved.append(
                 AgentTool(
+                    # Rebuilt rather than copied, because ``execute`` must be
+                    # swapped for the adapter: the registered callable has the
+                    # extension's five-argument signature and the loop calls the
+                    # four-argument one. Every other field carries across as-is,
+                    # and ``label`` needs no default here any more -- the model
+                    # already filled it from ``name`` at registration.
                     definition=ToolDefinition(
-                        name=name,
-                        label=defn.get("label", name),
-                        description=defn["description"],
-                        parameters=defn["parameters"],
+                        **{**defn.model_dump(exclude={"execute", "source"}), "name": name},
                         execute=_make_adapter(),
-                        prompt_snippet=defn.get("prompt_snippet"),
-                        prompt_guidelines=defn.get("prompt_guidelines"),
-                        execution_mode=defn.get("execution_mode", "parallel"),
                     )
                 )
             )
@@ -3655,6 +3682,9 @@ class AgentSession:
         :meth:`ExtensionRegistry.get_active_tools`, a name-keyed dict whose own
         duplicate guard is :meth:`ExtensionRegistry.register_tool`.
 
+        ``no_tools="all"`` short-circuits between those two — see the comment at
+        the check itself for why that position and not another.
+
         Raises:
             ValueError: if ``self._tools`` holds more than one tool per name.
         """
@@ -3668,6 +3698,26 @@ class AgentSession:
                     "rather than silently resolved."
                 )
             seen[t.name] = index
+
+        # ``--no-tools``: the model is offered nothing at all. Deliberately placed
+        # AFTER the duplicate scan and BEFORE the extension merge.
+        #
+        # After the scan, because the docstring above promises that a broken
+        # ``self._tools`` fails identically whether or not an extension is loaded —
+        # returning early above the scan would make ``--no-tools`` also mean "stop
+        # validating", so a duplicate-name bug would hide until the flag came off.
+        #
+        # Before the merge, because this is the ONLY thing that separates
+        # ``--no-tools`` from ``--no-builtin-tools``: both arrive here with
+        # ``self._tools == []``, and the merge below is precisely what lets an
+        # extension tool through. Without this line the two flags are the same
+        # flag — which is exactly the defect this replaced.
+        #
+        # It does not raise. Suppressing an extension's tool here carries out an
+        # explicit operator instruction; the operator learns which flag emptied
+        # the list from the TUI's session-facts row, not from an exception.
+        if self._no_tools == "all":
+            return []
 
         ext_tools = self._resolve_extension_tools()
         if not ext_tools:

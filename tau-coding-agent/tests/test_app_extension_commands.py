@@ -32,7 +32,7 @@ from tau_coding_agent.backends import create_backend
 # A file extension registering a slash command whose handler writes a marker file
 # capturing the args it received — the file's existence + contents prove the
 # handler actually ran through the real dispatch (not a stored-but-inert name).
-_COMMAND_EXT = '''
+_COMMAND_EXT = """
 import pathlib
 
 MARKER = pathlib.Path({marker!r})
@@ -43,19 +43,19 @@ def register(api):
         MARKER.write_text("ran:" + args)
 
     api.register_command("greet", {{"description": "greet the user", "handler": _greet}})
-'''
+"""
 
 
 # A command whose handler RETURNS a report string (the S46 output channel). The
 # returned value must render as a display-only system box and never enter the
 # model-input working list.
-_OUTPUT_EXT = '''
+_OUTPUT_EXT = """
 def register(api):
     def _todos(args, ctx):
         return "# Todos\\n- one\\n- two"
 
     api.register_command("todos", {"description": "list todos", "handler": _todos})
-'''
+"""
 
 
 @pytest.fixture
@@ -152,9 +152,7 @@ async def test_command_via_palette_renders_output(app, tmp_path):
         await pilot.pause()
 
         boxes = app.query(ChatDisplay).first().query(MessageBox)
-        assert any(
-            b.role == "system" and b._content == "# Todos\n- one\n- two" for b in boxes
-        )
+        assert any(b.role == "system" and b._content == "# Todos\n- one\n- two" for b in boxes)
 
 
 async def test_unknown_slash_command_falls_through(app, tmp_path):
@@ -204,8 +202,7 @@ async def test_command_without_handler_raises(app, tmp_path):
     """A command registered without a callable handler raises on run (Fail-Early)."""
     ext = tmp_path / "bad_cmd_ext.py"
     ext.write_text(
-        "def register(api):\n"
-        "    api.register_command('inert', {'description': 'no handler'})\n"
+        "def register(api):\n    api.register_command('inert', {'description': 'no handler'})\n"
     )
     app._extension_paths = [str(ext)]
     app._discover_extensions = False

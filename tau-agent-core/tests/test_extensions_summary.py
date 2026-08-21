@@ -20,7 +20,7 @@ from pathlib import Path
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.sdk import summarize_extensions
 from tau_agent_core.session_log import InMemorySessionLog
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 
 def _make_session() -> AgentSession:

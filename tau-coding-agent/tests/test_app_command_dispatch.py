@@ -37,7 +37,6 @@ from tau_agent_core.commands import CommandOutcome, UnsupportedCommandError
 from tau_coding_agent.app import ChatDisplay, ChatInput, MessageBox
 from tau_coding_agent.backends import create_backend
 
-
 # An extension registering a command whose handler RETURNS a report string — the S46
 # output channel, which is what a ``performer="core"`` outcome carries.
 _TODOS_EXT = """

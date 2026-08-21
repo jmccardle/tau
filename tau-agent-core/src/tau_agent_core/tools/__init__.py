@@ -4,6 +4,7 @@ Exports:
 - ToolDefinition: Raw tool definition
 - AgentTool: Validated tool wrapper
 - AgentToolResult: Result from a single tool execution
+- ExtensionToolDefinition: ToolDefinition as api.register_tool() takes it
 - ToolBatchResult: Result from a batch of tool executions
 - create_all_tools(cwd): Factory to create all built-in tools
 - create_coding_tools(cwd): Factory for coding tools
@@ -17,6 +18,7 @@ Reference: PHASE-2-SUBPHASE-3.md, tool definitions.
 from tau_agent_core.tools.base import (
     AgentTool,
     AgentToolResult,
+    ExtensionToolDefinition,
     ToolBatchResult,
     ToolDefinition,
 )
@@ -65,6 +67,7 @@ __all__ = [
     # Base types
     "AgentTool",
     "AgentToolResult",
+    "ExtensionToolDefinition",
     "ToolBatchResult",
     "ToolDefinition",
     # Tool classes

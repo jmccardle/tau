@@ -18,7 +18,7 @@ async def example_basic_custom_prompt():
     )
 
     messages = await session.prompt("Write a fibonacci function")
-    print("Response:", session.messages[-1])
+    print("Response:", messages[-1])
 
 
 # Example 2: Detailed system prompt with guidelines
@@ -46,7 +46,7 @@ Available tools:
     )
 
     messages = await session.prompt("Write a unit test for the existing add function")
-    print("Response:", session.messages[-1])
+    print("Response:", messages[-1])
 
 
 # Example 3: System prompt loaded from a file
@@ -79,7 +79,7 @@ Be concise and direct in your responses."""
         )
 
         messages = await session.prompt("Summarize the guidelines")
-        print("Response:", session.messages[-1])
+        print("Response:", messages[-1])
     finally:
         os.unlink(prompt_file)
 

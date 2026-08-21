@@ -17,11 +17,15 @@ Exits non-zero if any load-bearing assertion fails.
 """
 
 import json
+import os
 import sys
 
 import httpx
 
-BASE = sys.argv[1] if len(sys.argv) > 1 else "http://192.168.1.100:8080"
+# The server under test is the caller's, so it is an argument or $TAU_LLAMA_TEST_URL.
+BASE = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("TAU_LLAMA_TEST_URL", "")
+if not BASE:
+    sys.exit("usage: w1_grammar_spike.py <llama-server-base-url>  (or set $TAU_LLAMA_TEST_URL)")
 URL = f"{BASE}/v1/chat/completions"
 
 VERDICT_GRAMMAR = '%llguidance {}\nstart: "include" | "exclude" | "examine-children"'
@@ -170,7 +174,11 @@ if r and tools_fire_unconstrained:
 # --- 7a. grammar + TOP-LEVEL json_schema -> loud 500 ----------------------------
 r = post(
     "7a. grammar + top-level json_schema",
-    {"messages": MSGS, "grammar": VERDICT_GRAMMAR, "json_schema": VERDICT_SCHEMA["json_schema"]["schema"]},
+    {
+        "messages": MSGS,
+        "grammar": VERDICT_GRAMMAR,
+        "json_schema": VERDICT_SCHEMA["json_schema"]["schema"],
+    },
 )
 if r:
     check(

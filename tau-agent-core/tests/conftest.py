@@ -247,7 +247,7 @@ def sample_agent_event():
 @pytest.fixture
 def sample_model():
     """Fixture providing a sample Model for testing."""
-    from tau_ai.types import Model
+    from tau_llm.types import Model
 
     return Model(
         id="gpt-4o",
@@ -411,8 +411,8 @@ def fake_llm():
     """Patch ``tau_agent_core.agent_loop.stream_simple`` with a canned reply."""
     from unittest.mock import patch
 
-    from tau_ai.streaming import DoneEvent, TextDeltaEvent
-    from tau_ai.types import AssistantMessage, TextContent, Usage
+    from tau_llm.streaming import DoneEvent, TextDeltaEvent
+    from tau_llm.types import AssistantMessage, TextContent, Usage
 
     def _assistant(text: str) -> AssistantMessage:
         return AssistantMessage(

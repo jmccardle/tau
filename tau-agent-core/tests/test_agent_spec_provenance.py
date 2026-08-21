@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import os
 
-from tau_ai.types import Model
+from tau_llm.types import Model
 
 from tau_agent_core.agent_session import AgentSession, _system_prompt_digest
 from tau_agent_core.session_log import InMemorySessionLog

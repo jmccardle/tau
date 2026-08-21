@@ -32,8 +32,8 @@ from typing import Any
 
 from tau_agent_core.completion import CompletionFailed, resolved_complete
 from tau_agent_core.usage import add_usage, usage_of, zero_usage
-from tau_ai.client import complete_simple
-from tau_ai.types import Model, TextContent
+from tau_llm.client import complete_simple
+from tau_llm.types import Model, TextContent
 
 from tau_agent_core.compaction_utils import (
     FileOperations,
@@ -532,7 +532,7 @@ async def generate_summary(
     # The shared completion door (C1). complete_fn is passed explicitly as this
     # module's own ``complete_simple`` so that a test patching
     # ``tau_agent_core.compaction.complete_simple`` is honored (the shared primitive
-    # otherwise reaches for ``tau_ai.client.complete_simple``). We keep compaction's
+    # otherwise reaches for ``tau_llm.client.complete_simple``). We keep compaction's
     # error taxonomy: the shared error/aborted check raises CompletionFailed, which we
     # translate — preserving the aborted-vs-summarization_failed code split — and a
     # provider/transport failure below stays ``summarization_failed``. Billing is

@@ -62,11 +62,22 @@ lookup, the parallel read-only guard, and the output truncation / summarisation.
 ## Usage
 
 ```python
+import importlib.util
+import sys
+
 from tau_agent_core.sdk import create_agent_session
-from examples.delegate import delegate_extension  # loaded via importlib in tests
+
+# examples/ is not an importable package: there is no __init__.py and every
+# filename starts with a digit. Load the file by path, as `tau -e` does.
+_spec = importlib.util.spec_from_file_location("ext", "examples/20_delegate.py")
+ext = importlib.util.module_from_spec(_spec)
+# Register BEFORE exec_module: a module using `from __future__ import
+# annotations` resolves its own dataclass annotations through sys.modules.
+sys.modules[_spec.name] = ext
+_spec.loader.exec_module(ext)
 
 session = create_agent_session(
-    model="gpt-4o", tools=["read"], extensions=[delegate_extension],
+    model="gpt-4o", tools=["read"], extensions=[ext.register],
 )
 ```
 

@@ -58,6 +58,5 @@ class TestOnDiskReloadRoundTrip:
         assert reloaded.entries() == expected_entries
         assert reloaded.cursor == expected_cursor
         assert (
-            ConversationTree(reloaded.entries(), reloaded.cursor).context_for()
-            == expected_context
+            ConversationTree(reloaded.entries(), reloaded.cursor).context_for() == expected_context
         )
