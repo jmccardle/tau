@@ -92,6 +92,32 @@ class _Stream:
         pass
 
 
+async def _eventually(predicate, what: str, timeout: float = 2.0) -> None:
+    """Wait for a task done-callback to land, then let the caller assert.
+
+    ``_run_threadsafe_submission`` resolves the caller's ``concurrent.futures``
+    future from INSIDE the coroutine — ``future.set_result(result)`` runs, and
+    only then does the coroutine return and the task become done, which is what
+    fires ``add_done_callback``. So the future is resolved BEFORE
+    ``_on_threadsafe_task_done`` runs, by construction, and how many loop
+    iterations separate the two is the scheduler's business.
+
+    Asserting the bookkeeping immediately after ``await asyncio.wrap_future``
+    therefore asserts an ordering the code has never promised. It held on 3.11
+    and stopped holding on 3.13, where it failed in CI on the 0.9.3 tag.
+
+    Waiting keeps the assertion that matters — the callback DOES run, so a
+    finished submission is untracked and its exception is surfaced — and drops
+    the accidental one. A callback that never runs still fails, on the timeout.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate():
+        if loop.time() >= deadline:
+            raise AssertionError(f"timed out after {timeout}s waiting for {what}")
+        await asyncio.sleep(0.005)
+
+
 class TestSubmitRefusesAForeignCaller:
     async def test_submit_from_a_different_live_loop_raises_and_names_the_fix(self):
         """The E5560 case: another loop, running at the same time as ours."""
@@ -189,7 +215,10 @@ class TestSubmitThreadsafeDelivers:
             ).context_for()
         )
         assert "hello from the bus" in active
-        assert session._threadsafe_tasks == {}, "the done-callback untracks a finished task"
+        await _eventually(
+            lambda: session._threadsafe_tasks == {},
+            "the done-callback to untrack a finished task",
+        )
 
     async def test_a_foreign_loop_marshals_a_turn_that_actually_runs(self):
         """The other foreign context: a thread that runs its own event loop."""
@@ -262,7 +291,10 @@ class TestSubmitThreadsafeDelivers:
         with pytest.raises(NotImplementedError):
             await asyncio.wrap_future(future)
 
-        assert surfaced == ["submit_threadsafe:e-1"]
+        await _eventually(
+            lambda: surfaced == ["submit_threadsafe:e-1"],
+            "the failure to reach the session's error sink",
+        )
         assert session._threadsafe_tasks == {}
 
 

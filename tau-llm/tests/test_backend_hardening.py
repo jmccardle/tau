@@ -436,8 +436,19 @@ def test_the_timeout_really_bounds_a_hanging_server_and_says_so():
     """
 
     async def go():
+        # The handler must stall for the whole request and then be releasable,
+        # which is not the same thing as stalling forever. From CPython 3.12,
+        # ``Server.wait_closed()`` waits for open connections' handlers to
+        # finish; a handler awaiting an Event nobody sets therefore hangs the
+        # TEARDOWN, not the code under test, and the outer wait_for below turns
+        # that into a TimeoutError that reads like the timeout knob failing.
+        # Measured directly: wait_closed() returns on 3.11 and hangs on 3.13.
+        # This cost the 0.9.3 tag a red matrix.
+        release = asyncio.Event()
+
         async def _accept_and_stall(reader, writer):
-            await asyncio.Event().wait()  # never responds, never closes
+            await release.wait()  # never responds while the request is in flight
+            writer.close()
 
         server = await asyncio.start_server(_accept_and_stall, "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]
@@ -452,6 +463,7 @@ def test_the_timeout_really_bounds_a_hanging_server_and_says_so():
             return [e async for e in stream]
         finally:
             await provider.aclose()
+            release.set()
             server.close()
             await server.wait_closed()
 

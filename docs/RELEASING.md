@@ -75,6 +75,53 @@ repo reports findings in `tests/`, `experiments/` and `run_agent_loop.py`; those
 trees are outside the gate on purpose, so run ruff on the four `src` trees, not
 on `.`.
 
+#### Run the matrix BEFORE the tag push, not after
+
+The local gate is 3.11 only, and `publish.yml` tests 3.11, 3.12, 3.13 and 3.14
+with `fail-fast: true`. So the first time a release learns about the other
+three is the tag push — and a tag push is the one step that cannot be taken
+back. 0.9.3 was tagged, went red on 3.13, and had to be recut.
+
+Run all four locally first:
+
+```bash
+tar -cf /tmp/src.tar --exclude=./venv --exclude=__pycache__ \
+    --exclude='*.egg-info' --exclude=./.git --exclude='*.tar.gz' .
+for v in 3.11 3.12 3.13 3.14; do
+  docker run --rm -v /tmp/src.tar:/src.tar:ro python:$v-bookworm bash -c '
+    mkdir /work && tar -xf /src.tar -C /work && cd /work &&
+    pip install -q -e ./tau-llm -e "./tau-agent-core[dev]" \
+                   -e "./tau-coding-agent[dev]" -e ./tau-jmfts &&
+    python -m pytest -q' | tail -3
+done
+```
+
+**Read 3.11 as the control, not as a pass.** Four tests fail in this harness on
+every version, and they are artifacts of it rather than defects:
+
+| Test | Why it fails here |
+|---|---|
+| `test_no_host_addresses_in_shipped_trees` | shells out to `git ls-files`; the tar has no `.git` |
+| `test_every_install_hint_names_a_real_distribution` | same |
+| `TestBashToolProcessGroupKill::test_timeout_kills_backgrounded_grandchild` | no real init to reap a process group |
+| `TestBashToolProcessGroupKill::test_abort_kills_backgrounded_grandchild` | same |
+
+A version is clean when its output is **identical to 3.11's**. At 0.9.3 all
+four gave `4551 passed, 4 failed, 151 skipped`. Anything else is a real
+difference and blocks the tag.
+
+The two failures that actually cost 0.9.3 its first tag are worth knowing,
+because both are shapes a 3.11-only gate cannot see:
+
+* **`Server.wait_closed()` changed in CPython 3.12** and now waits for open
+  connections' handlers to finish. A test whose handler stalls forever hangs
+  its own teardown. Measured: returns on 3.11, hangs on 3.13.
+* **Callback ordering after `asyncio.wrap_future`.** A coroutine that resolves
+  a `concurrent.futures.Future` from inside itself resolves it *before* the
+  task is done, so the task's done-callback has not run when the awaiting
+  caller wakes. How many loop iterations separate the two is the scheduler's
+  business, and it changed.
+
 ### 3. Merge and push internally
 
 ```bash
