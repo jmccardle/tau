@@ -29,7 +29,29 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The anthropic-messages wire protocol, built on the official SDK rather than on
+# httpx directly (docs/ANTHROPIC-GOOGLE-CLIENTS.md O5). An extra rather than a
+# hard dependency: the SDK carries its own HTTP stack, and an install that only
+# ever speaks the OpenAI wire should not pay for it. The provider imports it
+# lazily, on first request, so `import tau_llm` works without this extra and the
+# error for a missing one names the extra.
+anthropic = [
+    "anthropic>=1.0",
+]
+# The google-generative-ai wire protocol, on the official SDK for the same
+# reason (docs/ANTHROPIC-GOOGLE-CLIENTS.md O6) — and here the drift argument is
+# measured rather than predicted: thought_signature on a functionCall was
+# optional on Gemini 2.5 and is validated on Gemini 3, and Google's own two
+# documentation pages presently disagree about whether the field exists there at
+# all. Also an extra, also imported lazily on first request.
+google = [
+    "google-genai>=1.0",
+]
 dev = [
+    # `anthropic` is deliberately NOT here. The anthropic-messages provider's
+    # tests stub the SDK's streaming surface rather than importing it, and
+    # test_the_extra_is_genuinely_optional proves the module works with the SDK
+    # absent. A dev dependency nothing needs would quietly weaken that claim.
     "pytest",
     "pytest-asyncio",
     "ruff",

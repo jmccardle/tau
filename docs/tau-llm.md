@@ -1,29 +1,42 @@
-# τ-llm Design — OpenAI-compatible provider library
+# τ-llm Design — the provider layer
 
 ## Scope
 
 `tau_llm` is the streaming/provider layer: message and tool types, a
-`Provider` abstraction, and one concrete implementation
-(`OpenAICompletionsProvider`) for the OpenAI Chat Completions API and
-OpenAI-compatible local servers (vLLM, llama.cpp). `Provider` is written as
-an abstract interface so a second provider is *possible*, but as of this
-writing none exists and the abstraction has never been exercised by a
-second implementation — see "Extending with a new provider" below for what
-that would actually require today.
+`Provider` abstraction, and three concrete implementations — one per wire
+protocol τ speaks.
+
+| `Model.api` | Client | Built on | Vendor τ registers |
+|---|---|---|---|
+| `openai-completions` | `OpenAICompletionsProvider` | `httpx` directly | `openai` |
+| `anthropic-messages` | `AnthropicMessagesProvider` | the `anthropic` SDK | `anthropic` |
+| `google-generative-ai` | `GoogleGenerativeAIProvider` | the `google-genai` SDK | `gemini` |
+
+The two vendor SDKs are optional extras (`tau-llm[anthropic]`,
+`tau-llm[google]`) imported lazily on first request, so `import tau_llm` works
+without either and the whole test suite passes with both imports blocked.
+
+The OpenAI path also serves OpenAI-compatible local servers (vLLM,
+llama.cpp) as a first-class case rather than an afterthought.
 
 ## Package layout
 
 ```
 src/tau_llm/
-├── types.py            # Message/Tool/Model/Usage/streaming-event types (pydantic)
+├── types.py             # Message/Tool/Model/Usage types (pydantic)
 ├── client.py            # stream_simple() + the provider connection pool
-├── streaming.py         # AssistantMessageEventStream (queue buffering + result())
+├── streaming.py         # streaming events + AssistantMessageEventStream
 ├── tools.py             # define_tool(), validate_tool_arguments()
-├── models.py             # clampThinkingLevel-equivalent, thinking-level plumbing
+├── models.py            # clamp_thinking_level, thinking-level plumbing
+├── compat.py            # the two fields detected from a base URL
+├── catalog.py           # `python -m tau_llm.catalog` — models.dev lookup
 ├── abort.py, constraints.py, grammar.py, json_parse.py
 └── providers/
-    ├── base.py          # Provider ABC, StreamEventStream Protocol
-    └── openai.py        # OpenAICompletionsProvider — the only concrete provider
+    ├── base.py          # Provider ABC + the api and vendor registries
+    ├── __init__.py      # τ's own register_api / register_provider calls
+    ├── openai.py        # openai-completions
+    ├── anthropic.py     # anthropic-messages
+    └── google.py        # google-generative-ai
 ```
 
 ## Core types (`tau_llm/types.py`)
@@ -40,11 +53,18 @@ local OpenAI-compatible servers as a first-class case, not an afterthought:
 `reasoning: bool`, `thinking_level_map`, `reasoning_replay: Literal["all",
 "turn", "off"]` (τ defaults to `"turn"`, not pi's `"all"` — see README's
 "Where τ diverges from pi"), `grammar_dialect: Literal["llguidance",
-"gbnf"] | None`, `extra_body: dict[str, Any]`, `server_features:
-list[str]`. `Model.provider` and `AssistantMessage.provider` are typed
-`Literal["openai"]` today — there is no separate `KnownProvider`/`KnownApi`
-named type to extend; a second provider means adding a second literal
-value at each call site.
+"gbnf"] | None`, `extra_body: dict[str, Any]`, `server_features: list[str]`,
+`stream: bool`, `request_timeout: float | None`, `strict_reasoning_formats:
+bool`, `requires_tool_call_id: bool`, `supports_multimodal_function_response:
+bool`, and `compat: Compat | None`.
+
+`Model.api`, `AssistantMessage.api` and `AssistantMessage.provider` are `str`.
+They were `Literal["openai"]` until `6e1dfbe`, which was a latent defect rather
+than a constraint: `streaming.py` copies the Model's vendor onto the message,
+so a legal `Model` naming anyone else raised `ValidationError` there.
+
+A `ToolCall` and a `ThinkingContent` each carry a `provider_signature: dict`,
+namespaced by vendor. See "Reasoning signatures" below.
 
 ## Provider interface (`tau_llm/providers/base.py`)
 
@@ -58,32 +78,59 @@ class Provider(ABC):
     ) -> StreamEventStream: ...
 ```
 
-`StreamEventStream` is a structural `Protocol` (`__aiter__` only, no
-`api`/`name` properties on the class). `client.py`'s `stream_simple()` is
-the thin wrapper everything else calls: it resolves a provider instance,
-calls `stream_chat`, and wraps the result once in
-`AssistantMessageEventStream` (`streaming.py`) — the one stream type with
+`StreamEventStream` is a structural `Protocol` (`__aiter__` only). There is no
+non-streaming entry point on the interface: `Model.stream = False` changes how
+τ talks to the server, not what the caller sees, because the buffered path
+fills the same accumulator and yields the same event sequence.
+
+`client.py`'s `stream_simple()` is the thin wrapper everything else calls: it
+resolves a provider instance, calls `stream_chat`, and wraps the result once
+in `AssistantMessageEventStream` (`streaming.py`) — the one stream type with
 queue buffering and the terminal `async def result() -> AssistantMessage`.
 
-### Provider lifecycle: a pool, not a registry
+### Two registries, and a pool on top
 
-An earlier `ProviderRegistry` class existed and was deleted as dead code —
-`stream_simple` built a fresh, empty registry on every single call, so
-every lookup raised `KeyError`, and a new `OpenAICompletionsProvider` (and
-a new `httpx.AsyncClient`) got constructed per completion: measured at
-+42ms/call, no HTTP keep-alive. See `docs/PROVIDER-LIFETIME.md` for the
-forensics.
+Three questions, deliberately answered in three places.
 
-The real mechanism is a connection pool in `client.py`:
-`_get_or_create_provider(provider_name, base_url, api_key)` looks up or
-builds a provider cached by `(provider_name, resolved_base_url,
-sha256(api_key))`, held in a `WeakKeyDictionary` keyed per event loop, with
-explicit teardown via `aclose_providers()` — call it on process shutdown
-(the TUI, headless, and RPC entry points all do). API key resolution is not
-a generic `get_default_api_key(provider)` helper; it's inlined per provider
-(`OpenAICompletionsProvider.__init__` reads `OPENAI_API_KEY` directly) and
-raises `No API key for provider: …` rather than falling back to a
-fabricated key (Fail-Early).
+* **Which client class serves this `Model.api`?** The *api registry* —
+  `register_api(api, factory)` in `providers/base.py`. An unregistered `api`
+  raises, naming what was asked for and what is registered; it does not fall
+  back to the OpenAI class, because that fallback was the bug that let a model
+  declaring `openai-responses` be served over the completions wire in silence.
+* **Where does this `Model.provider` point, and which environment variables
+  hold its key?** The *vendor registry* — `register_provider(ProviderSpec(...))`.
+  τ registers one vendor per protocol it implements and ships no model
+  catalogs; anyone else's vendor is six lines in their own code at import time.
+* **Which client INSTANCE serves this call?** The pool in `client.py`, keyed on
+  `(provider_id, api, base_url, sha256(api_key))` and held in a
+  `WeakKeyDictionary` per event loop. `api` is in the key because two apis are
+  two classes. The credential is hashed, never stored raw, including the
+  absent case. Teardown is `aclose_providers()`; the TUI, headless and RPC
+  entry points all call it.
+
+An earlier `ProviderRegistry` class was deleted as dead code — `stream_simple`
+built a fresh, empty one on every call, so every lookup raised `KeyError` and a
+new provider and `httpx.AsyncClient` got constructed per completion: +42ms per
+call, no HTTP keep-alive. `docs/PROVIDER-LIFETIME.md` has the forensics. The
+registries above are the opposite case: `client.py` cannot construct a provider
+without them.
+
+A missing key raises `No API key for provider: …` rather than falling back to a
+fabricated one (Fail Early).
+
+### Reasoning signatures
+
+Anthropic's thinking blocks and Gemini 3's function calls both carry a
+signature the vendor VALIDATES on replay, so both are namespaced by vendor and
+the OpenAI writer refuses a foreign one — raising under
+`Model.strict_reasoning_formats`, otherwise warning once per payload shape and
+dropping the token while the tool call replays intact.
+
+The rule that is easy to get backwards: a **functionCall** signature is
+replayed on every `reasoning_replay` setting including `"off"`, because it is
+protocol rather than chain-of-thought and Gemini 3 answers 400 without it.
+Signatures on **text and thinking** parts do follow the knob. Full argument:
+`docs/ANTHROPIC-GOOGLE-CLIENTS.md` O4.
 
 ## Tools (`tau_llm/tools.py`)
 
@@ -135,21 +182,34 @@ third shape again — `api.register_tool()` takes a plain dict whose
 `execute` is `execute(tool_call_id, params, signal, on_update, ctx)` (see
 `docs/extensions.md`).
 
-## Extending with a new provider
+## Extending
 
-There is no `register_provider()` call to make — that function doesn't
-exist. Adding a second provider today means:
+**An OpenAI-compatible vendor needs no τ change at all** — no fork, no new
+file, no core edit. Register a spec at import time in your own code:
 
-1. Implement `Provider.stream_chat` in a new `tau_llm/providers/<name>.py`.
-2. Wire it into `client.py`'s `_get_or_create_provider`/`_pool_key`, which
-   currently only knows how to build an `OpenAICompletionsProvider`.
-3. Extend the `Literal["openai"]` annotations on `Model.provider` and
-   `AssistantMessage.provider` in `types.py`.
+```python
+from tau_llm.providers import ProviderSpec, register_provider
 
-That's real, scoped work inside `tau_llm`, not a drop-in extension point —
-correcting an earlier claim that no core changes were needed.
+register_provider(ProviderSpec(
+    id="groq", name="Groq",
+    api="openai-completions",
+    base_url="https://api.groq.com/openai/v1",
+    api_key_env=("GROQ_API_KEY",),
+))
+```
+
+then point a model at it with `provider="groq"`. This is pi's largest provider
+bucket — roughly 25 of its 39 providers are thin configurations over one
+OpenAI-compatible client.
+
+**A genuinely new wire protocol** is a new `tau_llm/providers/<name>.py`
+implementing `Provider.stream_chat`, plus a `register_api` call. Nothing in
+`client.py` or `types.py` changes: dispatch already reads `model.api` through
+the registry, and the type annotations are already `str`. The Anthropic and
+Google clients were both added this way.
 
 ## Dependencies
 
-`openai` SDK, `pydantic>=2.0`. Standard library otherwise (asyncio, json,
-time).
+`pydantic>=2.0` and `httpx>=0.27`. Standard library otherwise. The `anthropic`
+and `google-genai` SDKs are optional extras, imported lazily on first request
+by their own provider modules — nothing at module scope pulls them in.

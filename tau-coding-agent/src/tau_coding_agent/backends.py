@@ -13,7 +13,9 @@ import sys
 from abc import ABC, abstractmethod
 from typing import Any, Awaitable, Callable, Literal, cast
 from uuid import uuid4
+from tau_llm.compat import Compat
 from tau_llm.models import EXTENDED_THINKING_LEVELS, is_valid_thinking_level
+from tau_llm.providers import get_provider_spec, registered_apis
 from tau_llm.types import Model
 from tau_agent_core.agent_session import (
     AgentSession,
@@ -24,7 +26,7 @@ from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.event_projection import MessageDeltaProjector
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.session_log import InMemorySessionLog, SessionLog
-from tau_agent_core.sdk import LoadExtensionsResult, _resolve_tools
+from tau_agent_core.sdk import LoadExtensionsResult, _build_system_prompt, _resolve_tools
 from tau_agent_core.submission import Submission, SubmissionResult
 
 #: The render lane a caller that names none renders into. Every pre-B3-a consumer
@@ -658,12 +660,36 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     and carries the optional ``thinking_level_map``.
     """
     model_id = config.get("model", "gpt-4")
-    base_url = config.get("base_url", "https://api.openai.com/v1")
     backend_type = config.get("backend", "openai").lower()
 
     # Map provider name (Parley's "backend" field) to tau-agent-core provider.
     provider_map = {"openai": "openai", "anthropic": "anthropic", "gemini": "gemini"}
     provider = provider_map.get(backend_type, backend_type)
+
+    # Which WIRE PROTOCOL this endpoint speaks. This used to be hardcoded to
+    # "openai-completions", which meant no config could name any other — the
+    # api registry existed and no `~/.tau/config.json` user could reach it.
+    #
+    # Resolution order, and the polarity rule from PLAN-0.9.3 §4.5: a stated
+    # value wins, then the registered vendor's own protocol, then the historical
+    # default. An UNRECOGNISED stated value raises against the registry rather
+    # than falling through to the OpenAI wire — a model silently served over the
+    # wrong protocol is the exact failure that got "openai-responses"
+    # unregistered, and it is worse here than a startup error.
+    spec = get_provider_spec(provider)
+    api = config.get("api") or (spec.api if spec else "openai-completions")
+    if api not in registered_apis():
+        raise ValueError(
+            f"models.{model_id}.api is {api!r}, which τ does not implement. "
+            f"Registered wire protocols: {', '.join(sorted(registered_apis()))}."
+        )
+
+    # A stated base_url wins; otherwise take the vendor's own default, and only
+    # then the historical OpenAI URL. Defaulting every model to OpenAI's endpoint
+    # would point an Anthropic client at the wrong server.
+    base_url = config.get("base_url") or (spec.base_url if spec else None)
+    if not base_url:
+        base_url = "https://api.openai.com/v1"
 
     # Reasoning capability is DECLARED, never inferred. This used to read
     # ``bool(config.get("reasoning")) or <a level was requested>``, so asking for a
@@ -697,6 +723,18 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
         )
     reasoning_replay = cast(Literal["all", "turn", "off"], reasoning_replay)
 
+    # Whether a reasoning-format quirk warns and degrades (default) or raises
+    # (Model.strict_reasoning_formats). Per-model only — there is no top-level
+    # default to fold in, because the flag is a statement about one endpoint's
+    # pipeline, not about the installation.
+    # Reference: docs/ANTHROPIC-GOOGLE-CLIENTS.md S3.
+    strict_reasoning_formats = config.get("strict_reasoning_formats", False)
+    if not isinstance(strict_reasoning_formats, bool):
+        raise ValueError(
+            "models.<name>.strict_reasoning_formats must be a boolean; got "
+            f"{strict_reasoning_formats!r}"
+        )
+
     # Constrained-decoding capability (Model.grammar_dialect). Absent = the endpoint
     # declares no grammar support, and a constraint-carrying call will raise. We do
     # NOT infer support from the base_url or provider: guessing wrong means either a
@@ -721,20 +759,67 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
             f"models.<name>.server_features must be a list of strings; got {server_features!r}"
         )
 
+    # Endpoint wire quirks (Model.compat): which spelling of the output cap this
+    # server accepts, and whether it tolerates `stream_options`. Absent means τ
+    # infers both from provider/base_url, which is what every existing config
+    # gets and what it got before this key existed.
+    compat_config = config.get("compat")
+    if compat_config is not None and not isinstance(compat_config, dict):
+        raise ValueError(f"models.<name>.compat must be a JSON object; got {compat_config!r}")
+    compat = Compat(**compat_config) if compat_config else None
+
+    # The model's own limits. These were hardcoded here — 128000 and 4096 for
+    # every model in existence — and no config key reached them, so a 32k local
+    # model advertised a 128k window to the compactor and a model that can emit
+    # 128k tokens was capped at 4096. Both defaults are kept for a config that
+    # states neither, because changing what an existing config resolves to is a
+    # separate decision from making the key reachable.
+    #
+    # `python -m tau_llm.catalog config <provider>/<model>` emits both from
+    # models.dev, which is where the real numbers live.
+    # ``isinstance(True, int)`` is True in Python, so bools are excluded
+    # explicitly — ``"context_window": true`` would otherwise resolve to a
+    # one-token window and only show up as a model that can never say anything.
+    context_window = config.get("context_window", 128000)
+    if (
+        isinstance(context_window, bool)
+        or not isinstance(context_window, int)
+        or context_window <= 0
+    ):
+        raise ValueError(
+            f"models.<name>.context_window must be a positive integer; got {context_window!r}"
+        )
+    max_tokens = config.get("max_tokens", 4096)
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
+        raise ValueError(f"models.<name>.max_tokens must be a positive integer; got {max_tokens!r}")
+
     return Model(
         id=model_id,
         name=model_id,
-        api="openai-completions",
+        api=api,
         provider=provider,
         base_url=base_url,
-        context_window=128000,
-        max_tokens=4096,
+        context_window=context_window,
+        max_tokens=max_tokens,
         reasoning=model_reasoning,
         thinking_level_map=config.get("thinking_level_map"),
         reasoning_replay=reasoning_replay,
+        strict_reasoning_formats=strict_reasoning_formats,
         grammar_dialect=grammar_dialect,
         extra_body=dict(extra_body),
         server_features=list(server_features),
+        # Both of these were reachable on Model and dead through config: the
+        # field existed, the provider consumed it, and no user could set it
+        # because this seam never carried it. A knob that only a library caller
+        # can turn is not a knob a `~/.tau/config.json` user has.
+        #
+        # `stream: false` is for a gateway that does not implement SSE;
+        # `request_timeout` is seconds, and matters because a gateway that drops
+        # connections is exactly a timeout question. Both are typed on Model, so
+        # a bad value raises here at config load rather than mid-turn.
+        stream=config.get("stream", True),
+        request_timeout=config.get("request_timeout"),
+        compat=compat,
     )
 
 
@@ -998,8 +1083,6 @@ class TauBackend(Backend):
         api_key = config.get("api_key")
 
         self.model_name = model_id
-        self.system_prompt = config.get("system_prompt", "")
-
         # Thinking/reasoning level. The CLI's --thinking flag (or a model:level
         # suffix) lands here as config["thinking"]; a model config entry may also
         # declare a default "thinking" level and a "thinking_level_map". A
@@ -1028,6 +1111,30 @@ class TauBackend(Backend):
             tools = _resolve_tools(tool_names)
         else:
             tools = []
+
+        # The system prompt is BUILT, not copied out of the config (0.9.3 §1).
+        #
+        # This line used to be `config.get("system_prompt", "")`, and that one
+        # `.get` is why nothing a user wrote in an AGENTS.md ever reached a
+        # model: `_build_system_prompt` — τ's base prompt AND its context-file
+        # discovery — lives behind `create_agent_session`, which NOTHING in this
+        # package calls. TauBackend constructs `AgentSession` directly, so the
+        # TUI and every headless run sent whatever string the config held, and
+        # on a default install (no `system_prompt` key) that string was `""`.
+        # Dropping the key from tau_default_config.json was necessary but not
+        # sufficient; this is the other half.
+        #
+        # A configured `system_prompt` still wins over the base text — it is
+        # passed as `custom_prompt`, which replaces that text and nothing else,
+        # so project context files compose with it instead of being switched off
+        # by it (pi system-prompt.ts:46-62).
+        # ``cwd`` is left to default to ``os.getcwd()`` — the same directory the
+        # TUI stamps on a session and the same one the tools run in.
+        self.system_prompt = _build_system_prompt(
+            tools=tools,
+            custom_prompt=config.get("system_prompt") or None,
+            no_context_files=bool(config.get("no_context_files", False)),
+        )
 
         # The resolved tool-suppression policy (``--no-tools`` → "all",
         # ``--no-builtin-tools`` → "builtin", absent → None), set by

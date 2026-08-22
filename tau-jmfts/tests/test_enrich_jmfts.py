@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from tau_jmfts.catalog import JmftsSessionCatalog
-from tau_jmfts.client import CHUNK_USETYPE, EMBED_MAX_CHARS, JmftsClient, JmftsError
+from tau_jmfts.client import CHUNK_USETYPE, JmftsClient, JmftsError
 from tau_jmfts.ext.enrich import enrich_conversation
 
 pytestmark = pytest.mark.jmfts
@@ -147,9 +147,12 @@ def test_a_long_message_is_chunked_so_its_TAIL_is_searchable_too(
 
         chunks = client.get_children(report.chunked[0], usetype=CHUNK_USETYPE, limit=100)
         assert len(chunks) > 1
-        assert all(len(c["content"]) <= EMBED_MAX_CHARS for c in chunks), (
-            "a chunk still exceeds the embedder's window — it would be embedded as a "
-            "silently truncated prefix, which is the bug chunking exists to prevent"
+        # "It fits" is a token fact, so assert the token fact: an embedded chunk is one
+        # the server measured and accepted. A character bound would only assert τ's old
+        # guess about the exchange rate.
+        assert all(client.is_embedded(c["id"]) for c in chunks), (
+            "a chunk was not embedded — it did not fit the embedder's window, which is "
+            "the bug chunking exists to prevent"
         )
         assert any(tail_marker in (c["content"] or "") for c in chunks), "the tail was lost"
     finally:
@@ -160,11 +163,12 @@ def test_text_with_no_word_boundaries_is_split_and_embedded(
     catalog: JmftsSessionCatalog, client: JmftsClient, run_id: str
 ) -> None:
     """A base64 blob (or minified JS, or a long path) is ONE enormous "word" that a
-    word-based chunker cannot bound. The server now hard-splits any whitespace-free
-    chunk still over the embedder's window (the D4 fix), so the blob is split into
-    pieces that each fit and every one is embedded -- vector-searchable, not silently
-    truncated to a prefix and not reported as unembeddable (that client-side workaround
-    is reverted; the field no longer exists).
+    word-based chunker cannot bound, AND it tokenises far denser than the ~3.5 chars per
+    token that prose does. Both facts are invisible to a character count. The pieces have
+    to be held to the embedder's real window -- which the server will do, but only when
+    asked to chunk FOR embedding -- so every piece is embedded rather than refused,
+    silently truncated to a prefix, or reported as unembeddable (that client-side
+    workaround is reverted; the field no longer exists).
     """
     session = _session(catalog, run_id)
     try:
@@ -177,12 +181,47 @@ def test_text_with_no_word_boundaries_is_split_and_embedded(
         assert not hasattr(report, "unembeddable"), "the reverted unembeddable field is back"
 
         chunks = client.get_children(report.chunked[0], usetype=CHUNK_USETYPE, limit=100)
-        assert len(chunks) > 1, "the whitespace-free blob was not hard-split"
-        assert all(len(c["content"]) <= EMBED_MAX_CHARS for c in chunks), (
-            "a chunk still exceeds the embedder's window -- the server did not hard-split it"
-        )
+        assert len(chunks) > 1, "the whitespace-free blob was not split"
         assert all(client.is_embedded(c["id"]) for c in chunks), (
-            "a chunk was not embedded -- its content is not vector-searchable"
+            "a chunk was not embedded -- its content is not vector-searchable. A chunk "
+            "bounded in CHARACTERS is not bounded in tokens: 1800 chars of base64 is "
+            "~1350 tokens, well past the 512-token window."
+        )
+    finally:
+        catalog.delete(str(session.root_doc_id))
+
+
+def test_dense_content_short_enough_for_prose_is_still_over_the_token_window(
+    catalog: JmftsSessionCatalog, client: JmftsClient, run_id: str
+) -> None:
+    """The bug a character threshold cannot see, and the one prose hides.
+
+    τ decided "does this fit the embedder?" with ``len(content) > EMBED_MAX_CHARS``,
+    1800. The embedder's limit is 512 TOKENS. At English prose's ~3.5 chars/token the
+    two agree closely enough to look correct; base64 runs ~1.35 chars/token, so a blob
+    of 1800 chars -- one character UNDER the threshold, so routed down the "short enough
+    to embed whole" path -- is ~1350 tokens and the server refuses it outright.
+
+    This message is deliberately just inside the old threshold. Anything that decides by
+    counting characters fails here; only asking the server, which owns the tokenizer,
+    gets it right.
+    """
+    session = _session(catalog, run_id)
+    try:
+        blob = base64.b64encode(os.urandom(2048)).decode()[:1800]
+        assert len(blob) == 1800, "the fixture must sit just inside the old 1800-char proxy"
+        session.append_message(_msg("assistant", blob))
+
+        report = enrich_conversation(client, session.root_doc_id)
+
+        assert report.chunked, (
+            "dense content under the old character threshold was embedded whole -- a "
+            "character count decided a token question"
+        )
+        chunks = client.get_children(report.chunked[0], usetype=CHUNK_USETYPE, limit=100)
+        assert chunks, "the refused document produced no chunks"
+        assert all(client.is_embedded(c["id"]) for c in chunks), (
+            "a chunk was not embedded -- the blob is still not vector-searchable"
         )
     finally:
         catalog.delete(str(session.root_doc_id))
@@ -240,7 +279,9 @@ def test_a_pass_that_died_before_embedding_is_completed_by_re_running(
         doc_id = max(messages, key=lambda d: len(d.get("content") or ""))["id"]
 
         # Simulate the interrupted pass: chunk, but die before embedding any chunk.
-        chunks = client.chunk_document(doc_id)
+        # `auto_embed=False` is what makes the crash state reachable — the real path
+        # embeds inside the chunk call, so nothing else can leave chunks unembedded.
+        chunks = client.chunk_document(doc_id, auto_embed=False)
         assert not any(client.is_embedded(c["id"]) for c in chunks)
 
         report = enrich_conversation(client, session.root_doc_id)

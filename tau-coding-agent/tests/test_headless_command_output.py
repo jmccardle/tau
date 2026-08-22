@@ -191,3 +191,28 @@ async def test_unknown_slash_prompt_is_not_a_command(monkeypatch, tmp_path):
     # as ordinary prompt text.
     assert dispatched == []
     assert [s.text for s in admitted] == ["/nope not-a-command"]
+
+
+async def test_slash_resume_says_print_mode_cannot_perform_it(monkeypatch, tmp_path):
+    """The Fail-Early half of §7's third surface, in the mode that has no picker.
+
+    ``/resume`` is a built-in now (``tau_agent_core.commands.FRONTEND_COMMANDS``),
+    so print mode RESOLVES it and then says out loud that it cannot perform it —
+    the same contract ``/tree`` and ``/compact`` have here. Letting it fall through
+    to the model instead is the silent fallback this lifecycle removes: the user
+    asked to resume and would have got a paragraph about resuming.
+
+    It matches what ``cli.main`` does with the flag, too: ``tau -p --resume`` is
+    refused rather than ignored. One decision, stated in both places.
+    """
+    import pytest
+
+    from tau_agent_core.commands import UnsupportedCommandError
+
+    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+
+    args = CLIArgs(messages=["/resume"], print_mode=True, mode="text", model="m")
+    with pytest.raises(UnsupportedCommandError) as exc:
+        await run_print(args, _config())
+    assert "/resume" in str(exc.value)
+    assert "print mode" in str(exc.value)

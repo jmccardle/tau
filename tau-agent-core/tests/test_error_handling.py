@@ -374,6 +374,46 @@ def test_provider_error_event_paints_the_turn_then_raises_with_the_bracket_close
     assert closing.error == "RuntimeError: Connection refused"
 
 
+def test_an_empty_provider_error_message_still_raises_something_attributable():
+    """``RuntimeError: `` is not a bug report.
+
+    ``event.message`` is the only thing that survives this branch: it becomes the
+    transcript's error bubble and then the text of the raise. A provider that
+    emits an empty one produced a ``RuntimeError`` with nothing in it at all —
+    which is how a dropped connection surfaced before PLAN-0.9.3 §4.2, since
+    ``str(httpx.ReadTimeout())`` is ``""``.
+
+    τ's own provider now always fills the message in (see
+    ``tau-llm/tests/test_backend_hardening.py``), so this covers the OTHER
+    providers — the boundary guard has to name the model without inventing a
+    cause it does not know.
+    """
+    events: list[AgentEvent] = []
+
+    async def _emit(e):
+        events.append(e)
+
+    loop = AgentLoop(config=AgentLoopConfig(model="gpt-4o"), emit=_emit)
+
+    with patch(
+        "tau_agent_core.agent_loop.stream_simple",
+        side_effect=_error_stream_simple(""),
+    ):
+        with pytest.raises(RuntimeError) as excinfo:
+            asyncio.run(
+                loop.run(prompts=[UserMessage(content=[TextContent(text="hi")], timestamp=0)])
+            )
+
+    raised = str(excinfo.value)
+    assert raised.strip()
+    assert "empty message" in raised
+    assert "gpt-4o" in raised
+    # The rendered bubble and the raise must agree — one of them going blank is
+    # the same defect on a different surface.
+    message_ends = [e for e in events if e.type == "message_end"]
+    assert message_ends[-1].message["content"][0]["text"] == f"Error: {raised}"
+
+
 def test_a_normal_close_carries_no_error_so_the_two_are_distinguishable():
     """The other half of the signal: ``ended`` and ``died`` must not look alike.
 

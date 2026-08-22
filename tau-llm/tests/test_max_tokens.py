@@ -123,10 +123,59 @@ def _patch_client(monkeypatch) -> None:
 
 
 def test_model_max_tokens_reaches_the_request_body(monkeypatch):
-    """The regression this file exists for: it used to be absent entirely."""
+    """The regression this file exists for: it used to be absent entirely.
+
+    The fixture points at ``api.openai.com``, so the cap arrives under the
+    spelling that endpoint requires. ``test_a_local_endpoint_keeps_the_classic_
+    spelling`` below is the same assertion for everyone else.
+    """
     _patch_client(monkeypatch)
     payload = _run(_model(max_tokens=512))
+    assert payload["max_completion_tokens"] == 512
+    assert "max_tokens" not in payload
+
+
+def test_a_local_endpoint_keeps_the_classic_spelling(monkeypatch):
+    """An unrecognised endpoint gets ``max_tokens``, which is what it accepts.
+
+    llama.cpp, vLLM and the classic Chat Completions API reject
+    ``max_completion_tokens``, and an unrecognised base URL is far more often one
+    of those than a proxy in front of OpenAI. This is the case that decided
+    ``detect_compat``'s polarity, so it is pinned rather than left implied.
+    """
+    _patch_client(monkeypatch)
+    payload = _run(_model(base_url="http://127.0.0.1:8080/v1", max_tokens=512))
     assert payload["max_tokens"] == 512
+    assert "max_completion_tokens" not in payload
+
+
+def test_the_provider_name_openai_does_not_by_itself_switch_the_spelling(monkeypatch):
+    """``provider="openai"`` is τ's default filler, not a claim about the vendor.
+
+    ``build_model_from_config`` gives every config entry without a ``backend``
+    key ``provider="openai"``, so treating that string as identification — which
+    pi does — would flip every local server that never named a backend.
+    """
+    _patch_client(monkeypatch)
+    payload = _run(_model(provider="openai", base_url="http://localhost:11434/v1"))
+    assert "max_tokens" in payload
+    assert "max_completion_tokens" not in payload
+
+
+def test_compat_overrides_what_the_url_implies(monkeypatch):
+    """A proxy in front of OpenAI is one config key, not a patched provider."""
+    from tau_llm.compat import Compat
+
+    _patch_client(monkeypatch)
+    payload = _run(
+        _model(
+            base_url="https://gateway.example.internal/v1",
+            max_tokens=777,
+            compat=Compat(max_tokens_field="max_completion_tokens"),
+        )
+    )
+    assert payload["max_completion_tokens"] == 777
+    assert "max_tokens" not in payload
 
 
 def test_extra_body_max_tokens_wins_over_the_model_default(monkeypatch):

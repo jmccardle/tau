@@ -128,12 +128,10 @@ class _InMemoryConversationSession:
         parent_id: str | None,
         entry_type: str,
         payload: dict[str, Any],
-        *,
-        lane: str | None = None,
     ) -> str:
         """The C2/W14 explicit-parent append — delegated like every other appender."""
         self._touch()
-        return self._log.append_at(parent_id, entry_type, payload, lane=lane)
+        return self._log.append_at(parent_id, entry_type, payload)
 
     # -- ConversationSession additions ---------------------------------------
 

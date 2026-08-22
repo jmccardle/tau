@@ -1,0 +1,99 @@
+{
+  "measured_at": "2026-08-22T13:33:33.628827+00:00",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta",
+  "available_model_count": 37,
+  "available_gemini_models": [
+    "gemini-2.5-computer-use-preview-10-2025",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-image",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash-preview-tts",
+    "gemini-2.5-pro",
+    "gemini-2.5-pro-preview-tts",
+    "gemini-3-flash-preview",
+    "gemini-3-pro-image",
+    "gemini-3-pro-image-preview",
+    "gemini-3.1-flash-image",
+    "gemini-3.1-flash-image-preview",
+    "gemini-3.1-flash-lite",
+    "gemini-3.1-flash-lite-image",
+    "gemini-3.1-flash-lite-preview",
+    "gemini-3.1-flash-tts-preview",
+    "gemini-3.1-pro-preview",
+    "gemini-3.1-pro-preview-customtools",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash"
+  ],
+  "candidates": {
+    "2": [
+      "gemini-2.5-flash-lite"
+    ],
+    "3": [
+      "gemini-3-flash-preview"
+    ]
+  },
+  "skipped_as_uncallable": {
+    "gemini-2.5-flash-lite": "This model models/gemini-2.5-flash-lite is no longer available to new users. Please update your code to use models/gemini-3.5-flash-lite for the latest features and improvements."
+  },
+  "results": {
+    "gemini-2.5-flash-lite": {
+      "pi_major_version": 2,
+      "tool_call_shape": {
+        "available": false,
+        "reason": "This model models/gemini-2.5-flash-lite is no longer available to new users. Please update your code to use models/gemini-3.5-flash-lite for the latest features and improvements.",
+        "google_suggested": "gemini-3.5-flash-lite"
+      }
+    },
+    "gemini-3-flash-preview": {
+      "pi_major_version": 3,
+      "tool_call_shape": {
+        "available": true,
+        "called_the_tool": true,
+        "call_count": 1,
+        "call_carries_id": true,
+        "observed_id": "call_1545012",
+        "first_call_name": "get_temperature"
+      },
+      "tool_result_id": {
+        "exercised": true,
+        "google_supplied_an_id": true,
+        "without_id_status": 200,
+        "with_id_status": 200,
+        "id_verdict": "accepted",
+        "id_error": null,
+        "pi_would_send_id": true
+      },
+      "duplicate_name_pairing": {
+        "exercised": true,
+        "calls_carried_ids": true,
+        "call_order": [
+          "paris",
+          "tokyo"
+        ],
+        "sent": {
+          "paris": "11",
+          "tokyo": "29"
+        },
+        "answer": "Paris: 11\nTokyo: 29",
+        "paired_positionally": true
+      },
+      "multimodal_function_response": {
+        "exercised": true,
+        "without_image_status": 200,
+        "with_image_status": 400,
+        "verdict": "rejected",
+        "error": "Request contains an invalid argument.",
+        "pi_would_nest": true
+      }
+    }
+  },
+  "incomplete": null,
+  "models_probed": [
+    "gemini-2.5-flash-lite",
+    "gemini-3-flash-preview"
+  ],
+  "rate_limit_waits": 0,
+  "straddles_pi_boundary": false
+}

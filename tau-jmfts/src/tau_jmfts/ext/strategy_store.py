@@ -138,9 +138,14 @@ class StrategyStore:
             parent_id=None,
             structured_content={"kind": "strategy_root"},
             auto_embed=False,
-            # Top of an ordered region: giving the root a positioned subtree lets the
-            # heads (and, in turn, the log children) inherit CR-1 ordering.
-            sequential=True,
+            # No `sequential` here, and nothing downstream wants one. CR-1 ordering is a
+            # relationship between SIBLINGS under a parent, so it is undefined for a root
+            # (`parent_id is None`) — the server has rejected `sequential=True` on a root
+            # since jmfts d70cc57. Nor was it doing any work: inheritance is
+            # `sequential = parent is not None and parent.position is not None`, and both
+            # levels below set it themselves — `family()` on each head, `append_log()` on
+            # each log entry — so the ordering the store depends on is asserted, not
+            # inherited.
         )
         return int(root["id"])
 
@@ -176,8 +181,10 @@ class StrategyStore:
             usetype=HEAD_USETYPE,
             structured_content={"kind": HEAD_KIND},
             auto_embed=False,
-            # Opt this head's subtree into CR-1 ordering so appended log children are
-            # positioned automatically (temporal order = the footer/history invariant).
+            # A CR-1 position among its sibling heads, in creation order. `append_log`
+            # asks for its children's positions itself rather than relying on this
+            # propagating, so the log's temporal order (the footer/history invariant)
+            # does not depend on the value here.
             sequential=True,
         )
         return Family(name=name, head_id=int(head["id"]))

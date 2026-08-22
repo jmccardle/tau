@@ -2,7 +2,8 @@
 
 The live end-to-end path (a real sub-agent, a real tool call, a real verdict) was
 verified against the llama.cpp box during W14. What is pinned here is the behaviour
-that must not SILENTLY regress: tool scoping, failure containment, and lane discipline.
+that must not SILENTLY regress: tool scoping, failure containment, and the structural
+isolation of a branch's work.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import pytest
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree
-from tau_agent_core.session_log import LANE_KEY, InMemorySessionLog
+from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.tools.base import AgentToolResult
 from tau_llm.types import Model
 
@@ -61,13 +62,14 @@ async def test_asking_for_an_unavailable_tool_raises_before_any_model_call():
     told to use does not error — it returns a confident wrong answer ("I couldn't find
     it"), which reads exactly like a real verdict."""
     session, log = _session([_Tool("lookup")])
+    before = [e["id"] for e in log.entries()]
 
     with pytest.raises(ValueError, match="not available on this session"):
         await session._extension_api.context.spawn_branch(
             log.cursor, "go", tools=["lookup", "bash"]
         )
 
-    assert not [e for e in log.entries() if LANE_KEY in e], "nothing was written"
+    assert [e["id"] for e in log.entries()] == before, "nothing was written"
 
 
 async def test_the_allowlist_is_a_hard_filter(monkeypatch):
@@ -106,10 +108,13 @@ async def test_a_failing_sub_agent_is_contained_and_marks_its_branch(monkeypatch
 
     marks = [e for e in log.entries() if e.get("customType") == "branch_error"]
     assert len(marks) == 1, "the branch is marked, so the failure is visible in the tree"
-    assert marks[0][LANE_KEY] == result.lane
+    # The lane is in the mark's PAYLOAD (what the branch was), not a marker on the
+    # entry (who wrote it) — docs/LANE-REMOVAL.md §4.
+    assert marks[0]["data"]["lane"] == result.lane
+    assert "branchOf" not in marks[0]
 
 
-async def test_the_sub_agents_work_is_lane_tagged_and_never_reaches_the_primary_context(
+async def test_the_sub_agents_work_never_reaches_the_spawners_context(
     monkeypatch,
 ):
     session, log = _session([])
@@ -126,8 +131,7 @@ async def test_the_sub_agents_work_is_lane_tagged_and_never_reaches_the_primary_
     result = await session._extension_api.context.spawn_branch(tip, "go", tools=[])
 
     assert result.ok is True
-    tagged = [e for e in log.entries() if LANE_KEY in e]
-    assert tagged and all(e[LANE_KEY] == result.lane for e in tagged)
+    assert all("branchOf" not in e for e in log.entries()), "no durable branch marker"
 
     assert log.cursor == tip, "the primary cursor did not move"
     primary = ConversationTree(log.entries(), log.cursor).context_for()

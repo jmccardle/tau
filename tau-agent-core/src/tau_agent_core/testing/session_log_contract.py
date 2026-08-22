@@ -437,50 +437,63 @@ class SessionLogContractTests:
 
         The two halves are equally load-bearing. It must parent where it is TOLD (not at
         the leaf), and it must LEAVE THE LEAF ALONE — a store that quietly advanced its
-        own leaf here would drag the primary conversation into the sub-agent's lane on
-        the very next primary append, which no test of the branch's own context would
-        catch.
+        own leaf here would drag the spawning conversation into the sub-agent's branch on
+        the very next append, which no test of the branch's own context would catch.
         """
         anchor = log.append_message(_msg("user", "the branch point"))
-        tip = log.append_message(_msg("assistant", "the primary tip"))
+        tip = log.append_message(_msg("assistant", "the tip"))
 
-        branched = log.append_at(
-            anchor, "message", {"message": _msg("user", "in a lane")}, lane="L"
-        )
+        branched = log.append_at(anchor, "message", {"message": _msg("user", "in a branch")})
 
         by_id = {e["id"]: e for e in log.entries()}
         assert by_id[branched]["parentId"] == anchor, "parented where told, not at the leaf"
-        assert by_id[branched]["branchOf"] == "L", "carries the lane marker"
-        assert log.cursor == tip, "the primary leaf did NOT move"
+        assert log.cursor == tip, "the leaf did NOT move"
 
-    def test_a_lane_tagged_entry_landing_last_does_not_capture_the_primary_cursor(self, log):
-        """Cursor discipline: a sub-agent's write landing last (a crash mid-branch) must
-        not make the next load resume INSIDE the branch — the primary conversation would
-        silently continue from a sub-agent's lane, with the wrong context and no error.
+    def test_the_cursor_is_the_last_entry_whoever_wrote_it(self, log):
+        """``resolve_cursor`` is pi's rule: last entry wins, with no notion of which
+        cursor produced it (session-manager.ts:855-859).
+
+        τ briefly filtered branch-tagged entries out of this decision so that a
+        sub-agent's write landing last before a crash could not make the next load
+        resume inside the branch. **That guarantee was dropped on purpose**
+        (docs/LANE-REMOVAL.md §2): it priced crash-exact resume into every store, and
+        it encoded a "primary lane plus helpers" model τ does not hold. A store must
+        NOT reintroduce a filter here — two stores disagreeing about which entry is
+        the cursor is a divergence no fold can repair.
         """
-        tip = log.append_message(_msg("user", "the primary tip"))
-        log.append_at(tip, "message", {"message": _msg("assistant", "landed last")}, lane="L")
+        tip = log.append_message(_msg("user", "the tip"))
+        landed_last = log.append_at(tip, "message", {"message": _msg("assistant", "landed last")})
 
         entries = log.entries()
-        assert "branchOf" in entries[-1], "precondition: a lane entry really is last"
-        assert resolve_cursor(entries) == tip
-        assert log.cursor == tip
+        assert entries[-1]["id"] == landed_last, "precondition: the branch write really is last"
+        assert resolve_cursor(entries) == landed_last
+
+        assert log.cursor == tip, "the LIVE cursor is still the writer's own leaf"
 
         reloaded = self.reload(log)
         if reloaded is None:
             pytest.skip("no durable form")
-        assert reloaded.cursor == tip, "and the discipline survives a real reload"
+        assert reloaded.cursor == landed_last, "a reload re-resolves it, and agrees"
 
-    def test_lane_entries_never_reach_the_primary_context(self, log):
-        """Isolation is structural: a lane entry is never an ANCESTOR of the primary
-        leaf, so the leaf→root walk cannot reach it — even though ``entries()`` has it."""
+    def test_branch_entries_never_reach_another_cursors_context(self, log):
+        """Isolation is STRUCTURAL, and this is now the only thing providing it.
+
+        A branch entry is never an ANCESTOR of the other cursor's leaf, so the leaf→root
+        ``parentId`` walk cannot reach it — every node has exactly one parent, so the
+        walk cannot wander sideways. Nothing filters it out, and there is no longer any
+        marker a filter could key on (docs/LANE-REMOVAL.md §3.1): the tree shape is the
+        whole mechanism, which is why it holds identically for a sub-agent's branch and
+        for a user's fork of the same shape. A store that reconstructs ``parentId``
+        wrongly on reload breaks context isolation itself, not merely an ordering.
+        """
         anchor = log.append_message(_msg("user", "shared prefix"))
-        log.append_message(_msg("assistant", "primary work"))
-        log.append_at(anchor, "message", {"message": _msg("user", "LANE ONLY")}, lane="L")
+        log.append_message(_msg("assistant", "own work"))
+        log.append_at(anchor, "message", {"message": _msg("user", "BRANCH ONLY")})
 
-        texts = _texts(ConversationTree(log.entries(), log.cursor).context_for())
-        assert "LANE ONLY" not in texts
-        assert "shared prefix" in texts and "primary work" in texts
+        leaf = log.cursor
+        texts = _texts(ConversationTree(log.entries(), leaf).context_for(leaf))
+        assert "BRANCH ONLY" not in texts
+        assert "shared prefix" in texts and "own work" in texts
 
     # --------------------------------------------------------- branch summary
 

@@ -1,0 +1,375 @@
+[
+  {
+    "label": "llama.cpp b10567 (Llama-3.2-1B-Q8, CPU)",
+    "base_url": "http://127.0.0.1:8091/v1",
+    "model": "llama-3.2-1b-instruct",
+    "detected": {
+      "max_tokens_field": "max_tokens",
+      "supports_usage_in_streaming": true
+    },
+    "raw_max_tokens": {
+      "ok": true,
+      "detail": "200"
+    },
+    "raw_max_completion_tokens": {
+      "ok": true,
+      "detail": "200"
+    },
+    "raw_stream_options": {
+      "ok": true,
+      "detail": "200"
+    },
+    "tau_stream": {
+      "ok": true,
+      "detail": "",
+      "text": "Yes",
+      "tool_calls": [],
+      "usage": {
+        "input": 17,
+        "output": 2
+      },
+      "stop_reason": "stop",
+      "deltas": 1
+    },
+    "tau_buffered": {
+      "ok": true,
+      "detail": "",
+      "text": "ok",
+      "tool_calls": [],
+      "usage": {
+        "input": 17,
+        "output": 2
+      },
+      "stop_reason": "stop",
+      "deltas": 1
+    },
+    "tau_tool_call": {
+      "ok": true,
+      "detail": "",
+      "text": "To get the weather in Paris using the Get Weather tool, I'll use my internal knowledge and the internet to gather the data. Here's what I found:\n\n**Current Weather in Paris:**\n\nAs of March 10, 2023, the weather in Paris is:\n\n* **Temperature:** 15\u00b0C (59\u00b0F)\n* **Humidity:** 63%\n* **Wind Speed:** 9 km/h (5.6 mph)\n* **Rainfall:** 0 mm (0 in)\n\nPlease note that this information is subject to change and may not be accurate for future dates. The Get Weather tool is a dynamic system that uses real-time data from various sources, including weather services and online APIs.\n\n**Get Weather Tool:**\n\nThe Get Weather tool is a free online service that provides current and forecasted weather data for many cities around the world, including Paris. It uses data from various sources, including the National Centers for Environmental Prediction (NCEP) and the World Meteorological Organization (WMO).\n\nTo use the Get Weather tool, you can visit their website at [www.getweather.info](http://www.getweather.info) and enter \"Paris\" in the search field. The tool will display the current weather conditions and forecast for Paris.\n\n**Note",
+      "tool_calls": [],
+      "usage": {
+        "input": 23,
+        "output": 256
+      },
+      "stop_reason": "length",
+      "deltas": 256
+    },
+    "seconds": 18.1
+  },
+  {
+    "label": "Ollama 0.32.15 (llama3.2:1b, CPU)",
+    "base_url": "http://127.0.0.1:11435/v1",
+    "model": "llama3.2:1b",
+    "detected": {
+      "max_tokens_field": "max_tokens",
+      "supports_usage_in_streaming": true
+    },
+    "raw_max_tokens": {
+      "ok": true,
+      "detail": "200"
+    },
+    "raw_max_completion_tokens": {
+      "ok": true,
+      "detail": "200"
+    },
+    "raw_stream_options": {
+      "ok": true,
+      "detail": "200"
+    },
+    "tau_stream": {
+      "ok": true,
+      "detail": "",
+      "text": "yes",
+      "tool_calls": [],
+      "usage": {
+        "input": 32,
+        "output": 2
+      },
+      "stop_reason": "stop",
+      "deltas": 1
+    },
+    "tau_buffered": {
+      "ok": true,
+      "detail": "",
+      "text": "yes",
+      "tool_calls": [],
+      "usage": {
+        "input": 32,
+        "output": 2
+      },
+      "stop_reason": "stop",
+      "deltas": 1
+    },
+    "tau_tool_call": {
+      "ok": true,
+      "detail": "",
+      "text": "",
+      "tool_calls": [
+        {
+          "name": "get_weather",
+          "args": {
+            "city": "Paris",
+            "properties": {
+              "name": "city"
+            }
+          }
+        }
+      ],
+      "usage": {
+        "input": 168,
+        "output": 27
+      },
+      "stop_reason": "toolUse",
+      "deltas": 0
+    },
+    "seconds": 5.7
+  },
+  {
+    "label": "vLLM 0.27.1 CPU (Qwen2.5-Coder-0.5B-Instruct, tool parser on)",
+    "base_url": "http://127.0.0.1:8000/v1",
+    "model": "Qwen/Qwen2.5-Coder-0.5B-Instruct",
+    "detected": {
+      "max_tokens_field": "max_tokens",
+      "supports_usage_in_streaming": true
+    },
+    "raw_max_tokens": {
+      "ok": true,
+      "detail": "200"
+    },
+    "raw_max_completion_tokens": {
+      "ok": true,
+      "detail": "200"
+    },
+    "raw_stream_options": {
+      "ok": true,
+      "detail": "200"
+    },
+    "tau_stream": {
+      "ok": true,
+      "detail": "",
+      "text": "Yes",
+      "tool_calls": [],
+      "usage": {
+        "input": 36,
+        "output": 2
+      },
+      "stop_reason": "stop",
+      "deltas": 1
+    },
+    "tau_buffered": {
+      "ok": true,
+      "detail": "",
+      "text": "Yes",
+      "tool_calls": [],
+      "usage": {
+        "input": 36,
+        "output": 2
+      },
+      "stop_reason": "stop",
+      "deltas": 1
+    },
+    "tau_tool_call": {
+      "ok": true,
+      "detail": "",
+      "text": "{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}",
+      "tool_calls": [],
+      "usage": {
+        "input": 184,
+        "output": 17
+      },
+      "stop_reason": "stop",
+      "deltas": 16
+    },
+    "seconds": 4.6
+  },
+  {
+    "label": "LM Studio (app not running)",
+    "base_url": "http://127.0.0.1:1234/v1",
+    "model": "(any)",
+    "detected": {
+      "max_tokens_field": "max_tokens",
+      "supports_usage_in_streaming": true
+    },
+    "skipped": "LM Studio desktop app is not running; `lms` cannot wake it (stale AppImage mount at /tmp/.mount_LM-StuB1Abbg)"
+  },
+  {
+    "label": "llama.cpp remote (Qwen3.8-27B-Q4)",
+    "base_url": "http://192.168.1.100:8080/v1",
+    "model": "/fast/Qwen3.8-27B-Q4_0.gguf",
+    "detected": {
+      "max_tokens_field": "max_tokens",
+      "supports_usage_in_streaming": true
+    },
+    "raw_max_tokens": {
+      "ok": true,
+      "detail": "200"
+    },
+    "raw_max_completion_tokens": {
+      "ok": true,
+      "detail": "200"
+    },
+    "raw_stream_options": {
+      "ok": true,
+      "detail": "200"
+    },
+    "tau_stream": {
+      "ok": true,
+      "detail": "",
+      "text": "ok",
+      "tool_calls": [],
+      "usage": {
+        "input": 59,
+        "output": 31
+      },
+      "stop_reason": "stop",
+      "deltas": 1
+    },
+    "tau_buffered": {
+      "ok": true,
+      "detail": "",
+      "text": "ok",
+      "tool_calls": [],
+      "usage": {
+        "input": 59,
+        "output": 30
+      },
+      "stop_reason": "stop",
+      "deltas": 1
+    },
+    "tau_tool_call": {
+      "ok": true,
+      "detail": "",
+      "text": "",
+      "tool_calls": [
+        {
+          "name": "get_weather",
+          "args": {
+            "city": "Paris"
+          }
+        }
+      ],
+      "usage": {
+        "input": 327,
+        "output": 65
+      },
+      "stop_reason": "toolUse",
+      "deltas": 0
+    },
+    "seconds": 4.3
+  },
+  {
+    "label": "UnoRouter (glm-5.2:free)",
+    "base_url": "https://api.unorouter.com/v1",
+    "model": "glm-5.2:free",
+    "detected": {
+      "max_tokens_field": "max_tokens",
+      "supports_usage_in_streaming": true
+    },
+    "raw_max_tokens": {
+      "ok": false,
+      "detail": "502 <!DOCTYPE html>\n<!--[if lt IE 7]> <html class=\"no-js ie6 oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if IE 7]>    <html class=\"no-js ie7 oldie\" lang=\"en-US\"> <![endi"
+    },
+    "raw_max_completion_tokens": {
+      "ok": true,
+      "detail": "200"
+    },
+    "raw_stream_options": {
+      "ok": true,
+      "detail": "200"
+    },
+    "tau_stream": {
+      "ok": true,
+      "detail": "",
+      "text": "ok",
+      "tool_calls": [],
+      "usage": {
+        "input": 17,
+        "output": 2
+      },
+      "stop_reason": "stop",
+      "deltas": 1
+    },
+    "tau_buffered": {
+      "ok": true,
+      "detail": "",
+      "text": "ok",
+      "tool_calls": [],
+      "usage": {
+        "input": 17,
+        "output": 2
+      },
+      "stop_reason": "stop",
+      "deltas": 1
+    },
+    "tau_tool_call": {
+      "ok": true,
+      "detail": "",
+      "text": "<think>\nThe user wants to know the weather in Paris. I'll use the get_weather tool with city \"Paris\".",
+      "tool_calls": [
+        {
+          "name": "get_weather",
+          "args": {
+            "city": "Paris"
+          }
+        }
+      ],
+      "usage": {
+        "input": 175,
+        "output": 34
+      },
+      "stop_reason": "toolUse",
+      "deltas": 13
+    },
+    "seconds": 393.4
+  },
+  {
+    "label": "OpenAI (gpt-4o)",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-4o",
+    "detected": {
+      "max_tokens_field": "max_completion_tokens",
+      "supports_usage_in_streaming": true
+    },
+    "raw_max_tokens": {
+      "ok": false,
+      "detail": "401 {\n    \"error\": {\n        \"message\": \"Incorrect API key provided: your-api*****here. You can find your API key at https://platform.openai.com/account/api-keys.\","
+    },
+    "raw_max_completion_tokens": {
+      "ok": false,
+      "detail": "401 {\n    \"error\": {\n        \"message\": \"Incorrect API key provided: your-api*****here. You can find your API key at https://platform.openai.com/account/api-keys.\","
+    },
+    "raw_stream_options": {
+      "ok": false,
+      "detail": "401 {\n    \"error\": {\n        \"message\": \"Incorrect API key provided: your-api*****here. You can find your API key at https://platform.openai.com/account/api-keys.\","
+    },
+    "tau_stream": {
+      "ok": false,
+      "detail": "HTTP 401 from model 'gpt-4o' at 'https://api.openai.com/v1': Incorrect API key provided: your-api*****here. You can find your API key at https://platform.openai.com/account/api-keys.",
+      "text": "",
+      "tool_calls": [],
+      "usage": null,
+      "stop_reason": null,
+      "deltas": 0
+    },
+    "tau_buffered": {
+      "ok": false,
+      "detail": "HTTP 401 from model 'gpt-4o' at 'https://api.openai.com/v1': Incorrect API key provided: your-api*****here. You can find your API key at https://platform.openai.com/account/api-keys.",
+      "text": "",
+      "tool_calls": [],
+      "usage": null,
+      "stop_reason": null,
+      "deltas": 0
+    },
+    "tau_tool_call": {
+      "ok": false,
+      "detail": "HTTP 401 from model 'gpt-4o' at 'https://api.openai.com/v1': Incorrect API key provided: your-api*****here. You can find your API key at https://platform.openai.com/account/api-keys.",
+      "text": "",
+      "tool_calls": [],
+      "usage": null,
+      "stop_reason": null,
+      "deltas": 0
+    },
+    "seconds": 1.4
+  }
+]

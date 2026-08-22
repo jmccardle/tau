@@ -913,6 +913,13 @@ class TestStreamToolCallDelta:
         assert len(tool_calls) == 1
         assert tool_calls[0].name == "bash"
         assert tool_calls[0].id == "call_abc123"
+        # The finish_reason -> stop_reason mapping, asserted on the LIVE path.
+        # It used to be asserted in exactly one place repo-wide — a test of
+        # _convert_openai_choice_to_message, which production never called. Every
+        # other `stop_reason="toolUse"` in the suite CONSTRUCTS a fixture; none
+        # checked that the wire's "tool_calls" becomes it. Deleting that test
+        # without this line would have dropped the coverage silently.
+        assert final.stop_reason == "toolUse"
 
     def test_stream_tool_call_accumulates_arguments(self, monkeypatch):
         """Tool call arguments are accumulated correctly across deltas."""
@@ -1179,83 +1186,6 @@ class TestErrorHandling:
 # ═══════════════════════════════════════════════════════════════════════════
 # Additional tests: Conversion edge cases
 # ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestConvertOpenaiChoiceToMessage:
-    """Tests for _convert_openai_choice_to_message (streaming delta accumulation)."""
-
-    def setup_method(self):
-        self.provider = OpenAICompletionsProvider(api_key="sk-test")
-
-    def test_convert_text_delta_to_assistant_message(self):
-        """Text delta is converted to AssistantMessage with TextContent."""
-        choice = {
-            "delta": {"content": "Hello, world!", "model": "gpt-4"},
-            "finish_reason": "stop",
-            "message_id": "msg_123",
-        }
-        result = self.provider._convert_openai_choice_to_message(choice)
-
-        assert isinstance(result, AssistantMessage)
-        assert result.api == "openai-completions"
-        assert result.provider == "openai"
-        assert result.model == "gpt-4"
-        assert len(result.content) == 1
-        assert isinstance(result.content[0], TextContent)
-        assert result.content[0].text == "Hello, world!"
-
-    def test_convert_tool_call_delta(self):
-        """Tool call delta is converted to AssistantMessage with ToolCall."""
-        choice = {
-            "delta": {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_1",
-                        "function": {
-                            "name": "bash",
-                            "arguments": json.dumps({"command": "ls"}),
-                        },
-                    }
-                ],
-            },
-            "finish_reason": "tool_calls",
-        }
-        result = self.provider._convert_openai_choice_to_message(choice)
-
-        assert isinstance(result, AssistantMessage)
-        tool_calls = [c for c in result.content if isinstance(c, ToolCall)]
-        assert len(tool_calls) == 1
-        assert tool_calls[0].name == "bash"
-        assert tool_calls[0].arguments["command"] == "ls"
-
-    def test_convert_finish_reason_stop(self):
-        """finish_reason 'stop' maps to stop_reason 'stop'."""
-        choice = {"delta": {"content": "done"}, "finish_reason": "stop"}
-        result = self.provider._convert_openai_choice_to_message(choice)
-        assert result.stop_reason == "stop"
-
-    def test_convert_finish_reason_length(self):
-        """finish_reason 'length' maps to stop_reason 'length'."""
-        choice = {"delta": {"content": "truncated"}, "finish_reason": "length"}
-        result = self.provider._convert_openai_choice_to_message(choice)
-        assert result.stop_reason == "length"
-
-    def test_convert_finish_reason_tool_calls(self):
-        """finish_reason 'tool_calls' maps to stop_reason 'toolUse'."""
-        choice = {
-            "delta": {"tool_calls": [{"id": "c1", "function": {"name": "x", "arguments": "{}"}}]},
-            "finish_reason": "tool_calls",
-        }
-        result = self.provider._convert_openai_choice_to_message(choice)
-        assert result.stop_reason == "toolUse"
-
-    def test_convert_empty_delta(self):
-        """Empty delta produces AssistantMessage with empty content."""
-        choice = {"delta": {}, "finish_reason": "stop"}
-        result = self.provider._convert_openai_choice_to_message(choice)
-        assert isinstance(result, AssistantMessage)
-        assert len(result.content) == 0
 
 
 class TestConvertMessagesDict:
@@ -1622,24 +1552,6 @@ class TestThinkingContentConversion:
         # Thinking is included in the content field
         assert result[0]["content"] is not None
 
-    def test_convert_openai_reasoning_delta(self):
-        """OpenAI reasoning delta is converted to ThinkingContent."""
-        choice = {
-            "delta": {"reasoning": "Let me think step by step..."},
-            "finish_reason": "stop",
-        }
-        result = self.provider._convert_openai_choice_to_message(choice)
-        assert isinstance(result, AssistantMessage)
-        thinking_blocks = [c for c in result.content if isinstance(c, ThinkingContent)]
-        assert len(thinking_blocks) == 1
-        assert thinking_blocks[0].thinking == "Let me think step by step..."
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Additional: Token limit / truncated response
-# ═══════════════════════════════════════════════════════════════════════════
-
-
 class TestTokenLimitHandling:
     """Tests for token limit (truncated response) handling."""
 
@@ -1661,13 +1573,6 @@ class TestTokenLimitHandling:
                 pass
 
         return MockClient
-
-    def test_stop_reason_length_mapping(self):
-        """finish_reason 'length' correctly maps to stop_reason 'length'."""
-        provider = OpenAICompletionsProvider(api_key="sk-test")
-        choice = {"delta": {"content": "text"}, "finish_reason": "length"}
-        result = provider._convert_openai_choice_to_message(choice)
-        assert result.stop_reason == "length"
 
     def test_stream_with_length_finish_reason(self, monkeypatch):
         """stream_chat with 'length' finish_reason produces DoneEvent with length stop_reason."""

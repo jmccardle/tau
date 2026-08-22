@@ -12,7 +12,7 @@ Reference: SUBPHASE-0.0.md
 
 # This distribution's version, read at build time by pyproject.toml's
 # [tool.setuptools.dynamic]. Kept in lockstep with the other three packages.
-__version__ = "0.9.2"
+__version__ = "0.9.3"
 
 from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.session import (
@@ -81,7 +81,13 @@ from tau_agent_core.run_manifest import (
     require_compaction_policy,
     write_run_manifest,
 )
-from tau_agent_core.sdk import ExtensionCapabilityError, create_agent_session
+from tau_agent_core.sdk import (
+    ContextFile,
+    ContextFileError,
+    ExtensionCapabilityError,
+    create_agent_session,
+    load_project_context_files,
+)
 from tau_agent_core.session_manager import summarize_branch
 from tau_agent_core.rpc import RPCRequest, RPCResponse, RPCEvent, RPCHandler
 from tau_agent_core.export import (
@@ -156,6 +162,10 @@ __all__ = [
     # SDK
     "create_agent_session",
     "ExtensionCapabilityError",
+    # Project context files (AGENTS.md / CLAUDE.md discovery)
+    "ContextFile",
+    "ContextFileError",
+    "load_project_context_files",
     # Branch summarization
     "summarize_branch",
     # RPC types (Phase 6)

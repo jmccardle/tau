@@ -290,6 +290,34 @@ def test_resolve_append_system_prompt_reaches_run_config():
     assert mc["append_system_prompt"] == ["extra rule"]
 
 
+def test_resolve_no_context_files_reaches_model_config():
+    """-nc rides the model config, which is what TauBackend reads (0.9.3 §1)."""
+    _name, mc = resolve_model_config(_config(), CLIArgs(model="gpt-4o", no_context_files=True))
+    assert mc["no_context_files"] is True
+
+
+def test_resolve_omits_no_context_files_when_the_flag_is_absent():
+    """Only ever set TRUE: the flag's absence must not revoke a config entry's
+    own ``"no_context_files": true`` (the rule ``--bus`` already follows)."""
+    _name, mc = resolve_model_config(_config(), CLIArgs(model="gpt-4o"))
+    assert "no_context_files" not in mc
+
+
+def test_no_context_files_parses_under_both_spellings():
+    assert parse_cli_args(["--no-context-files"]).no_context_files is True
+    assert parse_cli_args(["-nc"]).no_context_files is True
+    assert parse_cli_args([]).no_context_files is False
+
+
+def test_nc_does_not_collide_with_the_name_short_alias():
+    """``-n`` (--name) takes a value, so ``-nc`` could have been read as
+    ``--name c``. argparse matches a registered option string exactly first —
+    the same reason -nt/-ne/-nbt already coexist with it."""
+    args = parse_cli_args(["-nc", "-n", "title"])
+    assert args.no_context_files is True
+    assert args.name == "title"
+
+
 def test_resolve_provider_override():
     _name, mc = resolve_model_config(_config(), CLIArgs(model="gpt-4o", provider="anthropic"))
     assert mc["backend"] == "anthropic"
@@ -370,10 +398,56 @@ def test_continuation_flags_mutually_exclusive():
         parse_cli_args(["-p", "--fork", "x", "--resume", "go"])
 
 
-def test_main_resume_is_deferred_error(capsys):
-    rc = cli.main(["--resume"])
+def test_main_resume_errors_only_under_print(capsys):
+    """Phase C narrows the rejection from *always* to *only with --print*.
+
+    ``--resume`` opens ``SessionPickerModal``; ``--print`` draws no screen, so
+    there is nothing for it to open on. Refusing beats opening nothing
+    (Fail-Early), and the message has to name the two flags that DO select a
+    session headlessly — otherwise it is a dead end rather than a redirect.
+    """
+    rc = cli.main(["-p", "--resume", "go"])
     assert rc == 2
-    assert "interactive picker" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "session picker" in err
+    assert "--continue" in err and "--session REF" in err
+
+
+def test_resume_help_and_behaviour_tell_the_same_story():
+    """A regression guard on the contradiction itself, not on either wording.
+
+    Before Phase C the flag could not succeed anywhere, and the two places that
+    said so disagreed (help: "TUI only"; error: "not available headlessly").
+    Now "TUI only" is TRUE — ``_launch_tui`` reads it — so the help may say it,
+    and must no longer claim the picker is missing.
+    """
+    help_text = cli.build_parser().format_help()
+    assert "NOT IMPLEMENTED" not in help_text
+    assert "TUI only" in help_text
+
+
+def test_resume_reaches_the_tui(monkeypatch):
+    """The wiring Phase B left for Phase C: ``args.resume`` → ``Parley(resume=…)``.
+
+    Without this line the flag parses, passes validation, launches the TUI and
+    does nothing — the accepted-and-ignored shape ``test_cli_flag_inventory.py``
+    exists to prevent, and the one ``--resume`` spent a release in.
+    """
+    seen = {}
+
+    class FakeParley:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr("tau_coding_agent.app.Parley", FakeParley)
+    assert cli._launch_tui(parse_cli_args(["--resume"]), {}) == 0
+    assert seen["resume"] is True
+    # And a plain start does not open the picker.
+    assert cli._launch_tui(parse_cli_args([]), {}) == 0
+    assert seen["resume"] is False
 
 
 def test_main_continue_without_print_errors(capsys):
@@ -743,7 +817,7 @@ def test_main_launches_tui_with_overrides(monkeypatch):
     captured = {}
 
     class FakeParley:
-        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False):
+        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False, resume=False):
             captured["overrides"] = cli_overrides
             captured["run_config"] = cli_run_config
             captured["fun"] = fun
@@ -792,7 +866,7 @@ def test_tui_tools_allowlist_is_run_level_not_a_model_override(monkeypatch):
     captured = {}
 
     class FakeParley:
-        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False):
+        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False, resume=False):
             captured["overrides"] = cli_overrides
             captured["run_config"] = cli_run_config
 
@@ -814,7 +888,7 @@ def test_tui_without_the_tools_flag_carries_no_allowlist(monkeypatch):
     captured = {}
 
     class FakeParley:
-        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False):
+        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False, resume=False):
             captured["run_config"] = cli_run_config
 
         def run(self):
@@ -839,7 +913,7 @@ def test_tui_no_tools_is_run_level_not_a_model_override(monkeypatch):
     captured = {}
 
     class FakeParley:
-        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False):
+        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False, resume=False):
             captured["overrides"] = cli_overrides
             captured["run_config"] = cli_run_config
 
@@ -860,7 +934,7 @@ def test_tui_no_builtin_tools_reaches_run_config_as_the_resolved_policy(monkeypa
     captured = {}
 
     class FakeParley:
-        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False):
+        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False, resume=False):
             captured["run_config"] = cli_run_config
 
         def run(self):
@@ -870,6 +944,28 @@ def test_tui_no_builtin_tools_reaches_run_config_as_the_resolved_policy(monkeypa
     monkeypatch.setattr(cli, "load_config", lambda: _config())
     assert cli.main(["-nbt"]) == 0
     assert captured["run_config"]["no_tools"] == "builtin"
+
+
+def test_tui_no_context_files_reaches_run_config(monkeypatch):
+    """-nc is run-level, not per-model: a mid-session ``/model`` switch must not
+    hand the project's context files back (``_apply_run_config`` re-applies it
+    at every ``create_backend``)."""
+    captured = {}
+
+    class FakeParley:
+        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False, resume=False):
+            captured["overrides"] = cli_overrides
+            captured["run_config"] = cli_run_config
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr("tau_coding_agent.app.Parley", FakeParley)
+    monkeypatch.setattr(cli, "load_config", lambda: _config())
+    assert cli.main(["-nc"]) == 0
+    assert captured["run_config"]["no_context_files"] is True
+    # Like the tool flags, it pins no model entry.
+    assert not captured["overrides"]
 
 
 # ── --store / --import-session / --export-session (W12) ────────────────────
@@ -906,7 +1002,7 @@ def test_store_flag_reaches_tui_run_config(monkeypatch):
     captured = {}
 
     class FakeParley:
-        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False):
+        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False, resume=False):
             captured["run_config"] = cli_run_config
 
         def run(self):

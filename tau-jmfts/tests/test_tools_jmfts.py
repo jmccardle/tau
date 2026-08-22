@@ -8,6 +8,8 @@ Marker: ``jmfts``.
 
 from __future__ import annotations
 
+import base64
+import os
 import uuid
 from typing import Any
 
@@ -186,6 +188,37 @@ async def test_ingest_files_a_document_that_is_immediately_findable(
 
         hits = client.search("wombat protocol handshake", method="vector", limit=5)
         assert doc_id in {h["document"]["id"] for h in hits}, "the ingested doc is not findable"
+    finally:
+        if doc_id is not None:
+            client.delete_document(doc_id)
+        catalog.delete(str(log.root_doc_id))
+
+
+async def test_ingest_of_dense_content_is_chunked_rather_than_refused(
+    client: JmftsClient, run_id: str
+) -> None:
+    """The same bug as enrich's, in the second code path that had its own copy of it.
+
+    ``ingest`` decided whether to embed inline with ``len(content) > EMBED_MAX_CHARS``,
+    1800 characters. The embedder's window is 512 TOKENS: a base64 blob of 1800 chars is
+    ~1350 tokens, so the guess said "embed it inline" and the write itself failed — the
+    agent's document was never filed at all. Whether it fits is now the server's answer,
+    and content it refuses is made findable through chunks instead.
+    """
+    catalog = JmftsSessionCatalog(client)
+    session, log = _bound(catalog, run_id)
+    doc_id = None
+    try:
+        api = _wire(session)
+        blob = base64.b64encode(os.urandom(2048)).decode()[:1800]
+        result = await api.call("jmfts_ingest", title=f"{TEST_PREFIX}-blob-{run_id}", content=blob)
+        doc_id = result["details"]["doc_id"]
+
+        # Filed intact, and made searchable through chunks the server measured itself.
+        assert client.get_document(doc_id)["content"] == blob, "the parent lost its full text"
+        chunks = client.get_children(doc_id, limit=100)
+        assert chunks, "over-window content was filed with nothing to find it by"
+        assert all(client.is_embedded(c["id"]) for c in chunks), "a chunk is not searchable"
     finally:
         if doc_id is not None:
             client.delete_document(doc_id)

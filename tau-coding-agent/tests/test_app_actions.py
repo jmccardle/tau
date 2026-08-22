@@ -83,6 +83,12 @@ async def test_new_chat_button_creates_chat(app, tmp_path):
         await pilot.pause()
         assert app.current_session is None
 
+        # The button lives in the sidebar, which mounts CLOSED (§8) — a click on
+        # a hidden widget lands on whatever is underneath it, which is how this
+        # test would silently stop testing anything.
+        app.action_toggle_sidebar()
+        await pilot.pause()
+
         await pilot.click("#new-chat-button")
         await pilot.pause()
 
@@ -108,6 +114,13 @@ async def test_chat_selected_loads_session_by_ref(app, wait_for_workers_settled)
             os.getcwd(), "m", "openai", system_prompt="sys", name="Picked"
         )
         seeded.append_message({"role": "user", "content": "hello"})
+
+        # §8: the sidebar mounts closed, and a closed sidebar deliberately does
+        # not mount its rows (``ChatSidebar._apply_sessions`` defers the render).
+        # This test reads a ``ChatListItem``, so it opens the sidebar the way a
+        # user does first.
+        app.action_toggle_sidebar()
+        await pilot.pause()
 
         sidebar = app.query_one(ChatSidebar)
         sidebar.refresh_chats()

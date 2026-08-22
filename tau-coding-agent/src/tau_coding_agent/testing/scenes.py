@@ -302,6 +302,37 @@ async def _noop(app: Any, pilot: Any) -> None:
     return None
 
 
+async def _open_sidebar(app: Any, pilot: Any) -> None:
+    """ctrl+b, then wait for the seeded session list to actually be on screen.
+
+    The sidebar mounts CLOSED since §8, so the scene that exists to show it has
+    to open it — through the same ``action_toggle_sidebar`` a user presses, not
+    by writing ``display`` behind the app's back, or the scene would be a picture
+    of a state the app cannot reach.
+
+    The wait is the ``_settle_tree`` rule applied to a different deferral: the
+    catalog listing runs on a THREAD worker, and while the sidebar is collapsed
+    ``ChatSidebar._apply_sessions`` records the result and skips the render
+    (``_render_pending``). Which side of the toggle that lands on decides which
+    of the two catch-up paths draws the rows, and both are one more event-loop
+    turn away. A fixed pause count would be a guess about how many; this waits
+    for the rows and raises if they never come.
+    """
+    from tau_coding_agent.app import ChatListItem
+
+    app.action_toggle_sidebar()
+    for _ in range(30):
+        await pilot.pause()
+        if len(app.query(ChatListItem)) == len(_SESSION_NAMES):
+            # One more, so the mounted rows have been laid out and composited.
+            await pilot.pause()
+            return
+    raise AssertionError(
+        f"the sidebar never listed the {len(_SESSION_NAMES)} seeded sessions "
+        f"(showing {len(app.query(ChatListItem))})"
+    )
+
+
 async def _load_answer(app: Any, pilot: Any) -> None:
     from tau_coding_agent.app import ChatDisplay
 
@@ -451,8 +482,8 @@ SCENES: tuple[Scene, ...] = (
     Scene("empty", "Fresh app, no saved sessions.", _noop, config=_EMPTY_PANE_CONFIG),
     Scene(
         "sidebar",
-        "Sidebar populated with named sessions, grouped by recency.",
-        _noop,
+        "Sidebar (ctrl+b) populated with named sessions, grouped by recency.",
+        _open_sidebar,
         seed=_seed_sessions,
         config=_EMPTY_PANE_CONFIG,
     ),

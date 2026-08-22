@@ -107,6 +107,50 @@ Completions API and OpenAI-compatible servers. There is no registry;
 provider name, base URL, and a hash of the API key — so a second model on a
 different endpoint can never be served by the first model's provider.
 
+### Endpoint quirks (`tau_llm.compat`)
+
+"OpenAI-compatible" is a family, not a specification. Two of the fields its
+members disagree about cannot be reached through `Model.extra_body`, so they
+live on `Model.compat`:
+
+- `max_tokens_field` — OpenAI's o-series and gpt-5 family reject `max_tokens`
+  and want `max_completion_tokens`; llama.cpp, vLLM and the classic Chat
+  Completions API want `max_tokens`.
+- `supports_usage_in_streaming` — whether `stream_options` may be sent.
+
+Both are inferred from the base URL when unset (`detect_compat`), and a stated
+field wins field by field (`resolve_compat`). Detection is deliberately narrow:
+an unrecognised endpoint keeps `max_tokens`, because an unrecognised endpoint is
+far more often a local server than a proxy in front of OpenAI. `Model.provider`
+is not consulted — τ's config seam defaults it to `"openai"` for any entry that
+names no backend, so it usually means "unstated".
+
+This is adapted from pi's `detectCompat`/`getCompat`, cut to the fields that
+have a live consumer. `tau_llm.compat`'s module docstring lists all 24 pi fields
+that did not port, and which τ field already says each one.
+
+## Model facts (`tau_llm.catalog`)
+
+τ ships no model catalog. `python -m tau_llm.catalog` reads one on demand from
+[models.dev](https://models.dev) and prints a `~/.tau/config.json` entry:
+
+```bash
+python -m tau_llm.catalog providers                  # provider ids and their env vars
+python -m tau_llm.catalog search kimi                # provider/model pairs
+python -m tau_llm.catalog show openai/gpt-5.1        # the raw catalog record
+python -m tau_llm.catalog config openai/gpt-5.1 \
+    --base-url https://api.openai.com/v1             # a config entry, on stdout
+```
+
+It fills `context_window`, `max_tokens`, `reasoning` and `thinking_level_map`.
+It refuses rather than guessing: a record with no context limit, or a model the
+catalog marks as unable to call tools, raises `CatalogError` instead of
+producing an entry with an invented number in it.
+
+`--base-url` is required, because models.dev carries provider `id`, `name`,
+`doc`, `npm` and `env` but **no endpoint** — one model id is served by many
+gateways. `--catalog api.json` reads a local copy instead of fetching.
+
 ## Tools
 
 Build a tool with `define_tool()`, which returns a validated `ToolDefinition`:
@@ -151,6 +195,19 @@ has the five-argument extension signature. See `docs/extensions.md`.
   rendered widget.
 - `docs/REASONING-VS-CONSTRAINED-DECODING.md` — why τ disables thinking on
   constrained calls.
+
+## Credits
+
+Two MIT-licensed projects, neither a dependency — both read and ported, so the
+attribution is here rather than in a lock file.
+
+- **[pi-mono](https://github.com/badlogic/pi-mono)**, Copyright (c) 2025 Mario
+  Zechner. The implementation this package was ported from: the streaming event
+  vocabulary, the OpenAI-completions provider, thinking-level clamping, and
+  `tau_llm.compat` (pi's `detectCompat`/`getCompat`).
+- **[models.dev](https://github.com/sst/models.dev)**, the SST project. The
+  model facts `tau_llm.catalog` reads, served from
+  <https://models.dev/api.json>. Fetched when asked for; never vendored here.
 
 Repository: <https://github.com/jmccardle/tau>
 

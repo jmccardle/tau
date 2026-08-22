@@ -19,31 +19,39 @@ import httpx
 
 DEFAULT_TIMEOUT = 10.0
 
+# Requests that make the server run the EMBEDDER get their own, far longer bound.
+#
+# This is a liveness check, not a performance budget: it answers "is the server still
+# there?", and nothing else should be read into it. DEFAULT_TIMEOUT is right for
+# metadata calls, which are a database round-trip; embedding is a GPU forward pass per
+# piece, and `chunk_document(auto_embed=True)` runs one for every chunk it mints --
+# measured at 8.9s for a 5.3KB base64 blob (13 chunks) against a warm local server, and
+# the first call after a restart also pays several GB of model load.
+#
+# A 10s bound there does not fail early, it fails WRONG: the server completes the work
+# and stores the chunks, while the client reports a transport failure for an operation
+# that succeeded. Fail-Early is about not hiding a problem, not about manufacturing one.
+EMBED_TIMEOUT = 300.0
+
 # The usetype τ writes chunk documents under. Deliberately NOT `tau:*` -- chunks live
 # as children INSIDE the conversation subtree, and τ's loader treats a `tau:` usetype
 # as a promise that `structured_content.tau` is a real entry payload. Chunks have no
 # such payload, so a `tau:` usetype here would corrupt the load path (store._is_tau_doc).
 CHUNK_USETYPE = "jmfts:chunk"
 
-# The server REFUSES over-window text with HTTP 400 rather than embedding a truncated
-# prefix -- `POST /documents/{id}/embed` 400s when the content exceeds the embedder's
-# 512-token window. 512 tokens is ~2000 chars of English; this leaves margin, and
-# anything above it must be chunked first (JmftsClient.chunk_document) to avoid a
-# guaranteed round-trip failure. (This is the D1 server fix; before it, the embedder
-# silently truncated at 512 tokens and lost the tail -- see docs/KNOWN-DEFECTS.md.)
-EMBED_MAX_CHARS = 1800
-
-# Words per chunk. The server's `max_tokens` counts WHITESPACE-SPLIT WORDS, not the
-# subword tokens the embedder budgets (chunking.py: "word count as a fast proxy"), and
-# NOT the chars EMBED_MAX_CHARS is expressed in -- three different units for one
-# constraint. 300 words was the first guess and it overshot: technical prose ran ~6.4
-# chars/word, so chunks came back at ~1925 chars, past the guard. At 220 words even
-# long-worded text (identifiers, paths, stack traces) stays under EMBED_MAX_CHARS.
+# Words per chunk -- a TARGET for the common case, never a guarantee.
 #
-# This is a budget for the common case. Text with no word boundaries (a base64 blob is
-# one enormous "word") cannot be bounded by a word count alone -- but the server now
-# hard-splits any such over-window chunk at a character boundary (the D4 fix), so every
-# returned chunk is guaranteed to fit the embedder's window regardless of this number.
+# The server's `max_tokens` counts WHITESPACE-SPLIT WORDS, not the subword tokens the
+# embedder budgets (chunking.py: "word count as a fast proxy"). 300 words was the first
+# guess and it overshot: technical prose ran ~6.4 chars/word, so chunks came back at
+# ~1925 chars. At 220 words even long-worded text (identifiers, paths, stack traces)
+# lands comfortably inside the window for prose-like token ratios.
+#
+# Nothing about correctness rests on this number. Text with no word boundaries (a base64
+# blob is one enormous "word") cannot be bounded by a word count at all. The guarantee
+# comes from `chunk_document(auto_embed=True)`, which makes the server apply its own
+# tokenizer (`fits_token_window`) to every piece it returns -- a measurement in the unit
+# that actually constrains the embedder. See :meth:`JmftsClient.chunk_document`.
 CHUNK_MAX_WORDS = 220
 
 _SEARCH_METHODS = frozenset({"hybrid", "vector", "bm25", "fulltext", "maxsim"})
@@ -66,6 +74,48 @@ class JmftsError(Exception):
         self.url = url
         self.method = method
         super().__init__(f"JMFTS {method} {url} -> {status_code}: {detail!r}")
+
+
+class JmftsTextTooLongError(JmftsError):
+    """The server MEASURED the text and it does not fit the embedder's window.
+
+    ``POST /documents/{id}/embed`` refuses over-window content with HTTP 400 and a
+    STRUCTURED detail payload -- ``{"error": "text_too_long", "token_count": int,
+    "limit": int, "chars_total": int, "path": str, ...}`` -- rather than embedding a
+    prefix and reporting success (the D1 server fix; before it the embedder silently
+    truncated at 512 tokens and lost the tail).
+
+    That payload is the only thing in the system that can answer "does this text fit?",
+    because the answer is in TOKENS and only the server holds the tokenizer. τ used to
+    predict the answer from a character count (``EMBED_MAX_CHARS = 1800``), which is
+    roughly right for English prose and badly wrong for anything dense: 1800 chars of
+    base64 is ~1350 tokens, so the guess said "embed it whole" and the server -- rightly
+    -- refused. The guess is gone; this exception IS the decision procedure. A caller
+    that can chunk should catch this specific type and chunk; every other ``JmftsError``
+    still propagates untouched.
+    """
+
+    def __init__(self, status_code: int, detail: Any, *, url: str, method: str) -> None:
+        super().__init__(status_code, detail, url=url, method=method)
+        info = detail if isinstance(detail, dict) else {}
+        self.token_count: int | None = info.get("token_count")
+        self.limit: int | None = info.get("limit")
+        self.chars_total: int | None = info.get("chars_total")
+        self.window: str | None = info.get("path")
+
+    @staticmethod
+    def matches(status_code: int, detail: Any) -> bool:
+        """Whether this response is the server's own ``text_too_long`` refusal.
+
+        Keyed on the machine-readable ``error`` code the server emits, not on prose in
+        the message -- a 400 that merely *mentions* length is a different failure and
+        must not be mistaken for a chunk-me signal.
+        """
+        return (
+            status_code == 400
+            and isinstance(detail, dict)
+            and detail.get("error") == "text_too_long"
+        )
 
 
 DocumentDict = dict[str, Any]
@@ -127,6 +177,11 @@ class JmftsClient:
     # -- transport ------------------------------------------------------
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        # `timeout=None` means "no override" here, NOT httpx's "wait forever" -- drop it
+        # so the client's configured timeout applies. Callers that need a longer bound
+        # pass EMBED_TIMEOUT explicitly.
+        if kwargs.get("timeout") is None:
+            kwargs.pop("timeout", None)
         try:
             response = self._client.request(method, path, **kwargs)
         except httpx.HTTPError as exc:
@@ -137,9 +192,15 @@ class JmftsClient:
                 detail = body.get("detail", body) if isinstance(body, dict) else body
             except ValueError:
                 detail = response.text
-            raise JmftsError(
-                status_code=response.status_code, detail=detail, url=path, method=method
+            # One 400 is not a failure but an ANSWER: "I measured this text and it does
+            # not fit the embedder's window." Give it a type so callers can act on it
+            # without string-matching a message. Everything else stays a plain JmftsError.
+            cls = (
+                JmftsTextTooLongError
+                if JmftsTextTooLongError.matches(response.status_code, detail)
+                else JmftsError
             )
+            raise cls(status_code=response.status_code, detail=detail, url=path, method=method)
         if response.status_code == 204 or not response.content:
             return None
         return response.json()
@@ -190,7 +251,14 @@ class JmftsClient:
             "auto_embed": auto_embed,
             "sequential": sequential,
         }
-        result: DocumentDict = self._request("POST", "/documents", json=payload)
+        result: DocumentDict = self._request(
+            "POST",
+            "/documents",
+            json=payload,
+            # Only when the request actually runs the embedder; a plain write stays on
+            # the short transport bound.
+            timeout=EMBED_TIMEOUT if auto_embed else None,
+        )
         return result
 
     def get_document(self, doc_id: int, *, include_embed: bool = False) -> DocumentDict:
@@ -343,19 +411,30 @@ class JmftsClient:
         twice costs GPU time but cannot corrupt anything. (:meth:`index_document_into`
         is likewise replay-safe since the D3 server fix.)
 
-        **The server REFUSES over-window text with HTTP 400** -- ``embedding.py``'s
-        512-token window (~2000 chars) is now enforced as a hard limit, so handing a
-        long document straight to this method is a guaranteed round-trip failure rather
-        than a silently truncated prefix. Chunk first to avoid it: use
-        :meth:`chunk_document` (see :data:`EMBED_MAX_CHARS`). (Before the D1 server fix
-        this method silently truncated and lost the tail -- see docs/KNOWN-DEFECTS.md.)
+        **The server REFUSES over-window text with :class:`JmftsTextTooLongError`** (HTTP
+        400 with a structured ``text_too_long`` payload) rather than embedding a
+        truncated prefix. That refusal is also the only reliable way to LEARN that a
+        document is over-window: the limit is 512 *tokens*, and the tokenizer lives on
+        the server. So the intended pattern is to call this and let it answer --
+
+            try:
+                client.embed_document(doc_id)
+            except JmftsTextTooLongError:
+                client.chunk_document(doc_id)   # measured chunks, already embedded
+
+        -- rather than to predict the answer from a character count. (Before the D1
+        server fix this method silently truncated and lost the tail; see
+        docs/KNOWN-DEFECTS.md.)
 
         Raises ``JmftsError`` 404 if the document does not exist OR has no content --
         a ``content=None`` document (τ's ``navigate`` / config entries) can never be
         embedded, which is correct: they have no searchable text.
         """
         result: dict[str, Any] = self._request(
-            "POST", f"/documents/{doc_id}/embed", params={"with_tokens": with_tokens}
+            "POST",
+            f"/documents/{doc_id}/embed",
+            params={"with_tokens": with_tokens},
+            timeout=EMBED_TIMEOUT,
         )
         return result
 
@@ -379,32 +458,39 @@ class JmftsClient:
         max_tokens: int = CHUNK_MAX_WORDS,
         overlap: int = 40,
         child_usetype: str = CHUNK_USETYPE,
+        auto_embed: bool = True,
     ) -> list[DocumentDict]:
         """``POST /documents/{id}/chunk`` -- split a long document into embeddable children.
 
-        The answer to :meth:`embed_document`'s 512-token truncation: rather than embed a
-        prefix and silently lose the tail, cut the text into pieces that each fit, and
-        embed those. The parent keeps its full ``content`` verbatim -- nothing is
-        destroyed; the chunks are simply what vector search matches on. Returns the
-        chunk documents.
+        The answer to :meth:`embed_document`'s 512-token refusal: rather than lose the
+        tail, cut the text into pieces that each fit, and embed those. The parent keeps
+        its full ``content`` verbatim -- nothing is destroyed; the chunks are simply what
+        vector search matches on. Returns the chunk documents.
 
-        The server now caps EVERY strategy to ``max_tokens`` and bounds the merge step,
-        so no strategy pin is needed: the default strategy returns bounded chunks (the
-        D2 server fix). Earlier this method pinned ``strategy="token_count"`` and passed
-        ``min_chunk_length=1`` to disable the unbounded merge -- both were load-bearing
-        workarounds and are no longer required.
+        **``auto_embed=True`` is what makes the pieces FIT, and is not merely a
+        convenience.** The server applies its real tokenizer to every piece it is about
+        to return -- ``chunk_text(fits=EmbeddingService.fits_token_window)`` -- but it
+        wires that predicate in *only* when ``auto_embed`` is set, on the stated
+        reasoning that a caller who is not embedding is not chunking for that window
+        (``document_service.chunk_document``). With ``auto_embed=False`` the pieces are
+        bounded in CHARACTERS alone (``max_chars``, 1800 by default), which for dense
+        text is not a bound at all: an 1800-char slice of base64 is ~1350 tokens, and τ
+        used to ask for exactly that and then fail embedding every chunk it got back.
+        Passing ``auto_embed=True`` is how a client buys the measurement.
 
         ``max_tokens`` counts WORDS, not subword tokens (the server uses whitespace
-        splitting as a proxy). :data:`CHUNK_MAX_WORDS` is set well under 512 to leave
-        room for both the subword expansion ratio and the ``"search_document: "`` prefix
-        the embedder prepends.
+        splitting as a proxy), so it is a target only -- see :data:`CHUNK_MAX_WORDS`.
+        The token-window guarantee comes from ``auto_embed``, not from this number.
 
-        **Chunks come back UNEMBEDDED** (``auto_embed=False``): the enrichment pass
-        embeds them in a separate step so that embedding a chunk that failed to fit
-        would surface as a loud HTTP 400 rather than being folded into the chunk write.
-        The server hard-splits any whitespace-free chunk still over the window (the D4
-        fix), so every returned chunk is guaranteed embeddable; a 400 is the loud
-        backstop if that guarantee is ever violated.
+        The server also caps EVERY strategy to ``max_chars`` and bounds the merge step,
+        so no strategy pin is needed (the D2 server fix). Earlier this method pinned
+        ``strategy="token_count"`` and passed ``min_chunk_length=1`` to disable the
+        unbounded merge -- both were load-bearing workarounds and are no longer required.
+
+        ``auto_embed=False`` is kept for callers that deliberately want unembedded
+        children (tests simulating a pass that died between chunking and embedding).
+        It gives up the fit guarantee, so anything embedding those chunks afterwards
+        must be ready for :class:`JmftsTextTooLongError`.
 
         ``child_usetype`` **must not begin with** ``tau:``. Chunks land as CHILD
         DOCUMENTS inside the conversation subtree, and τ's loader classifies anything in
@@ -427,8 +513,11 @@ class JmftsClient:
                 "max_tokens": max_tokens,
                 "overlap": overlap,
                 "child_usetype": child_usetype,
-                "auto_embed": False,
+                "auto_embed": auto_embed,
             },
+            # With auto_embed the server runs one forward pass per chunk it mints, and
+            # halves pieces until each fits -- minutes of work for a large document.
+            timeout=EMBED_TIMEOUT if auto_embed else None,
         )
         return self.get_children(doc_id, usetype=child_usetype, limit=1000)
 

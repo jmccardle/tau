@@ -4,17 +4,22 @@ Living schedule of open work. Each item cites the evidence (file:line, doc, or
 test) it came from so it can be audited against the source of truth (pi) and the
 "Fail Early" rule.
 
+**State (2026-08-21):** the 0.9.3 cycle closed most of what the 2026-08-09 audit
+left open. Now shipped: context files (Tier 8's loader half), Session UX Phases
+B and C, the non-streaming transport, multi-vendor dispatch, backend hardening,
+and branch-lane removal — see `docs/PLAN-0.9.3.md`, whose §7 sequencing list is
+fully built. **Genuinely still open, confirmed against code on 2026-08-21:**
+Tier 8's trust gate, Tier 9 (`--export` HTML, pi-faithful `--mode json`), Tier
+10 (themes/templates/skills — untouched), Tier 11's M4/M5 (deliberately
+deferred), two flags (`--list-models`, `--session-id`), and from 0.9.3 §4:
+retry/backoff, repeat-tool-call detection, and non-OpenAI clients. The "Doc
+hygiene" section below is now fully closed.
+
 **State (2026-08-09):** this file was last edited 2026-07-18 and had drifted
 152 commits behind master. A full re-audit (5 parallel evidence passes: RPC,
 submission-lifecycle, CLI flags, extensions, session UX) found five shipped
 arcs this file never mentioned or still called unbuilt — folded into "Shipped"
-below with commit-hash evidence. Genuinely still open, confirmed against code:
-Tier 8 (context files/trust gate), Tier 9 (`--export` HTML, pi-faithful
-`--mode json`), Tier 10 (themes/templates/skills — untouched), Tier 11's M4/M5
-(deliberately deferred), Session UX Phases B/C (not started), plus two flags
-(`--list-models`, `--session-id`). See "Doc hygiene found during this audit"
-below — several spec docs' own status headers are now wrong in the same way
-this file was.
+below with commit-hash evidence.
 
 **State (2026-07-14, W0–W15):** the constrained-decoding + JMFTS-backing-store
 workstream is tracked under four overlapping naming vocabularies (W-series
@@ -168,19 +173,22 @@ resync pass (see "Doc hygiene" below).
 ## Open work
 
 Confirmed still-unbuilt by direct code inspection (not doc-trusting) on
-2026-08-09.
+2026-08-09, and re-checked 2026-08-21.
 
-- **`--list-models [search]`** (Tier 6) — no occurrence anywhere in
-  `cli.py`/`headless.py`/`backends.py`.
-- **`--session-id`** (Tier 7) — no such flag in `build_parser()`.
-- **Context-file discovery** (Tier 8) — **partial, and orphaned**: real
-  AGENTS.md/`.tau/SYSTEM.md` loading exists in
-  `sdk.py:672-735` `_build_system_prompt()`, but nothing in
-  `tau-coding-agent` calls it — `TauBackend` builds `AgentSession` straight
-  from `config.get("system_prompt", "")` (`backends.py:966,1026`). No
-  CLAUDE.md support at all. The τ CLI/TUI does not load AGENTS.md today
-  despite the code existing. Wire it in, or remove it — leaving dead code on
-  a documented-but-unreachable path is itself a Fail-Early violation.
+- **`--list-models [search]`** (Tier 6) — still open; no `add_argument` for it
+  in `cli.py` as of 2026-08-21.
+- **`--session-id`** (Tier 7) — still open; no such flag in `build_parser()`.
+- ~~**Context-file discovery** (Tier 8)~~ — **built 2026-08-21** (`db98524`),
+  and the diagnosis in this entry was wrong in a way worth keeping. The loader
+  was not orphaned: `sdk.py` reached it, and the shipped
+  `tau_default_config.json` shadowed it with a non-empty `system_prompt`
+  string, which is truthy. The fix was precedence, not plumbing. τ now ports
+  pi's `loadProjectContextFiles` — agent dir first, then every ancestor of cwd,
+  one file per directory, deduped, with the nested-worktree shadowing rule —
+  supports `CLAUDE.md`, keeps `.tau/SYSTEM.md`, composes with the system prompt
+  rather than being displaced by it, and has `--no-context-files`/`-nc`
+  (`cli.py:298`). The default config no longer sets `system_prompt` at all
+  (`133e74d`). See `docs/PLAN-0.9.3.md` §1.
 - **Trust gate** (Tier 8) — no `trust.json`, no `TrustGate` symbol, no
   `--approve`/`--no-approve` flags anywhere.
 - **`--export` HTML** (Tier 9) — only `--export-session` (JMFTS→`.jsonl`
@@ -210,29 +218,33 @@ Confirmed still-unbuilt by direct code inspection (not doc-trusting) on
 
 ## Doc hygiene found during this audit
 
-Several spec docs' own status headers are now flatly wrong — written when the
-work was proposed, never updated once it shipped. Each is a one-line fix, not
-a rewrite, and is separate from the broader docs-overhaul plan already agreed
-(see memory `docs-overhaul-plan-for-ffwfrobotics-site`) — flagging here so it
-isn't lost before that pass starts:
+**All six entries are now closed (2026-08-21).** Kept as the record of what the
+audit found, with what actually fixed each one. This was separate from the
+broader docs-overhaul plan already agreed (see memory
+`docs-overhaul-plan-for-ffwfrobotics-site`), which is still to start.
 
-- `docs/REMOTE-CONTROL.md:3` — still says "Status: design. No code written."
-  RPC is built and tested (463 passing tests). Sharpest case: this doc's own
-  last-touch commit (2026-08-06) postdates the code it's declaring nonexistent
-  by a day.
-- `docs/SUBMISSION-LIFECYCLE.md:3` — still says "Status: proposal." Phases
-  1–5 of its own phasing table are shipped.
-- `docs/NODE-ADDRESSABLE-AGENTS.md:3` — still says "Status: design. No code
-  written." `agent_spec` + rollback are shipped; most of its cited "prior
-  art" already existed when it was written.
-- `docs/EXTENSIONS-DEMO-ROADMAP.md` — still says "Status: PLANNED (no
-  implementation yet)." The entire E6–E11 arc (S38–S75) is merged.
-- `docs/CLI-PLAN.md` §3's ❌/➖/✅ tables contradict both its own prose
-  sections and the actual code for `--append-system-prompt`,
-  `--exclude-tools`, `--no-builtin-tools`, and `--no-session` — needs a
-  resync pass before anyone trusts it as a status source again.
-- `origin/feat/extensions-e6` — stale remote ref, fully merged, safe to
-  delete.
+- ~~`docs/REMOTE-CONTROL.md:3`~~ — **fixed.** Header now reads "shipped
+  2026-08-01 → 08-07" and cites `cli.py:557`, the 20 implemented verbs and the
+  463 RPC-scoped tests. It had said "Status: design. No code written." while
+  its own last-touch commit postdated the code by a day.
+- ~~`docs/SUBMISSION-LIFECYCLE.md:3`~~ — **fixed.** Header now reads "shipped
+  2026-07-31 → 08-05" and cites `agent_session.py:1754` as the one door.
+- ~~`docs/NODE-ADDRESSABLE-AGENTS.md:3`~~ — **fixed.** Header now reads
+  "shipped 2026-07-30 → 08-01" and cites `agent_session.py:558` plus the
+  reload-invariance contract test.
+- ~~`docs/EXTENSIONS-DEMO-ROADMAP.md`~~ — **fixed.** Header now reads
+  "SHIPPED", with M4/M5 named as open by written decision rather than as
+  stalled work.
+- ~~`docs/CLI-PLAN.md` §3~~ — **resynced 2026-08-21**, and it needed more than
+  the four flags this entry named. The 2026-08-10 pass corrected those four but
+  asserted the remaining ❌ rows were "still accurate", which was itself wrong:
+  every flag was re-checked against `add_argument` calls in `cli.py`, and only
+  seven remain unbuilt. §2's "plumbing reality check" is now marked as a
+  pre-build snapshot, since every constraint it lists has been lifted.
+- ~~`origin/feat/extensions-e6`~~ — **gone**; the ref no longer exists on
+  `origin`, which now carries only `master` and `rpc/tier-b`. `rpc/tier-b` is
+  fully merged into `master` (0 commits ahead) and is the remaining deletable
+  remote ref.
 
 ---
 

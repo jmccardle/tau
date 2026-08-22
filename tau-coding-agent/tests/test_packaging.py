@@ -291,6 +291,82 @@ def test_nothing_published_names_the_private_remote():
     assert not leaked, f"{PRIVATE_HOST} appears in files that get published: {leaked}"
 
 
+# -- the supported-interpreter claim, and the matrix that backs it ----------
+
+
+def _requires_python_floor(pyproject: Path) -> str:
+    """The X.Y in a ``requires-python = ">=X.Y"``. Only ``>=`` is accepted: this
+    tree makes one claim about interpreters and a compound specifier would be a
+    second, unmeasured one."""
+    spec = tomllib.loads(pyproject.read_text())["project"]["requires-python"]
+    match = re.fullmatch(r">=(\d+\.\d+)", spec.strip())
+    assert match, f"{pyproject.name} declares requires-python={spec!r}; expected a plain >=X.Y"
+    return match.group(1)
+
+
+def _ci_python_matrix() -> list[str]:
+    """The interpreters publish.yml's ``test`` job actually runs.
+
+    Read with a regex rather than a YAML parser because the alternative is a
+    PyYAML dependency for one assertion, and the matrix is deliberately a single
+    flow-style line so that adding a version is a one-token diff. Same trade the
+    ``package.sh`` tests above make.
+    """
+    workflow = (REPO / ".github/workflows/publish.yml").read_text()
+    match = re.search(r"^\s*python-version:\s*\[([^\]]*)\]", workflow, re.M)
+    assert match, "publish.yml has no inline python-version matrix"
+    return re.findall(r'"([^"]+)"', match.group(1))
+
+
+def test_the_four_packages_claim_one_python_floor():
+    """``requires-python`` is what pip enforces at install time, and the four are
+    installed together by every extra here. A package that quietly raised its
+    floor would resolve out of an environment the other three accepted."""
+    floors = {
+        pkg: _requires_python_floor(REPO / pkg / "pyproject.toml") for pkg in DISTRIBUTIONS
+    }
+    floors["<root>"] = _requires_python_floor(REPO / "pyproject.toml")
+    assert len(set(floors.values())) == 1, f"requires-python floors disagree: {floors}"
+
+
+def test_ci_runs_the_oldest_python_the_packages_claim_to_support():
+    """``requires-python = ">=3.11"`` is a promise made to everyone who runs
+    ``pip install``; the CI matrix is the only evidence behind it. If the floor
+    moves and the matrix does not, the release ships a claim nobody has run --
+    which is the same defect as listing a matrix entry nobody has run.
+
+    The converse is not asserted: the matrix may name versions ABOVE the floor,
+    and each one there means someone ran the suite on it.
+    """
+    floor = _requires_python_floor(REPO / "tau-coding-agent/pyproject.toml")
+    matrix = _ci_python_matrix()
+    assert floor in matrix, (
+        f"publish.yml tests {matrix} but the packages claim to support {floor} and up. "
+        f"Either test {floor}, or raise requires-python to what is actually tested."
+    )
+    below = [v for v in matrix if tuple(map(int, v.split("."))) < tuple(map(int, floor.split(".")))]
+    assert not below, f"publish.yml tests {below}, which requires-python={floor} excludes"
+
+
+def test_the_release_pipeline_never_downgrades_a_failure():
+    """Fail Early (CLAUDE.md), asserted rather than only commented. Each of
+    these turns a broken release into a green run: two would let a failing step
+    pass, and ``skip-existing`` would make re-uploading an already-published
+    version a silent no-op instead of the error that catches a botched bump.
+
+    Comment lines are dropped first, and not as a convenience: the file's own
+    commentary *names* these tokens to explain why they are absent, so scanning
+    the raw text would fail on the documentation of the rule it enforces.
+    """
+    lines = (REPO / ".github/workflows/publish.yml").read_text().splitlines()
+    code = "\n".join(ln for ln in lines if not ln.lstrip().startswith("#"))
+    found = [t for t in ("continue-on-error", "|| true", "skip-existing:") if t in code]
+    assert not found, (
+        f"publish.yml contains {found}. The release pipeline must fail loudly; "
+        f"see the header comment and CLAUDE.md."
+    )
+
+
 def test_the_openai_sdk_is_not_a_dependency():
     """τ speaks the /chat/completions wire format with httpx. The `openai`
     package was declared and never imported; this keeps it gone."""

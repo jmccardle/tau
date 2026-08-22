@@ -25,7 +25,7 @@ from tau_llm.streaming import DoneEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 
 from tau_agent_core.agent_session import AgentSession
-from tau_agent_core.sdk import _resolve_tools
+from tau_agent_core.sdk import _resolve_tools, create_agent_session
 from tau_agent_core.session_log import InMemorySessionLog
 
 _BUILTINS = ["read", "write", "edit", "bash", "ls", "grep", "find"]
@@ -215,3 +215,90 @@ async def test_under_no_tools_the_extension_still_loads_hooks_and_injections() -
     # 3. And its injection reached the payload the provider was handed — the
     #    hook's effect on the turn, not merely the fact that it was called.
     assert any("HOOK-MARKER" in str(m) for m in seen_messages)
+
+
+# ── the SDK seam (PLAN-0.9.3 §6) ───────────────────────────────────────────
+#
+# Until ``create_agent_session`` took ``no_tools``, the tri-state was reachable
+# only through the CLI: every value above had to be handed to ``AgentSession``
+# directly. The tests below pin the factory's own contract, and in particular the
+# two halves that are NOT just forwarding — the emptying, and the raise.
+
+
+def _sdk_session(**kwargs: Any) -> AgentSession:
+    """``create_agent_session`` with the disk kept out of it.
+
+    ``no_context_files=True`` because the prompt builder otherwise walks from cwd
+    to the filesystem root reading AGENTS.md/CLAUDE.md, which makes the result
+    depend on where the suite is run from. A ``Model`` object rather than a name
+    so ``resolve_model`` is not consulted either.
+    """
+    kwargs.setdefault("model", _model())
+    kwargs.setdefault("no_context_files", True)
+    kwargs.setdefault("extensions", [_tool_registering_ext])
+    return create_agent_session(**kwargs)
+
+
+def test_sdk_no_tools_all_offers_nothing() -> None:
+    """``"all"`` through the factory: no built-ins, and no extension tool either."""
+    session = _sdk_session(no_tools="all")
+    assert session._build_turn_tools() == []
+
+
+def test_sdk_no_tools_builtin_keeps_the_extension_tool() -> None:
+    """``"builtin"`` through the factory: the extension's tool survives.
+
+    This is the case that had no behaviour behind it before. ``_build_turn_tools``
+    reads only ``== "all"``; ``"builtin"`` works by the built-in list already being
+    empty, and until now the only thing that emptied it was the coding-agent's
+    argv boundary. An SDK caller passing ``no_tools="builtin"`` got a label.
+    """
+    session = _sdk_session(no_tools="builtin")
+    assert [t.name for t in session._build_turn_tools()] == ["dynamic_tool"]
+
+
+def test_sdk_tools_with_no_tools_is_refused() -> None:
+    """The contradiction raises rather than picking a silent winner.
+
+    ``tools=["read"]`` and ``no_tools="builtin"`` ask for opposite things. Neither
+    parameter outranks the other at a call site, so resolving it by precedence
+    would hand back a session that quietly ignored half the call.
+    """
+    with pytest.raises(ValueError, match="ask for opposite things"):
+        _sdk_session(tools=["read"], no_tools="builtin")
+
+
+def test_sdk_tools_with_no_tools_all_is_refused_too() -> None:
+    """Both policies contradict a requested built-in, not just ``"builtin"``."""
+    with pytest.raises(ValueError, match="ask for opposite things"):
+        _sdk_session(tools=["read", "bash"], no_tools="all")
+
+
+@pytest.mark.parametrize("empty", [None, []])
+def test_sdk_empty_tools_is_not_a_contradiction(empty: list[str] | None) -> None:
+    """``tools=None`` and ``tools=[]`` stay legal alongside a policy.
+
+    Neither asks for a built-in, so neither contradicts a suppression — and
+    ``"all"`` is still meaningful on top of them, because it withholds
+    extension-registered tools, which ``tools=`` cannot speak about at all.
+    """
+    session = _sdk_session(tools=empty, no_tools="all")
+    assert session._build_turn_tools() == []
+
+
+def test_sdk_without_a_policy_nothing_changes() -> None:
+    """Non-vacuity: absent ``no_tools``, requested built-ins and the extension tool
+    are both offered exactly as before."""
+    session = _sdk_session(tools=["read"])
+    assert [t.name for t in session._build_turn_tools()] == ["read", "dynamic_tool"]
+
+
+def test_sdk_unrecognised_policy_still_raises() -> None:
+    """``AgentSession`` stays the single validator of the VALUE.
+
+    The factory deliberately keeps no second copy of the literal list, so a typo'd
+    policy has to surface through construction — this pins that it does, rather
+    than being swallowed by the factory's own emptying.
+    """
+    with pytest.raises(ValueError, match="no_tools must be"):
+        _sdk_session(no_tools="none")  # type: ignore[arg-type]

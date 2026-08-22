@@ -54,7 +54,7 @@ def test_session_dir_reaches_the_tui_run_config(monkeypatch, tmp_path):
     captured: dict = {}
 
     class _FakeParley:
-        def __init__(self, *, cli_overrides=None, cli_run_config=None, fun=False):
+        def __init__(self, *, cli_overrides=None, cli_run_config=None, fun=False, resume=False):
             captured["run_config"] = cli_run_config
 
         def run(self):

@@ -37,7 +37,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from tau_jmfts.client import EMBED_MAX_CHARS, JmftsClient
+from tau_jmfts.client import JmftsClient, JmftsTextTooLongError
 
 _SCOPES = ("conversation", "all", "subtree")
 
@@ -244,12 +244,10 @@ def register(api: Any) -> None:
                 "namespace belongs to τ's own conversation entries."
             )
         content = str(params["content"])
-        # The embedder 400s on over-window content (the D1 server fix), so an oversized
-        # ingest with auto_embed=True would fail the write. Mirror enrich's chunk-to-fit
-        # path: for content past EMBED_MAX_CHARS, write the parent UNembedded and make it
-        # findable by chunking it and embedding the (server-bounded) chunks. The parent
-        # keeps its full text for BM25. Short content still embeds inline.
-        oversized = len(content) > EMBED_MAX_CHARS
+        if not content.strip():
+            # An empty document cannot be embedded and cannot be found; filing one is a
+            # write to /dev/null that reports success. Say so instead.
+            raise ValueError("jmfts_ingest: content is empty — there is nothing to file.")
         doc = client.create_document(
             title=str(params["title"]),
             content=content,
@@ -261,15 +259,24 @@ def register(api: Any) -> None:
                 # across stores), not the JMFTS doc id.
                 "session": ctx._require_session().session_log.id,
             },
-            # Embed on the way in: an ingested document nobody can find is a write to
-            # /dev/null. This is not the hot path — the agent is already waiting on a
-            # tool call — so there is no reason to defer it the way the session write
-            # path must. Oversized content is embedded via its chunks instead (below).
-            auto_embed=not oversized,
+            # Write first, embed second — deliberately NOT auto_embed=True. Whether this
+            # content fits the embedder's 512-TOKEN window is a fact only the server can
+            # compute, and `POST /documents` reports the over-window case as a bare 400
+            # string that would also fail the write. Embedding as a separate step gets
+            # the same measurement as a typed, structured refusal, and keeps the document
+            # written either way.
+            auto_embed=False,
         )
-        if oversized:
-            for chunk in client.chunk_document(doc["id"]):
-                client.embed_document(chunk["id"])
+        # An ingested document nobody can find is a write to /dev/null, so embed it now:
+        # this is not the hot path (the agent is already waiting on a tool call), unlike
+        # the session write path that must defer. Over-window content is made findable
+        # through its chunks instead — the server measures each one against its own
+        # tokenizer (chunk_document's auto_embed=True) — and the parent keeps its full
+        # text for BM25.
+        try:
+            client.embed_document(doc["id"])
+        except JmftsTextTooLongError:
+            client.chunk_document(doc["id"])
         return _text(
             f"Ingested as doc {doc['id']} (usetype={usetype}).",
             {"doc_id": doc["id"], "usetype": usetype},

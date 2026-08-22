@@ -151,8 +151,8 @@ class _FakeConversationSession:
     def append_branch_summary(self, summary: str, from_id: str | None) -> str:
         return self._log.append_branch_summary(summary, from_id)
 
-    def append_at(self, parent_id, entry_type, payload, *, lane: str | None = None) -> str:
-        return self._log.append_at(parent_id, entry_type, payload, lane=lane)
+    def append_at(self, parent_id, entry_type, payload) -> str:
+        return self._log.append_at(parent_id, entry_type, payload)
 
     @property
     def header(self) -> dict[str, Any]:

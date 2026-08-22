@@ -4,7 +4,13 @@ Provides shared fixtures for tau-llm package tests:
 - mock_openai_client: Mock AsyncOpenAI client
 - sample_messages: List of UserMessage/AssistantMessage/ToolResultMessage
 - sample_tool_call: A ToolCall with valid arguments
-- Provider auto-registration for stream_simple tests
+
+(A fourth line here once promised "provider auto-registration for stream_simple
+tests". Nothing in this file has ever done that; it described the
+``ProviderRegistry`` deleted as dead code. The registries that do exist now are
+τ's own, populated at import in ``tau_llm.providers`` — tests need no fixture to
+reach them, and ``test_provider_dispatch.py`` registers its extra vendors
+itself.)
 
 Reference: SUBPHASE-0.0.md lines 260-340
 """

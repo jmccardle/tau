@@ -50,6 +50,16 @@ class FakeJmftsClient:
     # -- position helper (CR-1) --------------------------------------------------
 
     def _assign_position(self, parent_id: int | None, sequential: bool | None) -> int | None:
+        # The real server REFUSES sequential ordering on a root (jmfts d70cc57,
+        # repositories/document.py). CR-1 is a relationship between siblings under a
+        # parent, so it is undefined without one. The fake let this through, which is how
+        # a root create that has never worked against a live server survived in the
+        # offline suite — reproduce the refusal so it cannot happen again.
+        if sequential and parent_id is None:
+            raise ValueError(
+                "sequential ordering is not defined for root documents "
+                "(parent_id is None): roots have no reading-order relationship"
+            )
         parent_ordered = False
         if parent_id is not None:
             parent = self._docs.get(parent_id)
@@ -208,6 +218,28 @@ def test_root_is_created_once_and_reused() -> None:
     roots = [d for d in fake._docs.values() if d["usetype"] == ROOT_USETYPE]
     assert len(roots) == 1
     assert roots[0]["parent_id"] is None
+
+
+def test_root_is_unordered_and_the_levels_below_order_themselves() -> None:
+    """The root must NOT ask for CR-1 ordering, and nothing depends on it doing so.
+
+    ``create(parent_id=None, sequential=True)`` is refused by the server — sibling order
+    is undefined without a parent — so a root that asked for it could never be created at
+    all. The comment that justified it claimed the heads "inherit" ordering from the
+    root, but inheritance only applies when a child passes ``sequential=None``, and both
+    levels below pass ``True`` outright. That is what this pins: root unpositioned, head
+    and log positioned anyway.
+    """
+    fake = FakeJmftsClient()
+    store = StrategyStore(fake)  # type: ignore[arg-type]
+    fam = store.family("endgame")
+    entry = store.append_log(fam, "trade into a won pawn ending")
+
+    assert fake.get_document(store.root_id)["position"] is None, (
+        "the root asked for sibling ordering — the server refuses that on a root"
+    )
+    assert fake.get_document(fam.head_id)["position"] is not None, "the head lost its order"
+    assert entry["position"] is not None, "the log entry lost its temporal order"
 
 
 def test_root_reopened_not_duplicated() -> None:

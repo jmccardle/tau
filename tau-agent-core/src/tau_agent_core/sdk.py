@@ -668,21 +668,320 @@ async def _load_extensions(
     return result
 
 
+#: τ's default system prompt.
+#:
+#: Short on purpose. It buys context window on every single call, so each line
+#: has to earn its place, and a model told to be terse by a wordy prompt has
+#: already been shown which one to believe.
+#:
+#: The last line is where τ's voice lives. It is stated unconditionally and is
+#: NOT wired to ``--fun``: that flag's entire blast radius is
+#: ``tau_coding_agent.tagline`` by design, it belongs to the TUI rather than to
+#: this package, and a joke that can change a turn's behaviour is not the same
+#: kind of joke as a random tagline.
+BASE_SYSTEM_PROMPT = """\
+You are τ, a coding agent working in a real repository. You can read, write, \
+edit, search, and run shell commands, and the changes are real.
+
+Verify, then assert. Read a file before you change it. Never invent a path, a \
+flag, or an API you have not seen. If something surprises you, say so — do not \
+route around it.
+
+Prefer a loud failure to a quiet guess.
+
+Be brief. Report what you did and what it means, then stop. Skip the preamble, \
+the restatement, and the summary of the summary. Dry wit is welcome; filler is \
+not."""
+
+
+#: τ's agent directory — the home of the *global* context file, the one that
+#: applies wherever τ is run from. pi's ``agentDir`` (``~/.pi``); τ's own
+#: ``~/.tau``, the same directory ``_GLOBAL_EXTENSIONS_DIR`` lives under.
+#: A string rather than a ``Path`` so tests (and a caller with a different
+#: home) can pass their own, matching this module's existing convention.
+_AGENT_DIR = "~/.tau"
+
+#: The per-directory context-file candidates, in precedence order — pi
+#: ``resource-loader.ts:72`` at ``5cd93f688``. A directory contributes **at most
+#: one** file: the first of these that exists there wins, and the rest are not
+#: read. ``AGENTS.override.md`` is first so a developer can shadow a checked-in
+#: ``AGENTS.md`` without editing it.
+CONTEXT_FILE_NAMES: tuple[str, ...] = (
+    "AGENTS.override.md",
+    "AGENTS.md",
+    "AGENTS.MD",
+    "CLAUDE.md",
+    "CLAUDE.MD",
+)
+
+#: τ's own context file, and deliberately **not** a member of
+#: :data:`CONTEXT_FILE_NAMES`.
+#:
+#: Putting it in that tuple would make it *compete* with ``AGENTS.md`` under the
+#: one-file-per-directory rule, so a project carrying both would silently lose
+#: one — a regression for every τ user who already has this file, since τ has
+#: always read it *alongside* ``AGENTS.md``. It is instead its own slot, read
+#: from cwd only and appended last, i.e. as the most specific instruction in the
+#: prompt. It is still a context file, so ``--no-context-files`` suppresses it.
+TAU_SYSTEM_FILE = "SYSTEM.md"
+
+
+class ContextFileError(RuntimeError):
+    """A context file was found but could not be used.
+
+    Fail-Early: discovery deliberately *looked* for this file and located it, so
+    a read failure (permissions, a truncated mount, non-UTF-8 bytes) is a real
+    problem and not a reason to quietly prompt the model with less context than
+    the user wrote. pi warns to stderr and continues here
+    (``resource-loader.ts:82``); τ raises, and names the path plus the escape
+    hatch, because a prompt silently missing its project instructions looks
+    exactly like a model that ignored them.
+    """
+
+
+@dataclass(frozen=True)
+class ContextFile:
+    """One discovered context file: its resolved path and its text."""
+
+    path: Path
+    content: str
+
+
+def _read_context_file(path: Path) -> str:
+    """Read one context file, or raise :class:`ContextFileError` naming it.
+
+    ``utf-8-sig`` ports pi's ``stripBom`` (``resource-loader.ts:85``): it drops a
+    leading BOM and is byte-identical to plain ``utf-8`` for everything else.
+    Decoding is *strict* — the old ``errors="replace"`` turned a mis-encoded
+    instruction file into U+FFFD soup that the model would have read as
+    instructions.
+    """
+    try:
+        return path.read_text(encoding="utf-8-sig")
+    except OSError as exc:
+        raise ContextFileError(
+            f"could not read context file {path}: {exc}. Fix it, or run with "
+            f"--no-context-files to skip context discovery entirely."
+        ) from exc
+    except UnicodeDecodeError as exc:
+        raise ContextFileError(
+            f"context file {path} is not valid UTF-8: {exc}. Fix it, or run with "
+            f"--no-context-files to skip context discovery entirely."
+        ) from exc
+
+
+def _find_context_file_in_dir(directory: Path) -> Path | None:
+    """Return this directory's single context file, or ``None``.
+
+    First match in :data:`CONTEXT_FILE_NAMES` wins (pi
+    ``loadContextFileFromDir``, ``resource-loader.ts:71``). Only the *path* is
+    returned: the shadowing check needs a name, not a body, and pi's version
+    reads the file twice for that.
+
+    ``is_file()`` follows symlinks and is False for a directory, so a stray
+    ``CLAUDE.md/`` directory falls through to the next candidate rather than
+    aborting the search (pi's ``statSync(...).isFile()`` ``continue``).
+    """
+    for name in CONTEXT_FILE_NAMES:
+        candidate = directory / name
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            # An unreadable *directory* is not a found file — `is_file()` on an
+            # unstattable path is the question "is there one here", answered no.
+            # A file we DID find and cannot READ still raises, in
+            # `_read_context_file`. This is not a fallback: nothing is
+            # substituted, the search simply continues.
+            continue
+    return None
+
+
+def _find_git_paths(start: Path) -> tuple[Path, Path] | None:
+    """Locate the repository containing ``start``: ``(repo_dir, common_git_dir)``.
+
+    A port of pi's ``findGitPaths`` (``footer-data-provider.ts:16``), and only
+    as much of it as :func:`_find_shadowed_context_file` needs. ``repo_dir`` is
+    the directory holding ``.git``; ``common_git_dir`` is the *shared* git
+    directory, which for a linked worktree resolves through its ``commondir``
+    file back to the main repository's ``.git``. Returns ``None`` when there is
+    no repository, or when what was found does not look like one.
+    """
+    directory = start
+    while True:
+        git_path = directory / ".git"
+        try:
+            if git_path.is_file():
+                content = git_path.read_text(encoding="utf-8").strip()
+                if content.startswith("gitdir: "):
+                    git_dir = (directory / content[len("gitdir: ") :].strip()).resolve()
+                    if not (git_dir / "HEAD").exists():
+                        return None
+                    common_dir_file = git_dir / "commondir"
+                    common_git_dir = (
+                        (git_dir / common_dir_file.read_text(encoding="utf-8").strip()).resolve()
+                        if common_dir_file.exists()
+                        else git_dir
+                    )
+                    return (directory, common_git_dir)
+            elif git_path.is_dir():
+                if not (git_path / "HEAD").exists():
+                    return None
+                return (directory, git_path)
+        except OSError:
+            return None
+        parent = directory.parent
+        if parent == directory:
+            return None
+        directory = parent
+
+
+def _canonicalize(path: Path) -> Path:
+    """``realpath`` without requiring the path to exist (pi ``canonicalizePath``)."""
+    return path.resolve()
+
+
+def _find_shadowed_context_file(cwd: Path) -> Path | None:
+    """The main repo's context file that a *nested* linked worktree's own copy hides.
+
+    A port of pi's ``findShadowedContextFile`` (``resource-loader.ts:101``).
+    When cwd sits in a worktree created *inside* its own main repository —
+    exactly this repo's ``.claude/worktrees/`` layout — the ancestor walk would
+    otherwise reach both the worktree's ``CLAUDE.md`` and the main checkout's,
+    and apply the same repository's instructions twice.
+
+    It deliberately does nothing for an ordinary repo (the two dirs are the
+    same), for a sibling worktree (``git worktree add ../feat``, whose main repo
+    is not an ancestor), for a bare layout (``proj/.bare`` + ``proj/main``,
+    where the dir holding the git dir tracks nothing), or for a submodule (whose
+    git dir lands under ``.git/modules`` and has no ``commondir``).
+
+    Paths are canonicalized because ``git worktree add`` writes the ``gitdir:``
+    target as a realpath while cwd may still be reached through a symlink.
+    """
+    git_paths = _find_git_paths(cwd)
+    if git_paths is None:
+        return None
+    worktree_root = _canonicalize(git_paths[0])
+    common_git_dir = _canonicalize(git_paths[1])
+    main_repo_root = common_git_dir.parent
+    # Strictly *nested*: equal roots mean an ordinary repo, and a root that is
+    # not below the main one means a sibling worktree. Neither shadows anything.
+    if worktree_root == main_repo_root or not worktree_root.is_relative_to(main_repo_root):
+        return None
+    # The parent of the common git dir is the main worktree root only when that
+    # directory is itself checked out from the same repository.
+    if _canonicalize(main_repo_root / ".git") != common_git_dir:
+        return None
+    worktree_context_file = _find_context_file_in_dir(worktree_root)
+    if worktree_context_file is None:
+        return None
+    return _canonicalize(main_repo_root / worktree_context_file.name)
+
+
+def load_project_context_files(
+    cwd: str | Path | None = None,
+    agent_dir: str | Path | None = None,
+) -> list[ContextFile]:
+    """Discover the context files that apply to ``cwd``, weakest first.
+
+    A port of pi's ``loadProjectContextFiles`` (``resource-loader.ts:119`` at
+    ``5cd93f688``), plus τ's own ``.tau/SYSTEM.md``. The returned order is the
+    order they belong in a prompt — **general first, specific last** — because
+    the nearest file is the one that should have the last word:
+
+    1. ``~/.tau``'s context file (:data:`_AGENT_DIR`), the user's global one.
+    2. Every ancestor of ``cwd`` that has one, **root-most first**, ending with
+       ``cwd``'s own — so a repo's ``AGENTS.md`` is read after ``$HOME``'s and
+       a package's after its monorepo's.
+    3. ``cwd``'s ``.tau/SYSTEM.md``, τ's own slot (see :data:`TAU_SYSTEM_FILE`).
+
+    Deduplicated by resolved path, so running τ from ``~`` does not load the
+    same file as both the agent-dir entry and an ancestor.
+
+    On walking all the way to ``/``: this is pi's behaviour and it is kept
+    deliberately, because "put your standing instructions in ``~/AGENTS.md``" is
+    a real workflow. The cost is a handful of ``stat`` calls per ancestor, once
+    per session — not per turn. The *surprise* is answered by
+    :func:`_build_system_prompt`, which labels every block with the absolute
+    path it came from, so a prompt can never carry instructions whose origin it
+    does not name; and by ``--no-context-files`` for a run that wants none.
+    """
+    resolved_cwd = _canonicalize(Path(cwd).expanduser() if cwd else Path(os.getcwd()))
+    resolved_agent_dir = _canonicalize(Path(agent_dir or _AGENT_DIR).expanduser())
+
+    context_files: list[ContextFile] = []
+    seen: set[Path] = set()
+
+    def _take(path: Path) -> ContextFile | None:
+        resolved = _canonicalize(path)
+        if resolved in seen:
+            return None
+        seen.add(resolved)
+        return ContextFile(path=resolved, content=_read_context_file(resolved))
+
+    global_context = _find_context_file_in_dir(resolved_agent_dir)
+    if global_context is not None:
+        taken = _take(global_context)
+        if taken is not None:
+            context_files.append(taken)
+
+    shadowed = _find_shadowed_context_file(resolved_cwd)
+    ancestors: list[ContextFile] = []
+    directory = resolved_cwd
+    while True:
+        found = _find_context_file_in_dir(directory)
+        if found is not None and _canonicalize(found) != shadowed:
+            taken = _take(found)
+            if taken is not None:
+                # Root-most first: each ancestor goes in FRONT of the ones
+                # already collected, so the nearest file ends up last.
+                ancestors.insert(0, taken)
+        parent = directory.parent
+        if parent == directory:
+            break
+        directory = parent
+    context_files.extend(ancestors)
+
+    # τ's own slot, last: the most specific instruction in the prompt.
+    tau_system = resolved_cwd / ".tau" / TAU_SYSTEM_FILE
+    if tau_system.is_file():
+        taken = _take(tau_system)
+        if taken is not None:
+            context_files.append(taken)
+
+    return context_files
+
+
 def _build_system_prompt(
     cwd: str | None = None,
     tools: list[AgentTool] | None = None,
+    custom_prompt: str | None = None,
+    no_context_files: bool = False,
+    agent_dir: str | Path | None = None,
 ) -> str:
-    """Build system prompt from context files and tool definitions.
+    """Build the system prompt from a base prompt, context files and tools.
 
     The system prompt is built from:
-    1. Base prompt (hardcoded)
-    2. AGENTS.md if present in cwd
-    3. .tau/SYSTEM.md if present in cwd
-    4. Tool definitions for prompt_snippet and prompt_guidelines
+
+    1. ``custom_prompt`` if given, else :data:`BASE_SYSTEM_PROMPT`.
+    2. Every context file :func:`load_project_context_files` discovers, unless
+       ``no_context_files``.
+    3. Tool definitions for ``prompt_snippet`` and ``prompt_guidelines``.
+
+    **Context files COMPOSE with (2 follows 1); they never replace it and are
+    never replaced by it.** This is the whole point of the change: a caller who
+    sets ``system_prompt`` used to silently turn project context off, and
+    nothing said so. pi does the same thing — ``buildSystemPrompt``
+    (``system-prompt.ts:46-62``) appends ``<project_context>`` to a
+    ``customPrompt`` exactly as it does to its own base text.
 
     Args:
-        cwd: Current working directory.
+        cwd: Directory the discovery walk starts from. Defaults to ``os.getcwd()``.
         tools: List of :class:`AgentTool` (one shape — see :func:`_resolve_tools`).
+        custom_prompt: Replaces the base prompt only. Context files still load.
+        no_context_files: Skip discovery entirely (``--no-context-files``/``-nc``).
+        agent_dir: Override the ``~/.tau`` global-context directory.
 
     Returns:
         Complete system prompt string.
@@ -690,27 +989,29 @@ def _build_system_prompt(
     cwd = cwd or os.getcwd()
     lines: list[str] = []
 
-    # Base prompt
-    lines.append(
-        "You are τ, a helpful AI assistant. "
-        "You can help with coding, file editing, and system commands."
-    )
+    # Base prompt. This is τ's default voice, and the ONLY copy of it — the
+    # shipped tau_default_config.json deliberately carries no ``system_prompt``
+    # key, so a default install reaches this text and its context files instead
+    # of a config string that would shadow both. A user who sets
+    # ``system_prompt`` is overriding on purpose — and overrides exactly this
+    # much: the paragraph below still gets the project's context files.
+    lines.append(custom_prompt if custom_prompt else BASE_SYSTEM_PROMPT)
 
-    # Try to load AGENTS.md
-    agents_md = Path(cwd) / "AGENTS.md"
-    if agents_md.exists():
-        lines.append("")
-        lines.append("---")
-        lines.append("Additional instructions from AGENTS.md:")
-        lines.append(agents_md.read_text(encoding="utf-8", errors="replace"))
-
-    # Try to load .tau/SYSTEM.md
-    system_md = Path(cwd) / ".tau" / "SYSTEM.md"
-    if system_md.exists():
-        lines.append("")
-        lines.append("---")
-        lines.append("Additional instructions from .tau/SYSTEM.md:")
-        lines.append(system_md.read_text(encoding="utf-8", errors="replace"))
+    # Project context files. The ``path=`` attribute is not decoration: it is the
+    # only thing that makes an ancestor walk reaching ``/`` honest, since the
+    # prompt then names every file it is carrying (pi system-prompt.ts:54-61).
+    if not no_context_files:
+        context_files = load_project_context_files(cwd, agent_dir=agent_dir)
+        if context_files:
+            lines.append("")
+            lines.append("<project_context>")
+            lines.append("Project-specific instructions and guidelines:")
+            for context_file in context_files:
+                lines.append("")
+                lines.append(f'<project_instructions path="{context_file.path}">')
+                lines.append(context_file.content.rstrip("\n"))
+                lines.append("</project_instructions>")
+            lines.append("</project_context>")
 
     # Add tool definitions. One shape, one branch (B1): the former
     # `hasattr(tool, "definition")` fork existed only because the built-ins arrived
@@ -743,11 +1044,13 @@ def create_agent_session(
     session_log: SessionLog | None = None,
     extensions: list[Callable] | None = None,
     system_prompt: str | None = None,
+    no_context_files: bool = False,
     thinking_level: str = "off",
     cwd: str | None = None,
     tool_execution_mode: Literal["sequential", "parallel"] = "parallel",
     compaction_policy: CompactionPolicy | None = None,
     bus_available: bool = False,
+    no_tools: Literal["all", "builtin"] | None = None,
 ) -> AgentSession:
     """Create an AgentSession with all defaults.
 
@@ -755,7 +1058,7 @@ def create_agent_session(
     - Model resolution (string → Model object)
     - Tool discovery (string names → AgentTool objects)
     - Extension registration (inline factory callables invoked at construction)
-    - System prompt building (from AGENTS.md, .tau/SYSTEM.md)
+    - System prompt building (base prompt + discovered context files + tools)
 
     It does NOT load ``~/.tau/settings.json``. Nothing in any package reads
     ``Settings`` outside tests; every value this factory uses is either passed
@@ -785,11 +1088,17 @@ def create_agent_session(
             through the :class:`~tau_agent_core.agent_session.AgentSession`
             constructor's ``tools=`` directly, or be registered by an extension
             (``ExtensionAPI`` tool registration, loaded via ``extensions=``/
-            ``load_extensions``).
+            ``load_extensions``). Passing a non-empty list together with
+            ``no_tools`` raises — see that parameter.
         session_log: Optional SessionLog to persist through (the coding-agent's
             file Session on the live path). Defaults to an in-memory log.
         extensions: List of extension factory callables.
-        system_prompt: Optional custom system prompt.
+        system_prompt: Optional custom system prompt. Replaces the base prompt
+            ONLY — project context files still load and are appended after it.
+            Pass ``no_context_files=True`` to suppress those as well.
+        no_context_files: Skip context-file discovery entirely
+            (``--no-context-files``/``-nc``). The prompt is then the base (or
+            custom) text plus the tool list, and nothing read from disk.
         thinking_level: Thinking level ("off", "minimal", "low", "medium",
             "high", "xhigh"). A non-"off" level marks the model reasoning-capable
             and is forwarded to the provider as `reasoning_effort`.
@@ -814,6 +1123,30 @@ def create_agent_session(
             ``TOUCHES_BUS = True`` (see :func:`_load_one_extension`); no NATS
             wiring exists in this package yet (tau-007), so there is nothing
             to back that capability with until a caller sets this ``True``.
+        no_tools: Tool-suppression policy, the SDK equivalent of the CLI's
+            ``--no-tools``/``-nt`` and ``--no-builtin-tools``/``-nbt``. One
+            resolved value rather than two booleans, for the reason
+            ``headless.resolve_no_tools`` gives: flags that only have meaning
+            against each other become the same flag once each consumer re-derives
+            the interaction.
+
+            - ``"all"`` — the model is offered nothing: no built-ins, and no
+              extension-registered tools either. Extensions still LOAD; hooks,
+              event subscriptions, slash commands and message injections are
+              untouched. Only callable tools are withheld.
+            - ``"builtin"`` — built-ins only. Extension-registered tools survive
+              and are offered.
+            - ``None`` — the default — no suppression.
+
+            Either value resolves zero built-ins here, which is what gives
+            ``"builtin"`` behaviour inside this package rather than leaving it a
+            display label that only the coding-agent's argv boundary honoured.
+            An unrecognised value raises in ``AgentSession``.
+
+    Raises:
+        ValueError: if ``no_tools`` is given together with a non-empty ``tools``
+            (a contradictory request, refused rather than silently resolved), or
+            if ``tools`` names a tool that is not a built-in (:func:`_resolve_tools`).
 
     Returns:
         Fully configured AgentSession instance.
@@ -835,7 +1168,41 @@ def create_agent_session(
         model.reasoning = True
 
     # 2. Discover and create tools
-    tool_objs = _resolve_tools(tools)
+    #
+    # ``no_tools`` with a non-empty ``tools`` is a CONTRADICTORY request — "offer
+    # `read`" and "offer no built-ins" — so it is refused rather than settled by
+    # precedence. Neither parameter outranks the other at a call site, and picking a
+    # silent winner is how a caller ends up with a session that quietly ignores half
+    # of what it asked for. The CLI boundary never has to answer this because argv
+    # cannot express both: ``--tools`` and ``--no-tools`` each write
+    # ``config["tools"]``, and ``headless.resolve_no_tools`` collapses the flags
+    # before ``backends.resolve_tool_names`` reads the result.
+    #
+    # ``tools=None`` (the default) and ``tools=[]`` both stay legal. Neither asks for
+    # a built-in, so neither contradicts a suppression — and ``no_tools="all"`` is
+    # MEANINGFUL on top of them, because it also withholds extension-registered
+    # tools, which ``tools=`` cannot speak about at all.
+    if no_tools is not None and tools:
+        raise ValueError(
+            f"create_agent_session() got tools={tools!r} together with "
+            f"no_tools={no_tools!r}. Those ask for opposite things: a built-in tool, "
+            "and no built-in tools. Drop `tools=` to suppress the built-ins, or drop "
+            "`no_tools=` to offer them."
+        )
+    #
+    # The empty list is set HERE rather than left to the caller, because
+    # ``AgentSession._build_turn_tools`` documents the invariant it relies on — both
+    # policies "arrive here with ``self._tools == []``" — and reads only
+    # ``no_tools == "all"`` itself. Until this factory took the parameter, that
+    # emptying existed solely at the coding-agent's argv boundary, so an SDK caller
+    # who forwarded ``no_tools="builtin"`` alone got a label with no behaviour behind
+    # it. The raise above already guarantees ``tools`` is falsy on this path; assigning
+    # the empty list states the invariant rather than inferring it from that.
+    #
+    # An INVALID ``no_tools`` value is not checked here. ``AgentSession.__init__``
+    # raises on one, and it stays the single validator — a second copy of the literal
+    # list is a second thing to keep current.
+    tool_objs: list[AgentTool] = [] if no_tools is not None else _resolve_tools(tools)
 
     # 3. Extensions: inline factory callables are invoked by AgentSession at
     #    construction (pi's loadExtensionFromFactory analog). File-path discovery
@@ -843,8 +1210,16 @@ def create_agent_session(
     #    wired into the CLI/headless run path (E0/S2).
     ext_factories = list(extensions) if extensions else []
 
-    # 4. Build system prompt
-    sys_prompt = system_prompt or _build_system_prompt(cwd, tool_objs)
+    # 4. Build system prompt. ``system_prompt`` is passed IN rather than short-
+    #    circuiting the builder: it replaces the base text and nothing else, so a
+    #    caller who sets it still gets the project's context files instead of
+    #    silently turning discovery off (see :func:`_build_system_prompt`).
+    sys_prompt = _build_system_prompt(
+        cwd,
+        tool_objs,
+        custom_prompt=system_prompt,
+        no_context_files=no_context_files,
+    )
 
     # 5. Default to an in-memory session log when the caller injects none. The
     #    live paths (TUI/headless) inject the coding-agent's file Session; the
@@ -864,4 +1239,5 @@ def create_agent_session(
         compaction_policy=compaction_policy,
         tool_execution_mode=tool_execution_mode,
         bus_available=bus_available,
+        no_tools=no_tools,
     )

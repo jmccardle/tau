@@ -41,7 +41,13 @@ real:
   design conflated them into one "session tree":
   - `ChatSidebar` picks *which session to open*. It's still a flat list
     grouped by date ("Today"/"Yesterday"/"Older"), exactly like Parley's
-    original — never replaced by a tree.
+    original — never replaced by a tree. It now mounts **closed**; ctrl+b
+    opens it and the choice sticks.
+  - `SessionPickerModal` (`session_picker.py`, added 0.9.3) also picks which
+    session to open, and is what `--resume`, `/resume` and the command palette
+    all reach — one handler, three bindings. It needs nothing from the app: a
+    `SessionCatalog` and a cwd are its whole input. Fuzzy filter over name
+    plus first and last message; Tab widens the scope from this cwd to all.
   - `SessionTreeModal` (opened with `Ctrl+G`) is a real `Tree` widget, but
     it browses the **branch structure inside the current conversation** —
     message/compaction/branch/navigate nodes, with a `◀ current` marker
@@ -99,7 +105,10 @@ stale.
 | `--ext-config NAME.KEY=VALUE` (repeatable) | | per-extension config override, CLI > `config.json` |
 | `--ui-defaults METHOD=ANSWER,...` | | headless dialog auto-answers; otherwise a headless dialog raises. `--print` only |
 | `--system-prompt` / `--append-system-prompt` (repeatable) | | |
-| `--continue` / `--resume` / `--session REF` / `--fork REF` | `-c` / `-r` | mutually exclusive. **`--resume` is TUI-sidebar-only — it raises at the CLI, it does not open a picker headlessly** |
+| `--continue` / `--session REF` / `--fork REF` | `-c` | mutually exclusive with each other and with `--resume` |
+| `--resume` | `-r` | opens `SessionPickerModal` at TUI startup. Raises under `--print`, which has no screen to open a picker on — use `--continue` or `--session REF` there |
+| `--no-context-files` | `-nc` | turn off `AGENTS.md`/`CLAUDE.md` discovery. Run-level, so a mid-session `/model` switch cannot hand the files back |
+| `--fun` / `--no-fun` | | pick the startup tagline at random rather than always the same one |
 | `--name` | `-n` | session display title |
 | `--no-session` | | ephemeral, no persistence |
 | `--thinking {off,minimal,low,medium,high,xhigh}` | | requires a reasoning-capable model |
@@ -111,4 +120,7 @@ stale.
 
 ## Dependencies
 
-`textual>=0.47`, `tau-agent-core` (local), `typer`.
+`ffwf-tau-agent-core` is the only hard one. `textual` and `rich` are the
+`[tui]` extra, and `cli.py:519` is the sole import of the Textual app, so
+`tau -p` and `tau --mode rpc` run a full turn with neither installed. `typer`
+was removed at 0.9.2; argument parsing is `argparse`.

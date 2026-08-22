@@ -65,6 +65,7 @@ from tau_coding_agent.headless import _append_system_prompt, resolve_extensions_
 from tau_agent_core.agent_session_runtime import AgentSessionRuntime
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, SessionInfo
 from tau_coding_agent.config import TAU_DIR, bootstrap_config, update_config
+from tau_coding_agent.session_picker import SessionPickerModal
 from tau_coding_agent.session_store import (
     subscribe_session_events,
 )
@@ -438,20 +439,12 @@ class ExtensionPanelHost(VerticalScroll):
     of the main area, so the chat flow is untouched when empty.
     """
 
-    class VisibilityChanged(Message):
-        """The host gained its first panel, or lost its last.
-
-        The host's own width is CSS (``#ext-panel-host``), but whether the SIDEBAR
-        also fits beside it is a decision about the whole row, so the app makes it
-        (``Parley._apply_side_columns``). This message is what tells the app the
-        row changed — posted from :meth:`set_panel` rather than read off
-        ``host.display`` on a timer, and posted by the host rather than by
-        ``Parley.set_extension_panel`` because a caller may hold the host directly.
-        """
-
-        def __init__(self, visible: bool) -> None:
-            super().__init__()
-            self.visible = visible
+    # There was a ``VisibilityChanged`` message here. It existed for exactly one
+    # listener — ``Parley._apply_side_columns``, which used to re-decide whether
+    # the SIDEBAR still fit beside a newly-opened panel. §8 mounts the sidebar
+    # closed and honors ctrl+b at any width, so that decision no longer exists and
+    # neither does the message: an announcement nobody listens to is a promise
+    # this class would have to keep for no one.
 
     def __init__(self) -> None:
         super().__init__(id="ext-panel-host")
@@ -461,11 +454,10 @@ class ExtensionPanelHost(VerticalScroll):
         self.display = False
 
     def _set_visible(self, visible: bool) -> None:
-        """Show/hide the host, announcing only an actual change of state."""
+        """Show/hide the host. Idempotent — an unchanged state is left alone."""
         if self.display == visible:
             return
         self.display = visible
-        self.post_message(self.VisibilityChanged(visible))
 
     def set_panel(self, key: str, spec: dict[str, Any] | None) -> None:
         """Mount, update in place, or remove one keyed panel (E10 §6 / S68)."""
@@ -2829,9 +2821,11 @@ class Parley(App):
     SUB_TITLE = "Ready"
 
     #: Narrowest terminal on which the sidebar and an open extension panel can BOTH
-    #: sit beside a readable chat column. Below it the sidebar yields — the panel is
-    #: something an extension just put on screen, the sidebar is navigation that is
-    #: one ctrl+b away, and at 80 columns there is not room for all three.
+    #: sit beside a readable chat column. It is no longer a breakpoint the app acts
+    #: on — since the sidebar defaults to CLOSED (SESSION-UX-REDESIGN §8, decision
+    #: 4) the only way it is on screen is that someone pressed ctrl+b, and an
+    #: explicit request is honored at any width — but it is still the measured
+    #: geometry cliff that request runs into, which is why it stays written down.
     #:
     #: It follows from the two CSS widths (``#sidebar`` 25%, ``#ext-panel-host`` 30%
     #: in parley.tcss): the chat is left 45%, less 2 columns of scrollbar gutter and
@@ -2890,8 +2884,16 @@ class Parley(App):
         cli_run_config: Optional[dict] = None,
         session_catalog: Optional[SessionCatalog] = None,
         fun: bool = False,
+        resume: bool = False,
     ):
         super().__init__()
+        # ``tau --resume``: open the session picker over the first frame (§6/§7).
+        # Its own argument rather than a ``cli_run_config`` key, for the reason
+        # ``fun`` is one — run_config is threaded into every backend this app
+        # builds, and a one-shot startup action has no business being visible
+        # from there. It is the whole reach of the flag: `on_mount` reads it once
+        # and nothing downstream can branch on "was this a --resume run".
+        self._resume_on_start: bool = resume
         # --fun (see tau_coding_agent.tagline). Defaults FALSE here rather than to
         # tagline.FUN_DEFAULT, so constructing a Parley programmatically — every
         # test, every scene, devshot — is deterministic whether or not this tree
@@ -2928,13 +2930,13 @@ class Parley(App):
         # what makes a turn this app never initiated renderable at all. Rebound
         # alongside ``_session_event_unsub`` when the backend/session changes.
         self._render_router: Optional[RenderRouter] = None
-        # The user's explicit sidebar choice (ctrl+b), or None while the sidebar
-        # follows the responsive default (``_apply_side_columns``). An explicit
-        # toggle STICKS: pressing ctrl+b on a narrow screen brings the sidebar back
-        # even next to an open panel, and hiding it on a wide screen keeps it hidden
-        # when a panel closes. Nothing resets it — the app never overrides a choice
-        # the user made by hand.
-        self._sidebar_override: Optional[bool] = None
+        # Whether the sidebar is open. FALSE at startup (SESSION-UX-REDESIGN §8,
+        # decision 4): the picker and the command palette are the canonical session
+        # surface now, so the list does not spend a quarter of the first screen
+        # before anyone asks for it. ctrl+b is the only thing that writes it, and
+        # what it writes STICKS — nothing in the app overrides a choice the user
+        # made by hand, at any terminal width (see SIDE_COLUMNS_MIN_WIDTH).
+        self._sidebar_open: bool = False
         # When each open lane started, for the exchange summary's wall clock. Keyed
         # by lane, because two lanes have two different clocks — the previous code
         # could keep one ``start`` local precisely because it could only ever be
@@ -2986,6 +2988,10 @@ class Parley(App):
         # the capability gates which extensions may load, so a model switch that
         # silently revoked it would unload the bus mid-session.
         self._bus_available: bool = bool(run_config.get("bus", False))
+        # ``--no-context-files``/``-nc``: run-level like the flags above, so a
+        # ``/model`` switch cannot silently re-enable the AGENTS.md/CLAUDE.md
+        # discovery this invocation turned off.
+        self._no_context_files: bool = bool(run_config.get("no_context_files", False))
         # Per-extension config overrides (S40): the parsed ``--ext-config`` map
         # ({name: {key: value}}). Merged over config.json's ``"extensions"`` block at
         # each backend load (``_load_backend_extensions``) so each extension's
@@ -3135,31 +3141,34 @@ class Parley(App):
         # before a resize corrects it.
         self._apply_side_columns()
 
-    # ------------------------------------------------------------------
-    # Responsive side columns
-    # ------------------------------------------------------------------
+        # ``tau --resume`` (§7): open the picker over the first frame. After the
+        # refresh, not during mount — ``action_resume_session`` pushes a screen,
+        # and a screen pushed before the base screen has laid out is placed
+        # against a geometry that does not exist yet.
+        if self._resume_on_start:
+            self.call_after_refresh(self.action_resume_session)
 
-    def _sidebar_fits(self) -> bool:
-        """Whether the sidebar can share this terminal with an open panel.
-
-        Always true while no extension panel is open — the sidebar alone is a
-        quarter of the width and leaves the chat three quarters at any size.
-        """
-        if not self.query_one(ExtensionPanelHost).display:
-            return True
-        return self.size.width >= self.SIDE_COLUMNS_MIN_WIDTH
+    # ------------------------------------------------------------------
+    # Side columns
+    # ------------------------------------------------------------------
 
     def _apply_side_columns(self) -> None:
-        """Show or hide the sidebar for the current width and panel state.
+        """Show or hide the sidebar for the current ``_sidebar_open``.
 
-        The ONE place ``#sidebar``'s display is written, so the responsive default
-        and the ctrl+b override cannot fight over it — an inline style set by one
-        of them is otherwise permanent and invisible to the other.
+        The ONE place ``#sidebar``'s display is written, so mount and ctrl+b
+        cannot fight over it — an inline style set by one of them is otherwise
+        permanent and invisible to the other.
+
+        There is no longer a *responsive* half to this decision. It used to hide
+        the sidebar automatically when an extension panel opened on a terminal too
+        narrow for both (``_sidebar_fits``), but that rule only ever decided the
+        case where the user had expressed no preference — an explicit ctrl+b won
+        over it by design. §8 makes "no preference" mean CLOSED, so there is
+        nothing left for the rule to decide: a visible sidebar is now, always,
+        one the user asked for, and it is honored at any width.
         """
         sidebar = self.query_one(ChatSidebar)
-        visible = self._sidebar_override
-        if visible is None:
-            visible = self._sidebar_fits()
+        visible = self._sidebar_open
         if sidebar.display == visible:
             return
         sidebar.display = visible
@@ -3167,16 +3176,6 @@ class Parley(App):
             # A refresh may have landed and been deferred (_apply_sessions) while
             # this was collapsed — catch it up now that it's visible.
             sidebar.ensure_rendered()
-
-    def on_resize(self, event: events.Resize) -> None:
-        """Re-decide which side columns fit when the terminal changes size."""
-        self._apply_side_columns()
-
-    def on_extension_panel_host_visibility_changed(
-        self, message: ExtensionPanelHost.VisibilityChanged
-    ) -> None:
-        """A panel opened or closed: re-decide whether the sidebar still fits."""
-        self._apply_side_columns()
 
     def set_extension_status(self, key: str, text: str | None) -> None:
         """Update one keyed slot in the extension status strip (E10 §6 / S67).
@@ -3462,10 +3461,10 @@ class Parley(App):
 
         ``performer="frontend"`` is a built-in the core deliberately did not run
         because it needs a screen: ``/compact`` re-renders the transcript, ``/tree``
-        and ``/fork`` open the browser, ``/extensions`` paints a panel or runs a
-        runtime management action. Each lands on the identical action the keybinding
-        and the palette already call, so there is one implementation of each command
-        and this method only routes.
+        and ``/fork`` open the browser, ``/resume`` opens the session picker, and
+        ``/extensions`` paints a panel or runs a runtime management action. Each
+        lands on the identical action the keybinding and the palette already call,
+        so there is one implementation of each command and this method only routes.
 
         Fail-Early: an outcome naming a built-in this app has no branch for RAISES.
         That is the whole point of the seam — the core is allowed to resolve
@@ -3484,6 +3483,20 @@ class Parley(App):
         if outcome.name in ("tree", "fork"):
             # pi aliases the two (keybindings.ts:252-253) — both open the browser.
             self.action_browse_tree()
+            return
+        if outcome.name == "resume":
+            # §7's third surface. Bare ``/resume`` opens the picker — the SAME
+            # ``action_resume_session`` the palette entry and ``--resume`` call.
+            # ``/resume <ref>`` skips the picker and names the session directly.
+            # Both end at the one ``ChatSelected`` loader, which resolves the ref
+            # through ``SessionCatalog.resolve_ref`` — the same path/id/id-prefix
+            # grammar ``--session REF`` uses headlessly (§7: one grammar). A ref
+            # that resolves to nothing fails there with its own message rather
+            # than silently degrading into "the picker opened instead".
+            if outcome.args:
+                self.post_message(ChatSelected(outcome.args))
+                return
+            self.action_resume_session()
             return
         if outcome.name == "extensions":
             if not outcome.args:
@@ -4072,6 +4085,7 @@ class Parley(App):
             or self._tool_allowlist is not None
             or inject_replay
             or self._bus_available
+            or self._no_context_files
         ):
             return model_config
         mc = dict(model_config)
@@ -4094,6 +4108,10 @@ class Parley(App):
             # Writing False would let the absence of a flag REVOKE what the
             # config file deliberately allowed.
             mc["bus_available"] = True
+        if self._no_context_files:
+            # Only ever set TRUE, like ``bus_available``: -nc's absence must not
+            # revoke a ``"no_context_files": true`` the config file set.
+            mc["no_context_files"] = True
         return mc
 
     async def _load_backend_extensions(self) -> None:
@@ -4255,13 +4273,16 @@ class Parley(App):
     def action_toggle_sidebar(self):
         """Toggle sidebar visibility.
 
-        Records the flip as ``_sidebar_override`` and lets ``_apply_side_columns``
-        do the write, so the key always inverts what is ON SCREEN — including
-        putting the sidebar back next to a panel on a narrow terminal, where the
-        responsive default had hidden it. The choice then sticks (see the attribute):
-        a keypress is not a hint the layout may overrule.
+        Records the flip as ``_sidebar_open`` and lets ``_apply_side_columns`` do
+        the write, so the key always inverts what is ON SCREEN — including opening
+        the sidebar next to an extension panel on a narrow terminal, which costs
+        the chat columns and is nonetheless what was asked for. The choice sticks
+        (see the attribute): a keypress is not a hint the layout may overrule.
+
+        This is the ONLY way the sidebar opens now that §8 mounts it closed, which
+        is why the binding is listed in the Footer rather than hidden.
         """
-        self._sidebar_override = not self.query_one(ChatSidebar).display
+        self._sidebar_open = not self.query_one(ChatSidebar).display
         self._apply_side_columns()
 
     def action_toggle_reasoning(self) -> None:
@@ -4515,6 +4536,12 @@ class Parley(App):
             )
 
         # General commands
+        yield SystemCommand(
+            "Resume session…",
+            "Pick a saved session from this directory (Tab: every directory)",
+            self.action_resume_session,
+        )
+
         yield SystemCommand("Clear Chat", "Clear current conversation", self.action_clear_chat)
 
         yield SystemCommand("Export Chat", "Export chat to markdown", self.action_export_chat)
@@ -4738,6 +4765,28 @@ class Parley(App):
         self._refresh_subtitle()
         self.notify(f"Compacted {before} → {len(new_messages)} messages")
 
+    @work(group="session-picker")
+    async def action_resume_session(self) -> None:
+        """Open the session picker and load whatever it returns (§6).
+
+        A worker so ``push_screen_wait`` is legal here, exactly as
+        :meth:`action_browse_tree` is one — that is the ``push_screen_wait``
+        branch of the either/or §6 states, chosen once rather than tried
+        alongside a ``push_screen(callback)`` fallback.
+
+        The chosen ``ref`` is posted as a :class:`ChatSelected`, which is the
+        message the sidebar already posts, so the picker adds an entry point and
+        not a second loader: model lookup, backend construction, the runtime's
+        switch/veto and the transcript reload all stay in
+        :meth:`on_chat_selected`. ``os.getcwd()`` rather than ``self._cwd`` for
+        the scope, matching ``ChatSidebar._refresh_chats_worker`` — ``_cwd`` is
+        the string the empty pane prints, not the directory sessions are keyed on.
+        """
+        ref = await self.push_screen_wait(SessionPickerModal(self.session_catalog, os.getcwd()))
+        if ref is None:
+            return
+        self.post_message(ChatSelected(ref))
+
     @work
     async def action_browse_tree(self) -> None:
         """Open the tree-browser and act on the chosen node (§3).
@@ -4950,11 +4999,21 @@ class Parley(App):
         await self.push_screen(SystemPromptEditor(current_prompt), handle_result)
 
     async def on_chat_selected(self, message: ChatSelected):
-        """Handle session selection from sidebar."""
+        """Load a session the sidebar, the picker, or ``/resume <ref>`` named.
+
+        The one loader, three posters (§6/§7). ``chat_ref`` is resolved with
+        ``resolve_ref`` rather than ``load``: the sidebar and the picker post a
+        catalog ref, but ``/resume`` posts whatever the human typed, and
+        ``resolve_ref`` is the grammar ``--session REF`` already uses — a
+        directly-addressable ref, an exact session id, or a unique id prefix. It
+        is also what ``AgentSessionRuntime.switch_session`` uses three lines
+        below, so the two resolutions in this method can no longer disagree
+        about what a ref is.
+        """
         try:
-            # Load the selected session — needed to learn its model, which
+            # Resolve the selected session — needed to learn its model, which
             # decides what backend to build BEFORE a runtime can switch onto it.
-            session = self.session_catalog.load(message.chat_ref)
+            session = self.session_catalog.resolve_ref(message.chat_ref, cwd=os.getcwd())
 
             # Get model config and create backend
             model_config = self.config["models"].get(session.model)

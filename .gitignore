@@ -6,6 +6,14 @@ tau-*.tar.gz
 # build artifacts from package.sh
 tau-*/build/
 
+# `python -m build --outdir dist` collects the wheels and sdists of all four
+# projects into one flat directory, which is also what publish.yml's build job
+# does before `twine check`. Ignored for the same reason tau-*/build/ is: it is
+# output, it is rebuilt by CI at publish time, and the copy that matters is the
+# one on PyPI. RELEASING.md step 5 says to build outside the tree; this is so that
+# forgetting to costs nothing.
+dist/
+
 # setuptools regenerates these on every `pip install -e`, so a tracked copy is
 # a diff on every machine that installs the repo and never a diff anyone reads.
 *.egg-info/

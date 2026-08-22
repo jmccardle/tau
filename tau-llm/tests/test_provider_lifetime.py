@@ -316,8 +316,12 @@ def test_pool_key_hashes_the_api_key_never_stores_it_raw():
         providers = _POOL[loop]
         assert len(providers) == 1
         (key,) = providers.keys()
-        provider_name, base_url, key_hash = key
+        # Four elements since dispatch landed: ``api`` selects the provider
+        # CLASS, so it varies what gets constructed and belongs in the key
+        # alongside the vendor, the endpoint and the credential.
+        provider_name, api, base_url, key_hash = key
         assert provider_name == "openai"
+        assert api == "openai-completions"
         assert base_url == "http://host.example/v1"
         assert key_hash == hashlib.sha256(b"sk-super-secret").hexdigest()
         assert "sk-super-secret" not in key_hash

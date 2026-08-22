@@ -118,17 +118,15 @@ class SessionLog(Protocol):
         parent_id: str | None,
         entry_type: str,
         payload: dict[str, Any],
-        *,
-        lane: str | None = None,
     ) -> str:
-        """Append an entry at an EXPLICIT parent, optionally tagged into a lane.
+        """Append an entry at an EXPLICIT parent.
 
         The one primitive C2/W14's branch sub-agents need, and the ONLY member this
         Protocol grew for them. Every appender above is "``append_at`` at the current
         leaf, then move the leaf"; this exposes the parent so a second cursor can write
         to the same log without disturbing the first. It does **not** move the store's
-        own leaf — a branch's writes must never move the primary tip (see
-        :func:`resolve_cursor`'s lane discipline).
+        own leaf — a branch's writes must never move the tip of the cursor that spawned
+        it.
 
         Deliberately ONE new member rather than the ``branch()``-per-store shape first
         sketched in the C2 plan: with ``append_at`` in place, the branch handle itself
@@ -137,49 +135,43 @@ class SessionLog(Protocol):
         also the member ``runtime_checkable`` can actually police, since that checks
         member *names*, never signatures: a store that ignored a ``parent_id=`` kwarg
         bolted onto the six existing appenders would pass an ``isinstance`` check while
-        silently writing every branch to the primary lane.
+        silently ignoring the explicit parent.
 
-        ``lane`` (when given) is written as the entry's ``branchOf`` marker.
+        It writes NO branch marker. A branch's identity is in-memory
+        (:attr:`BranchView.lane`, which the TUI uses as a render-routing key); nothing
+        durable distinguishes a sub-agent's entry from a user's fork of the same shape,
+        because nothing should — see docs/LANE-REMOVAL.md §1.
         """
         ...
 
 
-#: Marks an entry as belonging to a BRANCH LANE (a sub-agent's work), not the primary
-#: conversation. Carries the branch root's entry id. See :class:`BranchView` and
-#: :func:`resolve_cursor`.
-LANE_KEY = "branchOf"
-
-
 def resolve_cursor(entries: list[dict[str, Any]]) -> str | None:
-    """Resolve the persisted PRIMARY cursor (leaf pointer) from the entry log.
+    """Resolve the persisted cursor (leaf pointer) from the entry log.
 
     Latest-wins: a trailing ``navigate`` entry points at its ``targetId`` (``None`` =
     pre-root); any other kind points at itself. pi-style logs carry no ``navigate``
     entries, so the cursor is simply the last entry — identical to pi's "fall back to
-    last entry" on load (session-manager.ts:855-859).
+    last entry" on load (session-manager.ts:855-859). **This is pi parity restored**:
+    τ briefly filtered lane-tagged (``branchOf``) entries out of this decision, and no
+    longer does.
 
     Lives here, not on a concrete store, because **every** SessionLog implementation
     (in-memory, file, and any database-backed one) must agree on it exactly — the
     cursor is part of the entry algebra, not of any one durability layer.
 
-    **Lane discipline (C2/W14).** Entries tagged ``branchOf`` — a sub-agent's writes —
-    are skipped when deciding the primary cursor. Without this, a sub-agent's append
-    landing last before a crash would make the next load resume *inside the branch*:
-    the primary conversation would silently continue from a sub-agent's lane, which is
-    both wrong context and near-impossible to diagnose after the fact. Branch lanes are
-    concurrent with the primary lane, so "last entry in the file" stops being a sound
-    proxy for "the primary tip" the moment more than one cursor writes to one log.
-
-    Note the asymmetry, which is deliberate: the lane marker gates which entries may
-    **define** the cursor, not what a cursor may **point at**. A human navigating into a
-    branch in the tree browser still works — ``append_navigate(<branch entry>)`` writes
-    an untagged primary ``navigate`` whose ``targetId`` is a branch entry, and that is
-    honoured. What is refused is a branch entry *silently becoming* the tip on its own.
+    **A guarantee was dropped here, deliberately** (docs/LANE-REMOVAL.md §2). The lane
+    filter existed so that a sub-agent's append landing last before a crash could not
+    make the next load resume *inside* that branch. τ is an interactive agent, not a
+    service that must survive ``pkill`` at an arbitrary instant with perfect
+    consistency: if a crash lands you on a branch leaf, the transcript is visible, the
+    tree browser moves you, and nothing is corrupted. The filter also encoded a "main
+    agent with helpers" model that τ does not hold — one agent moves forwards,
+    backwards and sideways through its own history, and there "last write wins" is
+    usually the intended continuation rather than an accident (§2).
     """
-    primary = [e for e in entries if LANE_KEY not in e]
-    if not primary:
+    if not entries:
         return None
-    last = primary[-1]
+    last = entries[-1]
     if last.get("type") == "navigate":
         target = last.get("targetId")
         return str(target) if target is not None else None
@@ -334,8 +326,6 @@ class InMemorySessionLog:
         parent_id: str | None,
         entry_type: str,
         payload: dict[str, Any],
-        *,
-        lane: str | None = None,
     ) -> str:
         """Explicit-parent append (see the Protocol). Does NOT move this log's leaf."""
         if parent_id is not None and parent_id not in self._ids:
@@ -347,14 +337,12 @@ class InMemorySessionLog:
             "timestamp": _now_iso(),
             **payload,
         }
-        if lane is not None:
-            entry[LANE_KEY] = lane
         self._entries.append(entry)
         self._ids.add(entry["id"])
         return str(entry["id"])
 
     def _append(self, kind: str, **payload: Any) -> str:
-        """The primary-lane append: ``append_at`` the current leaf, then move the leaf."""
+        """The ordinary append: ``append_at`` the current leaf, then move the leaf."""
         entry_id = self.append_at(self._leaf_id, kind, payload)
         self._leaf_id = entry_id
         return entry_id
@@ -367,8 +355,15 @@ class BranchView:
     changes), but not a second log: same ``id``, same ``entries()`` (the whole shared
     list, not a filtered one), same durable storage. What it owns is **its own leaf**.
     Every append it makes goes to the underlying log via ``append_at`` — parented at the
-    branch's leaf, tagged into this branch's ``lane`` — and moves only *this* view's
-    cursor, never the primary one.
+    branch's leaf — and moves only *this* view's cursor, never the spawning one.
+
+    Its writes are **not marked** on disk. :attr:`lane` is an in-memory identity used to
+    route this branch's live output (the TUI opens a render lane per branch); it is not
+    stamped on the entries, because a durable "this came from a sub-agent" tag makes a
+    three-way fork and three sub-agents — structurally identical trees — behave
+    oppositely for every reader that asks "does this entry belong to the conversation I
+    am looking at?" (docs/LANE-REMOVAL.md §1, §3.2). The answer to that question is
+    ancestry from the reader's own cursor, and it is available without any tag.
 
     Two properties then fall out of the existing fold **for free**, which is the entire
     reason C2 is tractable (JMFTS-INTEGRATION-PLAN.md §9.2):
@@ -403,7 +398,11 @@ class BranchView:
 
     @property
     def lane(self) -> str:
-        """This branch's lane id — the ``branchOf`` marker its entries carry."""
+        """This branch's lane id — an IN-MEMORY identity, never written to an entry.
+
+        It names the branch on the ``branch_event``/``branch_end`` channels, which is
+        how the TUI's ``RenderRouter`` keeps two concurrent sub-agents' output in two
+        visual lanes. Nothing reads it back off disk (docs/LANE-REMOVAL.md §5)."""
         return self._lane
 
     @property
@@ -427,13 +426,9 @@ class BranchView:
         parent_id: str | None,
         entry_type: str,
         payload: dict[str, Any],
-        *,
-        lane: str | None = None,
     ) -> str:
-        """Pass through to the underlying log, defaulting the lane to this branch's."""
-        return self._log.append_at(
-            parent_id, entry_type, payload, lane=self._lane if lane is None else lane
-        )
+        """Pass through to the underlying log — a branch adds nothing to the entry."""
+        return self._log.append_at(parent_id, entry_type, payload)
 
     def _append(self, entry_type: str, **payload: Any) -> str:
         entry_id = self.append_at(self._leaf_id, entry_type, payload)
@@ -503,9 +498,9 @@ def open_branch(log: SessionLog, parent_id: str | None, *, label: str) -> Branch
 
     The lane id is freshly generated per call, NOT derived from ``parent_id``. Two
     sub-agents spawned from the SAME parent (the common fan-out shape — several
-    evaluators over one retrieval result) would otherwise be tagged identically and be
-    impossible to tell apart when reading the log back, which defeats the point of
-    tagging at all.
+    evaluators over one retrieval result) would otherwise be indistinguishable on the
+    live ``branch_event`` channel, and their output would interleave in one render lane.
+    It is a runtime routing key only; nothing durable carries it.
     """
     if parent_id is not None and parent_id not in {str(e["id"]) for e in log.entries()}:
         raise ValueError(

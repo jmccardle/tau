@@ -24,12 +24,14 @@ Usage:
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Iterable, Literal
 
 import httpx
 
 from tau_llm import grammar as grammar_mod
+from tau_llm.compat import resolve_compat
 from tau_llm.constraints import ConstraintViolation
 from tau_llm.providers.base import Provider
 from tau_llm.json_parse import (
@@ -56,6 +58,78 @@ from tau_llm.types import (
     Usage,
     UserMessage,
 )
+
+_logger = logging.getLogger(__name__)
+
+#: Payload shapes already warned about by :meth:`_on_foreign_thinking_signature`.
+#: Process-wide and deliberately unbounded-in-theory: it is keyed by the sorted
+#: top-level keys of a thinking-signature dict, so its size is the number of
+#: distinct provider payload shapes τ has seen, not the number of messages.
+_WARNED_FOREIGN_SIGNATURES: set[str] = set()
+
+#: The same, for :meth:`_on_foreign_tool_signature`. A separate set so a warned
+#: thinking payload does not silence a tool-call one that happens to share a
+#: vendor namespace: they are different fields with different consequences.
+_WARNED_FOREIGN_TOOL_SIGNATURES: set[str] = set()
+
+# Cap on how much of an upstream error body is quoted into an error message.
+# Same number and same reason as pi's MAX_PROVIDER_ERROR_BODY_CHARS
+# (utils/error-body.ts:16): enough to carry a real gateway error page's useful
+# head, bounded so an HTML 502 does not become the whole transcript.
+_MAX_ERROR_BODY_CHARS = 4000
+
+
+def _truncate_error_text(text: str, max_chars: int = _MAX_ERROR_BODY_CHARS) -> str:
+    """Bound an error body, saying how much was dropped rather than eliding silently."""
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}... [truncated {len(text) - max_chars} chars]"
+
+
+def _describe_exception(e: BaseException) -> str:
+    """Compose a NEVER-EMPTY description of an exception.
+
+    ``str(httpx.ReadTimeout())`` is ``""``, and so is ``ConnectError()`` and
+    ``RemoteProtocolError()`` — the three ways a dropped connection actually
+    reaches this provider. Interpolating that into ``f"Streaming error: {e}"``
+    produced ``RuntimeError: Streaming error: `` with nothing after the colon:
+    an error report that names neither what failed nor where.
+
+    So the exception TYPE always leads. ``ReadTimeout`` alone already tells an
+    operator the connection stalled mid-body rather than never opening, which is
+    a different fix (raise ``request_timeout`` vs. check the URL).
+
+    HTTP status and response body are appended when the exception carries them
+    — the shape of pi's ``normalizeProviderError``/``formatProviderError``
+    (utils/error-body.ts:38-135), adapted to httpx rather than transliterated:
+    httpx puts the status and body on ``e.response``, so one probe replaces
+    pi's four SDK-specific field orders.
+
+    This function must not raise. It runs only on the failure path, and an
+    exception here would replace a bad error message with no error message.
+    """
+    parts = [type(e).__name__]
+
+    detail = str(e).strip()
+    if detail:
+        parts.append(f": {detail}")
+
+    # httpx.HTTPStatusError and friends carry the response; a transport error
+    # does not. Attribute access is guarded because these are properties on some
+    # httpx exception types and can raise when unset.
+    try:
+        response = getattr(e, "response", None)
+        status = getattr(response, "status_code", None) if response is not None else None
+        body = response.text.strip() if response is not None else ""
+    except Exception:  # pragma: no cover - defensive: never fail while reporting
+        status, body = None, ""
+
+    if status is not None:
+        parts.append(f" [HTTP {status}]")
+    if body and body not in detail:
+        parts.append(f" body={_truncate_error_text(body)!r}")
+
+    return "".join(parts)
 
 
 @dataclass
@@ -99,6 +173,29 @@ class _Accumulator:
     response_id: str | None = None
 
 
+@dataclass
+class _TransportState:
+    """What a transport hands the SHARED finalize tail.
+
+    The streaming and non-streaming transports (:meth:`~OpenAICompletionsProvider.
+    _stream_transport` / ``_complete_transport``) differ only in how they fill an
+    ``_Accumulator`` and this record; everything after them — the final message
+    build, the constraint verification, the closing tool-call deltas, the
+    ``DoneEvent`` — is one piece of code reading these fields. Passing them out
+    through a mutable record rather than a return value is what lets a transport be
+    an async generator (it must yield events as it goes) without a second finalize
+    site, which is the defect this design exists to avoid.
+    """
+
+    usage_data: dict[str, Any] = field(default_factory=dict)
+    # llama.cpp's per-completion telemetry, a TOP-LEVEL sibling of `usage` in both
+    # transports (final SSE chunk / response body).
+    timings_data: dict[str, Any] = field(default_factory=dict)
+    stop_reason: Literal["stop", "length", "toolUse", "error", "aborted"] | None = None
+    # The transport already yielded an ErrorEvent and there is nothing to finalize.
+    failed: bool = False
+
+
 # Request-body fields τ owns and no caller-supplied dict may overwrite. These carry the
 # transport contract (what we send, and that we get a usage chunk back), not server
 # decode settings. See _guard_body_keys.
@@ -134,10 +231,22 @@ def _guard_body_keys(source: str, keys: Iterable[str], *, model_id: str) -> None
 
     reserved = _RESERVED_BODY_KEYS & keyset
     if reserved:
+        # "stream" has a supported knob now (Model.stream / the per-call `stream`
+        # option), so say where it lives rather than only that this door is shut —
+        # a raise that names no alternative reads as "unsupported".
+        hint = ""
+        if "stream" in reserved:
+            hint = (
+                " Streaming mode is chosen by `Model.stream` "
+                "(models.<name>.stream in ~/.tau/config.json) or the per-call "
+                "`stream` option, not by a request-body key: τ has to KNOW which "
+                "transport it is reading, and a body key would change the wire "
+                "format underneath the SSE parser."
+            )
         raise ValueError(
             f"Model {model_id!r}: {source} may not set τ transport fields "
             f"{sorted(reserved)}; it is for server decode/cache knobs "
-            "(cache_prompt, min_p, samplers, …)"
+            f"(cache_prompt, min_p, samplers, …).{hint}"
         )
 
     constraint = _CONSTRAINT_BODY_KEYS & keyset
@@ -150,6 +259,31 @@ def _guard_body_keys(source: str, keys: Iterable[str], *, model_id: str) -> None
             "(or silently overrides) comes back as an unconstrained generation "
             "masquerading as a constrained one."
         )
+
+
+def _resolve_stream_mode(per_call: Any, model: Model) -> bool:
+    """Decide whether this call streams. Precedence, narrowest first.
+
+    ``options["stream"]`` (this call) → ``Model.stream`` (config) → ``True``.
+    The same tiering as ``request_timeout``, and for the same reason: the mode is
+    a property of the ENDPOINT (a gateway that does not implement SSE), which is
+    configured per model, while a single call may still need the other mode.
+
+    Fail-Early on a non-bool. The model tier arrives pre-validated (pydantic
+    types the field), so this guard is really about the PER-CALL option, which no
+    schema sees: ``stream="false"`` is truthy in Python, and coercing it would
+    keep streaming against a backend that cannot stream — surfacing as an
+    unreadable response body rather than as the bad argument it is. ``bool`` only;
+    ``0``/``1`` are refused too, because accepting them means accepting ``2``.
+    """
+    value = per_call if per_call is not None else model.stream
+    if not isinstance(value, bool):
+        source = "the per-call `stream` option" if per_call is not None else "`Model.stream`"
+        raise ValueError(
+            f"Model {model.id!r}: {source} must be a bool (True = SSE streaming, "
+            f"False = one buffered completion), got {value!r} ({type(value).__name__})."
+        )
+    return value
 
 
 def _merge_thinking_fragment(
@@ -439,7 +573,21 @@ class OpenAICompletionsProvider(Provider):
     # reason (see docs/PROVIDER-LIFETIME.md §5).
     DEFAULT_BASE_URL: str = "https://api.openai.com/v1"
 
-    def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
+    # How long one completion may take, and how long its TCP connect may take.
+    # Split because they answer different questions: connect failing is a wrong
+    # or unreachable endpoint (seconds), while a completion legitimately takes
+    # minutes on a local server decoding a long reasoning trace. Both are
+    # overridable per provider (constructor) and per call
+    # (``options["request_timeout"]``) — see ``_resolve_timeout``.
+    DEFAULT_TIMEOUT_SECONDS: float = 300.0
+    DEFAULT_CONNECT_TIMEOUT_SECONDS: float = 10.0
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        request_timeout: float | httpx.Timeout | None = None,
+    ) -> None:
         """Initialize the OpenAI provider.
 
         Args:
@@ -448,6 +596,9 @@ class OpenAICompletionsProvider(Provider):
                 time in ``stream_chat``. Local servers that need no real auth
                 must still pass a truthy sentinel (e.g. ``"not-needed"``).
             base_url: Custom API base URL. Defaults to OpenAI production URL.
+            request_timeout: Completion timeout. A number is seconds and keeps
+                the default connect timeout; an ``httpx.Timeout`` sets every
+                phase explicitly. None keeps ``DEFAULT_TIMEOUT_SECONDS``.
         """
         import os
 
@@ -458,7 +609,43 @@ class OpenAICompletionsProvider(Provider):
         # (openai-completions.ts:141).
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self.base_url = base_url or self.DEFAULT_BASE_URL
+        # Validated HERE, not at first request: a bogus timeout in config is a
+        # configuration error, and the construction site is where the operator
+        # can still be told which value was wrong before a request is in flight.
+        self.request_timeout: httpx.Timeout = self._resolve_timeout(request_timeout)
         self._client: httpx.AsyncClient | None = None
+
+    @classmethod
+    def _resolve_timeout(cls, value: float | httpx.Timeout | None) -> httpx.Timeout:
+        """Normalize a caller-supplied timeout to an ``httpx.Timeout``.
+
+        Fail-Early: a value that cannot mean a duration raises instead of
+        quietly reverting to the default. A timeout silently ignored is exactly
+        the failure this knob exists to fix — the operator would tune a number,
+        see no change, and conclude the hang is elsewhere.
+
+        ``bool`` is rejected explicitly: it is an ``int`` subclass, so
+        ``request_timeout=True`` would otherwise arrive as a 1-second timeout.
+        """
+        if value is None:
+            return httpx.Timeout(
+                cls.DEFAULT_TIMEOUT_SECONDS, connect=cls.DEFAULT_CONNECT_TIMEOUT_SECONDS
+            )
+        if isinstance(value, httpx.Timeout):
+            return value
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(
+                f"request_timeout must be a number of seconds or an httpx.Timeout, "
+                f"got {value!r} ({type(value).__name__})"
+            )
+        if value <= 0:
+            raise ValueError(
+                f"request_timeout must be a positive number of seconds, got {value!r}. "
+                "(httpx spells 'no timeout' as None, which here means 'use the "
+                f"default of {cls.DEFAULT_TIMEOUT_SECONDS}s' — pass "
+                "httpx.Timeout(None) if an unbounded wait is really wanted.)"
+            )
+        return httpx.Timeout(float(value), connect=cls.DEFAULT_CONNECT_TIMEOUT_SECONDS)
 
     def _get_client(self) -> httpx.AsyncClient:
         """Get or create the HTTP client."""
@@ -469,7 +656,7 @@ class OpenAICompletionsProvider(Provider):
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
                 },
-                timeout=httpx.Timeout(300.0, connect=10.0),
+                timeout=self.request_timeout,
             )
         return self._client
 
@@ -493,7 +680,10 @@ class OpenAICompletionsProvider(Provider):
     # ──────────────────────────────────────────────────────────────────
 
     def _convert_messages_to_openai(
-        self, messages: list, reasoning_replay: str = "turn"
+        self,
+        messages: list,
+        reasoning_replay: str = "turn",
+        strict_reasoning_formats: bool = False,
     ) -> list[dict]:
         """Convert τ messages to OpenAI API message format.
 
@@ -543,18 +733,26 @@ class OpenAICompletionsProvider(Provider):
             if isinstance(msg, UserMessage):
                 openai_messages.append(self._convert_user_message(msg))
             elif isinstance(msg, AssistantMessage):
-                openai_messages.append(self._convert_assistant_message(msg, include_reasoning))
+                openai_messages.append(
+                    self._convert_assistant_message(
+                        msg, include_reasoning, strict_reasoning_formats
+                    )
+                )
             elif isinstance(msg, ToolResultMessage):
                 openai_messages.append(self._convert_tool_result(msg))
             elif isinstance(msg, dict):
                 # Convert via _convert_message_dict to handle toolResult → tool,
                 # content list → string, etc.
-                openai_messages.append(self._convert_message_dict(msg, include_reasoning))
+                openai_messages.append(
+                    self._convert_message_dict(msg, include_reasoning, strict_reasoning_formats)
+                )
             else:
                 # Try to convert via model_dump
                 if hasattr(msg, "model_dump"):
                     d = msg.model_dump()
-                    openai_messages.append(self._convert_message_dict(d, include_reasoning))
+                    openai_messages.append(
+                        self._convert_message_dict(d, include_reasoning, strict_reasoning_formats)
+                    )
                 else:
                     openai_messages.append({"role": "user", "content": str(msg)})
 
@@ -596,7 +794,12 @@ class OpenAICompletionsProvider(Provider):
         # Return the data as-is (assumed to be base64-encoded)
         return img.data
 
-    def _assistant_content_to_openai(self, blocks: list, include_reasoning: bool = True) -> dict:
+    def _assistant_content_to_openai(
+        self,
+        blocks: list,
+        include_reasoning: bool = True,
+        strict_reasoning_formats: bool = False,
+    ) -> dict:
         """Convert an assistant message's content blocks to OpenAI format.
 
         Accepts either τ pydantic blocks (``TextContent``/``ThinkingContent``/
@@ -618,7 +821,9 @@ class OpenAICompletionsProvider(Provider):
         branch (openai-completions.ts:835)."""
         text_parts: list[str] = []
         thinking_parts: list[str] = []
-        thinking_signature = ""
+        # str: the field name to replay under. dict: a payload from another
+        # provider — see _foreign_signature below.
+        thinking_signature: str | dict[str, Any] = ""
         tool_calls: list[dict] = []
         for block in blocks:
             if isinstance(block, dict):
@@ -630,6 +835,10 @@ class OpenAICompletionsProvider(Provider):
                     if not thinking_signature:
                         thinking_signature = block.get("thinking_signature", "")
                 elif btype == "toolCall":
+                    if block.get("provider_signature"):
+                        self._on_foreign_tool_signature(
+                            block["provider_signature"], strict_reasoning_formats
+                        )
                     tool_calls.append(
                         {
                             "id": block.get("id", ""),
@@ -647,6 +856,10 @@ class OpenAICompletionsProvider(Provider):
                 if not thinking_signature:
                     thinking_signature = block.thinking_signature
             elif isinstance(block, ToolCall):
+                if block.provider_signature:
+                    self._on_foreign_tool_signature(
+                        block.provider_signature, strict_reasoning_formats
+                    )
                 tool_calls.append(
                     {
                         "id": block.id,
@@ -657,6 +870,18 @@ class OpenAICompletionsProvider(Provider):
                         },
                     }
                 )
+
+        # A dict signature is not a field name — it is another provider's opaque
+        # payload (Anthropic's cryptographic thinking signature, say), and this is
+        # the OpenAI writer. Using it as a key below would NOT raise; it would put
+        # a blob where a field name belongs and send a valid-looking request that
+        # means nothing. So drop it to the empty signature, which routes the
+        # thinking through the same branch as a block that never had one: kept as
+        # text content, never replayed under a key.
+        # Reference: docs/ANTHROPIC-GOOGLE-CLIENTS.md S2/S4.
+        if not isinstance(thinking_signature, str):
+            self._on_foreign_thinking_signature(thinking_signature, strict_reasoning_formats)
+            thinking_signature = ""
 
         result: dict[str, Any] = {"role": "assistant"}
         text = "".join(text_parts)
@@ -694,16 +919,96 @@ class OpenAICompletionsProvider(Provider):
             result[thinking_signature] = thinking
         return result
 
+    def _on_foreign_thinking_signature(
+        self, signature: dict[str, Any], strict_reasoning_formats: bool
+    ) -> None:
+        """Handle a thinking signature this writer cannot use as a field name.
+
+        Raises under ``strict_reasoning_formats``; otherwise warns once per
+        payload shape per process and returns, leaving the caller to drop the
+        signature. Reference: docs/ANTHROPIC-GOOGLE-CLIENTS.md S2/S4.
+        """
+        origin = ",".join(sorted(signature)) or "<empty>"
+        detail = (
+            f"thinking block carries a {origin!r} signature payload, which the "
+            "OpenAI-completions writer cannot replay — a dict signature is a "
+            "provider-peculiar blob, not the field name this writer replays under. "
+            "The block almost certainly came from another provider (models mixed "
+            "within one session, or a message an extension synthesised)."
+        )
+        if strict_reasoning_formats:
+            raise ValueError(
+                f"{detail} Refusing to continue because "
+                "models.<name>.strict_reasoning_formats is set."
+            )
+        # Warn once per payload shape: a single foreign block would otherwise
+        # re-warn on every turn for the rest of the session, since the message
+        # stays in the replayed context.
+        if origin not in _WARNED_FOREIGN_SIGNATURES:
+            _WARNED_FOREIGN_SIGNATURES.add(origin)
+            _logger.warning(
+                "%s Keeping the reasoning as text content and not replaying it under "
+                "a signature field. Set models.<name>.strict_reasoning_formats to "
+                "raise instead.",
+                detail,
+            )
+
+    def _on_foreign_tool_signature(
+        self, signature: dict[str, Any], strict_reasoning_formats: bool
+    ) -> None:
+        """Handle a tool call carrying another wire's replay token.
+
+        The OpenAI tool_calls schema has no field for one, so the token is
+        DROPPED — the tool call itself still replays, with its id, name and
+        arguments intact, because the call is what the conversation needs and the
+        signature is what the other wire needs.
+
+        Same shape as :meth:`_on_foreign_thinking_signature`: raise under
+        ``strict_reasoning_formats``, else warn once per payload shape.
+
+        This is not a hypothetical. Gemini 3 REQUIRES the token on replay, so a
+        session that switches from a Google model to an OpenAI-compatible one
+        carries tool calls that still hold it. Forwarding it — under an invented
+        key, or inside ``arguments`` where it would reach the tool — would send a
+        valid-looking request that means something else. Reference:
+        docs/ANTHROPIC-GOOGLE-CLIENTS.md S8.
+        """
+        origin = ",".join(sorted(signature)) or "<empty>"
+        detail = (
+            f"tool call carries a {origin!r} replay signature, which the "
+            "OpenAI-completions writer has nowhere to put — the tool_calls schema "
+            "has no such field. The call was almost certainly made by another "
+            "provider (models mixed within one session, or a resumed session)."
+        )
+        if strict_reasoning_formats:
+            raise ValueError(
+                f"{detail} Refusing to continue because "
+                "models.<name>.strict_reasoning_formats is set."
+            )
+        if origin not in _WARNED_FOREIGN_TOOL_SIGNATURES:
+            _WARNED_FOREIGN_TOOL_SIGNATURES.add(origin)
+            _logger.warning(
+                "%s Replaying the tool call without it. Set "
+                "models.<name>.strict_reasoning_formats to raise instead.",
+                detail,
+            )
+
     def _convert_assistant_message(
-        self, msg: AssistantMessage, include_reasoning: bool = True
+        self,
+        msg: AssistantMessage,
+        include_reasoning: bool = True,
+        strict_reasoning_formats: bool = False,
     ) -> dict:
         """Convert a pydantic AssistantMessage to OpenAI format (text + tool_calls).
 
         ``include_reasoning`` carries the per-message reasoning-replay scope
         (:meth:`_convert_messages_to_openai`); False drops this message's replayed
-        chain-of-thought.
+        chain-of-thought. ``strict_reasoning_formats`` carries
+        ``Model.strict_reasoning_formats``.
         """
-        return self._assistant_content_to_openai(list(msg.content), include_reasoning)
+        return self._assistant_content_to_openai(
+            list(msg.content), include_reasoning, strict_reasoning_formats
+        )
 
     def _convert_tool_result(self, msg: ToolResultMessage) -> dict:
         """Convert ToolResultMessage to OpenAI tool role format."""
@@ -723,13 +1028,19 @@ class OpenAICompletionsProvider(Provider):
 
         return result
 
-    def _convert_message_dict(self, d: dict, include_reasoning: bool = True) -> dict:
+    def _convert_message_dict(
+        self,
+        d: dict,
+        include_reasoning: bool = True,
+        strict_reasoning_formats: bool = False,
+    ) -> dict:
         """Convert a generic dict message to OpenAI format.
 
         Handles toolResult → tool role conversion, extracts tool_call_id,
         and converts list-type content to a string. ``include_reasoning`` carries
         the per-message reasoning-replay scope (this is the persisted/reload path,
         so it is the one that actually accretes stale reasoning on follow-up turns).
+        ``strict_reasoning_formats`` carries ``Model.strict_reasoning_formats``.
         """
         role = d.get("role", "")
         content = d.get("content", "")
@@ -740,7 +1051,9 @@ class OpenAICompletionsProvider(Provider):
             # raw blocks the API rejects (HTTP 400 unsupported content[].type); a
             # plain-string body (older chats) passes straight through.
             if isinstance(content, list):
-                return self._assistant_content_to_openai(content, include_reasoning)
+                return self._assistant_content_to_openai(
+                    content, include_reasoning, strict_reasoning_formats
+                )
             return {"role": "assistant", "content": content}
         elif role == "user":
             return {"role": "user", "content": content}
@@ -808,79 +1121,6 @@ class OpenAICompletionsProvider(Provider):
     # Conversion: OpenAI → τ
     # ──────────────────────────────────────────────────────────────────
 
-    def _convert_openai_choice_to_message(self, choice: dict) -> AssistantMessage:
-        """Convert OpenAI choice to τ AssistantMessage.
-
-        Handles streaming delta accumulation into a final message.
-
-        Reference: PHASE-1-SUBPHASE-2.md, "OpenAI Choice → τ Message" section.
-
-        Args:
-            choice: OpenAI choice dict with delta and finish_reason.
-
-        Returns:
-            AssistantMessage with accumulated content.
-        """
-        delta = choice.get("delta", {})
-        finish_reason = choice.get("finish_reason")
-
-        # Build the final message from accumulated data
-        text_parts: list[str] = []
-        thinking_parts: list[str] = []
-        tool_calls: list[ToolCall] = []
-
-        # Extract text content
-        content = delta.get("content", "")
-        if content:
-            text_parts.append(content)
-
-        # Extract reasoning/thinking (reasoning_content / reasoning / reasoning_text)
-        reasoning, reasoning_field = _extract_reasoning(delta)
-        if reasoning:
-            thinking_parts.append(reasoning)
-
-        # Extract tool calls
-        deltas = delta.get("tool_calls", [])
-        if deltas:
-            for tc_delta in deltas:
-                tc_id = tc_delta.get("id", "")
-                tc_name = tc_delta.get("function", {}).get("name", "")
-                tc_args = tc_delta.get("function", {}).get("arguments", "")
-                if tc_id and tc_name:
-                    args_dict = parse_streaming_json(tc_args)
-                    tool_calls.append(
-                        ToolCall(
-                            id=tc_id,
-                            name=tc_name,
-                            arguments=args_dict,
-                        )
-                    )
-
-        # Build content blocks
-        content_blocks: list[Any] = []
-        content_blocks.extend([TextContent(type="text", text=t) for t in text_parts])
-        content_blocks.extend(
-            [
-                ThinkingContent(type="thinking", thinking=t, thinking_signature=reasoning_field)
-                for t in thinking_parts
-            ]
-        )
-        content_blocks.extend(tool_calls)
-
-        model_id = delta.get("model", "unknown")
-        response_id = choice.get("message_id", choice.get("id", "unknown"))
-
-        return AssistantMessage(
-            content=content_blocks,
-            api="openai-completions",
-            provider="openai",
-            model=model_id,
-            response_id=response_id,
-            usage=Usage(),
-            stop_reason=self._map_finish_reason(finish_reason),
-            timestamp=0,
-        )
-
     def _map_finish_reason(
         self, reason: str | None
     ) -> Literal["stop", "length", "toolUse", "error", "aborted"]:
@@ -939,9 +1179,12 @@ class OpenAICompletionsProvider(Provider):
             content_blocks.append(ToolCall(id=tc.id, name=tc.name, arguments=args_dict))
 
         return AssistantMessage(
+            # The vendor that actually answered, not the vendor whose wire format
+            # it speaks. These were hardcoded, so a reply from Groq or a private
+            # gateway was labelled "openai" in the transcript and in every export.
+            api=model.api,
+            provider=model.provider,
             content=content_blocks,
-            api="openai-completions",
-            provider="openai",
             model=model.id,
             response_id=accum.response_id,
             usage=Usage(),
@@ -967,6 +1210,35 @@ class OpenAICompletionsProvider(Provider):
         repairs = 0
         had_tool_call_with_args = False
         for tc in accum.tool_calls:
+            # A tool call MUST name the function to invoke. Checked before the
+            # arguments because it is the more fundamental half of the contract:
+            # arguments without a name are unroutable no matter how well they parse.
+            #
+            # This is not hypothetical. An OpenAI-compatible gateway was observed
+            # streaming tool-call chunks that never populate `function.name` for
+            # some deployments while populating it for others on the same gateway
+            # with byte-identical payloads (PLAN-0.9.3.md §4.2). τ transcribed the
+            # empty name faithfully, `self._tools.get("")` missed in the agent
+            # loop, and the run reported `Unknown tool: ` — which blames the model
+            # for a wire-contract violation by the gateway, and then burned the
+            # full max_turns budget repeating it.
+            #
+            # So: raise here, at the point where the fault is still attributable.
+            # The finalize path already raises on an argument buffer that will not
+            # decode (just below); the name was the one field it skipped. A second,
+            # dead finalize path did carry a name check — and DROPPED such calls
+            # silently, which is the same violation wearing a different hat. It has
+            # since been deleted; this is now the only place a tool call is built.
+            if not tc.name.strip():
+                raise ValueError(
+                    f"Tool call {tc.id!r} arrived with no function name "
+                    f"(model {model.id!r} at {self.base_url!r}). The provider or "
+                    "gateway never populated `function.name` on any chunk for this "
+                    "call, which violates the OpenAI tool-calling wire contract — "
+                    "a tool call must name the function to invoke. Refusing to "
+                    "execute a nameless call. Arguments received: "
+                    f"{''.join(tc.arguments_parts)!r}"
+                )
             args_str = "".join(tc.arguments_parts)
             # Authoritative path: the stream is complete, so the arguments must
             # be valid JSON. A complete-but-unparseable payload is a real error
@@ -1000,9 +1272,12 @@ class OpenAICompletionsProvider(Provider):
                 stop_reason = "stop"
 
         return AssistantMessage(
+            # The vendor that actually answered, not the vendor whose wire format
+            # it speaks. These were hardcoded, so a reply from Groq or a private
+            # gateway was labelled "openai" in the transcript and in every export.
+            api=model.api,
+            provider=model.provider,
             content=content_blocks,
-            api="openai-completions",
-            provider="openai",
             model=model.id,
             response_id=accum.response_id,
             usage=usage,
@@ -1026,13 +1301,23 @@ class OpenAICompletionsProvider(Provider):
         Converts τ messages to OpenAI format, streams the response,
         and produces τ streaming events.
 
+        Two transports serve this one contract (PLAN-0.9.3 §4.1): SSE
+        (``stream: true``, the default) and a single buffered completion
+        (``stream: false``), selected by the per-call ``stream`` option, then
+        ``Model.stream``. Which one ran is NOT observable from here: the
+        buffered response is adapted into the same delta events and finalized by
+        the same ``_build_final_message`` — one construction site, so the
+        Fail-Early guards on it (a nameless tool call, an argument buffer that
+        will not decode) cover both.
+
         Reference: PHASE-1-SUBPHASE-2.md, "Streaming event production" section.
 
         Args:
             model: The Model to use for the request.
             messages: List of τ message objects.
             tools: Optional list of tool definitions.
-            options: Optional provider-specific options (temperature, max_tokens, etc.).
+            options: Optional provider-specific options (temperature, max_tokens,
+                ``stream``, ``request_timeout``, …).
 
         Returns:
             An async iterator of typed streaming events — TextDeltaEvent,
@@ -1062,7 +1347,9 @@ class OpenAICompletionsProvider(Provider):
         self.api_key = api_key
 
         # Convert τ messages to OpenAI format
-        openai_messages = self._convert_messages_to_openai(messages, model.reasoning_replay)
+        openai_messages = self._convert_messages_to_openai(
+            messages, model.reasoning_replay, model.strict_reasoning_formats
+        )
 
         # Convert tools to OpenAI format
         openai_tools = None
@@ -1077,13 +1364,29 @@ class OpenAICompletionsProvider(Provider):
         # `api_key` is a transport credential, not a request-body field;
         # `reasoning` is a τ-internal level (converted to `reasoning_effort`
         # below); `abort_signal` is a τ-internal cancellation handle (polled in the
-        # stream loop) — strip all three so threading them through `options` never
-        # leaks them into the JSON body (a non-serializable object would 400/raise).
+        # stream loop); `request_timeout` is an HTTP-client setting — strip them all
+        # so threading them through `options` never leaks them into the JSON body
+        # (a non-serializable object would 400/raise).
         abort_signal = options.get("abort_signal")
         body_options = {
             k: v
             for k, v in options.items()
-            if k not in ("api_key", "reasoning", "abort_signal", "constraints")
+            if k
+            not in (
+                "api_key",
+                "reasoning",
+                "abort_signal",
+                "constraints",
+                "request_timeout",
+                # A TRANSPORT MODE, not a body field. Stripped here (like
+                # `request_timeout`) so that the value a caller passes selects which
+                # code path reads the response, and the `stream` that reaches the
+                # wire is always the one τ resolved and knows how to parse. It stays
+                # in _RESERVED_BODY_KEYS, so `extra_body`/`DecodeConstraints` still
+                # cannot smuggle it in as a raw key — those dicts do not go through
+                # this strip and are guarded below.
+                "stream",
+            )
         }
         # Both caller-supplied dicts are guarded, not just Model.extra_body: a `tools`
         # or `grammar` key smuggled through per-call options bypasses the constraint
@@ -1092,16 +1395,32 @@ class OpenAICompletionsProvider(Provider):
         _guard_body_keys("extra_body", model.extra_body.keys(), model_id=model.id)
         _guard_body_keys("per-call options", body_options.keys(), model_id=model.id)
 
+        stream_mode = _resolve_stream_mode(options.get("stream"), model)
+        # What THIS endpoint wants on the wire: the operator's `Model.compat` over
+        # what τ infers from provider/base_url. Resolved once, read twice below.
+        compat = resolve_compat(model)
+
         payload: dict[str, Any] = {
             "model": model.id,
             "messages": openai_messages,
-            "stream": True,
-            "stream_options": {"include_usage": True},
+            "stream": stream_mode,
             # Below **body_options: a per-call option always wins over the model's
             # static default.
             **model.extra_body,
             **body_options,
         }
+        if stream_mode and compat.supports_usage_in_streaming:
+            # `stream_options` is meaningful only ON a stream: OpenAI rejects it
+            # alongside `stream: false`, and a buffered response carries `usage` in
+            # the body unconditionally, so there is nothing to ask for. Assigned
+            # after the spreads rather than merged into the literal because it is a
+            # reserved key — neither caller dict can carry one past _guard_body_keys.
+            #
+            # `compat.supports_usage_in_streaming` is the escape for a gateway that
+            # rejects the key. It costs the turn's token counts (a `usage` block
+            # that never arrives reads as zero), which is why it is opt-out and
+            # never inferred: τ asks for usage unless an operator says it cannot.
+            payload["stream_options"] = {"include_usage": True}
         if openai_tools:
             payload["tools"] = openai_tools
 
@@ -1114,14 +1433,19 @@ class OpenAICompletionsProvider(Provider):
         # slot reporting `n_predict = -1`, so generation ran unbounded against an
         # n_ctx of 262144 and one turn decoded ~120k tokens before anyone noticed.
         #
-        # Skipped when the caller has already named a cap under either spelling.
-        # OpenAI's o-series rejects `max_tokens` and wants `max_completion_tokens`;
-        # llama.cpp and the classic Chat Completions API want `max_tokens`. τ sends
-        # the classic key and treats either one already present — via
-        # `Model.extra_body` or per-call options — as the caller having taken
-        # control, rather than sending two conflicting caps.
+        # Skipped when the caller has already named a cap under either spelling —
+        # via `Model.extra_body` or per-call options — which is the caller having
+        # taken control, rather than sending two conflicting caps.
+        #
+        # WHICH spelling is a property of the endpoint: OpenAI's o-series and
+        # gpt-5 family reject `max_tokens` and want `max_completion_tokens`, while
+        # llama.cpp, vLLM and the classic Chat Completions API want `max_tokens`.
+        # That used to be the fixed classic key with a comment explaining the
+        # hazard; it is now `compat.max_tokens_field`, inferred from the endpoint
+        # and overridable per model. Unrecognised endpoints still get `max_tokens`,
+        # so nothing that worked before changes.
         if not any(key in payload for key in ("max_tokens", "max_completion_tokens")):
-            payload["max_tokens"] = model.max_tokens
+            payload[compat.max_tokens_field] = model.max_tokens
 
         _apply_constraints(payload, model, options.get("constraints"), has_tools=bool(openai_tools))
 
@@ -1152,137 +1476,47 @@ class OpenAICompletionsProvider(Provider):
         client = self._get_client()
         accum = _Accumulator()
 
+        # Per-call timeout override. Resolved (and validated) here rather than
+        # mutating `self`: providers are POOLED and shared across models by
+        # (provider, base_url, key hash) in client.py, so a per-call value stored
+        # on the instance would silently retime every other caller's requests.
+        # Passing it to `client.stream(...)` keeps it scoped to this request and
+        # leaves the pool key untouched.
+        # Precedence, narrowest first: this call's option, then the model's own
+        # ``request_timeout`` from config, then the provider default. The model
+        # tier is what makes the knob usable — a slow local model and a flaky
+        # gateway want different patience, and both are configured per-model.
+        _per_call = options.get("request_timeout")
+        _configured = _per_call if _per_call is not None else model.request_timeout
+        request_timeout = self._resolve_timeout(
+            _configured if _configured is not None else self.request_timeout
+        )
+
         async def event_generator() -> AsyncIterator[Any]:
             try:
-                # Declared before the streaming context so the post-loop final
-                # message build (after the response closes) can still read them.
-                usage_data: dict[str, Any] = {}
-                # llama.cpp's `timings` block: a TOP-LEVEL sibling of `usage` on
-                # the same final SSE chunk (not nested inside it), captured the
-                # same way and for the same reason — BEFORE the empty-choices
-                # guard below, or it is silently dropped.
-                timings_data: dict[str, Any] = {}
-                final_stop_reason: (
-                    Literal["stop", "length", "toolUse", "error", "aborted"] | None
-                ) = None
+                # The transport fills `accum` and `state`, yielding delta events as
+                # it goes; everything after it is transport-agnostic. Which one runs
+                # is the ONLY difference between streaming and non-streaming mode —
+                # in particular the final message is built once, below, by the
+                # finalize path with the Fail-Early guards on it.
+                state = _TransportState()
+                transport = (
+                    self._stream_transport(
+                        client, payload, request_timeout, accum, state, model, abort_signal
+                    )
+                    if stream_mode
+                    else self._complete_transport(
+                        client, payload, request_timeout, accum, state, model, abort_signal
+                    )
+                )
+                async for event in transport:
+                    yield event
+                if state.failed:
+                    return
 
-                # `client.stream(...)` keeps the HTTP body OPEN and yields SSE
-                # lines as they arrive. `client.post(...)` (the old call) buffered
-                # the WHOLE response before returning, so every reasoning/text delta
-                # only surfaced in one burst at the end — the "reasoning invisible
-                # until complete" bug. pi streams the fetch body the same way.
-                async with client.stream("POST", "/chat/completions", json=payload) as response:
-                    if response.status_code != 200:
-                        # A streaming response's body is not read yet; pull it in
-                        # so the provider's error message can be surfaced.
-                        await response.aread()
-                        error_body = {}
-                        try:
-                            error_body = response.json()
-                        except Exception:
-                            pass
-                        error_msg = error_body.get("error", {}).get(
-                            "message", f"HTTP {response.status_code}"
-                        )
-                        yield ErrorEvent(
-                            type="error",
-                            message=f"HTTP {response.status_code}: {error_msg}",
-                            is_error=True,
-                        )
-                        return
-
-                    # Read SSE lines as they arrive (no full-body buffering).
-                    async for line in response.aiter_lines():
-                        # Cooperative cancellation: an abort raised mid-completion
-                        # stops the stream here (exiting `async with` closes the
-                        # connection) instead of draining the whole response. The
-                        # partial accumulated so far is finalized with an
-                        # "aborted" stop_reason. pi aborts the fetch the same way.
-                        if abort_signal is not None and abort_signal.is_aborted():
-                            final_stop_reason = "aborted"
-                            break
-                        line = line.strip()
-                        if not line or not line.startswith("data:"):
-                            continue
-                        data_str = line[5:].strip()
-                        if data_str == "[DONE]":
-                            break
-
-                        try:
-                            chunk = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
-
-                        # Usage and id can arrive in a trailing chunk whose `choices`
-                        # is empty (llama.cpp; OpenAI stream_options.include_usage).
-                        # Read them BEFORE the empty-choices guard or the token counts
-                        # are silently dropped.
-                        if chunk.get("id"):
-                            accum.response_id = chunk["id"]
-                        chunk_usage = chunk.get("usage")
-                        if chunk_usage:
-                            usage_data = chunk_usage
-                        chunk_timings = chunk.get("timings")
-                        if chunk_timings:
-                            timings_data = chunk_timings
-
-                        choices = chunk.get("choices", [])
-                        if not choices:
-                            continue
-
-                        choice = choices[0]
-                        delta = choice.get("delta", {})
-                        finish_reason = choice.get("finish_reason")
-                        choice_usage = choice.get("usage")
-                        if choice_usage:
-                            usage_data = choice_usage
-
-                        # Process text delta
-                        text = delta.get("content", "") or ""
-                        if text:
-                            accum.text_parts.append(text)
-                            accum.has_text = True
-                            partial = self._build_partial_message(accum, model)
-                            yield self._make_text_event(text, accum, partial)
-
-                        # Process reasoning/thinking delta — first non-empty of
-                        # reasoning_content / reasoning / reasoning_text, yielded live.
-                        # (Previously accumulated but never yielded, so reasoning never
-                        # streamed to the UI.)
-                        reasoning, reasoning_field = _extract_reasoning(delta)
-                        if reasoning:
-                            accum.thinking_parts.append(reasoning)
-                            if not accum.thinking_signature:
-                                accum.thinking_signature = reasoning_field
-                            accum.has_thinking = True
-                            partial = self._build_partial_message(accum, model)
-                            yield self._make_thinking_event(reasoning, accum, partial)
-
-                        # Process tool call deltas. OpenAI streams name and arguments
-                        # as incremental FRAGMENTS, one piece per chunk — concatenate
-                        # them. Route each fragment to its call by stream `index`
-                        # (falling back to `id`), since follow-up argument fragments
-                        # carry only the index.
-                        deltas = delta.get("tool_calls", [])
-                        for i, tc_delta in enumerate(deltas):
-                            block = _resolve_tool_call_block(accum, tc_delta, i)
-                            func = tc_delta.get("function") or {}
-                            tc_name = func.get("name") or ""
-                            if tc_name:
-                                block.name += tc_name
-                            tc_args = func.get("arguments") or ""
-                            if tc_args:
-                                block.arguments_parts.append(tc_args)
-                            accum.has_tool_calls = True
-
-                            partial = self._build_partial_message(accum, model)
-                            yield self._make_toolcall_event(tc_delta, accum, partial)
-
-                        # Record finish, but DON'T return yet: usage may arrive in a
-                        # later chunk (servers emit finish_reason and usage in separate
-                        # chunks). Returning here would drop that usage.
-                        if finish_reason:
-                            final_stop_reason = self._map_finish_reason(finish_reason)
+                usage_data = state.usage_data
+                timings_data = state.timings_data
+                final_stop_reason = state.stop_reason
 
                 # Stream ended ([DONE] or closed). Emit the final message with
                 # whatever usage (and timings) arrived, including a trailing
@@ -1356,12 +1590,365 @@ class OpenAICompletionsProvider(Provider):
                 # makes it actionable. Re-raise; the stream wrapper preserves it.
                 raise
             except Exception as e:
-                error_event = ErrorEvent(
-                    type="error",
-                    message=f"Streaming error: {str(e)}",
-                    is_error=True,
-                )
+                # Name the model and the endpoint as well as the fault. Most
+                # failures that reach here are transport failures, and the first
+                # question about one is always "which server?" — a fleet behind one
+                # τ config can have several, and the answer is not in the
+                # exception. See `_describe_exception` for why `str(e)` alone is
+                # not enough to build a message from.
+                #
+                # Unless the exception already said so: τ's own validation raises
+                # (a nameless tool call, an undecodable argument buffer) name the
+                # endpoint themselves, and repeating it would print the same URL
+                # twice in one sentence. This is pi's `messageCarriesBody` test
+                # (utils/error-body.ts:84) applied to the endpoint instead of the
+                # body — same idea, don't double-print what the message carries.
+                described = _describe_exception(e)
+                if self.base_url in described:
+                    message = f"Streaming error: {described}"
+                else:
+                    message = (
+                        f"Streaming error from model {model.id!r} at {self.base_url!r}: {described}"
+                    )
+                error_event = ErrorEvent(type="error", message=message, is_error=True)
                 yield error_event
                 return
 
         return event_generator()
+
+    # ──────────────────────────────────────────────────────────────────
+    # Transports. Each fills an `_Accumulator` + a `_TransportState` and yields
+    # delta events; neither builds a final message (see stream_chat's tail).
+    # ──────────────────────────────────────────────────────────────────
+
+    def _error_event_from_response(self, response: Any, model: Model) -> ErrorEvent:
+        """Build the ErrorEvent for a non-200, from an ALREADY-READ body.
+
+        Shared by both transports so a gateway's 502 reads the same either way.
+        The streaming caller must ``await response.aread()`` first (a streaming
+        response's body is not read yet); the buffered caller already has it.
+        """
+        error_body: Any = None
+        try:
+            error_body = response.json()
+        except Exception:
+            pass
+        error_msg = ""
+        if isinstance(error_body, dict):
+            # `error` is an object on OpenAI and most gateways, but
+            # some send a bare string. Neither shape may reach
+            # `.get()` unguarded — the string one used to raise
+            # AttributeError into the handler below, replacing a
+            # real HTTP status with an opaque "Streaming error".
+            err = error_body.get("error")
+            if isinstance(err, dict):
+                error_msg = str(err.get("message") or "")
+            elif isinstance(err, str):
+                error_msg = err
+        if not error_msg:
+            # No parseable error message: quote the raw body rather
+            # than repeat the status code back as its own
+            # explanation. A proxy's HTML 502 page says which hop
+            # failed; `HTTP 502: HTTP 502` says nothing twice.
+            error_msg = _truncate_error_text(response.text.strip())
+        return ErrorEvent(
+            type="error",
+            message=(
+                f"HTTP {response.status_code} from model {model.id!r} at "
+                f"{self.base_url!r}: {error_msg or '(empty response body)'}"
+            ),
+            is_error=True,
+        )
+
+    async def _stream_transport(
+        self,
+        client: Any,
+        payload: dict[str, Any],
+        request_timeout: httpx.Timeout,
+        accum: _Accumulator,
+        state: _TransportState,
+        model: Model,
+        abort_signal: Any,
+    ) -> AsyncIterator[Any]:
+        """SSE transport: read `data:` frames and yield a delta event per fragment."""
+        # `client.stream(...)` keeps the HTTP body OPEN and yields SSE
+        # lines as they arrive. `client.post(...)` (the old call) buffered
+        # the WHOLE response before returning, so every reasoning/text delta
+        # only surfaced in one burst at the end — the "reasoning invisible
+        # until complete" bug. pi streams the fetch body the same way.
+        async with client.stream(
+            "POST", "/chat/completions", json=payload, timeout=request_timeout
+        ) as response:
+            if response.status_code != 200:
+                # A streaming response's body is not read yet; pull it in
+                # so the provider's error message can be surfaced.
+                await response.aread()
+                yield self._error_event_from_response(response, model)
+                state.failed = True
+                return
+
+            # Read SSE lines as they arrive (no full-body buffering).
+            async for line in response.aiter_lines():
+                # Cooperative cancellation: an abort raised mid-completion
+                # stops the stream here (exiting `async with` closes the
+                # connection) instead of draining the whole response. The
+                # partial accumulated so far is finalized with an
+                # "aborted" stop_reason. pi aborts the fetch the same way.
+                if abort_signal is not None and abort_signal.is_aborted():
+                    state.stop_reason = "aborted"
+                    break
+                line = line.strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                data_str = line[5:].strip()
+                if data_str == "[DONE]":
+                    break
+
+                try:
+                    chunk = json.loads(data_str)
+                except json.JSONDecodeError:
+                    _logger.debug("skipping undecodable SSE frame: %r", data_str)
+                    continue
+
+                # A frame that decodes to something other than an object is
+                # not a completion chunk. Proxies and gateways emit `data: []`
+                # or a bare scalar as a keepalive, and `chunk.get(...)` below
+                # would raise AttributeError into the broad handler at the
+                # bottom of stream_chat's generator — turning a keepalive into a
+                # failed turn. pi skips the same shape (openai-completions.ts:510).
+                #
+                # Logged rather than dropped in silence: this path is also
+                # where genuinely malformed output from a broken gateway lands,
+                # and "the model said nothing" with no record of why is the
+                # failure mode this whole section exists to remove. Debug level
+                # because the expected case is a keepalive, which is normal.
+                if not isinstance(chunk, dict):
+                    _logger.debug(
+                        "skipping non-object SSE frame (%s): %r",
+                        type(chunk).__name__,
+                        data_str,
+                    )
+                    continue
+
+                # Usage and id can arrive in a trailing chunk whose `choices`
+                # is empty (llama.cpp; OpenAI stream_options.include_usage).
+                # Read them BEFORE the empty-choices guard or the token counts
+                # are silently dropped.
+                if chunk.get("id"):
+                    accum.response_id = chunk["id"]
+                chunk_usage = chunk.get("usage")
+                if chunk_usage:
+                    state.usage_data = chunk_usage
+                chunk_timings = chunk.get("timings")
+                if chunk_timings:
+                    state.timings_data = chunk_timings
+
+                choices = chunk.get("choices", [])
+                if not choices:
+                    continue
+
+                choice = choices[0]
+                delta = choice.get("delta", {})
+                finish_reason = choice.get("finish_reason")
+                choice_usage = choice.get("usage")
+                if choice_usage:
+                    state.usage_data = choice_usage
+
+                # Process text delta
+                text = delta.get("content", "") or ""
+                if text:
+                    accum.text_parts.append(text)
+                    accum.has_text = True
+                    partial = self._build_partial_message(accum, model)
+                    yield self._make_text_event(text, accum, partial)
+
+                # Process reasoning/thinking delta — first non-empty of
+                # reasoning_content / reasoning / reasoning_text, yielded live.
+                # (Previously accumulated but never yielded, so reasoning never
+                # streamed to the UI.)
+                reasoning, reasoning_field = _extract_reasoning(delta)
+                if reasoning:
+                    accum.thinking_parts.append(reasoning)
+                    if not accum.thinking_signature:
+                        accum.thinking_signature = reasoning_field
+                    accum.has_thinking = True
+                    partial = self._build_partial_message(accum, model)
+                    yield self._make_thinking_event(reasoning, accum, partial)
+
+                # Process tool call deltas. OpenAI streams name and arguments
+                # as incremental FRAGMENTS, one piece per chunk — concatenate
+                # them. Route each fragment to its call by stream `index`
+                # (falling back to `id`), since follow-up argument fragments
+                # carry only the index.
+                deltas = delta.get("tool_calls", [])
+                for i, tc_delta in enumerate(deltas):
+                    block = _resolve_tool_call_block(accum, tc_delta, i)
+                    func = tc_delta.get("function") or {}
+                    tc_name = func.get("name") or ""
+                    if tc_name:
+                        block.name += tc_name
+                    tc_args = func.get("arguments") or ""
+                    if tc_args:
+                        block.arguments_parts.append(tc_args)
+                    accum.has_tool_calls = True
+
+                    partial = self._build_partial_message(accum, model)
+                    yield self._make_toolcall_event(tc_delta, accum, partial)
+
+                # Record finish, but DON'T return yet: usage may arrive in a
+                # later chunk (servers emit finish_reason and usage in separate
+                # chunks). Returning here would drop that usage.
+                if finish_reason:
+                    state.stop_reason = self._map_finish_reason(finish_reason)
+
+    async def _complete_transport(
+        self,
+        client: Any,
+        payload: dict[str, Any],
+        request_timeout: httpx.Timeout,
+        accum: _Accumulator,
+        state: _TransportState,
+        model: Model,
+        abort_signal: Any,
+    ) -> AsyncIterator[Any]:
+        """Buffered transport: one `stream: false` completion, ADAPTED into deltas.
+
+        PLAN-0.9.3 §4.1. A τ divergence from pi, which is streaming-only — see
+        ``Model.stream`` for why it exists (OpenAI-shaped gateways that do not
+        implement SSE) and what it costs.
+
+        The whole message arrives at once, so each channel produces exactly ONE
+        delta event — the same shape a cloud provider's single-chunk stream
+        produces, which the pipeline above already handles. Fields are read
+        through the SAME helpers as the streaming path (``_extract_reasoning``,
+        ``_resolve_tool_call_block``, ``_map_finish_reason``, ``_usage_from_openai``)
+        and the accumulator is filled the same way, so the caller's finalize tail —
+        with the nameless-tool-call and undecodable-arguments guards on it — is
+        reached identically. There is deliberately no second message builder here:
+        a divergent finalize path is the defect this repo has been removing.
+
+        Fail-Early on a malformed body. A buffered response has no "maybe the next
+        chunk carries it" excuse: if `choices` is empty or `message` is not an
+        object, the completion did not happen, and returning an empty
+        AssistantMessage would report that as the model having said nothing.
+        """
+        # Cancellation, as far as this transport can honour it: a buffered request
+        # is one round trip with nothing to poll between, so the abort is checked
+        # at the two points that exist. Before the request, an already-aborted turn
+        # is not sent at all. After it, the completion is real and PAID FOR — its
+        # text and its usage are kept and reported, marked "aborted" exactly as the
+        # streaming path marks a turn whose abort landed after the last delta. What
+        # cannot be reproduced is stopping mid-completion; see Model.stream.
+        if abort_signal is not None and abort_signal.is_aborted():
+            state.stop_reason = "aborted"
+            return
+
+        response = await client.post("/chat/completions", json=payload, timeout=request_timeout)
+        if response.status_code != 200:
+            yield self._error_event_from_response(response, model)
+            state.failed = True
+            return
+
+        body = response.json()
+        if not isinstance(body, dict):
+            raise ValueError(
+                f"Non-streaming completion from model {model.id!r} at {self.base_url!r} "
+                f"decoded to {type(body).__name__}, not a JSON object: "
+                f"{_truncate_error_text(response.text.strip())!r}"
+            )
+
+        if body.get("id"):
+            accum.response_id = body["id"]
+        usage = body.get("usage")
+        if usage:
+            state.usage_data = usage
+        # llama.cpp's `timings` sits top-level on a buffered response too, exactly
+        # as it does on the final SSE chunk — same key, same shape, same handling.
+        timings = body.get("timings")
+        if timings:
+            state.timings_data = timings
+
+        choices = body.get("choices") or []
+        if not choices:
+            raise ValueError(
+                f"Non-streaming completion from model {model.id!r} at {self.base_url!r} "
+                f"returned no choices: {_truncate_error_text(response.text.strip())!r}. "
+                "A buffered response carries the whole completion or none of it, so "
+                "there is no later chunk this could arrive in."
+            )
+        if len(choices) > 1:
+            # τ never sends `n`, so >1 means a caller asked for it through body
+            # options (or the server ignored the default). Only the first is used —
+            # the streaming path reads choices[0] too — but say so rather than drop
+            # the rest in silence.
+            _logger.warning(
+                "model %r returned %d choices; τ reads the first and ignores the rest",
+                model.id,
+                len(choices),
+            )
+
+        choice = choices[0]
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            raise ValueError(
+                f"Non-streaming completion from model {model.id!r} at {self.base_url!r} "
+                f"returned a choice with no `message` object: {choice!r}"
+            )
+
+        finish_reason = choice.get("finish_reason")
+        if finish_reason:
+            state.stop_reason = self._map_finish_reason(finish_reason)
+
+        # Thinking BEFORE text: that is the order a reasoning model streams in and
+        # the order `_consolidate_text_and_thinking` puts the blocks in, so a
+        # consumer diffing partials sees the same progression either way.
+        reasoning, reasoning_field = _extract_reasoning(message)
+        if reasoning:
+            accum.thinking_parts.append(reasoning)
+            accum.thinking_signature = reasoning_field
+            accum.has_thinking = True
+            partial = self._build_partial_message(accum, model)
+            yield self._make_thinking_event(reasoning, accum, partial)
+
+        content = message.get("content")
+        if content is not None and not isinstance(content, str):
+            # OpenAI's non-streaming `message.content` is a string or null. Anything
+            # else is a wire-contract violation, and guessing which field of a list
+            # of blocks holds the answer is how a silently-wrong transcript starts.
+            raise ValueError(
+                f"Non-streaming completion from model {model.id!r} at {self.base_url!r} "
+                f"returned `message.content` of type {type(content).__name__}, "
+                f"expected a string or null: {content!r}"
+            )
+        if content:
+            accum.text_parts.append(content)
+            accum.has_text = True
+            partial = self._build_partial_message(accum, model)
+            yield self._make_text_event(content, accum, partial)
+
+        # Tool calls arrive COMPLETE — name and arguments in one piece each, and
+        # every parallel call present at once. Routed through the same resolver as
+        # the streaming fragments (so the id/index bookkeeping is identical) and
+        # appended whole; concatenating one fragment is concatenating one fragment.
+        tool_calls = message.get("tool_calls") or []
+        for i, tc in enumerate(tool_calls):
+            if not isinstance(tc, dict):
+                raise ValueError(
+                    f"Non-streaming completion from model {model.id!r} at "
+                    f"{self.base_url!r} returned a non-object tool call: {tc!r}"
+                )
+            block = _resolve_tool_call_block(accum, tc, i)
+            func = tc.get("function") or {}
+            tc_name = func.get("name") or ""
+            if tc_name:
+                block.name += tc_name
+            tc_args = func.get("arguments") or ""
+            if tc_args:
+                block.arguments_parts.append(tc_args)
+            accum.has_tool_calls = True
+
+            partial = self._build_partial_message(accum, model)
+            yield self._make_toolcall_event(tc, accum, partial)
+
+        if abort_signal is not None and abort_signal.is_aborted():
+            state.stop_reason = "aborted"

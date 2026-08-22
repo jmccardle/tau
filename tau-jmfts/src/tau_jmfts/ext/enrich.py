@@ -38,16 +38,29 @@ root-registration + a full ``refresh`` at O(corpus), the only replay-safe option
 the fix.)
 
 Embedding a long document whole now fails LOUDLY: the embedder refuses over-window text
-with HTTP 400 rather than truncating and dropping the tail. Long entries are still
-chunked first (``JmftsClient.chunk_document``) to avoid a guaranteed 400 — and the
-server bounds every chunk and hard-splits whitespace-free ones, so each chunk fits.
+with HTTP 400 rather than truncating and dropping the tail.
+
+---
+
+**"Is this too long?" is a question only the server can answer.** The limit is 512
+*tokens* and the tokenizer lives on the server, so this pass no longer predicts the
+answer. It asks: embed the document, and if the server comes back with its structured
+``text_too_long`` refusal (:class:`JmftsTextTooLongError`), chunk it instead. Chunking
+likewise asks rather than guesses — ``chunk_document(auto_embed=True)`` makes the server
+hold every piece it returns to the same tokenizer measurement.
+
+This replaced a character threshold (``EMBED_MAX_CHARS = 1800``) that decided the same
+question by proxy. ~3.5 chars/token is a fair rate for English prose and a bad one for
+anything dense: 1800 chars of base64 is ~1350 tokens, so the proxy routed it down the
+"short enough to embed whole" path and the server refused it — correctly. A guess in the
+wrong unit is not a cheap approximation of a measurement; it is a different answer.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from tau_jmfts.client import CHUNK_USETYPE, EMBED_MAX_CHARS, JmftsClient
+from tau_jmfts.client import CHUNK_USETYPE, JmftsClient, JmftsTextTooLongError
 
 # Only these τ entry kinds carry text worth embedding. `navigate` / `model_change` /
 # `session_info` project to an empty `content` (store._content_for), and the server
@@ -57,7 +70,14 @@ EMBEDDABLE_USETYPES = ("tau:message", "tau:compaction", "tau:branch_summary", "t
 
 
 class EnrichmentReport:
-    """What one pass actually did — so the result is inspectable, not a claim."""
+    """What one pass actually did — so the result is inspectable, not a claim.
+
+    ``chunked`` lists parent documents the server refused to embed whole and that were
+    split instead; their chunks are embedded by that same ``chunk_document`` call, so
+    they do NOT also appear in ``embedded``. ``embedded`` counts documents this pass
+    embedded by an explicit ``embed_document`` — whole entries, plus chunks it had to
+    finish for an earlier pass that died mid-flight.
+    """
 
     def __init__(self) -> None:
         self.embedded: list[int] = []
@@ -84,7 +104,6 @@ def enrich_conversation(
     *,
     index: str | None = None,
     embed: bool = True,
-    max_chars: int = EMBED_MAX_CHARS,
 ) -> EnrichmentReport:
     """Embed + index one conversation subtree. Idempotent; safe to re-run.
 
@@ -102,15 +121,22 @@ def enrich_conversation(
             content = doc.get("content") or ""
             if len(content.strip()) <= 10:
                 # The server refuses to embed content this short (`len(content) > 10`),
-                # and it is right to: there is nothing to match on.
+                # and it is right to: there is nothing to match on. This IS a character
+                # test, and legitimately so — it is not standing in for a token count,
+                # it mirrors the server's own char-counted floor.
                 report.skipped_empty.append(doc_id)
-            elif len(content) > max_chars:
-                _enrich_long_document(client, doc_id, report)
             elif client.is_embedded(doc_id):
                 report.already_done.append(doc_id)
             else:
-                client.embed_document(doc_id)
-                report.embedded.append(doc_id)
+                # Ask, don't estimate. Whether this fits is a fact about TOKENS that only
+                # the server can compute; its `text_too_long` refusal is that computation
+                # and the branch condition at once. Any other error still propagates.
+                try:
+                    client.embed_document(doc_id)
+                except JmftsTextTooLongError:
+                    _enrich_long_document(client, doc_id, report)
+                else:
+                    report.embedded.append(doc_id)
 
     if index is not None:
         _ensure_index(client, index)
@@ -131,10 +157,12 @@ def enrich_conversation(
 
 
 def _enrich_long_document(client: JmftsClient, doc_id: int, report: EnrichmentReport) -> None:
-    """A document too long to embed whole: chunk it, then embed the chunks.
+    """A document the server refused to embed whole: chunk it, then embed the chunks.
 
-    Embedding it as-is would 400 (the server refuses over-window text since the D1 fix),
-    so it is chunked first into pieces that each fit the embedder's window.
+    Reached only from the server's own ``text_too_long`` answer, never from a client-side
+    length guess. ``chunk_document`` defaults to ``auto_embed=True``, which is what makes
+    the pieces fit: the server holds each one to ``fits_token_window`` — its real
+    tokenizer — and only wires that predicate in when the chunks are being embedded.
 
     Chunking is done ONCE — re-chunking would mint a second full set of chunk documents,
     doubling this message's weight in every future search result. Existing chunks are
@@ -151,10 +179,10 @@ def _enrich_long_document(client: JmftsClient, doc_id: int, report: EnrichmentRe
 
     for chunk in chunks:
         chunk_id = chunk["id"]
-        # Every chunk is embeddable: the server bounds each chunk to the window and
-        # hard-splits whitespace-free ones (the D2/D4 fixes), so there is nothing to
-        # re-verify client-side. If that guarantee were ever violated, embed_document
-        # would raise a loud HTTP 400 rather than storing a truncated prefix.
+        # Chunks minted just above arrive already embedded, so this loop is normally a
+        # confirmation. It earns its cost on the resume path: chunks left behind by a
+        # pass that died mid-flight are finished here. A chunk that somehow still does
+        # not fit raises JmftsTextTooLongError rather than storing a truncated prefix.
         if client.is_embedded(chunk_id):
             report.already_done.append(chunk_id)
         else:

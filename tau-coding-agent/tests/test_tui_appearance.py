@@ -548,63 +548,90 @@ async def test_the_side_columns_are_a_share_of_the_width(size) -> None:
     The bounds are the point of the percentages: a share alone would make the
     sidebar 50 columns on a 200-column terminal (nothing there is 50 columns wide)
     and 20 on an 80-column one (narrower than the words in a session name).
+
+    ctrl+b first, because §8 mounts the sidebar closed and a hidden widget has a
+    zero-width region — which would satisfy an upper bound by not being there.
     """
-    async with open_scene(get_scene("ext-surfaces"), size) as (app, _pilot):
+    async with open_scene(get_scene("ext-surfaces"), size) as (app, pilot):
         host = app.query_one(ExtensionPanelHost)
         assert host.display, "the ext-surfaces scene should have a panel open"
         assert 26 <= host.region.width <= 44
+        await pilot.press("ctrl+b")
         sidebar = app.query_one(ChatSidebar)
-        if sidebar.display:
-            assert 24 <= sidebar.region.width <= 32
+        assert sidebar.display
+        assert 24 <= sidebar.region.width <= 32
         # The two old fixed widths, in one assertion: they cannot both be right at
         # two terminal sizes.
         assert (sidebar.region.width, host.region.width) != (30, 40)
 
 
-async def test_the_sidebar_yields_to_a_panel_on_a_narrow_terminal() -> None:
-    """At 80 columns the sidebar, the panel and a readable chat do not all fit.
+@pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
+@pytest.mark.parametrize(
+    "scene_name", [s.name for s in SCENES if s.name != "sidebar"], ids=lambda n: n
+)
+async def test_no_scene_starts_with_the_sidebar_open(scene_name, size) -> None:
+    """The startup state, asserted everywhere except the scene that opens it.
 
-    Something has to give, and it is the sidebar: the panel is what an extension
-    just put on screen, while the sidebar is navigation that ctrl+b brings back.
-    Hiding the panel instead would mean an extension's ``ctx.ui.panel`` call
-    silently did nothing.
+    docs/SESSION-UX-REDESIGN.md §8 / decision 4: the sidebar mounts CLOSED. The
+    picker and the command palette are the canonical way to reach a saved
+    session, so the list is something you ask for (ctrl+b) rather than a quarter
+    of the first screen.
+
+    Swept over every scene rather than asserted once on ``empty``, because the
+    default is written in two places that have to agree — ``#sidebar``'s
+    ``display: none`` in parley.tcss and ``Parley._sidebar_open`` — and a scene
+    that pushes a modal or opens a panel is exactly where a stray write to
+    ``sidebar.display`` would come from.
     """
-    async with open_scene(get_scene("ext-surfaces"), (80, 24)) as (app, _pilot):
+    async with open_scene(get_scene(scene_name), size) as (app, _pilot):
         assert not app.query_one(ChatSidebar).display
-    async with open_scene(get_scene("ext-surfaces"), (120, 40)) as (app, _pilot):
-        assert app.query_one(ChatSidebar).display
 
 
-async def test_the_sidebar_comes_back_when_the_panel_closes() -> None:
-    """The rule runs in both directions — the sidebar yields for as long as the
-    panel is up, not for the rest of the session."""
+async def test_a_panel_does_not_touch_the_sidebar_the_user_opened() -> None:
+    """An extension panel opening or closing is not a vote on the sidebar.
+
+    It used to be: below :data:`Parley.SIDE_COLUMNS_MIN_WIDTH` the sidebar was
+    hidden automatically to keep the chat readable beside a panel. That rule only
+    ever decided the case where the user had expressed no preference — an
+    explicit ctrl+b won over it by design — and §8 makes "no preference" mean
+    closed. So a visible sidebar is now always one that was asked for, and the
+    panel does not get to revoke it (nor to bring it back when it closes).
+    """
     async with open_scene(get_scene("ext-surfaces"), (80, 24)) as (app, pilot):
         sidebar = app.query_one(ChatSidebar)
+        host = app.query_one(ExtensionPanelHost)
+        assert host.display, "the ext-surfaces scene should have a panel open"
         assert not sidebar.display
-        app.query_one(ExtensionPanelHost).set_panel("fleet", None)
+
+        await pilot.press("ctrl+b")
+        assert sidebar.display, "ctrl+b beside a panel on a narrow terminal is honored"
+
+        host.set_panel("fleet", None)
         await pilot.pause()
         await pilot.pause()
-        assert sidebar.display
+        assert not host.display
+        assert sidebar.display, "closing the panel left the user's choice alone"
 
 
-async def test_the_sidebar_stays_on_a_narrow_terminal_with_no_panel() -> None:
-    """The sidebar yields to a PANEL, not to a narrow terminal by itself."""
+async def test_the_sidebar_stays_open_on_a_narrow_terminal() -> None:
+    """Nothing shrinks the sidebar back out of existence once it is open."""
     async with open_scene(get_scene("sidebar"), (80, 24)) as (app, _pilot):
         assert app.query_one(ChatSidebar).display
 
 
-async def test_ctrl_b_overrides_the_responsive_default() -> None:
-    """An explicit toggle wins, in both directions.
+async def test_ctrl_b_is_the_only_thing_that_opens_the_sidebar() -> None:
+    """An explicit toggle wins, in both directions, at any width.
 
-    The responsive rule is a default, not a policy: a user who asks for the
-    sidebar next to a panel on an 80-column terminal gets it (and pays for it in
-    chat columns), and one who hides it keeps it hidden. The two paths write
-    ``#sidebar``'s display through the same method for exactly this reason — an
-    inline style set by one of them would otherwise be invisible to the other.
+    A user who asks for the sidebar next to a panel on an 80-column terminal gets
+    it (and pays for it in chat columns — see
+    :func:`test_side_columns_min_width_is_where_the_floor_is`), and one who
+    closes it keeps it closed. Both directions write ``#sidebar``'s display
+    through ``_apply_side_columns`` for exactly this reason — an inline style set
+    by one of them would otherwise be invisible to the other.
     """
     async with open_scene(get_scene("ext-surfaces"), (80, 24)) as (app, pilot):
         sidebar = app.query_one(ChatSidebar)
-        assert not sidebar.display  # hidden by the responsive default
+        assert not sidebar.display  # closed by default (§8)
         await pilot.press("ctrl+b")
         assert sidebar.display
         await pilot.press("ctrl+b")
@@ -618,17 +645,24 @@ async def test_side_columns_min_width_is_where_the_floor_is() -> None:
     Asserted from both sides, so the constant cannot drift away from the CSS it
     was derived from. If a percentage in parley.tcss changes, one of these two
     halves fails and names the direction.
+
+    The app no longer *acts* on the number (§8 — the sidebar starts closed and
+    ctrl+b is honored at any width), so both halves reach the two-column layout
+    the way a user does: by opening the sidebar next to the panel. What the
+    constant now marks is the width below which that request costs the chat its
+    floor, which is a price worth keeping measured even though nobody is stopped
+    from paying it.
     """
     fits = Parley.SIDE_COLUMNS_MIN_WIDTH
-    async with open_scene(get_scene("ext-surfaces"), (fits, 30)) as (app, _pilot):
+    async with open_scene(get_scene("ext-surfaces"), (fits, 30)) as (app, pilot):
+        await pilot.press("ctrl+b")
         assert app.query_one(ChatSidebar).display
         assert app.query_one(ChatDisplay).content_size.width >= CHAT_MIN_COLUMNS
 
-    # One column narrower the sidebar hides. Ask for it back — the override path —
-    # and the chat drops under the floor, which is why the breakpoint sits here.
+    # One column narrower, the same request drops the chat under the floor.
     async with open_scene(get_scene("ext-surfaces"), (fits - 1, 30)) as (app, pilot):
-        assert not app.query_one(ChatSidebar).display
         await pilot.press("ctrl+b")
+        assert app.query_one(ChatSidebar).display
         assert app.query_one(ChatDisplay).content_size.width < CHAT_MIN_COLUMNS
 
 

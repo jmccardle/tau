@@ -111,7 +111,7 @@ Every flag below is parsed in `args.ts:63-210` (`parseArgs`) and documented in `
 | `--no-skills` | `-ns` | — | `args.ts:163` | |
 | `--no-prompt-templates` | `-np` | — | `args.ts:165` | |
 | `--no-themes` | — | — | `args.ts:167` | |
-| `--no-context-files` | `-nc` | — | `args.ts:169` | disables AGENTS.md **and** CLAUDE.md |
+| `--no-context-files` | `-nc` | — | `args.ts:185` | disables AGENTS.md **and** CLAUDE.md |
 | `--list-models` | — | optional search | `args.ts:171` | `string \| true` |
 | `--verbose` | — | — | `args.ts:178` | **long-only in pi; no `-v`** |
 | `--approve` | `-a` | — | `args.ts:180` | trust project-local files this run |
@@ -164,8 +164,17 @@ pi derives env-var names from `APP_NAME` (`config.ts:475`, default `"pi"`). The 
 Net: tau implements 9 flags, **all effectively no-ops** (except `--verbose`'s debug print), and 4 of them (`-m`,`-p`,`-s`,`-o`,`-v`) use short aliases that *collide semantically* with pi. There is **no print mode, no session continuation, no tool/thinking/system-prompt control, no positional messages, no `@file` handling**.
 
 ### Plumbing reality check (constrains the plan)
+
+> **This subsection is a snapshot of τ BEFORE the CLI work, kept as the record of
+> what constrained the plan. Every constraint named in it has since been lifted:**
+> `--thinking` has its `reasoning_effort` send-path, the extension tooling exists,
+> `--continue`/`--fork`/`--resume`/`--session` are all surfaced, and print mode
+> shipped as `headless.py` (not on `run_agent_loop.py`, which is the self-build
+> meta-orchestrator and never was a τ runner — see CLAUDE.md). Read §3's status
+> column, not this list, for what is true now.
+
 - **`--thinking` has no backend yet.** tau-llm's `Model` (`tau-llm/src/tau_llm/types.py:109-123`) has no reasoning/thinking field, and `tau-llm/src/tau_llm/providers/openai.py` only *reads* `reasoning` from responses (`openai.py:431`, `:701`); it never *sends* `reasoning_effort`. So `--thinking` requires a tau-llm change (add a request param), not just a CLI flag. Flag this; do not fake it.
-- **Tools** resolve via `_resolve_tools(names)` (`tau-agent-core/src/tau_agent_core/sdk.py:104-155`) over the 7 built-ins `read,write,edit,bash,ls,grep,find`. `--tools`/`--no-tools` map cleanly onto this; `--no-builtin-tools`/`--exclude-tools` need extension tooling that tau lacks → lower priority.
+- **Tools** resolve via `_resolve_tools(names)` (`tau-agent-core/src/tau_agent_core/sdk.py:104-155`) over the 7 built-ins `read,write,edit,bash,ls,grep,find`. `--tools`/`--no-tools` map cleanly onto this; `--no-builtin-tools`/`--exclude-tools` need extension tooling that tau lacks → lower priority. *(Superseded 2026-08-21: the extension tooling exists and all four flags shipped — see §3. `-nbt` and `-nt` becoming genuinely distinct is what broke Tectum, which passes `--no-tools` and wanted `-nbt`; `docs/TECTUM-NO-TOOLS-MIGRATION.md`.)*
 - **Sessions** exist in `tau_agent_core.session_manager.SessionManager` (`new_session`, etc.), but `--continue`/`--fork`/`--resume`/`--session` are not surfaced. The current `TauBackend.__init__` always calls `self.session_manager.new_session()` (`backends.py:90`), so continuation needs a code path that loads instead of creating.
 - **`-p`/print mode** requires a *headless* run path. tau's `run_agent_loop.py` is the closest existing headless driver and should be the basis, not the TUI.
 
@@ -176,61 +185,74 @@ Net: tau implements 9 flags, **all effectively no-ops** (except `--verbose`'s de
 Priority tiers: **Core** (familiarity-critical, ship first) · **Secondary** (high value, not blocking) · **Nice-to-have**.
 Status: ✅ in tau (even if inert) · ➖ divergent (exists but wrong semantics/alias) · ❌ missing.
 
-*Resynced 2026-08-10: `--append-system-prompt`, `--exclude-tools`/`-xt`,
-`--no-builtin-tools`/`-nbt`, and `--no-session` were marked ❌ here while
-already shipped and wired — see `ROADMAP.md`'s "CLI parity" entry for the
-compressed shipped-state summary with evidence citations. The remaining ❌
-rows below were re-checked against code as part of that same audit and are
-still accurate as of 2026-08-09.*
+> **Resynced 2026-08-21 — read this before reading the tables.**
+>
+> The 2026-08-10 pass fixed four rows (`--append-system-prompt`,
+> `--exclude-tools`/`-xt`, `--no-builtin-tools`/`-nbt`, `--no-session`) and
+> asserted the remaining ❌ rows were "still accurate as of 2026-08-09". They
+> were not, and the assertion is what made this table unsafe to trust: a
+> ✅-corrected table with unchecked ❌ rows reads as fully audited.
+>
+> Every flag in all three tables was re-checked on 2026-08-21 by matching
+> `add_argument` calls in `cli.py` directly. **Seven flags remain unbuilt**, and
+> they are the only ❌ rows left: `--list-models`, `--skill`/`--no-skills`,
+> `--prompt-template`/`--no-prompt-templates`, `--theme`/`--no-themes`,
+> `--export`, `--offline`, `--approve`/`--no-approve`, `--session-id`, plus the
+> package-manager subcommands and the deliberately-declined `--api-key`.
+> Everything else in §3 is shipped, and the line numbers below are from the same
+> pass.
+>
+> This section is now a HISTORICAL plan with a verified status column, not a
+> to-do list. `ROADMAP.md`'s "Open work" is the shorter live list.
 
 ### Core (ship first — these define "feels like pi")
 
 | pi flag (cite) | proposed tau flag | status | notes |
 |---|---|---|---|
-| `--print`/`-p` (`args.ts:140`) | `--print` / `-p` | ❌ | The biggest gap. Headless run → stdout, exit. Replicate the message-eating rule (`args.ts:142-146`). **Frees `-p` from `--provider`.** Build on `run_agent_loop.py`, not the TUI. |
-| `--mode` (`args.ts:78`) | `--mode {text,json,rpc}` | ➖ | Replaces tau's `--output {tui,json}`. Start with `text`+`json`; `rpc` is a separate phase. Keep `tui` as the *interactive default when no `--mode`/`-p`*, but don't expose `tui` as a `--mode` value (pi doesn't). |
-| `--model` (`args.ts:89`) | `--model` (+ keep `-m` as tau extension) | ✅/➖ | Already present but inert and must actually drive config. Add `provider/id` + `:thinking` shorthand per `model-resolver.ts` (§1). pi has no `-m`; keeping `-m` is a deliberate, documented tau-only convenience. |
-| `--provider` (`args.ts:87`) | `--provider` (long-only) | ➖ | **Drop tau's `-p` alias** (collides with print). Wire into model resolution. |
-| `--continue`/`-c` (`args.ts:83`) | `--continue` / `-c` | ❌ | Load latest session for cwd instead of `new_session()`. |
-| `--tools`/`-t` (`args.ts:120`) | `--tools` / `-t` | ❌ | Comma list → `_resolve_tools` allowlist. |
-| `--no-tools`/`-nt` (`args.ts:116`) | `--no-tools` / `-nt` | ❌ | Empty tool list (read-only agent). |
-| `--thinking` (`args.ts:130`) | `--thinking` | ❌ (**needs tau-llm work**) | Levels `off..xhigh` (`args.ts:57`). **Blocked on adding `reasoning_effort` send-path in tau-llm (`openai.py`); do not stub.** Default `medium` (`defaults.ts:3`). |
-| `@file` (`args.ts:186`) + positional messages (`args.ts:204`) | same | ❌ | Core ergonomics: `tau @README.md "summarize"`. Without this, no initial-prompt UX. |
-| `--help`/`-h` (`args.ts:74`) | `--help` / `-h` | ❌ | argparse gives this for free. |
-| `--version`/`-v` (`args.ts:76`) | `--version` (consider freeing `-v`) | ➖ | **pi's `-v` = version.** tau currently uses `-v` for verbose. Decide: either (a) match pi (`-v`=version, verbose long-only) or (b) keep tau's `-v`=verbose and document the divergence. Recommend matching pi for familiarity. |
-| `--verbose` (`args.ts:178`) | `--verbose` (long-only) | ➖ | Already honored; just drop the `-v` short if matching pi on version. |
+| `--print`/`-p` (`args.ts:140`) | `--print` / `-p` | ✅ | Shipped (`cli.py:167`) — headless run → stdout, exit, via `headless.run_print`. `-p` is print, not provider. |
+| `--mode` (`args.ts:78`) | `--mode {text,json,rpc}` | ✅ | Shipped (`cli.py:174`), all three choices real; `text` is the default and `tui` is deliberately not a value. `rpc` landed with the RPC arc (`docs/REMOTE-CONTROL.md`). |
+| `--model` (`args.ts:89`) | `--model` (+ keep `-m` as tau extension) | ✅ | Shipped (`cli.py:184`) and driving config. `-m` is kept as the documented τ-only convenience. |
+| `--provider` (`args.ts:87`) | `--provider` (long-only) | ✅ | Shipped (`cli.py:190`), long-only; the `-p` collision is gone. |
+| `--continue`/`-c` (`args.ts:83`) | `--continue` / `-c` | ✅ | Shipped (`cli.py:307`). |
+| `--tools`/`-t` (`args.ts:120`) | `--tools` / `-t` | ✅ | Shipped (`cli.py:195`) — comma list → `_resolve_tools` allowlist. |
+| `--no-tools`/`-nt` (`args.ts:116`) | `--no-tools` / `-nt` | ✅ | Shipped (`cli.py:201`). See the `-nbt` row: the two collapse into one resolved tri-state. |
+| `--thinking` (`args.ts:130`) | `--thinking` | ✅ | Shipped (`cli.py:339`); the `reasoning_effort` send-path it was blocked on exists in tau-llm. *Caveat kept from ROADMAP: a silent no-op on the local llama.cpp rig, where the real toggle is `chat_template_kwargs.enable_thinking`.* |
+| `@file` (`args.ts:186`) + positional messages (`args.ts:204`) | same | ✅ | Shipped — `tau -p "summarize @README.md"` is the documented example in CLAUDE.md. |
+| `--help`/`-h` (`args.ts:74`) | `--help` / `-h` | ✅ | Free from argparse, as predicted; no explicit `add_argument`. |
+| `--version`/`-v` (`args.ts:76`) | `--version` / `-v` | ✅ | Shipped (`cli.py:160`). **Option (a) was taken:** `-v` is version, pi-aligned. Reads `tau_coding_agent.__version__` through `_version()` (`cli.py:36`), one source. |
+| `--verbose` (`args.ts:178`) | `--verbose` (long-only) | ✅ | Shipped long-only (`cli.py:378`); its own help string states "-v is --version". |
 
 ### Secondary (high value, after Core)
 
 | pi flag (cite) | proposed tau flag | status | notes |
 |---|---|---|---|
-| `--system-prompt` (`args.ts:93`) | `--system-prompt` | ❌ | Replace system prompt (text or file). Feeds `AgentSession(system_prompt=…)`. |
-| `--append-system-prompt` (`args.ts:95`) | `--append-system-prompt` (repeatable) | ✅ | Shipped (`cli.py:258`). Accumulates; appends after default + context files. |
-| `--resume`/`-r` (`args.ts:85`) | `--resume` / `-r` | ❌ | Interactive session picker (TUI). Lower than `--continue` because it needs picker UI. |
-| `--session` (`args.ts:106`) | `--session` (long-only) | ➖ | tau's `-s` alias is non-pi; make long-only, accept path or partial UUID. Currently inert "session_name". |
-| `--no-session` (`args.ts:104`) | `--no-session` | ✅ | Shipped (`cli.py:234`, `headless.py:617-628`) — ephemeral, skips the persist path. |
-| `--fork` (`args.ts:110`) | `--fork` | ❌ | Needs `SessionManager` fork support (verify it exists before promising). |
-| `--name`/`-n` (`args.ts:98`) | `--name` / `-n` | ❌ | Session display name. Missing from the tau doc entirely. |
-| `--exclude-tools`/`-xt` (`args.ts:125`) | `--exclude-tools` / `-xt` | ✅ | Shipped (`cli.py:219`) — denylist, pairs with `--tools`. |
-| `--list-models` (`args.ts:171`) | `--list-models [search]` | ❌ | Reads from `~/.tau/config.json` models map; cheap to implement. |
-| `--session-dir` (`args.ts:112`) | `--session-dir` | ✅ | Override session storage dir — the file store's `base_dir` (seam 1). See "`--session-dir` and the per-mode default" below. |
+| `--system-prompt` (`args.ts:93`) | `--system-prompt` | ✅ | Shipped (`cli.py:287`) — replaces the prompt, text or file. |
+| `--append-system-prompt` (`args.ts:95`) | `--append-system-prompt` (repeatable) | ✅ | Shipped (`cli.py:279`). Accumulates; appends after default + context files. |
+| `--resume`/`-r` (`args.ts:85`) | `--resume` / `-r` | ✅ | Shipped (`cli.py:314`) — the Textual picker modal landed as Session UX Phase B, so the flag reaches something. `--resume` ≡ `/resume` ≡ the palette entry (Phase C). |
+| `--session` (`args.ts:106`) | `--session` (long-only) | ✅ | Shipped (`cli.py:321`), long-only, accepting a path or a partial id. |
+| `--no-session` (`args.ts:104`) | `--no-session` | ✅ | Shipped (`cli.py:255`); the persist path is skipped via `persist=not args.no_session` (`headless.py:669`) and `create_ephemeral` (`headless.py:725`). |
+| `--fork` (`args.ts:110`) | `--fork` | ✅ | Shipped (`cli.py:327`); `SessionManager` fork support exists and is covered by the `SessionLog` contract suite. |
+| `--name`/`-n` (`args.ts:98`) | `--name` / `-n` | ✅ | Shipped (`cli.py:333`) — session display name. |
+| `--exclude-tools`/`-xt` (`args.ts:125`) | `--exclude-tools` / `-xt` | ✅ | Shipped (`cli.py:240`) — denylist, pairs with `--tools`. |
+| `--list-models` (`args.ts:171`) | `--list-models [search]` | ❌ | **Still open** — no `add_argument` for it. Reads from `~/.tau/config.json` models map; cheap to implement. Also listed in `ROADMAP.md`'s "Open work". |
+| `--session-dir` (`args.ts:112`) | `--session-dir` | ✅ | Shipped (`cli.py:353`) — the file store's `base_dir` (seam 1). See "`--session-dir` and the per-mode default" below. |
 
 ### Nice-to-have (later / when subsystems exist)
 
 | pi flag (cite) | proposed tau flag | status | notes |
 |---|---|---|---|
 | `--no-builtin-tools`/`-nbt` (`args.ts:118`) | same | ✅ | Shipped and now genuinely distinct from `--no-tools`: `-nbt` drops the built-in set and keeps extension-registered tools, `-nt` withholds both. The two argv booleans collapse into ONE resolved `no_tools` (`"all"`/`"builtin"`/`None`) at the argv boundary — `headless.resolve_no_tools`, pi `main.ts:424-428` — carried on the model config and consumed by `AgentSession._build_turn_tools`. |
-| `--extension`/`-e`, `--no-extensions`/`-ne` (`args.ts:149,152`) | same | ❌ | Extension subsystem is partial in tau (`sdk.py:_load_extensions`); wire when stable. |
+| `--extension`/`-e`, `--no-extensions`/`-ne` (`args.ts:149,152`) | same | ✅ | Shipped (`cli.py:209`, `cli.py:218`). The extension subsystem stabilized through the E0–E11 arc; see `docs/EXTENSIONS-DEMO-ROADMAP.md`. |
 | `--skill`/`--no-skills` (`args.ts:154,163`) | same | ❌ | No skills subsystem in tau yet. |
 | `--prompt-template`/`--no-prompt-templates` (`args.ts:157,165`) | same | ❌ | No template subsystem in tau yet. |
 | `--theme`/`--no-themes` (`args.ts:160,167`) | same | ❌ | TUI theming; defer. |
-| `--no-context-files`/`-nc` (`args.ts:169`) | same | ❌ | Once AGENTS.md/CLAUDE.md discovery lands. |
+| `--no-context-files`/`-nc` (`args.ts:185`, help `args.ts:302`) | same | ✅ | Shipped with the discovery it was waiting on (0.9.3 §1). `sdk.load_project_context_files` ports pi's `loadProjectContextFiles` (`resource-loader.ts:119` at `5cd93f688`) — agent dir first, then every ancestor of cwd root-most first, one file per directory, deduped by resolved path, with the nested-worktree shadowing rule; plus τ's own `.tau/SYSTEM.md` last. The flag rides the run config (TUI) / model config (`--print`, `--mode rpc`) and reaches `TauBackend._build_system_prompt`. Pi's line moved: `args.ts:169` above is stale.
 | `--export` (`args.ts:147`) | `--export` | ❌ | Session → HTML export; needs an exporter. |
 | `--offline` (`args.ts:184`) | `--offline` | ❌ | Only meaningful once tau does startup network ops. |
 | `--approve`/`-a`, `--no-approve`/`-na` (`args.ts:180,182`) | same | ❌ | Project-trust model; tau has no trust manager yet. |
 | `--api-key` (`args.ts:91`) | `--api-key` | ❌ | Supported by pi; the tau doc calls it a "security risk / out of scope". **This is an opinionated divergence from pi, not a pi gap** — note it as a deliberate choice, not an omission. Env vars / `config.json` remain the primary path. |
 | `--session-id` (`args.ts:108`) | `--session-id` | ❌ | Exact project session id (create-if-missing). Niche. |
-| `--mode rpc` (`args.ts:80`) | `--mode rpc` | ❌ | Separate RPC phase (pi has whole `modes/` dir). |
+| `--mode rpc` (`args.ts:80`) | `--mode rpc` | ✅ | Shipped — a real `--mode` choice (`cli.py:174`), wired to `tau_coding_agent.rpc_mode.run_rpc`. 20 command verbs, 7 formally declined; `docs/REMOTE-CONTROL.md`, `docs/RPC-TIER-B.md`. |
 | subcommands `install/remove/update/list/config` (`args.ts:228-235`) | — | ❌ | Package-manager surface; out of scope until tau has one. |
 
 ### Arg-parsing approach

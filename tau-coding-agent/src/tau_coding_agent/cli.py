@@ -79,12 +79,20 @@ class CLIArgs:
     ui_defaults: str | None = None
     append_system_prompt: list[str] = field(default_factory=list)  # repeatable
     system_prompt: str | None = None
+    # -nc → skip AGENTS.md/CLAUDE.md/.tau/SYSTEM.md discovery for this run
+    # (pi args.ts:185). Run-level, like the tool flags: it is a statement about
+    # the whole invocation, not about one model entry, so a mid-session /model
+    # switch must not hand the project's context files back.
+    no_context_files: bool = False
     thinking: str | None = None  # off|minimal|low|medium|high|xhigh
     # Session continuation (headless): resume/fork a persisted ~/.tau/chats
     # session. continue/resume/session/fork are mutually exclusive (argparse
     # group). `name` sets the session title and may combine with any of them.
     continue_session: bool = False  # --continue/-c → most-recent session
-    resume: bool = False  # --resume/-r → interactive picker (TUI-only)
+    # --resume/-r → open the interactive session picker at TUI startup
+    # (SESSION-UX-REDESIGN §7). Threaded to ``Parley(resume=...)`` by
+    # ``_launch_tui``; refused under --print, where there is no picker to open.
+    resume: bool = False
     session: str | None = None  # --session REF → specific session (path|stem)
     fork: str | None = None  # --fork REF → fork a session into a new one
     name: str | None = None  # --name/-n → session display title
@@ -135,6 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
             '  tau -p "explain @main.py"   # headless: print the answer and exit\n'
             '  tau -p --mode json "hi"     # headless, JSONL event stream\n'
             "  tau --thinking high         # TUI, request high reasoning effort\n"
+            "  tau --resume                # TUI, pick a saved session to resume\n"
             '  tau -p -c "and then?"       # continue the most recent session\n'
             '  tau -p --session 17188 "go" # resume a session by filename stem\n'
             '  tau -p --store jmfts "hi"   # headless turn persisted to JMFTS\n'
@@ -142,7 +151,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  tau --export-session 42 x.jsonl     # copy JMFTS doc 42 to a file\n"
             "  tau --mode rpc --model gpt-4o       # JSON-RPC 2.0 server over stdio\n"
             "\n"
-            "--resume (interactive picker) is available in the TUI, not headlessly.\n"
+            "--resume opens the interactive session picker, so it is TUI only; a\n"
+            "headless run names its session with --continue or --session REF.\n"
             "--mode rpc runs a persistent protocol server (docs/REMOTE-CONTROL.md); "
             "it does not combine with --print."
         ),
@@ -277,7 +287,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--system-prompt",
         dest="system_prompt",
         default=None,
-        help="override the system prompt for this run",
+        help="replace the base system prompt for this run (project context "
+        "files still load; add -nc to suppress those too)",
+    )
+    # pi args.ts:185, help text at args.ts:302. ``-nc`` is free: the -n family
+    # already holds -nt/-ne/-nbt alongside --name's -n, and argparse matches a
+    # registered option string exactly before it tries to read `-n`'s value.
+    parser.add_argument(
+        "--no-context-files",
+        "-nc",
+        dest="no_context_files",
+        action="store_true",
+        help="skip project context discovery (AGENTS.md, CLAUDE.md, .tau/SYSTEM.md) for this run",
     )
     # Session continuation (headless --print). continue/resume/session/fork are
     # mutually exclusive; --name combines with any of them (or a fresh run).
@@ -293,7 +314,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--resume",
         "-r",
         action="store_true",
-        help="resume via interactive picker (TUI only; not headless)",
+        help="open the interactive session picker at startup (TUI only — a "
+        "headless run has no picker; use --continue or --session REF there)",
     )
     sess.add_argument(
         "--session",
@@ -396,6 +418,7 @@ def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
         ui_defaults=ns.ui_defaults,
         append_system_prompt=list(ns.append_system_prompt or []),
         system_prompt=ns.system_prompt,
+        no_context_files=ns.no_context_files,
         thinking=ns.thinking,
         continue_session=ns.continue_session,
         resume=ns.resume,
@@ -469,6 +492,10 @@ def _launch_tui(args: CLIArgs, config: dict) -> int:
         # interaction left to re-derive.
         "no_tools": resolve_no_tools(args),
         "append_system_prompt": list(args.append_system_prompt or []),
+        # -nc: run-level for the same reason the tool flags are — the policy is
+        # re-applied at every create_backend, so a /model switch cannot silently
+        # re-enable the discovery this invocation asked to turn off.
+        "no_context_files": args.no_context_files,
         "ext_config": ext_config_overrides,
         # --store (W12): threaded to Parley.__init__, which resolves it via
         # store_factory.build_session_catalog before building the SessionCatalog
@@ -503,7 +530,15 @@ def _launch_tui(args: CLIArgs, config: dict) -> int:
     # threaded into every backend this app builds, and the tagline flag has no
     # business being visible from there. This is the flag's ONLY crossing into the
     # app, and Parley resolves it to a string in __init__.
-    app = Parley(cli_overrides=overrides or None, cli_run_config=run_config, fun=args.fun)
+    # `resume` rides as its own argument for the same reason `fun` does: it is a
+    # one-shot startup action, not policy every backend this app builds should be
+    # able to see. Parley reads it once in on_mount and opens the picker (§7).
+    app = Parley(
+        cli_overrides=overrides or None,
+        cli_run_config=run_config,
+        fun=args.fun,
+        resume=args.resume,
+    )
     app.run()
     return 0
 
@@ -670,20 +705,28 @@ def main(argv: list[str] | None = None) -> int:
 
             return asyncio.run(run_rpc(args, config))
 
-        # --resume is an interactive picker; it has no headless meaning and the
-        # TUI uses the sidebar, so reject it clearly rather than no-op (Fail-Early).
-        if args.resume:
+        # --resume is now a real TUI flag (Phase C, docs/SESSION-UX-REDESIGN.md
+        # §7): it opens ``SessionPickerModal`` over the first frame, and
+        # ``_launch_tui`` threads it to ``Parley(resume=...)``. The rejection
+        # therefore narrows from *always* to *only with --print*, which is the
+        # one mode where the picker cannot exist: --print draws no screen, so
+        # there is nobody to pick. Refusing beats opening nothing, and the
+        # message names the two flags that DO name a session headlessly.
+        if args.resume and args.print_mode:
             raise CLIError(
-                "--resume opens an interactive picker, which isn't available "
-                "headlessly; use --continue (most recent) or --session REF, or "
-                "pick a session from the TUI sidebar"
+                "--resume opens an interactive session picker, and --print runs "
+                "one headless turn with no screen to open it on. Use --continue "
+                "(most recent) or --session REF to name a session headlessly, or "
+                "drop -p to pick one in the TUI"
             )
         # Session continuation is a headless feature; in the TUI you resume from
-        # the sidebar. Requiring --print keeps the flag from silently no-op'ing.
+        # the picker (--resume / the palette / /resume). Requiring --print keeps
+        # the flag from silently no-op'ing.
         if (args.continue_session or args.session or args.fork) and not args.print_mode:
             raise CLIError(
                 "--continue/--session/--fork require --print (headless); in the "
-                "TUI, resume a session from the sidebar"
+                "TUI, resume a session with --resume (or /resume, or the command "
+                "palette's 'Resume session…')"
             )
         config = load_config()
         # Headless print mode is opt-in via -p/--print. Messages without --print

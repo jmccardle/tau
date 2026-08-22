@@ -94,10 +94,12 @@ def create_agent_session(
     base_url: str | None = None, api_key: str | None = None,
     tools: list[str] | None = None, session_log: SessionLog | None = None,
     extensions: list[Callable] | None = None, system_prompt: str | None = None,
+    no_context_files: bool = False,
     thinking_level: str = "off", cwd: str | None = None,
     tool_execution_mode: Literal["sequential", "parallel"] = "parallel",
     compaction_policy: CompactionPolicy | None = None,
     bus_available: bool = False,
+    no_tools: Literal["all", "builtin"] | None = None,
 ) -> AgentSession
 ```
 
@@ -110,12 +112,24 @@ built-in name strings only (`read`, `write`, `edit`, `bash`, `grep`,
 `find`, `ls`); an `AgentTool` instance needs the `AgentSession` constructor
 directly.
 
-**`create_agent_session` is not on the live TUI/headless path today.**
-`tau-coding-agent/src/tau_coding_agent/backends.py` constructs
-`AgentSession` directly and never calls it — the same "real code, orphaned
-from the path that actually runs" shape as `sdk.py`'s AGENTS.md-loading
-`_build_system_prompt()`. Worth fixing (wire it in, or accept the SDK/TUI
-split explicitly) rather than leaving unstated.
+`no_tools` is the SDK half of the CLI's two flags: `"all"` offers the model
+nothing, `"builtin"` drops the built-in set and keeps extension-registered
+tools. Passing `tools=` and `no_tools=` together **raises** — they ask for
+opposite things and neither outranks the other at a call site. `tools=None`
+and `tools=[]` stay legal alongside `"all"`.
+
+**`create_agent_session` is still not on the live TUI/headless path.**
+`tau-coding-agent/src/tau_coding_agent/backends.py` constructs `AgentSession`
+directly. What used to follow from that no longer does: the backend now calls
+`_build_system_prompt` itself (`backends.py:1133`), so τ's base prompt and its
+project context files reach the model on every path. Before `db98524` neither
+had ever reached a model on the TUI or headless path at all — the backend
+passed `config.get("system_prompt", "")` straight through, and after the
+config key was removed that was the empty string.
+
+What remains is that the factory's OTHER defaults are exercised only by SDK
+callers. Worth deciding deliberately (wire it in, or accept the split) rather
+than leaving unstated.
 
 ## Compaction (`compaction.py`)
 

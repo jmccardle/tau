@@ -63,6 +63,11 @@ HONORED_UNDER_RPC = {
     "ui_defaults",
     "system_prompt",
     "append_system_prompt",
+    # -nc rides the same `resolve_model_config` -> `create_backend` path: it
+    # lands on the model config as `no_context_files`, and `TauBackend` passes
+    # it to `_build_system_prompt`, so an RPC run really does start with no
+    # AGENTS.md/CLAUDE.md in its prompt. Checked against rpc_mode.py:226,248.
+    "no_context_files",
     "thinking",
     "session_dir",
     # The field this file exists because of. `--mode rpc` selects

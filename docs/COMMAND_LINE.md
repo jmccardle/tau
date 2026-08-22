@@ -37,13 +37,14 @@ argparse-based (`build_parser()` in `cli.py`); `--print` runs headless via
 | `--tools` | `-t` | ✅ wired | comma-separated allowlist over the 7 built-ins. |
 | `--no-tools` | `-nt` | ✅ wired | the model is offered **zero** tools: no built-ins and no extension-registered ones. Extensions still load — hooks, commands, injections and subscriptions all keep working; only callable tools are withheld. |
 | `--no-builtin-tools` | `-nbt` | ✅ wired | drops the **built-in** set only; extension-registered tools are still offered. |
-| `--system-prompt` | — | ✅ wired | replace the system prompt for this run. |
+| `--system-prompt` | — | ✅ wired | replace the **base** system prompt for this run. Project context files still load and are appended after it — setting this used to switch them off silently (0.9.3 §1). |
+| `--no-context-files` | `-nc` | ✅ wired | skip project context discovery entirely: `~/.tau`'s context file, every `AGENTS.override.md`/`AGENTS.md`/`AGENTS.MD`/`CLAUDE.md`/`CLAUDE.MD` from cwd up to `/`, and cwd's `.tau/SYSTEM.md`. See "Project context files" below. |
 | `--thinking {off…xhigh}` | — | ✅ wired | sends `reasoning_effort` (clamped, gated on `Model.reasoning`). See "Thinking" below. |
 | `--continue` | `-c` | ✅ wired (headless) | continue the most recent `~/.tau/chats` session. |
 | `--session REF` | — | ✅ wired (headless) | resume a specific session (`.json` path or filename **stem**). |
 | `--fork REF` | — | ✅ wired (headless) | continue a session into a **new** file; source untouched. |
 | `--name` | `-n` | ✅ wired | session display title. |
-| `--resume` | `-r` | ⛔ deferred (Fail-Early) | pi's *interactive* picker (`args.ts:85`); no headless meaning, TUI resumes from the sidebar, so `main()` rejects it with a pointer to `--continue`/`--session`. |
+| `--resume` | `-r` | ⛔ not implemented (Fail-Early) | pi's *interactive* picker (`args.ts:85`). τ has **no picker in either mode** — nothing outside `cli.py` reads `args.resume` — so `main()` rejects it in the TUI and headlessly alike, with a pointer to `--continue`/`--session`. It becomes real with the Phase B picker (`docs/SESSION-UX-REDESIGN.md` §6). |
 | `@file` + positional messages | — | ✅ wired | `tau -p @README.md "summarize"`. |
 | `--help` | `-h` | ✅ (argparse) | |
 | `--version` | `-v` | ✅ wired | **pi-aligned: `-v` is version.** τ's old `-v`=verbose is dropped. |
@@ -100,6 +101,50 @@ pi's full surface is tabulated in `docs/CLI-PLAN.md` §1 (every flag with its
   `--api-key` (`args.ts:91`). τ keeps keys in env vars / `config.json` by choice;
   label it a *deliberate* divergence, not a "missing/niche" pi flag.
 
+## Project context files (0.9.3 §1)
+
+τ builds every system prompt as **base text + discovered context files + tool
+list**, and the three compose. `--system-prompt` replaces the *base text only*;
+`--no-context-files`/`-nc` is the one way to turn discovery off.
+
+`tau_agent_core.sdk.load_project_context_files` ports pi's
+`loadProjectContextFiles` (`resource-loader.ts:119` at pi `5cd93f688`). The
+returned order is the order it belongs in a prompt — **general first, specific
+last**, so the nearest file gets the last word:
+
+1. `~/.tau`'s own context file — the user's global one.
+2. Every ancestor of cwd that has one, **root-most first**, ending with cwd's.
+3. cwd's `.tau/SYSTEM.md` — τ's addition, and last.
+
+Per directory the first match wins among `AGENTS.override.md`, `AGENTS.md`,
+`AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD` (`resource-loader.ts:72`), so a directory
+contributes **at most one** file. Results are deduplicated by resolved path.
+
+`.tau/SYSTEM.md` is deliberately **not** in that candidate list: it would then
+*compete* with a sibling `AGENTS.md` under the one-file-per-directory rule, and a
+project carrying both would silently lose one. It is its own slot, read from cwd
+only, appended last.
+
+**Shadowing.** When cwd is inside a git worktree nested under its own main repo —
+this repo's `.claude/worktrees/` layout — the worktree's context file suppresses
+the main repo's same-named file (`findShadowedContextFile`,
+`resource-loader.ts:101`), so the same repository's instructions are not applied
+twice. It deliberately does nothing for an ordinary repo, a sibling worktree, a
+bare layout, or a submodule.
+
+**Two deliberate divergences from pi.**
+
+- The walk really does reach `/`, which means a `CLAUDE.md` in `$HOME` or `/` is
+  loaded on every run. That is pi's behaviour and a real workflow, and the cost
+  is a handful of `stat`s per ancestor once per session. The *surprise* is
+  answered by naming every file in the prompt: each block is wrapped in
+  `<project_instructions path="…">`, so a prompt can never carry instructions
+  whose origin it does not state.
+- A file that is found but cannot be read (permissions, non-UTF-8) **raises**
+  `ContextFileError` naming the path. pi warns to stderr and continues; a prompt
+  silently missing its project instructions looks exactly like a model that
+  ignored them.
+
 ## Thinking (corrected mapping)
 
 pi levels: `off | minimal | low | medium | high | xhigh`
@@ -134,7 +179,7 @@ new user turn, run, save back — **in place** for `--continue`/`--session`, a
 **new file** for `--fork` (with a same-second collision guard so a fork never
 clobbers its source). A resumed run keeps the session's stored model unless
 `--model` overrides; combining `--system-prompt` with a resume raises (the session
-already has one). `--resume`'s interactive picker is TUI-only and stays deferred.
+already has one). `--resume`'s interactive picker does not exist in either mode yet and is rejected in both.
 See `headless.py` (`_select_chat`/`_resolve_selector`/`_persist_session`).
 
 ## Output modes & the JSON schema caveat

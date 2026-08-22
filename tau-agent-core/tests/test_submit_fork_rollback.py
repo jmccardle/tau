@@ -23,7 +23,7 @@ from tau_llm.streaming import TextDeltaEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree
-from tau_agent_core.session_log import LANE_KEY, InMemorySessionLog
+from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.submission import Submission
 
 
@@ -165,8 +165,9 @@ class TestForkAdmission:
         await asyncio.wait_for(session._forked_tasks["fork-3"], timeout=1.0)
 
         assert log.cursor == tip, "fork must never move the primary cursor"
-        tagged = [e for e in log.entries() if LANE_KEY in e]
-        assert tagged, "the branch's work is lane-tagged, not on the primary path"
+        assert "BRANCH ONLY" in str(log.entries()), "the branch's work IS in the log"
+        # ...and is kept out of the primary context by the tree shape alone: it hangs
+        # off the fork point, so it is never an ancestor of the primary leaf.
         primary = ConversationTree(log.entries(), log.cursor).context_for()
         assert "BRANCH ONLY" not in str(primary)
 

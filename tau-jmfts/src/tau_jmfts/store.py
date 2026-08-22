@@ -32,7 +32,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from tau_agent_core.session_log import LANE_KEY, resolve_cursor
+from tau_agent_core.session_log import resolve_cursor
 from tau_jmfts.client import JmftsClient
 
 #: Sentinel for "no explicit parent supplied" in ``JmftsSessionLog._append``. ``None``
@@ -571,24 +571,18 @@ class JmftsSessionLog:
         parent_id: str | None,
         entry_type: str,
         payload: dict[str, Any],
-        *,
-        lane: str | None = None,
     ) -> str:
         """Explicit-parent append -- the C2/W14 branch primitive (see the SessionLog
         Protocol). Does NOT move this log's leaf: a branch's writes must never move the
-        primary tip.
+        tip of the cursor that spawned it.
 
-        ``lane`` rides in the τ payload as ``branchOf``, so it lands inside
-        ``structured_content.tau`` and survives the round-trip like any other entry
-        field -- which also means ``resolve_cursor``'s lane filter keeps working after a
-        reload from the server, not just in memory.
+        Nothing marks the entry as a branch's. The subtree it forms IS the record
+        (docs/LANE-REMOVAL.md §4), and on this store that subtree is already searchable
+        as documents parented under the branch root.
         """
         if parent_id is not None and parent_id not in self._ids:
             raise ValueError(f"append parent {parent_id!r} not found")
-        extra = dict(payload)
-        if lane is not None:
-            extra[LANE_KEY] = lane
-        return self._append(entry_type, _parent=parent_id, **extra)
+        return self._append(entry_type, _parent=parent_id, **payload)
 
     # --- internals -------------------------------------------------------
 
@@ -631,5 +625,5 @@ class JmftsSessionLog:
         self._entries.append(entry)
         self._ids.add(entry_id)
         if not explicit_parent:
-            self._leaf_id = entry_id  # primary lane only; a branch owns its own leaf
+            self._leaf_id = entry_id  # explicit-parent appends leave the leaf alone
         return entry_id

@@ -67,6 +67,14 @@ FRONTEND_COMMANDS: dict[str, str] = {
     "tree": "open the session-tree browser",
     "fork": "open the session-tree browser (pi's alias of /tree)",
     "extensions": "list loaded extensions, or run `enable|disable|reload <name>`",
+    # docs/SESSION-UX-REDESIGN.md §7: ONE action, three surfaces. The CLI flag
+    # (--resume), the palette entry ("Resume session…") and this slash command
+    # are three bindings to the frontend's single resume handler, not three
+    # implementations — which is only possible because the DECISION that
+    # "/resume" is a command lives here, with the rest of τ's vocabulary. A
+    # frontend with no picker (--print, --mode json) says so through
+    # UnsupportedCommandError rather than opening nothing.
+    "resume": "open the session picker, or resume the session named by <ref>",
 }
 
 

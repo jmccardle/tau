@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, Iterable, Iterator
 
 __all__ = ["DEFAULT_CONFIG", "SANDBOX_CWD", "build_parley", "sandbox_tau_home"]
 
@@ -97,12 +97,3 @@ def build_parley(
     app._extension_paths = list(extension_paths)
     app._discover_extensions = discover_extensions
     return app
-
-
-def stub_backend_factory(backend: Any) -> Callable[[dict], Any]:
-    """A ``create_backend`` replacement that always returns *backend*."""
-
-    def _create(_config: dict) -> Any:
-        return backend
-
-    return _create

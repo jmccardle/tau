@@ -18,6 +18,7 @@ from datetime import datetime
 
 import pytest
 
+from tau_agent_core.session_log import open_branch
 from tau_coding_agent.session_store import (
     SESSION_BEFORE_COMPACT,
     SESSION_BEFORE_FORK,
@@ -75,6 +76,54 @@ def test_round_trip_messages_match(tmp_path):
     assert reloaded.model == "local-llm"
     assert reloaded.backend == "openai"
     assert reloaded.id == session.id
+
+
+def test_messages_never_concatenates_mutually_exclusive_fork_alternatives(tmp_path):
+    """``messages`` is the cursor's ancestry (docs/LANE-REMOVAL.md §3.2).
+
+    This is the bug the lane removal was argued from, made executable: ``messages`` was
+    a flat scan of every ``message`` entry, so a three-way fork returned three answers
+    that never coexisted, presented as one conversation. No tag could have fixed it —
+    a fork writes no tag, and the question was never "who wrote this" but "is this on
+    the path I am looking at".
+    """
+    session = _create(tmp_path)
+    root = session.append_message({"role": "user", "content": "shared question"})
+    session.append_message({"role": "assistant", "content": "ALTERNATIVE ONE"})
+    session.append_navigate(root)
+    session.append_message({"role": "assistant", "content": "ALTERNATIVE TWO"})
+    session.append_navigate(root)
+    session.append_message({"role": "assistant", "content": "ALTERNATIVE THREE"})
+
+    reloaded = Session.load(session.path)
+    assert [m["content"] for m in reloaded.messages] == ["shared question", "ALTERNATIVE THREE"]
+
+    # The abandoned alternatives are still on disk — nothing was hidden from the log.
+    assert sum("ALTERNATIVE" in line for line in session.path.read_text().splitlines()) == 3
+
+    # And navigating back to an abandoned alternative makes THAT one the conversation.
+    two = next(
+        e["id"]
+        for e in reloaded.entries()
+        if e.get("message", {}).get("content") == "ALTERNATIVE TWO"
+    )
+    reloaded.append_navigate(two)
+    assert [m["content"] for m in reloaded.messages] == ["shared question", "ALTERNATIVE TWO"]
+
+
+def test_messages_excludes_a_sub_agents_turns_the_same_way_it_excludes_a_forks(tmp_path):
+    """The §1 asymmetry at the ``Session`` level: a sub-agent branch and a user's fork
+    are the same shape, and are now excluded by the same rule — ancestry — rather than
+    one by a tag and the other not at all."""
+    session = _create(tmp_path)
+    root = session.append_message({"role": "user", "content": "shared question"})
+    session.append_message({"role": "assistant", "content": "the answer"})
+
+    branch = open_branch(session, root, label="sub-agent")
+    branch.append_message({"role": "user", "content": "SUB-AGENT ONLY"})
+
+    assert [m["content"] for m in session.messages] == ["shared question", "the answer"]
+    assert all("branchOf" not in e for e in session.entries()), "and no marker was written"
 
 
 def test_name_property_latest_wins(tmp_path):
@@ -189,6 +238,56 @@ def test_session_info_fields(tmp_path):
     assert info.parent is None
 
 
+def test_session_info_counts_the_ancestry_not_the_file(tmp_path):
+    """The picker previews the conversation you would RESUME (docs/LANE-REMOVAL.md §3.2).
+
+    Before this was ancestry-scoped it counted every ``message`` entry in the file, so a
+    three-way fork reported 4 messages for a 2-message conversation and could show an
+    abandoned alternative as the preview. A ``branchOf`` filter did not help: a fork
+    writes no tag.
+    """
+    session = _create(tmp_path)
+    root = session.append_message({"role": "user", "content": "shared question"})
+    session.append_message({"role": "assistant", "content": "ALTERNATIVE ONE"})
+    session.append_navigate(root)
+    session.append_message({"role": "assistant", "content": "ALTERNATIVE TWO"})
+    session.append_navigate(root)
+    session.append_message({"role": "assistant", "content": "ALTERNATIVE THREE"})
+
+    info = read_session_info(session.path)
+    assert info is not None
+    assert info.message_count == 2, "two messages on the active path, not four in the file"
+    assert info.first_message == "shared question"
+    assert info.last_message == "ALTERNATIVE THREE"
+
+
+def test_session_info_title_cannot_come_from_a_sub_agents_prompt(tmp_path):
+    """``first_message`` becomes the session's display title. A sub-agent's opening
+    prompt is not a message of this conversation — and now it is excluded for the
+    structural reason (it is not an ancestor of the cursor), which holds whether the
+    subtree was written by ``spawn_branch`` or by a user forking at the same node."""
+    session = _create(tmp_path)
+    root = session.append_message({"role": "user", "content": "the real first message"})
+    session.append_message({"role": "assistant", "content": "the real answer"})
+
+    branch = open_branch(session, root, label="sub-agent")
+    branch.append_message({"role": "user", "content": "SUB-AGENT INTERNAL PROMPT"})
+    branch.append_message({"role": "assistant", "content": "sub-agent scratch work"})
+
+    # The primary turn continues after the sub-agent finishes, so it wrote last. (If the
+    # process died between those two writes the cursor would land in the branch — the
+    # guarantee dropped in docs/LANE-REMOVAL.md §2, deliberately not bought back here.)
+    session.append_message({"role": "user", "content": "the follow-up"})
+
+    info = read_session_info(session.path)
+    assert info is not None
+    assert info.first_message == "the real first message"
+    assert info.last_message == "the follow-up"
+    assert info.message_count == 3, "the sub-agent's two turns are not this conversation's"
+    # ...and the branch really did land in the file — this is not a read failure.
+    assert "SUB-AGENT INTERNAL PROMPT" in session.path.read_text()
+
+
 def test_session_info_read_returns_none_on_garbage(tmp_path):
     bad = tmp_path / "bad.jsonl"
     bad.write_text("not json at all\n")
@@ -262,11 +361,12 @@ def test_navigate_entry_round_trips(tmp_path):
     nav = next(e for e in entries if e["id"] == nav_id)
     assert nav["type"] == "navigate"
     assert nav["targetId"] == interior
-    # navigate carries no message → skipped by reconstruction.
-    assert reloaded.messages == [
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": "hi"},
-    ]
+    # navigate carries no message → skipped by reconstruction. And ``messages`` follows
+    # the cursor the navigate moved (docs/LANE-REMOVAL.md §3.2): it is the ancestry of
+    # the leaf, so "hi" — a DESCENDANT of the node we navigated back to — is not part of
+    # the conversation this session would resume. It is still in ``entries()``.
+    assert reloaded.messages == [{"role": "user", "content": "hello"}]
+    assert any(e.get("message") == {"role": "assistant", "content": "hi"} for e in entries)
 
 
 def test_navigate_null_target_is_pre_root(tmp_path):

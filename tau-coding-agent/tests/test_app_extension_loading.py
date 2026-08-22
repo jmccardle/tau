@@ -117,6 +117,23 @@ def test_apply_run_config_no_tools_marks_the_run_all(app):
     assert mc["no_tools"] == "all"
 
 
+def test_apply_run_config_threads_no_context_files(app):
+    """-nc reaches the model config TauBackend builds its prompt from (0.9.3 §1),
+    and a mid-session ``/model`` switch re-applies it like the tool flags."""
+    app._no_context_files = True
+    first = app._apply_run_config({"backend": "openai", "model": "a"})
+    switched = app._apply_run_config({"backend": "openai", "model": "b"})
+    assert first["no_context_files"] is True
+    assert switched["no_context_files"] is True
+
+
+def test_apply_run_config_without_nc_leaves_the_entry_alone(app):
+    """Absence never writes False: a config entry may set it on its own."""
+    app._no_context_files = False
+    mc = app._apply_run_config({"backend": "openai", "model": "a", "no_context_files": True})
+    assert mc["no_context_files"] is True
+
+
 def test_model_switch_under_no_tools_does_not_restore_tools(app):
     """The mid-session ``/model`` switch must not hand the tools back.
 

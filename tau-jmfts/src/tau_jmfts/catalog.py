@@ -207,13 +207,11 @@ class _EphemeralConversationSession:
         parent_id: str | None,
         entry_type: str,
         payload: dict[str, Any],
-        *,
-        lane: str | None = None,
     ) -> str:
         """The C2/W14 explicit-parent append. Delegated like every other appender, so a
         branch sub-agent works in an ephemeral session too -- branching is a property of
         the entry algebra, not of durability."""
-        return self._log.append_at(parent_id, entry_type, payload, lane=lane)
+        return self._log.append_at(parent_id, entry_type, payload)
 
     # -- ConversationSession additions --------------------------------------
 

@@ -43,11 +43,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-# The lane marker (C2/W14). Defined in session_log (it is part of the entry algebra, and
-# every store writes it); imported here because the FOLD is what has to respect it. Safe
-# direction: session_log does not import this module.
-from tau_agent_core.session_log import LANE_KEY
-
 # Kinds that carry a ``summary`` field (for previews + subtree extraction). NOTE:
 # ``compaction`` is a splice anchor AND has a summary; ``branch_summary`` has a
 # summary but renders INLINE, never splicing (Decision 5, §5) — pi's
@@ -615,27 +610,31 @@ class ConversationTree:
         return None
 
     def subtree_text(self, from_id: str) -> str:
-        """Concatenated text of every descendant of ``from_id`` (BFS), **within its lane**.
+        """Concatenated text of the whole SUBTREE at ``from_id`` (BFS, every descendant).
 
         Verbatim port of ``_extract_branch_messages`` (``session_manager.py:627-702``)
         with ``parent_id`` → ``parentId`` and a ``branch_summary`` case added
         alongside ``compaction`` (§2.4). Feeds the "summarize branch" prompt.
 
-        **Lane containment (C2/W14).** The BFS descends into *every* child, and a C2 sub-agent
-        branch is, structurally, just another child subtree. Without a filter, summarizing an
-        abandoned branch would silently vacuum up the transcripts of any sub-agents that ran
-        under it — putting a sub-agent's private working notes into a summary that goes to the
-        model on the primary path, which is precisely the context leak the lane design exists
-        to prevent. So the walk stays in ``from_id``'s OWN lane: summarizing a primary entry
-        never descends into a branch, and summarizing a branch root walks only that branch.
-        (The lane of ``from_id`` itself is the reference — this is what makes "summarize the
-        sub-agent's branch" work as well as "summarize an abandoned primary branch".)
+        **The bound is structural: descendants of the node the caller named** — nothing
+        else. It reaches down, never sideways: a sibling subtree, a concurrent branch
+        rooted elsewhere, and the primary line above ``from_id`` are all outside it,
+        because none of them is reachable by following ``parentId`` edges downward from
+        ``from_id``.
+
+        This is deliberately NOT the lane filter it replaces (docs/LANE-REMOVAL.md §6.2).
+        That filter asked *who wrote this entry* and refused to descend from a primary
+        entry into a sub-agent branch hanging under it; this asks *what did the caller
+        name*, and a sub-agent's subtree under ``from_id`` IS part of what happened
+        there, so it is summarized with it. The difference is visible exactly when the
+        two disagree — and when they do, write provenance is the wrong answer: an
+        extension that deliberately summarizes a region containing a sub-agent's work
+        has said which region it means, while the old rule silently returned a different
+        one. A caller that wants only the sub-agent's own work names the branch root; a
+        caller that wants only the primary line asks for ``context_for``, not this.
         """
         if not self._entries:
             return ""
-
-        root = self._by_id.get(from_id)
-        lane = root.get(LANE_KEY) if root is not None else None
 
         branch_messages: list[str] = []
         queue: list[str] = [from_id]
@@ -649,11 +648,6 @@ class ConversationTree:
 
             entry = self._by_id.get(current_id)
             if entry is None:
-                continue
-
-            # Stay in from_id's lane: never descend from a primary entry into a
-            # sub-agent's branch (nor from one branch into a sibling branch).
-            if entry.get(LANE_KEY) != lane:
                 continue
 
             kind = entry.get("type")

@@ -1500,20 +1500,32 @@ class TestToolCallIdTracking:
 
 
 # ---------------------------------------------------------------------------
-# Test 16: _to_llm_tool conversion
+# Test 16: AgentTool -> OpenAI function schema
 # ---------------------------------------------------------------------------
 
 
-class TestToLLMTool:
-    """Tests for the _to_llm_tool helper method."""
+class TestAgentToolConvertsToOpenAISchema:
+    """The loop hands ``AgentTool`` objects straight to the client (``run()``
+    passes ``list(self._tools.values())`` as ``tools``); the PROVIDER does the
+    OpenAI-schema conversion, via ``_convert_tools_to_openai``, reading the
+    ``ToolSpec`` protocol (``.name``/``.description``/``.parameters``).
 
-    def test_convert_to_llm_tool(self):
-        """AgentTool converts to OpenAI-format tool dict."""
-        config = AgentLoopConfig(model="gpt-4o")
+    ``AgentLoop`` used to carry a private ``_to_llm_tool`` that did the same
+    conversion off ``tool.definition.*``. Nothing in production ever called it —
+    only this test did — so it was a second, unexercised implementation of the
+    live path. It is gone; this asserts the same property against the
+    conversion the agent loop actually reaches, with the same production input
+    type (an ``AgentTool``, not a bare ``ToolDefinition`` as
+    ``test_openai_provider.py``'s own suite uses)."""
+
+    def test_agent_tool_converts_to_openai_function_schema(self):
+        """AgentTool converts to an OpenAI-format tool dict."""
+        from tau_llm.providers.openai import OpenAICompletionsProvider
+
         ls_tool = _make_simple_tool(name="ls", result="files", path=".")
-        loop = AgentLoop(config=config, tools=[ls_tool])
+        provider = OpenAICompletionsProvider(api_key="sk-test")
 
-        result = loop._to_llm_tool(ls_tool)
+        (result,) = provider._convert_tools_to_openai([ls_tool])
 
         assert result["type"] == "function"
         assert result["function"]["name"] == "ls"

@@ -1326,9 +1326,11 @@ class ExtensionContext:
 
         ``parent_id`` chooses the inherited context: the fold walks up from it, so the
         sub-agent sees exactly the shared conversation prefix down to that point, plus
-        its own work. Its writes are lane-tagged and can never reach the primary
-        context (they are never ancestors of the primary leaf) nor move the primary
-        cursor.
+        its own work. Its writes can never reach the spawner's context nor move its
+        cursor — structurally, not by a filter: they are never ancestors of the
+        spawner's leaf, and a leaf→root walk cannot wander (docs/LANE-REMOVAL.md §3.1).
+        Nothing on disk marks them as a sub-agent's, because a sub-agent's branch and a
+        user's fork are the same shape and are meant to read the same (§1).
 
         ``tools`` is a **required hard allowlist**, deliberately not defaulted. Sub-agents
         share the process and cwd, so "inherit the parent's tools" would silently hand a

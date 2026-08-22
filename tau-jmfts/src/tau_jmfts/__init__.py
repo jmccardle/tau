@@ -4,6 +4,9 @@ Public API (see docs/JMFTS-INTEGRATION-PLAN.md Sec3):
 
 - JmftsClient: thin synchronous httpx wrapper over the JMFTS REST API.
 - JmftsError: raised for any non-2xx JMFTS response (Fail-Early -- no fallback).
+- JmftsTextTooLongError: the one subclass, for the server's structured
+  ``text_too_long`` refusal -- its measurement of whether text fits the
+  embedder's 512-token window, which a caller that can chunk should act on.
 - JmftsSessionLog: the JMFTS-backed SessionLog / ConversationSession -- the τ
   entry tree mirrored 1:1 onto a JMFTS document subtree (Sec2).
 - JmftsSessionCatalog: the SessionCatalog seam over JMFTS -- discovery
@@ -17,10 +20,10 @@ Reference: docs/JMFTS-INTEGRATION-PLAN.md
 
 # This distribution's version, read at build time by pyproject.toml's
 # [tool.setuptools.dynamic]. Kept in lockstep with the other three packages.
-__version__ = "0.9.2"
+__version__ = "0.9.3"
 
 from tau_jmfts.catalog import JmftsSessionCatalog
-from tau_jmfts.client import DocumentDict, JmftsClient, JmftsError
+from tau_jmfts.client import DocumentDict, JmftsClient, JmftsError, JmftsTextTooLongError
 from tau_jmfts.importer import export_session, import_session
 from tau_jmfts.store import JmftsSessionLog
 
@@ -28,6 +31,7 @@ __all__ = [
     "__version__",
     "JmftsClient",
     "JmftsError",
+    "JmftsTextTooLongError",
     "DocumentDict",
     "JmftsSessionLog",
     "JmftsSessionCatalog",

@@ -29,7 +29,7 @@ from typing import Any, Callable
 
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, SessionInfo
-from tau_agent_core.session_log import LANE_KEY, resolve_cursor
+from tau_agent_core.session_log import resolve_cursor
 
 # τ data dir for config and session storage. Re-exported (not redefined) from the
 # single config module — tests still monkeypatch ``session_store.TAU_DIR``, which
@@ -333,24 +333,29 @@ class Session:
 
     @property
     def messages(self) -> list[dict[str, Any]]:
-        """Raw linear fold: every PRIMARY-lane ``message`` entry in load order.
+        """Every ``message`` entry on the CURSOR'S ANCESTRY, in root→leaf order.
 
-        This IGNORES the cursor and never splices compaction/``branch_summary``,
-        so it is *not* what the user sees or the model receives — use ``context``
-        for that. Kept because a few callers still want the flat entry list.
+        Unspliced: unlike ``context``, no compaction / ``branch_summary`` boundary is
+        applied, so a compacted session still shows its dropped history here. This is
+        *not* what the user sees or the model receives — use ``context`` for that. Kept
+        because a few callers want the flat message list.
 
-        **Lane-filtered (C2/W14).** Ignoring the cursor was harmless while one cursor
-        wrote the log; with branch sub-agents it stops being harmless, because a
-        cursor-ignoring fold picks up every sub-agent's messages too. The consumers are
-        exactly the places a user would notice and mistrust: ``display_title()`` (a
-        session named after a sub-agent's internal prompt), ``read_session_info``'s
-        ``message_count``/``first_message`` in the picker, and ``rpc``'s
-        ``message_count``. A sub-agent's private turns are not messages *of this
-        conversation*, so they are excluded here. Anything wanting the true raw log
-        still has ``entries()``.
+        **Ancestry, not a filter** (docs/LANE-REMOVAL.md §3.2). This used to be a flat
+        scan of every entry with a ``branchOf``-tag exclusion, which asked "who wrote
+        it?" when the question is "does it belong to the conversation being looked at?".
+        Those coincide for a sub-agent and diverge for a fork: a three-way fork returned
+        three mutually exclusive alternatives concatenated as one conversation, and the
+        callers are exactly the places a user would notice and mistrust —
+        ``display_title()``, ``read_session_info``'s ``message_count``/``first_message``
+        in the picker, and ``rpc``'s ``message_count``. Walking up from the cursor
+        answers the real question, and answers it identically for a sub-agent branch and
+        a user's fork, which are the same shape. Anything wanting the true raw log still
+        has ``entries()``.
         """
         return [
-            e["message"] for e in self._entries if e.get("type") == "message" and LANE_KEY not in e
+            e["message"]
+            for e in ConversationTree(self._entries, self._leaf_id).path()
+            if e.get("type") == "message"
         ]
 
     @property
@@ -669,12 +674,10 @@ class Session:
         parent_id: str | None,
         entry_type: str,
         payload: dict[str, Any],
-        *,
-        lane: str | None = None,
     ) -> str:
         """Explicit-parent append — the C2/W14 branch primitive (see the ``SessionLog``
         Protocol). Parents where it is TOLD and does **not** move this log's leaf: a
-        sub-agent's writes must never drag the primary cursor into its lane.
+        sub-agent's writes must never drag the spawning cursor along with them.
 
         The interleaving this allows (a branch's lines landing between two primary lines
         in one JSONL file) is already valid on disk — entries carry an explicit
@@ -690,15 +693,13 @@ class Session:
             "timestamp": _now_iso(),
             **payload,
         }
-        if lane is not None:
-            entry[LANE_KEY] = lane
         self._entries.append(entry)
         self._ids.add(entry["id"])
         self._persist_entry(entry)
         return str(entry["id"])
 
     def _append(self, kind: str, **payload: Any) -> str:
-        """The primary-lane append: ``append_at`` the current leaf, then move the leaf."""
+        """The ordinary append: ``append_at`` the current leaf, then move the leaf."""
         entry_id = self.append_at(self._leaf_id, kind, payload)
         self._leaf_id = entry_id
         return entry_id
@@ -733,8 +734,23 @@ class Session:
 
 
 def read_session_info(path: Path) -> SessionInfo | None:
-    """Stream a file → SessionInfo, or None on any parse error (skip at the
-    list edge — Fail-Early: a corrupt file shouldn't break the whole listing)."""
+    """Read a file → SessionInfo, or None on any parse error (skip at the
+    list edge — Fail-Early: a corrupt file shouldn't break the whole listing).
+
+    **The message counts are ancestry-scoped** (docs/LANE-REMOVAL.md §3.2, §6.3), which
+    is why this buffers the entries instead of accumulating in one streaming pass: the
+    picker's ``message_count`` / ``first_message`` describe *the conversation you would
+    resume*, so they are taken from the cursor's ancestor chain. A flat count is wrong
+    on any session that has been forked — it sums mutually exclusive alternatives — and
+    was previously patched with a ``branchOf`` filter that only helped when the extra
+    entries came from a sub-agent. Buffering costs a constant factor here (both passes
+    are dominated by ``json.loads``, and this runs in the picker's worker thread), not
+    a change of complexity.
+
+    ``name`` and the modified timestamp stay whole-file: a session's name is
+    session-level metadata, and any write to the file — on the active path or not —
+    genuinely did modify it.
+    """
     try:
         header: dict[str, Any] | None = None
         name: str | None = None
@@ -742,6 +758,7 @@ def read_session_info(path: Path) -> SessionInfo | None:
         first_message = ""
         last_message = ""
         last_timestamp: str | None = None
+        entries: list[dict[str, Any]] = []
 
         with path.open("r", encoding="utf-8") as handle:
             for raw in handle:
@@ -759,27 +776,28 @@ def read_session_info(path: Path) -> SessionInfo | None:
                 if isinstance(timestamp, str):
                     last_timestamp = timestamp
 
-                kind = entry.get("type")
-                if kind == "session_info":
+                if entry.get("type") == "session_info":
                     value = entry.get("name")
                     name = value.strip() if isinstance(value, str) and value.strip() else None
-                elif kind == "message" and LANE_KEY not in entry:
-                    # Primary lane only (C2/W14). A branch sub-agent's turns are not
-                    # messages of THIS conversation: counting them would inflate the
-                    # picker's message_count and — worse — let a sub-agent's internal
-                    # prompt become the session's first_message, i.e. its display title.
-                    message = entry.get("message", {})
-                    role = message.get("role")
-                    if role in ("user", "assistant"):
-                        message_count += 1
-                        text = _extract_text(message)
-                        if text:
-                            last_message = text
-                            if not first_message and role == "user":
-                                first_message = text
+                entries.append(entry)
 
         if header is None:
             return None
+
+        # Same cursor rule as a real load (resolve_cursor), then the same leaf→root walk
+        # the fold uses — so the picker previews the conversation `tau --resume` opens.
+        for entry in ConversationTree(entries, resolve_cursor(entries)).path():
+            if entry.get("type") != "message":
+                continue
+            message = entry.get("message", {})
+            role = message.get("role")
+            if role in ("user", "assistant"):
+                message_count += 1
+                text = _extract_text(message)
+                if text:
+                    last_message = text
+                    if not first_message and role == "user":
+                        first_message = text
 
         created = _parse_iso(str(header["timestamp"]))
         modified = _parse_iso(last_timestamp) if last_timestamp else created

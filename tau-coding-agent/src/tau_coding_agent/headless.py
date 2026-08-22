@@ -214,6 +214,12 @@ def resolve_model_config(
     if args.append_system_prompt:
         model_config["append_system_prompt"] = list(args.append_system_prompt)
 
+    # ``--no-context-files``/``-nc`` (pi args.ts:185). Only ever set TRUE, for
+    # the same reason ``--bus`` is: the absence of the flag must not revoke a
+    # ``"no_context_files": true`` a model entry set deliberately.
+    if args.no_context_files:
+        model_config["no_context_files"] = True
+
     # Fold the top-level ``reasoning_replay`` default into the entry when it sets
     # none of its own (per-model wins; else global; else build_model_from_config's
     # "turn"), so headless and the TUI resolve the scope identically.
@@ -587,9 +593,12 @@ def _perform_command_outcome(outcome: CommandOutcome, mode: str) -> None:
     already had: stdout text, or one ``command_output`` record under ``--mode json``.
 
     ``performer="frontend"`` — a built-in the core deliberately did not run because it
-    needs a frontend, and print mode has none of the four:
+    needs a frontend, and print mode has none of them:
 
     - ``/tree`` and ``/fork`` open a modal browser; there is no screen to push it onto.
+    - ``/resume`` opens the session picker — same reason, and the flag that would open
+      it (``--resume``) is refused under ``--print`` in ``cli.main`` for that reason.
+      A print run names its session with ``--continue``/``--session REF`` instead.
     - ``/extensions`` paints a panel (or manages extensions in a process that is about
       to exit, which would be a runtime toggle nothing outlives).
     - ``/compact`` is the one that looks performable and is not, for a specific

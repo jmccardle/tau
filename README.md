@@ -140,3 +140,37 @@ position rather than mirroring pi's:
 | `docs/NATS-BUS-EXTENSION.md` | The `nats_bus` extension: loading it, its config, its per-verb tool contract |
 | `docs/WIRE-CONTRACT.md` | The `TectumEvent` wire format the NATS bus extension speaks |
 | `docs/PI-TO-TAU-COMPATIBILITY.md` | What maps from pi to τ, and what doesn't |
+
+## Configuring a model
+
+τ ships **no model catalog and no vendor list**, on purpose. Every URL,
+environment-variable name and context window in one is a claim τ would have to
+keep true as vendors move them, and a stale claim is worse than none.
+
+So a model's facts are read on demand, from a database that does track them:
+
+```bash
+python -m tau_llm.catalog search gpt-5
+python -m tau_llm.catalog config openai/gpt-5.1 --base-url https://api.openai.com/v1
+```
+
+That prints a `~/.tau/config.json` `models` entry — context window, output cap,
+whether the model reasons, and which effort levels it accepts — to stdout, with
+the credential variable and any caveats on stderr. Nothing is cached, written or
+vendored into τ, so nothing in τ can go stale. `--catalog api.json` reads a local
+copy instead of fetching.
+
+Wire quirks are separate and are inferred from the endpoint URL at request time:
+which spelling of the output cap a server accepts, and whether it tolerates
+`stream_options`. State `models.<name>.compat` to override either.
+
+## Credits
+
+τ carries work from two MIT-licensed projects, and neither is a dependency —
+both were read and ported, so the attribution lives here rather than in a lock
+file.
+
+| Project | License | What τ takes from it |
+|---|---|---|
+| [pi-mono](https://github.com/badlogic/pi-mono) — Copyright (c) 2025 Mario Zechner | MIT | The reference implementation τ was ported from: the agent loop, the streaming event vocabulary, the OpenAI-completions provider, thinking-level clamping, and the endpoint-quirk detection in `tau_llm.compat` (pi's `detectCompat`/`getCompat`). Divergences are listed above and marked in the source. |
+| [models.dev](https://github.com/sst/models.dev) — the SST project | MIT | The model facts `python -m tau_llm.catalog` reads: context windows, output limits, reasoning support and effort levels, served from <https://models.dev/api.json>. Fetched when you ask for it; never vendored into this repository. |

@@ -831,9 +831,24 @@ class AgentLoop:
                 )
                 return final_msg
             elif isinstance(event, ErrorEvent):
+                # The message is the ONLY thing that survives to the operator: it
+                # becomes the transcript's error block and then the text of the
+                # RuntimeError raised below. A provider that emits an empty one
+                # therefore produced `RuntimeError: ` — a failure with no
+                # attribution at all, which is how a dropped connection used to
+                # surface (PLAN-0.9.3.md §4.2). τ's own provider now always fills
+                # it in; this is the boundary guard for any other provider, and it
+                # names the model rather than inventing a cause.
+                detail = (event.message or "").strip()
+                if not detail:
+                    model_label = getattr(model, "id", model)
+                    detail = (
+                        f"provider emitted an error event with an empty message "
+                        f"(model {model_label!r}); the upstream failure is unreported"
+                    )
                 error_msg = {
                     "role": "assistant",
-                    "content": [{"type": "text", "text": f"Error: {event.message}"}],
+                    "content": [{"type": "text", "text": f"Error: {detail}"}],
                 }
                 await self._emit(
                     AgentEvent(
@@ -849,7 +864,7 @@ class AgentLoop:
                         message=error_msg,
                     )
                 )
-                raise RuntimeError(event.message)
+                raise RuntimeError(detail)
 
         # Stream completed without DoneEvent
         content_blocks: list[TextContent | ThinkingContent | ToolCall] = (
@@ -1398,21 +1413,3 @@ class AgentLoop:
             if patch.get("is_error") is not None:
                 result.is_error = patch["is_error"]
         return result
-
-    def _to_llm_tool(self, tool: AgentTool) -> dict:
-        """Convert AgentTool to LLM tool format.
-
-        Args:
-            tool: The AgentTool to convert.
-
-        Returns:
-            OpenAI-format tool dict.
-        """
-        return {
-            "type": "function",
-            "function": {
-                "name": tool.name,
-                "description": tool.definition.description,
-                "parameters": tool.definition.parameters,
-            },
-        }

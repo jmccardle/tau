@@ -1,7 +1,9 @@
 # Cutting a τ release
 
 Written 2026-08-20 while cutting 0.9.2, from what the release actually did.
-Every command here was run; every value was read off the thing it configures.
+Every command here was run and every value was read off the thing it configures,
+with one exception, called out where it appears: the trusted-publishing upload
+in step 6 has never run. 0.9.2 went to both indexes by hand.
 
 ## The two repositories
 
@@ -34,8 +36,16 @@ failed all nine of its cases there — blocking the pipeline, because `publish`
 needs `test`. It was retired at 0.9.2 rather than made conditional.
 
 Before adding a test that shells out to `git`, ask whether the commits it names
-exist in a three-commit checkout. They will not. As of 0.9.2 no test in the
-suite runs `git`, and that is worth keeping true.
+exist in a three-commit checkout. They will not.
+
+The rule is about **history**, not about `git` itself — 0.9.2's blanket "no test
+runs `git`" was wrong when it was written. Several tests build a throwaway repo
+under `tmp_path`, which is self-contained and safe anywhere, and one queries the
+repository the suite is running in: `test_no_host_addresses.py` reads `git
+ls-files` to enumerate the tracked shipped files. That one is fine, because a
+shallow squashed checkout still tracks every file — depth is what it does not
+have. It does mean the suite needs a real checkout, so it fails outside a work
+tree: a tarball, or an unpacked `git archive`, is not enough.
 
 ## Steps
 
@@ -126,9 +136,10 @@ twine check --strict "$DIST"/*
 ./package.sh                            # the tau-<version>.tar.gz, three packages, no tau-jmfts
 ```
 
-Build to a directory outside the repository. `dist/` has no `.gitignore` rule,
-so a build inside the tree leaves an untracked directory behind. (`tau-*/build/`
-*is* ignored, which is why the per-package build dirs do not show up.)
+Build to a directory outside the repository. `dist/` is gitignored as of 0.9.3,
+so a build inside the tree no longer leaves an untracked directory behind — but
+outside is still better, because `$DIST` also collects the `package.sh` tarball
+and the two are easier to keep straight when neither is in the working tree.
 
 Then install the wheels into a throwaway venv and run them. `twine check` reads
 metadata; it does not tell you the package works:
@@ -158,6 +169,35 @@ A wheel missing either installs cleanly and dies on first run.
 
 `.github/workflows/publish.yml` does the upload, through PyPI Trusted
 Publishing. There is no API token anywhere.
+
+**The publish path is proven, as of run 32473936746 (2026-08-21).** Publishing
+the v0.9.2 GitHub release created the tag, which fired the workflow. It reached
+`pypa/gh-action-pypi-publish`, and the log shows the action holding a credential
+it did not have a moment earlier:
+
+```
+INFO  username: __token__
+INFO  password: <hidden>
+Uploading ffwf_tau_agent_core-0.9.2-py3-none-any.whl
+INFO  Response from https://upload.pypi.org/legacy/: 400 Bad Request
+      400 File already exists (…)
+```
+
+That token is minted by exchanging the job's OIDC identity with PyPI, so those
+two lines are the proof the exchange worked — owner, repository, workflow
+filename and environment name all matched a registered publisher. The upload
+then failed for the only reason left: 0.9.2 was already on PyPI from the hand
+bootstrap, and `skip-existing` is deliberately off.
+
+So the whole pipeline is exercised except the final write, and the one step that
+could still surprise a release is the one that only succeeds once per version.
+Read a `400 File already exists` as success of everything before it.
+
+**Wheels are not byte-reproducible across machines.** The same run shows it: the
+CI-built wheel hashed `789ca4e4…` while the published one is `40f090ac…`, same
+version, same source. Ordinary — a wheel embeds timestamps and build paths — but
+it means the artifact on PyPI is whichever machine uploaded first, and for 0.9.3
+that should be CI rather than a laptop.
 
 **A project that does not exist on the index yet cannot be created by this
 workflow.** PyPI will not accept four *pending* publishers that share one
@@ -217,7 +257,9 @@ The two GitHub environments already exist and hold no secrets and no protection
 rules. The environment name is part of the publisher identity, so it has to
 match exactly.
 
-Rehearse on TestPyPI first. Register the four TestPyPI publishers, then:
+Rehearse on TestPyPI first — this is the run that has not happened yet, and the
+only way to find out whether the eight registrations are right before a tag push
+makes it expensive. Register the four TestPyPI publishers, then:
 
 ```bash
 gh workflow run publish.yml --repo jmccardle/tau --ref master -f target=testpypi

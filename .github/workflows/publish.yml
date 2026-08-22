@@ -11,9 +11,18 @@
 # Authentication is PyPI Trusted Publishing (OIDC). There is no API token in
 # repository secrets: the publish job requests an OIDC identity token
 # (`permissions: id-token: write`) and pypa/gh-action-pypi-publish exchanges it
-# for a short-lived, project-scoped upload token. A single exchange covers all
-# four projects because all four register the same publisher identity
-# (owner / repo / workflow filename / environment).
+# for a short-lived, project-scoped upload token. All four projects register the
+# SAME publisher identity (owner / repo / workflow filename / environment), so
+# one workflow uploads all four.
+#
+# That holds only once the projects EXIST on the index. A project that has never
+# been published is registered as a *pending* publisher, and PyPI allows exactly
+# one pending row per configuration -- the second of the four is refused with
+# "A pending trusted publisher matching this configuration has already been
+# registered for a different project name." So this workflow cannot create a new
+# project, on either index, and the bootstrap is a one-time hand upload with an
+# account-scoped token. That is docs/RELEASING.md step 6, and it is what cost the
+# 0.9.2 release an afternoon. Read it before adding a fifth distribution.
 #
 # "Fail Early" (see CLAUDE.md): there is no `continue-on-error`, no `|| true`,
 # and no step that turns a failure into a warning anywhere in this file. Shell
@@ -60,10 +69,27 @@ jobs:
       # Fail the whole release the moment any interpreter fails. Do not weaken.
       fail-fast: true
       matrix:
-        # 3.11 is the ONLY verified version so far. 3.13 and 3.14 are being
-        # measured separately; when a result lands, add the string to this list
-        # and nothing else in this file needs to change.
-        python-version: ["3.11"]
+        # Every version here has had the whole suite run on it. 3.11 is the
+        # floor the four pyprojects declare (`requires-python = ">=3.11"`), and
+        # a test holds this list against that floor so the promise and the
+        # evidence cannot drift apart.
+        #
+        # 3.12, 3.13 and 3.14 were measured for 0.9.3, in clean
+        # `python:<v>-bookworm` containers, installing the four packages exactly
+        # as the step below does. All four runs came back identical: 4137
+        # passed, 149 skipped, 6 deselected. Three tests failed in ALL FOUR,
+        # including the 3.11 control, which is what identifies them as artifacts
+        # of running in a container rather than as version breakage -- two
+        # process-group kill tests that need real PID semantics, and one that
+        # reads `git ls-files` and so needs a work tree. Neither condition holds
+        # on a GitHub runner. There is no version-specific failure anywhere.
+        #
+        # The list is contiguous on purpose: `>=3.11` promises 3.12 as loudly as
+        # it promises 3.11, so leaving a hole would ship an untested claim.
+        #
+        # 3.14 additionally warns that `asyncio.iscoroutinefunction` goes away
+        # in 3.16. It is a warning, in a test file, not in any shipped tree.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
 

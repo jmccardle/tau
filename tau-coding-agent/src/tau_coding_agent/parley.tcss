@@ -21,7 +21,14 @@ ModalScreen {
    elided session name is shorter than the words in it) and capped at 32 (one row
    per session; columns past a full title show nothing more). At 120 columns that
    is the same 30 it always was, so the wide-terminal look is unchanged. */
+/* CLOSED at startup (docs/SESSION-UX-REDESIGN.md §8, decision 4). The session
+   picker (--resume / /resume / the palette's "Resume session…") is the canonical
+   way to reach a saved session now, so the first frame does not spend a quarter
+   of its width on a list nobody asked for. ctrl+b opens it, and from that point
+   Parley._apply_side_columns owns the display through an inline style — this
+   rule only decides the frame before anyone has pressed anything. */
 #sidebar {
+    display: none;
     width: 25%;
     min-width: 24;
     max-width: 32;
@@ -389,6 +396,62 @@ ModalScreen {
     color: #a6adc8;
 }
 
+/* === Session Picker Modal (docs/SESSION-UX-REDESIGN.md §6) === */
+/* The picker chooses among SAVED SESSIONS; the tree browser below it navigates
+   inside one. They are different screens and this is the one that does not need
+   the whole terminal: three narrow columns and a title, so it is a share of the
+   screen the `ModalScreen { align: center middle }` rule above then centres.
+   `max-width` because the title column stops earning columns somewhere around a
+   full sentence, and a 200-column terminal would otherwise draw a 200-column row
+   of mostly whitespace. */
+#session-picker-dialog {
+    width: 80%;
+    max-width: 100;
+    height: 80%;
+    background: #181825;
+    border: thick #45475a;
+    padding: 0 1;
+}
+
+#session-picker-title {
+    text-align: center;
+    text-style: bold;
+    color: #cba6f7;
+    margin-bottom: 1;
+}
+
+/* Present but quiet until `/` puts the cursor in it: an always-visible box is
+   how the reader learns the filter exists, and a bordered empty input at the top
+   of the dialog would otherwise read as the thing to type into first. */
+#session-picker-filter {
+    background: #1e1e2e;
+    border: solid #45475a;
+    color: #cdd6f4;
+}
+
+#session-picker-filter:focus {
+    border: solid #cba6f7;
+}
+
+#session-picker-table {
+    width: 100%;
+    height: 1fr;
+    background: #1e1e2e;
+    color: #cdd6f4;
+}
+
+/* Exactly one row, whatever the cwd is. A `height: auto` status wrapped a long
+   absolute path over three lines on an 80-column terminal and took those three
+   rows out of the table — the list is what the dialog is for, and the caption
+   under it must not be able to grow at the list's expense. `text-overflow` puts
+   the cut where the reader can see it. */
+#session-picker-status {
+    height: 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+    color: #6c7086;
+}
+
 /* === Session Tree Browser Modal === */
 /* Fills the screen. It was 90x30 regardless of terminal size, which left a dead
    band on a wide terminal and rendered off-screen (clipped top and bottom) on an
@@ -721,8 +784,9 @@ ModalScreen {
    Together with #sidebar this leaves the chat 45% of the width in the middle of
    the range, less 2 columns of scrollbar gutter and 4 of ChatDisplay padding.
    Where that stops clearing the 40-column floor asserted in
-   tests/test_tui_appearance.py is Parley.SIDE_COLUMNS_MIN_WIDTH, below which the
-   sidebar yields rather than the chat. */
+   tests/test_tui_appearance.py is Parley.SIDE_COLUMNS_MIN_WIDTH. The sidebar no
+   longer yields there — it starts closed, so a sidebar beside a panel is one the
+   user opened with ctrl+b, and that is honored at any width. */
 #ext-panel-host {
     width: 30%;
     min-width: 26;

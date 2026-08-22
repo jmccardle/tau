@@ -925,15 +925,36 @@ class TestCreateAgentSession:
         assert session._system_prompt is not None
         assert "τ" in session._system_prompt or "helpful" in session._system_prompt.lower()
 
-    def test_system_prompt_custom(self):
-        """create_agent_session() uses custom system prompt when provided."""
+    def test_system_prompt_custom(self, tmp_path):
+        """create_agent_session()'s system_prompt replaces the BASE text only.
+
+        It used to replace the whole prompt, which is how setting one silently
+        turned project context files off (0.9.3 §1). Context files now compose
+        with it — see tests/test_context_files.py — so this asserts the custom
+        text leads, not that it is alone. ``cwd`` is pinned at an empty dir so
+        the assertion does not depend on the machine's own AGENTS.md.
+        """
         custom_prompt = "You are a test assistant."
         session = create_agent_session(
             model="gpt-4o",
             session_log=InMemorySessionLog(),
             system_prompt=custom_prompt,
+            cwd=str(tmp_path),
+            no_context_files=True,
         )
         assert session._system_prompt == custom_prompt
+
+    def test_system_prompt_custom_still_gets_context_files(self, tmp_path):
+        """The other half of the same contract, stated positively."""
+        (tmp_path / "AGENTS.md").write_text("PROJECT MARKER", encoding="utf-8")
+        session = create_agent_session(
+            model="gpt-4o",
+            session_log=InMemorySessionLog(),
+            system_prompt="You are a test assistant.",
+            cwd=str(tmp_path),
+        )
+        assert session._system_prompt.startswith("You are a test assistant.")
+        assert "PROJECT MARKER" in session._system_prompt
 
     def test_sdk_agent_session_is_agent_session(self):
         """create_agent_session() returns an AgentSession instance."""
