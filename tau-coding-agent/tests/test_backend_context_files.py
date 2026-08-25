@@ -23,6 +23,12 @@ import pytest
 from tau_agent_core.sdk import BASE_SYSTEM_PROMPT
 from tau_coding_agent.backends import TauBackend
 
+#: The base prompt's first paragraph, which carries no ``{{field}}`` slots.
+#: ``BASE_SYSTEM_PROMPT`` is a TEMPLATE — its ``{{cwd}}``/``{{model}}`` slots are
+#: filled at build time — so the raw constant never appears in a finished prompt
+#: and comparing against it would only assert that templating happened.
+_BASE_OPENING = BASE_SYSTEM_PROMPT.split("\n\n", 1)[0]
+
 
 def _cfg(**extra) -> dict:
     return {
@@ -49,7 +55,7 @@ def test_a_default_install_gets_tau_s_base_prompt(tmp_path, monkeypatch):
 
     backend = TauBackend(_cfg())
 
-    assert backend.agent_session._system_prompt.startswith(BASE_SYSTEM_PROMPT)
+    assert backend.agent_session._system_prompt.startswith(_BASE_OPENING)
 
 
 def test_a_projects_agents_md_reaches_the_model(project):
@@ -75,7 +81,7 @@ def test_a_configured_system_prompt_replaces_the_base_text_only(project):
 
     prompt = backend.agent_session._system_prompt
     assert prompt.startswith("CUSTOM VOICE")
-    assert BASE_SYSTEM_PROMPT not in prompt
+    assert _BASE_OPENING not in prompt
     assert "PROJECT MARKER" in prompt
 
 
@@ -86,7 +92,7 @@ def test_no_context_files_suppresses_discovery(project):
     prompt = backend.agent_session._system_prompt
     assert "PROJECT MARKER" not in prompt
     assert "project_context" not in prompt
-    assert prompt.startswith(BASE_SYSTEM_PROMPT)
+    assert prompt.startswith(_BASE_OPENING)
 
 
 def test_no_context_files_still_leaves_the_tools_section(project):

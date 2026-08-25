@@ -194,9 +194,53 @@ def test_apply_run_config_exclude_tools_rides_as_denylist(app):
 
 
 def test_apply_run_config_no_flags_returns_unchanged(app):
-    """A bare tau (no run flags) leaves the model_config object untouched."""
+    """A bare tau (no run flags, no config defaults) leaves the object untouched.
+
+    The config-level defaults this method also folds in — ``system_prompt`` here,
+    ``reasoning_replay`` elsewhere — are cleared first. They are not run flags,
+    and each has its own test; what this one pins is that the FLAGS alone never
+    cause a copy.
+    """
+    app.config.pop("system_prompt", None)
     original = {"backend": "openai", "model": "m", "tools": ["read"]}
     assert app._apply_run_config(original) is original
+
+
+def test_apply_run_config_folds_the_config_system_prompt_onto_the_entry(app):
+    """The top-level ``system_prompt`` reaches the ENTRY, not the session message.
+
+    This is the seam that lets a configured prompt COMPOSE with the project
+    context files and the tool list: ``TauBackend`` reads it off the entry as
+    ``custom_prompt`` and builds around it. It used to be written straight into
+    the session's first message, which takes precedence over the built prompt —
+    so setting it cost the user their AGENTS.md context and the tool list.
+    """
+    app.config["system_prompt"] = "MY PROMPT"
+    mc = app._apply_run_config({"backend": "openai", "model": "m"})
+    assert mc["system_prompt"] == "MY PROMPT"
+
+
+def test_apply_run_config_entry_prompt_wins_over_the_config_default(app):
+    """A model entry naming its own prompt is not overwritten by the global one.
+
+    Same precedence ``reasoning_replay`` has: per-model wins, else the top-level
+    default. Writing the global over it would make a per-model prompt unusable.
+    """
+    app.config["system_prompt"] = "GLOBAL"
+    mc = app._apply_run_config({"backend": "openai", "model": "m", "system_prompt": "ENTRY"})
+    assert mc["system_prompt"] == "ENTRY"
+
+
+def test_apply_run_config_carries_append_sections_for_the_backend(app):
+    """``--append-system-prompt`` rides as its own key rather than pre-folded.
+
+    ``TauBackend`` applies it to whichever base text it resolves, so the sections
+    land ahead of the project context and the tool list (pi's placement) and one
+    code path decides that for the TUI, print mode and RPC mode alike.
+    """
+    app._append_system_prompt = ["EXTRA RULE"]
+    mc = app._apply_run_config({"backend": "openai", "model": "m"})
+    assert mc["append_system_prompt"] == ["EXTRA RULE"]
 
 
 def test_apply_run_config_bus_grants_the_h8_capability(app):
@@ -221,6 +265,42 @@ def test_apply_run_config_without_bus_does_not_revoke_a_configured_one(app):
     app._bus_available = False
     mc = app._apply_run_config({"backend": "openai", "model": "m", "bus_available": True})
     assert mc["bus_available"] is True
+
+
+def test_apply_run_config_threads_the_turn_ceiling(app):
+    """``--max-turns`` reaches the model config, and survives a ``/model`` switch.
+
+    The ceiling is a statement about the run, not about the entry the run happens
+    to be pointed at, so it is re-applied at every ``create_backend`` like the
+    tool flags.
+    """
+    app._max_turns = 12
+    first = app._apply_run_config({"backend": "openai", "model": "a"})
+    switched = app._apply_run_config({"backend": "openai", "model": "b"})
+    assert first["max_turns"] == 12
+    assert switched["max_turns"] == 12
+
+
+def test_apply_run_config_falls_back_to_the_config_ceiling(app):
+    """No flag → config.json's top-level ``max_turns``; a model entry beats it."""
+    app._max_turns = None
+    app.config["max_turns"] = 30
+    assert app._apply_run_config({"backend": "openai", "model": "a"})["max_turns"] == 30
+    entry = {"backend": "openai", "model": "a", "max_turns": 5}
+    assert app._apply_run_config(entry)["max_turns"] == 5
+    # …and the flag beats both.
+    app._max_turns = 7
+    assert app._apply_run_config(entry)["max_turns"] == 7
+
+
+def test_apply_run_config_without_a_ceiling_states_none(app):
+    """Silence everywhere leaves the key absent, so ``AgentLoopConfig``'s default
+    (no ceiling) stands. Writing a number here would resurrect the unreachable 50
+    this replaced, just in a different file."""
+    app._max_turns = None
+    app.config.pop("max_turns", None)
+    mc = app._apply_run_config({"backend": "openai", "model": "m"})
+    assert "max_turns" not in mc
 
 
 async def test_new_chat_appends_system_prompt(app, tmp_path):

@@ -12,7 +12,7 @@ Reference: SUBPHASE-0.0.md
 
 # This distribution's version, read at build time by pyproject.toml's
 # [tool.setuptools.dynamic]. Kept in lockstep with the other three packages.
-__version__ = "0.9.3"
+__version__ = "0.9.4"
 
 from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.session import (
@@ -49,7 +49,7 @@ from tau_agent_core.tools.base import (
 )
 from tau_agent_core.agent_session import AgentSession, ExtensionCommandResult
 from tau_agent_core.conversation_tree import ConversationTree, TreeNode
-from tau_agent_core.session_log import InMemorySessionLog, SessionLog
+from tau_agent_core.session_log import InMemorySessionLog, SessionLog, agent_spec_in_force
 from tau_agent_core.session_manager import SessionManager
 from tau_agent_core.compaction import (
     DEFAULT_COMPACTION_SETTINGS,
@@ -59,6 +59,7 @@ from tau_agent_core.compaction import (
     CompactionSettings,
     compact,
     estimate_context_tokens,
+    estimate_span_tokens,
     prepare_compaction,
     should_compact,
 )
@@ -106,6 +107,7 @@ __all__ = [
     "TreeNode",
     "SessionLog",
     "InMemorySessionLog",
+    "agent_spec_in_force",
     "SessionManager",
     "AgentEvent",
     "EventBus",
@@ -143,6 +145,7 @@ __all__ = [
     "compact",
     "should_compact",
     "estimate_context_tokens",
+    "estimate_span_tokens",
     # Declared compaction policy for a measured run (H5 / SIM_SPEC_v2 §16.8)
     "CompactionPolicy",
     "CompactionPolicyError",

@@ -34,7 +34,11 @@ None, steer_queue: list[Any] | None = None)` — `config`, `tools`, `model`,
 `abort_signal` are constructor arguments, not fields on one shared object.
 `AgentLoopConfig` (`agent_loop_types.py`) is intentionally small: `model`,
 `system_prompt`, `tool_execution_mode`, `max_retries`, `max_turns`,
-`temperature`, `api_key`, `reasoning`. Everything an earlier design put on
+`temperature`, `api_key`, `reasoning`. `max_turns` defaults to `None` — the
+loop takes as many turns as the model asks for, which is pi's behaviour
+(`agent-loop.ts:155-275`). It was a hardcoded 50 that no CLI flag, config key
+or `create_agent_session` parameter could move; see docs/CLI-PLAN.md
+"`--max-turns` and the ceiling that used to be unreachable". Everything an earlier design put on
 the config as callbacks — `before_tool_call`/`after_tool_call`,
 `get_steering_messages`, `get_follow_up_messages`, `transform_context` —
 is now injected instead: extension hook dispatch goes through

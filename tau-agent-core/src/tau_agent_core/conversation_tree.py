@@ -63,6 +63,17 @@ _SUMMARY_KINDS = ("compaction", "branch_summary")
 # ``"compaction"``-only check, so compaction's own behaviour is unchanged.
 _SPLICE_ANCHOR_KINDS = ("compaction", "elide")
 
+# The verb each splice anchor's browser row uses for the span it removes from the
+# fold. Two verbs, deliberately: an ``elide`` HIDES its span (``context_for``'s
+# ``elide`` case renders nothing in its place), while a ``compaction`` FOLDS its
+# span into the summary it renders instead. TREE-BROWSER-AS-EDITOR.md uses exactly
+# that pair for exactly that distinction (§1.2 "hides 42 entries", §4.1 "folds 3
+# entries"), so the verb alone tells a reader scanning rows whether the removed
+# span left anything behind. Keyed by entry ``type``, so a kind added to
+# ``_SPLICE_ANCHOR_KINDS`` without a verb raises here rather than rendering a row
+# that silently omits its span.
+_SPLICE_VERBS = {"compaction": "folds", "elide": "hides"}
+
 
 def _compaction_message(summary: str) -> dict[str, Any]:
     """Render a compaction anchor as the loop-consumable user message. Mirrors
@@ -412,6 +423,23 @@ class ConversationTree:
         """
         return self._by_id[entry_id]
 
+    def message_text(self, entry_id: str) -> str:
+        """``entry_id``'s message flattened to plain text, or ``""`` if it has none.
+
+        The whole body, where :attr:`TreeNode.preview` is its first line elided to
+        a row. Added for the tree browser's ``revise`` gesture (PLAN-0.9.4 §4,
+        item 2), which puts a user message back in the input to be edited — a
+        preview would hand back a truncated version of what the reader typed.
+
+        ``""`` for an entry with no message at all (a ``navigate``, an
+        ``agent_spec``) — those are records, not text, and the caller asking for
+        one is asking about the wrong node rather than hitting an error.
+
+        Raises:
+            KeyError: no entry has that id, same as :meth:`entry`.
+        """
+        return _message_text(self._by_id[entry_id].get("message", {}))
+
     def tree(self) -> list[TreeNode]:
         """Parent/child ``TreeNode`` roots for the browser (pi ``getTree``).
 
@@ -469,6 +497,12 @@ class ConversationTree:
         kind = entry.get("type")
         if kind in ("message", "customMessage"):
             text = _message_text(entry.get("message", {}))
+        elif kind in _SPLICE_ANCHOR_KINDS:
+            # BEFORE the ``_SUMMARY_KINDS`` arm: ``compaction`` is in both tuples and
+            # the anchor rendering is the more specific one (it states the span AND
+            # the summary). ``branch_summary`` is in ``_SUMMARY_KINDS`` only — it is
+            # not an anchor and has no span (Decision 5, §5).
+            text = self._splice_anchor_preview(entry)
         elif kind in _SUMMARY_KINDS:
             text = str(entry.get("summary", ""))
         elif kind == "customEntry":
@@ -477,31 +511,65 @@ class ConversationTree:
             else:
                 # Backplane state (E6 §2 / S39): label the browser row by its customType.
                 text = f"customEntry: {entry.get('customType', '')}"
-        elif kind == "elide":
-            text = self._elide_preview(entry)
         else:
             text = ""
         stripped = text.strip()
         return stripped.split("\n", 1)[0] if stripped else ""
 
-    def _elide_preview(self, entry: dict[str, Any]) -> str:
-        """Row text for an ``elide`` node: WHAT the span it hides actually is.
+    def _splice_anchor_preview(self, entry: dict[str, Any]) -> str:
+        """Row text for a splice anchor: WHAT it removes, then WHAT it left behind.
 
-        An elide carries no ``summary``, so without this it renders in the tree
-        browser as a bare ``(elide)`` — the one node kind whose whole meaning is
-        invisible from its own payload. The meaning is a function of *where it
-        sits*: the span it hides is everything on its parent's root-ward path that
-        the fold drops once this anchor supersedes any earlier one, i.e. the
-        difference between :meth:`context_entries` at the parent and the kept
-        region ``firstKeptId``…parent. That is exactly the arithmetic
-        ``_active_path_entries`` performs, read back out.
+        TREE-BROWSER-AS-EDITOR.md §4.2. Both members of ``_SPLICE_ANCHOR_KINDS`` get
+        the same arithmetic, because the span is a property of *where the anchor
+        sits*, not of whether it renders a summary — until now the kind with no
+        payload (``elide``) had the better row and the kind with a summary
+        (``compaction``) said nothing at all about the entries it replaced (§1.2).
 
-        A ``firstKeptId`` that is NOT on the parent's path is reported as such
-        rather than counted: the forward scan never finds it, so the fold keeps
-        *nothing* before the anchor (see :meth:`_active_path_entries`). Saying
-        "hides everything" is the honest reading of that node, and it is the only
-        way a browser row can warn about a log written by something that skipped
-        the boundary check.
+        **Composition: the computed span FIRST, the summary after an em dash.** Two
+        reasons, both about truncation. :meth:`_preview_of` keeps only the first
+        line, and the browser then elides the row to the width left over after the
+        indent (``app.py:736``); the span phrase is bounded (a count and one id)
+        while a summary is a paragraph, so summary-first would let the very fact
+        this change adds be the part that gets cut — and a multi-line summary would
+        delete it outright at the ``split("\\n")``. An ``elide`` has no summary, so
+        it degrades to exactly the span phrase and its row is unchanged.
+
+        The span itself is the difference between :meth:`context_entries` at the
+        parent and the kept region ``firstKeptId``…parent — the arithmetic
+        :meth:`_active_path_entries` performs, read back out. Three shapes, because
+        the two stores disagree about where the kept region sits (§4.1):
+
+        1. ``firstKeptId`` on the parent's raw path — the append-at-the-tip shape
+           (``session_store.append_compaction`` / ``append_elide``). The kept region
+           is the suffix of the parent's path from the boundary onward.
+        2. ``firstKeptId`` is a DESCENDANT of the anchor — the re-parented shape
+           (``SessionManager.apply_compaction``, and the frozen System-A oracle the
+           fold-parity tests pin). The forward scan in :meth:`_active_path_entries`
+           never finds the boundary among the anchor's ancestors, so the anchor keeps
+           nothing from before itself; the count is therefore the whole folded parent
+           context, and it is a real count, not a guess. Rendering this as the
+           warning in case 3 would cry corruption over τ's own normal output.
+        3. Anything else — no ``firstKeptId``, or one naming an entry that is neither
+           an ancestor nor a descendant. The fold keeps nothing before the anchor
+           *and* the resume point is unreachable, so the row says so instead of
+           reporting a count next to a meaningless id. That is the only way a browser
+           row can warn about a log written by something that skipped the boundary
+           check.
+
+        A root-level anchor (``parentId is None``) folds nothing, and is counted as
+        such rather than passed to :meth:`context_entries`, whose ``leaf=None`` means
+        "use the cursor" — a different question with a plausible-looking wrong answer.
+        """
+        kind = str(entry.get("type", ""))
+        verb = _SPLICE_VERBS[kind]  # KeyError == a caller that is not an anchor
+        span = self._splice_span_phrase(entry, kind, verb)
+        summary = str(entry.get("summary", "")).strip()
+        return f"{span} — {summary}" if summary else span
+
+    def _splice_span_phrase(self, entry: dict[str, Any], kind: str, verb: str) -> str:
+        """``"folds 3 entries, resumes at e05"`` — the structural half of the row.
+
+        See :meth:`_splice_anchor_preview` for the three shapes and why they differ.
         """
         boundary_value = entry.get("firstKeptId")
         boundary = str(boundary_value) if boundary_value is not None else None
@@ -509,13 +577,33 @@ class ConversationTree:
         parent = str(parent_value) if parent_value is not None else None
 
         path_ids = [e["id"] for e in self._walk(parent)] if parent is not None else []
-        if boundary is None or boundary not in path_ids:
-            return f"elide → {boundary}: resume point is not on this path (hides everything)"
+        if boundary is not None and boundary in path_ids:
+            kept = set(path_ids[path_ids.index(boundary) :])
+        elif boundary is not None and self._boundary_trails_anchor(entry, boundary):
+            kept = set()  # shape 2: the kept region hangs BELOW the anchor
+        else:
+            return f"{kind} → {boundary}: resume point is not on this path ({verb} everything)"
 
-        kept = set(path_ids[path_ids.index(boundary) :])
-        hidden = [e for e in self.context_entries(parent) if e["id"] not in kept]
+        hidden = (
+            [e for e in self.context_entries(parent) if e["id"] not in kept]
+            if parent is not None
+            else []
+        )
         noun = "entry" if len(hidden) == 1 else "entries"
-        return f"hides {len(hidden)} {noun}, resumes at {boundary}"
+        return f"{verb} {len(hidden)} {noun}, resumes at {boundary}"
+
+    def _boundary_trails_anchor(self, entry: dict[str, Any], boundary: str) -> bool:
+        """True when ``firstKeptId`` names a DESCENDANT of this anchor (shape 2).
+
+        ``SessionManager.apply_compaction`` re-parents ``first_kept`` onto the
+        compaction, so the kept region trails the anchor instead of preceding it.
+        The anchor is then on the boundary's own ancestor chain, which is what this
+        checks — an unknown boundary, or one on a sibling branch, is not.
+        """
+        if boundary not in self._by_id:
+            return False
+        anchor_id = entry.get("id")
+        return any(e["id"] == anchor_id for e in self._walk(boundary))
 
     def _agent_spec_preview(self, entry: dict[str, Any]) -> str:
         """Row text for an ``agent_spec`` node: WHICH agent starts speaking here.
@@ -548,7 +636,7 @@ class ConversationTree:
         """
         data = entry.get("data")
         if not isinstance(data, dict):
-            # A hand-written or future log. Same policy as _elide_preview's
+            # A hand-written or future log. Same policy as _splice_span_phrase's
             # unreachable boundary: report the shape honestly rather than guess.
             return "agent_spec: no frame recorded"
 

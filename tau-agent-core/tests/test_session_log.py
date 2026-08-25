@@ -27,7 +27,24 @@ from tau_llm.types import Model
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.sdk import create_agent_session
-from tau_agent_core.session_log import InMemorySessionLog, SessionLog
+from tau_agent_core.session_log import (
+    InMemorySessionLog,
+    SessionLog,
+    agent_spec_in_force,
+    open_branch,
+)
+
+# TREE-BROWSER-AS-EDITOR.md §8/§11.3: ``append_compaction`` now requires the
+# summary's provenance as keyword-only arguments with no defaults. These tests are
+# about something else, so they name plausible values once here rather than at every
+# call — the point of the required keywords is that a REAL caller cannot skip them.
+_PROV = {
+    "summarizer_model_id": "test-summarizer",
+    "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+    "covered_entries": 1,
+    "covered_tokens": 50,
+    "agent_spec_id": None,
+}
 
 
 def _model() -> Model:
@@ -73,7 +90,9 @@ class TestInMemorySessionLog:
     def test_append_compaction_writes_camelcase_shape(self):
         log = InMemorySessionLog()
         first = log.append_message(_um("keep"))
-        log.append_compaction(summary="recap", first_kept_id=first, tokens_before=123)
+        log.append_compaction(
+            summary="recap", first_kept_id=first, tokens_before=123, **_PROV
+        )
         comp = log.entries()[-1]
         assert comp["type"] == "compaction"
         assert comp["summary"] == "recap"
@@ -116,6 +135,109 @@ class TestInMemorySessionLog:
         assert isinstance(InMemorySessionLog(), SessionLog)
 
 
+# ── §8 anchor provenance: agent_spec_in_force and the branch wrapper ─────────
+#
+# The round trip through each store is the contract suite's job
+# (testing/session_log_contract.py). What is pinned here is the piece that is NOT
+# a per-store obligation: the shared ancestry rule the call sites use to name
+# ``agent_spec_id``, and the branch wrapper, which is the one SessionLog
+# implementation with no store of its own.
+
+
+class TestAgentSpecInForce:
+    """TREE-BROWSER-AS-EDITOR.md §8.3 — the frame a splice anchor points at."""
+
+    def test_it_finds_the_nearest_agent_spec_ancestor(self):
+        log = InMemorySessionLog()
+        log.append_custom_entry("agent_spec", {"model": {"id": "first"}})
+        log.append_message(_um("under the first spec"))
+        second = log.append_custom_entry("agent_spec", {"model": {"id": "second"}})
+        leaf = log.append_message(_um("under the second spec"))
+
+        assert agent_spec_in_force(log.entries(), leaf) == second
+
+    def test_a_spec_on_a_sibling_branch_never_governs_this_path(self):
+        """Ancestry, not load order. A ``set_model`` on an abandoned branch is
+        chronologically the most recent ``agent_spec`` in the log and governed
+        nothing on this leaf's path — the distinction docs/LANE-REMOVAL.md §1
+        removed the ``branchOf`` tag over."""
+        log = InMemorySessionLog()
+        mine = log.append_custom_entry("agent_spec", {"model": {"id": "mine"}})
+        fork_point = log.append_message(_um("shared prefix"))
+        leaf = log.append_message(_um("my continuation"))
+
+        log.append_navigate(fork_point)
+        log.append_custom_entry("agent_spec", {"model": {"id": "the other branch"}})
+        log.append_message(_um("their continuation"))
+
+        assert agent_spec_in_force(log.entries(), leaf) == mine
+
+    def test_a_log_with_no_agent_spec_answers_none(self):
+        """An honest absence — a pi-imported log, or a store driven without an
+        AgentSession, has no such node. §11.3's "no defaults" rule is what keeps
+        this answer distinct from a caller that never looked."""
+        log = InMemorySessionLog()
+        leaf = log.append_message(_um("no frame was ever recorded"))
+
+        assert agent_spec_in_force(log.entries(), leaf) is None
+        assert agent_spec_in_force(log.entries(), None) is None
+
+    def test_a_non_agent_spec_custom_entry_is_not_mistaken_for_one(self):
+        log = InMemorySessionLog()
+        log.append_custom_entry("jmfts:document", {"docId": "42"})
+        leaf = log.append_message(_um("hello"))
+
+        assert agent_spec_in_force(log.entries(), leaf) is None
+
+
+class TestBranchViewRecordsAnchorProvenance:
+    """A branch adds nothing to the provenance and must subtract nothing.
+
+    ``BranchView`` is the SessionLog implementation with no storage of its own, so
+    it is the one that could plausibly forward a widened call by dropping the new
+    keywords and still look correct — its writes land in the underlying log either
+    way, just without §8's fields.
+    """
+
+    def test_a_branchs_compaction_carries_the_full_provenance(self):
+        log = InMemorySessionLog()
+        root = log.append_message(_um("shared"))
+        branch = open_branch(log, root, label="reviewer")
+        keep = branch.append_message(_um("kept in the lane"))
+
+        anchor_id = branch.append_compaction(
+            "LANE SUMMARY",
+            keep,
+            77,
+            summarizer_model_id="lane-summarizer",
+            summary_usage={"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
+            covered_entries=2,
+            covered_tokens=31,
+            agent_spec_id=None,
+        )
+
+        anchor = next(e for e in log.entries() if e["id"] == anchor_id)
+        assert anchor["summarizerModelId"] == "lane-summarizer"
+        assert anchor["summaryUsage"] == {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7}
+        assert anchor["coveredEntries"] == 2
+        assert anchor["coveredTokens"] == 31
+        assert anchor["agentSpecId"] is None
+
+    def test_a_branchs_elide_carries_its_span(self):
+        log = InMemorySessionLog()
+        root = log.append_message(_um("shared"))
+        branch = open_branch(log, root, label="reviewer")
+        keep = branch.append_message(_um("kept in the lane"))
+
+        anchor_id = branch.append_elide(
+            keep, covered_entries=1, covered_tokens=12, agent_spec_id=None
+        )
+
+        anchor = next(e for e in log.entries() if e["id"] == anchor_id)
+        assert anchor["coveredEntries"] == 1
+        assert anchor["coveredTokens"] == 12
+
+
 # ── Fold parity: context built via ConversationTree over the log entries ──────
 
 
@@ -133,7 +255,9 @@ class TestConversationTreeOverLog:
         log = InMemorySessionLog()
         log.append_message(_um("old"))
         keep = log.append_message(_um("keep me"))
-        log.append_compaction(summary="SUM", first_kept_id=keep, tokens_before=10)
+        log.append_compaction(
+            summary="SUM", first_kept_id=keep, tokens_before=10, **_PROV
+        )
         session = AgentSession(session_log=log, model=_model())
         texts = [m["content"][0]["text"] for m in session.messages]
         assert texts == ["[[Compaction summary: SUM]]", "keep me"]

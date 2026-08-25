@@ -100,7 +100,7 @@ def _messages_answer_only() -> list[dict[str, Any]]:
                     ),
                 }
             ],
-            "usage": {"total_tokens": 412},
+            "usage": {"input_tokens": 380, "output_tokens": 32, "total_tokens": 412},
         },
     ]
 
@@ -131,7 +131,7 @@ def _messages_with_tools() -> list[dict[str, Any]]:
                     "arguments": {"pattern": "arguments", "path": "tau-llm/tests"},
                 },
             ],
-            "usage": {"total_tokens": 1840},
+            "usage": {"input_tokens": 1700, "output_tokens": 140, "total_tokens": 1840},
         },
         {
             "role": "toolResult",
@@ -161,7 +161,7 @@ def _messages_with_tools() -> list[dict[str, Any]]:
         {
             "role": "assistant",
             "content": [{"type": "text", "text": _LONG_ANSWER}],
-            "usage": {"total_tokens": 2310},
+            "usage": {"input_tokens": 1900, "output_tokens": 410, "total_tokens": 2310},
         },
     ]
 
@@ -366,7 +366,10 @@ async def _open_tree_modal(app: Any, pilot: Any) -> None:
     from tau_coding_agent.app import SessionTreeModal
 
     tree = _tree_session()
-    app.push_screen(SessionTreeModal(tree.tree(), resolve_entry=tree.entry))
+    # The whole ``ConversationTree``, not ``roots`` plus a resolver
+    # (TREE-BROWSER-AS-EDITOR.md §5.3): the browser derives three of its four
+    # selection sets from the tree itself.
+    app.push_screen(SessionTreeModal(tree))
     await _settle_tree(app, pilot, "n4")
 
 
@@ -426,9 +429,20 @@ async def _open_tree_modal_at_branch(app: Any, pilot: Any) -> None:
 
     await _open_tree_modal(app, pilot)
     tree = app.screen.query_one("#tree-browser-tree", Tree)
-    node = next(n for n in tree.root.children[0].children if n.data == "n2")
+    # Search the whole widget tree rather than one fixed nesting level: the browser
+    # nests by FORK, not by ``parentId`` (TREE-BROWSER-AS-EDITOR.md §2), so where a
+    # given entry sits in the widget tree is a function of where the branches are.
+    # ``data`` is the entry id at every level and is the stable way to name a row.
+    node = next(n for n in _widget_nodes(tree.root) if n.data == "n2")
     tree.move_cursor(node)
     await _settle_tree(app, pilot, "n2")
+
+
+def _widget_nodes(root: Any) -> Iterator[Any]:
+    """Every ``textual.widgets.tree.TreeNode`` under *root*, depth-first."""
+    for child in root.children:
+        yield child
+        yield from _widget_nodes(child)
 
 
 async def _open_tree_mode_modal(app: Any, pilot: Any) -> None:
@@ -515,7 +529,7 @@ SCENES: tuple[Scene, ...] = (
 
 
 @contextmanager
-def stage_scene(scene: Scene) -> Iterator[Any]:
+def stage_scene(scene: Scene, theme: str | None = None) -> Iterator[Any]:
     """Sandbox ``~/.tau`` into a temp dir, run *scene*'s seed, and yield the app.
 
     Everything :func:`open_scene` does *except* run the app — split out because
@@ -526,6 +540,17 @@ def stage_scene(scene: Scene) -> Iterator[Any]:
     its config and writes its sessions while it is up.
 
     The caller must not leave this block before the app has stopped.
+
+    ``theme`` names a τ colour theme (docs/PLAN-0.9.4.md §6) to render the scene
+    in. ``None`` — every existing caller, the snapshot suite included — leaves the
+    app on its default, so a reference SVG cannot move because a theme argument
+    was threaded through here. It is applied before the app runs because that is
+    when the stylesheet is parsed.
+
+    An unknown name **raises**, which the config key and ``--theme`` no longer do
+    (they toast and start in the default). The difference is deliberate: a
+    screenshot captured in a theme other than the one asked for is a wrong picture
+    that looks like a right one, and there is no user watching for a toast.
     """
     from tau_coding_agent.testing.sandbox import build_parley, sandbox_tau_home
 
@@ -535,6 +560,8 @@ def stage_scene(scene: Scene) -> Iterator[Any]:
             if scene.seed is not None:
                 scene.seed(home)
             app = build_parley(home, config=scene.config or None)
+            if theme is not None:
+                app._apply_theme(theme)
             # The "no live data" rule applies to motion too: a frame captured
             # mid-animation differs from the same frame captured after it. The
             # documented switch is TEXTUAL_ANIMATIONS=none, which `devshot` sets
@@ -596,15 +623,16 @@ async def arrange_scene(scene: Scene, app: Any, pilot: Any) -> None:
 
 @asynccontextmanager
 async def open_scene(
-    scene: Scene, size: tuple[int, int] = (120, 40)
+    scene: Scene, size: tuple[int, int] = (120, 40), theme: str | None = None
 ) -> AsyncIterator[tuple[Any, Any]]:
     """Run *scene* at *size* and yield ``(app, pilot)`` with the frame settled.
 
     The one place a scene is turned into a running app, shared by the ``devshot``
     CLI and the appearance tests so a screenshot and an assertion are always
-    looking at the same thing.
+    looking at the same thing. ``theme`` is :func:`stage_scene`'s — ``None`` keeps
+    the default.
     """
-    with stage_scene(scene) as app:
+    with stage_scene(scene, theme) as app:
         async with app.run_test(size=size) as pilot:
             await arrange_scene(scene, app, pilot)
             yield app, pilot

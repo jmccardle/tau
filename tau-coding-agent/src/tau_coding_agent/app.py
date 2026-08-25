@@ -6,6 +6,7 @@ Clean, simple, fast. Built with Textual.
 
 from rich import box
 from rich.console import RenderableType
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult, SystemCommand
@@ -27,13 +28,20 @@ from textual.widgets import (
     SelectionList,
 )
 from textual.widgets.markdown import MarkdownStream
+
+# Aliased: ``TreeNode`` is already the name of ``ConversationTree``'s DATA node in
+# this module (imported below), and the browser deliberately keeps the two apart —
+# one is a log entry's place in the conversation, the other is a row's place in the
+# widget, and §2 made those two shapes differ.
+from textual.widgets.tree import TreeNode as WidgetTreeNode
 from textual.binding import Binding
 from textual.reactive import reactive
 from textual import events, work
 from textual.message import Message
 from textual.screen import ModalScreen
+from textual.timer import Timer
 from textual.worker import get_current_worker
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 import asyncio
 import json
@@ -41,7 +49,7 @@ import os
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Callable, ClassVar, Literal, Optional
 from uuid import uuid4
 
 from tau_coding_agent.backends import (
@@ -50,10 +58,11 @@ from tau_coding_agent.backends import (
     RenderRouter,
     create_backend,
     make_model_resolver,
+    prompt_tokens,
     resolve_tool_names,
 )
 from tau_coding_agent.tagline import pick_tagline
-from tau_coding_agent.headless import _append_system_prompt, resolve_extensions_config
+from tau_coding_agent.headless import resolve_extensions_config
 
 # Session persistence lives in a Textual-free module so `tau -p` can save
 # sessions without importing the TUI. Sessions are append-only JSONL transcripts
@@ -70,6 +79,14 @@ from tau_coding_agent.session_store import (
     subscribe_session_events,
 )
 from tau_coding_agent.store_factory import build_session_catalog, resolve_backend_name
+from tau_coding_agent.themes import (
+    DEFAULT_THEME_NAME,
+    THEME_CONFIG_KEY,
+    ThemeError,
+    build_theme_registry,
+    install_themes,
+    resolve_theme,
+)
 
 # The pure session-tree algebra lives in tau-agent-core (the loop's package, not
 # the TUI); the tree-browser (§3) is a view over ConversationTree.tree().
@@ -87,7 +104,7 @@ from tau_agent_core.agent_session import ExtensionCommandResult
 
 # Extension load result + the read-only per-extension summary the /extensions
 # palette listing renders (E5 §5 / S34).
-from tau_agent_core.sdk import LoadExtensionsResult, summarize_extensions
+from tau_agent_core.sdk import BASE_SYSTEM_PROMPT, LoadExtensionsResult, summarize_extensions
 
 # The submission record every input source funnels through
 # (docs/SUBMISSION-LIFECYCLE.md "The one door"). The TUI constructs one per typed
@@ -507,25 +524,793 @@ class SystemPromptEditor(ModalScreen):
             self.dismiss(None)
 
 
+#: The narrowest column :func:`_elide` can still say something in: one character of
+#: the text, plus the ``…`` that says the rest was cut.
+_ELIDE_MIN_WIDTH = 2
+
+#: What a row becomes when its column is narrower than :data:`_ELIDE_MIN_WIDTH`.
+#: One cell — the marker alone, with nothing left to mark.
+_ELIDE_TOO_NARROW = "…"
+
+
 def _elide(text: str, width: int) -> str:
     """``text`` cut to ``width`` cells, ending in ``…`` when anything was cut.
 
-    A width too small to hold even one character plus the marker returns the text
-    unchanged: a label elided to nothing tells the reader less than one that
-    overflows, and the caller can see the overflow.
+    Below :data:`_ELIDE_MIN_WIDTH` the label is *replaced* by
+    :data:`_ELIDE_TOO_NARROW` rather than returned whole. The previous behaviour
+    returned the text unchanged on the theory that a label elided to nothing tells
+    the reader less than one that overflows. It tells them less either way, and the
+    overflow is not free: ``textual.widgets.Tree`` renders one unwrapped line per
+    node and sizes ``virtual_size`` to the widest of them, so one un-elided row grows
+    a horizontal scrollbar across the whole browser — the exact defect this function
+    exists to prevent, manufactured by the function itself
+    (TREE-BROWSER-AS-EDITOR.md §1.1, "a Fail-Early inversion in its own right").
+
+    A row that cannot be shortened is a bug worth showing. ``…`` in a column with no
+    room for anything else shows it, and costs one cell instead of the row's whole
+    length (TREE-BROWSER-AS-EDITOR.md §2).
     """
-    if width < 2 or len(text) <= width:
+    if width < _ELIDE_MIN_WIDTH:
+        return _ELIDE_TOO_NARROW
+    if len(text) <= width:
         return text
     return text[: width - 1] + "…"
 
 
-class SessionTreeModal(ModalScreen[Optional[str]]):
+#: What a :class:`SessionTreeModal` can answer with (TREE-BROWSER-AS-EDITOR.md
+#: §5.3 / §11.1). A ``Literal`` rather than the document's loose ``str``: the
+#: browser is about to grow gestures that each mean something different to the
+#: caller, and an action name that is only ever compared against string literals
+#: turns a typo into a branch that silently never runs. Listed here are the
+#: actions the modal ACTUALLY emits — two. §6's ``commit`` and §7's copy/paste
+#: actions join them when the code that emits them lands; naming them early would
+#: be a vocabulary no producer backs.
+#:
+#: ``navigate`` continues from BELOW the named node. ``revise`` says the reader
+#: named a USER message, which means the opposite side of it: fork from that
+#: message's parent and hand its text back for editing (PLAN-0.9.4 §4, item 2).
+#: Both carry exactly one id — the node that was pointed at, in both cases.
+#: ``elide`` is the only one that carries TWO ids, and it is the reason
+#: :attr:`TreeIntent.sole_id` raises rather than returning ``ids[0]``: an elide
+#: names ``(anchor, first_kept)`` and a caller that read one of them would fold a
+#: span it did not choose. It replaces the ``"elide"`` entry of
+#: :class:`TreeModeModal`, which asked for the second id by re-opening this same
+#: browser — a second full-screen modal for a question the first one could answer
+#: with a key (PLAN-0.9.4 §4, the elide feedback).
+TreeAction = Literal["navigate", "revise", "elide"]
+
+
+@dataclass(frozen=True)
+class TreeIntent:
+    """What the browser was asked to do, and to which nodes (§5.3, §11.1).
+
+    Replaces the bare ``Optional[str]`` the modal used to dismiss with. Every
+    operation §1.3 lists needs more than a node id — a subtree summary is one node
+    plus an action, a traversal summary is a *set* of nodes — so the return type is
+    widened once, here, rather than rewritten per operation.
+
+    ``TreeIntent("navigate", (id,))`` is the degenerate case §5.3 names: exactly
+    what ``dismiss(id)`` used to mean, said in the wider vocabulary.
+
+    Frozen, and ``ids`` is a tuple rather than a list, because the intent crosses a
+    screen boundary: the modal is gone by the time the caller reads it, and a
+    mutable answer would let the caller edit a record of what it was told.
+    """
+
+    action: TreeAction
+    ids: tuple[str, ...]
+
+    @property
+    def sole_id(self) -> str:
+        """The one id this intent applies to.
+
+        Fail-Early for the callers that can only act on a single node (both of
+        today's): an intent carrying zero or several ids means the modal answered a
+        question the caller did not ask, and reading ``ids[0]`` would act on an
+        arbitrary one of them instead of saying so.
+        """
+        if len(self.ids) != 1:
+            raise ValueError(f"{self.action!r} intent names {len(self.ids)} ids, expected 1")
+        return self.ids[0]
+
+
+@dataclass(frozen=True)
+class ElidePlan:
+    """A legal ``elide_span`` call, worked out from the marked node and the cursor.
+
+    **The two ends bracket what is KEPT, not what is removed.** This is the thing
+    about an elide that a reader guesses backwards, and it is worth stating in
+    the type rather than only in the manual: over ``[1,2,3,4,5,6]``, pairing 2
+    with 4 leaves ``[2,3,4]``, not ``[1,5,6]``. An elide is the summary-less form
+    of the compaction anchor, and a compaction keeps a tail and drops the head —
+    ``ConversationTree._active_path_entries`` emits the anchor and then its
+    ancestors from ``firstKeptId`` onward, so the kept region is always ONE
+    contiguous run ending at the anchor. Cutting a span out of the middle is not
+    a shape this operation can express at all.
+
+    ``anchor`` is where the fold jumps FROM — the elide entry is appended under it
+    and the conversation continues there. ``first_kept`` is where it jumps TO: the
+    oldest entry the fold keeps.
+
+    **Which of the two nodes is which is decided by the tree, not by the gesture
+    order.** The two ends of an elide are an ancestor and a descendant of each
+    other; the deeper one is always the anchor, because the shallower one is by
+    construction on its path and the reverse is impossible. So the reader marks
+    one node and puts the cursor on the other and does not have to remember which
+    they picked first — which is what was asked for.
+
+    Two counts, because they answer two different questions and the first one
+    alone under-reports:
+
+    * ``folded`` — entries the fold itself drops, measured at the ANCHOR. This is
+      the number ``TauBackend.elide_span`` computes, and an elide that folds 0 is
+      what it refuses, so this is what gates the offer.
+    * ``dropped`` — entries that leave the context the model can see RIGHT NOW.
+      Never smaller than ``folded``, and larger whenever the anchor is not the
+      current tip: moving the cursor back to it abandons everything newer. Over
+      ``[1..6]`` with the cursor at 6, pairing 2 with 4 folds ``[1]`` and drops
+      ``[1,5,6]``. This is what the reader loses, so it is what the offer says.
+
+    ``moves_cursor`` is that same difference stated as a fact rather than a
+    number: the conversation will continue somewhere other than where it is now.
+    """
+
+    anchor: str
+    first_kept: str
+    folded: int
+    dropped: int
+    moves_cursor: bool
+
+
+@dataclass(frozen=True)
+class TreeRow:
+    """One row the tree browser will draw, and where it sits (PLAN-0.9.4 §4).
+
+    The output of :func:`plan_tree_rows`. ``parent`` is an INDEX into the row list
+    rather than a node id, because two rows can name the same id only if the
+    planner is broken, and an index makes the widget build a single pass with no
+    lookup table. ``None`` means the widget root.
+
+    ``depth`` is the WIDGET depth — what ``_relabel`` spends ``guide_depth`` cells
+    on per level — and is not the ``parentId`` depth. See :meth:`_index` for the
+    data depth, which is a different number and stays a property of the log.
+    """
+
+    node: TreeNode
+    parent: Optional[int]
+    depth: int
+    expanded: bool
+    #: Whether any other row hangs off this one — i.e. whether this row is a turn
+    #: group or a fork. ``Tree.render_label`` draws its expand toggle off
+    #: ``allow_expand`` ALONE and never asks whether there are children (textual
+    #: 8.2.7, _tree.py), so without this every assistant and tool row wears an
+    #: arrow that clicks and toggles and reveals nothing. It is a property of the
+    #: plan, not of the entry: a node whose only child is a hidden ``navigate``
+    #: has children in the log and none on screen.
+    has_children: bool
+
+
+def _row_is_hidden(node: TreeNode) -> bool:
+    """Whether this entry gets no row at all (PLAN-0.9.4 §4, item 4).
+
+    A ``navigate`` entry records that the cursor moved. It carries no message, it
+    is not a branch target worth naming, and it sits between an assistant message
+    and the user message that forked off it — which is the one place an extra row
+    does the most damage to the shape the reader is trying to read. Its children
+    attach to its nearest drawn ancestor, which reads as what actually happened:
+    the new turn hangs off the node it was forked from.
+
+    Two exceptions, and neither is tidiness:
+
+    * **The cursor is never hidden.** A browser that will not say where you are
+      has failed at the one thing it must do.
+    * **A ``navigate`` with more than one child is a real fork point.** Hiding it
+      would draw two branches as one run — a shape the log does not have.
+
+    Only ``navigate``. ``model_change`` and ``agent_spec`` carry no message
+    either, but each records a real change to what the model is and what it was
+    told, which is worth seeing while browsing history.
+    """
+    return node.kind == "navigate" and not node.is_leaf and len(node.children) <= 1
+
+
+def _drawn_children(node: TreeNode) -> list[TreeNode]:
+    """``node``'s children with hidden ones spliced out, in order.
+
+    Recurses only through runs of hidden nodes (a ``navigate`` under a
+    ``navigate``), which are at most a handful long.
+    """
+    drawn: list[TreeNode] = []
+    for child in node.children:
+        if _row_is_hidden(child):
+            drawn.extend(_drawn_children(child))
+        else:
+            drawn.append(child)
+    return drawn
+
+
+def plan_tree_rows(roots: list[TreeNode]) -> list[TreeRow]:
+    """Decide what the browser draws, under what, at what depth (PLAN-0.9.4 §4).
+
+    Pure, and separate from the widget build, because these are the rules the
+    owner's feedback was about and they are worth testing without a terminal.
+
+    **Two nesting rules, and they compose.**
+
+    1. **A fork opens a level** — TREE-BROWSER-AS-EDITOR.md §2, unchanged. A run
+       of single-child entries is a run of SIBLINGS, so indent depth counts
+       branches rather than messages and does not grow as a conversation does.
+    2. **A user message opens a level, and the next user message closes it.** A
+       user turn is the boundary §2 did not use: everything from a user message
+       down to the next one is that turn, so it gets a widget parent and can be
+       folded. The next user message is that group's SIBLING, not its child,
+       which is what keeps rule 1's bound intact — a hundred linear turns is a
+       hundred rows at depth 0, each holding its own tool traffic.
+
+    The walk carries two containers to make rule 2 work. ``current`` is where an
+    ordinary row attaches (inside the open turn group). ``outer`` is where the
+    NEXT user message attaches, which is the group's own parent — that is the
+    whole of "the group closes at the next user message". A fork sets both, since
+    a fork's branches are the next turns.
+
+    **Turn groups mount collapsed; everything else mounts open.** The exception is
+    the groups the cursor row is actually inside — its WIDGET ancestors, not its
+    ``parentId`` ancestors, and the difference is the whole rule. In a linear
+    conversation every earlier user message is a ``parentId`` ancestor of the
+    cursor but none of them is a widget ancestor, because rule 2 makes them
+    siblings; keying off the data chain would leave every turn in the session
+    open, which is the state the owner asked to get out of. Off the widget chain,
+    exactly one turn opens — the one you are in. Fork rows never collapse: a
+    browser that opens without showing where you are has failed at the one thing
+    it must do, and folding the branch you are on is a gesture, not a default.
+
+    Iterative rather than recursive: a linear conversation is one frame per entry
+    and Python's default limit is 1000, so the recursive build this replaces would
+    have raised on a long session. ``ConversationTree.tree`` went iterative for the
+    same reason.
+    """
+    # (node, widget parent index or None, widget depth, opens a turn group)
+    built: list[tuple[TreeNode, Optional[int], int, bool]] = []
+    # A container is (row index or None for the widget root, depth for its rows).
+    top: tuple[Optional[int], int] = (None, 0)
+    # A hidden root has no ancestor to splice into, so its children become roots
+    # themselves rather than vanishing with it.
+    drawn_roots: list[TreeNode] = []
+    for root in roots:
+        drawn_roots.extend([root] if not _row_is_hidden(root) else _drawn_children(root))
+    stack: list[tuple[TreeNode, tuple[Optional[int], int], tuple[Optional[int], int]]] = [
+        (node, top, top) for node in reversed(drawn_roots)
+    ]
+    while stack:
+        node, outer, current = stack.pop()
+        is_turn = node.kind == "message" and node.role == "user"
+        container = outer if is_turn else current
+        index = len(built)
+        built.append((node, container[0], container[1], is_turn))
+        children = _drawn_children(node)
+        mine: tuple[Optional[int], int] = (index, container[1] + 1)
+        if len(children) > 1:
+            child_outer = child_current = mine
+        elif is_turn:
+            child_outer, child_current = outer, mine
+        else:
+            child_outer, child_current = outer, current
+        for child in reversed(children):
+            stack.append((child, child_outer, child_current))
+
+    # The cursor's widget ancestry, walked back up the parent indices recorded
+    # above. ``is_leaf`` is ``ConversationTree``'s own cursor mark and
+    # :func:`_row_is_hidden` never drops it, so this finds a row whenever the tree
+    # has a cursor at all.
+    open_groups: set[int] = set()
+    walk: Optional[int] = next((i for i, (n, _p, _d, _t) in enumerate(built) if n.is_leaf), None)
+    while walk is not None:
+        open_groups.add(walk)
+        walk = built[walk][1]
+    parents = {parent for _n, parent, _d, _t in built if parent is not None}
+    return [
+        TreeRow(
+            node=node,
+            parent=parent,
+            depth=depth,
+            expanded=not is_turn or i in open_groups,
+            has_children=i in parents,
+        )
+        for i, (node, parent, depth, is_turn) in enumerate(built)
+    ]
+
+
+@dataclass(frozen=True)
+class TreeZones:
+    """The four selection sets the browser renders against (§5.3).
+
+    §5.3's list, with set 3 ("derived — what the cursor node covers or connects")
+    split into the three roles §3's class table actually distinguishes:
+
+    1. ``cursor`` — one node; drives :class:`TreeDetailPane`.
+    2. ``marked`` — the multi-select set; drives the counts and the lowest common
+       ancestor.
+    3. derived: ``path`` (the cursor's ancestor chain), ``folded`` (entries on that
+       chain that the active splice anchor drops) and ``covered`` (``folded``, when
+       the cursor IS that anchor).
+    4. ``hidden`` — collapsed or archived. **View state** (§11.2): nothing is
+       appended for either, and this is computed from the modal, never read from
+       the log.
+
+    ``copied`` is §7's set. It is carried here and declared in
+    :attr:`ZoneTree.COMPONENT_CLASSES` so the renderer is complete, and it has no
+    producer until copy entries exist — see §10 step 7. No default value: a
+    constructor that quietly fills in an empty set is how a real producer gets
+    forgotten.
+
+    ``summary``/``abandoned`` are §4.3's pair, and ``hover_common``/
+    ``hover_divergent`` are §3's hover divergence (§10 step 5). Both arrived after
+    §5.3's list was written and neither is a *selection* set — the first is a fixed
+    property of the log's shape, the second is a function of the mouse. They live
+    here anyway so there is one zone container, one "nothing painted" value
+    (:data:`_NO_ZONES`) and one place a renderer has to look. What differs is how
+    they are REFRESHED: see :meth:`ZoneTree.set_hover_zones`.
+
+    Frozen sets, because the renderer holds this across many ``render_label`` calls
+    and a set mutated underneath it would paint two rows from two different states.
+    """
+
+    cursor: Optional[str]
+    marked: frozenset[str]
+    path: frozenset[str]
+    folded: frozenset[str]
+    covered: frozenset[str]
+    hidden: frozenset[str]
+    copied: frozenset[str]
+    #: A ``branch_summary`` row that has an abandoned branch to be the summary OF,
+    #: and the head of that branch (TREE-BROWSER-AS-EDITOR.md §4.3). Two sets rather
+    #: than one so the two halves of the relation read differently — a single
+    #: "this row is part of a summary pair" class cannot say which half it is.
+    summary: frozenset[str]
+    abandoned: frozenset[str]
+    #: Rows that cannot be the other end of the elide the reader has started —
+    #: everything not on one root→leaf line with the marked node (PLAN-0.9.4 §4,
+    #: the elide feedback). Empty unless exactly ONE node is marked: a mark is
+    #: what says "I am choosing a span", and greying half the tree while somebody
+    #: is only browsing would answer a question they did not ask.
+    ineligible: frozenset[str]
+    #: The hovered node's ancestry, split where it leaves the cursor's (§3, step 5).
+    #: ``hover_common`` is the shared prefix, ``hover_divergent`` the tail below it.
+    #: Both empty when there is no divergence to report — see
+    #: :meth:`SessionTreeModal._hover_divergence`.
+    hover_common: frozenset[str]
+    hover_divergent: frozenset[str]
+
+
+#: What :class:`ZoneTree` renders with before the modal has computed anything.
+#: Every set empty, so the first ``get_label_width`` pass (which Textual runs
+#: during ``_build``, before ``on_mount`` can set real zones) paints plain rows.
+_NO_ZONES = TreeZones(
+    cursor=None,
+    marked=frozenset(),
+    path=frozenset(),
+    folded=frozenset(),
+    covered=frozenset(),
+    hidden=frozenset(),
+    copied=frozenset(),
+    summary=frozenset(),
+    abandoned=frozenset(),
+    ineligible=frozenset(),
+    hover_common=frozenset(),
+    hover_divergent=frozenset(),
+)
+
+
+#: Which ``tree--kind-*`` component class a row's ``role``/``kind`` tag is painted
+#: with. The KEY is exactly what :meth:`SessionTreeModal._label` puts before the
+#: colon (``node.role or node.kind``), so the table is read off the rendered label
+#: rather than off a second derivation of it.
+#:
+#: Five classes for eleven tags, because the reader is separating *sides of a
+#: conversation*, not enumerating entry kinds: who spoke (user / assistant), what
+#: the tools said, what the system said, and what is bookkeeping. A class per kind
+#: would put eight colours on one screen and say nothing more.
+_TREE_KIND_CLASS: dict[str, str] = {
+    # message roles
+    "user": "tree--kind-user",
+    "assistant": "tree--kind-assistant",
+    "toolResult": "tree--kind-tool",
+    "system": "tree--kind-system",
+    # non-message entry kinds. `navigate` is in the table although the planner
+    # drops its row (PLAN-0.9.4 §4): a `navigate` that forks, or that is the
+    # cursor, KEEPS its row, and an unpainted row there would be the only tag on
+    # screen with no colour.
+    "compaction": "tree--kind-structural",
+    "branch_summary": "tree--kind-structural",
+    "elide": "tree--kind-structural",
+    "navigate": "tree--kind-structural",
+    "model_change": "tree--kind-structural",
+    "agent_spec": "tree--kind-structural",
+    "customEntry": "tree--kind-structural",
+}
+
+
+def tree_kind_span(node: TreeNode) -> tuple[str, int] | None:
+    """``(component class, tag length)`` for ``node``'s label, or ``None``.
+
+    The tag length counts the tag AND its colon — ``"user:"`` is 5 — which is the
+    range :meth:`ZoneTree.render_label` paints. ``None`` for a tag the table does
+    not know: an unmapped kind renders in the row's ordinary colour rather than
+    borrowing a hue that means something else (Fail-Early — an unknown kind should
+    look unknown, not look like a tool result).
+    """
+    tag = node.role or node.kind
+    component = _TREE_KIND_CLASS.get(tag)
+    if component is None:
+        return None
+    return component, len(tag) + 1
+
+
+class ZoneTree(Tree[str]):
+    """A ``Tree`` that paints per-row *zone* styling (TREE-BROWSER-AS-EDITOR.md §3).
+
+    Textual ``Tree`` rows are not DOM nodes and cannot carry per-row CSS classes,
+    so §3 uses the two hooks that exist instead: a ``COMPONENT_CLASSES`` frozenset
+    resolved through ``get_component_styles`` (textual 8.2.7, ``dom.py:601`` /
+    ``widget.py:1175``), and an override of ``render_label`` (``_tree.py:877``),
+    which Textual calls once per row.
+
+    The classes name zone **roles**, not branches. A class per branch would mint an
+    unbounded vocabulary that no stylesheet can enumerate; branch-distinguishing
+    colour, when it is wanted, cycles a small fixed palette modulo N instead (§3) —
+    not implemented here, and deliberately not faked with a role class.
+
+    This subclass exists for the styling alone. It adds no state the tree does not
+    already have except :attr:`zones`, and every colour lives in ``parley.tcss``.
+    """
+
+    #: Declared as a ``set`` and not the ``frozenset`` §3's prose names, because
+    #: the base declares ``ClassVar[set[str]]`` (textual 8.2.7, ``dom.py:144``) and
+    #: narrowing it in a subclass is a type error. Textual is what produces the
+    #: frozenset: ``DOMNode._get_component_classes`` (``dom.py:757``) unions this
+    #: with every base's, so the seven inherited ``tree--*`` names stay available
+    #: and only the new ones are listed.
+    COMPONENT_CLASSES: ClassVar[set[str]] = {
+        # On the cursor's ancestor chain. §10 puts this in step 5; it is populated
+        # HERE because step 1 removed the guide-hover ancestry highlight (§2, "§3 is
+        # the replacement, not an embellishment") and leaving it unpopulated would
+        # ship that removal as a regression. What step 5 still owns is the *hover
+        # divergence* highlight — where a hovered node's path leaves the cursor's.
+        "tree--zone-path",
+        # On the path, dropped by a splice anchor: in the chain, not in the context.
+        "tree--zone-folded",
+        # The same span, when the cursor is the anchor doing the dropping.
+        "tree--zone-covered",
+        # In the multi-select set.
+        "tree--zone-marked",
+        # Collapsed or archived (§11.2: view state, never read from the log).
+        "tree--zone-hidden",
+        # §7's copies. DECLARED WITH NO PRODUCER: copy entries do not exist yet, so
+        # `TreeZones.copied` is always empty. The class is here so §7 adds a
+        # producer rather than a producer plus a stylesheet plus a renderer branch.
+        "tree--zone-copied",
+        # §4.3's pair: a `branch_summary` row, and the head of the abandoned branch
+        # it looks back on. Two classes for the two ends of ONE relation — the
+        # stylesheet gives them a shared hue (that is what says "these two go
+        # together") and different weights (that is what says which is which).
+        "tree--zone-summary",
+        "tree--zone-abandoned",
+        # Cannot be the other end of the elide in progress. Greyed rather than
+        # made unselectable: the cursor still moves through these rows, because
+        # the reader is also using them to work out WHERE the eligible ones are,
+        # and a tree the arrow keys skip around in is harder to read than a tree
+        # that says which rows are live. `ctrl+E` is what refuses.
+        "tree--zone-ineligible",
+        # §3's hover divergence (§10 step 5): where the hovered node's ancestry
+        # parts company with the cursor's. These are laid over whatever the row
+        # already carries rather than instead of it — see `render_label`.
+        "tree--zone-hover-common",
+        "tree--zone-hover-divergent",
+        # The row's TYPE tag — the `user:` / `assistant:` / `toolResult:` prefix
+        # `_label` writes. Not a zone: a zone is a set the reader's gestures move,
+        # and a row's kind never moves. They live in the same frozenset because
+        # `get_component_rich_style` is the only way a `Tree` subclass can resolve
+        # a stylesheet rule at all, and `render_label` is the only place either
+        # gets applied. See `_TREE_KIND_CLASS` for why there are five and not one
+        # per entry kind.
+        "tree--kind-user",
+        "tree--kind-assistant",
+        "tree--kind-tool",
+        "tree--kind-system",
+        "tree--kind-structural",
+    }
+
+    #: Label-portion precedence, first match wins. Ordered by how much the reader
+    #: asked for the row: a mark is a deliberate act, so it outranks everything;
+    #: ``hidden`` states that a row is excluded, which outranks what it is; the
+    #: structural zones follow, most specific first (``covered`` is the anchor's own
+    #: span, ``folded`` is any anchor's); ``path`` is last because it is true of a
+    #: whole chain and would otherwise swallow the rest.
+    #:
+    #: §4.3's pair sits between the fold zones and ``path``. Behind the fold zones
+    #: because "this row is not in your context" outranks what the row IS; ahead of
+    #: ``path`` for the reason ``path`` is last at all — the summary pair names two
+    #: specific rows, and a whole-chain zone would swallow it.
+    _LABEL_ZONES: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("marked", "tree--zone-marked"),
+        # Ahead of everything but the mark: "you cannot pick this" is the only
+        # thing that matters about a row while a span is being chosen, and it has
+        # to outrank what the row IS. Behind the mark because the marked node is
+        # never ineligible and the reader's own act still wins.
+        ("ineligible", "tree--zone-ineligible"),
+        ("hidden", "tree--zone-hidden"),
+        ("copied", "tree--zone-copied"),
+        ("covered", "tree--zone-covered"),
+        ("folded", "tree--zone-folded"),
+        ("summary", "tree--zone-summary"),
+        ("abandoned", "tree--zone-abandoned"),
+        ("path", "tree--zone-path"),
+    )
+
+    #: The hover divergence (§3, step 5). NOT part of :attr:`_LABEL_ZONES`, because
+    #: it does not compete with those classes — it COMPOSES with them. A hovered
+    #: chain crosses rows that are already on the path, already marked, already
+    #: folded, and the reader wants to keep knowing that while they trace it. So
+    #: ``render_label`` stylizes this over the whole row as a second span, and Rich
+    #: merges the two attribute-wise: the stylesheet's ``underline`` survives on top
+    #: of a marked row's green, and the divergent half's colour is what separates
+    #: the two halves of the trace.
+    #:
+    #: Two entries and first-match-wins, but the two sets are disjoint by
+    #: construction (a node is on one side of the divergence or the other), so the
+    #: order is a formality rather than a precedence decision.
+    _HOVER_ZONES: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("hover_divergent", "tree--zone-hover-divergent"),
+        ("hover_common", "tree--zone-hover-common"),
+    )
+
+    #: Gutter-portion precedence — the range BEFORE the label, which for
+    #: ``render_label`` is the expand toggle (the indentation rails further left are
+    #: drawn by ``Tree._render_line`` from ``tree--guides*`` and are not ours to
+    #: style per row). Only the span zones are listed: a fold marking its own
+    #: toggle is §3's "a row can carry one style on its gutter portion and another
+    #: on its text", and it is the case §4's fold header needs that capability for.
+    _GUTTER_ZONES: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("covered", "tree--zone-covered"),
+        ("folded", "tree--zone-folded"),
+    )
+
+    class HoverChanged(Message):
+        """The ROW under the mouse changed — not the mouse (§3, step 5).
+
+        ``Tree.hover_line`` is a ``var`` (textual 8.2.7, ``_tree.py:655``), so
+        ``watch_hover_line`` runs only when the line number actually changes.
+        Sliding the mouse along one row therefore costs the assignment in
+        ``_on_mouse_move`` and nothing else, and this message is posted at most once
+        per row the pointer crosses. That is what makes it affordable to recompute
+        anything at all on hover.
+
+        Carries the ENTRY id rather than the widget node, because the divergence is
+        a fact about ``parentId`` ancestry and the widget nesting counts forks (§2)
+        — the two are deliberately different shapes. ``None`` when the pointer left
+        the tree, or landed on a row with no entry behind it.
+        """
+
+        def __init__(self, zone_tree: "ZoneTree", entry_id: Optional[str]) -> None:
+            super().__init__()
+            self.zone_tree = zone_tree
+            self.entry_id = entry_id
+
+        @property
+        def control(self) -> "ZoneTree":
+            return self.zone_tree
+
+    def __init__(self, label: str, *, id: Optional[str] = None) -> None:
+        super().__init__(label, id=id)
+        self._zones = _NO_ZONES
+        self._kinds: dict[str, tuple[str, int]] = {}
+
+    @property
+    def zones(self) -> TreeZones:
+        """The sets the next repaint will render against."""
+        return self._zones
+
+    def set_kinds(self, kinds: dict[str, tuple[str, int]]) -> None:
+        """Tell the renderer each row's type tag: ``id -> (class, tag length)``.
+
+        Handed in whole, once, at build time. Unlike every zone this is not state
+        a gesture can move — a row's kind is a property of its entry — so there is
+        no cache to clear and no repaint to ask for: it is set before the first
+        row is drawn. Rows missing from the map render their tag plainly.
+        """
+        self._kinds = kinds
+
+    def watch_hover_line(self, previous_hover_line: int, hover_line: int) -> None:
+        """Tell the screen which row the pointer moved onto (§3, step 5).
+
+        ``super()`` first: the base flips ``_hover`` on the two nodes and refreshes
+        their regions, which is what drives ``tree--highlight-line`` and the guide
+        hover. This adds the announcement the *divergence* highlight needs, and
+        computes nothing itself — the ancestry it would need is the ``parentId``
+        chain, which lives in :class:`SessionTreeModal` and not in a widget that
+        nests by fork.
+
+        ``_get_node`` is private and is used deliberately: it is the base's own way
+        of turning a line number into a node (``_tree.py:1102``, called by the
+        watcher this overrides), the mapping is not exposed publicly, and
+        re-deriving it from ``_tree_lines`` would touch the same privates one level
+        deeper.
+        """
+        super().watch_hover_line(previous_hover_line, hover_line)
+        node = self._get_node(hover_line)
+        data = None if node is None else node.data
+        self.post_message(self.HoverChanged(self, None if data is None else str(data)))
+
+    def set_zones(self, zones: TreeZones) -> None:
+        """Replace the zone sets and repaint the visible rows.
+
+        The line cache has to be dropped by hand. ``Tree._render_line``'s cache key
+        (textual 8.2.7, ``_tree.py:1325-1332``) is ``(y, is_hover, width,
+        self._updates, pseudo_class_state, per-node _updates)`` — zone state appears
+        in none of it, and only the two nodes whose ``_selected`` flips get a new
+        per-node ``_updates`` when the cursor moves (``_tree.py:178-181``). Every
+        OTHER row on the old and new ancestor chains would keep serving the strip it
+        was painted with, which is precisely the set of rows ``tree--zone-path``
+        exists to change.
+
+        ``self._line_cache.clear()`` rather than ``Tree._invalidate()``: the latter
+        also drops ``_tree_lines_cached`` and asks for a layout pass, which rebuilds
+        every row's width. Zone styling changes no row's WIDTH — ``render_label``
+        adds spans, never characters — so the geometry is still correct and the cost
+        should be the visible rows, not the whole tree, on every arrow key.
+        """
+        self._zones = zones
+        self._line_cache.clear()
+        self.refresh()
+
+    def set_hover_zones(self, common: frozenset[str], divergent: frozenset[str]) -> None:
+        """Replace ONLY the hover divergence, leaving the selection sets alone (step 5).
+
+        The separate write path is the whole performance story of this step.
+        :meth:`SessionTreeModal._refresh_zones` walks the conversation twice
+        (``ConversationTree.path`` and ``context_entries``) and every widget row
+        (``_hidden``); the hover divergence is two ``parentId`` walks and a common
+        prefix, bounded by the tree's DEPTH. Rebuilding the whole
+        :class:`TreeZones` on hover would put the first cost on every row the
+        pointer crosses, so ``replace`` swaps the two hover fields and nothing else.
+
+        **The no-op guard is not an optimisation detail.** The commonest hover is
+        along the cursor's own path, where there IS no divergence and both sets stay
+        empty; without this the reader would pay a full repaint per row for a frame
+        that is identical to the last one. Returning early also keeps ``refresh``
+        out of the ``_on_leave`` → already-empty case.
+        """
+        if common == self._zones.hover_common and divergent == self._zones.hover_divergent:
+            return
+        self._zones = replace(self._zones, hover_common=common, hover_divergent=divergent)
+        # Same reasoning as `set_zones`: the strip cache key holds no zone state, and
+        # the base's `watch_hover_line` refreshes only the two rows whose `_hover`
+        # flipped — while a divergence highlight changes a whole chain of them.
+        self._line_cache.clear()
+        self.refresh()
+
+    def render_label(self, node: WidgetTreeNode[str], base_style: Style, style: Style) -> Text:
+        """Paint one row's zone styling over Textual's own label (§3).
+
+        Composes with the base rather than replacing it: ``super()`` assembles the
+        expand toggle and the label with Textual's styles, and this adds spans over
+        character RANGES of the result — the gutter portion gets the span zones, the
+        text portion gets the selection zones. Rich combines span styles
+        attribute-wise, so a zone that sets only ``color`` leaves the row's
+        background and weight alone.
+
+        A fourth range, ahead of those three: the row's TYPE TAG — the ``user:`` /
+        ``toolResult:`` prefix — is painted from :meth:`set_kinds`. It is what the
+        reader scans a long tree with, and it is not a zone (see the comment on
+        the ``tree--kind-*`` entries in :attr:`COMPONENT_CLASSES`).
+
+        **The cursor row is left alone.** Its style is resolved with ``partial=False``
+        (``_tree.py:1424-1427``) and, when the tree has focus, sets a foreground
+        against the cursor's own background; a zone colour layered on top wins the
+        foreground and loses the contrast that made the row readable. The cursor is
+        already the strongest state on the screen and needs no second marking. The
+        cost is that marking the row under the cursor shows no change on that row —
+        which is why :meth:`SessionTreeModal._marks_summary` reports the count. The
+        hover divergence is skipped there for the same reason, and can only ever
+        want the cursor row for its COMMON half anyway: the divergent tail is by
+        construction the part of the hovered chain the cursor's does not contain.
+        """
+        text = super().render_label(node, base_style, style)
+        entry_id = node.data
+        if entry_id is None or entry_id == self._zones.cursor:
+            return text
+        # ``super()`` returns ``prefix + label``; the prefix is the 2-cell expand
+        # toggle or nothing (``_tree.py:893-901``), so the split is the difference
+        # in length. Character offsets, which is what ``Text.stylize`` takes.
+        label = node.label
+        label_len = len(label.plain if isinstance(label, Text) else label)
+        split = len(text.plain) - label_len
+        # The type tag first, so a zone the reader put there paints OVER it. The
+        # tag says what the row is, which is true of every row; a zone says what
+        # the reader has done to it, which is true of few — and when both apply,
+        # the answer to "did my mark land?" is the one that has to win.
+        #
+        # The end offset is clamped: `_relabel` elides from the tail, so the tag
+        # survives at any width a row can still say something at, but a tree
+        # narrow enough to elide INTO the tag would otherwise paint past the end
+        # of the line.
+        kind = self._kinds.get(entry_id)
+        if kind is not None:
+            component, tag_len = kind
+            tag_end = min(split + tag_len, len(text.plain))
+            if tag_end > split:
+                text.stylize(self.get_component_rich_style(component, partial=True), split, tag_end)
+        gutter_class = self._first_zone(self._GUTTER_ZONES, entry_id)
+        if gutter_class is not None and split > 0:
+            text.stylize(self.get_component_rich_style(gutter_class, partial=True), 0, split)
+        label_class = self._first_zone(self._LABEL_ZONES, entry_id)
+        if label_class is not None:
+            text.stylize(
+                self.get_component_rich_style(label_class, partial=True),
+                split,
+                len(text.plain),
+            )
+        # The hover divergence goes on LAST and over the WHOLE row, including the
+        # toggle: it is a trace the reader is drawing with the pointer, so it should
+        # read as one continuous thing down the rows it covers rather than stopping
+        # at each row's gutter. Layered rather than substituted (see
+        # :attr:`_HOVER_ZONES`) — the row keeps saying what it is while it says it
+        # is on the traced chain.
+        hover_class = self._first_zone(self._HOVER_ZONES, entry_id)
+        if hover_class is not None:
+            text.stylize(
+                self.get_component_rich_style(hover_class, partial=True),
+                0,
+                len(text.plain),
+            )
+        return text
+
+    def _first_zone(self, order: tuple[tuple[str, str], ...], entry_id: str) -> Optional[str]:
+        """The first component class in ``order`` whose set holds ``entry_id``."""
+        for field_name, component_class in order:
+            members: frozenset[str] = getattr(self._zones, field_name)
+            if entry_id in members:
+                return component_class
+        return None
+
+
+class SessionTreeModal(ModalScreen[Optional[TreeIntent]]):
     """Browse the conversation tree and pick a node to branch from (§3.2).
 
     Port of pi's ``showTreeSelector`` (interactive-mode.ts:4446): a
     ``textual.widgets.Tree`` populated from ``ConversationTree.tree()``, the current
-    leaf highlighted. ``Enter`` dismisses with the chosen entry id; ``Esc`` cancels
+    leaf highlighted. ``Enter`` dismisses with a :class:`TreeIntent`; ``Esc`` cancels
     (``None``). Copies the ``SystemPromptEditor`` modal template.
+
+    Selecting and committing are two gestures, not one (TREE-BROWSER-AS-EDITOR.md
+    §5.1). A click moves the cursor and leaves the browser open; only ``Enter``
+    dismisses. ``left`` collapses a fork, or moves to the enclosing one (§5.2).
+
+    The widget nesting handed to ``Tree`` counts **forks, not messages** (§2): see
+    :meth:`on_mount`.
+
+    **It takes the whole ``ConversationTree``, not ``roots`` plus a resolver**
+    (§5.3). Three of the four selection sets are derived rather than handed in —
+    ``path`` is ``ConversationTree.path``, ``folded``/``covered`` are the difference
+    between that and ``context_entries``, and the lowest common ancestor of the
+    marked set comes off the ``_parent_of`` map built at :meth:`_index`. A resolver
+    alone cannot answer any of them. Collapsing ``roots`` and ``resolve_entry`` into
+    the one object also removes the way they could disagree: the rows and the bodies
+    are now provably the same log, where before a caller could pass a ``roots`` graph
+    built from one tree and a resolver closed over another.
+
+    This does not weaken the standing contract that a body must be showable — it
+    strengthens it. ``resolve_entry`` was required because "a browser that cannot
+    show a body is the elided-preview draft this replaced". A ``ConversationTree``
+    cannot be passed without one: :meth:`~ConversationTree.entry` answers for every
+    id :meth:`~ConversationTree.tree` produced, by construction.
+
+    **It holds no ``SessionLog`` and performs no durable operation** (§11.1). Every
+    gesture accumulates in-memory state and the commit returns one intent for the
+    caller to apply. The rejected alternative — injecting a live editor the modal
+    calls — is on the record in §11.1; the visible consequence of not taking it is
+    that this class is constructible from a ``ConversationTree`` alone, which is what
+    every test across four files does.
 
     ``title``/``help_text`` exist for the SECOND pick of the elide flow (W3), which
     asks a different question of the same browser — "where does the fold resume?"
@@ -534,12 +1319,52 @@ class SessionTreeModal(ModalScreen[Optional[str]]):
     are identical, and only the sentence above them is not.
 
     Rows sit beside a :class:`TreeDetailPane` showing the highlighted node in full
-    — the rows say *which* node, the pane says *what it is*. ``resolve_entry`` is
-    what makes that possible and is required: a browser that cannot show a body is
-    the elided-preview draft this replaced, not a degraded mode worth keeping.
+    — the rows say *which* node, the pane says *what it is*.
     """
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False),
+        # ``priority`` is what splits the click from the commit
+        # (TREE-BROWSER-AS-EDITOR.md §5.1). ``App._check_bindings(key,
+        # priority=True)`` runs the whole binding chain from the App DOWN before the
+        # key is forwarded to the focused widget (textual 8.2.7, app.py:3966/4136),
+        # so this fires and ``Tree``'s own ``enter`` → ``action_select_cursor``
+        # (_tree.py:544) never does. ``Tree.NodeSelected`` therefore reaches
+        # :meth:`on_tree_node_selected` only from a click, which is what lets that
+        # handler select rather than dismiss. The rejected alternative — overriding
+        # ``Tree._on_click`` to suppress ``select_cursor`` — couples the modal to a
+        # private method across Textual versions.
+        Binding("enter", "commit", "Choose", priority=True, show=False),
+        Binding("left", "collapse", "Collapse", show=False),
+        # `left` collapses, so something has to re-open. `right` is unbound in
+        # `Tree.BINDINGS` exactly as `left` was (textual 8.2.7, _tree.py:524-551),
+        # and it is the other half of the file-tree idiom §5.2 borrowed.
+        Binding("right", "expand", "Expand", show=False),
+        # `space` for the multi-select mark is MY choice, not the document's — §5.3
+        # names the marked set and binds no key to it. Priority, and therefore
+        # taking the key from `Tree`'s own space=toggle-expand (_tree.py:556): the
+        # expand gesture moved to `left`/`right` above, which is where a reader of a
+        # fork-nested tree reaches for it, and marking is the gesture with no other
+        # home. Same trade `enter` already made for the commit.
+        Binding("space", "toggle_mark", "Mark", priority=True, show=False),
+        # Fold the detail pane away to see more tree (§4a).
+        #
+        # `ctrl+d`, and NOT the `ctrl+m` that was asked for: a terminal sends one
+        # byte (0x0D) for both Enter and Ctrl+M, and textual says so —
+        # ``KEY_ALIASES`` maps ``enter`` to ``["ctrl+m"]`` (textual 8.2.7,
+        # keys.py), so a ``ctrl+m`` binding on this screen would fire on every
+        # Enter, which is the commit key three lines above. There is no way to
+        # tell the two apart, so the gesture takes the next free key rather than
+        # a key that works some of the time.
+        Binding("ctrl+d", "toggle_detail", "Detail pane", priority=True, show=False),
+        # Fold a span out of the context, from the browser rather than through the
+        # mode chooser and a second copy of this screen (PLAN-0.9.4 §4). Priority
+        # for the same reason the others are, and because the App binds `ctrl+e`
+        # to the extension chord — that binding is not priority, so a screen-level
+        # one would win anyway, but relying on which of two non-priority bindings
+        # textual reaches first is how a key silently changes meaning.
+        Binding("ctrl+e", "elide", "Elide", priority=True, show=False),
+    ]
 
     #: Terminal HEIGHT at or above which the detail pane is drawn. The pane is
     #: stacked under the tree and takes half the body, so rows are what it can run
@@ -557,25 +1382,56 @@ class SessionTreeModal(ModalScreen[Optional[str]]):
 
     def __init__(
         self,
-        roots: list[TreeNode],
+        tree: ConversationTree,
         *,
-        resolve_entry: Callable[[str], dict[str, Any]],
         title: str = "Browse Conversation Tree",
-        help_text: str = "Enter: branch    Tab: detail pane    Esc: cancel",
+        # Two spaces between items rather than three, and ``Tab/^D: pane`` for what
+        # was ``Tab: detail pane``: this line is one row and must stay one row. The
+        # dialog's interior is the terminal less its border and padding — 76
+        # columns at 80 — and a help line that wraps takes a row from the tree to
+        # tell it about a key.
+        help_text: str = (
+            "Enter: choose  Space: mark  ←/→: fold  ^E: elide  Tab/^D: pane  Esc: cancel"
+        ),
     ) -> None:
         super().__init__()
-        self._roots = roots
-        self._resolve_entry = resolve_entry
+        self._tree = tree
+        # Computed here rather than taken as a parameter: see the class docstring on
+        # §5.3. `tree()` is one O(entries) walk at construction, which the callers
+        # were already paying to build the argument this replaced.
+        self._roots = tree.tree()
+        self._resolve_entry: Callable[[str], dict[str, Any]] = tree.entry
         self._title = title
         self._help_text = help_text
-        self._rows: list[tuple[Any, str, int]] = []
+        self._rows: list[tuple[Any, str, int, bool]] = []
+        # Set 2 of §5.3's four: the multi-select set, toggled by `space`. In-memory
+        # and per-open — nothing is appended for it (§11.1).
+        self._marked: set[str] = set()
         # id → node, and id → parent id, for the detail pane's neighbours. Built
         # from the graph handed in, so the pane never re-walks the session log.
         self._by_id: dict[str, TreeNode] = {}
         self._parent_of: dict[str, str] = {}
         self._depth_of: dict[str, int] = {}
-        for root in roots:
+        for root in self._roots:
             self._index(root, 0)
+        # §4.3's pair, computed ONCE. It is a property of the log's shape and no
+        # gesture can move it, so recomputing it in `_refresh_zones` beside the
+        # cursor-dependent sets would pay an O(entries) walk per arrow key for an
+        # answer that never changes.
+        self._summary_zone, self._abandoned_zone = self._branch_summary_pairs()
+        # The entry under the mouse, kept so `_refresh_zones` can re-derive the
+        # divergence after a CURSOR move — the divergence is a relation between two
+        # nodes and either end moving makes the painted one stale.
+        self._hovered: Optional[str] = None
+        # Whether the reader has folded the detail pane away to see more tree
+        # (PLAN-0.9.4 §4a). A CHOICE, kept separate from the height rule in
+        # `_apply_detail_pane` that also hides the pane: a terminal that grows
+        # back past `DETAIL_MIN_HEIGHT` must not un-fold a pane the reader folded.
+        self._detail_folded = False
+        # Every node on one root→leaf line with the elide's other end — its
+        # ancestors and its descendants. Cached because it moves only when the
+        # MARK moves, while the rows are repainted on every cursor key.
+        self._elide_line = self._line_through(self._elide_other_end())
 
     def _index(self, node: TreeNode, depth: int) -> None:
         self._by_id[node.id] = node
@@ -591,10 +1447,31 @@ class SessionTreeModal(ModalScreen[Optional[str]]):
             # column split starves both of the width they need (see the
             # `#tree-browser-body` rule in parley.tcss).
             with Vertical(id="tree-browser-body"):
-                tree: Tree[str] = Tree("session", id="tree-browser-tree")
+                tree = ZoneTree("session", id="tree-browser-tree")
                 tree.show_root = False
+                # 2 is ``validate_guide_depth``'s floor (textual 8.2.7,
+                # _tree.py:1063) and the whole indent budget a row can spare once
+                # nesting counts forks (TREE-BROWSER-AS-EDITOR.md §2). It also makes
+                # ``_relabel``'s width arithmetic exact rather than approximate —
+                # see the comment there.
+                tree.guide_depth = 2
                 yield tree
                 yield TreeDetailPane(self._resolve_entry)
+                # What stands where the pane was when it is folded away: one row,
+                # so the tree gains the pane's whole half of the body minus this.
+                # It exists so the fold is REVERSIBLE by pointing at it — a pane
+                # that vanishes with only a key to bring it back is a pane the
+                # reader has to remember they hid.
+                yield Static(
+                    "▸ detail pane hidden — ctrl+D, or click here, to show it",
+                    id="tree-detail-folded",
+                )
+            # The selection readout: what is marked, where those marks converge,
+            # and what they are estimated to cost. Outside the body, so it keeps
+            # its row when the detail pane gives its own away on a short terminal
+            # — the count is the ONLY feedback a mark on the cursor row produces
+            # (see :meth:`ZoneTree.render_label`).
+            yield Static(self._marks_summary(), id="tree-browser-marks")
             yield Static(self._help_text, id="tree-browser-help")
 
     # -- the detail pane's window on the tree --------------------------------
@@ -639,8 +1516,27 @@ class SessionTreeModal(ModalScreen[Optional[str]]):
         return total
 
     async def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
-        """Move the detail pane to whatever the cursor now sits on."""
+        """Move the detail pane, and the zone sets, to what the cursor now sits on."""
         await self._show_node(event.node.data)
+        self._refresh_zones()
+
+    def on_tree_node_collapsed(self, event: Tree.NodeCollapsed) -> None:
+        """Folding a branch changes set 4 (``hidden``), so the zones are stale.
+
+        The labels are NOT refitted here. A fold changes how many rows the tree
+        holds and therefore whether it has a vertical scrollbar — but
+        :meth:`_relabel` reserves that width whether the bar is there or not, so
+        the answer it gives does not depend on a fold. See the comment there for
+        why chasing the current state instead is a loop.
+        """
+        self._refresh_zones()
+
+    def on_tree_node_expanded(self, event: Tree.NodeExpanded) -> None:
+        """The other direction. Not posted during :meth:`on_mount`'s build — the
+        rows are added with ``add(expand=…)``, which sets the flag without a
+        message (textual 8.2.7, ``_tree.py:426-431``), so this does not fire once
+        per row at startup."""
+        self._refresh_zones()
 
     async def _show_cursor_node(self) -> None:
         """Draw the pane for wherever the cursor already is.
@@ -664,36 +1560,129 @@ class SessionTreeModal(ModalScreen[Optional[str]]):
             await pane.show(view)
 
     def _apply_detail_pane(self) -> None:
-        """Show or hide the pane for the current height (see :attr:`DETAIL_MIN_HEIGHT`).
+        """Show or hide the pane for the current height and fold state.
 
         The one place the pane's ``display`` is written, mirroring
         ``Parley._apply_side_columns``: an inline style set from two places is
         permanent and invisible to the other.
+
+        Two reasons the pane can be absent and they are not the same reason. The
+        HEIGHT rule (:attr:`DETAIL_MIN_HEIGHT`) is the layout's — below it the
+        pane cannot say what it exists to say, so it gives its rows to the tree
+        and the one-row marker would be a worse use of the last of them. The FOLD
+        is the reader's, and it gets the marker, because a choice needs a way back.
         """
         pane = self.query_one(TreeDetailPane)
-        pane.display = self.app.size.height >= self.DETAIL_MIN_HEIGHT
+        marker = self.query_one("#tree-detail-folded", Static)
+        tall_enough = self.app.size.height >= self.DETAIL_MIN_HEIGHT
+        pane.display = tall_enough and not self._detail_folded
+        marker.display = tall_enough and self._detail_folded
+
+    async def action_toggle_detail(self) -> None:
+        """``ctrl+D``: fold the detail pane away, or bring it back (§4a).
+
+        The pane takes half the body, and a reader who is following the SHAPE of
+        a conversation rather than reading a message wants those rows. Nothing
+        but the terminal's height used to be able to hide it.
+
+        Redrawing on the way back rather than on the way out: :meth:`_show_node`
+        does nothing while the pane is hidden (there is no audience), so the
+        cursor may have moved several rows since the last frame the pane drew.
+        :meth:`TreeDetailPane.show` dedupes, so a cursor that did not move costs
+        nothing here.
+        """
+        self._detail_folded = not self._detail_folded
+        self._apply_detail_pane()
+        if not self._detail_folded:
+            await self._show_cursor_node()
+
+    async def on_click(self, event: events.Click) -> None:
+        """Double-click the pane to fold it; single-click the marker to unfold.
+
+        ``event.widget is pane`` and not "the pane or anything in it": a click
+        inside the pane lands on a :class:`MessageBox`, a tool box or a markdown
+        block, and those are things the reader is *reading*. The pane itself is
+        reachable only at its border and padding, which is the gesture asked for.
+
+        The marker is one row of text with nothing to read, so one click is
+        enough — a fold you have to double-click your way out of is a trap.
+        """
+        pane = self.query_one(TreeDetailPane)
+        if event.widget is pane and event.chain >= 2:
+            await self.action_toggle_detail()
+            return
+        if event.widget is self.query_one("#tree-detail-folded", Static):
+            await self.action_toggle_detail()
 
     def on_mount(self) -> None:
+        """Build the widget tree from :func:`plan_tree_rows`.
+
+        The nesting rules live in that function, which is pure and has its own
+        tests; this is the widget build alone. Two rules: a fork opens a level
+        (TREE-BROWSER-AS-EDITOR.md §2 — indent counts branches, not messages, so
+        it does not grow with the conversation) and a user message opens a level
+        that the next user message closes (PLAN-0.9.4 §4, the turn group). Line
+        ORDER is a depth-first walk either way, so the rows appear in the sequence
+        the log has.
+
+        ``data=node.id`` is deliberately unchanged — the widget nesting is a
+        rendering decision and ``parentId`` stays the property of the data, so
+        :meth:`_view_of`, :class:`TreeDetailPane` and every caller reading
+        ``node.data`` are unaffected. :attr:`_depth_of` (built in :meth:`_index`)
+        remains the *data* depth the pane counts with; the depth recorded in
+        :attr:`_rows` is the *widget* depth, because that is what :meth:`_relabel`
+        needs to know how much indentation a row is paying for. A row the planner
+        drops is dropped from the DRAWING only: it keeps its entry, its place in
+        :attr:`_by_id` and its ancestry.
+
+        The cost is on the record: Textual highlights the hovered row's ancestry
+        through its guide rails, and a flattened run has no rails between siblings.
+        §3's ``tree--zone-path`` is the replacement.
+        """
         self._apply_detail_pane()
         tree = self.query_one("#tree-browser-tree", Tree)
+        if isinstance(tree, ZoneTree):
+            # Every node, not just the drawn ones — building the map from
+            # `_by_id` costs one pass over the log and means a row the planner
+            # later starts drawing (a `navigate` that forks) needs no second
+            # producer. `isinstance` because `query_one` is typed to `Tree` here
+            # and a test double could supply a plain one.
+            tree.set_kinds(
+                {
+                    node_id: span
+                    for node_id, node in self._by_id.items()
+                    if (span := tree_kind_span(node)) is not None
+                }
+            )
         leaf_widget: list[Any] = []
-        # (widget node, full label, depth) for every row, kept so _relabel can
-        # re-elide from the untruncated text on every resize. Eliding an already
+        # (widget node, full label, WIDGET depth) for every row, kept so _relabel
+        # can re-elide from the untruncated text on every resize. Eliding an already
         # elided label would eat a character per resize.
         self._rows = []
 
-        def _add(parent, node: TreeNode, depth: int) -> None:
-            label = self._label(node)
-            widget_node = parent.add(label, data=node.id)
-            widget_node.expand()
-            self._rows.append((widget_node, label, depth))
-            if node.is_leaf:
+        widgets: list[Any] = []
+        for row in plan_tree_rows(self._roots):
+            label = self._label(row.node)
+            parent = tree.root if row.parent is None else widgets[row.parent]
+            # ``expand`` on the ``add`` rather than a following ``.expand()``: both
+            # set the flag, but ``expand()`` also POSTS ``NodeExpanded`` (textual
+            # 8.2.7, _tree.py:249-258), and :meth:`on_tree_node_expanded` recomputes
+            # every zone set. One message per row at mount would make building the
+            # tree quadratic in the conversation's length.
+            # ``allow_expand`` off for a row nothing hangs from: Textual draws the
+            # toggle off that flag alone and never checks for children, so an
+            # assistant or tool row otherwise wears an arrow that clicks, toggles,
+            # and reveals nothing.
+            widget_node = parent.add(
+                label,
+                data=row.node.id,
+                expand=row.expanded,
+                allow_expand=row.has_children,
+            )
+            widgets.append(widget_node)
+            self._rows.append((widget_node, label, row.depth, row.has_children))
+            if row.node.is_leaf:
                 leaf_widget.append(widget_node)
-            for child in node.children:
-                _add(widget_node, child, depth + 1)
-
-        for root in self._roots:
-            _add(tree.root, root, 0)
 
         # Highlight the current leaf (pi passes realLeafId to the selector). Defer
         # until after the first refresh — a node's ``line`` (which ``move_cursor``
@@ -705,6 +1694,10 @@ class SessionTreeModal(ModalScreen[Optional[str]]):
         # to it until it has laid out at least once.
         tree.call_after_refresh(self._relabel)
         tree.call_after_refresh(self._show_cursor_node)
+        # After the deferred cursor move, for the same reason the pane's first draw
+        # is deferred: the zones are a function of where the cursor ended up, and a
+        # session whose leaf is also the first row posts no ``NodeHighlighted``.
+        tree.call_after_refresh(self._refresh_zones)
         tree.focus()
 
     def on_resize(self, event: object) -> None:
@@ -726,13 +1719,49 @@ class SessionTreeModal(ModalScreen[Optional[str]]):
         if not self._rows:
             return
         tree = self.query_one("#tree-browser-tree", Tree)
-        width = tree.content_size.width
+        # The vertical scrollbar's width, subtracted ALWAYS. ``content_size`` is
+        # ``region.shrink(styles.gutter)`` in textual 8.2.7 — border and padding
+        # only, never the scrollbar — so a tree tall enough to scroll had every
+        # label sized two cells too wide, the rows overflowed, and it grew a
+        # horizontal scrollbar showing two cells of nothing (which then cost a
+        # row of height as well). The arithmetic below was always exact; it was
+        # the width handed to it that was wrong.
+        #
+        # Reserved unconditionally rather than read off the CURRENT scrollbar
+        # state (``scrollable_content_region``), because that state is a moving
+        # target and this method is one of the things that moves it: shortening
+        # the labels can retire the horizontal scrollbar, which gives back a row
+        # of height, which can retire the VERTICAL one, which would widen the
+        # labels again and bring the first one back. Measured: three ``_relabel``
+        # passes at mount, all three seeing a vertical scrollbar that was gone by
+        # the time the tree settled. Folding a turn open moves it too, and
+        # reproduced the reported symptom exactly — a tree that opened at four
+        # rows with no scrollbar reached ``max_scroll_x == 2`` on the first
+        # expand.
+        #
+        # The cost is two cells of preview on a tree short enough not to scroll.
+        # A stable answer that is occasionally two cells conservative beats a
+        # tight one that oscillates.
+        #
+        # ``styles.scrollbar_size_vertical`` and not ``Widget`` 's property of the
+        # same name: the property answers 0 when the bar is not currently shown,
+        # which is the very state this refuses to depend on.
+        width = tree.content_size.width - tree.styles.scrollbar_size_vertical
         if width <= 0:
             return
-        for widget_node, label, depth in self._rows:
-            # Textual indents each level by ``guide_depth`` cells and prefixes the
-            # row with a toggle; both eat into the label's share of the line.
-            available = width - (depth + 1) * tree.guide_depth
+        for widget_node, label, depth, has_children in self._rows:
+            # Textual indents each level by ``guide_depth`` cells (_tree.py:65-81,
+            # ``show_root`` False) and ``render_label`` prefixes the row with a
+            # 2-cell toggle (_tree.py:876-901); both eat into the label's share of
+            # the line. ``depth`` is the WIDGET depth, which counts forks and turn
+            # groups — so the term no longer grows with the conversation. At
+            # ``guide_depth == 2`` the toggle is exactly one more level, which makes
+            # this arithmetic exact instead of merely conservative.
+            #
+            # A row nothing hangs from carries no toggle (``allow_expand`` is off
+            # for it), so it gets those two cells back for its preview.
+            toggle = tree.guide_depth if has_children else 0
+            available = width - depth * tree.guide_depth - toggle
             widget_node.set_label(_elide(label, available))
 
     @staticmethod
@@ -743,12 +1772,613 @@ class SessionTreeModal(ModalScreen[Optional[str]]):
         return f"{tag}: {text}{marker}"
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
-        # Enter (or click) on a node confirms the branch point.
+        """A click SELECTS; it does not commit (TREE-BROWSER-AS-EDITOR.md §5.1).
+
+        ``Tree._on_click`` sets ``cursor_line`` and then runs ``select_cursor``
+        (textual 8.2.7, _tree.py:1453-1466), which posts this message — the same
+        message ``Enter`` used to arrive by. Dismissing here is why a click jumped
+        straight out of the browser: the reader could not point at a node to read it
+        in the detail pane without leaving. The screen's priority ``enter`` binding
+        now owns the commit, so this message can only have come from a click.
+
+        ``move_cursor`` rather than nothing: the click has already moved the cursor,
+        but a ``NodeSelected`` raised any other way should still leave the cursor —
+        and therefore the detail pane — on the node the reader named.
+        """
         event.stop()
-        self.dismiss(event.node.data)
+        self.query_one("#tree-browser-tree", Tree).move_cursor(event.node)
+
+    def action_commit(self) -> None:
+        """``Enter``: dismiss with an intent naming the cursor node (§5.1).
+
+        ``TreeIntent("navigate", (id,))`` is §5.3's degenerate case, and is exactly
+        what ``dismiss(id)`` meant before the return type widened (§11.1). One id,
+        because the cursor is one node; the marked set is not committed here — no
+        gesture consumes it yet, and inventing one would be a producer for an
+        operation §6 has not built.
+
+        **Two actions, because pointing at a user message means something else**
+        (PLAN-0.9.4 §4, item 2). ``navigate`` continues from BELOW the named node,
+        which is right for an assistant or tool row. A user message's below is the
+        one place a conversation cannot go — two user turns in a row — and what
+        the reader means by pointing at one is "ask this differently", which is a
+        fork from that message's PARENT with its text in hand to edit. That is
+        ``revise``, and the id it carries is still the node the reader named.
+
+        The id, not the parent: this modal reports what was pointed at and the
+        CALLER knows the question (§5.3 / §11.1). The elide flow asks a different
+        question of this same browser and reads ``sole_id``, which both actions
+        carry — see :meth:`Parley._elide_span_flow`, which says so rather than
+        relying on it.
+
+        No cursor means nothing was named, so there is nothing to answer with and
+        the browser stays open. Dismissing with ``None`` here would be indexed as a
+        cancel, which is a different thing than "Enter on an empty tree".
+        """
+        node = self.query_one("#tree-browser-tree", Tree).cursor_node
+        if node is None or node.data is None:
+            return
+        entry_id = str(node.data)
+        picked = self._by_id.get(entry_id)
+        is_user = picked is not None and picked.kind == "message" and picked.role == "user"
+        self.dismiss(TreeIntent("revise" if is_user else "navigate", (entry_id,)))
+
+    def action_collapse(self) -> None:
+        """``left``: fold this fork, or step out to the enclosing one (§5.2).
+
+        ``left`` is unbound in ``Tree.BINDINGS`` (textual 8.2.7, _tree.py:524-551 —
+        only ``shift+left`` is ``cursor_parent``), so the standard file-tree idiom
+        was simply missing. A node with widget children is a fork or a user turn
+        (PLAN-0.9.4 §4 added the second), which makes "collapse what the cursor is
+        on, else go to what contains it" the gesture for folding away a branch or a
+        turn rather than for hiding one message.
+
+        The widget root is skipped: ``show_root`` is ``False``, so it occupies no
+        line and ``move_cursor`` onto it would clear the cursor rather than move it.
+        """
+        tree = self.query_one("#tree-browser-tree", Tree)
+        node = tree.cursor_node
+        if node is None:
+            return
+        if node.children and node.is_expanded:
+            node.collapse()
+            return
+        parent = node.parent
+        if parent is not None and parent is not tree.root:
+            tree.move_cursor(parent)
+
+    def action_expand(self) -> None:
+        """``right``: unfold the fork or turn the cursor is on.
+
+        The counterpart :meth:`action_collapse` needs, and the gesture that opens a
+        turn group, which is how most rows now arrive (PLAN-0.9.4 §4: a group
+        mounts collapsed unless the cursor is inside it). ``space`` used to be
+        ``Tree``'s expand/collapse toggle and now marks (see :attr:`BINDINGS`), so
+        without this a collapsed row could not be reopened from the keyboard at
+        all. A row with no widget children has nothing to unfold; moving the cursor
+        into the subtree on ``right`` is deliberately NOT done — ``down`` already
+        goes there, and the pair here is about folding.
+        """
+        node = self.query_one("#tree-browser-tree", Tree).cursor_node
+        if node is not None and node.children and not node.is_expanded:
+            node.expand()
+
+    def action_toggle_mark(self) -> None:
+        """``space``: add or remove the cursor node from the marked set (§5.3 set 2).
+
+        The key is this implementation's choice; §5.3 names the set and binds
+        nothing to it. Marks are in-memory and per-open: §11.1 keeps the modal free
+        of a ``SessionLog``, so nothing here is durable and closing the browser
+        forgets them.
+        """
+        node = self.query_one("#tree-browser-tree", Tree).cursor_node
+        if node is None or node.data is None:
+            return
+        entry_id = str(node.data)
+        if entry_id in self._marked:
+            self._marked.remove(entry_id)
+        else:
+            self._marked.add(entry_id)
+        self._elide_line = self._line_through(self._elide_other_end())
+        self._refresh_zones()
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+    # -- the elide, from inside the browser (PLAN-0.9.4 §4) -------------------
+
+    def _elide_other_end(self) -> Optional[str]:
+        """The node the cursor is being paired WITH, or ``None`` if there isn't one.
+
+        Exactly one mark is the pairing the reader asked for. **No** mark still
+        elides — against the current leaf, which is the ordinary case ("fold the
+        history behind where I am and keep going") and the one that would
+        otherwise cost a mark to say. More than one mark is refused: an elide has
+        two ends and a set of three does not name them.
+        """
+        if len(self._marked) == 1:
+            return next(iter(self._marked))
+        if self._marked:
+            return None
+        return self._leaf_id()
+
+    def _leaf_id(self) -> Optional[str]:
+        """The ``◀ current`` node — the log's cursor as the browser drew it."""
+        for node in self._by_id.values():
+            if node.is_leaf:
+                return node.id
+        return None
+
+    def _line_through(self, node_id: Optional[str]) -> frozenset[str]:
+        """Every node on a root→leaf line through ``node_id``: its ancestry and its
+        descendants.
+
+        This is exactly the set an elide's other end can come from, because
+        ``elide_span`` requires the resume point to be on the anchor's path — the
+        fold's forward scan only ever walks ancestors, and a boundary it cannot
+        reach would empty the context in silence (``TauBackend.elide_span``).
+
+        Both directions, because either node can turn out to be the anchor: the
+        deeper of the two always is (see :class:`ElidePlan`).
+        """
+        if node_id is None:
+            return frozenset()
+        line = {node_id}
+        walk = self._parent_of.get(node_id)
+        while walk is not None:
+            line.add(walk)
+            walk = self._parent_of.get(walk)
+        stack = list(self._by_id[node_id].children)
+        while stack:
+            node = stack.pop()
+            line.add(node.id)
+            stack.extend(node.children)
+        return frozenset(line)
+
+    def _elide_ineligible(self) -> frozenset[str]:
+        """Rows to grey out: everything off the line, while a span is being chosen.
+
+        Only when exactly ONE node is marked. With none, the reader is browsing
+        and the elide is merely available; with several, nothing has been named
+        and greying to a set of three would be a guess.
+
+        This is the ANCESTRY rule alone. The other way an elide can be illegal —
+        a legal pair whose span happens to be empty — is one row, and it is
+        refused by name when ``ctrl+E`` is pressed rather than greyed here,
+        because computing it for every row means one context walk per row.
+        """
+        if len(self._marked) != 1:
+            return frozenset()
+        return frozenset(node_id for node_id in self._by_id if node_id not in self._elide_line)
+
+    def _elide_plan(self, cursor: Optional[str]) -> "ElidePlan | None":
+        """The elide ``cursor`` and the other end would make, or ``None``.
+
+        Every rejection ``TauBackend.elide_span`` performs is performed here
+        first, on the same rules and against the same tree, so the help line can
+        only offer an elide the backend will accept. That is the point of doing
+        it here: the reported problem was learning the pick was illegal by
+        landing back in the conversation with an error.
+
+        **The refusal is measured at the anchor and the COST at the cursor**, and
+        those are two different sets — see :class:`ElidePlan`. Measuring both at
+        the anchor is the defect this fixed: over ``[1..6]`` with the cursor at 6,
+        pairing 2 with 4 was offered as "elide 1 message" when three leave, because
+        ``context_entries(anchor)`` cannot see the two the cursor move abandons.
+        Measuring both at the cursor would be wrong the other way — it would offer
+        an elide whose fold hides nothing, which the backend then refuses.
+        """
+        other = self._elide_other_end()
+        if cursor is None or other is None or cursor == other:
+            return None
+        # Deeper end is the anchor. `_depth_of` is the DATA depth (built in
+        # `_index`), not the widget depth the planner assigns — the fold walks
+        # `parentId`, so this has to be the same graph `elide_span` will walk.
+        if self._depth_of[cursor] > self._depth_of[other]:
+            anchor, first_kept = cursor, other
+        else:
+            anchor, first_kept = other, cursor
+        path_ids = [entry["id"] for entry in self._tree.path(anchor)]
+        if first_kept not in path_ids:
+            return None
+        kept = set(path_ids[path_ids.index(first_kept) :])
+        folded = [e for e in self._tree.context_entries(anchor) if e["id"] not in kept]
+        if not folded:
+            return None
+        dropped = [e for e in self._tree.context_entries() if e["id"] not in kept]
+        return ElidePlan(
+            anchor=anchor,
+            first_kept=first_kept,
+            folded=len(folded),
+            dropped=len(dropped),
+            moves_cursor=anchor != self._tree.cursor,
+        )
+
+    def action_elide(self) -> None:
+        """``ctrl+E``: fold the span between the cursor and the other end.
+
+        Dismisses with the pair; the caller performs it. This screen still holds
+        no ``SessionLog`` and still writes nothing (§11.1).
+
+        An illegal pick is refused HERE, with the reason, and the browser stays
+        open — which is the whole change. It used to be discovered one modal
+        later, after the browser had closed, as an error notification over a
+        conversation the reader could no longer see the shape of.
+        """
+        node = self.query_one("#tree-browser-tree", Tree).cursor_node
+        cursor = None if node is None or node.data is None else str(node.data)
+        plan = self._elide_plan(cursor)
+        if plan is not None:
+            self.dismiss(TreeIntent("elide", (plan.anchor, plan.first_kept)))
+            return
+        self.app.notify(self._elide_refusal(cursor), severity="warning")
+
+    def _elide_refusal(self, cursor: Optional[str]) -> str:
+        """Why the elide the reader just asked for is not one. One sentence each.
+
+        Ordered from "nothing was named" to "this pair is legal but empty", which
+        is the order the reader hits them in.
+        """
+        if cursor is None:
+            return "Put the cursor on a node first."
+        if len(self._marked) > 1:
+            return (
+                f"{len(self._marked)} nodes are marked. An elide has two ends — "
+                "mark one node, and put the cursor on the other."
+            )
+        other = self._elide_other_end()
+        if other is None:
+            return "There is no current node to fold back to."
+        if cursor == other:
+            return "That is both ends of the elide. Move the cursor, or mark another node."
+        if cursor not in self._elide_line:
+            return (
+                "Those two nodes are on different branches. An elide folds a span "
+                "of ONE line of the conversation, so the two ends have to be on it."
+            )
+        return "That would hide nothing — the span between those two nodes is already empty."
+
+    # -- the four selection sets (§5.3) --------------------------------------
+
+    def _refresh_zones(self) -> None:
+        """Recompute all four sets and hand them to the renderer.
+
+        One entry point, called from every gesture that can move a set: the cursor
+        (``NodeHighlighted``), a mark (``space``), a fold (``NodeCollapsed`` /
+        ``NodeExpanded``) and the deferred initial layout. Recomputing all four
+        rather than patching the one that moved — ``path``/``folded``/``covered``
+        are all functions of the cursor, and a partial update is how two of them
+        end up describing different cursors.
+
+        This is the EXPENSIVE path — two walks of the conversation plus one of every
+        widget row — and it is deliberately not what a hover runs. See
+        :meth:`ZoneTree.set_hover_zones`.
+        """
+        if not self._rows:
+            return
+        tree = self.query_one("#tree-browser-tree", ZoneTree)
+        node = tree.cursor_node
+        cursor = None if node is None or node.data is None else str(node.data)
+        path, folded, covered = self._derived(cursor)
+        hover_common, hover_divergent = self._hover_divergence(cursor, self._hovered)
+        tree.set_zones(
+            TreeZones(
+                cursor=cursor,
+                marked=frozenset(self._marked),
+                path=path,
+                folded=folded,
+                covered=covered,
+                hidden=self._hidden(),
+                # §7 mints these; there is no copy entry to be in the set yet, and
+                # an empty frozenset is the truth rather than a placeholder.
+                copied=frozenset(),
+                summary=self._summary_zone,
+                abandoned=self._abandoned_zone,
+                ineligible=self._elide_ineligible(),
+                # Re-derived, not carried over: the divergence is measured FROM the
+                # cursor, so the cursor move that brought us here invalidated
+                # whatever is painted. Cheap — see :meth:`_hover_divergence`.
+                hover_common=hover_common,
+                hover_divergent=hover_divergent,
+            )
+        )
+        self.query_one("#tree-browser-marks", Static).update(self._marks_summary(cursor))
+
+    def _derived(
+        self, cursor: Optional[str]
+    ) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+        """§5.3's set 3, as the three roles §3's class table distinguishes.
+
+        ``path`` is the cursor's raw ancestor chain (``ConversationTree.path``,
+        every kind, no splice). ``folded`` is what the fold at the cursor drops from
+        that chain — the difference between the raw walk and ``context_entries``,
+        which is exactly "on the path, dropped by a splice anchor".
+
+        ``covered`` is the same span, reported separately when the cursor IS the
+        anchor doing the dropping. Which anchor that is comes out of
+        ``context_entries`` rather than out of a kind test:
+        ``_active_path_entries`` emits ``[anchor] + kept + after``
+        (``conversation_tree.py:383-391``), so element 0 of a folded result is the
+        anchor by construction. Reading it there instead of re-testing
+        ``entry["type"] in ("compaction", "elide")`` keeps the anchor vocabulary in
+        the one module that owns it — ``_SPLICE_ANCHOR_KINDS`` is private to
+        ``conversation_tree`` and a second copy in the TUI would be a fifth kind
+        away from being wrong.
+
+        ``folded`` deliberately still contains ``covered``: the two are the same
+        rows seen from two positions, and :attr:`ZoneTree._LABEL_ZONES` resolves
+        which class wins rather than the sets pre-subtracting each other.
+        """
+        empty: frozenset[str] = frozenset()
+        if cursor is None:
+            return empty, empty, empty
+        path_ids = frozenset(entry["id"] for entry in self._tree.path(cursor))
+        kept = self._tree.context_entries(cursor)
+        kept_ids = {entry["id"] for entry in kept}
+        folded = frozenset(entry_id for entry_id in path_ids if entry_id not in kept_ids)
+        anchor = kept[0]["id"] if kept else None
+        covered = folded if (folded and anchor == cursor) else empty
+        return path_ids, folded, covered
+
+    def _branch_summary_pairs(self) -> tuple[frozenset[str], frozenset[str]]:
+        """§4.3's two-row relation: each ``branch_summary`` and what it summarizes.
+
+        §1.2 established that no structural change is needed —
+        ``SessionStore.append_branch_summary`` (``session_store.py:665``) moves the
+        leaf to ``from_id`` *before* appending, mirroring pi's ``branchWithSummary``
+        (``session-manager.ts:1272``), so ``parentId == fromId`` and the summary is
+        already a sibling of the abandoned branch's first message. What was missing
+        is that a reader cannot see it. §4.3 was attempted inside ``_preview_of``
+        and correctly bounced there: that renders one line for one node, and this is
+        a relation BETWEEN two rows. So it is zone work (§3).
+
+        **Which sibling.** The immediately PRECEDING one, in the order the browser
+        already draws them (``ConversationTree.tree`` sorts children by timestamp;
+        roots keep load order, which for an append-only log is the same order). Not
+        "every sibling that is not the summary": a branch point can be abandoned
+        more than once, and ``b1, S1, b2, S2`` then pairs correctly — ``S1`` looks
+        back at ``b1``, ``S2`` at ``b2`` — where a set-difference rule would blame
+        ``S2`` for ``b1`` as well. It is also the phrase §4.3 uses: *the* abandoned
+        branch's first message, singular.
+
+        A ``branch_summary`` with no earlier sibling is left out of both sets rather
+        than paired with something. That shape means a branch was summarized before
+        it existed; painting half a pair would state a relation that is not there.
+
+        Computed on the ``TreeNode`` graph, so it needs no payload lookup — ``kind``
+        is on the node (``conversation_tree.py:173``) and the ``fromId`` the payload
+        carries would only re-state the ``parentId`` the graph is already built
+        from.
+        """
+        summary: set[str] = set()
+        abandoned: set[str] = set()
+        stack: list[list[TreeNode]] = [self._roots]
+        while stack:
+            siblings = stack.pop()
+            for position, node in enumerate(siblings):
+                if node.children:
+                    stack.append(node.children)
+                if node.kind != "branch_summary" or position == 0:
+                    continue
+                summary.add(node.id)
+                abandoned.add(siblings[position - 1].id)
+        return frozenset(summary), frozenset(abandoned)
+
+    def on_zone_tree_hover_changed(self, event: "ZoneTree.HoverChanged") -> None:
+        """Repaint the divergence for the row the pointer moved onto (§3, step 5).
+
+        §2 removed the guide-rail ancestry highlight — after flattening, a
+        30-message run is 30 siblings at one level with no rails between them — and
+        §3 is "the replacement, not an embellishment". ``tree--zone-path`` replaced
+        the CURSOR's ancestry in step 3; this replaces the HOVER's, and says
+        something the rails never did: not just "these are the hovered row's
+        ancestors" but *where that ancestry stops agreeing with where you are*.
+
+        Nothing here recomputes a selection set. The two ancestry walks in
+        :meth:`_hover_divergence` are the whole per-hover cost.
+        """
+        event.stop()
+        self._hovered = event.entry_id
+        tree = event.zone_tree
+        node = tree.cursor_node
+        cursor = None if node is None or node.data is None else str(node.data)
+        tree.set_hover_zones(*self._hover_divergence(cursor, self._hovered))
+
+    def _hover_divergence(
+        self, cursor: Optional[str], hovered: Optional[str]
+    ) -> tuple[frozenset[str], frozenset[str]]:
+        """Split ``hovered``'s ancestry where it leaves ``cursor``'s (§3, step 5).
+
+        The common prefix and the divergent tail are different facts and the
+        stylesheet reads them differently: the prefix is context the two nodes
+        share, the tail is what you would be picking up if you went there.
+
+        **A node ON the cursor's path reports no divergence.** Its chain is then a
+        PREFIX of the cursor's, the tail is empty by construction, and this returns
+        two empty sets rather than a prefix with nothing to contrast against —
+        painting the shared half alone would show a highlight that means "you are
+        already here", which reads as a divergence that is not there. Hovering the
+        cursor itself, or leaving the tree entirely, lands in the same case.
+
+        A DESCENDANT of the cursor is not on the cursor's path and does diverge:
+        the rows below the cursor are exactly what the cursor's context does not
+        contain, which is the question this answers.
+
+        ``k == 0`` — two different roots, which ``ConversationTree.tree`` really can
+        produce from an orphaned entry — gives an empty prefix and the hovered
+        chain entire. That is the honest answer, and it is the same answer
+        :meth:`_lowest_common_ancestor` gives for the same shape.
+
+        Cost is O(depth), twice: :meth:`_ancestry` is a ``_parent_of`` walk, and the
+        prefix scan is a ``zip``. No conversation walk, no row walk — which is the
+        constraint, because this runs on every row the pointer crosses.
+        """
+        empty: frozenset[str] = frozenset()
+        if cursor is None or hovered is None:
+            return empty, empty
+        hover_chain = self._ancestry(hovered)
+        cursor_chain = self._ancestry(cursor)
+        shared = 0
+        for mine, theirs in zip(hover_chain, cursor_chain):
+            if mine != theirs:
+                break
+            shared += 1
+        if shared == len(hover_chain):
+            # `hovered` is the cursor, or one of its ancestors. Nothing diverges.
+            return empty, empty
+        return frozenset(hover_chain[:shared]), frozenset(hover_chain[shared:])
+
+    def _hidden(self) -> frozenset[str]:
+        """§5.3's set 4: rows the reader has folded out of sight.
+
+        View state, per §11.2 — computed from the widget tree, never read from the
+        log, and nothing is appended for it. The *archived* half of §11.2's decision
+        has no gesture yet, so this is the collapsed half alone; a row in it is not
+        currently drawn, which is why ``tree--zone-hidden`` has no visible effect
+        today and why :meth:`_marks_summary` is where the set is observable at all.
+
+        The walk stops one short of the widget root. ``Tree.__init__`` builds its
+        root with ``expand=False`` (textual 8.2.7, ``_tree.py:783`` →
+        ``_add_node``'s default) and ``_build`` adds the root's children anyway
+        when ``show_root`` is ``False`` (``_tree.py:1272-1275``) — so the root's
+        collapsed flag means nothing here, and counting it would report every
+        top-level row as folded away.
+        """
+        hidden: set[str] = set()
+        for widget_node, _label, _depth, _has_children in self._rows:
+            walk = widget_node.parent
+            while walk is not None and walk.parent is not None:
+                if not walk.is_expanded:
+                    hidden.add(str(widget_node.data))
+                    break
+                walk = walk.parent
+        return frozenset(hidden)
+
+    def _lowest_common_ancestor(self, ids: set[str]) -> Optional[str]:
+        """The deepest node every id in ``ids`` descends from, itself included.
+
+        §5.3: the ``_parent_of`` map :meth:`_index` already builds "gives the lowest
+        common ancestor for free". Root→node chains, then the longest common prefix.
+
+        ``None`` when the marked nodes are in different roots — an orphaned entry
+        (broken parent chain) is its own root in ``ConversationTree.tree``, so two
+        marks really can have no ancestor in common, and saying so beats naming an
+        arbitrary one.
+        """
+        if not ids:
+            return None
+        chains = [self._ancestry(entry_id) for entry_id in sorted(ids)]
+        common: Optional[str] = None
+        for step in zip(*chains):
+            if len(set(step)) != 1:
+                break
+            common = step[0]
+        return common
+
+    def _ancestry(self, entry_id: str) -> list[str]:
+        """``entry_id``'s root→self chain through :attr:`_parent_of`."""
+        chain = [entry_id]
+        walk = self._parent_of.get(entry_id)
+        seen = {entry_id}
+        while walk is not None and walk not in seen:
+            chain.append(walk)
+            seen.add(walk)
+            walk = self._parent_of.get(walk)
+        chain.reverse()
+        return chain
+
+    def _marks_summary(self, cursor: Optional[str] = None) -> str:
+        """The marked set's count, its lowest common ancestor and its size (§5.3).
+
+        **The size is a labelled estimate, and says so.** ``compaction.estimate_tokens``
+        is a ~4-chars-per-token heuristic over the payload; the only measured number
+        in a session is ``usage.input_tokens`` on an assistant message
+        (``agent_loop.py:819``), which is a measurement of one request rather than of
+        an arbitrary set of entries. §5.3: "a row may state a measured
+        ``input_tokens``; a selection total may only state an estimate, and must say
+        so". So this prints ``~N tokens (estimate)`` and never a bare number.
+
+        **The elide offer goes FIRST when there is one.** This line is one row
+        (``#tree-browser-marks`` is ``height: 1``), so it clips rather than
+        wrapping — and the readout plus the offer runs to about 96 columns, which
+        on an 80-column terminal means whatever is last is what disappears. The
+        offer is the only part of the line that is an action.
+        """
+        elide = self._elide_offer(cursor)
+        if not self._marked:
+            base = "nothing marked · space marks the row under the cursor"
+            return f"{elide} · {base}" if elide else base
+        count = len(self._marked)
+        noun = "node" if count == 1 else "nodes"
+        folded_away = len(self._marked & self._hidden())
+        out_of_sight = f" ({folded_away} folded away)" if folded_away else ""
+        ancestor = self._lowest_common_ancestor(self._marked)
+        where = f"common ancestor {ancestor}" if ancestor is not None else "no common ancestor"
+        line = (
+            f"{count} {noun} marked{out_of_sight} · {where} · "
+            f"~{self._estimated_tokens(self._marked)} tokens (estimate)"
+        )
+        return f"{elide} · {line}" if elide else line
+
+    def _elide_offer(self, cursor: Optional[str]) -> str:
+        """``ctrl+E: keep this span, drop the other 14`` — or ``""``.
+
+        The empty string is the feature, not a fallback: the offer appears exactly
+        when pressing the key would do something, so a reader who has never used
+        the gesture meets it on the row where it applies rather than in a list of
+        keys they have to test one at a time. This is what was asked for in place
+        of the mode-chooser's ``Elide a span ending here…`` button, which named the
+        operation on every node whether or not it could be performed on that one.
+
+        **"keep this span" is load-bearing wording.** It read ``elide N messages``,
+        which every reader parses as "remove the N between these two rows" — the
+        opposite of what an elide does (:class:`ElidePlan`). The frame has to be
+        stated where the gesture is, not only in the manual, because the manual is
+        not open at the moment somebody presses the key.
+
+        ``and move back to it`` is appended when the anchor is not the current tip,
+        because that is a second thing happening: the conversation resumes
+        somewhere else, and the entries newer than the anchor are part of the
+        ``dropped`` count precisely for that reason.
+
+        ``cursor`` is passed in rather than read off the tree: :meth:`compose`
+        writes the first version of this line, and the tree it would query does
+        not exist yet at that point. ``None`` there is honest — no row is under
+        the cursor until one is drawn.
+        """
+        plan = self._elide_plan(cursor)
+        if plan is None:
+            return ""
+        noun = "entry" if plan.dropped == 1 else "entries"
+        move = ", and move back to it" if plan.moves_cursor else ""
+        return f"ctrl+E: keep this span, drop the other {plan.dropped} {noun}{move}"
+
+    def _estimated_tokens(self, ids: set[str]) -> int:
+        """A character-based token estimate over the entries ``ids`` names.
+
+        ``compaction.estimate_tokens`` for the entries that carry a message, and the
+        same arithmetic over the summary text for the kinds that carry one instead
+        (``compaction``, ``branch_summary`` — what ``context_for`` injects for them
+        is a message built from that string, ``conversation_tree.py:78-96``). Kinds
+        with neither, such as ``navigate`` and ``elide``, contribute nothing to a
+        context and so contribute nothing here.
+
+        Never presented without the word "estimate" beside it — see
+        :meth:`_marks_summary`.
+        """
+        from tau_agent_core.compaction import estimate_tokens
+
+        total = 0
+        for entry_id in ids:
+            entry = self._resolve_entry(entry_id)
+            message = entry.get("message")
+            if isinstance(message, dict):
+                total += estimate_tokens(message)
+                continue
+            summary = entry.get("summary")
+            if isinstance(summary, str):
+                total += estimate_tokens({"role": "user", "content": summary})
+        return total
 
 
 class TreeModeModal(ModalScreen[Optional[str]]):
@@ -758,12 +2388,15 @@ class TreeModeModal(ModalScreen[Optional[str]]):
     "Summarize" / "Summarize with custom instructions". Dismisses with
     ``"navigate"`` / ``"summarize"`` / ``"custom"`` (or ``None`` on cancel).
 
-    Plus a fourth, τ-only mode: ``"elide"`` (W3, NODE-ADDRESSABLE-AGENTS.md). It is
-    the odd one out and the title says so — the other three treat the picked node as
-    a BRANCH POINT and move the cursor back to it, while ``elide`` treats it as the
-    fold's ANCHOR and needs a second node (the resume point) before it can do
-    anything. :meth:`Parley.action_browse_tree` collects that second pick; this
-    modal only names the mode.
+    **``elide`` used to be a fourth button here and is not one any more**
+    (PLAN-0.9.4 §4). It never fitted: the other three treat the picked node as a
+    BRANCH POINT and move the cursor back to it, while an elide treats it as the
+    fold's ANCHOR and needs a second node before it can do anything — so choosing
+    it re-opened the whole tree browser to ask for that second node, and an
+    illegal pick was reported after both screens had closed. It is a key in the
+    browser now (``ctrl+E``, :meth:`SessionTreeModal.action_elide`), which is the
+    one place both nodes are visible at once and the only place a refusal can be
+    stated while the reader can still see what they picked.
     """
 
     BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
@@ -775,7 +2408,6 @@ class TreeModeModal(ModalScreen[Optional[str]]):
                 yield Button("Branch: no summary", variant="primary", id="mode-navigate")
                 yield Button("Branch: summarize abandoned branch", id="mode-summarize")
                 yield Button("Branch: summarize with custom instructions…", id="mode-custom")
-                yield Button("Elide a span ending here…", id="mode-elide")
                 yield Button("Cancel", id="mode-cancel")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -783,7 +2415,6 @@ class TreeModeModal(ModalScreen[Optional[str]]):
             "mode-navigate": "navigate",
             "mode-summarize": "summarize",
             "mode-custom": "custom",
-            "mode-elide": "elide",
         }
         self.dismiss(mapping.get(event.button.id or ""))
 
@@ -1293,6 +2924,19 @@ class MessageBox(Static):
         self._source = source
         self._reasoning: ReasoningRegion | None = None
         self._tool_boxes: dict[str, ToolBox] = {}
+        # Children created before compose() ran, mounted in creation order by
+        # on_mount. A live step box is mounted fire-and-forget
+        # (ExchangeBox.add_step) and the agent loop drains a non-empty
+        # asyncio.Queue without ever yielding to the event loop, so the first
+        # reasoning delta or tool call of a turn routinely arrives while
+        # compose() still has not run and the slots below do not exist yet.
+        # Mirrors the text body's own pre-compose buffering (see
+        # append_content_delta's hasattr gate and on_mount's catch-up).
+        #
+        # NOT named _pending_children: Textual's Widget already owns that name
+        # for its own compose stack, and shadowing it with these (slot, widget)
+        # tuples makes mount_composed_widgets try to mount a tuple.
+        self._deferred_children: list[tuple[str, Widget]] = []
         # Lazily created by append_content_delta on the first streamed delta
         # once the inner Markdown has composed; see append_content_delta/finish_stream.
         self._stream: MarkdownStream | None = None
@@ -1362,6 +3006,29 @@ class MessageBox(Static):
             self._md_widget.append(self._format(self._content))
         if self._subtitle:
             self.border_subtitle = self._subtitle
+        # Mount whatever ensure_reasoning/add_tool_call created while the slots
+        # did not exist yet, in creation order. compose() has run by now, so
+        # every slot named here is present and attached.
+        for slot, widget in self._deferred_children:
+            getattr(self, slot).mount(widget)
+        self._deferred_children.clear()
+
+    def _mount_lazy(self, slot: str, widget: Widget) -> None:
+        """Mount a lazily-created child into one of ``compose()``'s slots.
+
+        Buffers the child when ``compose()`` has not run yet; :meth:`on_mount`
+        flushes the buffer. Before this existed, both callers raised
+        ``AttributeError: 'MessageBox' object has no attribute '_reasoning_slot'``
+        on the first delta of a turn — and because ``ensure_reasoning`` had
+        already assigned ``self._reasoning``, every later call took the
+        already-created branch and handed back a region that was never mounted,
+        so the whole turn's reasoning accumulated into a widget nobody could see.
+        """
+        container = getattr(self, slot, None)
+        if container is None:
+            self._deferred_children.append((slot, widget))
+            return
+        container.mount(widget)
 
     # -- text body -----------------------------------------------------------
 
@@ -1442,19 +3109,26 @@ class MessageBox(Static):
         """Lazily mount (once) and return this message's reasoning region.
 
         The region buffers its own streamed text until it mounts, so callers may
-        ``set_text``/``append`` on the returned region immediately.
+        ``set_text``/``append`` on the returned region immediately -- including
+        before this box has composed, in which case :meth:`_mount_lazy` holds the
+        region until ``on_mount``.
         """
         if self._reasoning is None:
             self._reasoning = ReasoningRegion()
-            self._reasoning_slot.mount(self._reasoning)
+            self._mount_lazy("_reasoning_slot", self._reasoning)
         return self._reasoning
 
     def add_tool_call(self, name: str, arguments: object, tool_call_id: str = "") -> ToolBox:
-        """Append a tool call as a child ToolBox, tracked by id for its result."""
+        """Append a tool call as a child ToolBox, tracked by id for its result.
+
+        ``ToolBox`` buffers a result written before it mounts, so a call and its
+        result arriving in the same synchronous burst are both rendered even when
+        this box has not composed yet.
+        """
         box = ToolBox(name, arguments, tool_call_id)
         if tool_call_id:
             self._tool_boxes[tool_call_id] = box
-        self._tools_slot.mount(box)
+        self._mount_lazy("_tools_slot", box)
         return box
 
     async def add_tool_call_async(
@@ -1463,13 +3137,19 @@ class MessageBox(Static):
         """Like :meth:`add_tool_call` but awaits the ToolBox mount.
 
         The reload path folds a tool *result* into this box immediately after the
-        next persisted message, so the box must have composed first (a Markdown
-        update before mount is silently lost — see ``ReasoningRegion``). The live
-        path is network-paced and uses the fire-and-forget variant."""
+        next persisted message; awaiting the mount here keeps that write on the
+        direct path rather than through ``ToolBox``'s pre-mount buffer. Every
+        reload caller has already awaited the step's own mount, so the slot
+        exists and this really does await. The live path is network-paced and
+        uses the fire-and-forget variant."""
         box = ToolBox(name, arguments, tool_call_id)
         if tool_call_id:
             self._tool_boxes[tool_call_id] = box
-        await self._tools_slot.mount(box)
+        slot = getattr(self, "_tools_slot", None)
+        if slot is None:
+            self._deferred_children.append(("_tools_slot", box))
+            return box
+        await slot.mount(box)
         return box
 
     def set_tool_result(
@@ -1712,6 +3392,9 @@ class _LaneRender:
         "active_text",
         "active_reasoning",
         "tool_routes",
+        "started",
+        "measured_output",
+        "chunks",
     )
 
     def __init__(self, exchange: Optional[ExchangeBox] = None, label: str | None = None) -> None:
@@ -1732,6 +3415,20 @@ class _LaneRender:
         self.active_reasoning: str = ""
         #: Route each tool result to the step that issued the call, by id.
         self.tool_routes: dict[str, MessageBox] = {}
+        #: When this lane's exchange opened, on the MONOTONIC clock — the right
+        #: one for an elapsed readout that must not jump when the wall clock is
+        #: adjusted. ``None`` for a lane nobody opened an exchange for (the
+        #: defensive path), which shows no duration rather than a fabricated one.
+        #: The FINISHED exchange's duration is still ``Parley``'s own
+        #: ``time.time()`` measurement, passed to :meth:`finalize_exchange`, so
+        #: this clock cannot change what a completed turn reports.
+        self.started: float | None = None
+        #: Real ``output_tokens`` summed over this lane's COMPLETED completions,
+        #: as of the last ``completion_end``. Never an estimate.
+        self.measured_output: int = 0
+        #: Stream events received since the last completion boundary — the
+        #: completion in flight, which has no measured token count at all.
+        self.chunks: int = 0
 
 
 def _display_path(path: Path) -> str:
@@ -2208,6 +3905,11 @@ class ChatDisplay(MessageList):
       summary (``N tools · X tok · M:SS``). A trivial no-tool exchange is
       unwrapped entirely — just the plain answer, no grouping. ONE reparent, at
       the end (Textual has no live reparent, so the answer is reconstructed).
+    - while any lane is open, a timer repaints each exchange's ``Working…``
+      title with a measured token count, the in-flight chunk count and the
+      elapsed time (:meth:`_tick_live_counters`). Per lane rather than one
+      global readout: two concurrent turns have two different answers, and the
+      one line a header subtitle has could only report one of them.
 
     Reloaded (persisted) chats still render as flat boxes via
     :meth:`add_persisted_message` — rebuilding exchanges from the saved message
@@ -2231,6 +3933,77 @@ class ChatDisplay(MessageList):
         # inventing facts nobody supplied.
         self._facts_source = facts
         self._placeholder: ChatPlaceholder | None = None
+        #: The list the last :meth:`reload_messages` was handed, kept by
+        #: reference so :meth:`show_all_messages` can re-render the WHOLE
+        #: transcript. It is the caller's own list object, not a copy — there is
+        #: no second source of truth to fall out of step.
+        self._reload_source: list[dict] = []
+        #: How many messages the last reload declined to MOUNT. Zero when the
+        #: whole transcript is on screen.
+        self._elided = 0
+        #: Repaints every open exchange's live counter. Created paused in
+        #: :meth:`on_mount` and only running while a lane is open, so an idle
+        #: chat costs nothing. ``None`` on a display that was never mounted (a
+        #: bare renderer harness), which simply has no counter.
+        self._live_timer: Timer | None = None
+
+    #: Bound on how much of a reloaded transcript is mounted as widgets.
+    #: Whichever limit is reached first walking BACKWARDS from the end wins.
+    #:
+    #: This is a RENDERING bound and nothing else. The whole conversation is
+    #: still loaded, still in the session log, and still what the model is sent;
+    #: only the widget tree is capped. If this ever changes model input it has
+    #: become a silent context bug (docs/TREE-BROWSER-AS-EDITOR.md's
+    #: tree-as-truth invariant), which is why the cap lives here on the display
+    #: and touches no message list.
+    #:
+    #: The numbers matter because the render cost is quadratic in the mounted
+    #: widget count: an 800-message reload takes over four minutes, and the same
+    #: mounted tree throttles streaming to a couple of tokens per second.
+    RENDER_CAP_TURNS = 4
+    RENDER_CAP_MESSAGES = 50
+
+    #: How often the live exchange counter repaints, in seconds. Deliberately
+    #: decoupled from the delta rate: the counter must keep moving through a
+    #: thirty-second tool call, when nothing is arriving at all, and it must not
+    #: cost a title repaint per delta on a fast stream.
+    LIVE_TICK_SECONDS = 0.25
+
+    def on_mount(self) -> None:
+        """Create the (paused) live-counter timer.
+
+        Paused, because it is started by :meth:`begin_exchange` and stopped again
+        when the last lane closes — a chat with nothing streaming does no work.
+        """
+        self._live_timer = self.set_interval(
+            self.LIVE_TICK_SECONDS, self._tick_live_counters, pause=True
+        )
+
+    def _tick_live_counters(self) -> None:
+        """Repaint every open exchange's ``Working…`` line.
+
+        Reads the lane state and writes the title; it measures nothing itself, so
+        a lane whose provider reports no usage shows the duration and the chunk
+        count and makes no token claim.
+        """
+        now = time.monotonic()
+        for state in self._lanes.values():
+            if state.exchange is None:
+                continue
+            state.exchange.set_live(
+                seconds=None if state.started is None else now - state.started,
+                output=state.measured_output,
+                chunks=state.chunks,
+            )
+
+    def _sync_live_timer(self) -> None:
+        """Run the counter timer exactly while at least one lane is open."""
+        if self._live_timer is None:
+            return
+        if self._lanes:
+            self._live_timer.resume()
+        else:
+            self._live_timer.pause()
 
     def compose(self) -> ComposeResult:
         """Compose the placeholder, when this display has facts to state.
@@ -2252,11 +4025,19 @@ class ChatDisplay(MessageList):
         the tree what is in it cannot go stale — the only failure mode left is a
         missed call, which is why ``test_chat_placeholder.py`` asserts the state
         after every public entry point.
+
+        Derived from the DIRECT children, not from two deep ``query()`` calls.
+        Each ``query()`` walks the whole subtree and builds a list; this runs on
+        every mount, so on a reload it was Σ O(widgets) — 12 % of a 150-message
+        reload, and 3.2 s of an 8.6 s 200-message one. The direct children answer
+        the same question: a nested ``MessageBox`` is a step inside an
+        ``ExchangeBox``, and that exchange IS a direct child. ``any()`` also stops
+        at the first box instead of collecting every one of them.
         """
         placeholder = self._placeholder
         if placeholder is None:
             return
-        has_content = bool(self.query(MessageBox)) or bool(self.query(ExchangeBox))
+        has_content = any(isinstance(child, (MessageBox, ExchangeBox)) for child in self.children)
         placeholder.display = not has_content
         if not has_content:
             placeholder.update_facts(self._facts_source())  # type: ignore[misc]
@@ -2296,7 +4077,13 @@ class ChatDisplay(MessageList):
             await box.finish_stream()
         await self.query(ExchangeBox).remove()
         await self.query(MessageBox).remove()
+        # The ``⋯ N earlier`` row is neither, and a stale one would keep claiming
+        # a count for a transcript that is no longer on screen.
+        await self.query(".chat-fold").remove()
+        self._elided = 0
         self._lanes = {}
+        # Every exchange the counter had to draw has just been removed.
+        self._sync_live_timer()
         # The "content left" half of the pair with :meth:`mount`. Awaiting the two
         # removals above is what makes this correct rather than racy: _sync reads
         # the DOM, so it has to run after the nodes are actually gone.
@@ -2348,8 +4135,11 @@ class ChatDisplay(MessageList):
         outlives neither the promoted answer nor, for a no-tool span, itself.
         """
         exchange = ExchangeBox(label=label)
-        self._lanes[lane] = _LaneRender(exchange, label)
+        state = _LaneRender(exchange, label)
+        state.started = time.monotonic()
+        self._lanes[lane] = state
         await self.mount(exchange)
+        self._sync_live_timer()
         self.scroll_end(animate=False)
 
     async def handle_stream_event(self, event: dict) -> None:
@@ -2369,13 +4159,23 @@ class ChatDisplay(MessageList):
         if kind == "turn_start":
             await self._on_turn_start(state)
         elif kind == "reasoning_delta":
+            state.chunks += 1
             await self._on_reasoning_delta(state, event.get("delta", ""))
         elif kind == "text_delta":
+            state.chunks += 1
             await self._on_text_delta(state, event.get("delta", ""))
         elif kind == "tool_call":
             await self._on_tool_call(state, event)
         elif kind == "tool_result":
             self._on_tool_result(state, event)
+        elif kind == "completion_end":
+            # A completion boundary: what was estimated is now measured, and
+            # nothing is in flight until the next delta. Reasoning and answer
+            # text both count as chunks above — both are stream events, and a
+            # reasoning model that thinks for a minute before answering is the
+            # case this counter exists for.
+            state.measured_output = int(event.get("output", 0) or 0)
+            state.chunks = 0
 
     def _start_step(self, state: _LaneRender) -> MessageBox:
         """Mount a fresh assistant step box for this lane's current turn.
@@ -2512,7 +4312,8 @@ class ChatDisplay(MessageList):
     async def finalize_exchange(
         self,
         *,
-        tokens: int,
+        context: int,
+        output: int,
         seconds: float | None,
         telemetry: str | None = None,
         lane: str = DEFAULT_LANE,
@@ -2530,6 +4331,9 @@ class ChatDisplay(MessageList):
         ``None`` (a provider that reported no timings) leaves the summary unchanged.
         """
         state = self._lanes.pop(lane, None)
+        # Popped above, so the counter timer stops with the last lane and can no
+        # longer overwrite the summary this call is about to stamp.
+        self._sync_live_timer()
         if state is None:
             # Nothing was ever opened for this lane — a lane_end whose lane_start
             # never rendered (a chat cleared mid-turn). Say so rather than
@@ -2545,7 +4349,8 @@ class ChatDisplay(MessageList):
 
         await self._close_exchange(
             exchange,
-            tokens=tokens,
+            context=context,
+            output=output,
             seconds=seconds,
             telemetry=telemetry,
             label=state.label,
@@ -2554,7 +4359,8 @@ class ChatDisplay(MessageList):
 
     @staticmethod
     def _exchange_subtitle(
-        tokens: int,
+        context: int,
+        output: int,
         seconds: float | None,
         telemetry: str | None = None,
         label: str | None = None,
@@ -2562,13 +4368,19 @@ class ChatDisplay(MessageList):
         """The stats line stamped on an unwrapped (no-tool) answer. Duration is
         omitted when unknown (reload) rather than fabricated (Fail-Early).
 
+        Two token numbers, never their sum. ``context`` is how large the prompt had
+        grown by the end of this turn; ``output`` is what the turn generated. The
+        single ``N tok`` this replaced was ``total_tokens``, i.e. context + output —
+        which on turn 12 read as ~the whole conversation and looked like a running
+        total, because it was one.
+
         ``telemetry`` is the last completion's G4 readout, appended as one more
         ``·`` part when present; ``None`` appends nothing.
 
         ``label`` is the lane's origin badge and leads the line when present
         (B3-b), because this subtitle is the ONLY chrome an unwrapped answer has
         left: the exchange that carried the badge is removed on this path."""
-        parts = [f"{format_tokens(tokens)} tok"]
+        parts = [f"{format_tokens(context)} ctx", f"{format_tokens(output)} out"]
         if seconds is not None:
             parts.append(format_duration(seconds))
         if telemetry is not None:
@@ -2581,7 +4393,8 @@ class ChatDisplay(MessageList):
         self,
         exchange: ExchangeBox,
         *,
-        tokens: int,
+        context: int,
+        output: int,
         seconds: float | None,
         telemetry: str | None = None,
         label: str | None = None,
@@ -2618,14 +4431,20 @@ class ChatDisplay(MessageList):
             # span has no summary line, so the (real) token + duration would be
             # lost — stamp them on the answer's subtitle instead of hiding them.
             if promoted is not None:
-                promoted.set_subtitle(self._exchange_subtitle(tokens, seconds, telemetry, label))
+                promoted.set_subtitle(
+                    self._exchange_subtitle(context, output, seconds, telemetry, label)
+                )
             exchange.remove()
         else:
             if final is not None:
                 final.remove()
             exchange.collapsed = True
             exchange.set_summary(
-                tools=tool_count, tokens=tokens, seconds=seconds, telemetry=telemetry
+                tools=tool_count,
+                context=context,
+                output=output,
+                seconds=seconds,
+                telemetry=telemetry,
             )
 
     async def _promote_answer(
@@ -2664,7 +4483,38 @@ class ChatDisplay(MessageList):
     # Reload: reconstruct exchanges from the persisted flat message list
     # ------------------------------------------------------------------
 
-    async def reload_messages(self, messages: list[dict]) -> None:
+    def render_cap_start(self, messages: list[dict]) -> int:
+        """Index of the first message :meth:`reload_messages` will MOUNT.
+
+        Walks backwards from the end and stops at whichever bound is reached
+        first: :attr:`RENDER_CAP_TURNS` user turns, or
+        :attr:`RENDER_CAP_MESSAGES` messages. The larger index wins, because
+        walking backwards the bound that cuts more is the one reached first.
+
+        The answer is always a ``user`` message, so a user→answer span is never
+        cut in half. That is also why the message bound cannot be applied
+        literally: it lands wherever it lands, so the true start is the LAST user
+        message that still leaves the span within the bound.
+
+        A single span longer than the message bound mounts whole rather than
+        being cut, and a transcript with no user message at all mounts whole.
+        Rendering nothing is not a smaller version of rendering something.
+        """
+        users = [i for i, m in enumerate(messages) if m.get("role", "") == "user"]
+        if not users:
+            return 0
+        by_turns = users[-self.RENDER_CAP_TURNS] if len(users) > self.RENDER_CAP_TURNS else 0
+        # 0 leads the candidates so a transcript that already fits reports a
+        # start of 0 rather than the first user message -- otherwise a leading
+        # system message would read as one elided message that never renders.
+        starts = [0, *users]
+        within = [s for s in starts if len(messages) - s <= self.RENDER_CAP_MESSAGES]
+        # No candidate leaves a short enough tail: one span is over the bound on
+        # its own, so mount that span rather than nothing.
+        by_count = within[0] if within else users[-1]
+        return max(by_turns, by_count)
+
+    async def reload_messages(self, messages: list[dict], *, cap: bool = True) -> None:
         """Render a saved chat as exchanges, matching the finalized live look.
 
         The persisted transcript is a flat list — ``system``, ``user``, then per
@@ -2678,28 +4528,85 @@ class ChatDisplay(MessageList):
         The ONE difference from live is the summary omits wall-clock duration —
         it is not persisted and we do not fabricate it (Fail-Early). Tokens come
         from each completion's persisted ``usage`` (a true 0 for pre-fix chats).
+
+        ``cap=True`` mounts only the tail :meth:`render_cap_start` names and
+        writes a ``⋯ N earlier`` row above it; ``cap=False`` mounts everything.
+        The whole list is loaded either way — see :attr:`RENDER_CAP_MESSAGES`.
+
+        The mounting runs inside ``App.batch_update``, which holds off the screen
+        layout until it is done. Without it every awaited mount hands control
+        back to the event loop, Textual's screen timer fires, and the ENTIRE
+        widget tree is re-arranged — 78 to 104 full layout passes on a
+        200-message reload, each over a tree that is still growing. Batched it is
+        5, and the reader sees the finished transcript rather than it being
+        assembled a message at a time.
         """
+        self._reload_source = messages
+        start = self.render_cap_start(messages) if cap else 0
+        # Cleared FIRST: clear_messages resets the elided count, so setting it
+        # before this would hand the row a zero.
         await self.clear_messages()
-        n = len(messages)
-        i = 0
-        while i < n:
-            role = messages[i].get("role", "")
-            if role == "system":
-                i += 1
-                continue
-            if role == "user":
-                # The user box sits above the exchange, as in the live path.
-                self.add_persisted_message(messages[i])
-                i += 1
-            # Collect the answer span (assistant + toolResult) up to the next
-            # user/system message, and rebuild it as one exchange.
-            span: list[dict] = []
-            while i < n and messages[i].get("role") not in ("user", "system"):
-                span.append(messages[i])
-                i += 1
-            if span:
-                await self._reload_exchange(span)
+        # System messages never render, so counting them in "N earlier" would
+        # claim more is hidden than a reader could ever get back.
+        self._elided = sum(1 for m in messages[:start] if m.get("role", "") != "system")
+        with self.app.batch_update():
+            if self._elided:
+                await self.mount(self._earlier_row())
+            n = len(messages)
+            i = start
+            while i < n:
+                role = messages[i].get("role", "")
+                if role == "system":
+                    i += 1
+                    continue
+                if role == "user":
+                    # The user box sits above the exchange, as in the live path.
+                    self.add_persisted_message(messages[i])
+                    i += 1
+                # Collect the answer span (assistant + toolResult) up to the next
+                # user/system message, and rebuild it as one exchange.
+                span: list[dict] = []
+                while i < n and messages[i].get("role") not in ("user", "system"):
+                    span.append(messages[i])
+                    i += 1
+                if span:
+                    await self._reload_exchange(span)
         self.scroll_end(animate=False)
+
+    @property
+    def elided_count(self) -> int:
+        """How many messages the last reload declined to mount. 0 when all are on."""
+        return self._elided
+
+    def _earlier_row(self) -> Static:
+        """The ``⋯ N earlier`` row that stands where the elided messages would be.
+
+        A count rather than a blank gap, matching :class:`TreeDetailPane`'s row,
+        because a gap does not say anything and this does. It names its own
+        gesture: the row is clickable, and the same action is in the command
+        palette, so neither the mouse nor the keyboard is a dead end.
+        """
+        row = Static(f"⋯ {self._elided} earlier · click to show them", classes="chat-fold")
+        row.tooltip = "Mount the whole conversation. On a long one this takes a while."
+        return row
+
+    async def on_click(self, event: events.Click) -> None:
+        """Show the whole transcript when the reader clicks the ``⋯`` row."""
+        widget = getattr(event, "widget", None)
+        if widget is not None and widget.has_class("chat-fold"):
+            await self.show_all_messages()
+
+    async def show_all_messages(self) -> None:
+        """Re-render the last reloaded transcript with no cap.
+
+        A no-op when nothing was elided, so the palette entry is safe to invoke
+        at any time. It is deliberately not cheap: mounting the rest costs the
+        same quadratic layout the cap avoided, which is why it is a gesture the
+        reader asks for rather than something scrolling triggers.
+        """
+        if not self._elided:
+            return
+        await self.reload_messages(self._reload_source, cap=False)
 
     async def _reload_exchange(self, span: list[dict]) -> None:
         """Rebuild one user→answer span (assistant + toolResult messages) as a
@@ -2707,7 +4614,9 @@ class ChatDisplay(MessageList):
         exchange = ExchangeBox()
         await self.mount(exchange)
         routes: dict[str, ToolBox] = {}
-        tokens = 0
+        # Mirrors the live path (TurnStream): output sums, context replaces.
+        output = 0
+        context = 0
         for msg in span:
             role = msg.get("role", "")
             if role == "assistant":
@@ -2730,7 +4639,8 @@ class ChatDisplay(MessageList):
                         routes[tc_id] = box
                 usage = msg.get("usage")
                 if isinstance(usage, dict):
-                    tokens += int(usage.get("total_tokens", 0) or 0)
+                    output += int(usage.get("output_tokens", 0) or 0)
+                    context = prompt_tokens(usage)
             elif role == "toolResult":
                 tc_id = msg.get("tool_call_id", "") or ""
                 target = routes.get(tc_id)
@@ -2745,7 +4655,7 @@ class ChatDisplay(MessageList):
                 # Unexpected role inside an answer span — render flat rather than
                 # drop it (add_persisted_message raises on a bad content shape).
                 self.add_persisted_message(msg)
-        await self._close_exchange(exchange, tokens=tokens, seconds=None)
+        await self._close_exchange(exchange, context=context, output=output, seconds=None)
 
 
 class ChatInput(TextArea):
@@ -2845,10 +4755,19 @@ class Parley(App):
         Binding("ctrl+t", "toggle_tools", "Tools", priority=True),
         Binding("ctrl+j", "focus_and_send", "^Enter=Send", show=True),
         Binding("ctrl+p", "command_palette", "Commands", show=False),
-        Binding("ctrl+c", "quit", "Quit"),
+        # NOT bound straight to `quit` any more: one mistimed press ended a session
+        # with a draft in the input and no warning. See `action_interrupt` for the
+        # four steps. `priority` so it reaches this action while the ChatInput has
+        # focus, which is where it is pressed.
+        # `show=False` keeps the Footer exactly as it was. Textual's own system
+        # `ctrl+c` binding is `show=False` and used to shadow this one; making this
+        # `priority` put `^c Quit` in the footer for the first time, costing ten
+        # columns to advertise the most widely known key in a terminal. The first
+        # press now says what the second one will do, which is the affordance.
+        Binding("ctrl+c", "interrupt", "Quit", priority=True, show=False),
         # priority=True: caught during generation regardless of which widget holds
-        # focus. The action no-ops when nothing is generating.
-        Binding("escape", "cancel_generation", "Cancel", show=False, priority=True),
+        # focus. Idle, it offers the tree browser on a second press.
+        Binding("escape", "escape", "Cancel", show=False, priority=True),
         # Esc's "and un-path what it did" variant (docs/SUBMISSION-LIFECYCLE.md
         # decision 2). ctrl+z is TextArea's undo, and this steals it ONLY while a
         # turn is generating — which is exactly when the input is disabled and that
@@ -2930,6 +4849,12 @@ class Parley(App):
         # what makes a turn this app never initiated renderable at all. Rebound
         # alongside ``_session_event_unsub`` when the backend/session changes.
         self._render_router: Optional[RenderRouter] = None
+        # The "press it again" offers currently standing, action name -> the timer
+        # that will withdraw one. A dict rather than two attributes because both
+        # keys that use it (`ctrl+C` to exit, `Esc` to open the tree) write the
+        # SAME status bar, and only one offer can be readable there at a time —
+        # see :meth:`_offer_again`.
+        self._pending_confirm: dict[str, Timer] = {}
         # Whether the sidebar is open. FALSE at startup (SESSION-UX-REDESIGN §8,
         # decision 4): the picker and the command palette are the canonical session
         # surface now, so the list does not spend a quarter of the first screen
@@ -2992,6 +4917,11 @@ class Parley(App):
         # ``/model`` switch cannot silently re-enable the AGENTS.md/CLAUDE.md
         # discovery this invocation turned off.
         self._no_context_files: bool = bool(run_config.get("no_context_files", False))
+        # ``--max-turns`` (the turn ceiling): run-level like the flags above. Its
+        # ``None`` is meaningful and is NOT coerced — it means "the flag was
+        # absent", which lets ``_apply_run_config`` fall through to config.json's
+        # top-level ``max_turns`` and then to no ceiling at all.
+        self._max_turns: Optional[int] = run_config.get("max_turns")
         # Per-extension config overrides (S40): the parsed ``--ext-config`` map
         # ({name: {key: value}}). Merged over config.json's ``"extensions"`` block at
         # each backend load (``_load_backend_extensions``) so each extension's
@@ -3003,6 +4933,25 @@ class Parley(App):
         self.load_config()
         if cli_overrides:
             self._apply_cli_overrides(cli_overrides)
+
+        # === Colour theme (docs/PLAN-0.9.4.md §6) ===
+        # Registered and applied HERE, in ``__init__``, and not in ``on_mount``:
+        # ``App.__init__`` has already built ``self.stylesheet`` from
+        # ``get_css_variables()``, and the first parse of ``parley.tcss`` happens
+        # before ``on_mount`` runs. Every colour in that sheet is a ``$tau-*``
+        # variable a theme supplies, so a theme applied at mount time would be a
+        # sheet parsed against variables that do not exist yet. ``_apply_theme``
+        # re-seeds the stylesheet's variable table for exactly that reason.
+        #
+        # A theme that cannot be loaded does not stop τ from starting. Each
+        # failure lands in ``_theme_errors`` and ``on_mount`` raises it as an
+        # error toast, and the app runs in the default theme — so the problem is
+        # reported on the one screen the user is looking at, without a broken file
+        # for a theme they are not even selecting taking the whole TUI down.
+        # ``themes.py``'s module docstring has the Fail-Early reasoning.
+        self._theme_errors: list[str] = []
+        self._theme_registry = build_theme_registry(errors=self._theme_errors)
+        self._apply_theme(self._configured_theme_name())
 
         # The storage-agnostic construction/lookup seam (W10): every current_session
         # assignment goes through this one instance rather than the concrete file
@@ -3054,6 +5003,13 @@ class Parley(App):
             self.config["default_model"] = overrides["default_model"]
         if "system_prompt" in overrides:
             self.config["system_prompt"] = overrides["system_prompt"]
+        # ``--theme`` (docs/PLAN-0.9.4.md §6). It rides the same in-memory config
+        # the other overrides do, which is exactly what makes it a ONE-RUN choice:
+        # ``action_set_theme``'s ``update_config`` re-reads the file rather than
+        # writing ``self.config`` back, so switching themes in a ``--theme latte``
+        # session saves the theme the user picked and not the one the flag set.
+        if THEME_CONFIG_KEY in overrides:
+            self.config[THEME_CONFIG_KEY] = overrides[THEME_CONFIG_KEY]
 
     def load_config(self):
         """Load ``~/.tau/config.json``, creating it from the packaged template if absent.
@@ -3065,6 +5021,91 @@ class Parley(App):
         """
         self.config = bootstrap_config()
         self.log(f"Loaded config with {len(self.config.get('models', {}))} models")
+
+    # ------------------------------------------------------------------
+    # Colour themes (docs/PLAN-0.9.4.md §6)
+    # ------------------------------------------------------------------
+
+    def _configured_theme_name(self) -> str:
+        """The theme this run asks for — ``--theme``, else config.json, else the default.
+
+        Absent means "no preference", which resolves to
+        :data:`~tau_coding_agent.themes.DEFAULT_THEME_NAME`.
+
+        *Present and wrong* — a name nothing answers to, or a non-string where a
+        name belongs — records the reason in :attr:`_theme_errors` and also
+        resolves to the default. The two outcomes look the same on screen for
+        about a second, and then ``on_mount``'s toast says which one happened.
+        That toast is the whole reason this can return a name instead of raising:
+        without it, "mocah" would silently render as mocha and the user would have
+        no way to tell a typo from a theme that looks like the default.
+
+        ``--theme`` reaches here through ``self.config`` because
+        ``_apply_cli_overrides`` wrote it there. That is a change to the config
+        *in memory* only; ``update_config`` re-reads the file, so a one-run
+        override cannot ride into the saved config on the back of a later swap.
+        """
+        configured = self.config.get(THEME_CONFIG_KEY)
+        if configured is not None and not isinstance(configured, str):
+            self._theme_errors.append(
+                f"config key {THEME_CONFIG_KEY!r} must be a theme name (a string), "
+                f"got {type(configured).__name__}"
+            )
+            return DEFAULT_THEME_NAME
+        try:
+            return resolve_theme(configured, self._theme_registry).name
+        except ThemeError as exc:
+            self._theme_errors.append(str(exc))
+            return DEFAULT_THEME_NAME
+
+    def _apply_theme(self, name: str) -> None:
+        """Make *name* the live theme, at construction time or mid-session.
+
+        Delegates to :func:`~tau_coding_agent.themes.install_themes`, which is
+        also what the bare-``App`` harnesses that load ``parley.tcss`` outside
+        this class call — one implementation of "make this app wear this theme",
+        so a harness cannot drift into a half-registered palette.
+
+        Passing ``self._theme_registry`` rather than letting the helper rebuild
+        one matters: rebuilding re-reads ``~/.tau/themes`` from disk, so a
+        mid-session swap would silently pick up a file added since startup and
+        the palette listing (built from the stored registry) would disagree with
+        what a swap can reach.
+        """
+        install_themes(self, name, registry=self._theme_registry)
+
+    def action_set_theme(self, name: str) -> None:
+        """Switch themes in-session and remember the choice.
+
+        The second of the two surfaces §6 asked for ("selectable / swappable"):
+        the config key is the standing setting, this is the live swap. It
+        **persists**, through the same ``update_config`` read-modify-write
+        ``action_edit_system_prompt`` uses — a colour scheme picked once and gone
+        at the next launch is a worse answer than one that sticks, and the gesture
+        that undoes it is the same gesture that did it.
+
+        ``update_config`` re-reads the on-disk file rather than writing
+        ``self.config`` back, so a one-run ``--model``/``--theme`` override cannot
+        ride along into the saved config on the back of a theme change.
+
+        An unknown name here cannot come from the palette, which is built from the
+        registry — it comes from ``run_action`` with a name typed by hand. It
+        reports and changes nothing: the app already wears a theme that works, and
+        the startup rule ("fall back to the default") would be the wrong answer
+        for a swap, because it would take the colours away from a user who asked
+        for a different set and mistyped.
+        """
+        try:
+            theme = resolve_theme(name, self._theme_registry)
+        except ThemeError as exc:
+            self.notify(str(exc), title="Theme", severity="error", timeout=10)
+            return
+        self._apply_theme(theme.name)
+        # Keep the in-memory config in step with the file, so a later read of
+        # ``self.config`` (or a second call here) sees what disk says.
+        self.config[THEME_CONFIG_KEY] = theme.name
+        update_config(THEME_CONFIG_KEY, theme.name)
+        self.notify(f"Theme: {theme.name}")
 
     def _session_facts(self) -> SessionFacts:
         """The configuration the empty chat pane states (handoff §4.4).
@@ -3140,6 +5181,16 @@ class Parley(App):
         # 80x24 with a panel already open must not render the starved chat once
         # before a resize corrects it.
         self._apply_side_columns()
+
+        # Theme load failures collected in __init__ (docs/PLAN-0.9.4.md §6).
+        # Reported here rather than there because ``notify`` needs a screen: the
+        # toasts are mounted on it, and __init__ runs before there is one. One
+        # toast per failure, each naming its own file, because two broken themes
+        # are two things to fix. The timeout is long: this is the only notice the
+        # user gets that the colours they are looking at are not the ones they
+        # asked for.
+        for message in self._theme_errors:
+            self.notify(message, title="Theme", severity="error", timeout=10)
 
         # ``tau --resume`` (§7): open the picker over the first frame. After the
         # refresh, not during mount — ``action_resume_session`` pushes a screen,
@@ -3581,6 +5632,103 @@ class Parley(App):
         self.current_backend.abort()
         self.sub_title = "Cancelling…"
 
+    # -- "press it again": two keys that ask before doing something big -------
+
+    #: How long a standing "press it again" offer lasts. Long enough to read the
+    #: status bar and act, short enough that an unrelated later press of the same
+    #: key is a fresh first press rather than a confirmation of something the
+    #: reader has forgotten about.
+    CONFIRM_SECONDS = 3.0
+
+    def _offer_again(self, name: str, message: str) -> bool:
+        """``True`` when ``name``'s offer was already standing — so act now.
+
+        The other half of the answer is the side effect: on a first press this
+        writes ``message`` into the status bar and starts the clock. So a caller
+        reads it as "has the reader already been told what this does, and said
+        yes by pressing again?".
+
+        A press of one key withdraws the OTHER key's offer. There is one status
+        bar, and an offer nobody can see any longer is one that must not still be
+        answerable — a reader who presses Esc and then Ctrl+C should get Ctrl+C's
+        warning, not an exit.
+        """
+        standing = self._pending_confirm.pop(name, None)
+        if standing is not None:
+            standing.stop()
+            self._withdraw_offers()
+            return True
+        self._withdraw_offers()
+        self.sub_title = message
+        self._pending_confirm[name] = self.set_timer(
+            self.CONFIRM_SECONDS, lambda: self._withdraw_offer(name)
+        )
+        return False
+
+    def _withdraw_offer(self, name: str) -> None:
+        """Time is up for ``name``'s offer: forget it and put the subtitle back."""
+        timer = self._pending_confirm.pop(name, None)
+        if timer is not None:
+            timer.stop()
+        self._restore_subtitle()
+
+    def _withdraw_offers(self) -> None:
+        for name in list(self._pending_confirm):
+            self._withdraw_offer(name)
+
+    def _restore_subtitle(self) -> None:
+        """Undo whatever an offer wrote. ``_refresh_subtitle`` returns early with no
+        session, which would leave the offer's text standing — so say nothing
+        instead, which is what the header shows before a session exists."""
+        if self.current_session is None:
+            self.sub_title = ""
+            return
+        self._refresh_subtitle()
+
+    def action_interrupt(self) -> None:
+        """``ctrl+C``, in four steps from "stop that" to "quit".
+
+        1. Generating — abort the turn. Same as Esc; the key a terminal user
+           reaches for to stop a runaway process should stop the runaway process.
+        2. Something typed — clear the input. The draft is thrown away, which is
+           what ``ctrl+C`` means at a shell prompt.
+        3. Nothing typed, nothing offered — offer the exit and say so.
+        4. Nothing typed, the offer standing — quit.
+
+        Steps 3 and 4 are the point: ``ctrl+C`` used to be bound straight to
+        ``quit``, so one mistimed keypress ended a session with unsaved input and
+        no warning.
+        """
+        if self.is_generating:
+            self.action_cancel_generation()
+            return
+        editor = self.query_one("#chat-input", ChatInput)
+        if editor.text:
+            editor.text = ""
+            self._withdraw_offers()
+            return
+        if self._offer_again("exit", "press ctrl+C again to exit"):
+            self.exit()
+
+    def action_escape(self) -> None:
+        """``Esc``: stop the turn if one is running, else offer the tree browser.
+
+        Esc has meant "cancel this response" since the beginning and still does —
+        that is checked first, and nothing about it changes. What it used to mean
+        when nothing was generating is *nothing at all*: the binding is
+        ``priority=True`` so the key was consumed, the action no-op'd, and the
+        reader got no feedback of any kind.
+
+        It now offers the tree, on the second press. Two presses rather than one
+        because Esc is also the key people hit to mean "never mind", and opening a
+        full-screen modal on that is worse than doing nothing was.
+        """
+        if self.is_generating:
+            self.action_cancel_generation()
+            return
+        if self._offer_again("tree", "press Esc again to view the tree"):
+            self.action_browse_tree()
+
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Decide which of the two ``priority=True`` app bindings are live right now.
 
@@ -3608,7 +5756,7 @@ class Parley(App):
           becomes undo inside the rollback prompt editor rather than a second
           rollback modal stacked on the first.
         """
-        if action in ("rollback_turn", "cancel_generation") and len(self.screen_stack) > 1:
+        if action in ("rollback_turn", "escape", "interrupt") and len(self.screen_stack) > 1:
             return False
         if action == "rollback_turn":
             return self.is_generating
@@ -3907,7 +6055,8 @@ class Parley(App):
             # reads exactly as it did pre-G4.
             telemetry = format_telemetry(event.get("extra") or {})
             await display.finalize_exchange(
-                tokens=int(event.get("tokens", 0) or 0),
+                context=int(event.get("context", 0) or 0),
+                output=int(event.get("output", 0) or 0),
                 seconds=elapsed,
                 telemetry=telemetry,
                 lane=lane,
@@ -4079,13 +6228,34 @@ class Parley(App):
         # (new-chat, resume) inherit it.
         global_replay = self.config.get("reasoning_replay")
         inject_replay = global_replay is not None and "reasoning_replay" not in model_config
+        # The system prompt follows reasoning_replay's rule — a model entry that
+        # names its own wins, else the top-level default — and lands on the ENTRY
+        # so ``TauBackend`` receives it as ``custom_prompt`` and composes it with
+        # the project context files and the tool list. It used to be written
+        # straight into the session's first message instead, which took
+        # precedence over the built prompt and threw that composition away.
+        base_prompt = model_config.get("system_prompt") or self.config.get("system_prompt")
+        inject_prompt = bool(base_prompt) and "system_prompt" not in model_config
+        # The turn ceiling resolves like ``reasoning_replay``, with ``--max-turns``
+        # ahead of both: the flag, else the entry's own key, else the top-level
+        # config default, else nothing — and nothing means no ceiling, which is
+        # ``AgentLoopConfig``'s default and pi's behaviour.
+        global_max_turns = self.config.get("max_turns")
+        resolved_max_turns: Optional[int] = None
+        if self._max_turns is not None:
+            resolved_max_turns = self._max_turns
+        elif global_max_turns is not None and "max_turns" not in model_config:
+            resolved_max_turns = int(global_max_turns)
         if not (
             self._exclude_tools
             or self._no_tools
             or self._tool_allowlist is not None
             or inject_replay
+            or inject_prompt
+            or self._append_system_prompt
             or self._bus_available
             or self._no_context_files
+            or resolved_max_turns is not None
         ):
             return model_config
         mc = dict(model_config)
@@ -4100,6 +6270,14 @@ class Parley(App):
             mc["tools"] = []
         if self._exclude_tools:
             mc["exclude_tools"] = self._exclude_tools
+        if inject_prompt:
+            mc["system_prompt"] = base_prompt
+        if self._append_system_prompt:
+            # Carried as its own key rather than folded in here: ``TauBackend``
+            # applies it to whichever base text it resolves, so the sections
+            # augment the base rather than the composed whole, and one code path
+            # decides that for every frontend.
+            mc["append_system_prompt"] = list(self._append_system_prompt)
         if inject_replay:
             mc["reasoning_replay"] = global_replay
         if self._bus_available:
@@ -4112,6 +6290,8 @@ class Parley(App):
             # Only ever set TRUE, like ``bus_available``: -nc's absence must not
             # revoke a ``"no_context_files": true`` the config file set.
             mc["no_context_files"] = True
+        if resolved_max_turns is not None:
+            mc["max_turns"] = resolved_max_turns
         return mc
 
     async def _load_backend_extensions(self) -> None:
@@ -4214,12 +6394,21 @@ class Parley(App):
             return
 
         # Create new session (writes the header + system message; append-only).
-        # --append-system-prompt sections augment the base prompt on a NEW session
-        # (S28); a resumed session keeps its own stored prompt, so no append there.
-        system_prompt = _append_system_prompt(
-            self.config.get("system_prompt", "You are a helpful assistant."),
-            self._append_system_prompt,
-        )
+        #
+        # The stored message is the prompt the backend BUILT — base text, project
+        # context files, tool list — because that message is what goes on the
+        # wire: it takes precedence over ``AgentSession``'s own prompt, so
+        # anything composed and not stored here is silently discarded. This line
+        # used to compose its own string from ``config["system_prompt"]``, with
+        # ``"You are a helpful assistant."`` when the key was absent. That
+        # fallback meant the message was NEVER absent, so on the TUI path the
+        # built prompt was never used: no AGENTS.md context and no
+        # ``Available tools:`` list ever reached a model, and a default install
+        # was told it was a helpful assistant rather than a coding agent.
+        # ``--append-system-prompt`` and a configured prompt now ride the model
+        # entry into that build (see ``_apply_run_config``); a resumed session
+        # keeps its own stored prompt, unchanged.
+        system_prompt = getattr(self.current_backend, "system_prompt", "") or ""
         # AgentSessionRuntime (H1, phase 3): the runtime performs the
         # session_log bind, the H2 veto check, and the H3 reset (a no-op
         # here — this AgentSession was just constructed, so there is
@@ -4298,6 +6487,21 @@ class Parley(App):
     def action_toggle_tools(self) -> None:
         """Fold/unfold every tool box (call + result) in the transcript at once."""
         self.tools_collapsed = self._fold_all(self.query(ToolBox), "Tool output")
+
+    async def action_show_all_messages(self) -> None:
+        """Mount the messages a capped reload left off screen.
+
+        Says so when there is nothing to show, rather than looking broken. The
+        conversation was never truncated — :meth:`ChatDisplay.reload_messages`
+        bounds what is MOUNTED, and this lifts that bound for the current view.
+        """
+        display = self.query_one(ChatDisplay)
+        elided = display.elided_count
+        if not elided:
+            self.notify("The whole conversation is already on screen.")
+            return
+        self.notify(f"Mounting {elided} earlier messages…")
+        await display.show_all_messages()
 
     def action_show_extensions(self) -> None:
         """List loaded extensions + load errors in the transcript (E5 §5 / S34).
@@ -4481,28 +6685,59 @@ class Parley(App):
 
     @staticmethod
     def _aggregate_label(messages: list[dict]) -> str:
-        """Conversation-level rollup: total tool calls + summed completion tokens.
+        """Conversation-level rollup: tool calls, cumulative usage, current context.
+
+        Follows pi's footer (``modes/interactive/components/footer.ts``): the
+        cumulative counts are broken out per direction — ``↑`` uncached input,
+        ``↓`` output, ``R`` cache reads, ``W`` cache writes — and the context size
+        is a SEPARATE, non-cumulative number.
+
+        This replaced a single ``Σ total_tokens`` over every assistant message.
+        That sum was quadratic in conversation length: each completion's
+        ``total_tokens`` includes its whole prompt, and each prompt contains every
+        earlier turn, so an N-turn conversation counted turn 1 N times. On a real
+        17-message session it read 192.9k for a 22.6k-token conversation that had
+        generated 10.5k tokens.
 
         Derived purely from the transcript, so it reads identically for a live
         session and a reloaded one. Wall-clock time is intentionally absent — it
         is not persisted per completion, and we don't fabricate it (Fail-Early).
         Returns an empty string when there's nothing to roll up yet."""
+        assistants = [m for m in messages if m.get("role") == "assistant"]
         tools = sum(
             1
-            for m in messages
-            if m.get("role") == "assistant"
+            for m in assistants
             for b in (m.get("content") or [])
             if isinstance(b, dict) and b.get("type") == "toolCall"
         )
-        tokens = sum(
-            int((m.get("usage") or {}).get("total_tokens", 0) or 0)
-            for m in messages
-            if m.get("role") == "assistant"
+        usages = [u for m in assistants if isinstance(u := m.get("usage"), dict)]
+        totals = {
+            key: sum(int(u.get(key, 0) or 0) for u in usages)
+            for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+        }
+        # The LAST completion's prompt is the conversation's current size. Not a
+        # sum — the prompts nest, so summing them counts the same text repeatedly.
+        context = prompt_tokens(usages[-1]) if usages else 0
+        parts = [f"{tools} tool" + ("" if tools == 1 else "s")] if tools else []
+        # Each arrow is dropped when its count is 0 (pi does the same): a provider
+        # that reports no caching should not show an empty R/W, and a fresh chat
+        # should not show a row of zeroes. The four share one ``·`` part — they are
+        # one reading of the same meter, not four separate stats.
+        arrows = " ".join(
+            f"{prefix}{format_tokens(totals[key])}"
+            for prefix, key in (
+                ("↑", "input_tokens"),
+                ("↓", "output_tokens"),
+                ("R", "cache_read_tokens"),
+                ("W", "cache_write_tokens"),
+            )
+            if totals[key]
         )
-        if not tools and not tokens:
-            return ""
-        label = f"{tools} tool" + ("" if tools == 1 else "s")
-        return f"{label} · {format_tokens(tokens)} tok"
+        if arrows:
+            parts.append(arrows)
+        if context:
+            parts.append(f"{format_tokens(context)} ctx")
+        return " · ".join(parts)
 
     def _refresh_subtitle(self) -> None:
         """Set the header subtitle to the model plus the conversation rollup."""
@@ -4576,6 +6811,16 @@ class Parley(App):
             self.action_edit_system_prompt,
         )
 
+        # The keyboard half of the "⋯ N earlier" row's gesture (the row itself is
+        # clickable). Listed unconditionally, like the rollback entry above and
+        # for the same reason: an entry that appears only sometimes is harder to
+        # find than one that explains it had nothing to do.
+        yield SystemCommand(
+            "Show earlier messages",
+            "Mount the whole conversation, not just the last few turns. Slow on a long one.",
+            self.action_show_all_messages,
+        )
+
         yield SystemCommand(
             "Toggle Reasoning",
             "Collapse/expand all reasoning regions",
@@ -4593,6 +6838,24 @@ class Parley(App):
             "List loaded extensions (name/path/tools/commands/hooks) and load errors",
             self.action_show_extensions,
         )
+
+        # Themes (docs/PLAN-0.9.4.md §6). One entry per theme rather than one
+        # "Theme…" entry opening a second chooser: the palette IS a chooser, it
+        # already filters by substring, and a themes list is short and stable.
+        # The active one is marked rather than hidden — an entry that disappears
+        # when you pick it makes the list a different length every time you open
+        # it, and "which one am I on" is the question a theme list is asked most.
+        #
+        # ``run_action`` rather than a bound lambda, so the palette entry, a
+        # keybinding and ``app.run_action("set_theme('latte')")`` from a test all
+        # land on the same one action.
+        for theme_name in sorted(self._theme_registry):
+            active = " (active)" if theme_name == self.theme else ""
+            yield SystemCommand(
+                f"Theme: {theme_name}{active}",
+                f"Switch to the {theme_name} colours and save the choice to config.json",
+                lambda t=theme_name: self.run_action(f'set_theme("{t}")'),
+            )
 
         # Extension-registered slash commands (E5 §5 / S35): list each so it is BOTH
         # visible here and runnable (dispatch mirrors this in on_input_submitted).
@@ -4819,26 +7082,52 @@ class Parley(App):
             self.notify("Conversation tree is empty", severity="warning")
             return
 
-        target_id = await self.push_screen_wait(SessionTreeModal(roots, resolve_entry=tree.entry))
-        if target_id is None:
+        # The modal returns an INTENT, not a bare id (§5.3 / §11.1). ``sole_id`` is
+        # the node the reader pointed at under either action, and it raises rather
+        # than silently taking ids[0] if a later gesture starts answering with a set.
+        intent = await self.push_screen_wait(SessionTreeModal(tree))
+        if intent is None:
             return
+        if intent.action == "elide":
+            # Both ends already, and already checked against the same rules
+            # ``elide_span`` will apply (``SessionTreeModal._elide_plan``). No mode
+            # chooser: "elide" was never one of the three branch modes, and the
+            # second browse it used to need is the key that produced this intent.
+            anchor_id, first_kept_id = intent.ids
+            await self._elide_span_flow(session, anchor_id, first_kept_id)
+            return
+        picked_id = intent.sole_id
+        # ``revise``: the reader named a USER message, which means fork from its
+        # PARENT and hand the old text back to edit (PLAN-0.9.4 §4, item 2).
+        # Navigating to the message itself would make the next turn its child —
+        # two user turns in a row, the one shape a conversation cannot have.
+        prefill: Optional[str] = None
+        target_id = picked_id
+        if intent.action == "revise":
+            revised = tree.entry(picked_id)
+            parent_id = revised.get("parentId")
+            if parent_id is None:
+                # The first message in the session has nothing to fork FROM. Say
+                # so rather than silently falling back to navigating onto it,
+                # which is the gesture this action exists to stop doing.
+                self.notify(
+                    "That is the first message — there is no earlier point to fork from.",
+                    severity="warning",
+                )
+                return
+            target_id = str(parent_id)
+            prefill = tree.message_text(picked_id)
 
         mode = await self.push_screen_wait(TreeModeModal())
         if mode is None:
             return
 
-        if mode == "elide":
-            # The picked node is the elide's ANCHOR, not a branch point — and an
-            # anchor that is already the cursor is the NORMAL case (fold the history
-            # behind the current tip and keep going), so the "already at that node"
-            # guard below deliberately does not apply to it.
-            await self._elide_span_flow(session, target_id, roots, tree.entry)
-            return
-
         if target_id == session.cursor:
             # Checked AFTER the mode pick, not before: it is a statement about
-            # *branching* (the three modes that move the cursor back), and hoisting
-            # it above the chooser would make it reject the elide flow too.
+            # *branching*, which is what all three remaining modes do. The elide
+            # returned above without reaching it — an anchor that is already the
+            # cursor is the NORMAL elide ("fold the history behind where I am and
+            # keep going"), not a no-op.
             self.notify("Already at that node")
             return
 
@@ -4867,53 +7156,52 @@ class Parley(App):
         self.messages = new_messages
         await self.query_one(ChatDisplay).reload_messages(self.messages)
         self._refresh_subtitle()
-        self.notify(
-            "Summarized and moved to selected node" if summarize else "Moved to selected node"
-        )
+        if prefill is None:
+            self.notify(
+                "Summarized and moved to selected node" if summarize else "Moved to selected node"
+            )
+            return
+        # ``revise``: the old text goes back in the input, selected end-first so
+        # typing replaces it and the cursor is where an edit starts. Written AFTER
+        # the navigation, not before, so a failed one leaves the input alone rather
+        # than staging a message against a conversation that did not move.
+        editor = self.query_one("#chat-input", ChatInput)
+        editor.text = prefill
+        editor.move_cursor(editor.document.end)
+        editor.focus()
+        self.notify("Forked from before that message — edit it and send.")
 
     async def _elide_span_flow(
         self,
         session: ConversationSession,
         anchor_id: str,
-        roots: list[TreeNode],
-        resolve_entry: Callable[[str], dict[str, Any]],
+        first_kept_id: str,
     ) -> None:
-        """Second half of the ``elide`` mode: pick the resume point, then fold (W3).
+        """Perform the elide the browser worked out, and re-render (W3).
 
-        Called from :meth:`action_browse_tree`'s worker, so ``push_screen_wait`` is
-        legal here. Split out rather than inlined because it asks a *second* node
-        question, which no other mode does: ``anchor_id`` is where the fold jumps
-        FROM (the elide is appended under it, and the kept region ends there) and the
-        node picked here is where it jumps TO — ``firstKeptId``, the first entry the
-        fold keeps.
+        ``anchor_id`` is where the fold jumps FROM (the elide entry is appended
+        under it, and the conversation continues there); ``first_kept_id`` is
+        where it jumps TO — the oldest entry the fold keeps. Everything on the
+        anchor's path before it leaves the context.
 
-        The browser is the SAME :class:`SessionTreeModal` with a different caption:
-        the second question is asked of the same tree, and a purpose-built second
-        widget would be the same list rendered twice. It shows the whole tree rather
-        than pre-filtering to the anchor's ancestors, because the tree is how a user
-        recognizes the node they mean — and an unreachable pick is caught by
-        ``elide_span``'s validation and reported, which is strictly more informative
-        than a node that mysteriously cannot be selected.
+        **Both ids arrive together now.** This used to take the anchor plus the
+        whole ``ConversationTree`` and open a SECOND full-screen browser to ask
+        for the resume point, with a different caption. That is gone: the pair is
+        two nodes of one line and the browser can name both of them without
+        closing (``ctrl+E``), which also means an illegal pair is refused while
+        the reader can still see the tree they picked it from. The rejected
+        design and why it looked reasonable are in PLAN-0.9.4 §4.
 
-        Every failure is surfaced through ``notify(severity="error")`` — the path the
-        other modes' failures already take — and nothing is appended when validation
-        fails: ``elide_span`` checks before it writes, so a rejected elide leaves the
-        session byte-identical rather than half-applied.
+        Still split out rather than inlined, and still validating on the backend
+        side as well: this is called from :meth:`action_browse_tree`'s worker with
+        a pair the modal checked against a tree it built at open time, and the
+        session is live. ``elide_span`` checks before it writes, so a pair that
+        went stale is refused rather than half-applied, and the failure is
+        surfaced through ``notify(severity="error")`` like every other mode's.
         """
         elide_span = getattr(self.current_backend, "elide_span", None)
         if elide_span is None:
             self.notify("This backend does not support eliding", severity="warning")
-            return
-
-        first_kept_id = await self.push_screen_wait(
-            SessionTreeModal(
-                roots,
-                resolve_entry=resolve_entry,
-                title="Elide: pick the resume point",
-                help_text="Enter: resume here    Tab: detail pane    Esc: cancel",
-            )
-        )
-        if first_kept_id is None:
             return
 
         before = len(self.messages)
@@ -4983,8 +7271,16 @@ class Parley(App):
         await self.push_screen(ExtensionChordScreen(shortcuts), _dispatch_chosen)
 
     async def action_edit_system_prompt(self):
-        """Edit the system prompt."""
-        current_prompt = self.config.get("system_prompt", "You are a helpful assistant.")
+        """Edit the system prompt.
+
+        The editor opens on τ's own base text when the config names no prompt,
+        not on a stand-in: this key REPLACES that text, so seeding the editor
+        with anything else would offer the user a starting point their agent has
+        never actually been given. What the editor shows is the base text alone —
+        the project context files and the tool list compose around it and are not
+        the user's to edit here.
+        """
+        current_prompt = self.config.get("system_prompt") or BASE_SYSTEM_PROMPT
 
         def handle_result(new_prompt: str | None):
             if new_prompt is not None:

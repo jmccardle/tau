@@ -57,22 +57,22 @@ pytest tau-coding-agent/tests/test_packaging.py
 git commit -am "release: version 0.9.3"
 ```
 
-The version lives in eleven places. The script writes all eleven and refuses to
-run on a dirty tree. Do not add a `version = "..."` literal to a package
+The version lives in thirteen places. The script writes all thirteen and refuses
+to run on a dirty tree. Do not add a `version = "..."` literal to a package
 `pyproject.toml` to fix a mismatch — a test forbids the second copy.
 
 ### 2. Gate
 
 ```bash
 pytest                                  # 4164 passed, 135 skipped, 6 deselected at 0.9.2
-venv/bin/ruff check tau-llm/src tau-agent-core/src tau-coding-agent/src tau-jmfts/src
-venv/bin/ruff format --check tau-llm/src tau-agent-core/src tau-coding-agent/src tau-jmfts/src
-venv/bin/mypy tau-llm/src tau-agent-core/src tau-coding-agent/src tau-jmfts/src
+venv/bin/ruff check tau-llm/src tau-agent-core/src tau-coding-agent/src tau-jmfts/src tau-meta/src
+venv/bin/ruff format --check tau-llm/src tau-agent-core/src tau-coding-agent/src tau-jmfts/src tau-meta/src
+venv/bin/mypy tau-llm/src tau-agent-core/src tau-coding-agent/src tau-jmfts/src tau-meta/src
 ```
 
 Those are the four `.githooks/pre-commit` runs. `ruff check .` over the whole
 repo reports findings in `tests/`, `experiments/` and `run_agent_loop.py`; those
-trees are outside the gate on purpose, so run ruff on the four `src` trees, not
+trees are outside the gate on purpose, so run ruff on the five `src` trees, not
 on `.`.
 
 #### Run the matrix BEFORE the tag push, not after
@@ -176,12 +176,31 @@ git tag -a v0.9.3-fullhistory -m "..." <internal master commit>
 
 ```bash
 pip install build twine
-for pkg in tau-llm tau-agent-core tau-coding-agent tau-jmfts; do
+for pkg in tau-llm tau-agent-core tau-coding-agent tau-jmfts tau-meta; do
     python -m build --sdist --wheel --outdir "$DIST" "./$pkg"
 done
 twine check --strict "$DIST"/*
 ./package.sh                            # the tau-<version>.tar.gz, three packages, no tau-jmfts
 ```
+
+Ten artifacts: five projects, a wheel and an sdist each. `tau-meta` is the
+`ffwf-tau` metapackage — no functional code, one dependency on
+`ffwf-tau-coding-agent[tui]`. It is not in the `package.sh` tarball, which stages
+functional source only.
+
+**Neither build path may patch source.** The two lines above are two independent
+build paths over one tree, and they may differ only in *shape* — which projects
+they carry (five vs. three: the tarball has no `tau-jmfts` and no `tau-meta`),
+and what rides along (the wheels carry PyPI metadata; the tarball carries none).
+They may not differ in the content of a shared source file. `package.sh` used to
+`sed` `tau_coding_agent/tagline.py` to turn `--fun` on for a release, and because
+the wheels come from `python -m build` and never ran it, every published wheel
+shipped the developer default — the feature reached only the artifact nobody
+installs from. The rewrite is gone, the default lives in the source, and
+`test_chat_placeholder.py::test_no_build_path_rewrites_the_fun_default` fails the
+suite if either file grows one again. If a release ever needs a value to differ
+between a checkout and a build, put it in the source and have the checkout ask
+for the other one — not the reverse.
 
 Build to a directory outside the repository. `dist/` is gitignored as of 0.9.3,
 so a build inside the tree no longer leaves an untracked directory behind — but
@@ -196,6 +215,17 @@ python3 -m venv /tmp/smoke
 /tmp/smoke/bin/pip install --find-links "$DIST" "ffwf-tau-coding-agent[tui,jmfts]==0.9.3"
 /tmp/smoke/bin/tau --version
 /tmp/smoke/bin/ffwf-tau --version
+```
+
+Smoke the metapackage in its own venv, because what it is for is the resolution
+it triggers — a stale pin inside it is invisible in every other check:
+
+```bash
+python3 -m venv /tmp/smoke-meta
+/tmp/smoke-meta/bin/pip install --find-links "$DIST" ffwf-tau
+/tmp/smoke-meta/bin/tau --version                       # the command exists
+/tmp/smoke-meta/bin/python -c "import textual"          # [tui] came with it
+/tmp/smoke-meta/bin/python -c "import tau_jmfts"        # must FAIL: [jmfts] must not
 ```
 
 Do not pass `--no-index`: the τ wheels are local but their third-party
@@ -247,16 +277,23 @@ it means the artifact on PyPI is whichever machine uploaded first, and for 0.9.3
 that should be CI rather than a laptop.
 
 **A project that does not exist on the index yet cannot be created by this
-workflow.** PyPI will not accept four *pending* publishers that share one
+workflow.** PyPI will not accept two *pending* publishers that share one
 configuration — the second attempt is refused with:
 
 > A pending trusted publisher matching this configuration has already been
 > registered for a different project name.
 
 This constraint applies to pending rows only. Once a project exists, the same
-identity may be registered to all four, which is what the workflow's header
+identity may be registered to all of them, which is what the workflow's header
 comment describes and what every release after the first one uses. So the
 comment is right about steady state and wrong about the bootstrap.
+
+**This is a per-project cost, and it recurs.** It was paid four times for 0.9.2
+and once more for `ffwf-tau`, the metapackage added after 0.9.3 was already
+published. A distribution added between releases can be bootstrapped on its own,
+without cutting a new version of anything: build only its two artifacts, hand
+upload them at the current lockstep version, then register its normal publisher
+so the next tag push carries it automatically.
 
 Bootstrap each index **once**, by hand, with an account-scoped API token:
 
@@ -278,6 +315,21 @@ shred -u ~/.pypirc                      # then REVOKE the token on the index
 The `ffwf_*` glob is not cosmetic: `$DIST` also holds `tau-<version>.tar.gz`
 from `package.sh`, which carries no PyPI metadata and is not a distribution.
 
+**A TestPyPI install of `ffwf-tau` needs the real index too.** TestPyPI carries
+`ffwf-tau-coding-agent` at 0.9.2 only, so the metapackage's `==0.9.3` pin cannot
+resolve there on its own:
+
+```bash
+/tmp/smoke-meta/bin/pip install \
+    --index-url https://test.pypi.org/simple/ \
+    --extra-index-url https://pypi.org/simple/ ffwf-tau
+```
+
+That is not a workaround for a defect. The TestPyPI upload rehearses the upload
+and the publisher registration; the dependency is pulled from the index that
+actually has it. The resolution itself is what the local `--find-links` smoke in
+step 5 proves.
+
 Drop `--repository testpypi` and point `repository` at
 `https://upload.pypi.org/legacy/` for real PyPI. The token is used locally and
 never becomes a repository secret, so "no API token in CI" still holds.
@@ -289,12 +341,12 @@ project:
 * PyPI — <https://pypi.org/manage/account/publishing/>
 * TestPyPI — <https://test.pypi.org/manage/account/publishing/>
 
-Four projects on each index, eight registrations, all with the same three
+Five projects on each index, ten registrations, all with the same three
 middle fields:
 
 | Field | Value |
 |---|---|
-| PyPI project name | `ffwf-tau-llm`, `ffwf-tau-agent-core`, `ffwf-tau-coding-agent`, `ffwf-tau-jmfts` |
+| PyPI project name | `ffwf-tau-llm`, `ffwf-tau-agent-core`, `ffwf-tau-coding-agent`, `ffwf-tau-jmfts`, `ffwf-tau` |
 | Owner | `jmccardle` |
 | Repository name | `tau` |
 | Workflow name | `publish.yml` |
@@ -305,8 +357,8 @@ rules. The environment name is part of the publisher identity, so it has to
 match exactly.
 
 Rehearse on TestPyPI first — this is the run that has not happened yet, and the
-only way to find out whether the eight registrations are right before a tag push
-makes it expensive. Register the four TestPyPI publishers, then:
+only way to find out whether the ten registrations are right before a tag push
+makes it expensive. Register the five TestPyPI publishers, then:
 
 ```bash
 gh workflow run publish.yml --repo jmccardle/tau --ref master -f target=testpypi

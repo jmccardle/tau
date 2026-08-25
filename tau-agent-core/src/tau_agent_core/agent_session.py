@@ -38,9 +38,9 @@ from tau_agent_core.extensions.runner import (
     ExtensionRunner,
 )
 from tau_agent_core.session import SessionState
-from tau_agent_core.session_log import SessionLog
+from tau_agent_core.session_log import SessionLog, agent_spec_in_force
 from tau_agent_core.conversation_tree import ConversationTree
-from tau_agent_core.agent_loop import AgentLoop
+from tau_agent_core.agent_loop import AgentLoop, completed_messages
 from tau_agent_core.agent_loop_types import AgentLoopConfig
 from tau_agent_core.commands import (
     CommandInvocation,
@@ -63,6 +63,7 @@ from tau_agent_core.compaction import (
     CompactionSettings,
     compact as run_compaction,
     estimate_context_tokens,
+    estimate_span_tokens,
     prepare_compaction,
     should_compact,
 )
@@ -190,6 +191,31 @@ def _extension_factory_label(ext: Callable) -> str:
     if qualname:
         return str(qualname)
     return repr(ext)
+
+
+def _covered_span(path_entries: list[dict[str, Any]], first_kept_id: str) -> list[dict[str, Any]]:
+    """The entries a compaction anchored at ``first_kept_id`` removes from the fold.
+
+    ``path_entries`` is ``ConversationTree.context_entries()`` at the leaf the anchor
+    will parent under — i.e. the fold as it stands *before* the compaction — so the
+    covered span is exactly its prefix up to the boundary. That is the same
+    difference ``ConversationTree._splice_span_phrase`` (conversation_tree.py:552)
+    reads back out of the tree afterwards, computed here at write time because the
+    token figure over it is not recoverable later (TREE-BROWSER-AS-EDITOR.md §8.2).
+
+    Fail-Early on a boundary that is not on the path. ``prepare_compaction`` picks
+    ``first_kept_entry_id`` *out of* ``path_entries``, so this cannot happen without
+    a defect upstream — and the failure mode if it did would be a provenance record
+    claiming a span of zero for a compaction that folded the whole conversation,
+    which is worse than a traceback.
+    """
+    for index, entry in enumerate(path_entries):
+        if entry.get("id") == first_kept_id:
+            return path_entries[:index]
+    raise ValueError(
+        f"compaction boundary {first_kept_id!r} is not on the path it was cut from; "
+        "the covered-span provenance would be a fabricated zero"
+    )
 
 
 class AgentSession:
@@ -350,9 +376,22 @@ class AgentSession:
                 "would silently mean 'no suppression'."
             )
         self._no_tools = no_tools
-        # Turn cap for THIS session's loop (C2/W14: a branch sub-agent is bounded, so a
-        # looping sub-agent cannot burn the primary run's budget). ``None`` = the
-        # AgentLoopConfig default; the loop, not this class, owns that number.
+        # Turn ceiling for THIS session's loop (C2/W14: a branch sub-agent can be
+        # bounded, so a looping sub-agent cannot burn the primary run's budget).
+        # ``None`` = the AgentLoopConfig default, which is itself no ceiling; the
+        # loop, not this class, owns that decision.
+        #
+        # Checked HERE and not only by AgentLoopConfig's ``ge=1``, because this is
+        # the point every source of the value passes through — the CLI flag,
+        # ``~/.tau/config.json``, a model entry, the SDK. A bad number from the
+        # config file would otherwise surface as a pydantic ValidationError on the
+        # first prompt, long after the TUI had started and with no mention of where
+        # it came from.
+        if max_turns is not None and max_turns < 1:
+            raise ValueError(
+                f"max_turns must be at least 1, got {max_turns} — "
+                "no ceiling is spelled None, never 0."
+            )
         self._max_turns = max_turns
         # Batch-level tool execution policy forwarded to every AgentLoopConfig this
         # session builds (prompt() and continue_conversation()). "parallel" is the
@@ -1307,8 +1346,9 @@ class AgentSession:
         """The ``max_turns`` kwarg for this session's loop, or nothing.
 
         Returns an EMPTY dict when unset rather than a number, so ``AgentLoopConfig``'s
-        own default stays the single definition of "how many turns by default" — copying
-        it here would be a second source of truth that silently drifts.
+        own default stays the single definition of the default ceiling — copying it here
+        would be a second source of truth that silently drifts. That default is now
+        ``None``: no ceiling, until a caller states one.
         """
         return {} if self._max_turns is None else {"max_turns": self._max_turns}
 
@@ -2885,11 +2925,6 @@ class AgentSession:
         # declared-``before_user`` prefix ahead of it. An extension that declares
         # nothing produces exactly pi's array, unchanged. The loop concatenates
         # context + prompts.
-        final_messages = await loop.run(
-            prompts=[*pre_user_messages, user_msg, *queued, *post_user_messages],
-            context=context_messages,
-        )
-
         # Persist this turn's messages AND collect them to return. The
         # return value is THIS turn's new messages only — the user message
         # (when it wasn't already supplied in the context) plus the
@@ -2903,6 +2938,60 @@ class AgentSession:
         # duplicated and got confused about what it had already done.
         turn_messages: list[dict[str, Any]] = []
 
+        # The turn is persisted on BOTH paths (docs/PLAN-0.9.4.md §3). This whole
+        # block used to sit after ``loop.run`` with nothing around it, so a raise
+        # anywhere in the loop skipped every append below — the user's own prompt
+        # included — and the turn vanished. That is what "Esc loses the turn" was:
+        # not the abort, but the exception the abort provoked in the finalizer.
+        #
+        # The requirement is *every complete message or tool result should be
+        # persisted*, so the failure path writes the same things in the same
+        # order, and adds whatever the loop had finished before it died
+        # (``completed_messages``). Then it re-raises, unchanged: the caller still
+        # learns the turn failed, it just no longer learns it by finding the
+        # session empty.
+        try:
+            final_messages = await loop.run(
+                prompts=[*pre_user_messages, user_msg, *queued, *post_user_messages],
+                context=context_messages,
+            )
+        except BaseException as exc:
+            self._persist_turn_inputs(
+                pre_user_messages, user_msg, queued, post_user_messages, turn_messages, persist
+            )
+            self._persist_loop_messages(completed_messages(exc), turn_messages, persist=persist)
+            raise
+
+        self._persist_turn_inputs(
+            pre_user_messages, user_msg, queued, post_user_messages, turn_messages, persist
+        )
+
+        # Assistant responses and tool results produced this turn (plus any durable
+        # ``custom`` nodes the mutating ``turn_end`` hook appended mid-loop, S43).
+        self._persist_loop_messages(final_messages, turn_messages, persist=persist)
+
+        return turn_messages
+
+    def _persist_turn_inputs(
+        self,
+        pre_user_messages: list[dict[str, Any]],
+        user_msg: UserMessage,
+        queued: list[UserMessage],
+        post_user_messages: list[dict[str, Any]],
+        turn_messages: list[dict[str, Any]],
+        persist: bool,
+    ) -> None:
+        """Append this turn's INPUT messages to the log and to *turn_messages*.
+
+        Everything the model was given before it answered: the ``before_user``
+        injections, the user's own message, the queued ``nextTurn`` messages, and
+        the ``after_user`` injections — in the order the model saw them.
+
+        Split out of :meth:`_run_one_turn` so the success path and the failure
+        path write the same things. It was inline, and therefore only on the
+        success path, which is why an aborted turn lost the user's prompt as well
+        as the assistant's reply.
+        """
         # Persist the ``before_user`` injections FIRST — the persisted order must be
         # the model-visible order or the reload forks (agent_session.py:419-421 —
         # the next load must rebuild the exact path the model saw). These reached
@@ -2951,12 +3040,6 @@ class AgentSession:
             if persist:
                 self._session_log.append_custom_message(cmsg, custom_type=str(cmsg["customType"]))
             turn_messages.append(cmsg)
-
-        # Assistant responses and tool results produced this turn (plus any durable
-        # ``custom`` nodes the mutating ``turn_end`` hook appended mid-loop, S43).
-        self._persist_loop_messages(final_messages, turn_messages, persist=persist)
-
-        return turn_messages
 
     async def _end_of_prompt_drain(self, turn_messages: list[dict[str, Any]]) -> None:
         """Drain the auto-compaction + deferred + followUp work at prompt()'s tail.
@@ -3260,10 +3343,32 @@ class AgentSession:
         # The System-B compaction entry records ``tokensBefore`` (not the retired
         # manager's tokens_saved/compacted_entry_ids); the read-time splice needs
         # only the summary + firstKeptId (§2.3).
+        #
+        # Everything after ``tokens_before=`` is TREE-BROWSER-AS-EDITOR.md §8's
+        # provenance, and every value of it was already sitting in this scope and
+        # being dropped on the floor — which is §8.1's complaint stated precisely.
+        # ``summarizer_model`` is two statements up and can differ from
+        # ``self._model`` (a ``local_summarizer`` policy, agent_session.py's
+        # ``_summarizer``); ``result.usage`` is what that call cost and is already
+        # being handed to ``record_side_usage``; the covered span is the prefix of
+        # ``path_entries`` the cut discarded. §11.3 makes them required keywords so
+        # this site cannot regress to silence.
+        covered = _covered_span(path_entries, result.first_kept_entry_id)
         self._session_log.append_compaction(
             summary=result.summary,
             first_kept_id=result.first_kept_entry_id,
             tokens_before=result.tokens_before,
+            summarizer_model_id=summarizer_model.id,
+            summary_usage=result.usage,
+            covered_entries=len(covered),
+            covered_tokens=estimate_span_tokens(covered),
+            # Ancestry from the node this anchor will parent at (the current leaf),
+            # not "the last spec this session wrote": after a navigate the two
+            # disagree, and only the first one describes the frame the covered span
+            # actually ran under (§8.3, session_log.agent_spec_in_force).
+            agent_spec_id=agent_spec_in_force(
+                self._session_log.entries(), self._session_log.cursor
+            ),
         )
         return result
 

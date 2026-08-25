@@ -12,10 +12,15 @@ Reference: docs/textual-headless-testing.md
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import tau_coding_agent
+from rich.style import Style
+from textual.app import App
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Collapsible, Tree
+from textual.widgets import Collapsible, Static, Tree
 
 from tau_coding_agent.app import (
     ChatDisplay,
@@ -35,6 +40,7 @@ from tau_coding_agent.chat_widgets import (
 )
 from tau_coding_agent.testing.render import render_text
 from tau_coding_agent.testing.scenes import SCENES, get_scene, open_scene
+from tau_coding_agent.themes import install_themes
 
 SIZES = [(120, 40), (80, 24)]
 
@@ -197,7 +203,7 @@ async def test_tree_browser_elides_long_labels() -> None:
         assert labels, "the scene should have mounted at least one node"
         modal = app.screen
         assert isinstance(modal, SessionTreeModal)
-        for _widget_node, full, _depth in modal._rows:
+        for _widget_node, full, _depth, _has_children in modal._rows:
             assert len(full) > 0
         # At least one preview in this scene is longer than an 80-column row, so
         # at least one label must carry the marker.
@@ -211,6 +217,222 @@ async def test_tree_browser_has_no_horizontal_scrollbar() -> None:
     async with open_scene(get_scene("tree-modal"), (80, 24)) as (app, _pilot):
         tree = app.screen.query_one("#tree-browser-tree", Tree)
         assert tree.virtual_size.width <= tree.content_size.width
+
+
+# ---------------------------------------------------------------------------
+# The tree browser's indentation counts forks, not messages (§2)
+# ---------------------------------------------------------------------------
+
+
+class _ModalHarness(App):
+    """Host one modal, so a tree shape can be asserted without the whole Parley app.
+
+    The scene set gives the browser one real conversation; these tests need a
+    conversation of a chosen SHAPE (40 unbranched entries, or exactly one fork), so
+    they build the log and push the modal themselves. Same harness as
+    ``test_session_tree_browser``.
+
+    It loads Parley's stylesheet. Component-class styling (§3's zone classes) has
+    no ``DEFAULT_CSS`` behind it — every colour lives in ``parley.tcss`` — so a
+    harness without it resolves every zone to an empty ``Style`` and a test that
+    asserts a row IS painted would pass against a renderer that paints nothing.
+    Resolved from the installed package rather than a path relative to this file,
+    so it keeps working from an installed wheel.
+
+    Loading the sheet means loading a theme (docs/PLAN-0.9.4.md §6): every colour
+    in ``parley.tcss`` is a ``$tau-*`` variable a theme supplies, so a bare ``App``
+    with the sheet and no palette does not render wrong — it fails to parse, with
+    ``UnresolvedVariableError: $tau-bg``. ``install_themes`` is the same call
+    ``Parley.__init__`` makes, and passing no name gets the default, which is what
+    these tests have always been asserting against.
+    """
+
+    CSS_PATH = str(Path(tau_coding_agent.__file__).with_name("parley.tcss"))
+
+    def __init__(self, modal) -> None:
+        super().__init__()
+        install_themes(self)
+        self._modal = modal
+
+    def on_mount(self) -> None:
+        self.push_screen(self._modal)
+
+
+def _linear_tree(length: int):
+    """A ``ConversationTree`` over one unbranched chain of ``length`` messages."""
+    from tau_agent_core.conversation_tree import ConversationTree
+    from tau_agent_core.session_log import InMemorySessionLog
+
+    log = InMemorySessionLog()
+    ids = [log.append_message({"role": "user", "content": f"m{i}"}) for i in range(length)]
+    return ConversationTree(log.entries(), log.cursor), ids
+
+
+def _widget_depth(tree: Tree, entry_id: str) -> int:
+    """Widget nesting level of the row whose ``data`` is ``entry_id``.
+
+    Counted from the hidden root, so a top-level row is 0. This is the number
+    ``_relabel`` spends ``guide_depth`` cells on per level — the quantity §2 is
+    about — and it is deliberately NOT the ``parentId`` depth.
+    """
+    node = next(n for n in _widget_rows(tree.root) if n.data == entry_id)
+    depth = -1
+    walk = node
+    while walk.parent is not None:
+        depth += 1
+        walk = walk.parent
+    return depth
+
+
+def _widget_rows(root):
+    for child in root.children:
+        yield child
+        yield from _widget_rows(child)
+
+
+async def test_a_long_unbranched_chain_does_not_indent() -> None:
+    """§2, the defect this replaced: one ``parentId`` level used to cost one widget
+    level, so a 25-message conversation ran ``_relabel``'s available width to zero
+    and the rows overflowed (TREE-BROWSER-AS-EDITOR.md §1.1).
+
+    A chain with no forks in it now has nothing to indent *for*: every entry is a
+    sibling of the one before, and the deepest row is as shallow as the first.
+    """
+    view, ids = _linear_tree(40)
+    harness = _ModalHarness(SessionTreeModal(view))
+    async with harness.run_test() as pilot:
+        await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", Tree)
+        assert [_widget_depth(tree, entry_id) for entry_id in ids] == [0] * len(ids)
+        # …and the rows are all still there, in order — this flattens nesting, not
+        # the walk.
+        assert [n.data for n in _widget_rows(tree.root)] == ids
+        # The depths `_relabel` sizes labels with are the WIDGET depths.
+        assert {depth for _node, _label, depth, _kids in harness.screen._rows} == {0}
+
+
+async def test_a_fork_is_what_creates_a_widget_level() -> None:
+    """The other half of §2: a level of indentation now means "a branch happened
+    here", which is the only thing worth spending the row's width on."""
+    from tau_agent_core.conversation_tree import ConversationTree
+    from tau_agent_core.session_log import InMemorySessionLog
+
+    log = InMemorySessionLog()
+    root = log.append_message({"role": "user", "content": "root"})
+    a = log.append_message({"role": "assistant", "content": "a"})
+    # A second child of `root`, so `root` is the one fork in the log. `append_at`
+    # rather than a navigate: it writes exactly one entry and does not move the leaf,
+    # so the shape under test is only the fork.
+    b = log.append_at(root, "message", {"message": {"role": "assistant", "content": "b"}})
+    a2 = log.append_message({"role": "user", "content": "a2"})
+    view = ConversationTree(log.entries(), log.cursor)
+
+    harness = _ModalHarness(SessionTreeModal(view))
+    async with harness.run_test() as pilot:
+        await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", Tree)
+        assert _widget_depth(tree, root) == 0
+        assert _widget_depth(tree, a) == 1
+        assert _widget_depth(tree, b) == 1
+        # `a2` continues `a` with no branch of its own, so it is a SIBLING of `a`,
+        # not a level deeper: the second level was bought by the fork, and one fork
+        # buys exactly one.
+        assert _widget_depth(tree, a2) == 1
+        # The fork is the widget parent of everything below it, so collapsing it
+        # folds the branching subtree away — the unit §5.2 binds `left` to.
+        fork = next(n for n in _widget_rows(tree.root) if n.data == root)
+        assert {n.data for n in fork.children} == {a, a2, b}
+
+
+async def test_a_long_chain_still_fills_the_row_at_80_columns() -> None:
+    """What §1.1 was really about, measured on the composited screen: depth used to
+    eat the label, so the deep rows overflowed and the tree grew a scrollbar."""
+    view, ids = _linear_tree(40)
+    modal = SessionTreeModal(view)
+    harness = _ModalHarness(modal)
+    async with harness.run_test(size=(80, 24)) as pilot:
+        for _ in range(10):
+            await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", Tree)
+        # ``scrollable_content_region``, not ``content_size``: the second does not
+        # subtract the vertical scrollbar, and comparing against it is how this
+        # test sat green over a tree that really was two cells too wide (§4 item
+        # 1). ``_linear_tree``'s previews are eight characters, so nothing here
+        # reaches the limit either way — the width bug has its own test below.
+        assert tree.virtual_size.width <= tree.scrollable_content_region.size.width
+        # No row was reduced to the too-narrow marker: at 80 columns and zero
+        # indentation there is plenty of room for a preview.
+        assert all(str(node.label) != "…" for node, _label, _depth, _kids in modal._rows)
+
+
+def _wide_tree(turns: int):
+    """A chain whose previews are far longer than any terminal is wide."""
+    from tau_agent_core.conversation_tree import ConversationTree
+    from tau_agent_core.session_log import InMemorySessionLog
+
+    log = InMemorySessionLog()
+    for i in range(turns):
+        log.append_message({"role": "user", "content": f"question {i} " + "x" * 200})
+        log.append_message({"role": "assistant", "content": f"answer {i} " + "y" * 200})
+    return ConversationTree(log.entries(), log.cursor)
+
+
+@pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
+async def test_the_rows_leave_room_for_the_vertical_scrollbar(size) -> None:
+    """§4 item 1: the labels were sized against a width the scrollbar was using.
+
+    ``Widget.content_size`` is ``region.shrink(styles.gutter)`` — border and
+    padding. It does NOT subtract the scrollbar; ``scrollable_content_region``
+    does. So every label on a tree tall enough to scroll came out two cells too
+    long, the rows overflowed, and the tree grew a horizontal scrollbar showing
+    two cells of nothing — which then cost a row of height as well.
+
+    Asserted as the reported symptom (a horizontal scrollbar that should not be
+    there) rather than as the arithmetic, because the arithmetic is not what the
+    reader sees and a later change to it would still have to keep this true.
+    """
+    modal = SessionTreeModal(_wide_tree(40))
+    harness = _ModalHarness(modal)
+    async with harness.run_test(size=size) as pilot:
+        for _ in range(10):
+            await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", Tree)
+        assert tree.show_vertical_scrollbar, "the fixture is tall enough to scroll"
+        assert tree.show_horizontal_scrollbar is False
+        assert tree.max_scroll_x == 0
+        assert tree.virtual_size.width <= tree.scrollable_content_region.size.width
+
+
+# ---------------------------------------------------------------------------
+# _elide's floor
+# ---------------------------------------------------------------------------
+
+
+def test_elide_marks_a_column_too_narrow_to_shorten_into() -> None:
+    """§2: below the minimum width ``_elide`` returns a marker, not the input.
+
+    Returning the input was the Fail-Early inversion — the one function whose job
+    is to stop a row overflowing answered an impossible width by producing the
+    overflow. One cell of ``…`` is a visible bug; a 60-cell row in a 1-cell column
+    is a horizontal scrollbar across the whole browser.
+    """
+    from tau_coding_agent.app import _ELIDE_MIN_WIDTH, _ELIDE_TOO_NARROW, _elide
+
+    for width in (-3, 0, _ELIDE_MIN_WIDTH - 1):
+        assert _elide("a very long preview line", width) == _ELIDE_TOO_NARROW
+    assert len(_ELIDE_TOO_NARROW) == 1
+
+
+def test_elide_still_cuts_visibly_at_and_above_the_floor() -> None:
+    """The floor is a floor, not a new behaviour: at the minimum width the marker
+    plus one character is exactly what fits, and above it nothing changed."""
+    from tau_coding_agent.app import _ELIDE_MIN_WIDTH, _elide
+
+    assert _elide("abcdef", _ELIDE_MIN_WIDTH) == "a…"
+    assert _elide("abcdef", 4) == "abc…"
+    # Short enough to fit is returned whole, marker and all absent.
+    assert _elide("ab", 6) == "ab"
+    assert _elide("abcdef", 6) == "abcdef"
 
 
 # ---------------------------------------------------------------------------
@@ -820,3 +1042,860 @@ async def test_a_tool_result_keeps_its_line_breaks() -> None:
         rows = _rows(app)
         assert any("alpha.py:1: one" in row for row in rows)
         assert any("beta.py:2: two" in row for row in rows)
+
+
+# ---------------------------------------------------------------------------
+# Zones: per-row styling from the four selection sets (§3, §5.3)
+# ---------------------------------------------------------------------------
+
+
+def _forked_tree():
+    """``m0 → m1 → m2`` with a second child ``b1`` hanging off ``m0``.
+
+    The smallest shape that separates the cursor's ancestor chain from a row that
+    is not on it: the cursor opens on ``m2``, so ``m0``/``m1`` are path rows and
+    ``b1`` is not. Returns the view plus the four ids.
+    """
+    from tau_agent_core.conversation_tree import ConversationTree
+    from tau_agent_core.session_log import InMemorySessionLog
+
+    log = InMemorySessionLog()
+    m0 = log.append_message({"role": "user", "content": "m0"})
+    m1 = log.append_message({"role": "assistant", "content": "m1"})
+    m2 = log.append_message({"role": "user", "content": "m2"})
+    # `append_at` writes one entry and does NOT move the leaf, so the cursor stays
+    # on m2 and b1 is genuinely off the cursor's path.
+    b1 = log.append_at(m0, "message", {"message": {"role": "assistant", "content": "b1"}})
+    return ConversationTree(log.entries(), log.cursor), m0, m1, m2, b1
+
+
+def _rendered_row(tree, entry_id):
+    """``render_label``'s output for ``entry_id``, with null base styles.
+
+    Calls the hook §3 chose, so what comes back is the zone styling alone rather
+    than the zone styling composited with whatever the cursor and hover happened
+    to be doing on that frame.
+    """
+    from rich.style import Style
+
+    node = next(n for n in _widget_rows(tree.root) if n.data == entry_id)
+    return tree.render_label(node, Style(), Style())
+
+
+def _row_span_styles(tree, entry_id):
+    """The ZONE styles on the row for ``entry_id`` — the spans that run to its end.
+
+    A zone covers the whole label (``render_label`` stylizes ``split`` →
+    ``len(text.plain)``), and the hover trace covers the whole row. The one span
+    that stops short is the type tag, which is not a zone, and it is filtered out
+    here because it can resolve to the same ``Style`` as a zone — ``tree--kind-user``
+    and ``tree--zone-summary`` both borrow ``$tau-role-user``, deliberately, and a
+    style-only comparison cannot tell those two apart. See ``_row_tag_styles``.
+    """
+    text = _rendered_row(tree, entry_id)
+    return [span.style for span in text.spans if span.end == len(text.plain)]
+
+
+def _row_tag_styles(tree, entry_id):
+    """The styles on the row's type tag — the spans that stop before its end."""
+    text = _rendered_row(tree, entry_id)
+    return [span.style for span in text.spans if span.end < len(text.plain)]
+
+
+async def test_a_row_on_the_cursors_path_is_painted_and_one_off_it_is_not() -> None:
+    """§3's ``tree--zone-path``, which §2 made necessary.
+
+    Textual highlights the hovered row's ancestry through its indentation guides,
+    and fork-nesting left a 30-message run with no rails between its siblings —
+    §2 records that cost and calls §3 "the replacement, not an embellishment". So
+    the ancestor chain is drawn per row, from the set, and this is the assertion
+    that it actually reaches the rows.
+
+    Both halves, because either alone passes on a bug: a renderer that paints
+    every row passes the first, and one that paints none passes the second.
+    """
+    from tau_coding_agent.app import ZoneTree
+
+    view, m0, m1, m2, b1 = _forked_tree()
+    harness = _ModalHarness(SessionTreeModal(view))
+    async with harness.run_test() as pilot:
+        for _ in range(6):
+            await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        assert tree.zones.cursor == m2, "the browser should open on the current leaf"
+        assert {m0, m1, m2} == tree.zones.path
+        assert b1 not in tree.zones.path
+
+        path_style = tree.get_component_rich_style("tree--zone-path", partial=True)
+        assert path_style != Style(), "the stylesheet defines no tree--zone-path"
+        assert path_style in _row_span_styles(tree, m0)
+        assert path_style in _row_span_styles(tree, m1)
+        assert path_style not in _row_span_styles(tree, b1)
+        # The cursor row is deliberately left alone: its own style is resolved
+        # with `partial=False` and would lose its foreground to a zone colour.
+        assert path_style not in _row_span_styles(tree, m2)
+
+
+async def test_space_marks_a_row_and_two_marks_report_their_common_ancestor() -> None:
+    """§5.3's set 2, and the lowest common ancestor it exists to give.
+
+    ``space`` is this implementation's key, not the document's. The ancestor is
+    the part §5.3 promises: ``_parent_of`` "gives the lowest common ancestor for
+    free", and ``m0`` is what ``m2`` and ``b1`` — one on each side of the only
+    fork — have in common.
+    """
+    from tau_coding_agent.app import ZoneTree
+
+    view, m0, _m1, m2, b1 = _forked_tree()
+    harness = _ModalHarness(SessionTreeModal(view))
+    async with harness.run_test() as pilot:
+        for _ in range(6):
+            await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        for target in (m2, b1):
+            tree.move_cursor(next(n for n in _widget_rows(tree.root) if n.data == target))
+            await pilot.pause()
+            await pilot.press("space")
+            await pilot.pause()
+
+        assert tree.zones.marked == frozenset({m2, b1})
+        summary = str(harness.screen.query_one("#tree-browser-marks", Static).content)
+        assert "2 nodes marked" in summary
+        assert f"common ancestor {m0}" in summary
+
+        # A marked row that is NOT the cursor is painted with the marked zone.
+        marked_style = tree.get_component_rich_style("tree--zone-marked", partial=True)
+        assert marked_style in _row_span_styles(tree, m2)
+
+
+async def test_a_selection_total_says_it_is_an_estimate() -> None:
+    """§5.3's last paragraph, which is a Fail-Early rule about numbers.
+
+    ``compaction.estimate_tokens`` is a ~4-chars-per-token heuristic. The only
+    measured figure in a session is ``usage.input_tokens`` on an assistant message
+    (``agent_loop.py:819``), and it measures one request rather than an arbitrary
+    selection. So a selection total may only state an estimate and must say which
+    — a bare number here would be read as measured, which is the swallowed gap the
+    repo's Fail-Early rule exists to stop.
+    """
+    import re
+
+    from tau_coding_agent.app import ZoneTree
+
+    view, _m0, _m1, m2, _b1 = _forked_tree()
+    harness = _ModalHarness(SessionTreeModal(view))
+    async with harness.run_test() as pilot:
+        for _ in range(6):
+            await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        tree.move_cursor(next(n for n in _widget_rows(tree.root) if n.data == m2))
+        await pilot.pause()
+        await pilot.press("space")
+        await pilot.pause()
+
+        summary = str(harness.screen.query_one("#tree-browser-marks", Static).content)
+        assert re.search(r"~\d+ tokens \(estimate\)", summary), summary
+        # …and there is no OTHER token figure on the line that a reader could take
+        # for a measurement.
+        assert summary.count("tokens") == 1
+
+
+async def test_nothing_marked_says_so_and_names_the_key() -> None:
+    """The readout's resting state. It is the only feedback a mark on the row
+    under the cursor produces (that row keeps its cursor styling), so it has to
+    be legible before there is anything to report."""
+    view, _m0, _m1, _m2, _b1 = _forked_tree()
+    harness = _ModalHarness(SessionTreeModal(view))
+    async with harness.run_test() as pilot:
+        for _ in range(6):
+            await pilot.pause()
+        summary = str(harness.screen.query_one("#tree-browser-marks", Static).content)
+        assert "nothing marked" in summary
+        assert "space" in summary
+
+
+# ---------------------------------------------------------------------------
+# The branch summary and the branch it looks back on (§4.3, step 4c)
+# ---------------------------------------------------------------------------
+
+
+def _abandoned_branch_tree():
+    """``m0`` forked into an abandoned branch and a summary of it.
+
+    ``m0 → b1 → b2`` is the branch that was walked and then left;
+    ``append_branch_summary(m0)`` moves the leaf back to ``m0`` and appends ``s``
+    there, so ``b1`` and ``s`` are SIBLINGS — which §1.2 says is already true in
+    the log and §4.3 says a reader cannot see. ``m1`` continues under the summary
+    and is the cursor, so the summary is on the cursor's path and the abandoned
+    branch is not. Returns the view plus the five ids.
+    """
+    from tau_agent_core.conversation_tree import ConversationTree
+    from tau_agent_core.session_log import InMemorySessionLog
+
+    log = InMemorySessionLog()
+    m0 = log.append_message({"role": "user", "content": "m0"})
+    b1 = log.append_message({"role": "assistant", "content": "b1"})
+    b2 = log.append_message({"role": "user", "content": "b2"})
+    s = log.append_branch_summary("tried b, went nowhere", m0)
+    m1 = log.append_message({"role": "assistant", "content": "m1"})
+    return ConversationTree(log.entries(), log.cursor), m0, b1, b2, s, m1
+
+
+async def test_a_branch_summary_and_the_branch_it_summarizes_read_as_a_pair() -> None:
+    """§4.3, the last open piece of §4.
+
+    ``append_branch_summary`` already parents the summary at the branch point, so
+    the summary and the abandoned branch's first message are siblings in the log —
+    "only the rendering is missing" (§1.2). It could not be done in
+    ``_preview_of``, which renders one line for one node; this is a relation
+    between two rows, so it is zone work (§3).
+
+    The pairing is carried by the two zones sharing a hue and differing in weight.
+    Asserted as such rather than against two hex values: the stylesheet owns the
+    colours and a theme swap should be able to move them, but not to break the
+    relation into two unrelated marks.
+    """
+    from tau_coding_agent.app import ZoneTree
+
+    view, m0, b1, b2, s, _m1 = _abandoned_branch_tree()
+    harness = _ModalHarness(SessionTreeModal(view))
+    async with harness.run_test() as pilot:
+        for _ in range(6):
+            await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        assert tree.zones.summary == frozenset({s})
+        assert tree.zones.abandoned == frozenset({b1})
+
+        summary_style = tree.get_component_rich_style("tree--zone-summary", partial=True)
+        abandoned_style = tree.get_component_rich_style("tree--zone-abandoned", partial=True)
+        assert summary_style != Style(), "the stylesheet defines no tree--zone-summary"
+        assert abandoned_style != Style(), "the stylesheet defines no tree--zone-abandoned"
+        # One hue says "these two are one relation"; the difference says which end.
+        assert summary_style.color == abandoned_style.color
+        assert summary_style != abandoned_style
+
+        assert summary_style in _row_span_styles(tree, s)
+        assert abandoned_style in _row_span_styles(tree, b1)
+        # The summary is on the cursor's path, and the pair outranks `path` there:
+        # `tree--zone-path` is true of a whole chain and would swallow the relation.
+        path_style = tree.get_component_rich_style("tree--zone-path", partial=True)
+        assert path_style not in _row_span_styles(tree, s)
+
+        # Rows that are in neither half of the relation carry neither mark. `b2` is
+        # deeper in the same abandoned branch — being NEAR the pair is not being in
+        # it — and `m0` is the branch point both sides hang off.
+        for unrelated in (b2, m0):
+            assert summary_style not in _row_span_styles(tree, unrelated)
+            assert abandoned_style not in _row_span_styles(tree, unrelated)
+
+
+async def test_a_second_abandoned_branch_pairs_with_its_own_summary() -> None:
+    """Two summaries under one branch point pair with one branch each.
+
+    The rule is "the immediately preceding sibling", not "every sibling that is
+    not a summary" — a branch point can be abandoned more than once, and the
+    set-difference rule would blame the second summary for the first branch as
+    well. ``b1, s1, c1, s2`` is the shape that tells the two rules apart.
+    """
+    from tau_agent_core.conversation_tree import ConversationTree
+    from tau_agent_core.session_log import InMemorySessionLog
+
+    from tau_coding_agent.app import ZoneTree
+
+    log = InMemorySessionLog()
+    m0 = log.append_message({"role": "user", "content": "m0"})
+    b1 = log.append_message({"role": "assistant", "content": "b1"})
+    s1 = log.append_branch_summary("first attempt", m0)
+    log.append_navigate(m0)
+    c1 = log.append_message({"role": "assistant", "content": "c1"})
+    s2 = log.append_branch_summary("second attempt", m0)
+    view = ConversationTree(log.entries(), log.cursor)
+
+    harness = _ModalHarness(SessionTreeModal(view))
+    async with harness.run_test() as pilot:
+        for _ in range(6):
+            await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        assert tree.zones.summary == frozenset({s1, s2})
+        # b1 is s1's, c1 is s2's — and neither summary claims the other's branch.
+        assert tree.zones.abandoned == frozenset({b1, c1})
+
+
+# ---------------------------------------------------------------------------
+# The hover divergence highlight (§3, step 5)
+# ---------------------------------------------------------------------------
+
+
+def _hover(tree, entry_id):
+    """Put the pointer on ``entry_id``'s row by moving ``Tree.hover_line``.
+
+    ``hover_line`` is the public reactive Textual's own ``_on_mouse_move`` writes
+    (textual 8.2.7, ``_tree.py:655/1081``), so setting it runs exactly the watcher
+    a real mouse would. ``test_a_real_mouse_move_reaches_the_divergence`` covers
+    the pointer path itself; these tests want a chosen row, not a chosen cell.
+    """
+    node = next(n for n in _widget_rows(tree.root) if n.data == entry_id)
+    tree.hover_line = node.line
+
+
+async def test_hovering_off_the_cursors_path_splits_shared_history_from_divergent() -> None:
+    """§3's "the divergence between the cursor's path and a hovered node", step 5.
+
+    §2 flattened single-child runs into siblings, which took Textual's
+    ``tree--guides-hover`` ancestry rails away — "§3 is the replacement, not an
+    embellishment". ``tree--zone-path`` replaced the cursor's ancestry in step 3.
+    This is the hover's, and it says more than the rails did: not merely which
+    rows are the hovered node's ancestors, but where that ancestry stops agreeing
+    with where the cursor is.
+
+    Both halves are asserted painted AND asserted different, because a renderer
+    that paints one style over the whole hovered chain passes either alone while
+    saying nothing about the divergence.
+    """
+    from tau_coding_agent.app import ZoneTree
+
+    view, m0, m1, m2, b1 = _forked_tree()
+    harness = _ModalHarness(SessionTreeModal(view))
+    async with harness.run_test() as pilot:
+        for _ in range(6):
+            await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        assert tree.zones.cursor == m2
+
+        _hover(tree, b1)
+        await pilot.pause()
+
+        # m0 is the branch point: shared. b1 hangs off it: divergent. m1 is on the
+        # cursor's path but not on the hovered node's, so it is in neither.
+        assert tree.zones.hover_common == frozenset({m0})
+        assert tree.zones.hover_divergent == frozenset({b1})
+
+        common = tree.get_component_rich_style("tree--zone-hover-common", partial=True)
+        divergent = tree.get_component_rich_style("tree--zone-hover-divergent", partial=True)
+        assert common != Style(), "the stylesheet defines no tree--zone-hover-common"
+        assert divergent != Style(), "the stylesheet defines no tree--zone-hover-divergent"
+        assert common != divergent, "the two halves of the divergence read the same"
+
+        assert common in _row_span_styles(tree, m0)
+        assert divergent in _row_span_styles(tree, b1)
+        assert common not in _row_span_styles(tree, m1)
+        assert divergent not in _row_span_styles(tree, m1)
+
+        # Layered, not substituted: m0 is still on the cursor's path and still
+        # says so. This is why the shared half sets no colour of its own.
+        path_style = tree.get_component_rich_style("tree--zone-path", partial=True)
+        assert path_style in _row_span_styles(tree, m0)
+
+
+async def test_hovering_on_the_cursors_path_reports_no_divergence() -> None:
+    """An ancestor of the cursor diverges from it nowhere, and is painted nowhere.
+
+    Its chain is a PREFIX of the cursor's, so the divergent tail is empty by
+    construction. Painting the shared half on its own would draw a highlight whose
+    only content is "you are already here" — which a reader coming from the case
+    above would read as a divergence that is not there.
+    """
+    from tau_coding_agent.app import ZoneTree
+
+    view, m0, m1, m2, b1 = _forked_tree()
+    harness = _ModalHarness(SessionTreeModal(view))
+    async with harness.run_test() as pilot:
+        for _ in range(6):
+            await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        assert tree.zones.cursor == m2
+
+        # First establish that this tree CAN report a divergence, so the emptiness
+        # below is the rule doing its job and not the wiring being absent.
+        _hover(tree, b1)
+        await pilot.pause()
+        assert tree.zones.hover_divergent == frozenset({b1})
+
+        _hover(tree, m1)
+        await pilot.pause()
+        assert tree.zones.hover_common == frozenset()
+        assert tree.zones.hover_divergent == frozenset()
+
+        common = tree.get_component_rich_style("tree--zone-hover-common", partial=True)
+        divergent = tree.get_component_rich_style("tree--zone-hover-divergent", partial=True)
+        for row in (m0, m1, b1):
+            assert common not in _row_span_styles(tree, row)
+            assert divergent not in _row_span_styles(tree, row)
+
+
+async def test_moving_the_cursor_re_measures_the_divergence_from_where_it_now_is() -> None:
+    """The divergence is a relation between two nodes; either end moving stales it.
+
+    Hover ``b1`` from ``m2`` and the split is ``{m0} / {b1}``. Move the cursor ONTO
+    ``b1`` without touching the mouse and there is nothing left to diverge from —
+    a renderer that only recomputes on hover would still be painting the old
+    answer.
+    """
+    from tau_coding_agent.app import ZoneTree
+
+    view, m0, _m1, _m2, b1 = _forked_tree()
+    harness = _ModalHarness(SessionTreeModal(view))
+    async with harness.run_test() as pilot:
+        for _ in range(6):
+            await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        _hover(tree, b1)
+        await pilot.pause()
+        assert tree.zones.hover_common == frozenset({m0})
+
+        tree.move_cursor(next(n for n in _widget_rows(tree.root) if n.data == b1))
+        await pilot.pause()
+        assert tree.zones.hover_common == frozenset()
+        assert tree.zones.hover_divergent == frozenset()
+
+
+async def test_a_real_mouse_move_reaches_the_divergence() -> None:
+    """The pointer path, once, end to end.
+
+    The tests above write ``hover_line`` so they can name a row. This one drives
+    ``Pilot.hover``, which posts a ``MouseMove`` the screen resolves to a style
+    with a ``line`` meta — the chain ``Tree._on_mouse_move`` reads. It is what
+    proves the highlight is reachable with a mouse rather than only with the
+    reactive.
+    """
+    from tau_coding_agent.app import ZoneTree
+
+    view, m0, _m1, _m2, b1 = _forked_tree()
+    harness = _ModalHarness(SessionTreeModal(view))
+    async with harness.run_test(size=(80, 24)) as pilot:
+        for _ in range(6):
+            await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        row = next(n for n in _widget_rows(tree.root) if n.data == b1)
+        # +1 for the tree's own border; a few cells in, so the pointer lands on
+        # the row body rather than on the frame.
+        await pilot.hover(tree, offset=(4, row.line + 1))
+        await pilot.pause()
+        assert tree.hover_line == row.line, "the pointer did not land on b1's row"
+        assert tree.zones.hover_common == frozenset({m0})
+        assert tree.zones.hover_divergent == frozenset({b1})
+
+
+# ---------------------------------------------------------------------------
+# PLAN-0.9.4 §4: turn groups, hidden `navigate` rows, and what Enter means.
+#
+# `plan_tree_rows` is pure, so the shape rules are tested against it directly
+# rather than through a Pilot. What the widget build does with those rows is
+# tested through the modal, once.
+# ---------------------------------------------------------------------------
+
+
+def _log_with_two_turns_forked_from_one_answer():
+    """The structure the owner reported, built as it really happens.
+
+    One answer ("no such file") is the fork point: the reader tried one follow-up,
+    navigated back to that answer, and tried a different one. The `navigate` entry
+    the second attempt appends is the row item 4 is about.
+    """
+    from tau_agent_core.conversation_tree import ConversationTree
+    from tau_agent_core.session_log import InMemorySessionLog
+
+    log = InMemorySessionLog()
+    ids = {}
+    ids["q0"] = log.append_message({"role": "user", "content": "read /tmp/context_test"})
+    ids["a0"] = log.append_message({"role": "assistant", "content": "No such file. Create one?"})
+    ids["u1"] = log.append_message({"role": "user", "content": "Yes, write your favorite number."})
+    ids["t1"] = log.append_message({"role": "toolResult", "content": "Wrote 1 lines"})
+    ids["a1"] = log.append_message({"role": "assistant", "content": "Wrote `42`."})
+    ids["nav"] = log.append_navigate(ids["a0"])
+    ids["u2"] = log.append_message({"role": "user", "content": "Actually, check again!"})
+    ids["t2"] = log.append_message({"role": "toolResult", "content": "42"})
+    ids["a2"] = log.append_message({"role": "assistant", "content": "Whoops, it contains `42`."})
+    return ConversationTree(log.entries(), log.cursor), ids
+
+
+def _plan(view):
+    from tau_coding_agent.app import plan_tree_rows
+
+    return plan_tree_rows(view.tree())
+
+
+def _shape(view) -> list[tuple[int, str, str]]:
+    """(depth, role-or-kind, preview) per drawn row — the tree as a reader sees it."""
+    return [(row.depth, row.node.role or row.node.kind, row.node.preview) for row in _plan(view)]
+
+
+def test_a_user_message_owns_its_turn() -> None:
+    """§4 item 3. The turn's tool traffic and answer hang off the message that
+    asked for them, so `←` on the user row folds the whole turn away — which is
+    what "there's rarely anything to fold" was about."""
+    view, ids = _log_with_two_turns_forked_from_one_answer()
+    rows = {row.node.id: row for row in _plan(view)}
+    group = rows[ids["u2"]]
+    assert rows[ids["t2"]].parent is not None
+    assert _plan(view)[rows[ids["t2"]].parent].node.id == ids["u2"]
+    assert rows[ids["t2"]].depth == group.depth + 1
+    assert rows[ids["a2"]].depth == group.depth + 1
+
+
+def test_the_next_user_message_is_a_sibling_not_a_child() -> None:
+    """The half that keeps §2's bound: a turn group CLOSES at the next user
+    message. Without this a hundred linear turns would be a hundred levels deep,
+    which is the exact defect TREE-BROWSER-AS-EDITOR.md §2 removed."""
+    from tau_agent_core.conversation_tree import ConversationTree
+    from tau_agent_core.session_log import InMemorySessionLog
+
+    log = InMemorySessionLog()
+    for i in range(30):
+        log.append_message({"role": "user", "content": f"q{i}"})
+        log.append_message({"role": "toolResult", "content": f"r{i}"})
+        log.append_message({"role": "assistant", "content": f"a{i}"})
+    rows = _plan(ConversationTree(log.entries(), log.cursor))
+    assert len(rows) == 90
+    assert max(row.depth for row in rows) == 1, "one level for the turn, and no more"
+    users = [row for row in rows if row.node.role == "user"]
+    assert {row.parent for row in users} == {None}, "every turn is a top-level row"
+
+
+def test_a_turn_group_starts_collapsed_and_the_one_you_are_in_does_not() -> None:
+    """§4 item 3, "start collapsed". The exception is the group the cursor row is
+    in — a browser that opens without showing where you are has failed at its one
+    job.
+
+    Keyed off the WIDGET ancestry, not the ``parentId`` chain. In a linear
+    conversation every earlier user message is a ``parentId`` ancestor of the
+    cursor and none is a widget ancestor, so the data chain would leave every turn
+    in the session open — the state item 3 asks to get out of.
+    """
+    from tau_agent_core.conversation_tree import ConversationTree
+    from tau_agent_core.session_log import InMemorySessionLog
+
+    log = InMemorySessionLog()
+    for i in range(5):
+        log.append_message({"role": "user", "content": f"q{i}"})
+        log.append_message({"role": "assistant", "content": f"a{i}"})
+    rows = _plan(ConversationTree(log.entries(), log.cursor))
+    users = [row for row in rows if row.node.role == "user"]
+    assert [row.expanded for row in users] == [False, False, False, False, True]
+    # Nothing that is not a turn group was folded: a fork the reader has not
+    # touched still shows its branches.
+    assert all(row.expanded for row in rows if row.node.role != "user")
+
+
+def test_a_navigate_row_is_not_drawn_and_its_turn_moves_up_to_the_fork() -> None:
+    """§4 item 4. The entry stays in the log and on the ancestry; it just stops
+    costing a row between an answer and the turn that forked off it."""
+    view, ids = _log_with_two_turns_forked_from_one_answer()
+    rows = _plan(view)
+    assert ids["nav"] not in {row.node.id for row in rows}
+    assert view.entry(ids["nav"])["type"] == "navigate", "still in the log"
+    # The second turn hangs off the ANSWER it forked from, which is what happened.
+    by_id = {row.node.id: row for row in rows}
+    assert rows[by_id[ids["u2"]].parent].node.id == ids["a0"]
+    # …as does the first, so the fork reads as one.
+    assert rows[by_id[ids["u1"]].parent].node.id == ids["a0"]
+    assert by_id[ids["u1"]].depth == by_id[ids["u2"]].depth
+
+
+def test_the_cursor_keeps_its_row_even_when_it_is_a_navigate() -> None:
+    """The exception that is not tidiness: hiding the cursor would leave the
+    reader with no `◀ current` row at all.
+
+    Reached by pointing a ``ConversationTree`` at the navigate entry, because
+    ``append_navigate`` moves the leaf to the navigate's TARGET rather than to the
+    entry itself — so no store this repo ships puts the cursor here. The cursor is
+    a constructor argument and a pi-imported log is not bound by that contract, so
+    the guard is reachable and this is how.
+    """
+    from tau_agent_core.conversation_tree import ConversationTree
+    from tau_agent_core.session_log import InMemorySessionLog
+
+    log = InMemorySessionLog()
+    first = log.append_message({"role": "user", "content": "q"})
+    log.append_message({"role": "assistant", "content": "a"})
+    nav = log.append_navigate(first)
+    assert log.cursor != nav, "the contract: the leaf advances to the TARGET"
+    rows = _plan(ConversationTree(log.entries(), nav))
+    assert nav in {row.node.id for row in rows}
+    # …and it is gone again the moment it stops being the cursor.
+    assert nav not in {row.node.id for row in _plan(ConversationTree(log.entries(), log.cursor))}
+
+
+def test_a_navigate_that_forks_keeps_its_row() -> None:
+    """The other exception. Two branches under one `navigate` drawn as one run is
+    a shape the log does not have."""
+    from tau_agent_core.conversation_tree import ConversationTree
+    from tau_agent_core.session_log import InMemorySessionLog
+
+    log = InMemorySessionLog()
+    root = log.append_message({"role": "user", "content": "q"})
+    log.append_message({"role": "assistant", "content": "a"})
+    nav = log.append_navigate(root)
+    # ``append_at`` twice rather than ``append_message``: the second would parent
+    # at the LEAF, which ``append_navigate`` just moved to the navigate's target.
+    b1 = log.append_at(nav, "message", {"message": {"role": "user", "content": "b1"}})
+    b2 = log.append_at(nav, "message", {"message": {"role": "user", "content": "b2"}})
+    rows = _plan(ConversationTree(log.entries(), log.cursor))
+    assert nav in {row.node.id for row in rows}
+    by_id = {row.node.id: row for row in rows}
+    assert rows[by_id[b1].parent].node.id == nav
+    assert rows[by_id[b2].parent].node.id == nav
+
+
+def test_the_drawn_rows_are_the_log_minus_the_hidden_ones_in_order() -> None:
+    """The planner drops rows and re-parents them. It must not reorder them, and
+    it must not lose one: a browser showing a conversation the log does not have
+    is worse than a cluttered one."""
+    view, ids = _log_with_two_turns_forked_from_one_answer()
+    drawn = [row.node.id for row in _plan(view)]
+    assert drawn == [ids[k] for k in ("q0", "a0", "u1", "t1", "a1", "u2", "t2", "a2")]
+
+
+async def test_the_widget_tree_matches_the_plan() -> None:
+    """The build is a transcription of the plan — asserted once, here, so the
+    rules above can be tested without a terminal."""
+    view, ids = _log_with_two_turns_forked_from_one_answer()
+    modal = SessionTreeModal(view)
+    harness = _ModalHarness(modal)
+    async with harness.run_test() as pilot:
+        await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", Tree)
+        plan = _plan(view)
+        assert [n.data for n in _widget_rows(tree.root)] == [row.node.id for row in plan]
+        assert [_widget_depth(tree, row.node.id) for row in plan] == [row.depth for row in plan]
+        assert [depth for _n, _l, depth, _k in modal._rows] == [row.depth for row in plan]
+        folded = {n.data for n in _widget_rows(tree.root) if not n.is_expanded}
+        assert folded == {ids["u1"]}, "the turn the cursor is not in"
+        # The cursor is on screen: every widget ancestor of its row is open. The
+        # walk stops one short of the widget root, which Textual builds collapsed
+        # and draws anyway under ``show_root = False`` — the same exclusion
+        # ``SessionTreeModal._hidden`` makes, for the same reason.
+        walk = next(n for n in _widget_rows(tree.root) if n.data == ids["a2"]).parent
+        while walk is not None and walk.parent is not None:
+            assert walk.is_expanded
+            walk = walk.parent
+
+
+async def test_a_row_nothing_hangs_from_has_no_expand_arrow() -> None:
+    """Textual draws the toggle off ``allow_expand`` ALONE and never asks whether
+    there are children (``Tree.render_label``, textual 8.2.7), so every assistant
+    and tool row used to wear an arrow that clicked, toggled, and revealed
+    nothing.
+
+    ``has_children`` is a property of the PLAN, not of the entry: an assistant
+    whose only child is a hidden ``navigate`` has a child in the log and none on
+    screen, and it is the screen the arrow is a promise about.
+    """
+    view, ids = _log_with_two_turns_forked_from_one_answer()
+    plan = {row.node.id: row for row in _plan(view)}
+    # The two turn groups and the answer they fork from — these open something.
+    assert {i for i, row in plan.items() if row.has_children} == {
+        ids["q0"],
+        ids["a0"],
+        ids["u1"],
+        ids["u2"],
+    }
+    # `a1` ends a turn and its only child is the hidden `navigate`.
+    assert plan[ids["a1"]].has_children is False
+
+    modal = SessionTreeModal(view)
+    harness = _ModalHarness(modal)
+    async with harness.run_test(size=(100, 30)) as pilot:
+        for _ in range(8):
+            await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", Tree)
+        for node in _widget_rows(tree.root):
+            assert node.allow_expand is plan[node.data].has_children, node.label
+        # …and on the screen the reader looks at: the drawn rows that carry an
+        # arrow are exactly the ones with something under them.
+        drawn = [
+            line
+            for line in render_text(harness).splitlines()
+            if "assistant:" in line or "user:" in line
+        ]
+        arrowed = [line for line in drawn if "▼" in line or "▶" in line]
+        assert len(drawn) > len(arrowed), "some rows are drawn with no arrow at all"
+        assert all(("user:" in line or "No such file" in line) for line in arrowed), arrowed
+
+
+async def test_a_row_with_no_arrow_gets_those_two_cells_for_its_preview() -> None:
+    """The width arithmetic follows the toggle. ``_relabel`` charged every row for
+    one, which on a row that has none is two characters of preview thrown away."""
+    view = _wide_tree(6)
+    modal = SessionTreeModal(view)
+    harness = _ModalHarness(modal)
+    async with harness.run_test(size=(80, 24)) as pilot:
+        for _ in range(10):
+            await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", Tree)
+        # The scrollbar's width is reserved whether or not the bar is showing —
+        # see ``_relabel``. ``styles.scrollbar_size_vertical``, not the widget
+        # property, which answers 0 when it is hidden.
+        width = tree.content_size.width - tree.styles.scrollbar_size_vertical
+        # The fixture's previews are 200 characters, so every row is elided and
+        # its label length IS the budget it was given.
+        seen = set()
+        for node, _label, depth, has_children in modal._rows:
+            toggle = tree.guide_depth if has_children else 0
+            assert len(str(node.label)) == width - depth * tree.guide_depth - toggle
+            seen.add(has_children)
+        assert seen == {True, False}, "both kinds of row are in this fixture"
+        assert tree.show_horizontal_scrollbar is False, "and it still fits"
+
+
+async def test_opening_a_turn_does_not_bring_the_horizontal_scrollbar_back() -> None:
+    """The scrollbar width is reserved whether the bar is there or not, and this
+    is why.
+
+    A fold changes how many ROWS the tree holds, which decides whether it has a
+    vertical scrollbar, which is two cells of the width every label is sized
+    against. Sizing against the CURRENT state means a tree that opens short and
+    unscrolled gets full-width labels, and the first turn the reader opens puts a
+    vertical scrollbar there and pushes every one of them over — the reported
+    symptom, back again, by a gesture the turn groups introduced.
+
+    The fixture is built for exactly that: a long first turn and a short last
+    one, so only the short one is open at mount and the tree starts at four rows.
+    """
+    from tau_agent_core.conversation_tree import ConversationTree
+    from tau_agent_core.session_log import InMemorySessionLog
+
+    log = InMemorySessionLog()
+    log.append_message({"role": "user", "content": "question 0 " + "x" * 200})
+    for j in range(30):
+        log.append_message({"role": "toolResult", "content": f"r0.{j} " + "y" * 200})
+    log.append_message({"role": "assistant", "content": "answer 0 " + "y" * 200})
+    log.append_message({"role": "user", "content": "question 1 " + "x" * 200})
+    log.append_message({"role": "assistant", "content": "answer 1 " + "y" * 200})
+
+    harness = _ModalHarness(SessionTreeModal(ConversationTree(log.entries(), log.cursor)))
+    async with harness.run_test(size=(80, 24)) as pilot:
+        for _ in range(10):
+            await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", Tree)
+        assert tree.show_vertical_scrollbar is False, "the fixture opens short"
+        assert tree.show_horizontal_scrollbar is False
+
+        for node in list(_widget_rows(tree.root)):
+            if node.allow_expand:
+                node.expand()
+        for _ in range(10):
+            await pilot.pause()
+
+        assert tree.show_vertical_scrollbar is True, "…and is long once opened"
+        assert tree.show_horizontal_scrollbar is False
+        assert tree.max_scroll_x == 0
+
+
+# ---------------------------------------------------------------------------
+# The row's type tag, painted (PLAN-0.9.4 §4, "spans for style")
+# ---------------------------------------------------------------------------
+
+
+async def test_each_row_paints_its_type_tag_in_that_roles_colour() -> None:
+    """`user:` is the user hue, `toolResult:` the tool hue, and they differ.
+
+    Both halves matter: a renderer that paints every tag one colour passes an
+    "is it painted?" assertion, and a renderer that paints nothing passes a
+    "they are not the same colour" one.
+    """
+    from rich.style import Style
+
+    from tau_agent_core.conversation_tree import ConversationTree
+    from tau_agent_core.session_log import InMemorySessionLog
+    from tau_coding_agent.app import ZoneTree
+
+    log = InMemorySessionLog()
+    user = log.append_message({"role": "user", "content": "ask"})
+    assistant = log.append_message({"role": "assistant", "content": "answer"})
+    tool = log.append_message({"role": "toolResult", "content": "42"})
+    log.append_message({"role": "assistant", "content": "done"})
+
+    harness = _ModalHarness(SessionTreeModal(ConversationTree(log.entries(), log.cursor)))
+    async with harness.run_test() as pilot:
+        for _ in range(6):
+            await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        for node in list(_widget_rows(tree.root)):
+            if node.allow_expand:
+                node.expand()
+        for _ in range(4):
+            await pilot.pause()
+
+        hues = {
+            role: tree.get_component_rich_style(f"tree--kind-{role}", partial=True)
+            for role in ("user", "assistant", "tool")
+        }
+        assert Style() not in hues.values(), "the stylesheet defines no tree--kind-* rule"
+        assert len(set(hues.values())) == 3, "three roles, three colours"
+
+        assert hues["user"] in _row_tag_styles(tree, user)
+        assert hues["assistant"] in _row_tag_styles(tree, assistant)
+        assert hues["tool"] in _row_tag_styles(tree, tool)
+        # …and each row wears only its own.
+        assert hues["tool"] not in _row_tag_styles(tree, user)
+
+
+async def test_the_tag_is_painted_and_the_preview_after_it_is_not() -> None:
+    """The span stops at the colon.
+
+    Painting the whole label would make the row one colour, which is what it
+    already was — the point is that the left edge is scannable and the sentence
+    is not shouting.
+    """
+    from tau_agent_core.conversation_tree import ConversationTree
+    from tau_agent_core.session_log import InMemorySessionLog
+    from tau_coding_agent.app import ZoneTree
+
+    log = InMemorySessionLog()
+    log.append_message({"role": "user", "content": "ask"})
+    assistant = log.append_message({"role": "assistant", "content": "a much longer answer here"})
+    # Not the leaf: the cursor row is deliberately left unpainted (see
+    # ``ZoneTree.render_label``), so the row under test has to be an ordinary one.
+    log.append_message({"role": "user", "content": "and again"})
+
+    harness = _ModalHarness(SessionTreeModal(ConversationTree(log.entries(), log.cursor)))
+    async with harness.run_test() as pilot:
+        for _ in range(6):
+            await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        for node in list(_widget_rows(tree.root)):
+            if node.allow_expand:
+                node.expand()
+        for _ in range(4):
+            await pilot.pause()
+
+        node = next(n for n in _widget_rows(tree.root) if n.data == assistant)
+        text = tree.render_label(node, Style(), Style())
+        hue = tree.get_component_rich_style("tree--kind-assistant", partial=True)
+        span = next(s for s in text.spans if s.style == hue)
+        assert text.plain[span.start : span.end] == "assistant:"
+
+
+async def test_a_bookkeeping_row_does_not_borrow_a_conversation_colour() -> None:
+    """A `navigate` that forks keeps its row (PLAN-0.9.4 §4) — and reads as
+    bookkeeping rather than as a turn."""
+    from rich.style import Style
+
+    from tau_agent_core.conversation_tree import ConversationTree
+    from tau_agent_core.session_log import InMemorySessionLog
+    from tau_coding_agent.app import ZoneTree
+
+    log = InMemorySessionLog()
+    root = log.append_message({"role": "user", "content": "ask"})
+    nav = log.append_navigate(root)
+    # Two children, so the planner keeps the navigate's row.
+    log.append_at(nav, "message", {"message": {"role": "assistant", "content": "one"}})
+    log.append_at(nav, "message", {"message": {"role": "assistant", "content": "two"}})
+
+    harness = _ModalHarness(SessionTreeModal(ConversationTree(log.entries(), root)))
+    async with harness.run_test() as pilot:
+        for _ in range(6):
+            await pilot.pause()
+        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        for node in list(_widget_rows(tree.root)):
+            if node.allow_expand:
+                node.expand()
+        for _ in range(4):
+            await pilot.pause()
+
+        structural = tree.get_component_rich_style("tree--kind-structural", partial=True)
+        assert structural != Style()
+        assert structural in _row_tag_styles(tree, nav)
+        for role in ("user", "assistant", "tool"):
+            assert tree.get_component_rich_style(f"tree--kind-{role}", partial=True) != structural

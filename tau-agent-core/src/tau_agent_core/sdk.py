@@ -18,6 +18,7 @@ import hashlib
 import importlib.util
 import inspect
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -679,19 +680,84 @@ async def _load_extensions(
 #: ``tau_coding_agent.tagline`` by design, it belongs to the TUI rather than to
 #: this package, and a joke that can change a turn's behaviour is not the same
 #: kind of joke as a random tagline.
+#: τ's default voice, and a worked example of the ``{{field}}`` slots
+#: :func:`_build_system_prompt` fills. The two section slots at the bottom are in
+#: the positions the builder would have appended them to anyway, so writing them
+#: out changes nothing about the composition — it makes the composition legible
+#: to anyone who copies this text into ``config.json`` as a starting point, and
+#: movable by anyone who wants the tool list somewhere else.
 BASE_SYSTEM_PROMPT = """\
-You are τ, a coding agent working in a real repository. You can read, write, \
-edit, search, and run shell commands, and the changes are real.
+You are Tau, a coding agent. Use tools to accomplish the user's goals. Write for \
+a competent engineer who reads English as a second language. Optimize for \
+one-pass comprehension, not for short word counts.
 
-Verify, then assert. Read a file before you change it. Never invent a path, a \
-flag, or an API you have not seen. If something surprises you, say so — do not \
-route around it.
+You are `{{model}}`, working in `{{cwd}}`. Every path you read, write, or run a \
+command against is relative to that directory unless it says otherwise.
 
-Prefer a loud failure to a quiet guess.
+## Behavior
 
-Be brief. Report what you did and what it means, then stop. Skip the preamble, \
-the restatement, and the summary of the summary. Dry wit is welcome; filler is \
-not."""
+Be an effective, methodical developer. "Read files before editing", "describe \
+how a problem occurs before you try to fix it", "admit mistakes and \
+misunderstandings", and "guess what will happen before you try something to \
+verify you're understanding properly" are the sort of rules you operate by. \
+YAGNI, DRY, SOLID, KISS, and "can a junior developer follow this code while I'm \
+on vacation" are important principles for you.
+
+A follow-up question is preferrable to doing it over.
+
+## Words
+
+TL;DR: don't make stuff up.
+
+Use the user's / project's vocabulary where it already exists. Variables, paths, \
+and code objects should be referenced verbatim (that's coding for you - no style \
+rules apply to source content being conveyed), but otherwise use simple language \
+to refer to what's happening.
+
+This is a technical conversation. We don't need variety. If there's a term for \
+an object or topic, use that term for it (i.e. no nicknames).
+
+When we build new stuff, we need to name it. For new modules, procedures, or \
+subsystems: Let the user lead new terminology's creation and acceptance. You can \
+suggest, but follow their lead.
+
+Write accessibly, directly say what you mean, and no corporate jargon: \
+"postpone", not "punt on". Write "internally", not "under the hood".
+
+## Sentences
+
+Active voice: "the scheduler writes the lock file", not "the lock file is \
+written".
+
+Keep sentences short.
+
+## Voice
+
+You're sharp and capable, a technical communicator. Helpful, but not in customer \
+service. You can form and present technical opinions, to extend or refine the \
+user's requests, but not argue with what the user goals are.
+
+No warm-up. Don't open with "Great question", "You're absolutely right", or \
+"Let's dive in". Get straight to it.
+
+Don't end with a summary of what you just said. That's a summary of a summary, \
+and neither of us needs it. If you're done, stop.
+
+Say what you did and what it means, then stop. Don't narrate the steps. The user \
+can watch the diff.
+
+Examples of addressing mistakes:
+- **My B.** I used the wrong flag (`-f` instead of `--force`). Retrying:
+- **Whoops!** `..` is not the correct path.
+- **Oof, yikes.** That did NOT work. Something different, then.
+- **...aw man.** Traceback. I'll get to the root cause
+- build failed 😅
+
+Style: Sardonic, dry, brief.
+
+{{project_context}}
+
+{{tools}}"""
 
 
 #: τ's agent directory — the home of the *global* context file, the one that
@@ -953,12 +1019,151 @@ def load_project_context_files(
     return context_files
 
 
+def append_system_prompt(base: str, sections: list[str] | None) -> str:
+    """Append ``--append-system-prompt`` sections to a base system prompt.
+
+    Sections augment rather than replace the base (pi ``appendSystemPrompt``,
+    system-prompt.ts:48), joined by blank lines. An empty/absent list returns the
+    base unchanged; an empty base with sections yields just the sections.
+
+    Lives here, beside :func:`_build_system_prompt`, because it composes the
+    *base text* slot and nothing else — the appended sections land ahead of the
+    project context and the tool list, not after them. It was previously a
+    private helper in ``tau_coding_agent.headless`` that three frontends reached
+    across for; ``headless`` re-exports this name so those imports keep working.
+    """
+    if not sections:
+        return base
+    parts = [base, *sections] if base else list(sections)
+    return "\n\n".join(parts)
+
+
+class SystemPromptFieldError(ValueError):
+    """A ``{{field}}`` in a system prompt names something τ cannot supply.
+
+    Raised rather than rendered literally. A misspelled ``{{tols}}`` left in the
+    text would reach the model as the four characters it is, say nothing, and
+    look exactly like a prompt that worked — the silent failure the whole
+    "loud failure over a quiet guess" rule exists to prevent.
+    """
+
+
+#: A system-prompt placeholder. Deliberately narrow — lowercase name, optional
+#: inner spaces — so ordinary prose using braces (JSON examples, f-string
+#: snippets, ``{{ anything With Caps }}``) passes through untouched and only a
+#: thing that really looks like a field is held to the field list.
+_PROMPT_FIELD = re.compile(r"\{\{\s*([a-z][a-z0-9_]*)\s*\}\}")
+
+#: A placeholder that is the whole line. Such a line is a SECTION slot, and when
+#: the section is empty the line — and the blank line separating it from what
+#: came before — would otherwise survive as vertical whitespace in the prompt.
+_LONE_PROMPT_FIELD_LINE = re.compile(r"^[ \t]*\{\{\s*([a-z][a-z0-9_]*)\s*\}\}[ \t]*$")
+
+
+def _drop_empty_field_lines(template: str, fields: dict[str, str]) -> str:
+    """Remove section slots that expand to nothing, with their leading blank line.
+
+    A run with no ``AGENTS.md`` must not read as a prompt with a hole in it. Only
+    a line that is *nothing but* a placeholder is eligible, and only when the
+    field is known AND empty — an unknown field is left in place so
+    :func:`_render_prompt_fields` still raises on it rather than being silently
+    tidied away.
+    """
+    kept: list[str] = []
+    for line in template.split("\n"):
+        match = _LONE_PROMPT_FIELD_LINE.match(line)
+        if match is not None and fields.get(match.group(1)) == "":
+            if kept and kept[-1] == "":
+                kept.pop()
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def _render_prompt_fields(template: str, fields: dict[str, str]) -> tuple[str, set[str]]:
+    """Substitute ``{{field}}`` placeholders, returning the text and which were used.
+
+    Substitution runs on the TEMPLATE ONLY, never on the assembled prompt: a
+    project's ``AGENTS.md`` is user content, and a ``{{...}}`` inside it must
+    reach the model as written rather than being rewritten by whatever field
+    happens to share its name.
+
+    Raises:
+        SystemPromptFieldError: on a placeholder naming no known field.
+    """
+    template = _drop_empty_field_lines(template, fields)
+    used: set[str] = set()
+
+    def _substitute(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in fields:
+            known = ", ".join(f"{{{{{k}}}}}" for k in sorted(fields))
+            extra = ""
+            if name == "base_prompt":
+                extra = (
+                    " ``{{base_prompt}}`` is available only in a prompt that REPLACES "
+                    "the base text; the base text cannot embed itself."
+                )
+            raise SystemPromptFieldError(
+                f"system prompt names an unknown field {{{{{name}}}}}. Known fields: {known}.{extra}"
+            )
+        used.add(name)
+        return fields[name]
+
+    return _PROMPT_FIELD.sub(_substitute, template), used
+
+
+def _render_project_context(cwd: str, agent_dir: str | Path | None) -> str:
+    """The ``<project_context>`` block, or ``""`` when no context file applies.
+
+    The ``path=`` attribute is not decoration: it is the only thing that makes an
+    ancestor walk reaching ``/`` honest, since the prompt then names every file it
+    is carrying (pi system-prompt.ts:54-61).
+    """
+    context_files = load_project_context_files(cwd, agent_dir=agent_dir)
+    if not context_files:
+        return ""
+    lines = ["<project_context>", "Project-specific instructions and guidelines:"]
+    for context_file in context_files:
+        lines.append("")
+        lines.append(f'<project_instructions path="{context_file.path}">')
+        lines.append(context_file.content.rstrip("\n"))
+        lines.append("</project_instructions>")
+    lines.append("</project_context>")
+    return "\n".join(lines)
+
+
+def _render_tool_list(tools: list[AgentTool] | None) -> str:
+    """The ``Available tools:`` block, or ``""`` when the model is offered none.
+
+    One shape, one branch (B1): the former ``hasattr(tool, "definition")`` fork
+    existed only because the built-ins arrived as raw classes. Its raw arm
+    computed ``f"{tool.name}: {tool.label}"``, which ``_resolve_tools`` now writes
+    into ``prompt_snippet`` at construction — so this renders byte-identically to
+    the two-branch version for both tool sources.
+    """
+    if not tools:
+        return ""
+    lines = ["---", "Available tools:"]
+    for tool in tools:
+        snippet = tool.definition.prompt_snippet
+        guidelines = tool.definition.prompt_guidelines
+
+        if snippet:
+            lines.append(f"- {snippet}")
+        if guidelines:
+            for guideline in guidelines:
+                lines.append(f"  - {guideline}")
+    return "\n".join(lines)
+
+
 def _build_system_prompt(
     cwd: str | None = None,
     tools: list[AgentTool] | None = None,
     custom_prompt: str | None = None,
     no_context_files: bool = False,
     agent_dir: str | Path | None = None,
+    model: str | None = None,
 ) -> str:
     """Build the system prompt from a base prompt, context files and tools.
 
@@ -976,61 +1181,82 @@ def _build_system_prompt(
     (``system-prompt.ts:46-62``) appends ``<project_context>`` to a
     ``customPrompt`` exactly as it does to its own base text.
 
+    **Placeholders.** The base text — τ's own, or a ``custom_prompt`` — may name
+    fields as ``{{field}}``:
+
+    ==================== =========================================================
+    ``{{base_prompt}}``  :data:`BASE_SYSTEM_PROMPT`, already rendered. Lets a
+                         custom prompt WRAP τ's voice instead of replacing it.
+                         Available only in a ``custom_prompt``.
+    ``{{project_context}}`` the ``<project_context>`` block.
+    ``{{tools}}``        the ``Available tools:`` block.
+    ``{{tool_names}}``   just the names, comma-separated, for a one-line mention.
+    ``{{cwd}}``          the working directory the tools run in.
+    ``{{model}}``        the model id going on the wire, when the caller knows it.
+    ==================== =========================================================
+
+    Naming ``{{project_context}}`` or ``{{tools}}`` MOVES that section to where
+    the placeholder is; it is not also appended, or the prompt would carry it
+    twice. A template naming neither composes exactly as it always did, so this
+    is invisible to any prompt that does not ask for it. ``{{tool_names}}`` is a
+    mention, not the section — using it does not suppress the block.
+
+    An unknown field raises rather than rendering literally; see
+    :class:`SystemPromptFieldError` for why that is not a convenience.
+
     Args:
         cwd: Directory the discovery walk starts from. Defaults to ``os.getcwd()``.
         tools: List of :class:`AgentTool` (one shape — see :func:`_resolve_tools`).
         custom_prompt: Replaces the base prompt only. Context files still load.
         no_context_files: Skip discovery entirely (``--no-context-files``/``-nc``).
         agent_dir: Override the ``~/.tau`` global-context directory.
+        model: Model id for ``{{model}}``. Empty when the caller does not know it.
 
     Returns:
         Complete system prompt string.
+
+    Raises:
+        SystemPromptFieldError: on a ``{{field}}`` naming no known field.
     """
     cwd = cwd or os.getcwd()
-    lines: list[str] = []
 
-    # Base prompt. This is τ's default voice, and the ONLY copy of it — the
-    # shipped tau_default_config.json deliberately carries no ``system_prompt``
-    # key, so a default install reaches this text and its context files instead
-    # of a config string that would shadow both. A user who sets
-    # ``system_prompt`` is overriding on purpose — and overrides exactly this
-    # much: the paragraph below still gets the project's context files.
-    lines.append(custom_prompt if custom_prompt else BASE_SYSTEM_PROMPT)
+    # Both movable sections are rendered up front, because a placeholder decides
+    # only WHERE they go — not whether they are built.
+    context_block = "" if no_context_files else _render_project_context(cwd, agent_dir)
+    tools_block = _render_tool_list(tools)
 
-    # Project context files. The ``path=`` attribute is not decoration: it is the
-    # only thing that makes an ancestor walk reaching ``/`` honest, since the
-    # prompt then names every file it is carrying (pi system-prompt.ts:54-61).
-    if not no_context_files:
-        context_files = load_project_context_files(cwd, agent_dir=agent_dir)
-        if context_files:
-            lines.append("")
-            lines.append("<project_context>")
-            lines.append("Project-specific instructions and guidelines:")
-            for context_file in context_files:
-                lines.append("")
-                lines.append(f'<project_instructions path="{context_file.path}">')
-                lines.append(context_file.content.rstrip("\n"))
-                lines.append("</project_instructions>")
-            lines.append("</project_context>")
+    fields = {
+        "project_context": context_block,
+        "tools": tools_block,
+        "tool_names": ", ".join(tool.name for tool in (tools or [])),
+        "cwd": cwd,
+        "model": model or "",
+    }
 
-    # Add tool definitions. One shape, one branch (B1): the former
-    # `hasattr(tool, "definition")` fork existed only because the built-ins arrived
-    # as raw classes. Its raw arm computed `f"{tool.name}: {tool.label}"`, which
-    # `_resolve_tools` now writes into `prompt_snippet` at construction — so this
-    # renders byte-identically to the two-branch version for both tool sources.
-    if tools:
+    # τ's default voice, and the ONLY copy of it — the shipped
+    # tau_default_config.json deliberately carries no ``system_prompt`` key, so a
+    # default install reaches this text and its context files instead of a config
+    # string that would shadow both. Rendered first so ``{{base_prompt}}`` hands a
+    # custom prompt the finished text rather than a template it cannot expand.
+    base_text, base_used = _render_prompt_fields(BASE_SYSTEM_PROMPT, fields)
+
+    # A user who sets ``system_prompt`` is overriding on purpose — and overrides
+    # exactly this much: the sections below still compose around it.
+    if custom_prompt:
+        text, used = _render_prompt_fields(custom_prompt, {**fields, "base_prompt": base_text})
+        if "base_prompt" in used:
+            # The base text was inlined, so whatever IT placed counts as placed.
+            used |= base_used
+    else:
+        text, used = base_text, base_used
+
+    lines = [text]
+    if context_block and "project_context" not in used:
         lines.append("")
-        lines.append("---")
-        lines.append("Available tools:")
-        for tool in tools:
-            snippet = tool.definition.prompt_snippet
-            guidelines = tool.definition.prompt_guidelines
-
-            if snippet:
-                lines.append(f"- {snippet}")
-            if guidelines:
-                for guideline in guidelines:
-                    lines.append(f"  - {guideline}")
+        lines.append(context_block)
+    if tools_block and "tools" not in used:
+        lines.append("")
+        lines.append(tools_block)
 
     return "\n".join(lines)
 
@@ -1051,6 +1277,7 @@ def create_agent_session(
     compaction_policy: CompactionPolicy | None = None,
     bus_available: bool = False,
     no_tools: Literal["all", "builtin"] | None = None,
+    max_turns: int | None = None,
 ) -> AgentSession:
     """Create an AgentSession with all defaults.
 
@@ -1142,6 +1369,13 @@ def create_agent_session(
             ``"builtin"`` behaviour inside this package rather than leaving it a
             display label that only the coding-agent's argv boundary honoured.
             An unrecognised value raises in ``AgentSession``.
+        max_turns: Stop the loop after this many LLM calls. ``None`` — the default
+            — is no ceiling, which is also ``AgentLoopConfig``'s default and pi's
+            behaviour. This factory did not take the parameter at all until now,
+            and neither did any CLI flag or config key, so the ceiling that did
+            exist (a hardcoded 50) was unreachable from every caller τ ships. What
+            bounds a runaway run without one is the abort signal: an extension's
+            budget guard, or Escape in the TUI.
 
     Raises:
         ValueError: if ``no_tools`` is given together with a non-empty ``tools``
@@ -1219,6 +1453,10 @@ def create_agent_session(
         tool_objs,
         custom_prompt=system_prompt,
         no_context_files=no_context_files,
+        # ``{{model}}`` gets the id that goes on the wire, which after resolution
+        # is ``Model.id`` — not the string the caller passed, which may have been
+        # a config-entry name or a ``provider/id`` shorthand.
+        model=model.id,
     )
 
     # 5. Default to an in-memory session log when the caller injects none. The
@@ -1240,4 +1478,5 @@ def create_agent_session(
         tool_execution_mode=tool_execution_mode,
         bus_available=bus_available,
         no_tools=no_tools,
+        max_turns=max_turns,
     )

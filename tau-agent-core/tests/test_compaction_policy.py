@@ -490,6 +490,76 @@ class TestLocalSummarizerPolicy:
             "has declared a capability it does not have"
         )
 
+    async def test_the_compaction_entry_records_the_summariser_not_the_session_model(self):
+        """TREE-BROWSER-AS-EDITOR.md §8.1 — the defect this test closes.
+
+        The test above proves the summariser is *reached*. That is a live fact that
+        vanished the moment the call returned: ``append_compaction`` took
+        ``summary``/``first_kept_id``/``tokens_before`` and dropped the rest, so for
+        any compaction node on any transcript, "which model wrote this and what did
+        it cost" was unanswerable — even though both numbers existed at the write.
+        Here the session model and the summariser genuinely differ, so recording
+        either the wrong one or nothing at all fails.
+
+        ``summaryUsage`` is asserted alongside it because the pair is the point: a
+        record naming a model but not its cost still cannot answer §8.1's question.
+        The value is the summariser stub's own usage (``_assistant``: 1 in, 1 out),
+        which is also what ``record_side_usage`` was already being handed — the
+        number was in the same scope and going nowhere durable.
+        """
+        board = _model("board-summariser", context_window=128_000)
+        session = _session(CompactionPolicy.local_summarizer(model=board, api_key="board-key"))
+        assert session._model.id == "session-model", "the two models must actually differ"
+
+        with (
+            patch("tau_agent_core.agent_loop.stream_simple", side_effect=_stream_stub()),
+            patch("tau_agent_core.compaction.complete_simple", side_effect=_summarizer_stub()),
+        ):
+            await session.prompt("one")
+            with patch("tau_agent_core.agent_session.should_compact", return_value=True):
+                await session.prompt(_COMPACTING_PROMPT)
+
+        anchors = [e for e in session.session_log.entries() if e["type"] == "compaction"]
+        assert len(anchors) == 1
+        assert anchors[0]["summarizerModelId"] == "board-summariser"
+        assert anchors[0]["summaryUsage"]["input_tokens"] == 1
+        assert anchors[0]["summaryUsage"]["output_tokens"] == 1
+
+    async def test_the_compaction_entry_records_the_span_it_folded_and_its_frame(self):
+        """§8.2 and §8.3 on the live path: the covered span and the frame id.
+
+        ``coveredEntries`` must be positive — ``prepare_compaction`` returns ``None``
+        rather than compact when the cut would remove nothing, so a compaction that
+        happened at all folded something, and a recorded zero would mean the write
+        site fabricated the number instead of measuring it. ``agentSpecId`` must name
+        the ``agent_spec`` node ``AgentSession.__init__`` writes (W2), found by
+        ancestry from the anchor's parent, and that node must really be an
+        ``agent_spec`` rather than merely a real id.
+        """
+        session = _session()
+
+        with (
+            patch("tau_agent_core.agent_loop.stream_simple", side_effect=_stream_stub()),
+            patch("tau_agent_core.compaction.complete_simple", side_effect=_summarizer_stub()),
+        ):
+            await session.prompt("one")
+            with patch("tau_agent_core.agent_session.should_compact", return_value=True):
+                await session.prompt(_COMPACTING_PROMPT)
+
+        entries = session.session_log.entries()
+        anchor = next(e for e in entries if e["type"] == "compaction")
+
+        assert anchor["coveredEntries"] > 0, (
+            "a compaction that ran folded something; a zero here is a fabricated count"
+        )
+        assert anchor["coveredTokens"] > 0
+        assert anchor["coveredTokens"] <= anchor["tokensBefore"], (
+            "the covered span is a subset of the context that preceded it"
+        )
+
+        spec = next(e for e in entries if e["id"] == anchor["agentSpecId"])
+        assert spec["type"] == "customEntry" and spec["customType"] == "agent_spec"
+
     def test_a_summariser_that_cannot_hold_the_window_is_refused(self):
         # It would be asked to summarise a full session window and 400 at the
         # provider — mid-partition, as a CompactionError that reads as a result.

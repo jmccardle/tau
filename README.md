@@ -10,6 +10,22 @@ below). It is not a 1:1 clone.
 ## Install
 
 ```bash
+pip install ffwf-tau     # the `tau` command with its TUI
+tau
+```
+
+`ffwf-tau` is a metapackage: it contains no code and resolves to
+`ffwf-tau-coding-agent[tui]`. Install that distribution directly to choose your
+own extras — a headless install is 15 packages, the TUI install is 27:
+
+```bash
+pip install ffwf-tau-coding-agent                  # headless: the CLI, `tau -p`, `--mode rpc`
+pip install 'ffwf-tau-coding-agent[tui,jmfts]'     # TUI plus the JMFTS session store
+```
+
+### From this tree
+
+```bash
 python -m venv venv && source venv/bin/activate
 
 # Headless: the agent, the CLI, `tau -p`. 15 packages, no interface libraries.
@@ -44,6 +60,9 @@ for `tau`. At least one unrelated project ships its own `tau`, so in an
 environment holding both, whichever installed last owns the name and neither pip
 nor uv says a word about it. `ffwf-tau` cannot be taken, which makes it the right
 name inside scripts, systemd units, and Dockerfiles.
+
+`ffwf-tau` is now also the metapackage's name on PyPI, so the one spelling that
+is unambiguous as a command is unambiguous as an install too.
 
 If `tau --version` does not report τ, `ffwf-tau --version` will.
 

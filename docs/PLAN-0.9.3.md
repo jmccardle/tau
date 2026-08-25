@@ -160,6 +160,23 @@ non-streaming response may carry the field the stream omits.
 
 ### 4.2 The AskSage report — what is and is not τ's
 
+> **Follow-up, 2026-08-23 — built.** A second report against the same gateway
+> covered the buffered responses this section did not see, and proposed a
+> client-side shim. The shim's diagnosis was right and its packaging was not: a
+> global, silent, permanently-installed normalizer that translated any
+> `function`-less tool call carrying a top-level `name`, and defaulted a call
+> with no argument payload to empty. What shipped instead is
+> `compat.tool_call_schema` (`tau_llm/compat.py`) — operator-stated per model,
+> never detected, raising rather than defaulting — plus the enriched diagnosis in
+> `_build_final_message` that tells the two failure modes apart, plus a real τ
+> bug the report surfaced: `delta.get("tool_calls", [])` treated a
+> present-and-null key as a value and raised `TypeError: 'NoneType' object is not
+> iterable`. That `TypeError`, not the Azure preamble frame the report blamed,
+> was the crash; the preamble frame was already handled by the `if not choices:
+> continue` guard §4.3 records. Measurements, shapes and the rejected shim are in
+> `docs/RELEASE-NOTES-0.9.4.md`; the tests are sections (5) and (6) of
+> `tau-llm/tests/test_backend_hardening.py`.
+
 The root cause is upstream and correctly diagnosed. The gateway's `gpt-5*` and
 `gpt-o3*` deployments never populate `function.name` on any tool-call SSE chunk,
 while `gpt-4.1*`, `gpt-5.1-gov` and `gpt-o4-mini` on the *same* gateway do —
@@ -283,7 +300,9 @@ Cheapest useful order:
 ### 4.5 Where the model's facts come from — **built 2026-08-21**
 
 Steps 1 and 2 shipped in `6e1dfbe`. Step 4 shipped as `tau_llm.compat`, and it
-is **two fields, not pi's twenty-six**. That is the finding, not a shortcut: most
+is **two fields, not pi's twenty-six** (three since 2026-08-23 — see the §4.2
+follow-up; `tool_call_schema` is the one field here that is never detected,
+because it is the one that could hide a fault rather than surface one). That is the finding, not a shortcut: most
 of pi's compat is already said by a τ `Model` field, and saying it twice invites
 the two to disagree. `supportsReasoningEffort` is `Model.reasoning`;
 `thinkingFormat` and `supportsThinkingTokenBudget` are `thinking_level_map`,

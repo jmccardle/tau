@@ -22,11 +22,17 @@ from tau_agent_core.agent_session import (
     ExtensionActionResult,
     ExtensionCommandResult,
 )
-from tau_agent_core.compaction import CompactionSettings
+from tau_agent_core.compaction import CompactionSettings, estimate_span_tokens
 from tau_agent_core.event_projection import MessageDeltaProjector
 from tau_agent_core.events import AgentEvent
-from tau_agent_core.session_log import InMemorySessionLog, SessionLog
-from tau_agent_core.sdk import LoadExtensionsResult, _build_system_prompt, _resolve_tools
+from tau_agent_core.session_log import InMemorySessionLog, SessionLog, agent_spec_in_force
+from tau_agent_core.sdk import (
+    BASE_SYSTEM_PROMPT,
+    LoadExtensionsResult,
+    _build_system_prompt,
+    _resolve_tools,
+    append_system_prompt,
+)
 from tau_agent_core.submission import Submission, SubmissionResult
 
 #: The render lane a caller that names none renders into. Every pre-B3-a consumer
@@ -100,6 +106,42 @@ def tau_event_to_pi_event(event: AgentEvent) -> dict[str, Any] | None:
     return event.model_dump(exclude_none=True)
 
 
+def prompt_tokens(usage: dict[str, Any]) -> int:
+    """One completion's prompt size — the conversation's context when it was sent.
+
+    Read as ``total_tokens - output_tokens``, because ``total_tokens`` is the
+    server's own figure for the whole call and every provider's ``output_tokens``
+    is the part of it the model generated. The remainder is the prompt, whatever
+    fields the provider split it across.
+
+    The alternative — summing ``input + cache_read + cache_write`` — is equal on
+    a transcript written by today's code but WRONG on one written before the
+    providers stopped double-counting the cached span inside ``input_tokens``. A
+    reloaded chat from last week would read ~2× its real size on a cache-heavy
+    provider. The subtraction gets both right with no version check and no guess.
+
+    Falls to the field sum only when the server reported no ``total_tokens`` at
+    all; ``Usage`` defaults it to 0, so 0 here means "nothing reported", not a
+    zero-token prompt. A ``total`` below ``output`` is a contradiction rather than
+    a small number, so it takes the same path instead of yielding a negative size.
+
+    This is a per-completion reading. Callers REPLACE it as completions arrive
+    rather than summing: prompt N contains prompt N-1 in full, so a sum reports
+    the same conversation once per turn. Shared by the live path
+    (:class:`TurnStream`) and the TUI's reload/header rollups, so both read the
+    context the same way.
+    """
+    total = int(usage.get("total_tokens", 0) or 0)
+    output = int(usage.get("output_tokens", 0) or 0)
+    if total >= output and total > 0:
+        return total - output
+    return (
+        int(usage.get("input_tokens", 0) or 0)
+        + int(usage.get("cache_read_tokens", 0) or 0)
+        + int(usage.get("cache_write_tokens", 0) or 0)
+    )
+
+
 class TurnStream:
     """One lane's worth of agent events, normalized into widget-lifecycle dicts.
 
@@ -124,13 +166,22 @@ class TurnStream:
         {"kind": "tool_call", "id": str, "name": str, "arguments": dict}
         {"kind": "tool_result", "id": str, "name": str, "result": str,
          "is_error": bool, "blocked": bool, "blocked_by": str | None}
+        {"kind": "completion_end", "output": int, "context": int}
 
     Tool widgets are driven off ``tool_execution_start`` / ``tool_execution_end``
     (which carry name/args/result directly), NOT off ``message_end`` toolCall
     blocks — the agent loop emits ``message_end`` twice per tool-bearing turn, so
     consuming it for rendering would duplicate. ``message_end`` is used only to
-    harvest ``tool_calls`` for chat persistence (deduplicated by id) and the
-    per-completion usage.
+    harvest ``tool_calls`` for chat persistence (deduplicated by id), the
+    per-completion usage, and the ``completion_end`` boundary below.
+
+    ``completion_end`` carries this lane's REAL token totals so far — the same
+    running sums ``lane_end`` reports, published at every completion boundary
+    instead of only at the end. A tool-bearing turn has one per tool call, so a
+    live counter can show a measured figure that steps mid-turn rather than an
+    approximation. It is emitted on both of the turn's ``message_end`` events;
+    the second adds no usage, so it restates the same totals, and both mark the
+    same real boundary — the completion is over and nothing is in flight.
     """
 
     def __init__(self, lane: str = DEFAULT_LANE) -> None:
@@ -150,6 +201,12 @@ class TurnStream:
             "cache_read_tokens": 0,
             "cache_write_tokens": 0,
         }
+        #: The LAST completion's prompt size (input + cache_read + cache_write) —
+        #: the conversation's context at the moment this lane finished. Kept as a
+        #: replace, never a sum: each completion's prompt already CONTAINS every
+        #: earlier one, so summing prompts across a tool-bearing turn reports the
+        #: same conversation once per completion. 0 until a completion reports.
+        self.context_tokens: int = 0
         # The LAST completion's ``usage.extra`` — server-reported per-completion
         # telemetry (llama.cpp timings + τ's JSON-repair count). t/s and
         # forced-share are per-COMPLETION, not summable like tokens, so only the
@@ -183,8 +240,7 @@ class TurnStream:
         if event.type == "message_update":
             return self._feed_message_update(event)
         if event.type == "message_end":
-            self._harvest_message_end(event)
-            return []
+            return self._harvest_message_end(event)
         if event.type == "tool_execution_start":
             # Render the tool call as soon as it begins — this is the
             # authoritative, ordered signal (carries name + args directly).
@@ -237,10 +293,10 @@ class TurnStream:
                 out.append(self._tag({"kind": "reasoning_delta", "delta": block_delta.delta}))
         return out
 
-    def _harvest_message_end(self, event: Any) -> None:
+    def _harvest_message_end(self, event: Any) -> list[dict[str, Any]]:
         message = getattr(event, "message", None)
         if not message:
-            return
+            return []
         content = message.get("content", [])
         if isinstance(content, list):
             for block in content:
@@ -262,10 +318,24 @@ class TurnStream:
         if isinstance(usage, dict):
             for key in self.usage_totals:
                 self.usage_totals[key] += int(usage.get(key, 0) or 0)
+            self.context_tokens = prompt_tokens(usage)
             # Overwrite, don't merge: a real completion with no telemetry SHOULD
             # clear the prior reading, so take whatever this completion carried.
             extra = usage.get("extra")
             self.last_extra = extra if isinstance(extra, dict) else {}
+        # The boundary itself, with whatever is measured at it. A completion that
+        # reported no usage still ends here, and the totals it publishes are the
+        # ones that ARE measured — a provider that never reports usage publishes
+        # 0, which is the honest reading (nothing was measured), not a guess.
+        return [
+            self._tag(
+                {
+                    "kind": "completion_end",
+                    "output": self.usage_totals["output_tokens"],
+                    "context": self.context_tokens,
+                }
+            )
+        ]
 
     def _feed_tool_execution_end(self, event: Any) -> dict[str, Any]:
         tool_call_id = getattr(event, "tool_call_id", "") or ""
@@ -323,12 +393,15 @@ class RenderRouter:
         {"kind": "lane_start", "lane": str, "source": str | None,
          "submitter": str | None, "correlation": dict, "text": str}
         {"kind": "lane_end", "lane": str, "source": str | None,
-         "submitter": str | None, "tokens": int, "extra": dict}
+         "submitter": str | None, "context": int, "output": int, "extra": dict}
 
-    ``tokens`` is the lane's real total, including the side-usage delta
-    ``submission_end`` reports for work done off the agent loop (auto-compaction,
-    an extension's ``ctx.complete()``); ``extra`` is the last completion's
-    telemetry, or ``{}`` when the provider reported none.
+    ``output`` is every token the lane GENERATED, summed across its completions
+    and including the side-usage delta ``submission_end`` reports for work done
+    off the agent loop (auto-compaction, an extension's ``ctx.complete()``).
+    ``context`` is the prompt the lane last SENT — a replace, not a sum, because
+    each completion's prompt contains every earlier one. Side usage is a different
+    conversation's prompt, so it is not added to ``context``. ``extra`` is the last
+    completion's telemetry, or ``{}`` when the provider reported none.
 
     An agent event whose ``submission_id`` names no open lane is NOT dropped in
     silence: it goes to ``on_orphan`` with a reason. Those exist — a
@@ -512,8 +585,12 @@ class RenderRouter:
             self._orphan(f"lane {lane!r} closed twice, or was never opened")
             return
         source, submitter = self._identity.pop(lane, (None, None))
-        tokens = stream.usage_totals["total_tokens"] + int(
-            (side_usage or {}).get("total_tokens", 0)
+        # Two numbers, not one. ``output`` is summable — every completion generated
+        # its own tokens, and a side call (a tool's own summarizing model) generated
+        # more. ``context`` is NOT: it is the prompt this lane last sent, and a side
+        # call's prompt is a different conversation, so it never lands here.
+        output = stream.usage_totals["output_tokens"] + int(
+            (side_usage or {}).get("output_tokens", 0)
         )
         await self._deliver(
             {
@@ -521,7 +598,8 @@ class RenderRouter:
                 "lane": lane,
                 "source": source,
                 "submitter": submitter,
-                "tokens": tokens,
+                "context": stream.context_tokens,
+                "output": output,
                 "extra": dict(stream.last_extra),
             }
         )
@@ -760,9 +838,11 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
         )
 
     # Endpoint wire quirks (Model.compat): which spelling of the output cap this
-    # server accepts, and whether it tolerates `stream_options`. Absent means τ
-    # infers both from provider/base_url, which is what every existing config
-    # gets and what it got before this key existed.
+    # server accepts, whether it tolerates `stream_options`, and which schema it
+    # returns tool calls in. Absent means τ infers the first two from
+    # provider/base_url and reads tool calls as OpenAI-shaped, which is what every
+    # existing config gets and what it got before this key existed.
+    # `tool_call_schema` is never inferred — see tau_llm/compat.py for why.
     compat_config = config.get("compat")
     if compat_config is not None and not isinstance(compat_config, dict):
         raise ValueError(f"models.<name>.compat must be a JSON object; got {compat_config!r}")
@@ -896,6 +976,13 @@ class Backend(ABC):
     def __init__(self, config: dict[str, Any]):
         self.config = config
         self.model = config.get("model", "")
+        #: The composed system prompt this backend will send. :class:`TauBackend`
+        #: BUILDS it — base text, project context files, tool list — and every
+        #: frontend stores THIS on a new session, because the session's first
+        #: message is what actually goes on the wire and takes precedence over
+        #: anything the AgentSession holds. A backend that composes no prompt
+        #: leaves it empty and the session gets no system message.
+        self.system_prompt: str = ""
 
     @abstractmethod
     async def chat(self, messages: list[dict]) -> tuple[str, dict, list[dict]]:
@@ -1130,10 +1217,27 @@ class TauBackend(Backend):
         # by it (pi system-prompt.ts:46-62).
         # ``cwd`` is left to default to ``os.getcwd()`` — the same directory the
         # TUI stamps on a session and the same one the tools run in.
+        #
+        # ``--append-system-prompt`` sections augment the BASE TEXT, not the
+        # composed whole — they land ahead of the project context and the tool
+        # list, which is pi's placement (system-prompt.ts:48). Applied HERE, the
+        # one point every frontend's model config passes through, so the TUI,
+        # print mode and RPC mode compose identically instead of each folding
+        # the sections in on its own before the builder ever sees them.
+        custom_prompt = config.get("system_prompt") or None
+        append_sections = config.get("append_system_prompt")
+        if append_sections:
+            custom_prompt = append_system_prompt(
+                custom_prompt or BASE_SYSTEM_PROMPT, list(append_sections)
+            )
         self.system_prompt = _build_system_prompt(
             tools=tools,
-            custom_prompt=config.get("system_prompt") or None,
+            custom_prompt=custom_prompt,
             no_context_files=bool(config.get("no_context_files", False)),
+            # ``{{model}}``: the id that goes on the wire, not the config key it
+            # was reached by — a prompt saying which model it is should say the
+            # thing the server sees.
+            model=config.get("model") or None,
         )
 
         # The resolved tool-suppression policy (``--no-tools`` → "all",
@@ -1145,6 +1249,15 @@ class TauBackend(Backend):
         # two flags. An unrecognised value raises in AgentSession rather than
         # degrading to "no suppression".
         no_tools = config.get("no_tools")
+
+        # The turn ceiling, resolved upstream (``--max-turns`` > the model entry >
+        # config.json's top-level ``max_turns``) by ``resolve_model_config`` for
+        # ``tau -p`` and by ``Parley._apply_run_config`` for the TUI. ``None`` here
+        # means nobody stated one, and ``AgentSession`` passes that through to
+        # ``AgentLoopConfig``, whose default is no ceiling. Nothing in this class
+        # invents a number: the 50 that used to bound every run lived in
+        # ``AgentLoopConfig`` and could not be reached from either frontend.
+        max_turns = config.get("max_turns")
 
         # Forward the configured API key to the session -> agent loop ->
         # provider. The provider requires a truthy key (Fail-Early); local
@@ -1186,6 +1299,7 @@ class TauBackend(Backend):
             # a capability the operator grants, never one a run assumes.
             bus_available=bool(config.get("bus_available", False)),
             no_tools=no_tools,
+            max_turns=max_turns,
         )
 
     def bind_session_log(self, session_log: SessionLog) -> None:
@@ -1509,7 +1623,25 @@ class TauBackend(Backend):
             # makes; skipped entirely when the anchor already IS the tip, which is
             # the common "fold my history and keep going" case.
             session.append_navigate(anchor_id)
-        session.append_elide(first_kept_id)
+        # TREE-BROWSER-AS-EDITOR.md §8.2/§8.3, required keywords per §11.3. ``hidden``
+        # is the span this elide removes — already computed above for the no-op
+        # refusal and, until now, thrown away immediately afterwards, which is §8.1's
+        # pattern exactly. ``coveredTokens`` is the figure §8.2 names as the one an
+        # elide records nowhere and no reader can recompute later; the count is
+        # passed alongside it so both halves describe the same list rather than one
+        # being re-derived from the tree on a different basis.
+        #
+        # The frame is looked up from ``anchor_id``, the entry this elide parents at,
+        # not from the backend's live AgentSession: the browser aims an elide at an
+        # arbitrary historical anchor, which may sit two ``set_model`` swaps behind
+        # the session's current spec, and the frame that governed the covered span is
+        # the one on that anchor's ancestor chain.
+        session.append_elide(
+            first_kept_id,
+            covered_entries=len(hidden),
+            covered_tokens=estimate_span_tokens(hidden),
+            agent_spec_id=agent_spec_in_force(entries, anchor_id),
+        )
 
         return ConversationTree(session.entries(), session.cursor).context_for()
 

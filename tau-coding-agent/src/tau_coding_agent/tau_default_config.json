@@ -18,5 +18,6 @@
       "api_key": "not-needed"
     }
   },
-  "default_model": "local-llm"
+  "default_model": "local-llm",
+  "theme": "mocha"
 }

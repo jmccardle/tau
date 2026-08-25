@@ -16,7 +16,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
 dependencies = [
-    "ffwf-tau-llm==0.9.3",
+    "ffwf-tau-llm==0.9.4",
     "pydantic>=2.0",
 ]
 
@@ -37,7 +37,7 @@ bus = ["nats-py>=2.15.0"]
 # install stays pytest-free.
 testing = ["pytest"]
 dev = [
-    "ffwf-tau-agent-core[bus,testing]==0.9.3",
+    "ffwf-tau-agent-core[bus,testing]==0.9.4",
     "pytest-asyncio",
     "ruff",
     # Pinned, unlike every other dev tool here. mypy has no "state your rule set"

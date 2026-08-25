@@ -215,7 +215,7 @@ def test_a_payload_with_no_frame_says_so():
 
 
 def test_a_non_dict_payload_is_reported_rather_than_crashing_the_browser():
-    """Same policy as ``_elide_preview``'s unreachable boundary: this flow cannot
+    """Same policy as ``_splice_span_phrase``'s unreachable boundary: this flow cannot
     write such a node, a hand-written log can, and a browser that raises on one is
     a browser that cannot show the log you are debugging."""
     entries = [

@@ -94,9 +94,70 @@ class SessionLog(Protocol):
 
     def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str: ...
 
-    def append_compaction(self, summary: str, first_kept_id: str, tokens_before: int) -> str: ...
+    def append_compaction(
+        self,
+        summary: str,
+        first_kept_id: str,
+        tokens_before: int,
+        *,
+        summarizer_model_id: str,
+        summary_usage: dict[str, int],
+        covered_entries: int,
+        covered_tokens: int,
+        agent_spec_id: str | None,
+    ) -> str:
+        """Persist a compaction splice anchor and the provenance of its summary.
 
-    def append_elide(self, first_kept_id: str) -> str:
+        The five keyword arguments are TREE-BROWSER-AS-EDITOR.md §8's decision,
+        widened onto this Protocol by §11.3. They are **keyword-only and have no
+        defaults**, which is the whole point: every one of them already exists at
+        the call site and was being discarded there (§8.1), so a caller that cannot
+        name one fails where the value lives rather than recording ``None``. A
+        default would make "no provenance recorded" indistinguishable from
+        "provenance recorded as unknown" — the swallowed-gap pattern the repo's
+        Fail-Early rule exists to prevent (§11.3, rejected option 1).
+
+        - ``summarizer_model_id`` — the id of the model that WROTE ``summary``.
+          Not the conversation's model: ``AgentSession._summarizer()``
+          (agent_session.py:866) routes a ``local_summarizer`` policy's compaction
+          through a different one, so the two genuinely differ and the transcript
+          could not previously say which (§8.1).
+        - ``summary_usage`` — what generating ``summary`` cost, i.e.
+          ``CompactionResult.usage`` (compaction.py:112-119). Compaction summarises
+          a full context window and fires automatically, so this is routinely the
+          most expensive call in a session; ``tokens_before`` says how big the
+          context was, this says what shrinking it charged.
+        - ``covered_entries`` / ``covered_tokens`` — the span this anchor removes
+          from the fold, as measured at write time: the count of entries and
+          :func:`~tau_agent_core.compaction.estimate_span_tokens` over them. Passed
+          in rather than recomputed here — see :meth:`append_elide` for why.
+        - ``agent_spec_id`` — the id of the ``agent_spec`` ``customEntry`` in force
+          over the covered span, from :func:`agent_spec_in_force`. ``None`` is a
+          real answer (a pi-imported log, or a store driven without an
+          ``AgentSession``, has no such node), not an absent one — the absence of a
+          default is what keeps those two cases apart. §8.3: only the ID is
+          recorded, never the prompt text, and the record it points at may lag what
+          was actually bound, because ``_record_agent_spec`` re-runs at construction
+          and ``set_model`` but not at ``load_extensions``.
+
+        ``agent_spec_id`` is deliberately NOT validated against the entry set, unlike
+        ``first_kept_id``. The hazards are not comparable: a dangling
+        ``first_kept_id`` is never found by the fold's forward scan and silently
+        drops the entire kept region from model input, while a dangling
+        ``agent_spec_id`` only makes one browser row unhelpful. ``agent_spec`` is a
+        RECORD and never a contract (NODE-ADDRESSABLE-AGENTS.md Decision 3), so
+        nothing reads it back to reconstruct anything that could then be wrong.
+        """
+        ...
+
+    def append_elide(
+        self,
+        first_kept_id: str,
+        *,
+        covered_entries: int,
+        covered_tokens: int,
+        agent_spec_id: str | None,
+    ) -> str:
         """Persist a summary-less splice anchor (W3, NODE-ADDRESSABLE-AGENTS.md).
 
         Same anchor kind ``ConversationTree._active_path_entries`` folds
@@ -106,6 +167,27 @@ class SessionLog(Protocol):
         per-node flag, no new walker, and a branch whose path never reaches this
         node is completely unaffected (Decision 7 keeps it out of no fold but
         ``context_for`` — ``entries()`` stays total).
+
+        **It takes three of :meth:`append_compaction`'s five provenance arguments,
+        not five.** An elide generates no summary, so there is no summarizer model
+        and no summary cost; ``summarizer_model_id``/``summary_usage`` would be
+        parameters whose only admissible value is a placeholder, which is the same
+        swallowed gap §11.3 rejects, wearing symmetry as a disguise. It does have a
+        covered span and it does run under an ``agent_spec``, so it takes those.
+
+        ``covered_entries``/``covered_tokens`` close §8.2 — an elide recorded no
+        size at all, where a compaction at least recorded ``tokensBefore``. They are
+        **passed in, not computed here**, for three reasons. (1) ``covered_tokens``
+        is not recoverable from structure at read time (§8.2 says exactly this), so
+        it must cross the boundary regardless; computing the count here while the
+        token figure comes from the caller would let the two describe different
+        spans, with nothing to catch it. (2) The count arithmetic already exists,
+        once, in ``ConversationTree._splice_span_phrase`` (conversation_tree.py:552);
+        reproducing it in the five stores that implement this Protocol would be five
+        copies, and pushing it down here would make every store depend on
+        ``ConversationTree``. (3) Both call sites already compute the span and throw
+        it away — ``TauBackend.elide_span`` builds the exact ``hidden`` list for its
+        no-op refusal check (backends.py) — which is §8.1's pattern verbatim.
         """
         ...
 
@@ -176,6 +258,48 @@ def resolve_cursor(entries: list[dict[str, Any]]) -> str | None:
         target = last.get("targetId")
         return str(target) if target is not None else None
     return str(last["id"])
+
+
+def agent_spec_in_force(entries: list[dict[str, Any]], leaf_id: str | None) -> str | None:
+    """The id of the ``agent_spec`` record governing ``leaf_id``, or ``None``.
+
+    What a splice anchor's ``agentSpecId`` must be set to
+    (TREE-BROWSER-AS-EDITOR.md §8.3): the nearest ``agent_spec`` ``customEntry``
+    among ``leaf_id``'s ANCESTORS, walking ``parentId`` leaf→root.
+
+    Ancestry, not "the last one this session wrote", for the same reason
+    ``ConversationTree._previous_agent_spec`` uses it and docs/LANE-REMOVAL.md §1
+    removed the tag that pretended otherwise: a leaf's frame is its ancestor chain
+    and nothing else. The two answers diverge exactly where it matters — an elide
+    the tree browser aims at a historical anchor is governed by whatever spec was in
+    force *there*, which may be two ``set_model`` swaps behind the session's current
+    one, and a spec written on a sibling branch never governed this path at all.
+
+    Lives here beside :func:`resolve_cursor`, and for the same reason: it is part of
+    the entry algebra every ``SessionLog`` implementation must agree on exactly, not
+    a property of any one durability layer. Implemented as a plain ``parentId`` walk
+    rather than through ``ConversationTree`` so this module keeps its zero-dependency
+    position under the tree, and so the two callers (one in ``tau-agent-core``, one in
+    ``tau-coding-agent``) share one spelling.
+
+    Returns ``None`` when no ancestor is an ``agent_spec`` — an honest answer, and a
+    reachable one: a pi-imported log has no such node, and neither does a store
+    driven directly rather than through ``AgentSession``. §11.3's "no defaults" rule
+    is what keeps that answer distinct from a caller who never looked.
+    """
+    by_id = {str(e["id"]): e for e in entries if e.get("id") is not None}
+    current = leaf_id
+    visited: set[str] = set()
+    while current is not None and current not in visited:
+        visited.add(current)  # cycle guard, mirroring ConversationTree._walk
+        node = by_id.get(current)
+        if node is None:
+            return None
+        if node.get("type") == "customEntry" and node.get("customType") == "agent_spec":
+            return current
+        parent = node.get("parentId")
+        current = str(parent) if parent is not None else None
+    return None
 
 
 def _now_iso() -> str:
@@ -260,12 +384,27 @@ class InMemorySessionLog:
         ``TreeStore`` reconstructs from ``ctx.entries()`` on reload."""
         return self._append("customEntry", customType=custom_type, data=data)
 
-    def append_compaction(self, summary: str, first_kept_id: str, tokens_before: int) -> str:
+    def append_compaction(
+        self,
+        summary: str,
+        first_kept_id: str,
+        tokens_before: int,
+        *,
+        summarizer_model_id: str,
+        summary_usage: dict[str, int],
+        covered_entries: int,
+        covered_tokens: int,
+        agent_spec_id: str | None,
+    ) -> str:
         """Fail-Early on an unknown splice anchor, as ``append_navigate`` already does.
 
         An anchor matching no entry is never found by the tree fold, so the entire kept
         region silently drops out of the context — the worst of the three
         unknown-id cases, because it corrupts model input rather than raising.
+
+        The five provenance keywords land as camelCase payload fields beside the
+        three that were already here (see the Protocol for what each records and why
+        none of them has a default — TREE-BROWSER-AS-EDITOR.md §8, §11.3).
         """
         if first_kept_id not in self._ids:
             raise ValueError(
@@ -278,21 +417,43 @@ class InMemorySessionLog:
             summary=summary,
             firstKeptId=first_kept_id,
             tokensBefore=tokens_before,
+            summarizerModelId=summarizer_model_id,
+            summaryUsage=dict(summary_usage),
+            coveredEntries=covered_entries,
+            coveredTokens=covered_tokens,
+            agentSpecId=agent_spec_id,
         )
 
-    def append_elide(self, first_kept_id: str) -> str:
+    def append_elide(
+        self,
+        first_kept_id: str,
+        *,
+        covered_entries: int,
+        covered_tokens: int,
+        agent_spec_id: str | None,
+    ) -> str:
         """Persist a summary-less splice anchor (W3, NODE-ADDRESSABLE-AGENTS.md):
         the same splice as ``append_compaction``, minus ``summary``/``tokensBefore``.
         Fail-Early for the identical reason ``append_compaction`` validates — an
         anchor matching no entry is never found by ``_active_path_entries``'s
-        forward scan, so the ENTIRE kept region silently drops out of the fold."""
+        forward scan, so the ENTIRE kept region silently drops out of the fold.
+
+        Three provenance keywords, not five: §8.2's missing size plus §8.3's frame
+        id. There is no summary here, so there is no summarizer and no summary cost
+        (see the Protocol)."""
         if first_kept_id not in self._ids:
             raise ValueError(
                 f"elide first_kept_id {first_kept_id!r} not found; the splice anchor "
                 "must name a real entry, or the whole kept region silently drops out of "
                 "the context fold"
             )
-        return self._append("elide", firstKeptId=first_kept_id)
+        return self._append(
+            "elide",
+            firstKeptId=first_kept_id,
+            coveredEntries=covered_entries,
+            coveredTokens=covered_tokens,
+            agentSpecId=agent_spec_id,
+        )
 
     def append_navigate(self, target_id: str | None) -> str:
         """Persist a cursor move; the leaf advances to ``target_id`` (not to the
@@ -444,10 +605,25 @@ class BranchView:
     def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
         return self._append("customEntry", customType=custom_type, data=data)
 
-    def append_compaction(self, summary: str, first_kept_id: str, tokens_before: int) -> str:
+    def append_compaction(
+        self,
+        summary: str,
+        first_kept_id: str,
+        tokens_before: int,
+        *,
+        summarizer_model_id: str,
+        summary_usage: dict[str, int],
+        covered_entries: int,
+        covered_tokens: int,
+        agent_spec_id: str | None,
+    ) -> str:
         """Fail-Early on an unknown anchor, exactly as the concrete stores do — a
         compaction whose ``firstKeptId`` names nothing silently drops the whole kept
-        region from the fold rather than raising."""
+        region from the fold rather than raising.
+
+        A branch adds nothing to the provenance and hides nothing from it: the five
+        §8 fields are written verbatim, exactly as ``append_at`` writes a branch's
+        entries with no marker of their own (docs/LANE-REMOVAL.md §1)."""
         if first_kept_id not in self._ids():
             raise ValueError(
                 f"compaction first_kept_id {first_kept_id!r} not found; the splice anchor "
@@ -459,9 +635,21 @@ class BranchView:
             summary=summary,
             firstKeptId=first_kept_id,
             tokensBefore=tokens_before,
+            summarizerModelId=summarizer_model_id,
+            summaryUsage=dict(summary_usage),
+            coveredEntries=covered_entries,
+            coveredTokens=covered_tokens,
+            agentSpecId=agent_spec_id,
         )
 
-    def append_elide(self, first_kept_id: str) -> str:
+    def append_elide(
+        self,
+        first_kept_id: str,
+        *,
+        covered_entries: int,
+        covered_tokens: int,
+        agent_spec_id: str | None,
+    ) -> str:
         """Fail-Early on an unknown anchor, exactly as ``append_compaction`` does —
         see :class:`InMemorySessionLog` for why a dangling anchor is the worst of
         the unknown-id cases rather than merely a rejected call."""
@@ -471,7 +659,13 @@ class BranchView:
                 "must name a real entry, or the whole kept region silently drops out of "
                 "the context fold"
             )
-        return self._append("elide", firstKeptId=first_kept_id)
+        return self._append(
+            "elide",
+            firstKeptId=first_kept_id,
+            coveredEntries=covered_entries,
+            coveredTokens=covered_tokens,
+            agentSpecId=agent_spec_id,
+        )
 
     def append_navigate(self, target_id: str | None) -> str:
         """Move THIS branch's leaf. The primary cursor is untouched."""

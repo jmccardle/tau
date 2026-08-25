@@ -53,6 +53,10 @@ class CLIArgs:
     mode: str = "text"  # text | json
     model: str | None = None
     provider: str | None = None
+    #: ``--theme``: the TUI colour theme for this run only (docs/PLAN-0.9.4.md §6).
+    #: ``None`` means "no flag", which leaves the ``theme`` key in config.json to
+    #: decide — a distinction the app depends on, so this must not default to a name.
+    theme: str | None = None
     tools: str | None = None  # comma-separated allowlist
     no_tools: bool = False
     # Extensions + tool-filtering flags (E0/S2; pi args.ts:104-153). Threaded into
@@ -70,6 +74,10 @@ class CLIArgs:
     # nothing downstream reads either boolean.
     no_builtin_tools: bool = False
     no_session: bool = False  # --no-session → ephemeral, unpersisted run
+    # --max-turns N: the ceiling on LLM calls in one run. None (the default) is NO
+    # ceiling, matching AgentLoopConfig.max_turns and pi. Run-level, like the tool
+    # flags: a /model switch must not change how long the agent is allowed to work.
+    max_turns: int | None = None
     # Per-extension config overrides (S40): repeatable --ext-config NAME.KEY=VALUE.
     # Applied over ~/.tau/config.json "extensions" per key (CLI > config.json).
     ext_config: list[str] = field(default_factory=list)
@@ -117,8 +125,9 @@ class CLIArgs:
     verbose: bool = False
     # --fun / --no-fun: randomize the TUI's startup tagline. Reaches exactly one
     # string (tau_coding_agent.tagline.pick_tagline) and nothing else; inert in
-    # every headless path, which prints no tagline. The DEFAULT is the packaged
-    # one — False in a checkout, rewritten to True by package.sh.
+    # every headless path, which prints no tagline. On by default everywhere;
+    # cli.py is the ONLY reader of FUN_DEFAULT, which is what keeps the rendered
+    # scenes deterministic (they construct a Parley directly, which defaults off).
     fun: bool = FUN_DEFAULT
 
     @property
@@ -128,6 +137,25 @@ class CLIArgs:
     @property
     def is_json_output(self) -> bool:
         return self.mode == "json"
+
+
+def _positive_int(raw: str) -> int:
+    """argparse type for a count that must be at least 1.
+
+    ``--max-turns 0`` is refused here rather than at ``AgentLoopConfig``, whose
+    ``ge=1`` would surface as a pydantic ValidationError three layers down, long
+    after the TUI had started. Zero is a way of spelling "run no turns", which no
+    caller means on purpose; "no ceiling" is spelled by omitting the flag.
+    """
+    try:
+        value = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {raw!r}") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(
+            f"must be at least 1, got {value} — omit the flag for no limit"
+        )
+    return value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -185,6 +213,16 @@ def build_parser() -> argparse.ArgumentParser:
         "-m",
         default=None,
         help="model name from ~/.tau/config.json, or provider/id shorthand",
+    )
+    parser.add_argument(
+        "--theme",
+        default=None,
+        help=(
+            "TUI colour theme for this run only, overriding the 'theme' key in "
+            "~/.tau/config.json (built in: mocha, latte, gruvbox, ansi; plus any "
+            "~/.tau/themes/<name>.json). Picking a theme from the command palette "
+            "still saves; this flag never does"
+        ),
     )
     parser.add_argument(
         "--provider",
@@ -256,6 +294,19 @@ def build_parser() -> argparse.ArgumentParser:
         dest="no_session",
         action="store_true",
         help="run ephemerally without persisting a session to disk",
+    )
+    # The turn ceiling, reaching the console. It was a hardcoded 50 in
+    # AgentLoopConfig that no flag and no config key could move, so every TUI and
+    # every `tau -p` run stopped at turn 50 whether or not the work was done. The
+    # number is now the operator's, and its absence means no ceiling.
+    parser.add_argument(
+        "--max-turns",
+        dest="max_turns",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="stop the agent after N LLM calls in one run (default: no limit; "
+        'over ~/.tau/config.json "max_turns")',
     )
     parser.add_argument(
         "--ext-config",
@@ -379,10 +430,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="verbose logging (long-only; pi-aligned, -v is --version)",
     )
-    # The one paired boolean in the flag set, because it is the one flag whose
-    # default flips between a source checkout (off) and a release (on) — so BOTH
-    # directions have to be expressible. A released τ needs --no-fun to get a
-    # reproducible screen back; a checkout needs --fun to see the other taglines.
+    # The one paired boolean in the flag set: it defaults ON, so --no-fun is how
+    # anyone — a user who wants a stable screen, a developer reproducing a
+    # rendered scene from the command line — gets the fixed tagline back. A
+    # store_true alone could not say that.
     parser.add_argument(
         "--fun",
         action=argparse.BooleanOptionalAction,
@@ -405,6 +456,7 @@ def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
         mode=ns.mode,
         model=ns.model,
         provider=ns.provider,
+        theme=ns.theme,
         tools=ns.tools,
         no_tools=ns.no_tools,
         # action="append" yields None when the flag is absent → normalize to [].
@@ -414,6 +466,7 @@ def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
         exclude_tools=ns.exclude_tools,
         no_builtin_tools=ns.no_builtin_tools,
         no_session=ns.no_session,
+        max_turns=ns.max_turns,
         ext_config=list(ns.ext_config or []),
         ui_defaults=ns.ui_defaults,
         append_system_prompt=list(ns.append_system_prompt or []),
@@ -454,6 +507,13 @@ def _launch_tui(args: CLIArgs, config: dict) -> int:
         overrides["default_model"] = name
     if args.system_prompt is not None:
         overrides["system_prompt"] = args.system_prompt
+    # ``--theme`` (docs/PLAN-0.9.4.md §6). Not validated here, for the same reason
+    # ``--model`` is not: the registry a name has to be in includes ``~/.tau/themes``,
+    # which only the app reads, and a second reader of it here would be a second
+    # answer to "what themes are there". An unknown name reaches ``Parley``, which
+    # toasts it and starts in the default theme.
+    if args.theme is not None:
+        overrides["theme"] = args.theme
 
     # Run-level flags apply to EVERY backend the TUI creates, so they ride
     # separately from the per-model ``overrides`` (a model switch must not drop
@@ -496,6 +556,12 @@ def _launch_tui(args: CLIArgs, config: dict) -> int:
         # re-applied at every create_backend, so a /model switch cannot silently
         # re-enable the discovery this invocation asked to turn off.
         "no_context_files": args.no_context_files,
+        # --max-turns: run-level for the same reason the tool flags are. A
+        # ``/model`` switch selects a different entry, and how long the agent may
+        # work is not a property of the entry it happens to be pointed at.
+        # ``None`` = the flag was absent; ``_apply_run_config`` then falls back to
+        # config.json, and if that is silent too, to no ceiling.
+        "max_turns": args.max_turns,
         "ext_config": ext_config_overrides,
         # --store (W12): threaded to Parley.__init__, which resolves it via
         # store_factory.build_session_catalog before building the SessionCatalog

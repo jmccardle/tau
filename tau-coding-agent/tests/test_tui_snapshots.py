@@ -99,9 +99,11 @@ def test_sidebar_snapshot(snap_compare) -> None:
 
     The chat column here is EMPTY, so this is also the reference for
     :class:`~tau_coding_agent.app.ChatPlaceholder`: the τ, the tagline, the five
-    configuration rows, and the tree hint. That the tagline is stable across runs
-    is the visible half of ``--fun`` defaulting off in a source checkout — a
-    packaged tree would randomize it and this comparison would flap.
+    configuration rows, and the tree hint. The tagline is stable across runs
+    because ``Parley.__init__`` declares ``fun: bool = False`` as a literal and
+    every scene constructs a ``Parley`` without passing it — NOT because of
+    ``tagline.FUN_DEFAULT``, which is ``True``. So this comparison holds in a
+    packaged tree exactly as it does in a checkout.
     """
     assert snapshot_scene(snap_compare, "sidebar")
 

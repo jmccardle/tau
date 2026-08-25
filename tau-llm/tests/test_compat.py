@@ -82,6 +82,45 @@ class TestUsageInStreaming:
         assert detect_compat("x", "http://anywhere/v1").supports_usage_in_streaming is True
 
 
+class TestToolCallSchema:
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://api.openai.com/v1",
+            "http://127.0.0.1:8080/v1",
+            "https://api.asksage.ai/server/openai/v1/",
+        ],
+    )
+    def test_detection_never_reports_anthropic(self, base_url):
+        """The one field here that is NEVER inferred, including for the gateway
+        that motivated it.
+
+        The other two are safe to detect because guessing wrong produces a 400
+        naming the field. Guessing this one wrong rewrites a tool call τ was
+        handed correctly, and the nameless-tool-call error's whole value is that
+        it names the gateway rather than quietly compensating for it.
+        """
+        assert detect_compat("whatever", base_url).tool_call_schema == "openai"
+
+    def test_an_operator_can_state_it(self):
+        model = _model(compat=Compat(tool_call_schema="anthropic"))
+        assert resolve_compat(model).tool_call_schema == "anthropic"
+
+    def test_stating_it_does_not_reset_the_detected_fields(self):
+        model = _model(
+            base_url="https://api.openai.com/v1",
+            compat=Compat(tool_call_schema="anthropic"),
+        )
+        resolved = resolve_compat(model)
+        assert resolved.tool_call_schema == "anthropic"
+        assert resolved.max_tokens_field == "max_completion_tokens"
+        assert resolved.supports_usage_in_streaming is True
+
+    def test_an_unknown_schema_is_refused(self):
+        with pytest.raises(ValueError):
+            Compat(tool_call_schema="bedrock")
+
+
 class TestResolve:
     def test_no_compat_is_the_detected_value(self):
         assert resolve_compat(_model()) == detect_compat("local-llm", "http://127.0.0.1:8080/v1")

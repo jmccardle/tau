@@ -332,8 +332,114 @@ def test_tree_node_previews_and_roles() -> None:
     by_id: dict[str, TreeNode] = {}
     _index(roots, by_id)
     assert by_id["e02"].role == "user" and by_id["e02"].preview == "u1"
-    assert by_id["e08"].kind == "compaction" and by_id["e08"].preview == "SUMMARY-1"
+    # TREE-BROWSER-AS-EDITOR.md §4.2: the compaction row states the span it folds
+    # BEFORE its summary. Here ``firstKeptId=e05`` is a DESCENDANT of the anchor
+    # (``SessionManager.apply_compaction``'s re-parented shape), so the fold keeps
+    # nothing from before e08 and the count is the whole parent context e01..e03.
+    assert by_id["e08"].kind == "compaction"
+    assert by_id["e08"].preview == "folds 3 entries, resumes at e05 — SUMMARY-1"
     assert by_id["e08"].role is None
+
+
+def _preview(entries: list[dict[str, Any]], entry_id: str, cursor: str) -> str:
+    by_id: dict[str, TreeNode] = {}
+    _index(ConversationTree(entries, cursor=cursor).tree(), by_id)
+    return by_id[entry_id].preview
+
+
+def test_compaction_preview_states_the_span_it_folds() -> None:
+    """§4.2: the tip-append shape — ``firstKeptId`` is an ANCESTOR of the anchor.
+
+    ``session_store.Session.append_compaction`` appends at the leaf, so the kept
+    region precedes the anchor. The row must state the span (e02 and e03 drop out;
+    e04 onward is kept) and the summary, in that order.
+    """
+    entries = [
+        _msg("e01", None, "system", "sys"),
+        _msg("e02", "e01", "user", "u1"),
+        _msg("e03", "e02", "assistant", "a1"),
+        _msg("e04", "e03", "user", "u2"),
+        _compaction("e05", "e04", "e04", "SUMMARY-1\nsecond line"),
+        _msg("e06", "e05", "assistant", "a2"),
+    ]
+    # e01..e03 fold away, e04 is the resume point; only the summary's FIRST line
+    # survives, and it lands after the span rather than displacing it.
+    assert _preview(entries, "e05", "e06") == "folds 3 entries, resumes at e04 — SUMMARY-1"
+
+
+def test_compaction_preview_singular_entry() -> None:
+    entries = [
+        _msg("e01", None, "system", "sys"),
+        _msg("e02", "e01", "user", "u1"),
+        _compaction("e03", "e02", "e02", "S"),
+    ]
+    assert _preview(entries, "e03", "e03") == "folds 1 entry, resumes at e02 — S"
+
+
+def test_compaction_preview_reports_an_unreachable_resume_point() -> None:
+    """§4.2's honest-reporting case, inherited from the elide row.
+
+    ``firstKeptId`` names an entry on a SIBLING branch — neither an ancestor of the
+    anchor nor a descendant of it. ``_active_path_entries``' forward scan never finds
+    it, so the fold keeps nothing before the anchor and the resume point is
+    unfollowable. The row must say that rather than print a count next to a
+    meaningless id, and the summary must still be there.
+    """
+    entries = [
+        _msg("e01", None, "system", "sys"),
+        _msg("e02", "e01", "user", "branch A"),
+        _msg("e03", "e01", "user", "branch B"),
+        _compaction("e04", "e03", "e02", "SUMMARY-1"),
+    ]
+    assert _preview(entries, "e04", "e04") == (
+        "compaction → e02: resume point is not on this path "
+        "(folds everything) — SUMMARY-1"
+    )
+
+
+def test_compaction_preview_without_a_summary_is_just_the_span() -> None:
+    """A compaction whose ``summary`` is empty renders no trailing em dash."""
+    entries = [
+        _msg("e01", None, "system", "sys"),
+        _msg("e02", "e01", "user", "u1"),
+        _compaction("e03", "e02", "e02", ""),
+    ]
+    assert _preview(entries, "e03", "e03") == "folds 1 entry, resumes at e02"
+
+
+def test_elide_preview_is_unchanged_by_the_shared_arithmetic() -> None:
+    """The §4.2 refactor gives ``compaction`` elide's arithmetic; it must not change
+    elide's own row. An elide has no summary, so it degrades to the span phrase."""
+    entries = [
+        _msg("e01", None, "system", "sys"),
+        _msg("e02", "e01", "user", "u1"),
+        _msg("e03", "e02", "assistant", "a1"),
+        {
+            "id": "e04",
+            "type": "elide",
+            "parentId": "e03",
+            "timestamp": "2026-07-03T00:00:04Z",
+            "firstKeptId": "e03",
+        },
+    ]
+    assert _preview(entries, "e04", "e04") == "hides 2 entries, resumes at e03"
+
+    entries[3]["firstKeptId"] = None
+    assert _preview(entries, "e04", "e04") == (
+        "elide → None: resume point is not on this path (hides everything)"
+    )
+
+
+def test_branch_summary_preview_is_untouched() -> None:
+    """§4.3 needs no change HERE: ``branch_summary`` is not a splice anchor, so it
+    has no span, and the sibling relation §4.3 wants shown is a two-row relation a
+    one-line preview cannot express (it is `render_label` work in the TUI)."""
+    entries = [
+        _msg("e01", None, "system", "sys"),
+        _msg("e02", "e01", "user", "abandoned"),
+        _branch_summary("e03", "e01", "e02", "what that branch tried"),
+    ]
+    assert _preview(entries, "e03", "e03") == "what that branch tried"
 
 
 def test_tree_orphan_is_root() -> None:

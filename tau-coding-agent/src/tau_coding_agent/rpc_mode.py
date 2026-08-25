@@ -149,7 +149,6 @@ from typing import TYPE_CHECKING, Any
 from tau_agent_core.rpc import RPCHandler, transport
 from tau_coding_agent.headless import (
     CLIError,
-    _append_system_prompt,
     parse_ext_config_overrides,
     parse_ui_defaults,
     resolve_extensions_config,
@@ -236,9 +235,11 @@ async def run_rpc(args: "CLIArgs", config: dict[str, Any]) -> int:
             if args.system_prompt is not None
             else config.get("system_prompt", "")
         )
-        model_config["system_prompt"] = _append_system_prompt(
-            base_system_prompt, model_config.get("append_system_prompt")
-        )
+        if base_system_prompt:
+            model_config["system_prompt"] = base_system_prompt
+        # ``append_system_prompt`` is left on the entry for ``TauBackend`` to
+        # apply. Folding it in here would append it twice now that the backend
+        # does the same thing for every frontend.
 
         # Imported lazily, matching headless.py's own comment: keeps a bare
         # `import tau_coding_agent.rpc_mode` free of the backend/agent-core

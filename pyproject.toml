@@ -1,6 +1,6 @@
 [project]
 name = "ffwf-tau-monorepo"
-version = "0.9.3"
+version = "0.9.4"
 description = "τ (tau-agent-core) monorepo"
 requires-python = ">=3.11"
 
@@ -28,7 +28,7 @@ ignore_missing_imports = true
 
 [tool.ruff]
 # Lint + format gate (enforced by .git/hooks/pre-commit). Scope mirrors the
-# mypy config: the four package src trees. line-length 100 keeps the format
+# mypy config: the five package src trees. line-length 100 keeps the format
 # churn small relative to the existing code.
 line-length = 100
 target-version = "py311"

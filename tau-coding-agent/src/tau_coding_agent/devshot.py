@@ -49,10 +49,17 @@ async def shoot(
     out_dir: Path,
     *,
     png: bool = True,
+    theme: str | None = None,
 ) -> dict[str, Path]:
-    """Render one scene at one size; return the files written."""
-    async with open_scene(scene, size) as (app, _pilot):
-        name = f"{scene.name}@{size[0]}x{size[1]}"
+    """Render one scene at one size; return the files written.
+
+    ``theme`` names a colour theme (docs/PLAN-0.9.4.md §6). It goes in the file
+    name too — the loop this tool exists for is "render, look, edit, repeat", and
+    three themes overwriting each other's PNG makes that loop useless.
+    """
+    async with open_scene(scene, size, theme) as (app, _pilot):
+        suffix = f"-{theme}" if theme else ""
+        name = f"{scene.name}{suffix}@{size[0]}x{size[1]}"
         return save_render(app, out_dir, name, title=f"tau — {scene.name}", png=png)
 
 
@@ -62,12 +69,15 @@ async def run(
     out_dir: Path,
     *,
     png: bool,
+    themes: list[str | None],
 ) -> None:
-    for scene in scenes:
-        for size in sizes:
-            written = await shoot(scene, size, out_dir, png=png)
-            target = written.get("png") or written["svg"]
-            print(f"{scene.name}@{size[0]}x{size[1]}  ->  {target}")
+    for theme in themes:
+        for scene in scenes:
+            for size in sizes:
+                written = await shoot(scene, size, out_dir, png=png, theme=theme)
+                target = written.get("png") or written["svg"]
+                label = f"{scene.name}{f'-{theme}' if theme else ''}"
+                print(f"{label}@{size[0]}x{size[1]}  ->  {target}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -96,6 +106,13 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("shots"),
         help="output directory (default: ./shots)",
     )
+    parser.add_argument(
+        "--theme",
+        action="append",
+        dest="themes",
+        metavar="NAME",
+        help="colour theme to render in (repeatable); default: the configured one",
+    )
     parser.add_argument("--no-png", action="store_true", help="skip PNG rasterization")
     parser.add_argument("--list", action="store_true", help="list scene names and exit")
     args = parser.parse_args(argv)
@@ -111,7 +128,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(exc.args[0]))
 
     sizes = args.sizes or list(DEFAULT_SIZES)
-    asyncio.run(run(scenes, sizes, args.out, png=not args.no_png))
+    # ``[None]`` rather than ``["mocha"]``: with no flag the scene renders in
+    # whatever theme the app resolves for itself, which is what every caller
+    # before the flag existed got, and what a developer checking a change to
+    # parley.tcss wants.
+    themes: list[str | None] = list(args.themes) if args.themes else [None]
+    asyncio.run(run(scenes, sizes, args.out, png=not args.no_png, themes=themes))
     return 0
 
 

@@ -209,8 +209,9 @@ def resolve_model_config(
         model_config["bus_available"] = True
 
     # Appended system-prompt sections (pi appendSystemPrompt, system-prompt.ts:48).
-    # ``run_print`` folds them into the stored session prompt via _append_system_prompt
-    # (S28); kept off the base ``system_prompt`` so they augment rather than replace it.
+    # Carried on the entry for ``TauBackend`` to apply to the base text it
+    # resolves (S28), so they augment rather than replace it — and so every
+    # frontend gets that placement from one code path.
     if args.append_system_prompt:
         model_config["append_system_prompt"] = list(args.append_system_prompt)
 
@@ -225,6 +226,15 @@ def resolve_model_config(
     # "turn"), so headless and the TUI resolve the scope identically.
     if "reasoning_replay" not in model_config and config.get("reasoning_replay") is not None:
         model_config["reasoning_replay"] = config["reasoning_replay"]
+
+    # ``--max-turns``, then the entry's own key, then the top-level config default,
+    # then nothing — and nothing means no ceiling (``AgentLoopConfig.max_turns``).
+    # Same precedence the TUI's ``_apply_run_config`` applies, so `tau -p` and the
+    # TUI stop at the same turn.
+    if args.max_turns is not None:
+        model_config["max_turns"] = args.max_turns
+    elif "max_turns" not in model_config and config.get("max_turns") is not None:
+        model_config["max_turns"] = int(config["max_turns"])
 
     return spec, model_config
 
@@ -348,20 +358,6 @@ def resolve_ui_defaults(config: dict, overrides: dict[str, str]) -> dict[str, st
     merged: dict[str, str] = {str(k): str(v) for k, v in base.items()}
     merged.update(overrides)
     return merged
-
-
-def _append_system_prompt(base: str, sections: list[str] | None) -> str:
-    """Append ``--append-system-prompt`` sections to a base system prompt.
-
-    Sections augment rather than replace the base (pi ``appendSystemPrompt``,
-    system-prompt.ts:48), joined by blank lines. An empty/absent list returns the
-    base unchanged; an empty base with sections yields just the sections. Shared by
-    the headless and TUI paths (E5 §2.3 / S28).
-    """
-    if not sections:
-        return base
-    parts = [base, *sections] if base else list(sections)
-    return "\n\n".join(parts)
 
 
 def assemble_prompt(messages: list[str]) -> str:
@@ -703,23 +699,36 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
     backend_name = model_config.get("backend", "")
     cwd = os.getcwd()
 
+    # The base text the prompt is BUILT from, folded onto the model entry so
+    # ``TauBackend`` receives it as ``custom_prompt`` and composes it with the
+    # project context files and the tool list. This used to be stored straight
+    # into the session's first message with the backend's own prompt left empty
+    # — a scheme that predates the backend having a real prompt to build. Once
+    # it did, the stored message won and the built one was discarded, so a
+    # config ``system_prompt`` silently cost the user their AGENTS.md context
+    # and the ``Available tools:`` list. The entry is now the single place the
+    # base text lives, matching rpc_mode.py and the TUI's ``_apply_run_config``.
+    # ``--append-system-prompt`` rides as its own key; ``TauBackend`` applies it
+    # to whichever base it resolves, so the sections augment the base text
+    # rather than the composed whole (pi appendSystemPrompt, E5 §2.3 / S28).
+    cli_prompt = args.system_prompt if args.system_prompt is not None else None
+    base_prompt = cli_prompt if cli_prompt is not None else config.get("system_prompt")
+    if base_prompt:
+        model_config["system_prompt"] = base_prompt
+
+    # Imported lazily: keeps `import tau_coding_agent.headless` free of the
+    # backend/agent-core import chain until a run actually happens. Hoisted
+    # ABOVE session creation because the session now stores the prompt the
+    # backend BUILT, so the backend has to exist first.
+    from tau_coding_agent.backends import create_backend, make_model_resolver
+
+    backend = create_backend(model_config)
+
     if prior is None:
-        # Fresh run: system prompt is stored as the first message entry (matching
-        # the TUI), so the backend's own system_prompt stays empty and is not
-        # double-counted.
-        system_prompt = (
-            args.system_prompt
-            if args.system_prompt is not None
-            else config.get("system_prompt", "")
-        )
-        # --append-system-prompt sections augment (not replace) the base prompt
-        # (pi appendSystemPrompt) — E5 §2.3 / S28. Appended to the STORED session
-        # prompt (the first message), which is what the model actually sees on this
-        # path; the backend's own system_prompt stays empty. Only on a fresh run —
-        # a resumed session already carries its (possibly-augmented) prompt.
-        system_prompt = _append_system_prompt(
-            system_prompt, model_config.get("append_system_prompt")
-        )
+        # Fresh run: the session stores the COMPOSED prompt — base text, project
+        # context files and tool list — so the transcript records exactly what
+        # the model was told, and a resume replays it verbatim.
+        system_prompt = getattr(backend, "system_prompt", "") or ""
         # --no-session → ephemeral (no on-disk file, appends never touch disk); the
         # create_ephemeral seam is the one-API alternative to create (§E0.2).
         create = catalog.create_ephemeral if args.no_session else catalog.create
@@ -732,12 +741,6 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
     else:  # --continue / --session: append in place
         session = prior
         _apply_resume_metadata(session, model_name, backend_name, prior, args.name)
-
-    # Imported lazily: keeps `import tau_coding_agent.headless` free of the
-    # backend/agent-core import chain until a run actually happens.
-    from tau_coding_agent.backends import create_backend, make_model_resolver
-
-    backend = create_backend(model_config)
 
     # Bind the model-name resolver (S45) so an extension's ctx.set_model(name)
     # resolves NAME through the same config "models" map --model uses. Guarded via

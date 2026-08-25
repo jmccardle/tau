@@ -91,7 +91,7 @@ def _script(backend: TauBackend, gate: asyncio.Event | None = None) -> None:
                 message={
                     "role": "assistant",
                     "content": [{"type": "text", "text": answer}],
-                    "usage": {"total_tokens": 7},
+                    "usage": {"input_tokens": 80, "output_tokens": 7, "total_tokens": 87},
                 },
             )
         )
@@ -187,7 +187,7 @@ async def test_one_ordinary_turn_renders_exactly_as_before(scripted, wait_for_wo
         # A no-tool span is unwrapped entirely — no ExchangeBox left behind.
         assert not list(display.query(ExchangeBox))
         # Real usage, on the answer's subtitle (the unwrapped-span path).
-        assert "7 tok" in (top[1].border_subtitle or "")
+        assert "80 ctx · 7 out" in (top[1].border_subtitle or "")
         assert app.is_generating is False
 
 
@@ -232,8 +232,12 @@ async def test_two_lanes_do_not_interleave_into_one_transcript(scripted):
         await app._on_render_event({"kind": "text_delta", "lane": "b", "delta": "BBB"})
         await app._on_render_event({"kind": "text_delta", "lane": "a", "delta": "aaa"})
         await pilot.pause()
-        await app._on_render_event({"kind": "lane_end", "lane": "a", "tokens": 3, "extra": {}})
-        await app._on_render_event({"kind": "lane_end", "lane": "b", "tokens": 5, "extra": {}})
+        await app._on_render_event(
+            {"kind": "lane_end", "lane": "a", "context": 90, "output": 3, "extra": {}}
+        )
+        await app._on_render_event(
+            {"kind": "lane_end", "lane": "b", "context": 90, "output": 5, "extra": {}}
+        )
         await pilot.pause()
 
         display = app.query_one(ChatDisplay)
@@ -540,7 +544,7 @@ async def test_a_forks_answer_stays_attributed_after_its_exchange_is_unwrapped(s
                 message={
                     "role": "assistant",
                     "content": [{"type": "text", "text": "sub-answer"}],
-                    "usage": {"total_tokens": 11},
+                    "usage": {"input_tokens": 90, "output_tokens": 11, "total_tokens": 101},
                 },
             )
         )
@@ -556,7 +560,7 @@ async def test_a_forks_answer_stays_attributed_after_its_exchange_is_unwrapped(s
         assert answers[0].has_class(LANE_FOREIGN_CLASS)
         subtitle = answers[0].border_subtitle or ""
         assert subtitle.startswith("agent · fork:explore · ")
-        assert "11 tok" in subtitle
+        assert "90 ctx · 11 out" in subtitle
 
 
 async def test_an_ordinary_typed_turn_carries_no_badge_at_all(scripted, wait_for_workers_settled):
@@ -580,7 +584,7 @@ async def test_an_ordinary_typed_turn_carries_no_badge_at_all(scripted, wait_for
         assert bubble.border_subtitle in (None, "")
         # The answer's subtitle is the stats line and ONLY the stats line.
         answer = [b for b in boxes if b.role == "assistant"][0]
-        assert (answer.border_subtitle or "").startswith("7 tok")
+        assert (answer.border_subtitle or "").startswith("80 ctx · 7 out")
         assert app.query_one(LaneStrip).display is False
 
 
@@ -647,7 +651,9 @@ async def test_the_strip_announces_a_foreign_lane_for_exactly_as_long_as_it_runs
         assert strip.lanes == {"b1": "bus · nats_bus"}
         assert "bus · nats_bus" in strip.summary
 
-        await app._on_render_event({"kind": "lane_end", "lane": "b1", "tokens": 3, "extra": {}})
+        await app._on_render_event(
+            {"kind": "lane_end", "lane": "b1", "context": 90, "output": 3, "extra": {}}
+        )
         await pilot.pause()
         assert strip.lanes == {}
         assert strip.display is False

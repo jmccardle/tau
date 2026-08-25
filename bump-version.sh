@@ -2,19 +2,19 @@
 #
 # bump-version.sh — set the τ monorepo's release version.
 #
-# The four distributions release in lockstep: one number, four wheels. That
-# number is written in eleven places, and tau-coding-agent/tests/test_packaging.py
-# fails until all eleven agree — so nothing drifts silently, but a release means
-# eleven hand edits. This script is those eleven edits.
+# The five distributions release in lockstep: one number, five wheels. That
+# number is written in thirteen places, and tau-coding-agent/tests/test_packaging.py
+# fails until all thirteen agree — so nothing drifts silently, but a release means
+# thirteen hand edits. This script is those thirteen edits.
 #
-# The eleven:
-#   * four ``__version__`` literals, one per package __init__.py. These are what
+# The thirteen:
+#   * five ``__version__`` literals, one per package __init__.py. These are what
 #     setuptools reads for [tool.setuptools.dynamic], so they ARE the wheels'
 #     versions — NEVER add a ``version = "..."`` literal back to a package
 #     pyproject.toml to "fix" a mismatch; a test forbids the second copy.
 #   * one literal in the repo-root pyproject.toml, which is config rather than a
 #     distribution and so has no package to read from.
-#   * six ``ffwf-tau…==<version>`` pins on in-repo requirements. A requirement
+#   * seven ``ffwf-tau…==<version>`` pins on in-repo requirements. A requirement
 #     string has nowhere to read a version from, so these are the copies this
 #     repo cannot make dynamic — and the ones a manual bump forgets.
 #
@@ -87,14 +87,20 @@ VERSION_FILES=(
     "tau-agent-core/src/tau_agent_core/__init__.py"
     "tau-coding-agent/src/tau_coding_agent/__init__.py"
     "tau-jmfts/src/tau_jmfts/__init__.py"
+    # tau-meta ships no functional code; this module holds its version literal
+    # and nothing else, precisely so that it is bumped by this loop like the
+    # other four rather than by an exception.
+    "tau-meta/src/tau_meta/__init__.py"
 )
 ROOT_PYPROJECT="pyproject.toml"
 
-# The pins, by contrast, are DISCOVERED rather than listed. There are six today,
-# spread over three of the four package pyprojects (tau-llm depends on nothing
-# in-repo). A seventh added next month must be bumped too, and a hardcoded list
-# of six would miss it silently — which is the exact failure this script exists
+# The pins, by contrast, are DISCOVERED rather than listed. There are seven today,
+# spread over four of the five package pyprojects (tau-llm depends on nothing
+# in-repo). An eighth added next month must be bumped too, and a hardcoded list
+# of seven would miss it silently — which is the exact failure this script exists
 # to prevent. Anything matching this pattern is in scope, wherever it appears.
+# tau-meta's single pin was picked up by this glob on the day it was added, with
+# no edit here — which is the property being described.
 PIN_FILES=(tau-*/pyproject.toml)
 PIN_PATTERN='"ffwf-tau[a-z-]*(\[[a-z,]+\])?==[^"]+"'
 

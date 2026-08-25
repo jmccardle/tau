@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -46,7 +47,7 @@ _RELOAD = [
     {"role": "user", "content": "q"},
     {
         "role": "assistant",
-        "usage": {"total_tokens": 30},
+        "usage": {"input_tokens": 100, "output_tokens": 30, "total_tokens": 130},
         "content": [
             {"type": "thinking", "thinking": "let me look"},
             {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {}},
@@ -61,7 +62,12 @@ _RELOAD = [
     },
     {
         "role": "assistant",
-        "usage": {"total_tokens": 12},
+        "usage": {
+            "input_tokens": 400,
+            "cache_read_tokens": 100,
+            "output_tokens": 12,
+            "total_tokens": 512,
+        },
         "content": [
             {"type": "thinking", "thinking": "done"},
             {"type": "text", "text": "one file"},
@@ -75,7 +81,13 @@ def app(make_app):
     # Sandboxing, config, and an injected file catalog all come from the shared
     # ``make_app`` (tests/conftest.py); all this fixture still chooses is that no
     # real backend gets built.
-    return make_app(create_backend=lambda cfg: object())
+    #
+    # The double carries ``system_prompt`` because a new chat now stores the
+    # prompt the BACKEND built — a bare ``object()`` would store nothing and the
+    # session would silently start with no system message.
+    return make_app(
+        create_backend=lambda cfg: SimpleNamespace(system_prompt=cfg.get("system_prompt", ""))
+    )
 
 
 async def test_new_chat_button_creates_chat(app, tmp_path):
@@ -207,22 +219,40 @@ async def test_toggle_with_no_widgets_is_noop(app):
 
 
 def test_aggregate_label_rolls_up_tools_and_tokens():
-    # Pure function: 1 tool call total, 30 + 12 = 42 tokens.
-    assert Parley._aggregate_label(_RELOAD) == "1 tool · 42 tok"
-    # Plural tools and the k-formatting share the widget helpers.
+    # Pure function: 1 tool call; cumulative ↑100+400 ↓30+12 R100; context is the
+    # LAST prompt (400 + 100 cached), NOT 100 + 500 summed.
+    assert Parley._aggregate_label(_RELOAD) == "1 tool · ↑500 ↓42 R100 · 500 ctx"
+    # Plural tools, the k-formatting, and a provider that reports no caching (the
+    # R and W arrows are dropped rather than shown as zero).
     many = [
         {
             "role": "assistant",
-            "usage": {"total_tokens": 2500},
+            "usage": {"input_tokens": 2500, "output_tokens": 300},
             "content": [
                 {"type": "toolCall", "id": "a", "name": "ls", "arguments": {}},
                 {"type": "toolCall", "id": "b", "name": "cat", "arguments": {}},
             ],
         },
     ]
-    assert Parley._aggregate_label(many) == "2 tools · 2.5k tok"
+    assert Parley._aggregate_label(many) == "2 tools · ↑2.5k ↓300 · 2.5k ctx"
     # Nothing to roll up yet -> empty (subtitle then shows just the model).
     assert Parley._aggregate_label([{"role": "user", "content": "hi"}]) == ""
+
+
+def test_aggregate_label_reports_context_separately_from_cumulative_input():
+    """Ten completions on a conversation that grew to 10k. The old single ``N tok``
+    was Σ total_tokens = 55.1k, which read as the conversation's size. Cumulative
+    input really is 55.0k and stays — labelled ``↑``, where it means what it says —
+    while the conversation's actual size, 10.0k, is its own ``ctx`` number."""
+    messages = [
+        {
+            "role": "assistant",
+            "usage": {"input_tokens": n * 1000, "output_tokens": 10},
+            "content": [],
+        }
+        for n in range(1, 11)
+    ]
+    assert Parley._aggregate_label(messages) == "↑55.0k ↓100 · 10.0k ctx"
 
 
 async def test_subtitle_shows_rollup_after_reload(app):
@@ -234,7 +264,7 @@ async def test_subtitle_shows_rollup_after_reload(app):
         app.messages = _RELOAD
         app._refresh_subtitle()
         await pilot.pause()
-        assert app.sub_title == "m · 1 tool · 42 tok"
+        assert app.sub_title == "m · 1 tool · ↑500 ↓42 R100 · 500 ctx"
 
 
 # ---------------------------------------------------------------------------
@@ -525,3 +555,226 @@ def test_taubackend_abort_delegates_to_session():
     backend.agent_session = MagicMock()
     backend.abort()
     backend.agent_session.abort.assert_called_once_with()
+
+
+# ---------------------------------------------------------------------------
+# The render cap's two gestures (docs/PLAN-0.9.4.md §1). The cap itself is
+# tested against ChatDisplay in test_chat_rendering.py; what is tested here is
+# that a reader can actually reach the messages it left off screen — by mouse
+# (the "⋯ N earlier" row is clickable) and by keyboard (the palette action).
+# ---------------------------------------------------------------------------
+
+
+def _long_transcript(turns: int) -> list[dict]:
+    msgs: list[dict] = []
+    for i in range(turns):
+        msgs.append({"role": "user", "content": f"q{i}"})
+        msgs.append({"role": "assistant", "content": [{"type": "text", "text": f"a{i}"}]})
+    return msgs
+
+
+async def test_clicking_the_earlier_row_mounts_the_rest(app):
+    """The mouse half. Without it the row states a fact and offers no way to act."""
+    from tau_coding_agent.app import MessageBox
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        display = app.query_one(ChatDisplay)
+        await display.reload_messages(_long_transcript(20))
+        await pilot.pause()
+        assert display.elided_count == 32
+
+        # The reader reaches the row the only way it can be reached: a reload
+        # parks at the newest message, so scrolling up to the top is the gesture
+        # that puts the row on screen in the first place.
+        display.scroll_home(animate=False)
+        await pilot.pause()
+        row = display.query_one(".chat-fold")
+        await pilot.click(row)
+        await pilot.pause()
+
+        assert display.elided_count == 0
+        assert len(display.query(MessageBox)) == 40
+
+
+async def test_the_palette_action_mounts_the_rest_and_says_it_is_doing_so(app):
+    """The keyboard half, plus the notice — mounting hundreds of boxes is slow
+    enough that a silent action reads as a dead key."""
+    from tau_coding_agent.app import MessageBox
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        display = app.query_one(ChatDisplay)
+        await display.reload_messages(_long_transcript(20))
+        await pilot.pause()
+
+        notices: list[str] = []
+        app.notify = lambda msg, **kw: notices.append(msg)  # type: ignore[assignment]
+        await app.action_show_all_messages()
+        await pilot.pause()
+
+        assert len(display.query(MessageBox)) == 40
+        assert notices and "32" in notices[0]
+
+
+async def test_the_palette_action_says_so_when_nothing_is_hidden(app):
+    """Rather than looking broken. Nothing was truncated; there is just nothing
+    left to mount."""
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        display = app.query_one(ChatDisplay)
+        await display.reload_messages(_long_transcript(2))
+        await pilot.pause()
+
+        notices: list[str] = []
+        app.notify = lambda msg, **kw: notices.append(msg)  # type: ignore[assignment]
+        await app.action_show_all_messages()
+        await pilot.pause()
+
+        assert display.elided_count == 0
+        assert notices == ["The whole conversation is already on screen."]
+
+
+# ---------------------------------------------------------------------------
+# ctrl+C and Esc: two keys that ask before doing something big (PLAN-0.9.4 §4)
+# ---------------------------------------------------------------------------
+
+
+def _input(app):
+    from tau_coding_agent.app import ChatInput
+
+    return app.query_one("#chat-input", ChatInput)
+
+
+async def test_ctrl_c_stops_the_turn_rather_than_the_program(app):
+    """Step 1. The key a terminal user reaches for to stop a runaway process."""
+    aborted: list[bool] = []
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.current_backend = SimpleNamespace(abort=lambda: aborted.append(True))
+        app.is_generating = True
+
+        app.action_interrupt()
+        await pilot.pause()
+
+        assert aborted == [True]
+        assert app.sub_title == "Cancelling…"
+        assert app.is_running, "the app must still be up"
+
+
+async def test_ctrl_c_clears_a_draft_before_it_offers_to_exit(app):
+    """Step 2, and the reason steps 3 and 4 exist at all: ``ctrl+C`` used to be
+    bound straight to ``quit``, so a mistimed press ended the session with the
+    draft in it."""
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        editor = _input(app)
+        editor.text = "half a question"
+
+        app.action_interrupt()
+        await pilot.pause()
+
+        assert editor.text == ""
+        assert "exit" not in app.sub_title, "clearing is not also an exit offer"
+        assert app.is_running
+
+
+async def test_ctrl_c_on_an_empty_input_offers_the_exit_and_then_takes_it(app):
+    """Steps 3 and 4."""
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+        before = app.sub_title
+
+        app.action_interrupt()
+        await pilot.pause()
+        assert app.sub_title == "press ctrl+C again to exit"
+        assert app.is_running, "the first press must not exit"
+
+        app.action_interrupt()
+        await pilot.pause()
+        assert not app.is_running
+    assert before != "press ctrl+C again to exit"
+
+
+async def test_the_exit_offer_lapses_and_puts_the_subtitle_back(app):
+    """The offer is timed. A press three seconds later is a fresh first press,
+    not a confirmation of something the reader has stopped thinking about."""
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+        settled = app.sub_title
+
+        app.action_interrupt()
+        await pilot.pause()
+        assert app.sub_title == "press ctrl+C again to exit"
+
+        app._withdraw_offer("exit")  # what the timer fires
+        await pilot.pause()
+        assert app.sub_title == settled
+
+        app.action_interrupt()
+        await pilot.pause()
+        assert app.is_running, "the lapsed offer must not still be answerable"
+        assert app.sub_title == "press ctrl+C again to exit"
+
+
+async def test_esc_still_cancels_a_turn_first(app):
+    """Esc has meant "stop this response" since the beginning; nothing about that
+    changes, and it is checked before the tree offer."""
+    aborted: list[bool] = []
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.current_backend = SimpleNamespace(abort=lambda: aborted.append(True))
+        app.is_generating = True
+
+        app.action_escape()
+        await pilot.pause()
+
+        assert aborted == [True]
+        assert "tree" not in app.sub_title
+
+
+async def test_esc_twice_opens_the_tree_and_once_only_says_so(app):
+    """What Esc used to do idle was nothing at all — the binding is priority, so
+    the key was consumed and the action no-op'd. Two presses rather than one
+    because Esc is also the key people hit to mean "never mind"."""
+    opened: list[bool] = []
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+        app.action_browse_tree = lambda: opened.append(True)  # type: ignore[method-assign]
+
+        app.action_escape()
+        await pilot.pause()
+        assert app.sub_title == "press Esc again to view the tree"
+        assert opened == []
+
+        app.action_escape()
+        await pilot.pause()
+        assert opened == [True]
+
+
+async def test_one_key_withdraws_the_other_keys_offer(app):
+    """There is one status bar. An offer the reader can no longer see must not
+    still be answerable — press Esc then ctrl+C and you get ctrl+C's warning, not
+    an exit."""
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+
+        app.action_escape()
+        await pilot.pause()
+        assert app.sub_title == "press Esc again to view the tree"
+
+        app.action_interrupt()
+        await pilot.pause()
+        assert app.sub_title == "press ctrl+C again to exit"
+        assert app.is_running

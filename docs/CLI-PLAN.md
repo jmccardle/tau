@@ -276,6 +276,43 @@ A model entry in the `models` map may carry an **optional** `cost` block giving 
 
 When the block is present, the final `done` / `agent_end` emit carries a `cost_usd` total inside its `usage` dict, priced at the emit boundary (`backends.py` `compute_cost_usd`) as `sum(price[k] / 1e6 * tokens[k])` over `input`/`output`/`cache_read`. **`cost_usd` is emitted only when the block is present** — an absent block yields tokens-only (**Fail-Early: never a fabricated `$0`**), so an *unknown* price (`cost_usd` absent) reads differently from a genuinely free/local model (`"cost": {…: 0}` → `cost_usd: 0.0`). `cache_write` is accepted but currently inert — today's provider never reports cache-write tokens, so its price term is always 0. The frozen `Usage` object is untouched; `24_budget` computes its own running `$` from per-message tokens × these same prices.
 
+### `--max-turns` and the ceiling that used to be unreachable (τ-only)
+
+pi has **no turn bound at all**: `agent-loop.ts:155-275` exits on error, on
+no-more-tool-calls, or via a host-supplied `shouldStopAfterTurn`. τ added one —
+`AgentLoopConfig.max_turns`, default 50 — as a safeguard, and then never gave
+anyone a way to reach it. `create_agent_session` took no such parameter, no flag
+set it, and no config key was read, so **every TUI session and every `tau -p` run
+stopped after 50 LLM calls whether or not the work was done**. It stopped
+silently, too: reaching the ceiling falls out of the `while` and emits an
+ordinary `agent_end` with `is_error=False`, so nothing distinguishes "the model
+finished" from "τ cut it off".
+
+The default is now `None` — no ceiling, which is pi's position — and the number
+is the operator's:
+
+| Source | Example | Wins over |
+|---|---|---|
+| `--max-turns N` | `tau -p --max-turns 12 "…"` | everything |
+| a model entry | `"models": {"gpt-4o": {"max_turns": 12}}` | the top-level default |
+| top-level config | `{"max_turns": 30}` in `~/.tau/config.json` | nothing |
+| absent everywhere | | — no ceiling |
+
+`--max-turns 0` is refused at the argv boundary (`cli._positive_int`) rather than
+three layers down as a pydantic error; "no ceiling" is spelled by omitting the
+flag. The flag is run-level, like the tool flags: it is re-applied at every
+`create_backend`, so a mid-session `/model` switch cannot change how long the
+agent may work. The SDK equivalent is `create_agent_session(max_turns=…)`.
+
+What bounds a runaway run when no ceiling is stated: an extension's budget guard
+tripping the abort signal (`max_usd`/`max_seconds`,
+docs/EXTENSIONS-WALKTHROUGH.md), a `terminate`-ing tool, or Escape in the TUI.
+
+**Still open:** a stated ceiling is still reached silently. Nothing in the event
+stream says a run was truncated rather than finished. Fixing it means either a
+new `AgentEvent` field or reusing `agent_end`'s `error`, and `error` is currently
+documented as "the loop raised" in the generated RPC reference.
+
 ### `--session-dir` and the per-mode default (unit S)
 
 `--session-dir DIR` is implemented and general: the TUI, `--print` and

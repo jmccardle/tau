@@ -184,7 +184,7 @@ class TestAgentLoopConfig:
         config = AgentLoopConfig()
         assert config.tool_execution_mode == "parallel"
         assert config.max_retries == 3
-        assert config.max_turns == 50
+        assert config.max_turns is None
         assert config.temperature == 0.7
 
     def test_create_agent_loop_config_with_all_fields(self):
@@ -261,9 +261,24 @@ class TestAgentLoopConfig:
         assert config.max_turns == 1
 
     def test_max_turns_rejects_zero(self):
-        """AgentLoopConfig.max_turns rejects zero."""
+        """AgentLoopConfig.max_turns rejects zero.
+
+        ``ge=1`` still applies to a STATED ceiling. "No ceiling" is ``None``, not
+        zero — zero would ask the loop to run no turns at all.
+        """
         with pytest.raises(ValidationError):
             AgentLoopConfig(max_turns=0)
+
+    def test_max_turns_defaults_to_no_ceiling(self):
+        """AgentLoopConfig.max_turns defaults to None, meaning unbounded.
+
+        It was 50, and 50 was unreachable: no ``create_agent_session`` parameter,
+        no CLI flag and no config key set it, so every TUI and every ``tau -p``
+        run stopped at turn 50 whether or not the work was done. pi has no turn
+        bound at all (``agent-loop.ts:155-275``).
+        """
+        assert AgentLoopConfig().max_turns is None
+        assert AgentLoopConfig(max_turns=None).max_turns is None
 
     def test_temperature_bounds(self):
         """AgentLoopConfig.temperature must be between 0.0 and 2.0."""

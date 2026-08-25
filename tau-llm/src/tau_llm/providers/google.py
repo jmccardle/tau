@@ -814,6 +814,13 @@ def _usage_from_google(usage: Any) -> Usage:
     ``thoughts_token_count`` is part of output for billing, and Google reports
     ``candidates_token_count`` without it, so the two are added rather than
     letting a reasoning turn under-report what it cost.
+
+    ``prompt_token_count`` INCLUDES ``cached_content_token_count``, so the cached
+    count is subtracted out of ``input_tokens`` — the two fields partition the
+    prompt rather than overlapping (pi: ``google-generative-ai.ts:227``). Left
+    overlapping, every consumer that reads both double-counts the cached span.
+    ``total_tokens`` is unaffected: Google's ``total_token_count`` is the server's
+    own figure, and the computed fallback still uses the full ``prompt``.
     """
     prompt = getattr(usage, "prompt_token_count", 0) or 0
     candidates = getattr(usage, "candidates_token_count", 0) or 0
@@ -821,7 +828,7 @@ def _usage_from_google(usage: Any) -> Usage:
     cached = getattr(usage, "cached_content_token_count", 0) or 0
     total = getattr(usage, "total_token_count", 0) or 0
     return Usage(
-        input_tokens=prompt,
+        input_tokens=max(0, prompt - cached),
         output_tokens=candidates + thoughts,
         cache_read_tokens=cached,
         total_tokens=total or (prompt + candidates + thoughts),

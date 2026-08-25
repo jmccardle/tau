@@ -80,15 +80,54 @@ def _extract_text(message: dict[str, Any]) -> str:
     return ""
 
 
+def _elide_content(payload: dict[str, Any]) -> str:
+    """The searchable text projection of an ``elide`` (TREE-BROWSER-AS-EDITOR.md §7.3).
+
+    An elide carries no ``summary``, so it used to fall through to ``return ""`` and
+    land in JMFTS as a document with empty content: a query could never surface
+    *where someone folded history*, only the (fully preserved) history itself. But
+    an elide is not a deletion — it is a record of the conversation being engineered
+    to proceed in a new direction, which is exactly the kind of thing a later search
+    is looking for. Empty content makes the one node that marks the decision the one
+    node that cannot be found.
+
+    **What is honestly reachable from here, and what is not.** The browser row
+    (``ConversationTree._splice_anchor_preview``) says "hides N entries, resumes at
+    X", but N is a function of the *tree*: it walks ``parentId`` to the root and
+    diffs ``context_entries`` at the parent. This function is handed one entry's
+    payload — at ``_append`` time the document does not exist yet and at import time
+    the ancestors are mid-remap — so N is not computable here, and per "Fail Early"
+    a fabricated count in a search index is worse than no count: it would read as a
+    recorded measurement forever. So the projection states only what the payload
+    actually holds — that this node folds history, and where the fold resumes —
+    which is enough for the entry to be findable and for the resume point to be
+    followed by hand.
+
+    A missing ``firstKeptId`` is stated rather than raised. Both appenders reject an
+    anchor that names no entry (``JmftsSessionLog.append_elide``,
+    ``session_store.Session.append_elide``), so a payload without one is a
+    hand-written or corrupt log — and the importer is precisely the tool one reaches
+    for to get such a log somewhere it can be inspected. Refusing to project its text
+    would block the forensics; saying "no resume point recorded" makes the defect
+    searchable, which is the same policy ``ConversationTree`` applies to the row.
+    """
+    reference = payload.get("firstKeptId")
+    if reference is None:
+        return "elide: history folded here, no resume point recorded"
+    return f"elide: history folded here, context resumes at entry {reference}"
+
+
 def _content_for(kind: str, payload: dict[str, Any]) -> str:
     """The searchable text projection of an entry (Sec2.1): concatenated text
-    blocks of a message, the compaction/branch-summary text, empty otherwise
-    (navigate + config kinds)."""
+    blocks of a message, the compaction/branch-summary text, the computed
+    ``elide`` marker (§7.3), empty otherwise (navigate + config kinds)."""
     if kind in _MESSAGE_KINDS:
         message = payload.get("message")
         return _extract_text(message) if isinstance(message, dict) else ""
     if kind in _SUMMARY_KINDS:
         return str(payload.get("summary", ""))
+    if kind == "elide":
+        return _elide_content(payload)
     return ""
 
 
@@ -121,8 +160,11 @@ def _build_header(
 #: JMFTS store an entry id *is* a doc id, so any operation that mints new documents
 #: for existing entries -- ``fork`` today, a CR-3 batch copy tomorrow -- must rewrite
 #: these or leave them pointing at the wrong tree. Keep this list in sync with the
-#: appenders in :class:`JmftsSessionLog`: ``navigate``, ``compaction``,
-#: ``branch_summary``. A ``None`` value is MEANINGFUL (pre-root cursor / root-level
+#: appenders in :class:`JmftsSessionLog`: ``navigate`` (``targetId``), ``compaction``
+#: and ``elide`` (both ``firstKeptId``), ``branch_summary`` (``fromId``) —
+#: TREE-BROWSER-AS-EDITOR.md §7.3 caught ``elide`` missing from this list, which was
+#: a stale comment and not a behavioural gap: ``firstKeptId`` was already covered by
+#: the tuple. A ``None`` value is MEANINGFUL (pre-root cursor / root-level
 #: branch point) and must survive as ``None``, not be mistaken for a broken link.
 _CROSS_REF_FIELDS = ("targetId", "firstKeptId", "fromId")
 
@@ -517,10 +559,26 @@ class JmftsSessionLog:
         self._client.update_document(self._root_doc_id, title=name, re_embed=False)
         return entry_id
 
-    def append_compaction(self, summary: str, first_kept_id: str, tokens_before: int) -> str:
+    def append_compaction(
+        self,
+        summary: str,
+        first_kept_id: str,
+        tokens_before: int,
+        *,
+        summarizer_model_id: str,
+        summary_usage: dict[str, int],
+        covered_entries: int,
+        covered_tokens: int,
+        agent_spec_id: str | None,
+    ) -> str:
         """Fail-Early on an unknown splice anchor -- see
         ``InMemorySessionLog.append_compaction`` for why this is the most
-        damaging of the three unknown-id cases to skip."""
+        damaging of the three unknown-id cases to skip.
+
+        The five keyword-only provenance fields (TREE-BROWSER-AS-EDITOR.md §8,
+        widened onto the Protocol by §11.3) ride in the entry payload like every
+        other field, so they reach JMFTS through the same ``structured_content.tau``
+        projection and need no schema of their own."""
         if first_kept_id not in self._ids:
             raise ValueError(
                 f"compaction first_kept_id {first_kept_id!r} not found; the splice anchor "
@@ -528,21 +586,45 @@ class JmftsSessionLog:
                 "the context fold"
             )
         return self._append(
-            "compaction", summary=summary, firstKeptId=first_kept_id, tokensBefore=tokens_before
+            "compaction",
+            summary=summary,
+            firstKeptId=first_kept_id,
+            tokensBefore=tokens_before,
+            summarizerModelId=summarizer_model_id,
+            summaryUsage=dict(summary_usage),
+            coveredEntries=covered_entries,
+            coveredTokens=covered_tokens,
+            agentSpecId=agent_spec_id,
         )
 
-    def append_elide(self, first_kept_id: str) -> str:
+    def append_elide(
+        self,
+        first_kept_id: str,
+        *,
+        covered_entries: int,
+        covered_tokens: int,
+        agent_spec_id: str | None,
+    ) -> str:
         """Fail-Early on an unknown splice anchor, mirroring
         ``append_compaction`` -- the summary-less generalization (W3,
         NODE-ADDRESSABLE-AGENTS.md) drops ``summary``/``tokensBefore`` but keeps
-        the same anchor semantics ``ConversationTree`` folds on."""
+        the same anchor semantics ``ConversationTree`` folds on.
+
+        Three provenance fields, not five (§8.2, §8.3): no summary means no
+        summarizer model and no summary cost to record."""
         if first_kept_id not in self._ids:
             raise ValueError(
                 f"elide first_kept_id {first_kept_id!r} not found; the splice anchor "
                 "must name a real entry, or the whole kept region silently drops out of "
                 "the context fold"
             )
-        return self._append("elide", firstKeptId=first_kept_id)
+        return self._append(
+            "elide",
+            firstKeptId=first_kept_id,
+            coveredEntries=covered_entries,
+            coveredTokens=covered_tokens,
+            agentSpecId=agent_spec_id,
+        )
 
     def append_navigate(self, target_id: str | None) -> str:
         """Move the leaf to ``target_id`` (``None`` = before the root document).

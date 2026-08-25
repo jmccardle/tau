@@ -30,6 +30,17 @@ from tau_coding_agent.session_store import (
     subscribe_session_events,
 )
 
+# TREE-BROWSER-AS-EDITOR.md §8/§11.3: ``append_compaction`` now requires the summary's
+# provenance as keyword-only arguments with no defaults. These tests are about
+# something else, so they name plausible values once here.
+_PROV = {
+    "summarizer_model_id": "test-summarizer",
+    "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+    "covered_entries": 1,
+    "covered_tokens": 50,
+    "agent_spec_id": None,
+}
+
 
 def _model() -> Model:
     return Model(
@@ -171,7 +182,9 @@ async def test_seam3_before_compact_reaches_extension_handler():
     unsub = subscribe_session_events(session.route_session_event)
     try:
         # The genuine seam-3 emit point (append_compaction), which compact() calls.
-        store.append_compaction("summary", first_kept_id=first_kept, tokens_before=42)
+        store.append_compaction(
+            "summary", first_kept_id=first_kept, tokens_before=42, **_PROV
+        )
         # The bus dispatch is a fire-and-forget task scheduled on the running loop;
         # yield once so it runs before we assert.
         await asyncio.sleep(0)
@@ -201,7 +214,9 @@ async def test_seam3_channel_isolation():
 
     unsub = subscribe_session_events(session.route_session_event)
     try:
-        store.append_compaction("summary", first_kept_id=first_kept, tokens_before=0)
+        store.append_compaction(
+            "summary", first_kept_id=first_kept, tokens_before=0, **_PROV
+        )
         await asyncio.sleep(0)
     finally:
         unsub()

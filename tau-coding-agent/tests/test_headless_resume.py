@@ -29,6 +29,18 @@ from tau_coding_agent.cli import CLIArgs
 from tau_coding_agent.headless import CLIError, run_print
 from tau_coding_agent.session_store import Session
 
+# TREE-BROWSER-AS-EDITOR.md §8/§11.3: ``append_compaction`` now requires the summary's
+# provenance as keyword-only arguments with no defaults. These tests are about
+# something else, so they name plausible values once here.
+_PROV = {
+    "summarizer_model_id": "test-summarizer",
+    "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+    "covered_entries": 1,
+    "covered_tokens": 50,
+    "agent_spec_id": None,
+}
+
+
 # ── config / fakes ──────────────────────────────────────────────────────────
 
 
@@ -248,7 +260,7 @@ async def test_resume_of_compacted_session_hands_spliced_context_to_backend(env)
     """
     a = env["seed"]("local-llm", "a1")  # system + user "a1" + assistant "r"
     keep_id = a.entries()[-1]["id"]  # the assistant "r" message
-    a.append_compaction("OLD-SUMMARY", first_kept_id=keep_id, tokens_before=100)
+    a.append_compaction("OLD-SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
 
     await run_print(
         CLIArgs(messages=["next"], print_mode=True, session=a.id),

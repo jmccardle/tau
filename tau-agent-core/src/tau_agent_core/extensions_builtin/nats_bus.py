@@ -729,7 +729,9 @@ def register(api: Any) -> None:
             told the model nothing about the turn being over AND quoted the
             model's own sentence back to it. The model called ``speak`` again
             with identical text, and the loop ran to turn 28 before being killed
-            (it would have stopped at ``max_turns=50``).
+            by hand. Nothing else would have killed it: ``max_turns`` was 50 at
+            the time and is now ``None`` by default, so a terminal verb that does
+            not terminate has no backstop but the operator.
 
             ``terminal`` → ``terminate`` is the mechanical stop, read off this
             dict by ``agent_loop._build_batch_result``. ``spec.result`` is the

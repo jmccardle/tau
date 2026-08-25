@@ -1,0 +1,52 @@
+[project]
+name = "ffwf-tau"
+# The version is not a literal here. Each distribution reads it from its own
+# package's ``__version__``, so the wheel metadata and what the code reports can
+# never disagree -- they are the same line. Bump that line to cut a release.
+#
+# This distribution ships no functional code, and ``tau_meta/__init__.py`` exists
+# only to hold that line. The alternative -- a plain ``version = "..."`` literal,
+# the exemption the repo-root pyproject gets -- is the second copy of the number
+# that tests/test_packaging.py forbids by name, and this tree already shipped
+# ``0.0.0`` in four pyprojects while ``tau --version`` said ``0.9.1``. A one-line
+# module is cheaper than an exception to the rule that caught that.
+dynamic = ["version"]
+description = "τ: the guessable name. Installs ffwf-tau-coding-agent[tui] — the `tau` command with its TUI."
+requires-python = ">=3.11"
+readme = "README.md"
+# SPDX expression + the file itself (PEP 639), which is why build-system below
+# needs setuptools >= 77.0.3: earlier versions ignore `license-files` and the
+# wheel ships without the licence text. Each package carries its own copy of the
+# repo-root LICENSE because a wheel is built from one package directory and
+# cannot reach outside it.
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
+# The whole distribution. `[tui]` and not the bare package, because someone who
+# types the shortest name wants the program: `tau` with no arguments launches the
+# TUI, and without this extra that is the one thing it cannot do. `[jmfts]` is
+# deliberately absent -- it needs a running server, and an install that pulls one
+# in by default would be answering a question nobody asked.
+dependencies = [
+    "ffwf-tau-coding-agent[tui]==0.9.4",
+]
+
+# The PUBLIC repository only. This tree has a second, private git remote whose
+# history is unfiltered; its hostname must never reach this file or a README,
+# because both are uploaded verbatim (pyproject.toml ships inside the sdist).
+# tests/test_packaging.py enforces that.
+[project.urls]
+Homepage = "https://ffwfrobotics.github.io/tau/"
+Documentation = "https://ffwfrobotics.github.io/tau/"
+Repository = "https://github.com/jmccardle/tau"
+Issues = "https://github.com/jmccardle/tau/issues"
+
+[build-system]
+requires = ["setuptools>=77.0.3", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "tau_meta.__version__" }

@@ -280,7 +280,8 @@ def test_non_streaming_carries_text_thinking_tool_calls_usage_and_stop_reason():
     ]
 
     assert final.stop_reason == "toolUse"
-    assert final.usage.input_tokens == 31
+    # prompt_tokens 31 includes the 8 cached, so input_tokens is the uncached 23.
+    assert final.usage.input_tokens == 23
     assert final.usage.output_tokens == 12
     assert final.usage.total_tokens == 43
     assert final.usage.cache_read_tokens == 8

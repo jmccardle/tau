@@ -18,6 +18,18 @@ from tau_agent_core.conversation_tree import ConversationTree
 
 from tau_coding_agent.session_store import Session
 
+# TREE-BROWSER-AS-EDITOR.md §8/§11.3: ``append_compaction`` now requires the summary's
+# provenance as keyword-only arguments with no defaults. These tests are about
+# something else, so they name plausible values once here.
+_PROV = {
+    "summarizer_model_id": "test-summarizer",
+    "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+    "covered_entries": 1,
+    "covered_tokens": 50,
+    "agent_spec_id": None,
+}
+
+
 CWD = "/srv/proj"
 
 
@@ -35,7 +47,7 @@ def test_append_compaction_is_byte_prefix_stable(tmp_path) -> None:
     assert session.path is not None
 
     before = session.path.read_bytes()
-    session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100)
+    session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
     after = session.path.read_bytes()
 
     # Append-only: the whole prior file is a byte-prefix of the new file, and
@@ -47,7 +59,7 @@ def test_append_compaction_is_byte_prefix_stable(tmp_path) -> None:
 
 def test_context_for_splices_appended_compaction(tmp_path) -> None:
     session, keep_id, _ = _session_with_history(tmp_path)
-    session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100)
+    session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
 
     # After append_compaction the leaf is the compaction entry (pi appendCompaction).
     tree = ConversationTree(session.entries(), cursor=session._leaf_id)
@@ -64,7 +76,7 @@ def test_context_for_splices_appended_compaction(tmp_path) -> None:
 
 def test_navigate_behind_boundary_restores_pre_compaction(tmp_path) -> None:
     session, keep_id, behind_id = _session_with_history(tmp_path)
-    session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100)
+    session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
 
     tree = ConversationTree(session.entries(), cursor=session._leaf_id)
     # Behind the boundary the compacted prefix is addressable again — the append
@@ -79,7 +91,7 @@ def test_navigate_behind_boundary_restores_pre_compaction(tmp_path) -> None:
 
 def test_reloaded_session_resolves_cursor_to_compaction_and_splices(tmp_path) -> None:
     session, keep_id, _ = _session_with_history(tmp_path)
-    session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100)
+    session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
     assert session.path is not None
 
     # A fresh load resolves the cursor from the last entry (the compaction) and the
@@ -99,7 +111,7 @@ def test_context_property_is_the_spliced_fold_not_the_linear_messages(tmp_path) 
     now seed from — the fix for a compacted session rendering its dropped history.
     """
     session, keep_id, _ = _session_with_history(tmp_path)
-    session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100)
+    session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
 
     # The raw linear fold still contains the dropped prefix and no summary — the bug.
     assert {"role": "user", "content": "old question"} in session.messages

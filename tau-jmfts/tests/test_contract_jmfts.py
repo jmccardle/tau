@@ -30,6 +30,18 @@ from tau_agent_core.testing.session_log_contract import SessionLogContractTests
 from tau_jmfts.client import JmftsClient, JmftsError
 from tau_jmfts.store import JmftsSessionLog
 
+# TREE-BROWSER-AS-EDITOR.md §8/§11.3: the splice appenders now require the anchor's
+# provenance as keyword-only arguments with no defaults. These tests are about
+# something else, so they name plausible values once here.
+_PROV = {
+    "summarizer_model_id": "test-summarizer",
+    "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+    "covered_entries": 1,
+    "covered_tokens": 50,
+    "agent_spec_id": None,
+}
+
+
 pytestmark = pytest.mark.jmfts
 
 TEST_PREFIX = "tau-jmfts-test"
@@ -310,7 +322,7 @@ def test_fork_remaps_cross_references_not_just_parent_ids(client: JmftsClient) -
     try:
         source.append_message(_msg("user", "compacted away"))
         keep = source.append_message(_msg("assistant", "keep me"))
-        source.append_compaction("the summary", keep, tokens_before=10)
+        source.append_compaction("the summary", keep, tokens_before=10, **_PROV)
         tail = source.append_message(_msg("user", "after compaction"))
 
         # a branch + branch_summary (exercises fromId), then a TRAILING navigate

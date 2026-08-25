@@ -367,6 +367,27 @@ class ToolBox(Collapsible):
         super().__init__(self._args_md, self._result_md, title=self._summary, collapsed=True)
         self.add_class("tool-box")
         self.has_result = False
+        # Result body written before this box composed; flushed by on_mount.
+        # ``Markdown.update()`` on an unmounted widget removes the old blocks and
+        # mounts the new ones into nothing -- the title and the display flag
+        # survive, the text does NOT (verified: 0 blocks after the box mounts).
+        # A call and its result can arrive in the same synchronous burst off the
+        # agent loop's queue, so this is reachable, and losing the body silently
+        # is the failure this buffer exists to prevent.
+        self._pending_result: str | None = None
+
+    def on_mount(self) -> None:
+        if self._pending_result is not None:
+            self._result_md.update(self._pending_result)
+            self._pending_result = None
+
+    def _write_result_body(self, markdown: str) -> None:
+        """Show ``markdown`` in the result body, buffering until this box mounts."""
+        self._result_md.display = True
+        if self._result_md.is_mounted:
+            self._result_md.update(markdown)
+        else:
+            self._pending_result = markdown
 
     @staticmethod
     def _args_block(arguments: object) -> str:
@@ -388,16 +409,14 @@ class ToolBox(Collapsible):
             self.title = f"⛔ {self._summary}"
             body = f"blocked by {who}: {result_text}"
             body = body if len(body) <= 2000 else body[:2000] + "\n…(truncated)"
-            self._result_md.update(f"```\n{body}\n```")
-            self._result_md.display = True
+            self._write_result_body(f"```\n{body}\n```")
             self.has_result = True
             self.add_class("box-blocked")
             return
         mark = "✗" if is_error else "✓"
         self.title = f"{mark} {self._summary}"
         body = result_text if len(result_text) <= 2000 else result_text[:2000] + "\n…(truncated)"
-        self._result_md.update(f"```\n{body}\n```")
-        self._result_md.display = True
+        self._write_result_body(f"```\n{body}\n```")
         self.has_result = True
         if is_error:
             self.add_class("box-error")
@@ -407,9 +426,11 @@ class ExchangeBox(Collapsible):
     """Groups one user→answer exchange's steps (reasoning, tool calls, the final
     answer) under a single summary line.
 
-    Expanded by default so streaming is visible; the title shows ``Working…``
-    while the exchange runs and a ``N tools · X tok · M:SS`` summary once it
-    finishes. Steps are mounted into the collapsible body as they arrive.
+    Expanded by default so streaming is visible; the title shows a live
+    ``Working… · 1.2k out · ~83 chunks · 0:12`` readout while the exchange runs
+    (:meth:`set_live`) and a ``N tools · X tok · M:SS`` summary once it finishes
+    (:meth:`set_summary`). Steps are mounted into the collapsible body as they
+    arrive.
 
     ``label`` names the lane this exchange belongs to when it is NOT the ordinary
     "a human typed this" one — ``"bus · nats_bus"``, ``"agent · fork:explore"``
@@ -456,28 +477,72 @@ class ExchangeBox(Collapsible):
     def tool_count(self) -> int:
         return self._tool_count
 
+    def set_live(self, *, seconds: float | None, output: int, chunks: int) -> None:
+        """Update the running title while the exchange is still streaming.
+
+        The liveness readout. Before this the title said ``Working…`` and then
+        nothing on screen changed until the answer text started arriving — so a
+        turn spent thinking, or waiting on a slow tool, was indistinguishable
+        from a turn that had died.
+
+        Three parts, and the distinction between them is the whole point:
+
+        * ``N out`` is MEASURED. It is the sum of the per-completion
+          ``usage.output_tokens`` this lane has been told, so it steps at each
+          completion boundary (each tool call) and is omitted entirely until the
+          first completion reports one. It is never an approximation of the
+          completion currently in flight — no such measurement exists.
+        * ``~N chunks`` is the completion in flight, and is labelled twice over:
+          ``~`` and the word *chunks*. It counts stream events, not tokens. Most
+          OpenAI-compatible servers send one token per chunk, but nothing
+          guarantees that, so this never claims to be a token count.
+        * the duration is wall-clock since the exchange opened.
+
+        A part with nothing to say is left out rather than shown as zero: no
+        completion has reported, or nothing is in flight (a tool is running).
+        ``seconds=None`` omits the duration for the same Fail-Early reason
+        :meth:`set_summary` does — an unknown time is not a 0:00 one.
+        """
+        parts = ["Working…"]
+        if output:
+            parts.append(f"{format_tokens(output)} out")
+        if chunks:
+            parts.append(f"~{chunks} chunk" + ("" if chunks == 1 else "s"))
+        if seconds is not None:
+            parts.append(format_duration(seconds))
+        if self._label is not None:
+            parts.insert(0, self._label)
+        self.title = " · ".join(parts)
+
     def set_summary(
         self,
         *,
         tools: int,
-        tokens: int,
+        context: int,
+        output: int,
         seconds: float | None = None,
         telemetry: str | None = None,
     ) -> None:
-        """Finalize the title with the exchange's stats. Token count of 0 is
-        shown as 0 — we never hide a real value behind a branch.
+        """Finalize the title with the exchange's stats. A count of 0 is shown as
+        0 — we never hide a real value behind a branch.
+
+        ``context`` is how large the prompt had grown by the end of this exchange
+        (the last completion's prompt size); ``output`` is what the exchange
+        generated. They are reported separately and never summed: a prompt already
+        contains every earlier turn, so ``context + output`` restates the whole
+        conversation as if it were this exchange's cost.
 
         ``seconds`` is omitted on the reload path: wall-clock duration is not
-        persisted, so a reconstructed exchange shows ``N tools · X tok`` without
-        a fabricated time (Fail-Early).
+        persisted, so a reconstructed exchange shows ``N tools · X ctx · Y out``
+        without a fabricated time (Fail-Early).
 
         ``telemetry`` is the last completion's G4 readout (t/s · repairs ·
         forced-share, from :func:`format_telemetry`); it is per-completion, not an
-        exchange aggregate like the token sum, so it is appended verbatim as one
+        exchange aggregate like ``output``, so it is appended verbatim as one
         more ``·`` part when present. ``None`` (a provider that reported nothing)
         appends nothing — the summary reads exactly as it did before G4."""
         tool_label = f"{tools} tool" + ("" if tools == 1 else "s")
-        parts = [tool_label, f"{format_tokens(tokens)} tok"]
+        parts = [tool_label, f"{format_tokens(context)} ctx", f"{format_tokens(output)} out"]
         if seconds is not None:
             parts.append(format_duration(seconds))
         if telemetry is not None:

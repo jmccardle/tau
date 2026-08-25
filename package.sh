@@ -62,26 +62,14 @@ for pkg in tau-llm tau-agent-core tau-coding-agent; do
 done
 cp LICENSE "$DEST/LICENSE"
 
-# --fun defaults ON in a release and OFF in a source checkout, so a developer's
-# snapshot suite and devshot renders are deterministic without passing a flag
-# while a released τ still picks its tagline at random. The flag reaches exactly
-# one string (see tau_coding_agent/tagline.py); this rewrites its default in the
-# STAGED copy only, never in the working tree.
-#
-# Verified rather than assumed: if the literal is ever renamed or reformatted,
-# a bare `sed -i` would silently ship an unpatched build that looks fine and is
-# missing the feature. Grep for the result and fail the build instead.
-TAGLINE_FILE="$DEST/tau-coding-agent/src/tau_coding_agent/tagline.py"
-if [ ! -f "$TAGLINE_FILE" ]; then
-    echo "package.sh: $TAGLINE_FILE missing from the staged tree" >&2
-    exit 1
-fi
-sed -i 's/^FUN_DEFAULT = False$/FUN_DEFAULT = True/' "$TAGLINE_FILE"
-if ! grep -qx 'FUN_DEFAULT = True' "$TAGLINE_FILE"; then
-    echo "package.sh: could not flip FUN_DEFAULT in $TAGLINE_FILE" >&2
-    echo "package.sh: expected a line reading exactly 'FUN_DEFAULT = False'" >&2
-    exit 1
-fi
+# NOTE: this script deliberately rewrites NO source. It used to `sed` tagline.py
+# to flip FUN_DEFAULT on for a release, which worked for this tarball and only
+# this tarball — the PyPI wheels are built by .github/workflows/publish.yml with
+# `python -m build`, straight from the source tree, so they never saw the flip
+# and every published wheel shipped the developer default. FUN_DEFAULT is now
+# True in the source; a staged tree is a copy of the working tree and nothing
+# else. If you are about to add a "just patch this one line at package time"
+# step here, that is the bug that motivated its removal.
 
 TARBALL="tau-${VERSION}.tar.gz"
 tar -czf "$TARBALL" -C "$STAGE" "$PKG"

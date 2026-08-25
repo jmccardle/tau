@@ -20,7 +20,13 @@ import pytest
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.submission import Submission
-from tau_coding_agent.backends import DEFAULT_LANE, RenderRouter, TauBackend, TurnStream
+from tau_coding_agent.backends import (
+    DEFAULT_LANE,
+    RenderRouter,
+    TauBackend,
+    TurnStream,
+    prompt_tokens,
+)
 
 
 def _backend() -> TauBackend:
@@ -64,7 +70,7 @@ def _stub_turn(backend: TauBackend) -> None:
                 message={
                     "role": "assistant",
                     "content": [{"type": "text", "text": "ok"}],
-                    "usage": {"total_tokens": 5},
+                    "usage": {"input_tokens": 60, "output_tokens": 5, "total_tokens": 65},
                 },
             )
         )
@@ -81,6 +87,56 @@ def _text_event(lane: str, text: str) -> AgentEvent:
         message={"role": "assistant", "content": [{"type": "text", "text": text}]},
         submission_id=lane,
     )
+
+
+# ---------------------------------------------------------------------------
+# prompt_tokens — one completion's context, read the same way live and on reload.
+# ---------------------------------------------------------------------------
+
+
+class TestPromptTokens:
+    def test_the_prompt_is_the_total_minus_what_the_model_generated(self):
+        assert prompt_tokens({"total_tokens": 512, "output_tokens": 12}) == 500
+
+    def test_it_agrees_with_the_field_sum_on_a_transcript_written_today(self):
+        """The two readings are equal once the providers stopped double-counting
+        the cached span inside input_tokens — which is what makes the subtraction
+        safe to use everywhere rather than only on reload."""
+        usage = {
+            "input_tokens": 400,
+            "cache_read_tokens": 100,
+            "output_tokens": 12,
+            "total_tokens": 512,
+        }
+        fields = (
+            usage["input_tokens"] + usage["cache_read_tokens"] + usage.get("cache_write_tokens", 0)
+        )
+        assert prompt_tokens(usage) == fields == 500
+
+    def test_a_legacy_transcript_reads_its_real_size_not_double(self):
+        """Written before the provider fix: input_tokens 1404 CONTAINS the 1384
+        cached, so the field sum says 2788 for a 1404-token prompt. The server's
+        own total, 1620, still knows the truth. Real numbers from a session on
+        disk (~/.tau/sessions/…claudish-to-english…)."""
+        legacy = {
+            "input_tokens": 1404,
+            "cache_read_tokens": 1384,
+            "output_tokens": 216,
+            "total_tokens": 1620,
+        }
+        assert prompt_tokens(legacy) == 1404
+
+    def test_a_server_that_reported_no_total_falls_to_the_field_sum(self):
+        """Usage defaults total_tokens to 0, so 0 means "nothing reported" — not a
+        zero-token prompt. Fail-Early: use the fields that ARE there, don't
+        report 0 - output as a negative size."""
+        assert prompt_tokens({"input_tokens": 300, "output_tokens": 20}) == 300
+
+    def test_a_total_below_output_is_a_contradiction_not_a_small_prompt(self):
+        assert prompt_tokens({"input_tokens": 300, "output_tokens": 50, "total_tokens": 10}) == 300
+
+    def test_an_empty_usage_is_zero_not_an_error(self):
+        assert prompt_tokens({}) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +258,11 @@ class TestRenderRouterLanes:
         assert end["kind"] == "lane_end" and end["source"] == "timer"
         assert end["submitter"] == "cron:nightly"
 
-    async def test_lane_end_reports_loop_tokens_plus_the_side_usage_delta(self):
+    async def test_lane_end_reports_loop_output_plus_the_side_usage_delta(self):
+        """``output`` folds in the side-usage delta; ``context`` does not. A side
+        call (auto-compaction, ``ctx.complete()``) generates real tokens, so they
+        are added — but its 6000-token prompt is a DIFFERENT conversation, so
+        adding it to this lane's context would report a size the lane never had."""
         seen: list[dict] = []
         router = RenderRouter(seen.append)
         sub = Submission(text="x", source="interactive", submitter="human", submission_id="s")
@@ -212,20 +272,59 @@ class TestRenderRouterLanes:
             AgentEvent(
                 type="message_end",
                 timestamp=0,
-                message={"role": "assistant", "content": [], "usage": {"total_tokens": 40}},
+                message={
+                    "role": "assistant",
+                    "content": [],
+                    "usage": {
+                        "input_tokens": 300,
+                        "cache_read_tokens": 100,
+                        "output_tokens": 40,
+                        "total_tokens": 440,
+                    },
+                },
                 submission_id="s",
             )
         )
-        await router.on_submission_end(submission=sub, side_usage={"total_tokens": 2})
+        await router.on_submission_end(
+            submission=sub, side_usage={"input_tokens": 6000, "output_tokens": 2}
+        )
 
         assert seen[-1] == {
             "kind": "lane_end",
             "lane": "s",
             "source": "interactive",
             "submitter": "human",
-            "tokens": 42,
+            "context": 400,
+            "output": 42,
             "extra": {},
         }
+
+    async def test_lane_end_context_is_the_last_prompt_not_the_sum_of_prompts(self):
+        """Two completions in one tool-bearing turn. The second prompt CONTAINS the
+        first, so context is 900 — not 1400. Summing them is the overcount that made
+        every turn's badge read as the whole preceding conversation."""
+        seen: list[dict] = []
+        router = RenderRouter(seen.append)
+        sub = Submission(text="x", source="interactive", submitter="human", submission_id="s")
+
+        await router.on_submission_start(submission=sub, text="x")
+        for prompt, out in ((500, 20), (900, 35)):
+            await router.on_agent_event(
+                AgentEvent(
+                    type="message_end",
+                    timestamp=0,
+                    message={
+                        "role": "assistant",
+                        "content": [],
+                        "usage": {"input_tokens": prompt, "output_tokens": out},
+                    },
+                    submission_id="s",
+                )
+            )
+        await router.on_submission_end(submission=sub)
+
+        assert seen[-1]["context"] == 900
+        assert seen[-1]["output"] == 55
 
     async def test_an_unstamped_event_is_reported_not_swallowed(self):
         """``continue_conversation()`` and a bare ``compact()`` emit agent_start /
@@ -391,7 +490,7 @@ class TestSubscribeRenderWiring:
         assert kinds[0] == "lane_start" and kinds[-1] == "lane_end"
         assert all(e["lane"] == "s1" for e in seen)
         assert "text_delta" in kinds
-        assert seen[-1]["tokens"] == 5
+        assert seen[-1]["context"] == 60 and seen[-1]["output"] == 5
 
     async def test_a_second_turn_on_the_same_subscription_gets_its_own_lane(self):
         """The point of a PERSISTENT subscription: no re-attach per turn."""

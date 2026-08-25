@@ -27,6 +27,18 @@ from tau_agent_core.rpc.handler import RPCHandler
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_llm.types import Model
 
+# TREE-BROWSER-AS-EDITOR.md §8/§11.3: ``append_compaction`` now requires the
+# summary's provenance as keyword-only arguments with no defaults. These tests are
+# about something else, so they name plausible values once here rather than at every
+# call — the point of the required keywords is that a REAL caller cannot skip them.
+_PROV = {
+    "summarizer_model_id": "test-summarizer",
+    "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+    "covered_entries": 1,
+    "covered_tokens": 50,
+    "agent_spec_id": None,
+}
+
 
 def _model(context_window: int = 8192) -> Model:
     return Model(
@@ -337,11 +349,11 @@ async def test_last_compaction_reflects_the_newest_compaction_entry(
 ) -> None:
     first_id = session.session_log.append_message(_user_message("hello"))
     session.session_log.append_compaction(
-        summary="first summary", first_kept_id=first_id, tokens_before=100
+        summary="first summary", first_kept_id=first_id, tokens_before=100, **_PROV
     )
     second_id = session.session_log.append_message(_user_message("later"))
     session.session_log.append_compaction(
-        summary="second summary", first_kept_id=second_id, tokens_before=200
+        summary="second summary", first_kept_id=second_id, tokens_before=200, **_PROV
     )
 
     result = await _call(handler)
@@ -371,7 +383,7 @@ async def test_last_compaction_carries_the_entry_id_and_timestamp(
     `entry.get("timestamp")` with `None`. Each reddens this test alone."""
     first_id = session.session_log.append_message(_user_message("hello"))
     compaction_id = session.session_log.append_compaction(
-        summary="only summary", first_kept_id=first_id, tokens_before=100
+        summary="only summary", first_kept_id=first_id, tokens_before=100, **_PROV
     )
     written = [e for e in session.session_log.entries() if e.get("type") == "compaction"]
     assert len(written) == 1
@@ -391,9 +403,13 @@ def test_last_compaction_state_helper_directly() -> None:
     return the FIRST compaction entry ("old"), not the newest ("new")."""
     session = _session()
     first_id = session.session_log.append_message(_user_message("a"))
-    session.session_log.append_compaction(summary="old", first_kept_id=first_id, tokens_before=1)
+    session.session_log.append_compaction(
+        summary="old", first_kept_id=first_id, tokens_before=1, **_PROV
+    )
     second_id = session.session_log.append_message(_user_message("b"))
-    session.session_log.append_compaction(summary="new", first_kept_id=second_id, tokens_before=2)
+    session.session_log.append_compaction(
+        summary="new", first_kept_id=second_id, tokens_before=2, **_PROV
+    )
 
     state = _last_compaction_state(session)
 

@@ -16,7 +16,7 @@ Adapted from pi's ``detectCompat`` / ``getCompat``
 MIT, Copyright (c) 2025 Mario Zechner. See the repository README for the
 attribution τ carries.
 
-## Why this is two fields and not pi's twenty-six
+## Why this is three fields and not pi's twenty-six
 
 pi's ``ResolvedOpenAICompletionsCompat`` carries 26 fields. Most of them do not
 port, and their absence is a statement rather than an omission:
@@ -45,7 +45,7 @@ from a URL, and say why: guessing wrong there produces a server that *silently
 ignores* the parameter and returns an unconstrained generation dressed as a
 constrained one. That reasoning is about failures that hide.
 
-Neither field here can hide. Sending ``max_tokens`` where
+Neither of the two DETECTED fields can hide. Sending ``max_tokens`` where
 ``max_completion_tokens`` is required is a 400 with the field named in it, and
 τ *already guesses* — it sends the classic spelling unconditionally, which is a
 blind constant rather than an informed one. Detection narrows an existing guess;
@@ -54,6 +54,10 @@ rejects it rejects the request out loud.
 
 Detection is also always overridable, and an operator's ``compat`` entry wins
 field by field.
+
+``tool_call_schema`` is the exception that proves the rule: it CAN hide — it
+rewrites a response τ was handed — so nothing detects it, and it does something
+only when an operator states it. Its own comment says why.
 """
 
 from __future__ import annotations
@@ -66,6 +70,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from tau_llm.types import Model
 
 MaxTokensField = Literal["max_tokens", "max_completion_tokens"]
+ToolCallSchema = Literal["openai", "anthropic"]
 
 
 class Compat(BaseModel):
@@ -92,6 +97,32 @@ class Compat(BaseModel):
     # key is present. `stream_options` is a reserved body key, so `extra_body`
     # cannot suppress it and this is the only way to say so.
     supports_usage_in_streaming: bool | None = None
+    # Which schema this endpoint returns TOOL CALLS in. `"openai"` is the contract
+    # and the default; `"anthropic"` says the gateway leaks its upstream Anthropic
+    # tool_use shape — `{"type":"tool_use","id":…,"name":…,"input":{…}}` where
+    # `{"type":"function","function":{"name":…,"arguments":"…"}}` belongs.
+    #
+    # This is the one field here that is a WORKAROUND rather than a spelling
+    # choice, and it is shaped accordingly:
+    #
+    # * It is never detected (`detect_compat` returns `"openai"` for everyone).
+    #   The two fields above are safe to infer because guessing wrong produces a
+    #   400 with the field named in it. Guessing this one wrong would rewrite a
+    #   tool call τ was handed correctly. An operator states it or it does not
+    #   happen, so the config entry is the record of which endpoint is broken.
+    # * It translates, it does not repair. A call that carries the Anthropic keys
+    #   but no usable name or arguments still raises — see
+    #   `providers/openai.py::_tool_call_from_anthropic_shape`.
+    # * It is a stopgap for a gateway bug, so the fix is upstream on the gateway.
+    #   Setting it does not make the endpoint compliant; it makes τ usable against
+    #   a non-compliant one while the report is open.
+    #
+    # Observed on the AskSage `/server/openai/v1/` gateway's `gpt-5*` / `gpt-o3*`
+    # deployments, whose BUFFERED responses carry this shape (PLAN-0.9.3 §4.2).
+    # Their STREAMED responses are a different defect that no compat field can
+    # reach: the name is absent from every chunk, so there is nothing to
+    # translate. Pair this with `Model.stream: false` on such a model.
+    tool_call_schema: ToolCallSchema | None = None
 
 
 class ResolvedCompat(BaseModel):
@@ -99,6 +130,7 @@ class ResolvedCompat(BaseModel):
 
     max_tokens_field: MaxTokensField
     supports_usage_in_streaming: bool
+    tool_call_schema: ToolCallSchema
 
 
 # Hosts that REQUIRE `max_completion_tokens` and reject the classic key.
@@ -156,6 +188,12 @@ def detect_compat(provider: str, base_url: str) -> ResolvedCompat:
         # a gateway sets `compat.supports_usage_in_streaming: false` and is done,
         # where before this they had no route at all short of patching τ.
         supports_usage_in_streaming=True,
+        # Never inferred. The OpenAI tool-call schema is what an OpenAI-compatible
+        # endpoint promises, so τ reads it as promised and reports the endpoint
+        # that breaks it. Matching a hostname here would translate a shape on the
+        # strength of a URL, and the whole value of the nameless-tool-call error
+        # is that it names the gateway instead of guessing for it.
+        tool_call_schema="openai",
     )
 
 
@@ -182,5 +220,10 @@ def resolve_compat(model: Model) -> ResolvedCompat:
             stated.supports_usage_in_streaming
             if stated.supports_usage_in_streaming is not None
             else detected.supports_usage_in_streaming
+        ),
+        tool_call_schema=(
+            stated.tool_call_schema
+            if stated.tool_call_schema is not None
+            else detected.tool_call_schema
         ),
     )

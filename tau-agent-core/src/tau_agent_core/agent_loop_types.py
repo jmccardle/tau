@@ -62,7 +62,7 @@ class AgentLoopConfig(BaseModel):
         system_prompt: System prompt for the agent
         tool_execution_mode: How tools are executed
         max_retries: Maximum retry attempts for failed tool calls
-        max_turns: Maximum number of turns before termination
+        max_turns: Turn ceiling, or ``None`` (the default) for no ceiling
         temperature: Model temperature
         api_key: API key forwarded to the provider (None = use env/provider default)
         reasoning: Requested thinking level ("off".."xhigh"), or None
@@ -72,7 +72,23 @@ class AgentLoopConfig(BaseModel):
     system_prompt: str | None = None
     tool_execution_mode: Literal["sequential", "parallel"] = "parallel"
     max_retries: int = Field(default=3, ge=0)
-    max_turns: int = Field(default=50, ge=1)
+    # No ceiling by default. This used to be 50, and 50 was a number nobody could
+    # change: `create_agent_session` has no such parameter, no CLI flag set it, and
+    # no config key was read, so every TUI and every `tau -p` run stopped at turn
+    # 50 whether or not the work was done -- and stopped SILENTLY (see
+    # AgentLoop._emit_agent_end). A cap the operator cannot see, cannot raise, and
+    # is not told about is not a safeguard.
+    #
+    # pi has no turn bound at all (`agent-loop.ts:155-275` exits on error, on
+    # no-more-tool-calls, or via a host-supplied `shouldStopAfterTurn`), so `None`
+    # is also the parity position. What bounds a runaway run instead is the
+    # machinery built for it: an extension's budget guard tripping the abort
+    # signal (`max_usd`/`max_seconds`, docs/EXTENSIONS-WALKTHROUGH.md), Escape in
+    # the TUI, and the ceiling itself once someone states one.
+    #
+    # `ge=1` still holds for a stated ceiling: 0 would mean "run no turns", which
+    # is a way of spelling "do nothing" that no caller means on purpose.
+    max_turns: int | None = Field(default=None, ge=1)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     # Forwarded to the provider via stream_simple's options. Kept out of the
     # Model (which is serialized to session JSON on disk) so the credential is

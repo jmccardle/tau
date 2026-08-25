@@ -28,6 +28,36 @@ def _msg(role: str, text: str) -> dict[str, Any]:
     return {"role": role, "content": [{"type": "text", "text": text}]}
 
 
+# ── §8 anchor provenance ──────────────────────────────────────────────────
+#
+# TREE-BROWSER-AS-EDITOR.md §8 put transformation provenance on the splice
+# anchors, and §11.3 made every field a keyword argument with NO default, so an
+# implementor who cannot name a value fails at the call site instead of recording
+# ``None``. Widening a Protocol is exactly the kind of obligation this suite
+# exists to make visible, so the fields are spelled out here once and reused by
+# the dozen cases below that append an anchor for some OTHER reason. The two
+# ``test_*_records_its_provenance`` cases pass their own values explicitly —
+# reusing these constants there would test that the suite can echo itself.
+
+
+def _compaction_provenance() -> dict[str, Any]:
+    """The five ``append_compaction`` provenance kwargs, for incidental appends."""
+    return {
+        "summarizer_model_id": "contract-summarizer",
+        "summary_usage": {"input_tokens": 400, "output_tokens": 60, "total_tokens": 460},
+        "covered_entries": 2,
+        "covered_tokens": 300,
+        "agent_spec_id": None,
+    }
+
+
+def _elide_provenance() -> dict[str, Any]:
+    """The three ``append_elide`` provenance kwargs. Three, not five: an elide has
+    no summary, so a summarizer model and a summary cost do not exist for it and
+    are not parameters (§8.2)."""
+    return {"covered_entries": 2, "covered_tokens": 300, "agent_spec_id": None}
+
+
 def _texts(messages: list[dict[str, Any]]) -> list[str]:
     """Flatten a context fold to the text of each message, for readable assertions."""
     out = []
@@ -297,7 +327,7 @@ class SessionLogContractTests:
         log.append_message(_msg("user", "old one"))
         log.append_message(_msg("assistant", "old two"))
         keep = log.append_message(_msg("user", "recent"))
-        log.append_compaction("SUMMARY", keep, 1234)
+        log.append_compaction("SUMMARY", keep, 1234, **_compaction_provenance())
 
         context = ConversationTree(log.entries(), log.cursor).context_for()
         texts = _texts(context)
@@ -312,7 +342,7 @@ class SessionLogContractTests:
         keep = log.append_message(_msg("user", "recent"))
         before = log.entries()
 
-        log.append_compaction("SUMMARY", keep, 10)
+        log.append_compaction("SUMMARY", keep, 10, **_compaction_provenance())
         after = log.entries()
 
         assert after[: len(before)] == before
@@ -335,14 +365,14 @@ class SessionLogContractTests:
         log.append_message(_msg("user", "recent"))
 
         with pytest.raises(ValueError):
-            log.append_compaction("SUMMARY", "does-not-exist", 10)
+            log.append_compaction("SUMMARY", "does-not-exist", 10, **_compaction_provenance())
 
     def test_last_compaction_wins(self, log):
         log.append_message(_msg("user", "one"))
         k1 = log.append_message(_msg("user", "two"))
-        log.append_compaction("FIRST", k1, 10)
+        log.append_compaction("FIRST", k1, 10, **_compaction_provenance())
         k2 = log.append_message(_msg("user", "three"))
-        log.append_compaction("SECOND", k2, 20)
+        log.append_compaction("SECOND", k2, 20, **_compaction_provenance())
 
         texts = _texts(ConversationTree(log.entries(), log.cursor).context_for())
 
@@ -365,7 +395,7 @@ class SessionLogContractTests:
         log.append_message(_msg("user", "old one"))
         log.append_message(_msg("assistant", "old two"))
         keep = log.append_message(_msg("user", "recent"))
-        log.append_elide(keep)
+        log.append_elide(keep, **_elide_provenance())
 
         texts = _texts(ConversationTree(log.entries(), log.cursor).context_for())
 
@@ -384,7 +414,7 @@ class SessionLogContractTests:
         log.append_navigate(None)  # cursor before any root -- next append is root-level
         root = log.append_message(_msg("user", "root message"))
         log.append_message(_msg("assistant", "middle"))
-        log.append_elide(root)
+        log.append_elide(root, **_elide_provenance())
 
         texts = _texts(ConversationTree(log.entries(), log.cursor).context_for())
 
@@ -398,7 +428,7 @@ class SessionLogContractTests:
         log.append_message(_msg("user", "recent"))
 
         with pytest.raises(ValueError):
-            log.append_elide("does-not-exist")
+            log.append_elide("does-not-exist", **_elide_provenance())
 
     def test_branch_rooted_inside_an_elided_span_is_unaffected(self, log):
         """T3 -- a branch rooted INSIDE a later elided span. ``b`` sits in the
@@ -421,7 +451,7 @@ class SessionLogContractTests:
         # The primary continues past `b`, then elides everything up to `keep` --
         # which puts `early` and `b` inside the excluded span from the PRIMARY leaf.
         keep = log.append_message(_msg("user", "kept on primary"))
-        log.append_elide(keep)
+        log.append_elide(keep, **_elide_provenance())
 
         primary_texts = _texts(ConversationTree(log.entries(), log.cursor).context_for())
         assert "early" not in primary_texts and "branch point" not in primary_texts
@@ -429,6 +459,107 @@ class SessionLogContractTests:
         after = ConversationTree(log.entries(), log.cursor).context_for(branch_leaf)
         assert after == before, "an elide on another path must not perturb the branch's context"
         assert "branch point" in _texts(after) and "branch content" in _texts(after)
+
+    # ------------------------------------------------- anchor provenance (§8)
+    #
+    # TREE-BROWSER-AS-EDITOR.md §8: an anchor's labels are only as good as what the
+    # log records, and both anchor kinds were discarding values that existed at the
+    # write. What a store owes here is narrow and total — persist these fields
+    # verbatim and give them back through ``entries()`` and a reload. It owes no
+    # interpretation: nothing in the fold reads them, which is why §8 could add them
+    # without touching ``ConversationTree``.
+
+    def test_compaction_records_its_provenance(self, log):
+        """§8.1 — which model wrote this summary, what it cost, what it folded.
+
+        The point of the test is the round trip through ``entries()``, so the values
+        are all distinct and none is a default: a store that dropped one, coerced a
+        nested ``summaryUsage`` to a string on the way to its backing format, or
+        confused ``coveredTokens`` with ``tokensBefore`` fails on the exact field.
+        Payload keys are camelCase, matching ``firstKeptId``/``tokensBefore`` — an
+        entry's on-disk shape is part of the algebra (§4.5: same entries, same tree),
+        not each store's choice.
+        """
+        log.append_message(_msg("user", "old one"))
+        log.append_message(_msg("assistant", "old two"))
+        keep = log.append_message(_msg("user", "recent"))
+        spec = log.append_custom_entry("agent_spec", {"model": {"id": "conversation-model"}})
+
+        anchor_id = log.append_compaction(
+            "SUMMARY",
+            keep,
+            1234,
+            summarizer_model_id="cheap-local-summarizer",
+            summary_usage={"input_tokens": 900, "output_tokens": 70, "total_tokens": 970},
+            covered_entries=3,
+            covered_tokens=812,
+            agent_spec_id=spec,
+        )
+
+        def check(entries: list[dict[str, Any]], where: str) -> None:
+            anchor = next(e for e in entries if e["id"] == anchor_id)
+            assert anchor["summarizerModelId"] == "cheap-local-summarizer", where
+            assert anchor["summaryUsage"] == {
+                "input_tokens": 900,
+                "output_tokens": 70,
+                "total_tokens": 970,
+            }, where
+            assert anchor["coveredEntries"] == 3, where
+            assert anchor["coveredTokens"] == 812, where
+            assert anchor["agentSpecId"] == spec, where
+            assert anchor["tokensBefore"] == 1234, where
+
+        check(log.entries(), "in entries()")
+
+        reloaded = self.reload(log)
+        if reloaded is None:
+            return  # in-memory store: no durable form to re-read (see reload())
+        check(reloaded.entries(), "after a reload")
+
+    def test_elide_records_its_span_provenance(self, log):
+        """§8.2 — an elide recorded no size at all, where a compaction had
+        ``tokensBefore``.
+
+        Three fields, not five. ``coveredEntries`` is recomputable from tree
+        structure and ``coveredTokens`` is not, which is why both are written: the
+        recomputable one keeps the recorded pair self-consistent, and the other is
+        the only record that will ever exist of what the span cost.
+        """
+        log.append_message(_msg("user", "old one"))
+        keep = log.append_message(_msg("user", "recent"))
+
+        anchor_id = log.append_elide(keep, covered_entries=1, covered_tokens=57, agent_spec_id=None)
+
+        def check(entries: list[dict[str, Any]], where: str) -> None:
+            anchor = next(e for e in entries if e["id"] == anchor_id)
+            assert anchor["coveredEntries"] == 1, where
+            assert anchor["coveredTokens"] == 57, where
+            assert anchor["agentSpecId"] is None, where
+            assert "summarizerModelId" not in anchor, (
+                f"{where}: an elide has no summary, so it must not invent a summarizer"
+            )
+            assert "summaryUsage" not in anchor, where
+
+        check(log.entries(), "in entries()")
+
+        reloaded = self.reload(log)
+        if reloaded is None:
+            return
+        check(reloaded.entries(), "after a reload")
+
+    def test_anchor_provenance_does_not_leak_into_the_fold(self, log):
+        """The §8 fields are a RECORD, not context. Adding them must not put a token
+        in front of the model, and must not perturb the splice they annotate — §8
+        called the change additive on the payload, and this is what makes that
+        claim checkable rather than assumed.
+        """
+        log.append_message(_msg("user", "old one"))
+        keep = log.append_message(_msg("user", "recent"))
+        log.append_compaction("SUMMARY", keep, 10, **_compaction_provenance())
+
+        texts = _texts(ConversationTree(log.entries(), log.cursor).context_for())
+
+        assert texts == ["[[Compaction summary: SUMMARY]]", "recent"]
 
     # ------------------------------------------------------ branch lanes (C2/W14)
 
@@ -531,7 +662,7 @@ class SessionLogContractTests:
         log.append_message(_msg("assistant", "abandoned"))
         log.append_navigate(a)
         keep = log.append_message(_msg("assistant", "kept"))
-        log.append_compaction("SUMMARY", keep, 99)
+        log.append_compaction("SUMMARY", keep, 99, **_compaction_provenance())
 
         expected_entries, expected_cursor = log.entries(), log.cursor
         expected_context = ConversationTree(expected_entries, expected_cursor).context_for()
@@ -608,7 +739,7 @@ class SessionLogContractTests:
         #    fold step that scans more than a single entry (the anchor search),
         #    on a path that is still not an ancestor of `leaf`.
         keep = log.append_message(_msg("user", "kept on the other path"))
-        log.append_compaction("SUMMARY ON THE OTHER PATH", keep, 10)
+        log.append_compaction("SUMMARY ON THE OTHER PATH", keep, 10, **_compaction_provenance())
         assert ConversationTree(log.entries(), log.cursor).context_for(leaf) == before
 
     def test_no_pre_existing_entry_is_mutated_by_any_later_append(self, log):
@@ -634,7 +765,7 @@ class SessionLogContractTests:
         log.append_message(_msg("assistant", "branch"))
         log.append_branch_summary("summary", a)
         c = log.append_message(_msg("user", "for compaction"))
-        log.append_compaction("SUMMARY", c, 10)
+        log.append_compaction("SUMMARY", c, 10, **_compaction_provenance())
         branch = open_branch(log, b, label="lane")
         branch.append_message(_msg("user", "lane content"))
 
@@ -718,14 +849,14 @@ class SessionLogContractTests:
         # 3. compact -- the pre-boundary region is spliced OUT of context_for.
         keep = log.append_message(_msg("user", "kept"))
         minted.append(keep)
-        compaction_id = log.append_compaction("SUMMARY", keep, 10)
+        compaction_id = log.append_compaction("SUMMARY", keep, 10, **_compaction_provenance())
         minted.append(compaction_id)
 
         # 4. elide -- W3's summary-less anchor splices out a second span the same
         #    way, and must be just as reachable through entries() afterward.
         keep2 = log.append_message(_msg("user", "kept again"))
         minted.append(keep2)
-        elide_id = log.append_elide(keep2)
+        elide_id = log.append_elide(keep2, **_elide_provenance())
         minted.append(elide_id)
 
         present = {e["id"] for e in log.entries()}

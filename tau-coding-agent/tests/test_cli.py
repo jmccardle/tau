@@ -259,6 +259,54 @@ def test_no_bus_flag_leaves_the_capability_unstated():
     assert "bus_available" not in mc
 
 
+def test_max_turns_flag_parses_and_reaches_the_headless_model_config():
+    """``--max-turns`` must survive both hops, for the reason ``--bus`` must.
+
+    Before this flag existed the ceiling was a hardcoded 50 in
+    ``AgentLoopConfig`` that nothing τ ships could move, so a run needing turn 51
+    was cut off and nobody could raise the number.
+    """
+    assert parse_cli_args(["-p", "hi"]).max_turns is None
+    assert parse_cli_args(["-p", "--max-turns", "12", "hi"]).max_turns == 12
+
+    _name, mc = resolve_model_config(_config(), parse_cli_args(["-p", "--max-turns", "12", "hi"]))
+    assert mc["max_turns"] == 12
+
+
+def test_no_max_turns_flag_leaves_the_ceiling_unstated():
+    """Absence writes nothing, so ``AgentLoopConfig``'s "no ceiling" default stands
+    and a model entry's own ``"max_turns"`` is not overwritten by the flag's
+    absence — the rule ``--bus`` and ``-nc`` already follow."""
+    _name, mc = resolve_model_config(_config(), parse_cli_args(["-p", "hi"]))
+    assert "max_turns" not in mc
+
+
+def test_max_turns_falls_back_to_the_config_file_then_to_nothing():
+    """Precedence: the flag, then the model entry, then top-level config, then none."""
+    config = _config()
+    config["max_turns"] = 30
+    _name, mc = resolve_model_config(config, parse_cli_args(["-p", "hi"]))
+    assert mc["max_turns"] == 30
+
+    # The flag wins over the file.
+    _name, mc = resolve_model_config(config, parse_cli_args(["-p", "--max-turns", "7", "hi"]))
+    assert mc["max_turns"] == 7
+
+    # A model entry's own key wins over the top-level default.
+    config["models"]["gpt-4o"]["max_turns"] = 5
+    _name, mc = resolve_model_config(config, parse_cli_args(["-p", "-m", "gpt-4o", "hi"]))
+    assert mc["max_turns"] == 5
+
+
+def test_max_turns_rejects_zero_and_negatives_at_the_argv_boundary():
+    """``ge=1`` lives in ``AgentLoopConfig``; catching it here means the message
+    names the flag instead of surfacing as a pydantic error after the TUI starts.
+    "No ceiling" is spelled by omitting the flag, never by passing 0."""
+    for bad in ("0", "-1", "many"):
+        with pytest.raises(SystemExit):
+            parse_cli_args(["-p", "--max-turns", bad, "hi"])
+
+
 def test_resolve_exclude_tools_empty_raises():
     with pytest.raises(CLIError, match="no tool names parsed"):
         resolve_model_config(_config(), CLIArgs(model="gpt-4o", exclude_tools=" , "))
@@ -534,6 +582,20 @@ def test_assemble_missing_file_raises():
 class _FakeBackend:
     def __init__(self, config):
         self.config = config
+        # Mirrors TauBackend's contract: the backend BUILDS the system prompt and
+        # run_print stores what it built. A double that left this unset would
+        # assert that no system message reaches the model, which is the defect
+        # this seam exists to prevent. Composed with the SAME helper the real
+        # backend uses, so the placement of --append-system-prompt cannot drift
+        # between the double and the thing it stands in for; only the project
+        # context and tool list are omitted, which this double has no tools for.
+        from tau_agent_core.sdk import BASE_SYSTEM_PROMPT, append_system_prompt
+
+        base = config.get("system_prompt") or None
+        sections = config.get("append_system_prompt")
+        if sections:
+            base = append_system_prompt(base or BASE_SYSTEM_PROMPT, list(sections))
+        self.system_prompt = base or ""
 
     async def load_extensions(
         self, explicit_paths=None, *, discover=True, user_dir=None, extensions_config=None
@@ -852,9 +914,45 @@ def test_main_launches_tui_with_overrides(monkeypatch):
     assert rcfg["append_system_prompt"] == ["RULE"]
     # --fun rides as its OWN argument, never inside run_config: run_config is
     # threaded into every backend the app builds, and a tagline flag has no
-    # business being reachable from there.
-    assert captured["fun"] is False
+    # business being reachable from there. Unflagged, it arrives as the packaged
+    # default, which is ON everywhere (tau_coding_agent.tagline.FUN_DEFAULT).
+    assert captured["fun"] is True
     assert "fun" not in rcfg
+
+
+def test_theme_flag_rides_the_in_memory_overrides(monkeypatch):
+    """``--theme`` reaches the app as a config override, which is what makes it one-run.
+
+    ``Parley._apply_cli_overrides`` writes it into ``self.config``, and
+    ``action_set_theme``'s ``update_config`` re-reads the FILE rather than writing
+    ``self.config`` back — so a session started with ``--theme latte`` that then
+    picks gruvbox from the palette saves gruvbox, and never latte.
+
+    The flag is deliberately not validated here: the registry a name has to be in
+    includes ``~/.tau/themes``, which only the app reads.
+    """
+    captured = {}
+
+    class FakeParley:
+        def __init__(self, cli_overrides=None, cli_run_config=None, fun=False, resume=False):
+            captured["overrides"] = cli_overrides
+            captured["run_config"] = cli_run_config
+
+        def run(self):
+            captured["ran"] = True
+
+    monkeypatch.setattr("tau_coding_agent.app.Parley", FakeParley)
+    monkeypatch.setattr(cli, "load_config", lambda: _config())
+
+    assert cli.main(["--theme", "gruvbox"]) == 0
+    assert captured["overrides"]["theme"] == "gruvbox"
+    assert "theme" not in captured["run_config"], "a colour scheme is not backend policy"
+
+    # Absent, it must not appear at all: an override key present with a None value
+    # would make _configured_theme_name read None from the config it was told to
+    # override, which is a different question from "the user said nothing".
+    assert cli.main([]) == 0
+    assert not captured["overrides"] or "theme" not in captured["overrides"]
 
 
 def test_tui_tools_allowlist_is_run_level_not_a_model_override(monkeypatch):

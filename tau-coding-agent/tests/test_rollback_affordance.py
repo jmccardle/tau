@@ -377,14 +377,19 @@ async def test_ctrl_z_when_idle_reaches_the_input_as_undo(app_and_backend):
         assert chat_input.text != "typed"  # it reached the TextArea, which undid
 
 
-async def test_a_modal_takes_escape_back_from_cancel_generation(app_and_backend):
-    """Regression for the reason ``check_action`` also gates ``cancel_generation``.
+async def test_a_modal_takes_escape_back_from_the_app(app_and_backend):
+    """Regression for the reason ``check_action`` also gates the Esc binding.
 
     A ``priority=True`` App binding beats a modal's own, and a dispatched action
     CONSUMES the key even when it no-ops — so Esc used to be eaten by
     ``action_cancel_generation`` and no dialog could be dismissed with it. That was
     invisible until a modal could be open mid-turn (the rollback prompt), where Esc
     would have aborted the very turn being rolled back.
+
+    The action behind Esc is ``escape`` now, and it does something when nothing is
+    generating (it offers the tree browser), so ceding the key to a dialog matters
+    more than it did: without this, Esc over a dialog would arm a second modal
+    instead of closing the first.
     """
     app, backend = app_and_backend
     async with app.run_test() as pilot:
@@ -393,7 +398,8 @@ async def test_a_modal_takes_escape_back_from_cancel_generation(app_and_backend)
         app.push_screen(TreeModeModal(), lambda value: dismissed.append(value))
         await pilot.pause()
 
-        assert app.check_action("cancel_generation", ()) is False
+        assert app.check_action("escape", ()) is False
+        assert app.check_action("interrupt", ()) is False
         await pilot.press("escape")
         await pilot.pause()
 

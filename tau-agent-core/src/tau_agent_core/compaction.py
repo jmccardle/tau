@@ -666,6 +666,32 @@ def _build_messages_from_entries(entries: list[dict[str, Any]]) -> list[dict[str
     return messages
 
 
+def estimate_span_tokens(entries: list[dict[str, Any]]) -> int:
+    """Estimated context tokens a SPAN of active-path entries contributes.
+
+    The one spelling of "what did this span cost the context", so the number a
+    splice anchor RECORDS (``coveredTokens`` on a ``compaction``/``elide`` entry —
+    TREE-BROWSER-AS-EDITOR.md §8.1, §8.2) is produced by the same arithmetic as the
+    ``tokensBefore`` it sits beside (``prepare_compaction``, :func:`estimate_tokens`
+    via :func:`estimate_context_tokens`). Two spellings would let a browser row show
+    "folds 12 entries, 8k tokens" against a ``tokensBefore`` computed on a different
+    basis, and nothing would report the mismatch.
+
+    Public because the value must be named at the CALL SITE: §11.3 makes the
+    provenance a required keyword argument on the appenders precisely so a caller
+    that cannot compute it fails there, and the two callers live in two packages
+    (``AgentSession._perform_compaction`` here, ``TauBackend.elide_span`` in
+    ``tau-coding-agent``). Computing it inside the five ``SessionLog``
+    implementations instead would put this arithmetic — and the entry→message
+    flattening under it — in five places.
+
+    Non-message entries contribute nothing, exactly as they contribute nothing to
+    model input: an ``agent_spec``/``customEntry``/``navigate`` node in the span is
+    counted by ``coveredEntries`` and priced at zero here, which is the truth.
+    """
+    return estimate_context_tokens(_build_messages_from_entries(entries)).tokens
+
+
 def _message_for_compaction(entry: dict[str, Any]) -> dict[str, Any] | None:
     """Message dict to summarize for an entry, or None to skip it.
 

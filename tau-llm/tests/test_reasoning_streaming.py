@@ -363,6 +363,27 @@ def test_usage_from_openai_maps_and_computes_total():
     u3 = _usage_from_openai({})
     assert u3.total_tokens == 0
 
-    # cached prompt tokens map to cache_read.
+    # Cached prompt tokens map to cache_read AND come OUT of input_tokens: OpenAI's
+    # prompt_tokens INCLUDES cached_tokens, so leaving both at 9 and 4 would make
+    # every consumer that reads the pair count the cached span twice (pi does the
+    # same subtraction, openai-completions.ts:1487). The three still partition the
+    # prompt: 5 + 4 == 9.
     u4 = _usage_from_openai({"prompt_tokens": 9, "prompt_tokens_details": {"cached_tokens": 4}})
-    assert u4.cache_read_tokens == 4
+    assert (u4.input_tokens, u4.cache_read_tokens) == (5, 4)
+
+    # A server reporting the whole prompt as a cache hit leaves 0 uncached input,
+    # never a negative.
+    u5 = _usage_from_openai({"prompt_tokens": 9, "prompt_tokens_details": {"cached_tokens": 9}})
+    assert (u5.input_tokens, u5.cache_read_tokens) == (0, 9)
+
+    # total_tokens is the server's own number and is NOT reduced by the split.
+    u6 = _usage_from_openai(
+        {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120,
+            "prompt_tokens_details": {"cached_tokens": 90},
+        }
+    )
+    assert u6.total_tokens == 120
+    assert u6.input_tokens + u6.cache_read_tokens + u6.output_tokens == 120

@@ -31,7 +31,7 @@ from typing import Any, AsyncIterator, Iterable, Literal
 import httpx
 
 from tau_llm import grammar as grammar_mod
-from tau_llm.compat import resolve_compat
+from tau_llm.compat import ResolvedCompat, resolve_compat
 from tau_llm.constraints import ConstraintViolation
 from tau_llm.providers.base import Provider
 from tau_llm.json_parse import (
@@ -144,6 +144,11 @@ class _ToolCallAccumulator:
     name: str = ""
     index: int | None = None
     arguments_parts: list[str] = field(default_factory=list)
+    # True when at least one frame for this call arrived in the Anthropic tool_use
+    # shape and was NOT translated (the operator has not set
+    # `compat.tool_call_schema`). Carried only so the nameless-tool-call error can
+    # say which schema it saw; nothing routes on it.
+    saw_anthropic_shape: bool = False
 
 
 @dataclass
@@ -437,6 +442,91 @@ def _apply_constraints(
     payload["grammar"] = grammar_text
 
 
+def _looks_anthropic_shaped(tc: Any) -> bool:
+    """True when a tool-call object carries the Anthropic keys instead of OpenAI's.
+
+    The OpenAI schema nests everything under ``function``; the Anthropic tool_use
+    schema puts ``name`` and ``input`` at the top level. A gateway that leaks its
+    upstream schema onto an OpenAI-compatible endpoint produces the second where
+    the first belongs.
+
+    Read-only by design. This predicate decides ONE thing on its own — whether
+    the nameless-tool-call error adds a sentence naming the shape it saw. It never
+    decides to translate: that is ``compat.tool_call_schema``, which an operator
+    states. A `function`-less delta carrying neither key is not this shape but an
+    ordinary streaming fragment (index plus an arguments piece), so it is False.
+    """
+    if not isinstance(tc, dict) or tc.get("function"):
+        return False
+    return "name" in tc or "input" in tc
+
+
+def _tool_call_from_anthropic_shape(tc: dict, *, model_id: str, base_url: str) -> dict:
+    """Rewrite one Anthropic-shaped tool call into the OpenAI shape.
+
+    Reached only when the operator set ``compat.tool_call_schema="anthropic"`` for
+    this model AND :func:`_looks_anthropic_shaped` recognises the object, so an
+    ordinary argument fragment on a compat-enabled model passes through untouched.
+
+    Translation, not repair. Every field the OpenAI schema requires must be
+    derivable from what arrived, and this raises when one is not — a call whose
+    name is blank, or that carries no argument payload at all, is as unroutable
+    here as it is in ``_build_final_message``, and inventing ``{}`` for it would
+    execute a tool with arguments the model never chose. The point of the compat
+    field is to read a KNOWN-different schema, not to lower the bar.
+
+    ``input`` wins over ``text`` when both are present: ``input`` is the parsed
+    object and ``text`` is the gateway's own re-serialisation of it. Re-encoding
+    the dict to JSON so the finalize path can decode it again is deliberate — one
+    finalize path with the Fail-Early guards on it is worth a round trip.
+
+    Returns: a NEW dict in OpenAI shape, carrying over every key it did not
+    consume (``id`` above all — the Anthropic and OpenAI schemas spell that one
+    the same). The caller's object is not mutated: the streaming path compares
+    the two by identity to tell a translated call from an untranslated one, which
+    is what decides whether the nameless-call error mentions this field.
+    """
+    name = tc.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(
+            f"Tool call {tc.get('id')!r} from model {model_id!r} at {base_url!r} arrived "
+            f"in the Anthropic tool_use shape (compat.tool_call_schema='anthropic') but "
+            f"its `name` is {name!r}. There is nothing to route this call to."
+        )
+
+    if "input" in tc:
+        raw_input = tc["input"]
+        if not isinstance(raw_input, dict):
+            raise ValueError(
+                f"Tool call {tc.get('id')!r} ({name!r}) from model {model_id!r} at "
+                f"{base_url!r} arrived in the Anthropic tool_use shape with an `input` of "
+                f"type {type(raw_input).__name__}, expected an object: {raw_input!r}"
+            )
+        arguments = json.dumps(raw_input)
+    elif isinstance(tc.get("text"), str) and tc["text"].strip():
+        arguments = tc["text"]
+    else:
+        raise ValueError(
+            f"Tool call {tc.get('id')!r} ({name!r}) from model {model_id!r} at {base_url!r} "
+            f"arrived in the Anthropic tool_use shape with neither an `input` object nor a "
+            f"`text` payload, so its arguments are not on the wire. A call that takes no "
+            f'arguments still sends `"input": {{}}`; τ will not substitute one. '
+            f"Received keys: {sorted(tc)!r}"
+        )
+
+    _logger.debug(
+        "translating Anthropic-shaped tool call %r (%s) to the OpenAI schema "
+        "(compat.tool_call_schema='anthropic' on model %r)",
+        tc.get("id"),
+        name,
+        model_id,
+    )
+    normalized = {k: v for k, v in tc.items() if k not in ("name", "input", "text", "type")}
+    normalized["type"] = "function"
+    normalized["function"] = {"name": name, "arguments": arguments}
+    return normalized
+
+
 def _resolve_tool_call_block(
     accum: _Accumulator, tc_delta: dict, fallback_index: int
 ) -> _ToolCallAccumulator:
@@ -533,17 +623,26 @@ def _usage_from_openai(data: dict, timings: dict[str, Any] | None = None) -> Usa
     server omits ``total_tokens`` we compute it from input+output rather than
     fabricate — the real number, including a real zero.
 
+    ``prompt_tokens`` INCLUDES ``prompt_tokens_details.cached_tokens``, so the
+    cached count is subtracted out of ``input_tokens`` — the two fields partition
+    the prompt rather than overlapping (pi: ``openai-completions.ts:1487``). Left
+    overlapping, every consumer that reads both double-counts the cached span:
+    ``compute_cost_usd`` billed it once at the input rate and again at the
+    cache-read rate. ``total_tokens`` is unaffected — it comes from the server and
+    still equals ``input + output + cache_read``.
+
     ``timings`` is llama.cpp's per-completion telemetry block, a TOP-LEVEL
     sibling of ``usage`` on the final SSE chunk (not nested inside it). When
     non-empty it lands verbatim — keys unfiltered, unrenamed — on
     ``Usage.extra["timings"]``; stock builds omit ``n_ff_total`` and τ never
     fabricates it.
     """
-    input_tokens = int(data.get("prompt_tokens") or 0)
+    prompt_tokens = int(data.get("prompt_tokens") or 0)
     output_tokens = int(data.get("completion_tokens") or 0)
-    total = int(data.get("total_tokens") or 0) or (input_tokens + output_tokens)
+    total = int(data.get("total_tokens") or 0) or (prompt_tokens + output_tokens)
     details = data.get("prompt_tokens_details") or {}
     cache_read = int(details.get("cached_tokens") or 0)
+    input_tokens = max(0, prompt_tokens - cache_read)
     extra: dict[str, Any] = {}
     if timings:
         extra["timings"] = dict(timings)
@@ -1202,6 +1301,32 @@ class OpenAICompletionsProvider(Provider):
         """Build the final AssistantMessage with accumulated data."""
         content_blocks: list[Any] = _consolidate_text_and_thinking(accum)
 
+        # An ABORTED stream is not a malformed one, and the two must not be
+        # finalized the same way (docs/PLAN-0.9.4.md §3). The user pressed Esc;
+        # the SSE reader stopped at a line boundary; a tool call that was
+        # mid-`arguments` has a buffer that is *known* truncated. Handing that to
+        # the strict parser below raises, the raise becomes an ErrorEvent, the
+        # ErrorEvent becomes a RuntimeError out of ``AgentLoop._stream_response``
+        # — and every completed message of the turn dies with the frame. The
+        # traceback the user reported was not a side effect of the data loss; it
+        # was the cause of it.
+        #
+        # So on abort an unfinishable tool call is DROPPED rather than raised on.
+        # Dropped, not repaired: a half-streamed `{"path": "/etc/pas` must never
+        # become an executable call, and `{}` would be a fabricated argument set —
+        # the exact anti-pattern the strict path below exists to prevent. The
+        # message keeps `stop_reason="aborted"`, which is what says it is
+        # incomplete, and `usage.extra["dropped_partial_tool_calls"]` says how
+        # many were lost so the omission is inspectable rather than silent.
+        #
+        # This branch is narrow ON PURPOSE. It must not become "parse leniently
+        # everywhere": strictness on a COMPLETE stream is load-bearing, and
+        # docs/TOOL-CALL-PARSING-BUG.md is the corruption bug it exists to
+        # prevent. The condition is `stop_reason == "aborted"` — a fact the
+        # finalizer already had and did not read.
+        aborted = stop_reason == "aborted"
+        dropped_partial = 0
+
         # Repair count over the COMPLETE tool-arg buffers only (not the
         # display-only partial-buffer path in parse_streaming_json, where a
         # repair is normal/expected). This is the only grammar-agnostic signal
@@ -1230,12 +1355,38 @@ class OpenAICompletionsProvider(Provider):
             # silently, which is the same violation wearing a different hat. It has
             # since been deleted; this is now the only place a tool call is built.
             if not tc.name.strip():
+                # On abort, "no name yet" is the ordinary state of a call whose
+                # first chunks had not arrived — not a gateway violating the wire
+                # contract. Nothing downstream can route it, so drop it.
+                if aborted:
+                    dropped_partial += 1
+                    continue
+                # Which of the two failures this is decides whether the operator
+                # has anything to do about it, so say which. `saw_anthropic_shape`
+                # means the name IS on the wire, under the Anthropic keys — the
+                # gateway leaked its upstream schema, and there is a config field
+                # for exactly that. Without it the name is simply absent from every
+                # frame and nothing client-side can recover it.
+                if tc.saw_anthropic_shape:
+                    diagnosis = (
+                        "The call arrived in the Anthropic tool_use shape — a top-level "
+                        "`name`/`input` and no `function` object — so the name is on the "
+                        "wire under keys the OpenAI schema does not use. This is a "
+                        "gateway leaking its upstream schema; the fix belongs there. To "
+                        "read it anyway, state the endpoint's shape: set "
+                        '`compat.tool_call_schema: "anthropic"` on this model in '
+                        "~/.tau/config.json (with `stream: false` if its streamed "
+                        "responses drop the name too)."
+                    )
+                else:
+                    diagnosis = (
+                        "The provider or gateway never populated `function.name` on any "
+                        "chunk for this call, which violates the OpenAI tool-calling wire "
+                        "contract — a tool call must name the function to invoke."
+                    )
                 raise ValueError(
                     f"Tool call {tc.id!r} arrived with no function name "
-                    f"(model {model.id!r} at {self.base_url!r}). The provider or "
-                    "gateway never populated `function.name` on any chunk for this "
-                    "call, which violates the OpenAI tool-calling wire contract — "
-                    "a tool call must name the function to invoke. Refusing to "
+                    f"(model {model.id!r} at {self.base_url!r}). {diagnosis} Refusing to "
                     "execute a nameless call. Arguments received: "
                     f"{''.join(tc.arguments_parts)!r}"
                 )
@@ -1245,14 +1396,37 @@ class OpenAICompletionsProvider(Provider):
             # — raise (surfaced as an ErrorEvent) rather than fabricate args.
             if args_str.strip():
                 had_tool_call_with_args = True
-                args_dict, repaired = parse_json_with_repair_info(args_str)
+                try:
+                    args_dict, repaired = parse_json_with_repair_info(args_str)
+                except Exception:
+                    # Truncated mid-`arguments` by the abort. ``repair_json`` cannot
+                    # help here — it fixes control characters and bad escapes, not
+                    # an unterminated string — and there is nothing to recover: the
+                    # call was never issued, so dropping it loses no completed work.
+                    if not aborted:
+                        raise
+                    dropped_partial += 1
+                    continue
                 if repaired:
                     repairs += 1
                 if not isinstance(args_dict, dict):
+                    # Same rule for a buffer that parses but is not an object: on a
+                    # complete stream that is a model that emitted the wrong shape;
+                    # on an abort it is a fragment that happened to be valid JSON
+                    # on its own (`"pat` is not, but `123` would be).
+                    if aborted:
+                        dropped_partial += 1
+                        continue
                     raise ValueError(
                         f"Tool call {tc.id!r} ({tc.name!r}) arguments did not decode "
                         f"to a JSON object: {args_str!r}"
                     )
+            elif aborted:
+                # An empty buffer on an abort means the `arguments` had not started.
+                # Executing it with `{}` would invent an argument set the model
+                # never sent; on a complete stream `{}` is what the model MEANT.
+                dropped_partial += 1
+                continue
             else:
                 args_dict = {}
             content_blocks.append(ToolCall(id=tc.id, name=tc.name, arguments=args_dict))
@@ -1263,6 +1437,13 @@ class OpenAICompletionsProvider(Provider):
         # be a lie by omission-of-context, not a real "zero repairs" datum.
         if had_tool_call_with_args:
             usage = usage.model_copy(update={"extra": {**usage.extra, "repairs": repairs}})
+
+        # Only present when something was actually dropped, so a reader can tell
+        # "nothing was lost" from "this field is not reported here".
+        if dropped_partial:
+            usage = usage.model_copy(
+                update={"extra": {**usage.extra, "dropped_partial_tool_calls": dropped_partial}}
+            )
 
         # Determine stop_reason: use explicit value, or fall back to heuristic
         if stop_reason is None:
@@ -1502,11 +1683,25 @@ class OpenAICompletionsProvider(Provider):
                 state = _TransportState()
                 transport = (
                     self._stream_transport(
-                        client, payload, request_timeout, accum, state, model, abort_signal
+                        client,
+                        payload,
+                        request_timeout,
+                        accum,
+                        state,
+                        model,
+                        compat,
+                        abort_signal,
                     )
                     if stream_mode
                     else self._complete_transport(
-                        client, payload, request_timeout, accum, state, model, abort_signal
+                        client,
+                        payload,
+                        request_timeout,
+                        accum,
+                        state,
+                        model,
+                        compat,
+                        abort_signal,
                     )
                 )
                 async for event in transport:
@@ -1660,6 +1855,20 @@ class OpenAICompletionsProvider(Provider):
             is_error=True,
         )
 
+    def _apply_tool_call_schema(self, tc: dict, compat: ResolvedCompat, model: Model) -> dict:
+        """Return ``tc`` in the OpenAI tool-call schema, translating only if told to.
+
+        The default (`compat.tool_call_schema == "openai"`) returns the caller's
+        object unchanged — including when it is visibly Anthropic-shaped. τ reads
+        the schema the endpoint promised and reports the endpoint that breaks it;
+        the error in ``_build_final_message`` names the shape and the config field
+        that would accept it. Translating on sight instead would make a gateway bug
+        invisible to the operator who has to get it fixed.
+        """
+        if compat.tool_call_schema == "anthropic" and _looks_anthropic_shaped(tc):
+            return _tool_call_from_anthropic_shape(tc, model_id=model.id, base_url=self.base_url)
+        return tc
+
     async def _stream_transport(
         self,
         client: Any,
@@ -1668,6 +1877,7 @@ class OpenAICompletionsProvider(Provider):
         accum: _Accumulator,
         state: _TransportState,
         model: Model,
+        compat: ResolvedCompat,
         abort_signal: Any,
     ) -> AsyncIterator[Any]:
         """SSE transport: read `data:` frames and yield a delta event per fragment."""
@@ -1743,12 +1953,20 @@ class OpenAICompletionsProvider(Provider):
                 if chunk_timings:
                     state.timings_data = chunk_timings
 
-                choices = chunk.get("choices", [])
+                # `or []` rather than a `.get` default throughout this block: the
+                # default only applies when the key is ABSENT, and gateways send
+                # these keys present-and-null. An Azure-fronted deployment opens
+                # every stream with a content-filter preamble frame whose scalars
+                # are all null, and `for … in enumerate(None)` on the tool-call
+                # line below raised `TypeError: 'NoneType' object is not iterable`
+                # for every model on that gateway, tool call or not. Absent and
+                # null mean the same thing here — nothing in this frame.
+                choices = chunk.get("choices") or []
                 if not choices:
                     continue
 
                 choice = choices[0]
-                delta = choice.get("delta", {})
+                delta = choice.get("delta") or {}
                 finish_reason = choice.get("finish_reason")
                 choice_usage = choice.get("usage")
                 if choice_usage:
@@ -1780,9 +1998,21 @@ class OpenAICompletionsProvider(Provider):
                 # them. Route each fragment to its call by stream `index`
                 # (falling back to `id`), since follow-up argument fragments
                 # carry only the index.
-                deltas = delta.get("tool_calls", [])
-                for i, tc_delta in enumerate(deltas):
+                deltas = delta.get("tool_calls") or []
+                for i, raw_tc in enumerate(deltas):
+                    if not isinstance(raw_tc, dict):
+                        # Same guard, same reason, as the buffered transport's:
+                        # `_resolve_tool_call_block` would raise AttributeError into
+                        # the broad handler below, and a wire-contract violation would
+                        # surface as "the model said nothing".
+                        raise ValueError(
+                            f"Model {model.id!r} at {self.base_url!r} streamed a "
+                            f"non-object tool-call delta: {raw_tc!r}"
+                        )
+                    tc_delta = self._apply_tool_call_schema(raw_tc, compat, model)
                     block = _resolve_tool_call_block(accum, tc_delta, i)
+                    if tc_delta is raw_tc and _looks_anthropic_shaped(raw_tc):
+                        block.saw_anthropic_shape = True
                     func = tc_delta.get("function") or {}
                     tc_name = func.get("name") or ""
                     if tc_name:
@@ -1809,6 +2039,7 @@ class OpenAICompletionsProvider(Provider):
         accum: _Accumulator,
         state: _TransportState,
         model: Model,
+        compat: ResolvedCompat,
         abort_signal: Any,
     ) -> AsyncIterator[Any]:
         """Buffered transport: one `stream: false` completion, ADAPTED into deltas.
@@ -1931,13 +2162,16 @@ class OpenAICompletionsProvider(Provider):
         # the streaming fragments (so the id/index bookkeeping is identical) and
         # appended whole; concatenating one fragment is concatenating one fragment.
         tool_calls = message.get("tool_calls") or []
-        for i, tc in enumerate(tool_calls):
-            if not isinstance(tc, dict):
+        for i, raw_tc in enumerate(tool_calls):
+            if not isinstance(raw_tc, dict):
                 raise ValueError(
                     f"Non-streaming completion from model {model.id!r} at "
-                    f"{self.base_url!r} returned a non-object tool call: {tc!r}"
+                    f"{self.base_url!r} returned a non-object tool call: {raw_tc!r}"
                 )
+            tc = self._apply_tool_call_schema(raw_tc, compat, model)
             block = _resolve_tool_call_block(accum, tc, i)
+            if tc is raw_tc and _looks_anthropic_shaped(raw_tc):
+                block.saw_anthropic_shape = True
             func = tc.get("function") or {}
             tc_name = func.get("name") or ""
             if tc_name:

@@ -14,11 +14,16 @@ deliberately in several places.
 ```bash
 pip install ffwf-tau-coding-agent            # headless: the CLI, `tau -p`, `--mode rpc`
 pip install 'ffwf-tau-coding-agent[tui]'     # add the interactive TUI
+pip install ffwf-tau                         # the same thing, under the guessable name
 ```
 
 Python 3.11 or newer. Pulls in `ffwf-tau-agent-core`, and through it
-`ffwf-tau-llm`. Note the `ffwf-` prefix: `tau-llm` and `tau-ai` on PyPI are
-unrelated projects.
+`ffwf-tau-llm`. Note the `ffwf-` prefix: `tau`, `tau-llm`, and `tau-ai` on PyPI
+are unrelated projects.
+
+`ffwf-tau` is a metapackage holding no code; it depends on
+`ffwf-tau-coding-agent[tui]` and nothing else. Use it when you want one short
+name, and this distribution when you want to choose extras.
 
 | Extra | Adds | Needed for |
 |---|---|---|
@@ -59,7 +64,13 @@ picked up interactively later. `--no-session` means nothing is persisted.
 
 Flags worth knowing: `-m/--model`, `-t/--tools` and `-nt/--no-tools`,
 `-e/--extension PATH`, `--thinking {off,minimal,low,medium,high,xhigh}`,
-`-c/--continue`, `--session REF`, `--fork REF`, `--store {file,jmfts}`.
+`--max-turns N`, `-c/--continue`, `--session REF`, `--fork REF`,
+`--store {file,jmfts}`.
+
+**There is no turn limit by default.** An agent run ends when the model stops
+calling tools, a tool terminates it, an extension's budget guard aborts it, or
+you press Escape. `--max-turns N` adds a ceiling for one run, and
+`"max_turns": N` in `~/.tau/config.json` sets a standing one.
 
 ## Configure
 

@@ -94,7 +94,7 @@ def _third_party_imports(pkg: str) -> set[str]:
     import sys
 
     stdlib = set(sys.stdlib_module_names)
-    local = {"tau_llm", "tau_agent_core", "tau_coding_agent", "tau_jmfts"}
+    local = {"tau_llm", "tau_agent_core", "tau_coding_agent", "tau_jmfts", "tau_meta"}
     found: set[str] = set()
     for path in (REPO / pkg / "src").rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text())):
@@ -110,7 +110,7 @@ def _third_party_imports(pkg: str) -> set[str]:
     return found
 
 
-@pytest.mark.parametrize("pkg", [*PACKAGES, "tau-jmfts"])
+@pytest.mark.parametrize("pkg", [*PACKAGES, "tau-jmfts", "tau-meta"])
 def test_every_imported_third_party_module_is_declared(pkg):
     """A module imported at package scope but absent from `dependencies` is an
     install that succeeds and then fails on `import`. τ shipped exactly that
@@ -134,12 +134,17 @@ def test_every_imported_third_party_module_is_declared(pkg):
 # -- version, and the one place it is written ------------------------------
 
 #: Every distribution in this tree, and the module whose ``__version__`` is its
-#: version. They release in lockstep: one ``--version`` number, four wheels.
+#: version. They release in lockstep: one ``--version`` number, five wheels.
+#:
+#: ``tau-meta`` is the ``ffwf-tau`` metapackage. It ships no functional code, and
+#: ``tau_meta`` exists only to hold its version literal — which is why it belongs
+#: in this mapping rather than being exempted from it.
 DISTRIBUTIONS = {
     "tau-llm": "tau_llm",
     "tau-agent-core": "tau_agent_core",
     "tau-coding-agent": "tau_coding_agent",
     "tau-jmfts": "tau_jmfts",
+    "tau-meta": "tau_meta",
 }
 
 
@@ -184,7 +189,7 @@ def test_each_distribution_takes_its_version_from_its_package(pkg, module):
     assert attr == f"{module}.__version__", attr
 
 
-def test_all_four_distributions_carry_the_same_version():
+def test_all_distributions_carry_the_same_version():
     """They are built from one tree, tested only against each other, and installed
     together by every extra in this repo. A mixed set is a combination nothing here
     has run, so the numbers must agree."""
@@ -211,7 +216,7 @@ def _all_requirements(pkg: str) -> list[str]:
 
 @pytest.mark.parametrize("pkg", sorted(DISTRIBUTIONS))
 def test_in_repo_requirements_are_pinned_to_the_lockstep_version(pkg):
-    """``==``, not ``>=``. These four are built from one tree and tested only
+    """``==``, not ``>=``. These are built from one tree and tested only
     against each other, so any other combination is untested -- a later
     ``ffwf-tau-agent-core`` must not resolve against this coding-agent.
 
@@ -245,6 +250,46 @@ def test_every_distribution_ships_the_licence(pkg):
     shipped = (REPO / pkg / "LICENSE").read_text()
     assert shipped == (REPO / "LICENSE").read_text(), f"{pkg}/LICENSE differs from the root LICENSE"
     assert "Fight Fire with Fire Robotics, LLC" in shipped
+
+
+# -- the metapackage --------------------------------------------------------
+
+
+def test_the_metapackage_resolves_to_the_tui_install_and_nothing_else():
+    """``pip install ffwf-tau`` must be one decision, made here.
+
+    The name exists because people type it: before it was published, that command
+    failed with "could not find a version that satisfies the requirement", which
+    reads as a Python-version or index problem and is neither. Having claimed the
+    name, what it installs is a promise -- ``tau`` with the interface it needs to
+    start, and nothing that needs a server.
+
+    A second dependency added here is a package every casual install silently
+    grows. That is the change this test is here to make deliberate.
+    """
+    project = tomllib.loads((REPO / "tau-meta/pyproject.toml").read_text())["project"]
+    version = _declared_version("tau_coding_agent")
+    assert project["dependencies"] == [f"ffwf-tau-coding-agent[tui]=={version}"]
+    assert "optional-dependencies" not in project, (
+        "the metapackage grew an extra; an extra on a name that installs another "
+        "package's extra is two indirections to document and one to get wrong."
+    )
+
+
+def test_the_metapackage_ships_no_functional_code():
+    """It is a name, not a library. ``tau_meta`` holds the version literal so that
+    the wheel reads its number from a package attribute like the other four; the
+    moment it holds anything else, ``ffwf-tau`` is a fifth thing to maintain rather
+    than an alias, and the README's claim that it "contains no code" is false."""
+    src = REPO / "tau-meta/src/tau_meta"
+    assert sorted(p.name for p in src.iterdir() if p.is_file()) == ["__init__.py"]
+
+    body = (src / "__init__.py").read_text()
+    import ast
+
+    statements = [n for n in ast.parse(body).body if not isinstance(n, ast.Expr)]
+    assert len(statements) == 1, f"tau_meta/__init__.py does more than declare a version: {body}"
+    assert isinstance(statements[0], ast.Assign)
 
 
 def test_the_tarball_stages_every_file_the_metadata_points_at():
@@ -318,10 +363,10 @@ def _ci_python_matrix() -> list[str]:
     return re.findall(r'"([^"]+)"', match.group(1))
 
 
-def test_the_four_packages_claim_one_python_floor():
-    """``requires-python`` is what pip enforces at install time, and the four are
+def test_the_packages_claim_one_python_floor():
+    """``requires-python`` is what pip enforces at install time, and they are
     installed together by every extra here. A package that quietly raised its
-    floor would resolve out of an environment the other three accepted."""
+    floor would resolve out of an environment the others accepted."""
     floors = {
         pkg: _requires_python_floor(REPO / pkg / "pyproject.toml") for pkg in DISTRIBUTIONS
     }

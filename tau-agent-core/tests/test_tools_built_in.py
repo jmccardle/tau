@@ -19,6 +19,7 @@ Reference: PHASE-2-SUBPHASE-3.md, "Testing Strategy" section.
 
 import asyncio
 import contextlib
+import inspect
 import os
 import signal
 import sys
@@ -75,12 +76,16 @@ class TestToolCreation:
         assert set(t.name for t in coding) == set(t.name for t in all_tools)
 
     def test_all_tools_are_async(self):
-        """All tools are async (execute returns coroutine or awaitable)."""
+        """All tools are async (execute returns coroutine or awaitable).
+
+        ``inspect`` and not ``asyncio``: `asyncio.iscoroutinefunction` is
+        deprecated from 3.14 and slated for removal in 3.16, and it was the only
+        thing making the release matrix's 3.14 output differ from its 3.11
+        control. The two answer the same question on every version τ supports.
+        """
         tools = create_all_tools("/tmp")
         for tool in tools:
-            assert asyncio.iscoroutinefunction(tool.execute) or (
-                hasattr(tool, "execute") and asyncio.iscoroutinefunction(tool.execute)
-            )
+            assert inspect.iscoroutinefunction(tool.execute), tool.name
 
 
 # ============================================================================

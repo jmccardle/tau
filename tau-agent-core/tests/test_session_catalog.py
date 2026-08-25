@@ -107,13 +107,45 @@ class _InMemoryConversationSession:
         self._touch()
         return self._log.append_custom_entry(custom_type, data)
 
-    def append_compaction(self, summary: str, first_kept_id: str, tokens_before: int) -> str:
+    def append_compaction(
+        self,
+        summary: str,
+        first_kept_id: str,
+        tokens_before: int,
+        *,
+        summarizer_model_id: str,
+        summary_usage: dict[str, int],
+        covered_entries: int,
+        covered_tokens: int,
+        agent_spec_id: str | None,
+    ) -> str:
         self._touch()
-        return self._log.append_compaction(summary, first_kept_id, tokens_before)
+        return self._log.append_compaction(
+            summary,
+            first_kept_id,
+            tokens_before,
+            summarizer_model_id=summarizer_model_id,
+            summary_usage=summary_usage,
+            covered_entries=covered_entries,
+            covered_tokens=covered_tokens,
+            agent_spec_id=agent_spec_id,
+        )
 
-    def append_elide(self, first_kept_id: str) -> str:
+    def append_elide(
+        self,
+        first_kept_id: str,
+        *,
+        covered_entries: int,
+        covered_tokens: int,
+        agent_spec_id: str | None,
+    ) -> str:
         self._touch()
-        return self._log.append_elide(first_kept_id)
+        return self._log.append_elide(
+            first_kept_id,
+            covered_entries=covered_entries,
+            covered_tokens=covered_tokens,
+            agent_spec_id=agent_spec_id,
+        )
 
     def append_navigate(self, target_id: str | None) -> str:
         self._touch()

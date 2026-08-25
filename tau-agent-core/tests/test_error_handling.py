@@ -481,7 +481,21 @@ def test_provider_error_propagates_uncaught_through_session_prompt():
 
     This is the specific behaviour the old file's docstring claimed
     ("error event -> error message in chat") and never actually tested.
-    Reported, not fixed: no ``src/`` file is touched by this suite.
+
+    **The persistence half of this test was wrong and is inverted (2026-08-24).**
+    It used to assert ``session.messages == []`` with the comment "The turn never
+    completed, so nothing was persisted either." That reads as a description and
+    was in fact a defect being pinned: the turn's messages were persisted in one
+    batch *after* ``loop.run`` returned, so a raise skipped every append — the
+    user's own prompt included. This test was written about a 503 and the user hit
+    it with ``Esc``, which is docs/PLAN-0.9.4.md §3.
+
+    A 503 mid-turn keeps the completed messages for the same reason an abort does:
+    "the turn failed" is not a reason to discard what the user typed. What is
+    asserted here is only the user message, because a provider that errors before
+    any assistant message completes has produced nothing else;
+    ``test_abort_persistence.py`` covers the case where a tool result exists to
+    keep.
     """
     with patch(
         "tau_agent_core.agent_loop.stream_simple",
@@ -490,8 +504,8 @@ def test_provider_error_propagates_uncaught_through_session_prompt():
         session = _session()
         with pytest.raises(RuntimeError, match="upstream 503"):
             asyncio.run(session.prompt("hello"))
-        # The turn never completed, so nothing was persisted either.
-        assert session.messages == []
+        roles = [m.get("role") if isinstance(m, dict) else m.role for m in session.messages]
+        assert roles == ["user"]
 
 
 # ---------------------------------------------------------------------------

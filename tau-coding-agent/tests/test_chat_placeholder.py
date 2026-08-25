@@ -16,9 +16,13 @@ test and they are separable:
    which is why every public entry point gets its own case below.
 
 The ``--fun`` cases pin the containment promise: the flag reaches one string and
-stops. ``FUN_DEFAULT`` is asserted ``False`` in the source tree because the whole
-snapshot suite silently depends on it — a checkout that shipped ``True`` would
-turn every rendered scene into a coin flip.
+stops. They also pin the packaging invariant that replaced a build-time rewrite:
+``FUN_DEFAULT`` is ``True`` in the source, identically in a checkout and in every
+built artifact, and the deterministic surfaces stay deterministic by *asking* for
+``fun=False`` rather than inheriting whatever the default happens to be. The old
+arrangement — ``False`` in source, ``sed``-flipped to ``True`` by ``package.sh``
+— shipped the developer default in every PyPI wheel, because ``publish.yml``
+builds those without ever running ``package.sh``.
 """
 
 from __future__ import annotations
@@ -295,28 +299,48 @@ def test_fun_on_eventually_picks_something_other_than_the_first():
     assert picks <= set(TAGLINES)
 
 
-def test_fun_default_is_off_in_the_source_tree():
-    """A checkout that shipped ``True`` would make every rendered scene a coin flip.
+def test_fun_default_is_on_in_the_source_tree():
+    """The value a packaged user gets, asserted where it is actually written.
 
-    ``package.sh`` flips this in the STAGED copy only.
+    This is the whole fix for "``--fun`` never reaches anyone who installed τ":
+    the default lives in the source, so every artifact carries it — the GitHub
+    tarball from ``package.sh``, the five PyPI wheels from ``python -m build``,
+    and an editable checkout alike.
     """
-    assert FUN_DEFAULT is False
+    assert FUN_DEFAULT is True
 
-
-def test_package_sh_sed_target_still_matches_the_source_line():
-    """package.sh rewrites this literal by exact text. Keep the two in step.
-
-    package.sh already fails loudly when the substitution misses, so this test is
-    the early warning rather than the only guard — it fails in the suite instead
-    of at release time.
-    """
     source = Path(__file__).resolve().parents[1] / "src" / "tau_coding_agent" / "tagline.py"
-    assert "\nFUN_DEFAULT = False\n" in source.read_text()
+    assert "\nFUN_DEFAULT = True\n" in source.read_text()
 
-    package_sh = Path(__file__).resolve().parents[2] / "package.sh"
-    body = package_sh.read_text()
-    assert "s/^FUN_DEFAULT = False$/FUN_DEFAULT = True/" in body
-    assert "FUN_DEFAULT = True" in body  # the verification grep
+
+def test_no_build_path_rewrites_the_fun_default():
+    """No build step may patch this default in — that is how it got lost before.
+
+    ``package.sh`` used to ``sed`` ``FUN_DEFAULT`` on in its staged copy, which
+    left the PyPI wheels (built by ``publish.yml``, straight from source) with
+    the developer default. Any rewrite reintroduced in either build path has the
+    same shape, so neither file may mention the name at all.
+    """
+    root = Path(__file__).resolve().parents[2]
+    for build_file in (root / "package.sh", root / ".github" / "workflows" / "publish.yml"):
+        assert build_file.exists(), build_file
+        for line in build_file.read_text().splitlines():
+            if line.lstrip().startswith("#"):
+                continue  # the comments explain why the rewrite is gone
+            assert "FUN_DEFAULT" not in line, f"{build_file.name}: {line}"
+
+
+def test_deterministic_surfaces_name_their_own_fun_rather_than_inheriting_it():
+    """``Parley``'s default is the literal ``False``, not :data:`FUN_DEFAULT`.
+
+    The snapshot suite, ``testing.scenes`` and ``devshot`` all construct a
+    ``Parley`` without saying ``fun``, so this signature IS their determinism.
+    Wiring it to ``FUN_DEFAULT`` would make every rendered scene a coin flip.
+    """
+    import inspect
+
+    default = inspect.signature(Parley.__init__).parameters["fun"].default
+    assert default is False
 
 
 async def test_parley_defaults_to_the_deterministic_tagline_regardless_of_packaging(make_app):
@@ -343,17 +367,18 @@ async def test_fun_true_reaches_the_pane_and_nothing_else(tau_home, monkeypatch)
         assert isinstance(app._tagline, str)
 
 
-def test_cli_default_follows_the_packaged_default():
-    """``tau`` with no flag takes whatever this tree was built as."""
+def test_cli_default_is_the_packaged_default_and_it_is_on():
+    """``tau`` with no flag is fun, and cli.py is the only reader of that value."""
     from tau_coding_agent.cli import parse_cli_args
 
     assert parse_cli_args([]).fun is FUN_DEFAULT
+    assert parse_cli_args([]).fun is True
 
 
 def test_cli_can_turn_fun_on_and_off_explicitly():
     """Both directions are expressible, which is why this is the flag set's one
-    paired boolean: a release defaults it ON, so ``--no-fun`` is how a packaged
-    user gets a reproducible screen back."""
+    paired boolean: it defaults ON, so ``--no-fun`` is how anyone — a user, or a
+    developer reproducing a scene — gets a fixed screen back."""
     from tau_coding_agent.cli import parse_cli_args
 
     assert parse_cli_args(["--fun"]).fun is True

@@ -33,6 +33,7 @@ from textual.widgets._markdown import MarkdownBlock
 
 from tau_agent_core.submission import SubmissionResult
 from tau_coding_agent.app import ChatDisplay, MessageBox
+from tau_coding_agent.backends import DEFAULT_LANE
 from tau_coding_agent.chat_widgets import ExchangeBox, ToolBox
 
 # ---------------------------------------------------------------------------
@@ -62,13 +63,30 @@ def _top_level(display: ChatDisplay) -> list:
 async def _send(display: ChatDisplay, pilot, event: dict) -> None:
     """Deliver one lifecycle event, then yield a render tick.
 
-    The live loop is network-paced: every agent event is separated by an await
-    (a stream chunk or a tool execution), so Textual settles pending mounts
-    between events. Pausing here mirrors that cadence — without it the test
-    would fire a synchronous burst the real backend never produces.
+    This is the PACED cadence: a tick between every event. It is one of the two
+    cadences the live loop really produces, and it is the easy one.
+
+    The other is a synchronous burst, and this helper used to carry a comment
+    claiming the real backend never produces one. That was wrong, and it is why
+    a deterministic bug (§2a) shipped with no failing test: ``asyncio.Queue.get``
+    on a non-empty queue returns without yielding, so the agent loop hands
+    several events to the display back to back with no event-loop tick between
+    them. Burst coverage lives in ``_send_burst`` below; use it for anything that
+    touches mounting.
     """
     await display.handle_stream_event(event)
     await pilot.pause()
+
+
+async def _send_burst(display: ChatDisplay, events: list[dict]) -> None:
+    """Deliver several lifecycle events with NO render tick between them.
+
+    Mirrors the agent loop draining a queue that already has events in it. The
+    caller pauses afterwards, which is when Textual settles the mounts these
+    events queued.
+    """
+    for event in events:
+        await display.handle_stream_event(event)
 
 
 async def _fresh_parse_blocks(pilot, text: str) -> list[str]:
@@ -119,7 +137,7 @@ async def _replay_tool_turn(display: ChatDisplay, pilot) -> None:
     await _send(display, pilot, {"kind": "text_delta", "delta": "There are "})
     await _send(display, pilot, {"kind": "text_delta", "delta": "two files."})
 
-    await display.finalize_exchange(tokens=12, seconds=6)
+    await display.finalize_exchange(context=900, output=12, seconds=6)
 
 
 async def test_exchange_groups_tools_and_promotes_final_answer():
@@ -140,7 +158,7 @@ async def test_exchange_groups_tools_and_promotes_final_answer():
 
         exchange = top[1]
         assert exchange.collapsed is True
-        assert "1 tool" in exchange.title and "tok" in exchange.title
+        assert "1 tool" in exchange.title and "out" in exchange.title
 
         # The preamble step lives INSIDE the exchange with its tool folded in.
         step_boxes = list(exchange.query(MessageBox))
@@ -196,7 +214,7 @@ async def test_trivial_exchange_unwrapped_to_plain_answer():
         await display.begin_exchange()
         await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
         await _send(display, pilot, {"kind": "text_delta", "delta": "hello"})
-        await display.finalize_exchange(tokens=3, seconds=1)
+        await display.finalize_exchange(context=400, output=3, seconds=1)
         await pilot.pause()
 
         assert list(display.query(ExchangeBox)) == []
@@ -204,7 +222,7 @@ async def test_trivial_exchange_unwrapped_to_plain_answer():
         answer = list(display.query(MessageBox))[-1]
         assert answer.content_text == "hello"
         # Real token + duration are surfaced on the answer (no summary line here).
-        assert answer._subtitle == "3 tok · 0:01"
+        assert answer._subtitle == "400 ctx · 3 out · 0:01"
 
 
 async def test_reasoning_streams_into_step_and_collapses_on_text():
@@ -226,7 +244,7 @@ async def test_reasoning_streams_into_step_and_collapses_on_text():
         await _send(display, pilot, {"kind": "text_delta", "delta": "The answer is 4."})
         assert step.reasoning.collapsed is True  # answer began -> reasoning folds
 
-        await display.finalize_exchange(tokens=5, seconds=1)
+        await display.finalize_exchange(context=400, output=5, seconds=1)
         await pilot.pause()
 
         # No tools -> unwrapped to a single answer box that carries the reasoning.
@@ -236,6 +254,186 @@ async def test_reasoning_streams_into_step_and_collapses_on_text():
         assert answer.reasoning is not None
         assert answer.reasoning.text == "Let me think. 2+2=4."
         assert answer.reasoning.collapsed is True
+
+
+def _rendered_text(widget) -> str:
+    """The text actually parsed into ``widget``'s Markdown blocks.
+
+    Deliberately not ``region.text``/``box.content_text`` — those read the
+    buffer, which was full the whole time §2a was losing everything. Only the
+    block tree says a token reached the screen.
+    """
+    return "".join(b._content.plain for b in widget.query(MarkdownBlock))
+
+
+# ---------------------------------------------------------------------------
+# §2a: mounting under a synchronous burst.
+#
+# Every test above paces its events with a render tick. These do not, because
+# the live loop does not: `_start_step` mounts the step fire-and-forget and the
+# agent loop drains its queue without yielding, so the first reasoning delta or
+# tool call of a turn arrives before the step box has composed. Before the fix
+# `MessageBox.ensure_reasoning` mounted into a slot `compose()` had not created
+# yet, raised `AttributeError` — swallowed by `EventBus.emit` and misreported as
+# an extension error — and left `self._reasoning` pointing at a region that was
+# never mounted, so every later delta accumulated into a widget nobody could see.
+# ---------------------------------------------------------------------------
+
+
+async def test_reasoning_burst_before_the_step_composes_still_renders():
+    """The reported §2a bug: 0 of 28 reasoning tokens reached the screen."""
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.begin_exchange()
+        await pilot.pause()
+
+        # turn_start and the first deltas in one burst — no tick anywhere.
+        await _send_burst(
+            display,
+            [{"kind": "turn_start", "turn_index": 0}]
+            + [{"kind": "reasoning_delta", "delta": f"t{i} "} for i in range(8)],
+        )
+        await pilot.pause()
+
+        step = display.active_step()
+        assert step is not None and step.reasoning is not None
+        assert step.reasoning.is_mounted, "the region was created but never mounted"
+        assert _rendered_text(step.reasoning) == "t0 t1 t2 t3 t4 t5 t6 t7"
+
+        # Paced deltas after the burst keep landing in the same region.
+        for i in range(8, 12):
+            await _send(display, pilot, {"kind": "reasoning_delta", "delta": f"t{i} "})
+        assert _rendered_text(step.reasoning) == "t0 t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11"
+        assert step.reasoning.text == "".join(f"t{i} " for i in range(12))
+
+
+async def test_a_reasoning_burst_reports_no_error():
+    """The AttributeError was swallowed and blamed on an extension, so assert on
+    the raise itself: handle_stream_event must not throw under a burst."""
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.begin_exchange()
+        await pilot.pause()
+        await _send_burst(
+            display,
+            [
+                {"kind": "turn_start", "turn_index": 0},
+                {"kind": "reasoning_delta", "delta": "think"},
+            ],
+        )
+        await pilot.pause()
+
+
+async def test_text_burst_before_the_step_composes_still_renders():
+    """The text body already buffered pre-compose; this pins that it still does,
+    since the reasoning fix routes through the same on_mount catch-up."""
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.begin_exchange()
+        await pilot.pause()
+        await _send_burst(
+            display,
+            [
+                {"kind": "turn_start", "turn_index": 0},
+                {"kind": "text_delta", "delta": "The answer "},
+                {"kind": "text_delta", "delta": "is 4."},
+            ],
+        )
+        await pilot.pause()
+        step = display.active_step()
+        assert step is not None
+        assert _rendered_text(step._md_widget) == "The answer is 4."
+
+
+async def test_reasoning_then_text_in_one_burst_both_render():
+    """Both slots used before compose(), in the order the live path produces.
+
+    The whole turn arriving at once means the answer folds the reasoning away
+    before the region has mounted, so the region mounts already-collapsed and
+    D1's deferred parse applies: nothing is in its block tree while it is shut,
+    and expanding it renders the buffer. That is the same end state the paced
+    path reaches by a different route, and it is what the reader sees.
+    """
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.begin_exchange()
+        await pilot.pause()
+        await _send_burst(
+            display,
+            [
+                {"kind": "turn_start", "turn_index": 0},
+                {"kind": "reasoning_delta", "delta": "2+2 is 4."},
+                {"kind": "text_delta", "delta": "The answer is 4."},
+            ],
+        )
+        await pilot.pause()
+        step = display.active_step()
+        assert step is not None and step.reasoning is not None
+        assert step.reasoning.is_mounted
+        assert _rendered_text(step._md_widget) == "The answer is 4."
+        assert step.reasoning.collapsed is True  # answer began -> reasoning folds
+        assert step.reasoning.text == "2+2 is 4."
+
+        step.reasoning.collapsed = False  # the reader opens it
+        await pilot.pause()
+        assert _rendered_text(step.reasoning) == "2+2 is 4."
+
+
+async def test_tool_call_and_result_in_one_burst_both_render():
+    """``add_tool_call`` had the identical slot bug one method down, and the
+    result body is lost if ``ToolBox.set_result`` runs before the box mounts —
+    so buffering the box without buffering its result would trade a crash for
+    silent data loss."""
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.begin_exchange()
+        await pilot.pause()
+        await _send_burst(
+            display,
+            [
+                {"kind": "turn_start", "turn_index": 0},
+                {"kind": "tool_call", "id": "c1", "name": "ls", "arguments": {"path": "."}},
+                {"kind": "tool_result", "id": "c1", "name": "ls", "result": "a.py\nb.py"},
+            ],
+        )
+        await pilot.pause()
+        boxes = list(display.query(ToolBox))
+        assert len(boxes) == 1
+        box = boxes[0]
+        assert box.is_mounted
+        assert box.has_result
+        assert box.title == "✓ ls(path=.)"
+        assert "a.py\nb.py" in _rendered_text(box._result_md)
+
+
+async def test_a_deferred_tool_result_survives_an_error_and_a_block():
+    """The error and veto branches write the body through the same buffer."""
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.begin_exchange()
+        await pilot.pause()
+        await _send_burst(
+            display,
+            [
+                {"kind": "turn_start", "turn_index": 0},
+                {"kind": "tool_call", "id": "c1", "name": "ls", "arguments": {}},
+                {"kind": "tool_result", "id": "c1", "result": "boom", "is_error": True},
+                {"kind": "tool_call", "id": "c2", "name": "rm", "arguments": {}},
+                {"kind": "tool_result", "id": "c2", "result": "nope", "blocked": True},
+            ],
+        )
+        await pilot.pause()
+        errored, blocked = list(display.query(ToolBox))
+        assert "boom" in _rendered_text(errored._result_md)
+        assert errored.has_class("box-error")
+        assert "nope" in _rendered_text(blocked._result_md)
+        assert blocked.has_class("box-blocked")
 
 
 async def test_streamed_rendering_matches_full_parse_across_awkward_deltas():
@@ -302,7 +500,7 @@ async def test_streamed_rendering_matches_full_parse_across_awkward_deltas():
         assert len(streamed_reasoning_blocks) == 2
         assert len(streamed_answer_blocks) == 2
 
-        await display.finalize_exchange(tokens=5, seconds=1)
+        await display.finalize_exchange(context=400, output=5, seconds=1)
         await pilot.pause()
 
 
@@ -313,7 +511,7 @@ async def test_empty_terminal_turn_leaves_nothing():
         display = pilot.app.query_one(ChatDisplay)
         await display.begin_exchange()
         await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
-        await display.finalize_exchange(tokens=0, seconds=0)
+        await display.finalize_exchange(context=0, output=0, seconds=0)
         await pilot.pause()
         assert _box_roles(display) == []
         assert list(display.query(ExchangeBox)) == []
@@ -335,7 +533,7 @@ async def test_tool_only_final_turn_keeps_collapsed_exchange():
             pilot,
             {"kind": "tool_result", "id": "c1", "name": "ls", "result": "x", "is_error": False},
         )
-        await display.finalize_exchange(tokens=4, seconds=1)
+        await display.finalize_exchange(context=400, output=4, seconds=1)
         await pilot.pause()
 
         exchanges = list(display.query(ExchangeBox))
@@ -557,7 +755,7 @@ async def test_reload_reconstructs_exchange_like_live():
 
         exchange = top[1]
         assert exchange.collapsed is True
-        assert "1 tool" in exchange.title and "tok" in exchange.title
+        assert "1 tool" in exchange.title and "out" in exchange.title
         # No fabricated duration on reload — the title has no 'M:SS' segment.
         assert ":" not in exchange.title
 
@@ -568,13 +766,16 @@ async def test_reload_reconstructs_exchange_like_live():
         assert len(tools) == 1 and tools[0].has_result is True
 
 
-async def test_reload_aggregates_tokens_across_span():
-    """The exchange summary sums each completion's persisted usage.total_tokens."""
+async def test_reload_sums_output_but_takes_context_from_the_last_completion():
+    """Reload mirrors the live path: ``output`` sums across the span, ``context``
+    is the LAST completion's prompt. Summing prompts would report 100 + 500 = 600
+    for a conversation that only ever reached 500 tokens, which is the
+    running-total overcount this replaced."""
     messages = [
         {"role": "user", "content": "go"},
         {
             "role": "assistant",
-            "usage": {"total_tokens": 30},
+            "usage": {"input_tokens": 100, "output_tokens": 30, "total_tokens": 130},
             "content": [{"type": "toolCall", "id": "c1", "name": "ls", "arguments": {}}],
         },
         {
@@ -586,7 +787,12 @@ async def test_reload_aggregates_tokens_across_span():
         },
         {
             "role": "assistant",
-            "usage": {"total_tokens": 12},
+            "usage": {
+                "input_tokens": 400,
+                "cache_read_tokens": 100,
+                "output_tokens": 12,
+                "total_tokens": 512,
+            },
             "content": [{"type": "text", "text": "done"}],
         },
     ]
@@ -596,7 +802,9 @@ async def test_reload_aggregates_tokens_across_span():
         await display.reload_messages(messages)
         await pilot.pause()
         exchange = display.query_one(ExchangeBox)
-        assert "42 tok" in exchange.title  # 30 + 12, summed across the span
+        # 30 + 12 generated; context is 400 + 100 cached, NOT 100 + 500 summed.
+        assert "500 ctx" in exchange.title
+        assert "42 out" in exchange.title
 
 
 async def test_reload_consolidates_legacy_bloated_blocks():
@@ -914,3 +1122,458 @@ async def test_stream_chat_usage_includes_tokens_spent_off_the_agent_loop():
 
     # And the price the user sees follows: $1/token here, so 6215 tokens != 15.
     assert usage["cost_usd"] == pytest.approx(6215.0)
+
+
+# ---------------------------------------------------------------------------
+# §1 + §2b: the render cap, and the batched reload.
+#
+# Both symptoms in docs/PLAN-0.9.4.md — "long conversations take a long time to
+# load" and "text accumulates but doesn't display" — are one defect: Textual
+# re-arranges the WHOLE widget tree on every layout pass, so cost is quadratic
+# in the mounted widget count. An 800-message reload took over four minutes and
+# throttled the next turn to a couple of tokens a second.
+#
+# Two levers, tested here structurally rather than by wall-clock: bound the
+# mounted widgets (the cap), and stop re-arranging between every mount (the
+# batch). A timing assertion would be flaky on a loaded machine; the widget
+# count and the layout-pass count are the things that actually cause the time.
+# ---------------------------------------------------------------------------
+
+
+def _transcript(turns: int, *, system: bool = True) -> list[dict]:
+    """``turns`` user→assistant pairs, optionally behind a system message."""
+    msgs: list[dict] = [{"role": "system", "content": "s"}] if system else []
+    for i in range(turns):
+        msgs.append({"role": "user", "content": f"q{i}"})
+        msgs.append({"role": "assistant", "content": [{"type": "text", "text": f"a{i}"}]})
+    return msgs
+
+
+def _fold_rows(display: ChatDisplay) -> list:
+    return list(display.query(".chat-fold"))
+
+
+def _count_layouts(app: App) -> "list[int]":
+    """Start counting the screen's full layout passes. Returns a 1-item list."""
+    count = [0]
+    original = app.screen._refresh_layout
+
+    def counting(*args, **kwargs):
+        count[0] += 1
+        return original(*args, **kwargs)
+
+    app.screen._refresh_layout = counting  # type: ignore[method-assign]
+    return count
+
+
+def test_render_cap_stops_at_whichever_bound_comes_first():
+    """Walking backwards, the bound that cuts MORE is the one reached first."""
+    display = ChatDisplay()
+    # 20 short turns: the 4-turn bound bites long before the 50-message one.
+    msgs = _transcript(20)
+    start = display.render_cap_start(msgs)
+    assert [m["role"] for m in msgs[start:]].count("user") == ChatDisplay.RENDER_CAP_TURNS
+
+    # One turn per 20 messages: now the MESSAGE bound bites first, and the start
+    # is still a user message, so no user→answer span is cut in half.
+    fat: list[dict] = []
+    for i in range(10):
+        fat.append({"role": "user", "content": f"q{i}"})
+        fat += [{"role": "assistant", "content": []} for _ in range(19)]
+    start = display.render_cap_start(fat)
+    assert fat[start]["role"] == "user"
+    assert len(fat) - start <= ChatDisplay.RENDER_CAP_MESSAGES
+
+
+def test_a_short_transcript_is_not_capped_at_all():
+    display = ChatDisplay()
+    assert display.render_cap_start(_transcript(3)) == 0
+
+
+def test_one_span_longer_than_the_bound_is_mounted_whole():
+    """Rendering nothing is not a smaller version of rendering something.
+
+    A single turn with 80 tool results exceeds the message bound on its own.
+    Snapping forward to the next user message would leave the display empty, so
+    the span mounts whole and the bound is the thing that gives.
+    """
+    display = ChatDisplay()
+    msgs: list[dict] = [{"role": "user", "content": "q"}]
+    msgs += [{"role": "assistant", "content": []} for _ in range(80)]
+    assert display.render_cap_start(msgs) == 0
+
+
+def test_a_transcript_with_no_user_message_is_mounted_whole():
+    display = ChatDisplay()
+    assert display.render_cap_start([{"role": "assistant", "content": []}] * 90) == 0
+
+
+async def test_a_capped_reload_mounts_the_tail_and_says_what_it_left_out():
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        msgs = _transcript(30)
+        await display.reload_messages(msgs)
+        await pilot.pause()
+
+        # 4 turns => 8 boxes, whatever the transcript length is.
+        assert len(display.query(MessageBox)) == 2 * ChatDisplay.RENDER_CAP_TURNS
+        assert _box_texts(display)[-1] == "a29", "the tail is the END of the transcript"
+
+        # The system message never renders, so it is not counted as hidden.
+        assert display.elided_count == 60 - 2 * ChatDisplay.RENDER_CAP_TURNS
+        rows = _fold_rows(display)
+        assert len(rows) == 1
+        assert f"⋯ {display.elided_count} earlier" in str(rows[0].content)
+        assert display.children[0] is rows[0], "the row stands where the messages would"
+
+
+async def test_the_cap_bounds_widgets_but_not_the_message_list():
+    """Fail Early: this is a RENDERING bound. Nothing may leave the data.
+
+    The list handed in is not copied, not sliced and not mutated — the display
+    keeps the caller's own object, which is what lets `show_all_messages` render
+    the rest without a second source of truth to fall out of step.
+    """
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        msgs = _transcript(30)
+        before = list(msgs)
+        await display.reload_messages(msgs)
+        await pilot.pause()
+        assert msgs == before
+        assert display._reload_source is msgs
+
+
+async def test_the_mounted_widget_count_does_not_grow_with_the_transcript():
+    """The quadratic's input, held flat. This is why the cap exists."""
+    counts = []
+    for turns in (10, 40, 160):
+        async with _Harness().run_test() as pilot:
+            await pilot.pause()
+            display = pilot.app.query_one(ChatDisplay)
+            await display.reload_messages(_transcript(turns))
+            await pilot.pause()
+            counts.append(len(display.query("*")))
+    assert counts[0] == counts[1] == counts[2]
+
+
+async def test_showing_everything_mounts_the_rest_and_drops_the_row():
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.reload_messages(_transcript(30))
+        await pilot.pause()
+        assert display.elided_count
+
+        await display.show_all_messages()
+        await pilot.pause()
+        assert len(display.query(MessageBox)) == 60
+        assert _box_texts(display)[0] == "q0"
+        assert display.elided_count == 0
+        assert _fold_rows(display) == []
+
+
+async def test_showing_everything_is_a_no_op_when_nothing_was_left_out():
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.reload_messages(_transcript(2))
+        await pilot.pause()
+        await display.show_all_messages()
+        await pilot.pause()
+        assert len(display.query(MessageBox)) == 4
+
+
+async def test_a_second_capped_reload_does_not_leave_the_old_row_behind():
+    """A stale row would keep claiming a count for a transcript that is gone."""
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.reload_messages(_transcript(30))
+        await pilot.pause()
+        await display.reload_messages(_transcript(3))
+        await pilot.pause()
+        assert _fold_rows(display) == []
+        assert display.elided_count == 0
+
+
+async def test_a_reload_ends_scrolled_to_the_newest_message():
+    """The batch holds off layout, so the final scroll runs against sizes that
+    only exist once the batch ends. Getting this wrong parks the reader at the
+    top of a conversation they resumed to continue."""
+    async with _Harness().run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.reload_messages(_transcript(30), cap=False)
+        await pilot.pause()
+        assert display.max_scroll_y > 0, "the transcript is taller than the window"
+        assert display.scroll_y >= display.max_scroll_y - 0.5
+
+
+async def test_an_uncapped_reload_costs_a_handful_of_layout_passes_not_one_each():
+    """The batch, measured by the thing that costs the time.
+
+    Every awaited mount used to hand control back to the event loop, where the
+    screen timer re-arranged the entire tree — 78 to 104 full passes on a
+    200-message reload, each over a tree that was still growing. That is the
+    quadratic. Counted rather than timed: the count is deterministic and the
+    wall-clock is not.
+    """
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        layouts = _count_layouts(pilot.app)
+        await display.reload_messages(_transcript(50), cap=False)
+        await pilot.pause()
+        assert len(display.query(MessageBox)) == 100, "it really did mount them all"
+        assert layouts[0] < 20, f"{layouts[0]} layout passes for 100 messages"
+
+
+# ---------------------------------------------------------------------------
+# §2c: the live counter on a running exchange.
+#
+# Before this the exchange title said "Working…" and then nothing on screen
+# changed until answer text arrived. A turn spent reasoning, or waiting on a
+# slow tool, looked exactly like a turn that had died.
+#
+# The counter's whole design question is what it may claim. There is NO measured
+# token count during a completion: TextDeltaEvent.partial carries an
+# AssistantMessage whose usage is all zeros, and a server sends its usage block
+# on the final chunk. So the readout has one measured part (`N out`, the sum of
+# the per-completion usage this lane has been TOLD, which steps at each tool
+# boundary) and one labelled estimate (`~N chunks`, stream events for the
+# completion in flight, called chunks because one chunk is not guaranteed to be
+# one token). These tests assert that separation, not the wall-clock.
+# ---------------------------------------------------------------------------
+
+import time  # noqa: E402
+
+
+def _exchange_title(display: ChatDisplay) -> str:
+    return display.query_one(ExchangeBox).title
+
+
+def _completion_end(output: int, *, lane: str = DEFAULT_LANE, context: int = 0) -> dict:
+    return {"kind": "completion_end", "lane": lane, "output": output, "context": context}
+
+
+async def test_a_running_exchange_claims_no_tokens_it_has_not_measured():
+    """The first completion is in flight: chunks, no `out` part at all.
+
+    Zero is not shown as `0 out`. Nothing has reported, so nothing is claimed —
+    the same rule that omits an unknown duration rather than printing 0:00.
+    """
+    async with _Harness().run_test() as pilot:
+        display = pilot.app.query_one(ChatDisplay)
+        await display.begin_exchange()
+        for _ in range(3):
+            await _send(display, pilot, {"kind": "text_delta", "delta": "x"})
+        display._tick_live_counters()
+        title = _exchange_title(display)
+        assert "out" not in title, title
+        assert "~3 chunks" in title, title
+
+
+async def test_a_completion_boundary_turns_the_estimate_into_a_measurement():
+    """`out` appears and the chunk count clears: the completion is over."""
+    async with _Harness().run_test() as pilot:
+        display = pilot.app.query_one(ChatDisplay)
+        await display.begin_exchange()
+        for _ in range(5):
+            await _send(display, pilot, {"kind": "text_delta", "delta": "x"})
+        await _send(display, pilot, _completion_end(1200))
+        display._tick_live_counters()
+        title = _exchange_title(display)
+        assert "1.2k out" in title, title
+        assert "chunk" not in title, title
+
+
+async def test_the_estimate_restarts_for_the_next_completion():
+    """A tool-bearing turn: the measured half accumulates, the estimate does not.
+
+    This is the case the counter exists for — the one design that shows a REAL
+    number during a long turn, because message_end fires once per completion.
+    """
+    async with _Harness().run_test() as pilot:
+        display = pilot.app.query_one(ChatDisplay)
+        await display.begin_exchange()
+        for _ in range(5):
+            await _send(display, pilot, {"kind": "text_delta", "delta": "x"})
+        await _send(display, pilot, _completion_end(400))
+        for _ in range(2):
+            await _send(display, pilot, {"kind": "text_delta", "delta": "x"})
+        display._tick_live_counters()
+        title = _exchange_title(display)
+        assert "400 out" in title, title
+        assert "~2 chunks" in title, title
+
+
+async def test_a_provider_that_reports_no_usage_makes_no_token_claim():
+    """Fail-Early: the boundary is real, the measurement is zero, so `out` is
+    omitted rather than printed as a 0 that reads like a working counter."""
+    async with _Harness().run_test() as pilot:
+        display = pilot.app.query_one(ChatDisplay)
+        await display.begin_exchange()
+        await _send(display, pilot, {"kind": "text_delta", "delta": "x"})
+        await _send(display, pilot, _completion_end(0))
+        display._tick_live_counters()
+        assert "out" not in _exchange_title(display)
+
+
+async def test_reasoning_deltas_count_as_chunks_too():
+    """A reasoning model that thinks for a minute before answering is exactly
+    the silence this counter has to fill."""
+    async with _Harness().run_test() as pilot:
+        display = pilot.app.query_one(ChatDisplay)
+        await display.begin_exchange()
+        for _ in range(4):
+            await _send(display, pilot, {"kind": "reasoning_delta", "delta": "t"})
+        display._tick_live_counters()
+        assert "~4 chunks" in _exchange_title(display)
+
+
+async def test_the_clock_moves_with_no_events_at_all():
+    """The tool-call case: thirty seconds of silence, and the title still moves.
+
+    The elapsed figure is driven off a timer rather than off deltas, which is
+    the whole reason a counter fed only by stream events would still go dead
+    during the wait that matters most.
+    """
+    async with _Harness().run_test() as pilot:
+        display = pilot.app.query_one(ChatDisplay)
+        await display.begin_exchange()
+        state = display._lanes[DEFAULT_LANE]
+        state.started = time.monotonic() - 12
+        display._tick_live_counters()
+        assert "0:12" in _exchange_title(display)
+
+
+async def test_the_counter_runs_only_while_a_lane_is_open():
+    """An idle chat pays nothing: the timer is paused outside a turn.
+
+    Reads ``Timer._active``, which is private, because Textual exposes
+    ``pause()``/``resume()`` and no way to ask which one last ran. The
+    alternative — waiting real seconds and watching for a repaint — would be a
+    slow test that is flaky in exactly the case it is meant to catch.
+    """
+    async with _Harness().run_test() as pilot:
+        display = pilot.app.query_one(ChatDisplay)
+        assert display._live_timer is not None
+        assert display._live_timer._active.is_set() is False, "paused before any turn"
+        await display.begin_exchange()
+        assert display._live_timer._active.is_set() is True, "running during a turn"
+        await display.finalize_exchange(context=10, output=20, seconds=1.0)
+        assert display._live_timer._active.is_set() is False, "paused again after it"
+
+
+async def test_clearing_the_chat_mid_turn_stops_the_counter():
+    """The exchanges it was drawing have been removed; leaving it running would
+    tick over a lane dict pointing at detached widgets."""
+    async with _Harness().run_test() as pilot:
+        display = pilot.app.query_one(ChatDisplay)
+        await display.begin_exchange()
+        await display.clear_messages()
+        assert display._live_timer is not None
+        assert display._live_timer._active.is_set() is False
+
+
+async def test_two_lanes_count_separately():
+    """One readout per lane, which is why this is on the exchange and not on the
+    header subtitle: two concurrent turns have two different answers and the
+    subtitle's one line could only report one of them."""
+    async with _Harness().run_test() as pilot:
+        display = pilot.app.query_one(ChatDisplay)
+        await display.begin_exchange("a")
+        await display.begin_exchange("b", label="agent · fork:explore")
+        for _ in range(3):
+            await _send(display, pilot, {"kind": "text_delta", "delta": "x", "lane": "a"})
+        await _send(display, pilot, {"kind": "text_delta", "delta": "y", "lane": "b"})
+        display._tick_live_counters()
+        titles = [e.title for e in display.query(ExchangeBox)]
+        assert any("~3 chunks" in t for t in titles), titles
+        assert any("~1 chunk" in t and "chunks" not in t for t in titles), titles
+
+
+async def test_a_foreign_lane_keeps_its_badge_while_it_runs():
+    """B3-b: whose turn this is has to be legible at every moment of it, not
+    only in the finished summary."""
+    async with _Harness().run_test() as pilot:
+        display = pilot.app.query_one(ChatDisplay)
+        await display.begin_exchange("b", label="bus · nats_bus")
+        await _send(display, pilot, {"kind": "text_delta", "delta": "x", "lane": "b"})
+        display._tick_live_counters()
+        assert _exchange_title(display).startswith("bus · nats_bus · Working…")
+
+
+async def test_the_summary_survives_the_counter():
+    """finalize_exchange pops the lane BEFORE it stamps the summary, so a tick
+    landing afterwards cannot repaint the finished title back to `Working…`."""
+    async with _Harness().run_test() as pilot:
+        display = pilot.app.query_one(ChatDisplay)
+        await display.begin_exchange()
+        await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
+        await _send(
+            display, pilot, {"kind": "tool_call", "id": "c1", "name": "ls", "arguments": {}}
+        )
+        await _send(
+            display, pilot, {"kind": "tool_result", "id": "c1", "name": "ls", "result": "a.py"}
+        )
+        await display.finalize_exchange(context=100, output=50, seconds=2.0)
+        await pilot.pause()
+        display._tick_live_counters()
+        await pilot.pause()
+        title = _exchange_title(display)
+        assert title.startswith("✓ "), title
+        assert "Working" not in title, title
+
+
+# ---------------------------------------------------------------------------
+# §2c: the completion boundary on the wire (TurnStream -> render event).
+# ---------------------------------------------------------------------------
+
+
+def _message_end(usage: dict | None) -> _FakeEvent:
+    message: dict = {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}
+    if usage is not None:
+        message["usage"] = usage
+    return _FakeEvent(type="message_end", timestamp=0, message=message)
+
+
+def test_a_completion_boundary_publishes_the_measured_total():
+    """The number is the lane's real running sum, not this completion's alone —
+    the same figure lane_end reports, published early."""
+    from tau_coding_agent.backends import TurnStream
+
+    stream = TurnStream("lane-1")
+    first = stream.feed(_message_end({"output_tokens": 30, "input_tokens": 100}))
+    assert [e["kind"] for e in first] == ["completion_end"]
+    assert first[0] == {
+        "kind": "completion_end",
+        "lane": "lane-1",
+        "output": 30,
+        "context": 100,
+    }
+    second = stream.feed(_message_end({"output_tokens": 12, "input_tokens": 140}))
+    assert second[0]["output"] == 42, "summed across completions, like lane_end"
+    assert second[0]["context"] == 140, "replaced, not summed — a prompt contains the last one"
+
+
+def test_the_duplicate_message_end_restates_the_same_total():
+    """The agent loop emits message_end twice per tool-bearing turn and only the
+    first carries usage. Both mark the same real boundary, so both publish — and
+    the second must not double-count."""
+    from tau_coding_agent.backends import TurnStream
+
+    stream = TurnStream()
+    stream.feed(_message_end({"output_tokens": 30}))
+    again = stream.feed(_message_end(None))
+    assert again[0]["output"] == 30
+
+
+def test_a_message_end_with_no_message_publishes_nothing():
+    """No message, no boundary — there is nothing to have ended."""
+    from tau_coding_agent.backends import TurnStream
+
+    assert TurnStream().feed(_FakeEvent(type="message_end", timestamp=0, message=None)) == []

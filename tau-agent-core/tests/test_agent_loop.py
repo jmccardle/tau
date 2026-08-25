@@ -30,6 +30,7 @@ from tau_llm.streaming import (
     DoneEvent,
     ErrorEvent,
     TextDeltaEvent,
+    ThinkingDeltaEvent,
     ToolCallDeltaEvent,
 )
 from tau_llm.types import (
@@ -598,7 +599,19 @@ class TestEarlyTermination:
 
     @pytest.mark.asyncio
     async def test_early_termination_stops_tool_execution(self):
-        """Early termination stops further tool calls in a batch."""
+        """Early termination stops further tool calls in a batch AND ends the turn.
+
+        The second half was missing here, and the omission hid a real defect for
+        as long as the test existed. ``_execute_sequential`` tracked ``terminated``
+        and used it to skip the rest of the batch — which is all this test checked
+        — but returned ``_build_batch_result(all_results)`` without passing it on,
+        so ``ToolBatchResult.terminate`` stayed False and ``run``'s ``if
+        batch.terminate: break`` never fired. The mock below answers every call
+        with the same terminating tool, so the loop simply went around again, to
+        ``max_turns``. With the old ceiling of 50 that looked like a slow test;
+        with no ceiling it does not finish. ``call_count`` is the assertion that
+        can see it.
+        """
         events: list[AgentEvent] = []
         config = AgentLoopConfig(
             model="gpt-4o",
@@ -649,7 +662,10 @@ class TestEarlyTermination:
             tools=[term_tool, never_tool],
         )
 
+        call_count = [0]
+
         async def mock_stream_func(model, context, options):
+            call_count[0] += 1
             return _make_mock_stream(
                 [
                     DoneEvent(
@@ -686,6 +702,9 @@ class TestEarlyTermination:
             )
 
         assert len(called) == 0
+        # ONE LLM call. A terminating tool ends the turn, so the model is never
+        # consulted again — the same claim the parallel path has always kept.
+        assert call_count[0] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1431,6 +1450,56 @@ class TestMaxTurnsLimit:
 
         turn_starts = [e for e in events if e.type == "turn_start"]
         assert len(turn_starts) == 2
+
+    @pytest.mark.asyncio
+    async def test_no_max_turns_runs_past_the_old_hardcoded_fifty(self):
+        """With ``max_turns`` unset the loop is bounded by nothing but the model.
+
+        The old default was 50 and no caller τ ships could change it, so a run that
+        genuinely needed turn 51 was cut off — silently, since reaching the ceiling
+        emits an ordinary ``agent_end``. The default is now ``None``. This drives
+        the loop past 50 and lets the mock stop it, which the old default made
+        impossible.
+        """
+        events: list[AgentEvent] = []
+        # No max_turns argument: the point of the test is the DEFAULT.
+        config = AgentLoopConfig(model="gpt-4o")
+        ls_tool = _make_simple_tool(name="ls", result="files", path=".")
+        loop = AgentLoop(
+            config=config,
+            emit=lambda e: async_emit(events, e),
+            tools=[ls_tool],
+        )
+
+        call_count = [0]
+
+        async def mock_stream_func(model, context, options):
+            call_count[0] += 1
+            # Turns 1..60 call a tool; turn 61 answers, which is the only thing
+            # that ends this run.
+            if call_count[0] > 60:
+                return _make_mock_stream(
+                    [DoneEvent(final=_make_text_assistant("done"), usage=Usage())]
+                )
+            return _make_mock_stream(
+                [
+                    DoneEvent(
+                        final=_make_tool_call_assistant(
+                            f"call_{call_count[0]}", "ls", {"path": "."}
+                        ),
+                        usage=Usage(),
+                    ),
+                ]
+            )
+
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
+            await loop.run(
+                prompts=[UserMessage(content=[TextContent(text="go")], timestamp=0)],
+                context=[],
+            )
+
+        assert call_count[0] == 61
+        assert len([e for e in events if e.type == "turn_start"]) == 61
 
 
 # ---------------------------------------------------------------------------
@@ -2292,3 +2361,98 @@ class TestAssistantToolCallReachesTheWire:
                         f"call {index}: toolResult {call_id!r} has no preceding tool call "
                         f"(offered: {sorted(offered)})"
                     )
+
+
+# ---------------------------------------------------------------------------
+# message_start brackets ONE message
+# ---------------------------------------------------------------------------
+
+
+class TestMessageStartBracketsOneMessage:
+    """`message_start` opens a bracket once per completion, on any content kind.
+
+    It used to be emitted from the `TextDeltaEvent` branch alone, so it fired once
+    per text delta — a 2137-delta answer emitted 2137 of them — and never fired at
+    all for a completion that produced only reasoning or only a tool call. pi emits
+    it once, on the stream's `start` event (`agent-loop.ts:323`).
+    """
+
+    async def _types_for(self, events_in: list) -> tuple[list[str], list[AgentEvent]]:
+        events: list[AgentEvent] = []
+        # max_turns=1 because this class is about ONE completion's bracket. The
+        # default is None (no ceiling), and the mock stream replays the same
+        # DoneEvent on every call — so a tool-bearing final message would be
+        # answered, re-offered, and answered again forever.
+        config = AgentLoopConfig(model="gpt-4o", system_prompt="test", max_turns=1)
+        loop = AgentLoop(config=config, emit=lambda e: async_emit(events, e))
+        with patch(
+            "tau_agent_core.agent_loop.stream_simple",
+            return_value=_make_mock_stream(events_in),
+        ):
+            await loop.run(
+                prompts=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
+                context=[],
+            )
+        return [e.type for e in events], events
+
+    async def test_many_text_deltas_emit_one_message_start(self):
+        """The reported symptom: 2137 deltas, 2137 `message_start` events."""
+        deltas = [
+            TextDeltaEvent(delta=f"{i} ", partial=_make_text_assistant(""))
+            for i in range(50)
+        ]
+        types, _ = await self._types_for(
+            [*deltas, DoneEvent(final=_make_text_assistant("done"), usage=Usage())]
+        )
+        assert types.count("message_start") == 1
+        assert types.count("message_update") == 50
+
+    async def test_a_reasoning_only_completion_is_bracketed(self):
+        """Reasoning opened no bracket at all — the two channels disagreed."""
+        types, events = await self._types_for(
+            [
+                ThinkingDeltaEvent(delta="thinking…", partial=_make_text_assistant("")),
+                DoneEvent(final=_make_text_assistant("answer"), usage=Usage()),
+            ]
+        )
+        assert types.count("message_start") == 1
+        start = next(e for e in events if e.type == "message_start")
+        assert (start.message or {})["content"] == [
+            {"type": "thinking", "thinking": "thinking…"}
+        ]
+        assert types.index("message_start") < types.index("message_update")
+
+    async def test_a_tool_call_with_no_text_is_bracketed(self):
+        """A tool-call-only completion emitted `message_end` and no `message_start`."""
+        final = _make_tool_call_assistant("call_1", "read", {"path": "/tmp/x"})
+        types, _ = await self._types_for(
+            [
+                ToolCallDeltaEvent(
+                    delta={"index": 0, "id": "call_1"},
+                    partial=final,
+                ),
+                DoneEvent(final=final, usage=Usage()),
+            ]
+        )
+        assert types.count("message_start") == 1
+        assert types.index("message_start") < types.index("message_update")
+
+    async def test_a_completion_with_no_deltas_is_still_bracketed(self):
+        """`message_end` may not close a bracket nothing opened."""
+        types, _ = await self._types_for(
+            [DoneEvent(final=_make_text_assistant("straight to done"), usage=Usage())]
+        )
+        assert types.count("message_start") == 1
+        assert types.index("message_start") < types.index("message_end")
+
+    async def test_message_start_does_not_share_its_content_list(self):
+        """Two events holding one list is a subscriber's mutation reaching both."""
+        _, events = await self._types_for(
+            [
+                TextDeltaEvent(delta="hi", partial=_make_text_assistant("")),
+                DoneEvent(final=_make_text_assistant("hi"), usage=Usage()),
+            ]
+        )
+        start = next(e for e in events if e.type == "message_start")
+        update = next(e for e in events if e.type == "message_update")
+        assert (start.message or {})["content"] is not (update.message or {})["content"]

@@ -5,7 +5,10 @@ It has exactly two behaviours:
 
 - ``fun=False`` → ``TAGLINES[0]``, always. Every deterministic surface depends on
   this: ``tests/test_tui_snapshots.py`` compares rendered SVGs byte for byte, and
-  ``python -m tau_coding_agent.devshot`` has to produce the same PNG twice.
+  ``python -m tau_coding_agent.devshot`` has to produce the same PNG twice. Those
+  surfaces ASK for ``fun=False`` — ``Parley.__init__`` takes the literal, not
+  :data:`FUN_DEFAULT` — so their determinism does not depend on how this module's
+  default happens to be set, in a checkout or in a wheel.
 - ``fun=True`` → a uniform random pick from the whole list.
 
 **This module is the entire blast radius of ``--fun``.** The flag is parsed in
@@ -39,17 +42,23 @@ TAGLINES: tuple[str, ...] = (
     "yes, TUIs are cool in 2026",
 )
 
-# --- fun-default marker: package.sh rewrites the line below. Do not reformat. ---
-#: Whether ``--fun`` is on when the user does not say. ``False`` in a source
-#: checkout, so a developer's suite and screenshots are deterministic without
-#: passing a flag; ``package.sh`` rewrites this literal to ``True`` in the staged
-#: tarball, so a released τ is playful out of the box.
+#: Whether ``--fun`` is on when the user does not say. **On, everywhere** — this
+#: is the value a checkout, a GitHub-release tarball and a PyPI wheel all carry,
+#: because it is written here once and no build step rewrites it.
 #:
-#: The rewrite is a one-line ``sed`` against the exact text below, and package.sh
-#: verifies the substitution landed rather than shipping a silently unpatched
-#: build. Keep the assignment on one line, spelled exactly ``FUN_DEFAULT = False``.
-FUN_DEFAULT = False
-# --- end fun-default marker ---
+#: It used to be ``False`` here and ``package.sh`` flipped it to ``True`` in the
+#: staged tarball. That worked, for the one artifact package.sh builds; the PyPI
+#: wheels come from ``python -m build`` in ``.github/workflows/publish.yml``,
+#: which never ran the rewrite, so every published wheel shipped the developer
+#: default and the flip reached nobody who ran ``pip install``. A default that a
+#: build step has to patch in is a default one build path can forget.
+#:
+#: Determinism is bought the other way round now: the surfaces that need a fixed
+#: tagline ask for one. ``Parley.__init__`` defaults ``fun`` to the literal
+#: ``False``, so every test, scene and ``devshot`` render is stable, and only
+#: ``cli.py`` reads this value. Keep it that way — a deterministic surface that
+#: inherits this default instead of naming its own is the bug coming back.
+FUN_DEFAULT = True
 
 
 def pick_tagline(fun: bool) -> str:

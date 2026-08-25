@@ -1,8 +1,20 @@
-/* Parley stylesheet - clean, minimal, fast */
-/* Color palette: Warm grays with soft accent colors for comfortable long sessions */
+/* Parley stylesheet — clean, minimal, fast.
+
+   STRUCTURE ONLY. Every colour in this file is a `$tau-*` variable supplied by
+   the active theme (tau_coding_agent/themes.py, docs/PLAN-0.9.4.md §6): a hex
+   literal here would be a colour no theme could reach, so
+   tests/test_themes.py::test_the_structural_stylesheet_names_no_colour fails on
+   one. `$tau-*` is τ's vocabulary; the unprefixed `$primary`/`$surface`/… that
+   Textual's own widgets use come from the same Theme's design tokens.
+
+   The variables are ROLES, not hues — `$tau-role-user`, not "cyan" — and the six
+   `$tau-text-*` steps are a ramp from brightest to faintest. Where two rules
+   deliberately share a hue (the branch-summary pair, the hover divergence), they
+   now share the VARIABLE, so the pairing survives a theme swap by construction
+   rather than by two literals happening to agree. */
 
 Screen {
-    background: #1e1e2e;  /* Deep blue-gray, easy on eyes */
+    background: $tau-bg;
 }
 
 /* Every dialog sits in the middle of the terminal, not in its top-left corner.
@@ -32,8 +44,8 @@ ModalScreen {
     width: 25%;
     min-width: 24;
     max-width: 32;
-    background: #181825;  /* Slightly darker than main */
-    border-right: solid #45475a;  /* Subtle gray border */
+    background: $tau-bg-alt;  /* Slightly darker than main */
+    border-right: solid $tau-border;
 }
 
 /* One line, not three: the title says which program this is and nothing else,
@@ -41,27 +53,27 @@ ModalScreen {
 .sidebar-title {
     text-align: center;
     text-style: bold;
-    color: #cdd6f4;  /* Soft lavender for titles */
+    color: $tau-text;
     padding: 0 1;
-    background: #11111b;
+    background: $tau-bg-deep;
 }
 
 #new-chat-button {
     margin: 1;
     width: 100%;
-    background: #313244;
-    color: #cdd6f4;
-    border: solid #45475a;
+    background: $tau-surface;
+    color: $tau-text;
+    border: solid $tau-border;
 }
 
 #new-chat-button:hover {
-    background: #45475a;
+    background: $tau-surface-hover;
 }
 
 .chat-group-header {
     margin-top: 1;
     padding: 0 1;
-    color: #6c7086;  /* Muted for group headers */
+    color: $tau-text-muted;  /* Muted for group headers */
     text-style: italic;
 }
 
@@ -76,20 +88,20 @@ ModalScreen {
 .chat-list-item {
     padding: 0 1;
     margin: 0;
-    color: #bac2de;
+    color: $tau-text-soft;
     text-wrap: nowrap;
     text-overflow: ellipsis;
-    border-bottom: solid #313244;
+    border-bottom: solid $tau-border-subtle;
 }
 
 .chat-list-item:hover {
-    background: #313244;
-    color: #cdd6f4;
+    background: $tau-surface;
+    color: $tau-text;
 }
 
 .chat-list-empty {
     padding: 1;
-    color: #6c7086;
+    color: $tau-text-muted;
     text-style: italic;
 }
 
@@ -110,7 +122,7 @@ ModalScreen {
 #chat-display {
     height: 1fr;
     padding: 1 2;
-    background: #1e1e2e;
+    background: $tau-bg;
 }
 
 /* The empty-state pane (handoff §4.4). One color, because the label/value
@@ -121,7 +133,20 @@ ModalScreen {
    and ChatDisplay hides it the moment the first message box mounts. */
 #chat-placeholder {
     height: auto;
-    color: #cdd6f4;
+    color: $tau-text;
+}
+
+/* "⋯ 750 earlier · click to show them" — the row that stands where a capped
+   reload declined to mount the older messages (docs/PLAN-0.9.4.md §1). Same
+   muted, centered, italic treatment as the tree pane's fold rows, because it is
+   the same statement: this is a fold marker, not another message. `link`-less
+   but clickable, so the underline of a real link does not promise a URL. */
+#chat-display .chat-fold {
+    height: auto;
+    color: $tau-text-muted;
+    text-align: center;
+    text-style: italic;
+    padding: 1 0;
 }
 
 /* === Message Styling === */
@@ -136,7 +161,7 @@ ModalScreen {
        per message for nothing. One column left and right stays, so text does not
        sit against the border glyph. */
     padding: 0 1;
-    border: solid #45475a;  /* default; per-role rules below recolor */
+    border: solid $tau-border;  /* default; per-role rules below recolor */
 }
 
 /* The lazy reasoning / tools slots collapse to nothing when empty, so a plain
@@ -149,7 +174,7 @@ ModalScreen {
    padding and border — six columns of chrome per side before a character of
    text. The box supplies the inset now. */
 .message-content {
-    color: #cdd6f4;
+    color: $tau-text;
     padding: 0;
 }
 
@@ -221,17 +246,17 @@ ModalScreen {
 
 /* Pending placeholder — muted, until it resolves into a real role */
 .box-pending {
-    border: solid #6c7086;  /* Muted gray */
-    color: #6c7086;
+    border: solid $tau-role-pending;
+    color: $tau-role-pending;
 }
 
-.box-user { border: solid #89dceb; }       /* calm cyan */
-.box-assistant { border: solid #f9e2af; }  /* warm amber */
-.box-system { border: solid #cba6f7; }     /* subtle purple */
-.box-toolCall { border: solid #fab387; }   /* orange (legacy standalone tool box) */
-.box-toolResult { border: solid #a6e3a1; margin: 1 0 1 2; }  /* green, indented */
-.box-error { border: solid #f38ba8; }      /* red */
-.box-blocked { border: solid #f9e2af; }    /* amber — an extension veto (S50), not a tool failure */
+.box-user { border: solid $tau-role-user; }
+.box-assistant { border: solid $tau-role-assistant; }
+.box-system { border: solid $tau-role-system; }
+.box-toolCall { border: solid $tau-role-tool; }   /* legacy standalone tool box */
+.box-toolResult { border: solid $tau-role-result; margin: 1 0 1 2; }  /* indented */
+.box-error { border: solid $tau-role-error; }
+.box-blocked { border: solid $tau-role-blocked; }  /* an extension veto (S50), not a tool failure */
 
 /* === Foreign lanes (B3-b) === */
 /* Every box belonging to a turn this frontend did not originate — a bus/timer
@@ -241,12 +266,12 @@ ModalScreen {
    which source, and the border SUBTITLE who. Dashed + mauve so it reads as
    adjacent to the conversation rather than part of it. */
 .chat-message.lane-foreign {
-    border: dashed #b4a7f5;
+    border: dashed $tau-role-foreign;
     margin: 1 0 1 2;
 }
 
 .chat-message.lane-foreign > .message-content {
-    color: #bac2de;
+    color: $tau-text-soft;
 }
 
 /* === Collapsible density (reasoning regions, tool boxes, exchanges) ===
@@ -279,12 +304,12 @@ ModalScreen {
 }
 
 .reasoning-region > CollapsibleTitle {
-    color: #9399b2;  /* muted gray */
+    color: $tau-text-quiet;
     text-style: italic;
 }
 
 .reasoning-region Markdown {
-    color: #9399b2;
+    color: $tau-text-quiet;
     text-style: italic;
 }
 
@@ -294,15 +319,15 @@ ModalScreen {
 }
 
 .tool-box > CollapsibleTitle {
-    color: #fab387;  /* soft orange, matches the old tool-call color */
+    color: $tau-role-tool;  /* the same hue the tool box's own border carries */
 }
 
 .tool-box.box-error > CollapsibleTitle {
-    color: #f38ba8;  /* soft red on error */
+    color: $tau-role-error;  /* on error */
 }
 
 .tool-box.box-blocked > CollapsibleTitle {
-    color: #f9e2af;  /* amber — a `tool_call` extension veto (S50), read as a policy block */
+    color: $tau-role-blocked;  /* a `tool_call` extension veto (S50), read as a policy block */
 }
 
 /* === Exchange grouping (one user→answer span; summary line title) === */
@@ -311,7 +336,7 @@ ModalScreen {
 }
 
 .exchange-box > CollapsibleTitle {
-    color: #cdd6f4;
+    color: $tau-text;
     text-style: bold;
 }
 
@@ -319,22 +344,22 @@ ModalScreen {
    had). Same mauve as the boxes inside it, so the whole span reads as one
    not-the-main-line unit. */
 .exchange-box.exchange-foreign > CollapsibleTitle {
-    color: #b4a7f5;
+    color: $tau-role-foreign;
 }
 
 /* === Input Styling === */
 #chat-input {
     margin: 0 1 1 1;
-    border: solid #45475a;
+    border: solid $tau-border;
     height: auto;
     max-height: 10;
-    background: #181825;
-    color: #cdd6f4;
+    background: $tau-bg-alt;
+    color: $tau-text;
 }
 
 #chat-input:focus {
-    border: solid #89dceb;  /* Matches user message color */
-    background: #1e1e2e;
+    border: solid $tau-role-user;  /* Matches user message color */
+    background: $tau-bg;
 }
 
 /* === System Prompt Editor Modal === */
@@ -348,28 +373,28 @@ ModalScreen {
     max-width: 100%;
     height: 25;
     max-height: 100%;
-    background: #181825;
-    border: thick #45475a;
+    background: $tau-bg-alt;
+    border: thick $tau-border;
     padding: 1;
 }
 
 #prompt-editor-title {
     text-align: center;
     text-style: bold;
-    color: #cba6f7;
+    color: $tau-accent;
     margin-bottom: 1;
 }
 
 #prompt-editor-textarea {
     height: 1fr;
     margin-bottom: 1;
-    background: #1e1e2e;
-    border: solid #45475a;
-    color: #cdd6f4;
+    background: $tau-bg;
+    border: solid $tau-border;
+    color: $tau-text;
 }
 
 #prompt-editor-textarea:focus {
-    border: solid #cba6f7;
+    border: solid $tau-accent;
 }
 
 #prompt-editor-buttons {
@@ -379,13 +404,13 @@ ModalScreen {
 
 #prompt-editor-buttons Button {
     margin: 0 1;
-    background: #313244;
-    border: solid #45475a;
-    color: #cdd6f4;
+    background: $tau-surface;
+    border: solid $tau-border;
+    color: $tau-text;
 }
 
 #prompt-editor-buttons Button:hover {
-    background: #45475a;
+    background: $tau-surface-hover;
 }
 
 /* Consequence line above the RollbackPromptModal's editor — the operation
@@ -393,7 +418,7 @@ ModalScreen {
 #rollback-help {
     height: auto;
     margin-bottom: 1;
-    color: #a6adc8;
+    color: $tau-text-dim;
 }
 
 /* === Session Picker Modal (docs/SESSION-UX-REDESIGN.md §6) === */
@@ -408,15 +433,15 @@ ModalScreen {
     width: 80%;
     max-width: 100;
     height: 80%;
-    background: #181825;
-    border: thick #45475a;
+    background: $tau-bg-alt;
+    border: thick $tau-border;
     padding: 0 1;
 }
 
 #session-picker-title {
     text-align: center;
     text-style: bold;
-    color: #cba6f7;
+    color: $tau-accent;
     margin-bottom: 1;
 }
 
@@ -424,20 +449,20 @@ ModalScreen {
    how the reader learns the filter exists, and a bordered empty input at the top
    of the dialog would otherwise read as the thing to type into first. */
 #session-picker-filter {
-    background: #1e1e2e;
-    border: solid #45475a;
-    color: #cdd6f4;
+    background: $tau-bg;
+    border: solid $tau-border;
+    color: $tau-text;
 }
 
 #session-picker-filter:focus {
-    border: solid #cba6f7;
+    border: solid $tau-accent;
 }
 
 #session-picker-table {
     width: 100%;
     height: 1fr;
-    background: #1e1e2e;
-    color: #cdd6f4;
+    background: $tau-bg;
+    color: $tau-text;
 }
 
 /* Exactly one row, whatever the cwd is. A `height: auto` status wrapped a long
@@ -449,7 +474,7 @@ ModalScreen {
     height: 1;
     text-wrap: nowrap;
     text-overflow: ellipsis;
-    color: #6c7086;
+    color: $tau-text-muted;
 }
 
 /* === Session Tree Browser Modal === */
@@ -460,15 +485,15 @@ ModalScreen {
 #tree-browser-dialog {
     width: 100%;
     height: 100%;
-    background: #181825;
-    border: thick #45475a;
+    background: $tau-bg-alt;
+    border: thick $tau-border;
     padding: 0 1;
 }
 
 #tree-browser-title {
     text-align: center;
     text-style: bold;
-    color: #cba6f7;
+    color: $tau-accent;
     margin-bottom: 1;
 }
 
@@ -488,32 +513,229 @@ ModalScreen {
 #tree-browser-tree {
     width: 100%;
     height: 1fr;
-    background: #1e1e2e;
-    border: solid #45475a;
-    color: #cdd6f4;
+    background: $tau-bg;
+    border: solid $tau-border;
+    color: $tau-text;
 }
 
 #tree-browser-tree:focus {
-    border: solid #cba6f7;
+    border: solid $tau-accent;
+}
+
+/* === Tree browser zones (TREE-BROWSER-AS-EDITOR.md §3) === */
+/* Textual `Tree` rows are not DOM nodes and cannot carry per-row CSS classes, so
+   the browser declares COMPONENT CLASSES on a `Tree` subclass (`ZoneTree` in
+   app.py) and resolves each to a Rich style inside `render_label`. These are the
+   values it resolves to. They live here, not in app.py, because every other
+   colour in this application does — a hex literal in a widget is invisible to a
+   theme swap. Seven of the ten borrow a `$tau-role-*` or `$tau-text-*` variable
+   rather than naming a colour of their own; `$tau-zone-path` is the one zone with
+   no role to borrow, because "on the cursor's ancestry" is about position rather
+   than about a transformation.
+
+   Ten classes for ten zone ROLES. Deliberately NOT a class per branch: a branch
+   vocabulary is unbounded and no stylesheet can enumerate it, so §3's answer for
+   telling branches apart is a small fixed palette cycled modulo N, which is a
+   renderer decision and not a set of classes. Nothing cycles a palette yet.
+
+   Each rule sets as few properties as it can. `render_label` layers these over
+   Textual's own row styles as Rich spans, and Rich combines spans
+   attribute-wise — so a rule that sets only `color` leaves the hover background
+   and the row's weight intact. A rule that set `background` here would fight
+   `tree--highlight-line`, which is the widget's, not ours. */
+
+/* On the cursor's ancestor chain: the entries whose text is what the model saw
+   at the cursor. Blue, and the only zone that is about POSITION rather than
+   about a transformation — it is what replaces the guide-rail ancestry
+   highlight that fork-nesting (§2) took away. */
+ZoneTree > .tree--zone-path {
+    color: $tau-zone-path;
+}
+
+/* On the path, but dropped by a splice anchor: in the chain, not in the
+   context. Muted and struck through, which is exactly what happened to it. */
+ZoneTree > .tree--zone-folded {
+    color: $tau-text-muted;
+    text-style: strike;
+}
+
+/* The same span seen from the anchor doing the dropping — the cursor is ON the
+   compaction/elide node and these are the rows it covers. Peach rather than
+   grey: this is an answer to "what does this node hide", so it is foreground,
+   not background. */
+ZoneTree > .tree--zone-covered {
+    color: $tau-role-tool;
+    text-style: strike;
+}
+
+/* In the multi-select set. The one zone the reader put there on purpose, so it
+   is the loudest. */
+ZoneTree > .tree--zone-marked {
+    color: $tau-role-result;
+    text-style: bold;
+}
+
+/* Archived, excluded from counts (§3) — view state, never read from the log
+   (§11.2). Today's only members are rows folded away inside a collapsed fork,
+   which are not drawn at all, so this rule has no visible effect until an
+   archive gesture produces a hidden row that IS drawn. */
+ZoneTree > .tree--zone-hidden {
+    color: $tau-text-faint;
+    text-style: italic;
+}
+
+/* Minted by a copy (§7). DECLARED WITH NO PRODUCER: copy entries do not exist
+   yet, so nothing is ever in this zone. It is here so §7 adds a producer and not
+   a producer plus a stylesheet plus a renderer branch. */
+ZoneTree > .tree--zone-copied {
+    color: $tau-accent;
+    text-style: italic;
+}
+
+/* === The branch summary and the branch it looks back on (§4.3) === */
+/* `append_branch_summary` parents the summary at the branch point, so it is
+   ALREADY a sibling of the abandoned branch's first message — the structure is
+   right and only the rendering was missing (§1.2). What a reader needs to see is
+   that these two rows are one relation, and which end of it each row is.
+
+   So: ONE hue for both, which is what says "a pair", and a weight difference,
+   which is what says which half. No new colour — both rules take
+   `$tau-role-user`, the hue `.box-user` and `#chat-input:focus` already carry and
+   the one role no other zone had borrowed. Naming the same VARIABLE is what makes
+   the pairing survive a theme swap: a theme cannot break the relation without
+   deciding that a user message and a branch summary are different colours, which
+   is a decision it has to make on purpose. `dim` is relative to whatever the hue
+   becomes. */
+
+/* The summary row: the entry that was written when the branch was abandoned. */
+ZoneTree > .tree--zone-summary {
+    color: $tau-role-user;
+}
+
+/* Its sibling — the head of the branch the summary is about. Dimmed: it is the
+   abandoned side, and the summary above it is now the readable account of it. */
+ZoneTree > .tree--zone-abandoned {
+    color: $tau-role-user;
+    text-style: dim;
+}
+
+/* Cannot be the other end of the elide in progress: not on one line of the
+   conversation with the marked node. Painted only while exactly one node IS
+   marked, so this is never the resting state of the tree.
+
+   `$tau-text-faint` and no text-style: the row has to recede far enough that the
+   eligible rows read as a shape, and it is still a row the cursor moves through —
+   a strike or an italic would say something happened to the entry, when what is
+   true is only that it cannot be picked right now. `tree--zone-hidden` above is
+   the same colour family for the same reason, one step brighter, because a folded
+   row is a fact about the log and this is a fact about the gesture. */
+ZoneTree > .tree--zone-ineligible {
+    color: $tau-text-faint;
+}
+
+/* === The hover divergence (§3, step 5) === */
+/* §2 flattened single-child runs into siblings, which took away Textual's
+   `tree--guides-hover` ancestry highlight: 30 messages are 30 rows at one level
+   with no rails between them. `tree--zone-path` replaced the CURSOR's ancestry;
+   these two replace the HOVER's, and answer a question the rails never did —
+   where does the row you are pointing at stop sharing history with where you
+   are?
+
+   These are layered OVER whatever the row already carries (`render_label`
+   stylizes them last, across the whole row) rather than replacing it, so a
+   hovered chain crossing a marked or folded row keeps saying so. That is why the
+   shared half sets no colour at all: `underline` composes with the path blue, the
+   marked green and a plain row alike, where a hue would fight all three. The
+   underline is the thread; the colour on the divergent half is what splits it in
+   two.
+
+   `$tau-role-assistant` is the borrowed hue (`.box-assistant`, and whatever
+   `$tau-role-blocked` resolves to beside it) — an existing role, and the one that
+   already means "attention, not alarm" here. */
+
+/* Shared with the cursor's ancestry: the history both nodes stand on. */
+ZoneTree > .tree--zone-hover-common {
+    text-style: underline;
+}
+
+/* Below the divergence point: the history the hovered node has and the cursor
+   does not. This is the part a reader would be picking up by going there. */
+ZoneTree > .tree--zone-hover-divergent {
+    color: $tau-role-assistant;
+    text-style: underline;
+}
+
+/* === The row's type tag (`user:`, `toolResult:`, …) === */
+/* Every row already says what it is; before these rules it said so in the same
+   colour as the sentence after it, so telling a user turn from a tool result
+   meant reading the word. These paint the tag ALONE — `render_label` stops at the
+   colon — so the preview text stays the neutral colour a sentence should be, and
+   the left edge of the tree becomes scannable.
+
+   The hues are the transcript's own `$tau-role-*` variables, deliberately: a user
+   message is the same colour here as the bubble it is a preview OF, so the two
+   views cannot disagree about what colour a role is. Colour only, no weight — the
+   zone rules above use weight, and a tag that was also bold would compete with
+   the mark it is supposed to sit underneath.
+
+   Five rules for eleven tags (see `_TREE_KIND_CLASS` in app.py): the reader is
+   separating sides of a conversation, not enumerating entry kinds. */
+ZoneTree > .tree--kind-user {
+    color: $tau-role-user;
+}
+
+ZoneTree > .tree--kind-assistant {
+    color: $tau-role-assistant;
+}
+
+ZoneTree > .tree--kind-tool {
+    color: $tau-role-tool;
+}
+
+ZoneTree > .tree--kind-system {
+    color: $tau-role-system;
+}
+
+/* Bookkeeping entries — a compaction, a branch summary, an elide, a model change.
+   These are not turns and should not read as one, so they take the quiet text
+   colour rather than a role hue: present, identifiable, and not competing with
+   the conversation for attention. */
+ZoneTree > .tree--kind-structural {
+    color: $tau-text-quiet;
+    text-style: italic;
 }
 
 #tree-detail {
     width: 100%;
     height: 1fr;
-    background: #1e1e2e;
-    border: solid #45475a;
+    background: $tau-bg;
+    border: solid $tau-border;
     padding: 0 1;
 }
 
 #tree-detail:focus {
-    border: solid #cba6f7;
+    border: solid $tau-accent;
+}
+
+/* What stands in for the detail pane while it is folded away (§4a). One row —
+   the whole point of the fold is the rows it returns to the tree, so the marker
+   that makes it reversible must not charge for more than one of them. `height:
+   1` and not `auto`: `auto` on a Static is one row for this string and two for a
+   string that wraps, which would make the tree's height depend on the terminal's
+   width. */
+#tree-detail-folded {
+    width: 100%;
+    height: 1;
+    color: $tau-text-muted;
+    text-align: center;
+    text-style: italic;
 }
 
 /* "⋯ 3 earlier" / "⋯ 2 branches from here, 5 later" — the rows that keep the
    pane from reading as a three-message conversation. Muted and centered so they
    read as a fold marker rather than as another message. */
 #tree-detail .detail-fold {
-    color: #6c7086;
+    color: $tau-text-muted;
     text-align: center;
     text-style: italic;
 }
@@ -536,10 +758,28 @@ ModalScreen {
     opacity: 55%;
 }
 
+/* The selection readout: "2 nodes marked · common ancestor n2 · ~340 tokens
+   (estimate)". It keeps its row on a terminal too short for the detail pane,
+   because a mark placed on the row under the cursor is not drawn on that row (the
+   cursor's own styling owns it) and this line is then the only feedback the
+   gesture produces. Brighter than the help line below it and dimmer than the tree
+   above: it is state, not instruction.
+
+   It costs the tree NO rows. `#tree-browser-help` used to hold the dialog's
+   bottom edge off the body with `margin-top: 1`; that blank row is now this one,
+   and the help line sits directly under it. Spending a real row on the readout
+   instead would have taken one from the tree at every height — measured at
+   120x16, where the tree drops from 10 rows to 9 and
+   `test_the_pane_gives_the_rows_back_to_the_tree_when_short` says so. */
+#tree-browser-marks {
+    text-align: center;
+    color: $tau-text-quiet;
+    height: 1;
+}
+
 #tree-browser-help {
     text-align: center;
-    color: #6c7086;
-    margin-top: 1;
+    color: $tau-text-muted;
 }
 
 /* === Tree three-mode chooser Modal === */
@@ -557,15 +797,15 @@ ModalScreen {
     height: auto;
     max-height: 100%;
     overflow-y: auto;
-    background: #181825;
-    border: thick #45475a;
+    background: $tau-bg-alt;
+    border: thick $tau-border;
     padding: 1;
 }
 
 #tree-mode-title {
     text-align: center;
     text-style: bold;
-    color: #cba6f7;
+    color: $tau-accent;
     margin-bottom: 1;
 }
 
@@ -579,13 +819,13 @@ ModalScreen {
    rows — the five that pushed the dialog past an 80x24 screen. */
 #tree-mode-buttons Button {
     width: 100%;
-    background: #313244;
-    border: solid #45475a;
-    color: #cdd6f4;
+    background: $tau-surface;
+    border: solid $tau-border;
+    color: $tau-text;
 }
 
 #tree-mode-buttons Button:hover {
-    background: #45475a;
+    background: $tau-surface-hover;
 }
 
 /* === Extension dialogs (confirm / select / input) — E7 §3 / S47 === */
@@ -598,8 +838,8 @@ ModalScreen {
     max-width: 100%;
     height: auto;
     max-height: 100%;
-    background: #181825;
-    border: thick #45475a;
+    background: $tau-bg-alt;
+    border: thick $tau-border;
     padding: 1;
 }
 
@@ -610,13 +850,13 @@ ModalScreen {
 #ext-confirm-title, #ext-select-title, #ext-input-title {
     text-align: center;
     text-style: bold;
-    color: #cba6f7;
+    color: $tau-accent;
     margin-bottom: 1;
 }
 
 #ext-confirm-message {
     margin-bottom: 1;
-    color: #cdd6f4;
+    color: $tau-text;
 }
 
 #ext-confirm-buttons, #ext-input-buttons {
@@ -626,41 +866,41 @@ ModalScreen {
 
 #ext-confirm-buttons Button, #ext-input-buttons Button {
     margin: 0 1;
-    background: #313244;
-    border: solid #45475a;
-    color: #cdd6f4;
+    background: $tau-surface;
+    border: solid $tau-border;
+    color: $tau-text;
 }
 
 #ext-confirm-buttons Button:hover, #ext-input-buttons Button:hover {
-    background: #45475a;
+    background: $tau-surface-hover;
 }
 
 #ext-select-list {
     height: 1fr;
-    background: #1e1e2e;
-    border: solid #45475a;
-    color: #cdd6f4;
+    background: $tau-bg;
+    border: solid $tau-border;
+    color: $tau-text;
 }
 
 #ext-select-list:focus {
-    border: solid #cba6f7;
+    border: solid $tau-accent;
 }
 
 #ext-select-help {
     text-align: center;
-    color: #6c7086;
+    color: $tau-text-muted;
     margin-top: 1;
 }
 
 #ext-input-field {
     margin-bottom: 1;
-    background: #1e1e2e;
-    border: solid #45475a;
-    color: #cdd6f4;
+    background: $tau-bg;
+    border: solid $tau-border;
+    color: $tau-text;
 }
 
 #ext-input-field:focus {
-    border: solid #cba6f7;
+    border: solid $tau-accent;
 }
 
 /* === Extension shortcut chord (which-key menu) — E10 §6 / S69 === */
@@ -669,20 +909,20 @@ ModalScreen {
     max-width: 100%;
     height: auto;
     max-height: 90%;
-    background: #181825;
-    border: thick #45475a;
+    background: $tau-bg-alt;
+    border: thick $tau-border;
     padding: 1;
 }
 
 #ext-chord-title {
     text-align: center;
     text-style: bold;
-    color: #cba6f7;
+    color: $tau-accent;
     margin-bottom: 1;
 }
 
 .ext-chord-entry {
-    color: #cdd6f4;
+    color: $tau-text;
 }
 
 /* === Extension form (declarative fields) — E10 §6 / S66 === */
@@ -691,15 +931,15 @@ ModalScreen {
     max-width: 100%;
     height: auto;
     max-height: 90%;
-    background: #181825;
-    border: thick #45475a;
+    background: $tau-bg-alt;
+    border: thick $tau-border;
     padding: 1;
 }
 
 #ext-form-title {
     text-align: center;
     text-style: bold;
-    color: #cba6f7;
+    color: $tau-accent;
     margin-bottom: 1;
 }
 
@@ -709,23 +949,23 @@ ModalScreen {
 }
 
 .ext-form-label {
-    color: #a6adc8;
+    color: $tau-text-dim;
     margin-top: 1;
 }
 
 .ext-form-input {
-    background: #1e1e2e;
-    border: solid #45475a;
-    color: #cdd6f4;
+    background: $tau-bg;
+    border: solid $tau-border;
+    color: $tau-text;
 }
 
 .ext-form-input:focus {
-    border: solid #cba6f7;
+    border: solid $tau-accent;
 }
 
 #ext-form-help {
     text-align: center;
-    color: #6c7086;
+    color: $tau-text-muted;
     margin-top: 1;
 }
 
@@ -737,13 +977,13 @@ ModalScreen {
 
 #ext-form-buttons Button {
     margin: 0 1;
-    background: #313244;
-    border: solid #45475a;
-    color: #cdd6f4;
+    background: $tau-surface;
+    border: solid $tau-border;
+    color: $tau-text;
 }
 
 #ext-form-buttons Button:hover {
-    background: #45475a;
+    background: $tau-surface-hover;
 }
 
 /* === Foreign-lane strip (B3-b) === */
@@ -754,8 +994,8 @@ ModalScreen {
     height: 1;
     width: 100%;
     padding: 0 1;
-    background: #181825;
-    color: #b4a7f5;
+    background: $tau-bg-alt;
+    color: $tau-role-foreign;
 }
 
 /* === Extension status strip (E10 §6 / S67) === */
@@ -765,8 +1005,8 @@ ModalScreen {
     height: 1;
     width: 100%;
     padding: 0 1;
-    background: #181825;
-    color: #a6adc8;
+    background: $tau-bg-alt;
+    color: $tau-text-dim;
     text-style: dim;
 }
 
@@ -793,24 +1033,24 @@ ModalScreen {
     max-width: 44;
     height: 100%;
     padding: 0 1;
-    background: #181825;
-    border-left: solid #313244;
+    background: $tau-bg-alt;
+    border-left: solid $tau-border-subtle;
 }
 
 .ext-panel {
     height: auto;
     margin-bottom: 1;
     padding: 0 1;
-    border: round #45475a;
+    border: round $tau-border;
 }
 
 .ext-panel-title {
     text-style: bold;
-    color: #cba6f7;
+    color: $tau-accent;
 }
 
 .ext-panel-body {
-    color: #cdd6f4;
+    color: $tau-text;
     margin-top: 1;
 }
 
@@ -840,20 +1080,37 @@ ModalScreen {
     text-wrap: nowrap;
     text-overflow: ellipsis;
     margin: 0 1 0 0;
-    background: #313244;
+    background: $tau-surface;
     border: none;
-    color: #cdd6f4;
+    color: $tau-text;
 }
 
 .ext-panel-action:hover {
-    background: #45475a;
+    background: $tau-surface-hover;
 }
 
 /* === Code blocks in markdown === */
+/* INERT AGAINST textual 8.2.7 — kept, and labelled rather than deleted.
+   `CodeBlock` is not a widget this Textual has: a fence mounts `MarkdownFence`
+   holding a `Label`, and nothing named `CodeBlock` appears anywhere in the tree
+   (verified by walking the `tools` scene). So this rule matches zero widgets and
+   `$tau-code-fg` currently paints nothing.
+
+   What actually colours a fence is `textual.highlight.HighlightTheme`, whose
+   token styles are written against Textual's DESIGN TOKENS
+   (`$text-accent`, `$text-warning`, `$text-primary`, …) and never against
+   `$tau-*`. That is the one surface a τ theme reaches only through its
+   `textual.theme.Theme` half — see themes.py, and the report in
+   docs/PLAN-0.9.4.md §6: a theme that tunes the τ palette and leaves the design
+   tokens at some other palette's values gets code blocks from a third palette.
+
+   Deleting the rule is a structural change, and §10's non-goal on styling still
+   holds; it stays as written so that if a later Textual reintroduces the widget
+   the intent is already here. */
 Markdown CodeBlock {
-    background: #11111b;
-    border: solid #313244;
-    color: #a6e3a1;  /* Soft green for code */
+    background: $tau-bg-deep;
+    border: solid $tau-border-subtle;
+    color: $tau-code-fg;
 }
 
 /* Tool-call / tool-result blocks are rendered by the shared MessageBox widget

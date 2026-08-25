@@ -37,6 +37,19 @@ from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, 
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.submission import Submission
 
+# TREE-BROWSER-AS-EDITOR.md §8/§11.3: ``append_compaction`` now requires the
+# summary's provenance as keyword-only arguments with no defaults. These tests are
+# about something else, so they name plausible values once here rather than at every
+# call — the point of the required keywords is that a REAL caller cannot skip them.
+_PROV = {
+    "summarizer_model_id": "test-summarizer",
+    "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+    "covered_entries": 1,
+    "covered_tokens": 50,
+    "agent_spec_id": None,
+}
+
+
 # ── a minimal, test-only SessionCatalog/ConversationSession pair ───────────
 
 
@@ -74,11 +87,43 @@ class _FakeConversationSession:
     def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
         return self._log.append_custom_entry(custom_type, data)
 
-    def append_compaction(self, summary: str, first_kept_id: str, tokens_before: int) -> str:
-        return self._log.append_compaction(summary, first_kept_id, tokens_before)
+    def append_compaction(
+        self,
+        summary: str,
+        first_kept_id: str,
+        tokens_before: int,
+        *,
+        summarizer_model_id: str,
+        summary_usage: dict[str, int],
+        covered_entries: int,
+        covered_tokens: int,
+        agent_spec_id: str | None,
+    ) -> str:
+        return self._log.append_compaction(
+            summary,
+            first_kept_id,
+            tokens_before,
+            summarizer_model_id=summarizer_model_id,
+            summary_usage=summary_usage,
+            covered_entries=covered_entries,
+            covered_tokens=covered_tokens,
+            agent_spec_id=agent_spec_id,
+        )
 
-    def append_elide(self, first_kept_id: str) -> str:
-        return self._log.append_elide(first_kept_id)
+    def append_elide(
+        self,
+        first_kept_id: str,
+        *,
+        covered_entries: int,
+        covered_tokens: int,
+        agent_spec_id: str | None,
+    ) -> str:
+        return self._log.append_elide(
+            first_kept_id,
+            covered_entries=covered_entries,
+            covered_tokens=covered_tokens,
+            agent_spec_id=agent_spec_id,
+        )
 
     def append_navigate(self, target_id: str | None) -> str:
         return self._log.append_navigate(target_id)
@@ -322,7 +367,9 @@ async def test_last_compaction_anchor_is_cleared_not_rederived(session: AgentSes
     proves it is genuinely GONE, not carried over or recomputed."""
     log = session.session_log
     first = log.append_message({"role": "user", "content": "turn one"})
-    log.append_compaction(summary="a summary", first_kept_id=first, tokens_before=100)
+    log.append_compaction(
+        summary="a summary", first_kept_id=first, tokens_before=100, **_PROV
+    )
     # Sanity: the OLD log really does have a splice anchor before the reset.
     old_active = ConversationTree(log.entries(), log.cursor).context_for()
     assert any(m.get("role") == "user" and "summary" in str(m.get("content")) for m in old_active)

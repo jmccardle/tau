@@ -550,8 +550,27 @@ class Session:
     def append_session_info(self, name: str) -> str:
         return self._append("session_info", name=name)
 
-    def append_compaction(self, summary: str, first_kept_id: str, tokens_before: int) -> str:
+    def append_compaction(
+        self,
+        summary: str,
+        first_kept_id: str,
+        tokens_before: int,
+        *,
+        summarizer_model_id: str,
+        summary_usage: dict[str, int],
+        covered_entries: int,
+        covered_tokens: int,
+        agent_spec_id: str | None,
+    ) -> str:
         """Persist a compaction splice anchored at ``first_kept_id``.
+
+        The five keyword-only provenance fields are TREE-BROWSER-AS-EDITOR.md §8's
+        decision as §11.3 widened it onto the Protocol: which model wrote the
+        summary, what that cost, how big the folded span was, and which
+        ``agent_spec`` was in force. None of them has a default — every one existed
+        at the call site and was being dropped on the floor (§8.1), so a caller that
+        cannot name one must fail there rather than persist a ``None`` that reads as
+        a recorded unknown.
 
         Fail-Early on an unknown anchor, exactly as ``append_navigate`` and
         ``append_branch_summary`` already do. This one was missing, and it is the most
@@ -574,9 +593,21 @@ class Session:
             summary=summary,
             firstKeptId=first_kept_id,
             tokensBefore=tokens_before,
+            summarizerModelId=summarizer_model_id,
+            summaryUsage=dict(summary_usage),
+            coveredEntries=covered_entries,
+            coveredTokens=covered_tokens,
+            agentSpecId=agent_spec_id,
         )
 
-    def append_elide(self, first_kept_id: str) -> str:
+    def append_elide(
+        self,
+        first_kept_id: str,
+        *,
+        covered_entries: int,
+        covered_tokens: int,
+        agent_spec_id: str | None,
+    ) -> str:
         """Persist a summary-less splice anchor (W3, NODE-ADDRESSABLE-AGENTS.md).
 
         The same splice ``ConversationTree._active_path_entries`` runs for
@@ -589,6 +620,13 @@ class Session:
         Fail-Early on an unknown anchor, exactly as ``append_compaction`` does: an
         id matching nothing is never found by the fold's forward scan, so the
         entire kept region would silently drop out of context rather than raise.
+
+        Three provenance fields rather than ``append_compaction``'s five (§8.2,
+        §8.3): an elide has a covered span and an ``agent_spec``, but no summary and
+        therefore neither a summarizer nor a summary cost. Until now it recorded
+        only ``firstKeptId`` — less than a compaction, which at least carried
+        ``tokensBefore`` — and ``coveredTokens`` in particular is the one figure that
+        is NOT recomputable from the tree afterwards.
         """
         if first_kept_id not in self._ids:
             raise ValueError(
@@ -596,7 +634,13 @@ class Session:
                 "must name a real entry, or the whole kept region silently drops out of "
                 "the context fold"
             )
-        return self._append("elide", firstKeptId=first_kept_id)
+        return self._append(
+            "elide",
+            firstKeptId=first_kept_id,
+            coveredEntries=covered_entries,
+            coveredTokens=covered_tokens,
+            agentSpecId=agent_spec_id,
+        )
 
     def append_navigate(self, target_id: str | None) -> str:
         """Persist a cursor move as a first-class ``navigate`` entry (§2.2).

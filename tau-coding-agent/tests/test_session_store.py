@@ -32,6 +32,18 @@ from tau_coding_agent.session_store import (
     subscribe_session_events,
 )
 
+# TREE-BROWSER-AS-EDITOR.md §8/§11.3: ``append_compaction`` now requires the summary's
+# provenance as keyword-only arguments with no defaults. These tests are about
+# something else, so they name plausible values once here.
+_PROV = {
+    "summarizer_model_id": "test-summarizer",
+    "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+    "covered_entries": 1,
+    "covered_tokens": 50,
+    "agent_spec_id": None,
+}
+
+
 CWD = "/home/john/proj"
 OTHER_CWD = "/home/john/other"
 
@@ -330,7 +342,7 @@ def test_lifecycle_events_emitted(tmp_path):
         # (an unknown anchor is never found by the fold, so the whole kept region would
         # silently vanish from the context).
         keep = source.append_message({"role": "user", "content": "recent"})
-        source.append_compaction("summary", first_kept_id=keep, tokens_before=100)
+        source.append_compaction("summary", first_kept_id=keep, tokens_before=100, **_PROV)
     finally:
         unsubscribe()
 

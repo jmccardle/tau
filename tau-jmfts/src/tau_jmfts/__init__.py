@@ -20,7 +20,7 @@ Reference: docs/JMFTS-INTEGRATION-PLAN.md
 
 # This distribution's version, read at build time by pyproject.toml's
 # [tool.setuptools.dynamic]. Kept in lockstep with the other three packages.
-__version__ = "0.9.3"
+__version__ = "0.9.4"
 
 from tau_jmfts.catalog import JmftsSessionCatalog
 from tau_jmfts.client import DocumentDict, JmftsClient, JmftsError, JmftsTextTooLongError

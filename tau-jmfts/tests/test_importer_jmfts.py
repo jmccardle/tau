@@ -39,6 +39,19 @@ from tau_jmfts.client import JmftsClient
 from tau_jmfts.importer import export_session, import_session
 from tau_jmfts.store import JmftsSessionLog
 
+# TREE-BROWSER-AS-EDITOR.md §8/§11.3: the splice appenders now require the anchor's
+# provenance as keyword-only arguments with no defaults. These tests are about
+# something else, so they name plausible values once here.
+_PROV = {
+    "summarizer_model_id": "test-summarizer",
+    "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+    "covered_entries": 1,
+    "covered_tokens": 50,
+    "agent_spec_id": None,
+}
+_ELIDE_PROV = {"covered_entries": 1, "covered_tokens": 50, "agent_spec_id": None}
+
+
 pytestmark = pytest.mark.jmfts
 
 TEST_PREFIX = "tau-jmfts-test"
@@ -147,7 +160,9 @@ def _build_rich_source_session(tmp_path: Path) -> Session:
     # Back to branch A ([3]): append a compaction anchored at "hi".
     hi_id = session.entries()[3]["id"]
     session.append_navigate(hi_id)  # [8]
-    session.append_compaction("early chat summary", first_kept_id=hi_id, tokens_before=500)  # [9]
+    session.append_compaction(
+        "early chat summary", first_kept_id=hi_id, tokens_before=500, **_PROV
+    )  # [9]
     session.append_message(_msg("user", "continue after compaction"))  # [10]
 
     # A brand-new root-level branch.
@@ -308,7 +323,7 @@ def test_import_preserves_elide_crossref_and_context_fold(
     session.append_message(_msg("user", "before the elide"))  # dropped by the fold
     kept_id = session.append_message(_msg("assistant", "kept from here"))
     session.append_navigate(kept_id)
-    session.append_elide(first_kept_id=kept_id)
+    session.append_elide(first_kept_id=kept_id, **_ELIDE_PROV)
     session.append_message(_msg("user", "after the elide"))
 
     original_entries = session.entries()

@@ -672,3 +672,26 @@ def test_usage_counts_thinking_tokens_as_output() -> None:
 
     assert converted.output_tokens == 12
     assert converted.cache_read_tokens == 2
+    # prompt_token_count 10 INCLUDES the 2 cached, so input_tokens is the uncached
+    # 8. Left at 10 the pair would count the cached span twice (pi subtracts too,
+    # google-generative-ai.ts:227). The server's total is untouched.
+    assert converted.input_tokens == 8
+    assert converted.total_tokens == 22
+
+
+def test_usage_never_reports_a_negative_input_when_the_whole_prompt_was_cached() -> None:
+    usage = type(
+        "U",
+        (),
+        {
+            "prompt_token_count": 10,
+            "candidates_token_count": 4,
+            "thoughts_token_count": 0,
+            "cached_content_token_count": 10,
+            "total_token_count": 14,
+        },
+    )()
+
+    converted = google_provider._usage_from_google(usage)
+
+    assert (converted.input_tokens, converted.cache_read_tokens) == (0, 10)

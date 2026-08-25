@@ -70,6 +70,11 @@ HONORED_UNDER_RPC = {
     "no_context_files",
     "thinking",
     "session_dir",
+    # --max-turns rides the same `resolve_model_config` -> `create_backend` path
+    # as -nc: it lands on the model config as `max_turns`, `TauBackend` forwards
+    # it to `AgentSession`, and `AgentSession._turn_cap` puts it in the
+    # `AgentLoopConfig`. Checked against rpc_mode.py:225,249.
+    "max_turns",
     # The field this file exists because of. `--mode rpc` selects
     # `session_catalog.create_ephemeral` for the startup session when it is
     # set, which is what `--print` has always done on the same seam.
@@ -106,6 +111,12 @@ TUI_ONLY = {
     # tau_coding_agent.tagline: picks the startup tagline at random. Reaches one
     # string on one widget on the empty chat pane, and stops there.
     "fun",
+    # tau_coding_agent.themes: the TUI colour theme for this run. Read in exactly
+    # one place — ``_launch_tui`` puts it in ``cli_overrides`` — and ``rpc_mode.py``
+    # never mentions it. Checked: ``grep -n theme cli.py`` is the flag definition,
+    # the ``CLIArgs`` field, the ``parse_cli_args`` line and the ``_launch_tui``
+    # block, and nothing else.
+    "theme",
 }
 
 

@@ -161,9 +161,9 @@ async def test_exchange_box_groups_steps_and_summarizes():
         assert kids == [r, t1, t2]
         assert exchange.tool_count == 2
 
-        exchange.set_summary(tools=2, tokens=102700, seconds=186)
+        exchange.set_summary(tools=2, context=102700, output=1200, seconds=186)
         await pilot.pause()
-        assert exchange.title == "✓ 2 tools · 102.7k tok · 3:06"
+        assert exchange.title == "✓ 2 tools · 102.7k ctx · 1.2k out · 3:06"
 
 
 async def test_exchange_summary_appends_telemetry_suffix():
@@ -171,9 +171,11 @@ async def test_exchange_summary_appends_telemetry_suffix():
     exchange = ExchangeBox()
     async with _Host(exchange).run_test() as pilot:
         await pilot.pause()
-        exchange.set_summary(tools=2, tokens=1200, seconds=3, telemetry="41.2 t/s · repairs=0")
+        exchange.set_summary(
+            tools=2, context=1200, output=340, seconds=3, telemetry="41.2 t/s · repairs=0"
+        )
         await pilot.pause()
-        assert exchange.title == "✓ 2 tools · 1.2k tok · 0:03 · 41.2 t/s · repairs=0"
+        assert exchange.title == "✓ 2 tools · 1.2k ctx · 340 out · 0:03 · 41.2 t/s · repairs=0"
 
 
 async def test_exchange_summary_without_telemetry_is_unchanged():
@@ -181,9 +183,9 @@ async def test_exchange_summary_without_telemetry_is_unchanged():
     exchange = ExchangeBox()
     async with _Host(exchange).run_test() as pilot:
         await pilot.pause()
-        exchange.set_summary(tools=2, tokens=1200, seconds=3)
+        exchange.set_summary(tools=2, context=1200, output=340, seconds=3)
         await pilot.pause()
-        assert exchange.title == "✓ 2 tools · 1.2k tok · 0:03"
+        assert exchange.title == "✓ 2 tools · 1.2k ctx · 340 out · 0:03"
 
 
 async def test_exchange_summary_shows_zero_tokens_not_hidden():
@@ -191,9 +193,9 @@ async def test_exchange_summary_shows_zero_tokens_not_hidden():
     exchange = ExchangeBox()
     async with _Host(exchange).run_test() as pilot:
         await pilot.pause()
-        exchange.set_summary(tools=1, tokens=0, seconds=5)
+        exchange.set_summary(tools=1, context=0, output=0, seconds=5)
         await pilot.pause()
-        assert exchange.title == "✓ 1 tool · 0 tok · 0:05"
+        assert exchange.title == "✓ 1 tool · 0 ctx · 0 out · 0:05"
 
 
 async def test_nested_exchange_has_no_interior_scrollbars():

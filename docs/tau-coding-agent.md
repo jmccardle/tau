@@ -108,7 +108,8 @@ stale.
 | `--continue` / `--session REF` / `--fork REF` | `-c` | mutually exclusive with each other and with `--resume` |
 | `--resume` | `-r` | opens `SessionPickerModal` at TUI startup. Raises under `--print`, which has no screen to open a picker on — use `--continue` or `--session REF` there |
 | `--no-context-files` | `-nc` | turn off `AGENTS.md`/`CLAUDE.md` discovery. Run-level, so a mid-session `/model` switch cannot hand the files back |
-| `--fun` / `--no-fun` | | pick the startup tagline at random rather than always the same one |
+| `--fun` / `--no-fun` | | pick the startup tagline at random rather than always the same one. **On by default**, in a checkout and in every built artifact alike; `--no-fun` pins it to the first tagline. A `Parley` built in-process (tests, `testing.scenes`, `devshot`) defaults it OFF instead, which is what keeps rendered scenes byte-stable |
+| `--theme NAME` | | TUI colour theme for **this run only** — see the config table below. Never written to `config.json`, which is the whole difference between it and picking a theme from the command palette. Not validated here: an unknown name reaches the app, which raises an error toast and starts in `mocha` |
 | `--name` | `-n` | session display title |
 | `--no-session` | | ephemeral, no persistence |
 | `--thinking {off,minimal,low,medium,high,xhigh}` | | requires a reasoning-capable model |
@@ -117,6 +118,59 @@ stale.
 | `--import-session PATH` / `--export-session REF PATH` | | JMFTS store transfer, then exit |
 | `--verbose` | | long-only — **`-v` is `--version`**, not verbose |
 | `--help` / `--version` | `-h` / `-v` | |
+
+## Colour themes
+
+τ ships four: `mocha` (the default), `latte`, `gruvbox`, and `ansi`. A theme is
+a palette, not a stylesheet — `parley.tcss` holds the structure and contains no
+colour literal, and each theme supplies the 25 `$tau-*` role variables the sheet
+names plus the Textual design tokens that colour the Footer, the scrollbars and
+the tree cursor.
+
+`ansi` is the odd one. Every colour in it is an ANSI *name*, so the 16 colours
+already configured in the terminal emulator decide what τ looks like, and it
+paints no backgrounds at all — `ansi_black` would be a black sidebar on a light
+terminal and invisible on a dark one. Two costs come with that: the six-step
+text ramp collapses to three, and `border` and `border-subtle` become the same
+colour.
+
+Three ways to select one, in increasing durability:
+
+1. `tau --theme gruvbox` — this run only. Never written to disk.
+2. The command palette (`ctrl+p`, "Theme: …") — swaps live and **saves**.
+3. `"theme": "gruvbox"` in `~/.tau/config.json` — the standing choice.
+
+A theme that cannot be loaded does not stop τ from starting. Each failure — a
+name nothing answers to, a `theme` key that is not a string, a file in
+`~/.tau/themes` that will not parse — raises an error toast naming the problem,
+and the app runs in `mocha`. A broken file named after a built-in leaves the
+built-in standing, and one broken file does not cost the others.
+
+### Writing one
+
+Drop a `<name>.json` in `~/.tau/themes/`. The file's stem is the theme's name,
+and a file named after a built-in replaces it.
+
+```json
+{
+  "extends": "mocha",
+  "palette": { "bg": "#000000", "bg-alt": "#050508" },
+  "textual": { "background": "#000000" }
+}
+```
+
+`extends` names a built-in and supplies both halves. `palette` overrides τ's
+colours by the role names in `themes.TAU_PALETTE_KEYS`. The optional `textual`
+block overrides Textual's own design tokens, for the widgets `parley.tcss` does
+not reach — `"dark": false` there is what sends Textual's built-in widgets down
+their light branch, so a light palette does not end up under a dark Footer.
+
+## Other config keys
+
+There is no complete `config.json` reference yet. `models`, `default_model`,
+`system_prompt`, `session_store` and `theme` are the top-level keys the TUI
+reads directly; most CLI flags have a matching key, and the packaged
+`tau_default_config.json` is what a first run writes.
 
 ## Dependencies
 

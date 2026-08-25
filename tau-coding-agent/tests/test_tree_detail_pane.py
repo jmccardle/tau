@@ -339,7 +339,7 @@ async def test_the_pane_is_a_view_of_the_same_log_the_rows_are() -> None:
         }
     ]
     tree = ConversationTree(log, cursor="a")
-    modal = SessionTreeModal(tree.tree(), resolve_entry=tree.entry)
+    modal = SessionTreeModal(tree)
     with pytest.raises(KeyError):
         modal._resolve_entry("no-such-entry")
 
@@ -356,5 +356,133 @@ async def test_the_pane_is_reachable_from_the_keyboard() -> None:
 
 
 async def test_the_help_line_says_how() -> None:
+    """Both pane keys are named there — `Tab` to focus it, `^D` to fold it away.
+
+    Shortened from "Tab: detail pane" when `^E` and `^D` pushed the line to 94
+    columns and it wrapped to two rows, taking a row from the tree to tell it
+    about a key.
+    """
     async with open_scene(get_scene("tree-modal"), WIDE) as (app, _pilot):
-        assert "detail pane" in render_text(app)
+        assert "Tab/^D: pane" in render_text(app)
+
+
+# ---------------------------------------------------------------------------
+# Folding the pane away (PLAN-0.9.4 §4a)
+# ---------------------------------------------------------------------------
+
+
+async def test_folding_the_pane_gives_its_rows_to_the_tree_and_leaves_a_way_back():
+    """The pane takes half the body, and until now only a short terminal hid it.
+
+    A reader following the SHAPE of a conversation wants those rows. The fold
+    costs one row for the marker, which is what makes it reversible by pointing
+    at it — a pane that vanishes with only a key to bring it back is a pane the
+    reader has to remember they hid.
+    """
+    from textual.widgets import Static
+
+    async with open_scene(get_scene("tree-modal"), WIDE) as (app, pilot):
+        modal = app.screen
+        tree = app.screen.query_one("#tree-browser-tree", Tree)
+        marker = app.screen.query_one("#tree-detail-folded", Static)
+        assert _pane(app).display is True
+        assert marker.display is False
+        open_rows = tree.size.height
+
+        await modal.action_toggle_detail()
+        await pilot.pause()
+        assert _pane(app).display is False
+        assert marker.display is True
+        assert marker.size.height == 1
+        assert tree.size.height > open_rows, "the tree got the pane's rows"
+
+        await modal.action_toggle_detail()
+        await pilot.pause()
+        assert _pane(app).display is True
+        assert marker.display is False
+        assert tree.size.height == open_rows
+
+
+async def test_a_fold_survives_a_resize_that_would_have_shown_the_pane():
+    """Two reasons the pane can be absent, and they are not the same reason.
+
+    The height rule is the layout's; the fold is the reader's. A terminal growing
+    back past ``DETAIL_MIN_HEIGHT`` must not undo a choice.
+    """
+    async with open_scene(get_scene("tree-modal"), WIDE) as (app, pilot):
+        modal = app.screen
+        await modal.action_toggle_detail()
+        await pilot.pause()
+        assert _pane(app).display is False
+
+        await pilot.resize_terminal(100, SessionTreeModal.DETAIL_MIN_HEIGHT - 1)
+        await pilot.pause()
+        await pilot.resize_terminal(*WIDE)
+        await pilot.pause()
+        assert _pane(app).display is False, "the resize un-folded a pane the reader folded"
+
+
+async def test_the_marker_is_not_drawn_on_a_terminal_too_short_for_the_pane():
+    """Below ``DETAIL_MIN_HEIGHT`` the tree needs every row it can get, and a
+    marker for a pane the reader did not hide would be the worst use of one."""
+    from textual.widgets import Static
+
+    async with open_scene(
+        get_scene("tree-modal"), (120, SessionTreeModal.DETAIL_MIN_HEIGHT - 1)
+    ) as (app, pilot):
+        await pilot.pause()
+        assert _pane(app).display is False
+        assert app.screen.query_one("#tree-detail-folded", Static).display is False
+
+
+async def test_the_pane_redraws_for_wherever_the_cursor_went_while_it_was_folded():
+    """``_show_node`` does nothing while the pane is hidden — there is no audience —
+    so the cursor can have moved several rows since its last frame."""
+    async with open_scene(get_scene("tree-modal"), WIDE) as (app, pilot):
+        modal = app.screen
+        await _move_to(app, pilot, "n1")
+        shown_before = _titles(app)
+
+        await modal.action_toggle_detail()
+        await pilot.pause()
+        await _move_to(app, pilot, "n3")
+        await modal.action_toggle_detail()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert _titles(app) != shown_before
+        assert _pane(app)._shown_id == "n3"
+
+
+async def test_double_clicking_the_pane_border_folds_it_and_one_click_brings_it_back():
+    """The pointer half of the gesture, driven through the real event.
+
+    ``on_click`` tests ``event.widget is pane`` and not "the pane or anything in
+    it": a click INSIDE the pane lands on a ``MessageBox``, a tool box or a
+    markdown block, and those are things the reader is reading. The pane itself
+    is reachable at its border, which is the offset used here.
+    """
+    from textual.widgets import Static
+
+    async with open_scene(get_scene("tree-modal"), WIDE) as (app, pilot):
+        pane = _pane(app)
+        marker = app.screen.query_one("#tree-detail-folded", Static)
+
+        # (0, 0) of the pane's region is its own border cell.
+        await pilot.click(pane, offset=(0, 0), times=2)
+        await pilot.pause()
+        assert pane.display is False
+        assert marker.display is True
+
+        await pilot.click(marker)
+        await pilot.pause()
+        assert pane.display is True
+
+
+async def test_a_single_click_on_the_pane_does_not_fold_it():
+    """A fold on one click would fire every time the reader clicked to focus it."""
+    async with open_scene(get_scene("tree-modal"), WIDE) as (app, pilot):
+        pane = _pane(app)
+        await pilot.click(pane, offset=(0, 0))
+        await pilot.pause()
+        assert pane.display is True

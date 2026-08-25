@@ -76,6 +76,35 @@ class ErrorCall:
         self.error = error
 
 
+#: The result text a tool call gets when an abort reaches it before it ran.
+#: Matches pi's wording, and is deliberately a *result* rather than an omission —
+#: see :meth:`AgentLoop._aborted_batch`.
+ABORTED_TOOL_RESULT = "Operation aborted"
+
+#: Attribute name under which a failed :meth:`AgentLoop.run` /
+#: :meth:`AgentLoop.run_continue` attaches the messages it had already finished.
+#:
+#: An attribute on the raised exception, rather than a wrapper exception, on
+#: purpose: wrapping would change the type callers catch, and the loop raises
+#: several (``RuntimeError`` from a provider ``ErrorEvent``, ``ValueError`` from a
+#: malformed tool call, ``asyncio.CancelledError`` from a hard cancel). The
+#: failure must reach the caller exactly as it was; the completed work rides
+#: alongside it. Read it with :func:`completed_messages`.
+COMPLETED_MESSAGES_ATTR = "tau_completed_messages"
+
+
+def completed_messages(exc: BaseException) -> list[Any]:
+    """The messages an agent-loop run had already completed when *exc* ended it.
+
+    Empty for any other exception, so a caller can ask unconditionally. The
+    caller that matters is
+    :meth:`~tau_agent_core.agent_session.AgentSession._run_one_turn`, which
+    persists these before re-raising — the requirement in docs/PLAN-0.9.4.md §3:
+    *every complete message or tool result should be persisted*.
+    """
+    return list(getattr(exc, COMPLETED_MESSAGES_ATTR, []))
+
+
 # ---------------------------------------------------------------------------
 # AgentLoop
 # ---------------------------------------------------------------------------
@@ -208,7 +237,7 @@ class AgentLoop:
         final_messages: list[Any] = []
 
         try:
-            while turn_index < self.config.max_turns:
+            while not self._turn_ceiling_reached(turn_index):
                 if self._abort_signal and self._abort_signal.is_aborted():
                     break
 
@@ -343,6 +372,13 @@ class AgentLoop:
             # The bracket closes however the loop ended — see _emit_agent_end.
             # `except` rather than `finally` so the close can say WHY; the raise
             # below is unconditional, so nothing is swallowed by observing it.
+            #
+            # `final_messages` is a LOCAL, so before this it died with the frame:
+            # a provider error mid-turn took the assistant message and every
+            # completed tool result down with it, and the caller had no way to
+            # reach them (docs/PLAN-0.9.4.md §3). Attaching them to the exception
+            # hands the caller what finished without changing what it catches.
+            setattr(exc, COMPLETED_MESSAGES_ATTR, list(final_messages))
             await self._emit_agent_end(final_messages, exc)
             raise
 
@@ -373,7 +409,7 @@ class AgentLoop:
         await self._emit(AgentEvent(type="agent_start", timestamp=int(time.time() * 1000)))
 
         try:
-            while turn_index < self.config.max_turns:
+            while not self._turn_ceiling_reached(turn_index):
                 if self._abort_signal and self._abort_signal.is_aborted():
                     break
 
@@ -481,6 +517,13 @@ class AgentLoop:
             # The bracket closes however the loop ended — see _emit_agent_end.
             # `except` rather than `finally` so the close can say WHY; the raise
             # below is unconditional, so nothing is swallowed by observing it.
+            #
+            # `final_messages` is a LOCAL, so before this it died with the frame:
+            # a provider error mid-turn took the assistant message and every
+            # completed tool result down with it, and the caller had no way to
+            # reach them (docs/PLAN-0.9.4.md §3). Attaching them to the exception
+            # hands the caller what finished without changing what it catches.
+            setattr(exc, COMPLETED_MESSAGES_ATTR, list(final_messages))
             await self._emit_agent_end(final_messages, exc)
             raise
 
@@ -491,6 +534,20 @@ class AgentLoop:
     # ------------------------------------------------------------------
     # Internal methods
     # ------------------------------------------------------------------
+
+    def _turn_ceiling_reached(self, turn_index: int) -> bool:
+        """Whether ``max_turns`` forbids starting the turn at ``turn_index``.
+
+        ``max_turns=None`` — the default — is no ceiling, so this is ``False``
+        forever and the loop ends the way pi's does: no tool calls, an error, an
+        abort, or a ``terminate``-ing tool. See ``AgentLoopConfig.max_turns`` for
+        why the old hardcoded 50 is gone.
+
+        The index is the session's, not this call's: ``run_continue`` starts from
+        ``self._turn_index`` rather than 0, so a stated ceiling bounds the whole
+        run and not each continuation separately.
+        """
+        return self.config.max_turns is not None and turn_index >= self.config.max_turns
 
     async def _emit_agent_end(
         self,
@@ -737,18 +794,43 @@ class AgentLoop:
         partial_text = ""
         partial_reasoning = ""
         partial_content_blocks: list[dict[str, Any]] = []
+        started = False
+
+        async def start_once(content: list[Any]) -> None:
+            """Emit ``message_start`` for this completion, at most once.
+
+            ``message_start``/``message_end`` bracket ONE assistant message — the
+            contract `_drain_steer_queue` states in its own docstring, and what pi
+            does: it emits the event on the stream's `start` event and never again
+            (``agent-loop.ts:323``).
+
+            τ's streaming vocabulary has no `start` event, so the bracket opens on
+            the first content event of any kind. That is why the guard lives here
+            rather than in one branch: emitting from the text branch alone opened
+            the bracket once per text delta (a 2137-delta answer emitted 2137
+            ``message_start`` events), and never opened it at all for a completion
+            that produced only reasoning or only a tool call.
+            """
+            nonlocal started
+            if started:
+                return
+            started = True
+            await self._emit(
+                AgentEvent(
+                    type="message_start",
+                    timestamp=int(time.time() * 1000),
+                    # Copied: every caller hands over a list it also puts on the
+                    # following `message_update`/`message_end`, and two events
+                    # sharing one list is a subscriber's mutation reaching both.
+                    message={"role": "assistant", "content": list(content)},
+                )
+            )
 
         async for event in stream:
             if isinstance(event, TextDeltaEvent):
                 partial_text += event.delta
                 partial_content_blocks = [{"type": "text", "text": partial_text}]
-                await self._emit(
-                    AgentEvent(
-                        type="message_start",
-                        timestamp=int(time.time() * 1000),
-                        message={"role": "assistant", "content": partial_content_blocks},
-                    )
-                )
+                await start_once(partial_content_blocks)
                 await self._emit(
                     AgentEvent(
                         type="message_update",
@@ -766,13 +848,15 @@ class AgentLoop:
                 # distinct from the answer text so the UI can render and collapse
                 # it separately.
                 partial_reasoning += event.delta
+                thinking_blocks = [{"type": "thinking", "thinking": partial_reasoning}]
+                await start_once(thinking_blocks)
                 await self._emit(
                     AgentEvent(
                         type="message_update",
                         timestamp=int(time.time() * 1000),
                         message={
                             "role": "assistant",
-                            "content": [{"type": "thinking", "thinking": partial_reasoning}],
+                            "content": thinking_blocks,
                         },
                     )
                 )
@@ -786,6 +870,7 @@ class AgentLoop:
                     # ThinkingContent / ToolCall), each with model_dump().
                     partial_content_blocks = [c.model_dump() for c in partial.content]
 
+                await start_once(partial_content_blocks)
                 await self._emit(
                     AgentEvent(
                         type="message_update",
@@ -798,16 +883,22 @@ class AgentLoop:
                 )
             elif isinstance(event, DoneEvent):
                 final_msg = event.final
+                final_blocks = [
+                    c.model_dump() if hasattr(c, "model_dump") else c for c in final_msg.content
+                ]
+                # A completion that yielded no delta at all — an empty answer, or a
+                # provider that only ever produces a terminal message — would
+                # otherwise close a bracket that was never opened. Opening it here
+                # costs nothing when a delta already did (`start_once` is a no-op)
+                # and keeps every `message_end` this method emits paired.
+                await start_once(final_blocks)
                 await self._emit(
                     AgentEvent(
                         type="message_end",
                         timestamp=int(time.time() * 1000),
                         message={
                             "role": "assistant",
-                            "content": [
-                                c.model_dump() if hasattr(c, "model_dump") else c
-                                for c in final_msg.content
-                            ],
+                            "content": final_blocks,
                             # Real token usage for THIS completion. Attached to the
                             # per-completion message_end (emitted exactly once here,
                             # in _stream_response) rather than the duplicate
@@ -927,6 +1018,16 @@ class AgentLoop:
         Returns:
             ToolBatchResult with tool result messages.
         """
+        # Already aborted before the batch even starts. Two ways to get here: the
+        # user pressed Esc while the assistant message was still streaming, or
+        # while the PREVIOUS batch was running. Either way nothing in this batch
+        # may execute — and the parallel path below has no abort check of its own,
+        # so without this guard an abort mid-stream would still run every tool the
+        # model had asked for. The calls are answered rather than skipped; see
+        # :meth:`_aborted_batch`.
+        if self._abort_signal and self._abort_signal.is_aborted():
+            return await self._aborted_batch(tool_calls, prior=[])
+
         has_sequential_tool_call = any(
             self._tools[tc.name].execution_mode == "sequential"
             for tc in tool_calls
@@ -935,6 +1036,59 @@ class AgentLoop:
         if self.config.tool_execution_mode == "sequential" or has_sequential_tool_call:
             return await self._execute_sequential(assistant, tool_calls)
         return await self._execute_parallel(assistant, tool_calls)
+
+    async def _aborted_batch(
+        self,
+        tool_calls: list[ToolCall],
+        prior: list[AgentToolResult],
+    ) -> ToolBatchResult:
+        """Answer every tool call the abort left outstanding (docs/PLAN-0.9.4.md §3).
+
+        The defect this replaces: the sequential executor simply ``break``\\ed on
+        abort and synthesized nothing. That was invisible while an aborted turn
+        was discarded wholesale — but the turn is persisted now, so the same code
+        would write an assistant message carrying ``tool_call_id``\\ s that no
+        result ever answers. A validating provider rejects that transcript
+        outright on the next request, which turns a cancelled turn into a
+        conversation that cannot be resumed. pi does not have the problem: it
+        returns an aborted error result for every outstanding call.
+
+        *prior* holds the results a sequential batch already finished before the
+        abort landed. Those keep their genuine outcome and their position; only
+        the calls with no result yet are answered here.
+
+        The ``tool_execution_start``/``tool_execution_end`` pair is emitted for
+        each synthesized result for the reason the veto path states above: a
+        front-end folds a result into the widget its *start* event created, so a
+        result with no preceding start is silently dropped and the user sees a
+        turn that simply stops.
+        """
+        results = list(prior)
+        answered = {r.tool_call_id for r in prior}
+        for tc in tool_calls:
+            if tc.id in answered:
+                continue
+            await self._emit(
+                AgentEvent(
+                    type="tool_execution_start",
+                    timestamp=int(time.time() * 1000),
+                    tool_call_id=tc.id,
+                    tool_name=tc.name,
+                    args=tc.arguments if isinstance(tc.arguments, dict) else {},
+                )
+            )
+            await self._emit(
+                AgentEvent(
+                    type="tool_execution_end",
+                    timestamp=int(time.time() * 1000),
+                    tool_call_id=tc.id,
+                    tool_name=tc.name,
+                    result=ABORTED_TOOL_RESULT,
+                    is_error=True,
+                )
+            )
+            results.append(AgentToolResult.from_error(tc.name, ABORTED_TOOL_RESULT, tc.id))
+        return self._build_batch_result(results)
 
     def _emit_veto_record(self, tool_name: str, reason: str, extension: str | None) -> None:
         """Emit the JSON-stream veto record for an extension-blocked call (S50).
@@ -972,7 +1126,11 @@ class AgentLoop:
             if terminated:
                 break
             if self._abort_signal and self._abort_signal.is_aborted():
-                break
+                # The abort landed part-way through the batch. Everything already
+                # run keeps its real result; this call and the ones behind it are
+                # answered as aborted, so the assistant message leaves no
+                # tool_call_id unanswered (docs/PLAN-0.9.4.md §3).
+                return await self._aborted_batch(tool_calls, prior=all_results)
 
             # Emit the start for EVERY call up front (pi agent-loop.ts:406-413) —
             # BEFORE prepareToolCall — so a call vetoed by a `tool_call` hook (or
@@ -1059,7 +1217,18 @@ class AgentLoop:
             if result.terminate:
                 terminated = True
 
-        return self._build_batch_result(all_results)
+        # ``terminate=terminated`` — this argument was missing, and the parallel
+        # path two functions down always passed it. ``terminated`` still stopped
+        # the REST OF THE BATCH (the ``break`` at the top of the loop), so the
+        # visible half of the contract worked and the invisible half did not: the
+        # flag never reached ``ToolBatchResult``, so ``run``'s ``if
+        # batch.terminate: break`` never fired and a terminating tool in
+        # SEQUENTIAL mode did not end the turn. The loop went around again, the
+        # model called the same tool again, and it ran to ``max_turns`` — which
+        # was 50, and silent, so this read as a slow turn rather than a defect.
+        # Removing that ceiling is what turned it into a run that never ends, and
+        # is how it was found.
+        return self._build_batch_result(all_results, terminate=terminated)
 
     async def _execute_parallel(
         self,

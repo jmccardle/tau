@@ -152,7 +152,13 @@ async def test_working_list_is_a_view_over_session_context(app, wait_for_workers
         # VIEW, byte-identical to session.context, not a separately accumulated list.
         assert app.messages == list(session.context)
         # And it carries the full turn: system prompt, the user turn, the answer.
-        assert app.messages[0] == {"role": "system", "content": "sys"}
+        # The stored system message is the prompt the backend BUILT, so it opens
+        # with the configured base text and then composes the project context and
+        # the tool list onto it. This asserts the base text and the position; what
+        # gets composed around it is test_backend_context_files' subject, not this
+        # test's, and pinning the whole string here would break on any AGENTS.md.
+        assert app.messages[0]["role"] == "system"
+        assert app.messages[0]["content"].startswith("sys")
         assert any(m.get("role") == "user" for m in app.messages)
         assert any(m.get("role") == "assistant" for m in app.messages)
 
