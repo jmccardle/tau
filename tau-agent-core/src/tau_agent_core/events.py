@@ -32,6 +32,7 @@ from typing import Any, Callable, Literal
 from pydantic import BaseModel, Field
 
 from tau_agent_core.submission import SubmissionSource
+from tau_llm.docs import agent_facing
 
 #: A notify-bus error listener. Called ``listener(exc, channel)`` when a
 #: subscribed handler raises — the S44 surface that replaces the old silent
@@ -39,7 +40,31 @@ from tau_agent_core.submission import SubmissionSource
 #: handler was dispatched on, so the listener can attribute the failure.
 ErrorListener = Callable[[BaseException, str], None]
 
+#: Why an ``agent_end`` closed. Carried on ``AgentEvent.end_reason``, and set on
+#: every ``agent_end``.
+#:
+#: * ``"done"`` — the model answered with no tool calls. The natural end.
+#: * ``"terminate"`` — a tool set ``terminate`` and asked the loop to stop.
+#: * ``"aborted"`` — the abort signal was raised between turns.
+#: * ``"max_turns"`` — the configured ``max_turns`` ceiling was reached. The run
+#:   is TRUNCATED: the model had more to say and was not allowed to say it.
+#: * ``"repeat_tool_calls"`` — the loop stopped itself because the model repeated
+#:   an identical, wholly-failing batch of tool calls. Also truncated, and the one
+#:   reason that means the run was going nowhere rather than somewhere it did not
+#:   reach. See ``AgentLoopConfig.repeat_tool_call_limit``.
+#: * ``"error"`` — the loop raised. The only reason paired with ``is_error=True``
+#:   and a non-``None`` ``error``.
+AgentEndReason = Literal[
+    "done",
+    "terminate",
+    "aborted",
+    "max_turns",
+    "repeat_tool_calls",
+    "error",
+]
 
+
+@agent_facing(topic="events")
 class AgentEvent(BaseModel):
     """A single event from the agent loop.
 
@@ -66,6 +91,13 @@ class AgentEvent(BaseModel):
         error: Why an ``agent_end`` closed, when the loop raised rather than
             finishing (``"RuntimeError: Connection refused"``). ``None`` on a
             normal close; always paired with ``is_error=True``.
+        end_reason: How an ``agent_end`` closed, as one of ``"done"``,
+            ``"terminate"``, ``"aborted"``, ``"max_turns"``,
+            ``"repeat_tool_calls"`` or ``"error"``. ``None`` on every other event
+            type. This distinguishes a loop that finished from one that was cut
+            short: before it, a run stopped by ``max_turns`` emitted the same
+            ``agent_end`` as one where the model simply had nothing more to say,
+            so a caller could not tell a truncated answer from a complete one.
         submission_id: The ``Submission`` that drove this turn, if any — Jupyter's
             ``parent_header``. ``None`` for a turn not driven through ``submit()``
             (e.g. ``continue_conversation()``, which predates the Submission
@@ -120,6 +152,11 @@ class AgentEvent(BaseModel):
     # (S49) — same pattern as ``blocked``/``blocked_by``. Without it "the agent
     # finished" and "the agent died mid-turn" are the same event.
     error: str | None = None
+    # Set on EVERY ``agent_end``, and only there. ``error`` already said whether
+    # the loop raised; this says how it stopped when it did not. Data field, not a
+    # new ``type`` (S49). The two are consistent by construction:
+    # ``end_reason="error"`` is exactly the case that carries ``is_error=True``.
+    end_reason: AgentEndReason | None = None
 
     # Provenance (docs/SUBMISSION-LIFECYCLE.md "Provenance on events", phase 2):
     # stamped by AgentSession.submit() onto every event a submission-driven turn
@@ -134,6 +171,7 @@ class AgentEvent(BaseModel):
     correlation: dict[str, Any] | None = None
 
 
+@agent_facing(topic="events")
 class EventBus:
     """Central event bus for τ-agent-core.
 
@@ -150,7 +188,7 @@ class EventBus:
             def on(self, channel: str, handler: Callable) -> Callable[[], None]: ...
             def off(self, channel: str, handler: Callable) -> None: ...
             async def emit(self, event: AgentEvent) -> None: ...
-            async def emit_channel(self, channel: str, *args, **kwargs) -> None: ...
+            async def emit_channel(self, channel: str, *args: Any, **kwargs: Any) -> None: ...
 
     Constraint: "fire-and-forget" is a failure-isolation contract, not a
     scheduling one — see the module docstring. ``emit`` awaits each handler
@@ -301,7 +339,7 @@ class EventBus:
             except Exception as err:  # noqa: BLE001 — surfaced (S44), not swallowed
                 self._surface_handler_error(err, event.type)
 
-    async def emit_channel(self, channel: str, *args, **kwargs) -> None:
+    async def emit_channel(self, channel: str, *args: Any, **kwargs: Any) -> None:
         """Emit to all handlers on a specific channel.
 
         Args:

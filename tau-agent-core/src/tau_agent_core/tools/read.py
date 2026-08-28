@@ -7,6 +7,7 @@ Reference: PHASE-2-SUBPHASE-3.md, "read tool" section.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 from typing import Any, Callable, Literal
@@ -126,13 +127,15 @@ class ReadTool:
         signal: Any = None,
     ) -> dict:
         """Read a text file with optional truncation."""
+        # Off the event loop (docs/PLAN-0.9.4.md §8): the agent loop runs as an
+        # async Textual worker on the app's own loop, with no thread of its own,
+        # so a blocking read froze painting and input for its duration. A large
+        # file, or one on a slow or network filesystem, is the visible case.
         try:
-            with open(resolved_path, "r", encoding="utf-8") as f:
-                content = f.read()
+            content = await asyncio.to_thread(self._read_all, resolved_path, "utf-8")
         except UnicodeDecodeError:
             try:
-                with open(resolved_path, "r", encoding="latin-1") as f:
-                    content = f.read()
+                content = await asyncio.to_thread(self._read_all, resolved_path, "latin-1")
             except Exception as e:
                 return AgentToolResult.from_error(
                     tool_name=self.name,
@@ -177,6 +180,33 @@ class ReadTool:
         }
         return result_dict
 
+    @staticmethod
+    def _read_all(resolved_path: str, encoding: str) -> str:
+        """Read a whole text file in a worker thread.
+
+        Args:
+            resolved_path: Absolute path to read.
+            encoding: Text encoding to decode with.
+
+        Returns:
+            The file's full decoded contents.
+        """
+        with open(resolved_path, "r", encoding=encoding) as f:
+            return f.read()
+
+    @staticmethod
+    def _read_bytes(resolved_path: str) -> bytes:
+        """Read a whole binary file in a worker thread.
+
+        Args:
+            resolved_path: Absolute path to read.
+
+        Returns:
+            The file's raw bytes.
+        """
+        with open(resolved_path, "rb") as f:
+            return f.read()
+
     async def _read_image(
         self,
         resolved_path: str,
@@ -185,8 +215,7 @@ class ReadTool:
     ) -> dict:
         """Read an image file and return base64-encoded data."""
         try:
-            with open(resolved_path, "rb") as f:
-                image_data = f.read()
+            image_data = await asyncio.to_thread(self._read_bytes, resolved_path)
             b64_data = base64.b64encode(image_data).decode("utf-8")
             _, ext = os.path.splitext(resolved_path)
             mime_map = {

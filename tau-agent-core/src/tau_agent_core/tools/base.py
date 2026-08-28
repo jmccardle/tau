@@ -19,8 +19,31 @@ from typing import Any, Callable, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 from tau_llm.tools import ToolDefinition as LlmToolDefinition
+from tau_llm.docs import agent_facing
 
 
+class _WalkAborted(Exception):
+    """A tool's worker thread saw the abort signal and stopped early.
+
+    Internal to the built-in tools, and never seen by a caller: the tool that
+    started the thread catches it on the event-loop side and re-raises
+    ``asyncio.CancelledError``, which is what the agent loop already treats as an
+    abort (``AgentLoop._execute_tool`` catches ``Exception``, so a
+    ``CancelledError`` unwinds past it rather than becoming a tool error).
+
+    It exists because ``grep`` and ``find`` do their work in a worker thread.
+    Raising ``CancelledError`` *in the thread* would reach the awaiting task
+    through the executor's future-chaining rather than through a real
+    cancellation — two different things wearing one exception type. This keeps
+    the thread's exit and the task's cancellation distinct, and converts one to
+    the other at exactly one place per tool.
+
+    Not agent-facing: an extension author writing a tool has no reason to raise
+    it, and should check its own abort signal and return normally.
+    """
+
+
+@agent_facing(topic="tools")
 class ToolDefinition(LlmToolDefinition):
     """The runtime tool definition: :class:`tau_llm.tools.ToolDefinition` plus
     name-based identity.
@@ -53,6 +76,7 @@ class ToolDefinition(LlmToolDefinition):
         return self.name == other.name
 
 
+@agent_facing(topic="tools")
 class ExtensionToolDefinition(ToolDefinition):
     """A tool an extension registered, as the registry holds it.
 
@@ -110,6 +134,7 @@ class ExtensionToolDefinition(ToolDefinition):
         return data
 
 
+@agent_facing(topic="tools")
 class AgentTool(BaseModel):
     """Validated tool wrapper used by the agent loop.
 
@@ -172,6 +197,7 @@ class AgentTool(BaseModel):
         return self.name == other.name
 
 
+@agent_facing(topic="tools")
 class AgentToolResult(BaseModel):
     """Result from a single tool execution.
 
@@ -205,6 +231,7 @@ class AgentToolResult(BaseModel):
         )
 
 
+@agent_facing(topic="tools")
 class ToolBatchResult(BaseModel):
     """Result from a batch of tool executions.
 

@@ -18,8 +18,10 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+from tau_llm.docs import agent_facing
 
 
+@agent_facing(topic="sessions")
 class SessionState(BaseModel):
     """Read-only session state.
 
@@ -45,6 +47,7 @@ class SessionState(BaseModel):
     updated_at: int = 0
 
 
+@agent_facing(topic="sessions")
 class SessionInfo(BaseModel):
     """Session metadata and info.
 
@@ -80,6 +83,7 @@ class SessionInfo(BaseModel):
     status: Literal["idle", "running", "aborting", "error"] = "idle"
 
 
+@agent_facing(topic="sessions")
 class SessionEntry(BaseModel):
     """Root session entry.
 
@@ -97,6 +101,7 @@ class SessionEntry(BaseModel):
     session_name: str | None = None
 
 
+@agent_facing(topic="sessions")
 class MessageEntry(BaseModel):
     """Message entry: stores a single message.
 
@@ -110,6 +115,7 @@ class MessageEntry(BaseModel):
     message: dict[str, Any]
 
 
+@agent_facing(topic="sessions")
 class ToolResultEntry(BaseModel):
     """Tool result entry: stores tool execution result.
 
@@ -126,6 +132,7 @@ class ToolResultEntry(BaseModel):
     is_error: bool = False
 
 
+@agent_facing(topic="sessions")
 class CustomMessageEntry(BaseModel):
     """Custom message entry: extension-generated messages.
 
@@ -140,6 +147,7 @@ class CustomMessageEntry(BaseModel):
     message: dict[str, Any]
 
 
+@agent_facing(topic="sessions")
 class CompactionEntry(BaseModel):
     """Compaction entry: records session compaction.
 
@@ -156,6 +164,7 @@ class CompactionEntry(BaseModel):
     compacted_entries: list[str] = Field(default_factory=list)
 
 
+@agent_facing(topic="sessions")
 class BranchSummary(BaseModel):
     """Summary of a session branch for display in the TUI session tree.
 
@@ -183,6 +192,7 @@ class BranchSummary(BaseModel):
     is_compacted: bool = False
 
 
+@agent_facing(topic="sessions")
 class ForkResult(BaseModel):
     """Result of forking a session into a new branch.
 
@@ -201,6 +211,7 @@ class ForkResult(BaseModel):
     branches: list[BranchSummary]
 
 
+@agent_facing(topic="sessions")
 class CloneResult(BaseModel):
     """Result of cloning a session into a new independent session.
 

@@ -43,6 +43,7 @@ from tau_agent_core.compaction_utils import (
     format_file_operations,
     serialize_conversation,
 )
+from tau_llm.docs import agent_facing
 
 # Chars assumed per image content block when estimating tokens (pi: utils ↔
 # compaction.ts ESTIMATED_IMAGE_CHARS = 4800).
@@ -52,6 +53,7 @@ ESTIMATED_IMAGE_CHARS = 4800
 # ─── Errors ──────────────────────────────────────────────────────────────
 
 
+@agent_facing(topic="compaction")
 class CompactionError(Exception):
     """Raised when a compaction cannot complete.
 
@@ -69,6 +71,7 @@ class CompactionError(Exception):
 # ─── Settings / results ──────────────────────────────────────────────────
 
 
+@agent_facing(topic="compaction")
 @dataclass
 class CompactionSettings:
     """Compaction thresholds and retention settings (pi: CompactionSettings)."""
@@ -82,6 +85,7 @@ class CompactionSettings:
 DEFAULT_COMPACTION_SETTINGS = CompactionSettings()
 
 
+@agent_facing(topic="compaction")
 @dataclass
 class CompactionDetails:
     """File-operation details stored alongside a compaction (pi: CompactionDetails)."""
@@ -90,6 +94,7 @@ class CompactionDetails:
     modified_files: list[str] = field(default_factory=list)
 
 
+@agent_facing(topic="compaction")
 @dataclass
 class CompactionResult:
     """Generated compaction data ready to persist (pi: CompactionResult).
@@ -122,6 +127,7 @@ class CompactionResult:
 # ─── Token estimation ────────────────────────────────────────────────────
 
 
+@agent_facing(topic="compaction")
 def calculate_context_tokens(usage: dict[str, Any]) -> int:
     """Total context tokens from a Usage dict (pi: calculateContextTokens).
 
@@ -156,6 +162,7 @@ def _estimate_text_and_image_chars(content: Any) -> int:
     return chars
 
 
+@agent_facing(topic="compaction")
 def estimate_tokens(message: dict[str, Any]) -> int:
     """Estimate token count for one message dict (pi: estimateTokens).
 
@@ -210,6 +217,7 @@ def _get_assistant_usage(message: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+@agent_facing(topic="compaction")
 @dataclass
 class ContextUsageEstimate:
     """Estimated context-token usage for a message list (pi: ContextUsageEstimate)."""
@@ -228,6 +236,7 @@ def _last_assistant_usage_info(messages: list[dict[str, Any]]) -> tuple[dict[str
     return None
 
 
+@agent_facing(topic="compaction")
 def estimate_context_tokens(messages: list[dict[str, Any]]) -> ContextUsageEstimate:
     """Estimate context tokens, anchoring on the last assistant Usage when present.
 
@@ -256,6 +265,7 @@ def estimate_context_tokens(messages: list[dict[str, Any]]) -> ContextUsageEstim
     )
 
 
+@agent_facing(topic="compaction")
 def should_compact(context_tokens: int, context_window: int, settings: CompactionSettings) -> bool:
     """Whether context usage exceeds the compaction threshold (pi: shouldCompact)."""
     if not settings.enabled:
@@ -615,6 +625,7 @@ async def generate_turn_prefix_summary(
 # ─── Preparation + orchestration ─────────────────────────────────────────
 
 
+@agent_facing(topic="compaction")
 @dataclass
 class CompactionPreparation:
     """Prepared inputs for a compaction run (pi: CompactionPreparation)."""
@@ -666,6 +677,7 @@ def _build_messages_from_entries(entries: list[dict[str, Any]]) -> list[dict[str
     return messages
 
 
+@agent_facing(topic="compaction")
 def estimate_span_tokens(entries: list[dict[str, Any]]) -> int:
     """Estimated context tokens a SPAN of active-path entries contributes.
 
@@ -708,6 +720,7 @@ def _message_for_compaction(entry: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+@agent_facing(topic="compaction")
 def prepare_compaction(
     path_entries: list[dict[str, Any]], settings: CompactionSettings
 ) -> CompactionPreparation | None:
@@ -826,6 +839,7 @@ def prepare_compaction(
     )
 
 
+@agent_facing(topic="compaction")
 async def compact(
     preparation: CompactionPreparation,
     model: Model,

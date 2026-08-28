@@ -130,6 +130,11 @@ def _wire_event(event: AgentEvent, **extra: Any) -> WireEvent:
         # (AgentEvent.error's own docstring: "the agent finished" and "the
         # agent died mid-turn" were the same event on the wire).
         error=event.error,
+        # Same triage as `error` above, one field later: `error` says whether the
+        # loop RAISED, `end_reason` says how it stopped when it did not. Without
+        # it a host cannot tell a truncated run (max_turns, repeat_tool_calls)
+        # from a finished one, which is the silence PLAN-0.9.4 §8 recorded.
+        end_reason=event.end_reason,
         blocked=event.blocked,
         blocked_by=event.blocked_by,
         # E4/G6: copied straight through, never defaulted or fabricated —

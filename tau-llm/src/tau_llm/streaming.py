@@ -31,8 +31,10 @@ from dataclasses import dataclass
 from typing import Any, AsyncIterable, Literal
 
 from tau_llm.types import AssistantMessage, Usage
+from tau_llm.docs import agent_facing
 
 
+@agent_facing(topic="providers")
 @dataclass
 class TextDeltaEvent:
     """A text delta event from the LLM stream.
@@ -53,6 +55,7 @@ class TextDeltaEvent:
     type: Literal["text_delta"] = "text_delta"
 
 
+@agent_facing(topic="providers")
 @dataclass
 class ThinkingDeltaEvent:
     """A thinking/reasoning delta event from the LLM stream.
@@ -76,6 +79,7 @@ class ThinkingDeltaEvent:
     type: Literal["thinking_delta"] = "thinking_delta"
 
 
+@agent_facing(topic="providers")
 @dataclass
 class ToolCallDeltaEvent:
     """A tool call delta event from the LLM stream.
@@ -96,6 +100,7 @@ class ToolCallDeltaEvent:
     type: Literal["toolcall_delta"] = "toolcall_delta"
 
 
+@agent_facing(topic="providers")
 @dataclass
 class DoneEvent:
     """A done event signaling the stream is complete.
@@ -115,6 +120,7 @@ class DoneEvent:
     type: Literal["done"] = "done"
 
 
+@agent_facing(topic="providers")
 @dataclass
 class ErrorEvent:
     """An error event from the LLM stream.
@@ -135,6 +141,7 @@ class ErrorEvent:
     type: Literal["error"] = "error"
 
 
+@agent_facing(topic="providers")
 class AssistantMessageEventStream:
     """Async iterator over streaming events from the LLM.
 

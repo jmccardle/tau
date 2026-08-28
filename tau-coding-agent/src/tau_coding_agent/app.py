@@ -5079,14 +5079,11 @@ class Parley(App):
 
         The second of the two surfaces §6 asked for ("selectable / swappable"):
         the config key is the standing setting, this is the live swap. It
-        **persists**, through the same ``update_config`` read-modify-write
-        ``action_edit_system_prompt`` uses — a colour scheme picked once and gone
-        at the next launch is a worse answer than one that sticks, and the gesture
-        that undoes it is the same gesture that did it.
-
-        ``update_config`` re-reads the on-disk file rather than writing
-        ``self.config`` back, so a one-run ``--model``/``--theme`` override cannot
-        ride along into the saved config on the back of a theme change.
+        **persists** — a colour scheme picked once and gone at the next launch is
+        a worse answer than one that sticks, and the gesture that undoes it is the
+        same gesture that did it. The saving itself lives in :meth:`watch_theme`,
+        which is on the far side of ``app.theme``, so Textual's own theme palette
+        gets it too.
 
         An unknown name here cannot come from the palette, which is built from the
         registry — it comes from ``run_action`` with a name typed by hand. It
@@ -5100,12 +5097,36 @@ class Parley(App):
         except ThemeError as exc:
             self.notify(str(exc), title="Theme", severity="error", timeout=10)
             return
-        self._apply_theme(theme.name)
-        # Keep the in-memory config in step with the file, so a later read of
-        # ``self.config`` (or a second call here) sees what disk says.
-        self.config[THEME_CONFIG_KEY] = theme.name
-        update_config(THEME_CONFIG_KEY, theme.name)
+        self._apply_theme(theme.name)  # watch_theme saves it
         self.notify(f"Theme: {theme.name}")
+
+    def watch_theme(self, theme_name: str) -> None:
+        """Remember whichever theme became live, however it became live.
+
+        ``action_set_theme`` is not the only way in. Textual's own "Theme" system
+        command opens a second palette over ``App.available_themes`` and assigns
+        ``app.theme`` directly, and every theme there is now selectable
+        (``themes.textual_themes`` gives Textual's 21 the ``$tau-*`` palette
+        ``parley.tcss`` needs). Persisting from the action alone would mean two
+        theme lists in one palette where one sticks and one is forgotten at the
+        next launch, which is worse than either behaviour on its own.
+
+        Two conditions keep this from writing when nothing was chosen. Before the
+        app is running the only assignment is ``__init__``'s, which is applying
+        what config.json already says. And a name that matches the in-memory
+        config is a no-op, so a ``--theme`` override is not written to disk unless
+        the user picks something else — ``update_config``'s read-modify-write is
+        what keeps the rest of a one-run override out of the file, and this is the
+        same rule for this key.
+        """
+        if not self.is_running:
+            return
+        if self.config.get(THEME_CONFIG_KEY) == theme_name:
+            return
+        # Keep the in-memory config in step with the file, so a later read of
+        # ``self.config`` sees what disk says.
+        self.config[THEME_CONFIG_KEY] = theme_name
+        update_config(THEME_CONFIG_KEY, theme_name)
 
     def _session_facts(self) -> SessionFacts:
         """The configuration the empty chat pane states (handoff §4.4).
@@ -6840,11 +6861,18 @@ class Parley(App):
         )
 
         # Themes (docs/PLAN-0.9.4.md §6). One entry per theme rather than one
-        # "Theme…" entry opening a second chooser: the palette IS a chooser, it
-        # already filters by substring, and a themes list is short and stable.
+        # "Theme…" entry opening a second chooser: the palette IS a chooser and
+        # it already filters by substring, so 24 entries sharing a "Theme: "
+        # prefix cost one word of typing rather than a second screen.
         # The active one is marked rather than hidden — an entry that disappears
         # when you pick it makes the list a different length every time you open
         # it, and "which one am I on" is the question a theme list is asked most.
+        #
+        # The list is the whole registry, which since ``themes.textual_themes``
+        # includes Textual's own 21 themes adapted to τ's palette. Textual's
+        # separate "Theme" command opens a second palette over the same set;
+        # these entries save a keystroke and report the switch by toast, and
+        # ``watch_theme`` makes both routes persist the choice.
         #
         # ``run_action`` rather than a bound lambda, so the palette entry, a
         # keybinding and ``app.run_action("set_theme('latte')")`` from a test all

@@ -71,11 +71,13 @@ from tau_agent_core.compaction_policy import CompactionPolicy
 from tau_agent_core.compaction_utils import create_file_ops, extract_file_ops_from_message
 from tau_agent_core.usage import add_usage, zero_usage
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
+from tau_llm.docs import agent_facing
 
 if TYPE_CHECKING:
     from tau_agent_core.sdk import LoadedExtension, LoadExtensionsResult
 
 
+@agent_facing(topic="sessions")
 @dataclass(frozen=True)
 class ExtensionActionResult:
     """Outcome of a runtime ``/extensions`` action (E10 §6 / S70).
@@ -95,6 +97,7 @@ class ExtensionActionResult:
     message: str
 
 
+@agent_facing(topic="sessions")
 @dataclass(frozen=True)
 class ExtensionCommandResult:
     """Outcome of :meth:`AgentSession.run_extension_command` (E7 §3 / S46).
@@ -218,6 +221,7 @@ def _covered_span(path_entries: list[dict[str, Any]], first_kept_id: str) -> lis
     )
 
 
+@agent_facing(topic="sessions")
 class AgentSession:
     """High-level session API. Combines agent loop, a session log, and events.
 
@@ -870,11 +874,12 @@ class AgentSession:
         Returns:
             The new :meth:`get_model` projection.
 
+        Whatever the resolver raises for an unknown ``name`` (e.g. ``KeyError`` or
+        ``ValueError``) propagates unchanged — never swallowed.
+
         Raises:
             RuntimeError: no resolver is bound (Fail-Early — nothing to resolve
                 ``name`` against).
-            Whatever the resolver raises for an unknown ``name`` (e.g. ``KeyError`` /
-                ``ValueError``) propagates unchanged — never swallowed.
         """
         if self._model_resolver is None:
             raise RuntimeError(
@@ -2893,7 +2898,7 @@ class AgentSession:
         # Build the agent loop config
         config = AgentLoopConfig(
             system_prompt=turn_system_prompt,
-            temperature=getattr(self._model, "temperature", 0.7),
+            temperature=self._model.temperature,
             api_key=self._api_key,
             reasoning=self._reasoning,
             tool_execution_mode=self._tool_execution_mode,
@@ -3164,7 +3169,7 @@ class AgentSession:
             # Build the agent loop config
             config = AgentLoopConfig(
                 system_prompt=self._system_prompt,
-                temperature=getattr(self._model, "temperature", 0.7),
+                temperature=self._model.temperature,
                 api_key=self._api_key,
                 reasoning=self._reasoning,
                 tool_execution_mode=self._tool_execution_mode,

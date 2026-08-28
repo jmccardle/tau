@@ -71,6 +71,7 @@ any non-interactive caller want.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -83,11 +84,13 @@ __all__ = [
     "TAU_PALETTE_KEYS",
     "THEME_CONFIG_KEY",
     "ThemeError",
+    "adapt_theme",
     "build_theme_registry",
     "install_themes",
     "load_user_themes",
     "resolve_theme",
     "tau_themes",
+    "textual_themes",
 ]
 
 #: The ``~/.tau/config.json`` key holding the standing choice. One flat top-level
@@ -509,6 +512,178 @@ def tau_themes() -> dict[str, Theme]:
 
 
 # ---------------------------------------------------------------------------
+# Textual's own themes, adapted
+# ---------------------------------------------------------------------------
+#
+# ``App.__init__`` registers all of ``textual.theme.BUILTIN_THEMES``, and
+# Textual's "Theme" system command lists every registered theme. None of those
+# 21 themes knows what ``$tau-bg`` is, so selecting one used to stop the app with
+# ``reference to undefined variable '$tau-bg'`` — τ's four themes worked and the
+# other 21 crashed.
+#
+# The fix is to give each of them a τ palette *derived from the design tokens it
+# already has*, and re-register the result under the same name, so the theme the
+# palette selects is the adapted one. The derivation names no colour: every value
+# is a lookup into the variables Textual generates from the theme
+# (``ColorSystem.generate()``), which is the "set some tcss defaults to other tcss
+# values" shape — resolved in Python so the result is a concrete value and does
+# not depend on variable ordering in the stylesheet.
+#
+# An adapted theme is not a designed theme. τ's four spend two hues on roles
+# Textual has no token for, tune a light palette's roles for 3:1 on a *filled
+# row*, and pick surfaces that layer the way τ's panes are stacked. An adapted
+# theme gets what its author's six semantic hues can cover, and where τ needs
+# more hues than that it spends one twice — the same trade ``gruvbox`` already
+# documents above, applied 21 more times.
+
+
+def _first(generated: Mapping[str, str], *names: str) -> str:
+    """The value of the first of *names* that *generated* actually defines.
+
+    A chain rather than a single name because ``ColorSystem.generate`` does not
+    emit the same variable set for every theme — a theme that sets ``ansi`` or
+    overrides ``variables`` changes what is there. Each chain below ends in
+    ``background`` or ``foreground``, which every theme has, so a chain running
+    dry is a mistake in this module rather than a theme's problem — hence the
+    raise.
+    """
+    for name in names:
+        if name in generated:
+            return generated[name]
+    raise ThemeError(
+        "no Textual variable to derive from among " + ", ".join(names) + ". "
+        "themes._derived_palette needs a chain that ends in a variable every "
+        "theme generates."
+    )
+
+
+def _derived_palette(theme: Theme) -> dict[str, str]:
+    """A τ palette for a theme that has no τ palette, from its design tokens.
+
+    Surfaces and lines move *away* from the background — dark themes lighten,
+    light themes darken — which is how the panes stack (chat → sidebar → raised
+    control) and how a border separates from what it sits on. The text ramp does
+    not use a direction at all; see ``fade``.
+
+    Two consequences worth knowing before reading a render:
+
+    * ``bg-alt``/``bg-deep`` map to Textual's ``$surface``/``$panel``, which in a
+      dark theme are *lighter* than the background where τ's own themes go
+      darker. Keeping Textual's direction is deliberate: ``$panel`` is what the
+      Footer is painted with, so a sidebar derived any other way would not match
+      the Footer directly under it.
+    * τ has ten role hues and Textual has six semantic tokens, so four roles
+      double up (``blocked`` on ``warning`` with ``assistant``, ``foreign`` on
+      ``accent`` with ``system``, ``zone-path`` on ``secondary`` with ``tool``,
+      ``code-fg`` on ``success`` with ``result``). Every pairing is one τ's own
+      themes already make somewhere.
+
+    The role hues read from ``$text-*`` rather than ``$primary``/``$accent``/…
+    because Textual derives the ``text-`` forms to be legible *against the
+    background*, and τ paints roles as whole rows of text, not only as borders.
+    """
+    # ``ansi-dark`` and ``ansi-light`` have no colour ramp to derive from: every
+    # surface they generate is ``transparent`` and every hue is an ANSI name, so
+    # the derivation below would produce invisible borders on invisible panes.
+    # τ already designed the palette for that situation — the one every other
+    # theme's tokens cannot express — so use it rather than a worse copy.
+    # ``ansi-light`` then becomes exactly the light-terminal ANSI theme
+    # ``_ANSI_PALETTE``'s note says you would otherwise write by hand: same
+    # palette, ``dark=False``.
+    if theme.ansi:
+        return _variables(_ANSI_PALETTE)
+
+    generated = theme.to_color_system().generate()
+    away = "lighten" if theme.dark else "darken"
+    foreground = _first(generated, "foreground")
+
+    def fade(percent: int) -> str:
+        """The theme's own foreground at *percent* opacity.
+
+        The six-step text ramp is alpha rather than a second colour ramp, for
+        three reasons. Textual only generates three steps of
+        ``$foreground-darken-*`` and τ needs six. Mixing the two — three darken
+        steps then ``$foreground-muted`` — inverts on ``solarized-dark`` and
+        ``atom-one-dark``, where 60% alpha lands *louder* than darken-3, and a
+        ramp that is not monotonic stops meaning anything (see
+        ``test_the_text_ramp_runs_one_way``). And ``darken`` moves toward black,
+        which is the wrong direction on a light theme, while alpha moves toward
+        whatever the text is actually painted on and so needs no direction at
+        all. ``<color> <percentage>`` is Textual's own notation — ``ansi-dark``
+        generates ``ansi_default 50%`` — so this stays correct for a theme whose
+        colours are ANSI names.
+        """
+        return f"{foreground} {percent}%"
+
+    palette = {
+        # Surfaces, back to front.
+        "bg": _first(generated, "background"),
+        "bg-alt": _first(generated, "surface", "background"),
+        "bg-deep": _first(generated, "panel", "surface", "background"),
+        "surface": _first(generated, f"surface-{away}-1", "surface", "background"),
+        "surface-hover": _first(generated, f"surface-{away}-2", "surface", "background"),
+        # Lines. ``border`` lands on ``surface-hover``'s value and
+        # ``border-subtle`` on ``surface``'s; mocha makes both of those
+        # collisions too, for the same reason — a raised control and the line
+        # around a sunken one are the same distance from the background.
+        "border": _first(generated, f"surface-{away}-2", "surface", "foreground"),
+        "border-subtle": _first(generated, f"surface-{away}-1", "surface", "background"),
+        "accent": _first(generated, "text-accent", "accent", "foreground"),
+        # Text, brightest to faintest. Monotonic by construction — see ``fade``.
+        # Alpha is safe here because no rule in parley.tcss uses a text variable
+        # for anything but ``color:``, which ``test_themes.py`` asserts.
+        "text": foreground,
+        "text-soft": fade(87),
+        "text-dim": fade(74),
+        "text-quiet": fade(62),
+        "text-muted": fade(50),
+        "text-faint": fade(38),
+        # Message roles.
+        "role-user": _first(generated, "text-primary", "primary", "foreground"),
+        "role-assistant": _first(generated, "text-warning", "warning", "foreground"),
+        "role-system": _first(generated, "text-accent", "accent", "foreground"),
+        "role-tool": _first(generated, "text-secondary", "secondary", "foreground"),
+        "role-result": _first(generated, "text-success", "success", "foreground"),
+        "role-error": _first(generated, "text-error", "error", "foreground"),
+        "role-blocked": _first(generated, "text-warning", "warning", "foreground"),
+        "role-foreign": _first(generated, "text-accent", "accent", "foreground"),
+        # The same step as ``text-muted``: mocha spends one grey on both, and a
+        # pending row is a quiet row, not a coloured one.
+        "role-pending": fade(50),
+        "zone-path": _first(generated, "text-secondary", "secondary", "foreground"),
+        "code-fg": _first(generated, "text-success", "success", "foreground"),
+    }
+    # Through ``_variables`` rather than a dict comprehension so a key added to
+    # TAU_PALETTE_KEYS without a line above is a startup error naming it, exactly
+    # as it is for a theme file that forgets one.
+    return _variables(palette)
+
+
+def adapt_theme(theme: Theme) -> Theme:
+    """*theme* plus a derived ``$tau-*`` palette, so ``parley.tcss`` can parse.
+
+    A copy, never a mutation: ``BUILTIN_THEMES`` holds one shared ``Theme`` per
+    name for the whole process, and ``Theme`` is a plain mutable dataclass.
+
+    A theme that already carries τ variables keeps them — the derivation only
+    fills what is absent, so this is safe to call on a τ theme and on a user
+    theme that overrode four colours.
+    """
+    variables = {**_derived_palette(theme), **theme.variables}
+    return replace(theme, variables=variables)
+
+
+def textual_themes() -> dict[str, Theme]:
+    """Textual's own built-in themes, each adapted to answer τ's palette.
+
+    Registering these overrides Textual's originals on the app by name
+    (``App.available_themes`` is just the registration table), which is what
+    makes *Textual's* "Theme" system command safe as well as τ's own list.
+    """
+    return {name: adapt_theme(theme) for name, theme in BUILTIN_THEMES.items()}
+
+
+# ---------------------------------------------------------------------------
 # User themes
 # ---------------------------------------------------------------------------
 
@@ -545,7 +720,8 @@ def load_user_themes(
           "textual": { "background": "#000000" }
         }
 
-    ``extends`` names a built-in τ theme and supplies both halves (design tokens
+    ``extends`` names a built-in theme — one of τ's four, or any of Textual's own
+    as adapted by :func:`adapt_theme` — and supplies both halves (design tokens
     and starting palette); ``palette`` overrides τ colours by
     :data:`TAU_PALETTE_KEYS` name; the optional ``textual`` block overrides
     Textual's own design tokens for the widgets ``parley.tcss`` does not reach.
@@ -599,7 +775,7 @@ def _read_user_theme(path: Path, builtins: Mapping[str, Theme]) -> Theme:
     base_name = raw.get("extends", DEFAULT_THEME_NAME)
     if base_name not in builtins:
         raise ThemeError(
-            f"theme {path} extends {base_name!r}, which is not a built-in τ theme. "
+            f"theme {path} extends {base_name!r}, which is not a built-in theme. "
             f"Available: {', '.join(sorted(builtins))}"
         )
     base = builtins[base_name]
@@ -656,8 +832,13 @@ def build_theme_registry(
 
     ``errors`` is passed straight to :func:`load_user_themes`: absent, the first
     bad file raises; present, bad files are collected there and skipped here.
+
+    Three layers, each overriding the one before it by name: Textual's own themes
+    adapted by :func:`adapt_theme`, then τ's four, then the user's. τ's ``gruvbox``
+    therefore wins over Textual's ``gruvbox`` — the τ one is the tuned palette and
+    the adapted one is what a tuned palette is an improvement on.
     """
-    builtins = _builtin_tau_themes()
+    builtins = {**textual_themes(), **_builtin_tau_themes()}
     return {**builtins, **load_user_themes(builtins, directory, errors=errors)}
 
 

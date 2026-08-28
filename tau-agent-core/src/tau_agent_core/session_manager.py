@@ -19,8 +19,10 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Literal
+from tau_llm.docs import agent_facing
 
 
+@agent_facing(topic="sessions")
 @dataclass
 class SessionState:
     """State of a loaded session (return type of load()).
@@ -46,6 +48,7 @@ class SessionState:
     session_name: str | None = None
 
 
+@agent_facing(topic="sessions")
 @dataclass
 class SessionInfo:
     """Metadata about a session, for listing and display.
@@ -73,6 +76,7 @@ class SessionInfo:
     entries: list[dict] | None = None
 
 
+@agent_facing(topic="sessions")
 class SessionManager:
     """File-level session management.
 
@@ -710,6 +714,7 @@ _BRANCH_SUMMARY_SYSTEM_PROMPT = (
 )
 
 
+@agent_facing(topic="sessions")
 async def summarize_branch(
     branch_text: str,
     model: Any,

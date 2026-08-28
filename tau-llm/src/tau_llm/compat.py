@@ -65,6 +65,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel
+from tau_llm.docs import agent_facing
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from tau_llm.types import Model
@@ -73,6 +74,7 @@ MaxTokensField = Literal["max_tokens", "max_completion_tokens"]
 ToolCallSchema = Literal["openai", "anthropic"]
 
 
+@agent_facing(topic="providers")
 class Compat(BaseModel):
     """Wire quirks an operator STATES for one endpoint.
 
@@ -125,6 +127,7 @@ class Compat(BaseModel):
     tool_call_schema: ToolCallSchema | None = None
 
 
+@agent_facing(topic="providers")
 class ResolvedCompat(BaseModel):
     """:class:`Compat` with every field decided. What the provider reads."""
 
@@ -149,6 +152,7 @@ class ResolvedCompat(BaseModel):
 _REQUIRES_MAX_COMPLETION_TOKENS_HOSTS = ("api.openai.com", "openai.azure.com")
 
 
+@agent_facing(topic="providers")
 def detect_compat(provider: str, base_url: str) -> ResolvedCompat:
     """Infer wire quirks from the endpoint URL.
 
@@ -197,6 +201,7 @@ def detect_compat(provider: str, base_url: str) -> ResolvedCompat:
     )
 
 
+@agent_facing(topic="providers")
 def resolve_compat(model: Model) -> ResolvedCompat:
     """The compat τ will actually use for ``model``.
 

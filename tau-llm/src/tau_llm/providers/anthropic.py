@@ -36,9 +36,11 @@ retries, living under ``client.aclose_providers``. :meth:`aclose` closes it.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import time
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from tau_llm.models import clamp_thinking_level
@@ -95,6 +97,57 @@ _STOP_REASONS: dict[str, str] = {
 #: whole session, so warning per request would warn on every turn.
 _WARNED_REPLAY_OVERRIDE: set[str] = set()
 _WARNED_UNSIGNED_THINKING: set[str] = set()
+
+#: Per-call option keys that configure THIS PROVIDER rather than the request:
+#: a transport credential, a τ-internal thinking level, a cancellation handle, a
+#: constraint object, an HTTP-client setting, and a transport mode. Same list the
+#: OpenAI provider strips (``openai.py:1552``); none of them may reach the wire.
+_INTERNAL_OPTION_KEYS = frozenset(
+    {
+        "api_key",
+        "reasoning",
+        "abort_signal",
+        "constraints",
+        "request_timeout",
+        "stream",
+    }
+)
+
+
+def _accepted_stream_params(stream: Any) -> frozenset[str] | None:
+    """Return the keyword arguments this SDK's ``messages.stream`` declares.
+
+    ``None`` means "accepts anything": the signature has a ``**kwargs``, so
+    there is nothing to route around.
+
+    The OpenAI provider builds a JSON body and posts it, so a key it does not
+    recognise is the SERVER's business and the server answers. This provider
+    calls a typed Python method instead, and ``anthropic`` 1.0.0 both removed
+    ``temperature``/``top_p``/``top_k`` from that signature and declares no
+    ``**kwargs`` — so splatting one in is a ``TypeError`` raised inside τ before
+    any request exists, naming neither the model nor the fix.
+
+    Asking the INSTALLED SDK what it accepts is what lets this module answer in
+    its own words, and it stays correct across the SDK drift that this module's
+    docstring cites as the reason for depending on the SDK at all. The callable
+    τ is about to invoke is passed in, rather than a class imported here, so the
+    answer describes that object and nothing else.
+    """
+    # Cache against the underlying function: a bound method is a fresh object on
+    # every attribute access, so the method itself is not a usable cache key.
+    return _accepted_params_of(getattr(stream, "__func__", stream))
+
+
+@lru_cache(maxsize=8)
+def _accepted_params_of(function: Any) -> frozenset[str] | None:
+    params = inspect.signature(function).parameters.values()
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params):
+        return None
+    return frozenset(
+        p.name
+        for p in params
+        if p.name != "self" and p.kind is not inspect.Parameter.VAR_POSITIONAL
+    )
 
 
 def signature_payload(signature: str = "", *, data: str = "") -> dict[str, Any]:
@@ -555,27 +608,54 @@ class AnthropicMessagesProvider(Provider):
         if tools:
             request["tools"] = self._convert_tools(tools)
         request.update(self._thinking_params(model, options))
+
+        client = self._get_client()
+        accepted = _accepted_stream_params(client.messages.stream)
+
         # Model.extra_body is the operator's escape hatch for anything this
         # module does not model; per-call options win over it, as on the OpenAI
         # path. Transport-only and τ-internal keys never reach the wire.
-        request.update(model.extra_body)
-        request.update(
-            {
-                k: v
-                for k, v in options.items()
-                if k
-                not in (
-                    "api_key",
-                    "reasoning",
-                    "abort_signal",
-                    "constraints",
-                    "request_timeout",
-                    "stream",
-                )
-            }
-        )
+        #
+        # Both dicts are SPLIT rather than splatted. A key the SDK declares is
+        # passed as that keyword argument, which is what keeps the per-call-wins
+        # precedence intact — the SDK merges `extra_body` over the named
+        # arguments, so a key sitting in `extra_body` would beat the per-call
+        # option meant to override it. A key the SDK does not declare goes into
+        # `extra_body`, where it lands in the JSON body and the SERVER decides,
+        # which is the same contract the OpenAI path gives `Model.extra_body`.
+        extra_body: dict[str, Any] = {}
+        if accepted is not None:
+            for key, value in model.extra_body.items():
+                (request if key in accepted else extra_body)[key] = value
+        else:
+            request.update(model.extra_body)
 
-        client = self._get_client()
+        per_call = {k: v for k, v in options.items() if k not in _INTERNAL_OPTION_KEYS}
+        # `extra_body` is itself one of the SDK's named parameters, so a per-call
+        # one would REPLACE the model's rather than override it key-by-key.
+        extra_body.update(per_call.pop("extra_body", {}))
+
+        if accepted is not None:
+            # Fail-Early. τ will not guess that an undeclared keyword argument
+            # belongs in the body: `Model.extra_body` is the express way to say
+            # so, and it is one line of config away. The alternative — quietly
+            # rerouting it — turns a caller's `temperature` into a 400 from a
+            # model that removed the parameter, which reads as a τ bug.
+            unknown = sorted(k for k in per_call if k not in accepted)
+            if unknown:
+                raise ValueError(
+                    f"Model {model.id!r} speaks {API!r}, and the installed anthropic "
+                    f"SDK's messages.stream() does not accept {unknown} as keyword "
+                    "argument(s). The Messages API removed temperature, top_p and "
+                    "top_k on the current models (they return 400) and the SDK "
+                    "dropped them from its signature. If this endpoint does accept "
+                    "them, send them explicitly via models.<name>.extra_body in "
+                    f"~/.tau/config.json. Accepted here: {sorted(accepted)}."
+                )
+        request.update(per_call)
+        if extra_body:
+            request["extra_body"] = extra_body
+
         abort_signal = options.get("abort_signal")
 
         async def event_generator() -> AsyncIterator[Any]:

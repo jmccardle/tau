@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Literal
 
 from tau_llm.types import Model
+from tau_llm.docs import agent_facing
 
 # User-facing levels (no "off"). pi: `ThinkingLevel` (types.ts:65).
 ThinkingLevel = Literal["minimal", "low", "medium", "high", "xhigh"]
@@ -47,11 +48,13 @@ class _Unset:
 _UNSET = _Unset()
 
 
+@agent_facing(topic="messages")
 def is_valid_thinking_level(level: str) -> bool:
     """True if ``level`` is one of the known levels ("off".."xhigh")."""
     return level in EXTENDED_THINKING_LEVELS
 
 
+@agent_facing(topic="messages")
 def get_supported_thinking_levels(model: Model) -> list[ModelThinkingLevel]:
     """Return the levels ``model`` supports, least → most effort.
 
@@ -78,6 +81,7 @@ def get_supported_thinking_levels(model: Model) -> list[ModelThinkingLevel]:
     return supported
 
 
+@agent_facing(topic="messages")
 def clamp_thinking_level(model: Model, level: ModelThinkingLevel) -> ModelThinkingLevel:
     """Clamp ``level`` to the nearest level ``model`` actually supports.
 

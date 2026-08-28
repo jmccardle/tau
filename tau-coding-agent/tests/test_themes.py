@@ -27,10 +27,12 @@ from tau_coding_agent.themes import (
     TAU_PALETTE_KEYS,
     THEME_CONFIG_KEY,
     ThemeError,
+    adapt_theme,
     build_theme_registry,
     load_user_themes,
     resolve_theme,
     tau_themes,
+    textual_themes,
 )
 
 STYLESHEET = Path(tau_coding_agent.__file__).with_name("parley.tcss")
@@ -348,6 +350,144 @@ def test_the_text_ramp_runs_one_way() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Textual's own themes, adapted
+# ---------------------------------------------------------------------------
+#
+# The defect these cover: ``App.__init__`` registers Textual's 21 themes and its
+# "Theme" system command lists every registered theme, so selecting one used to
+# stop the app with ``reference to undefined variable '$tau-bg'``. τ's four
+# worked; the other 21 crashed.
+
+
+def _parse(value: str) -> Any:
+    """``#rrggbb``, ``#rrggbb 62%`` or an ANSI name, as a ``Color``.
+
+    ``Color.parse`` does not take the ``<colour> <percentage>`` form — that is
+    handled by the CSS parser, and the derived text ramp uses it — so the
+    percentage is split off and applied as alpha here.
+    """
+    from textual.color import Color
+
+    head, _, tail = value.partition(" ")
+    colour = Color.parse(head)
+    return colour.with_alpha(float(tail.rstrip("%")) / 100) if tail else colour
+
+
+def _over(value: str, background: str) -> str:
+    """*value* composited onto *background*, as ``#rrggbb``.
+
+    The alpha steps of a derived ramp are not comparable as literals: 62% of a
+    foreground is a different colour on the chat pane than on a dialog, and that
+    is the point of using alpha. Every measurement below flattens first.
+    """
+    colour, base = _parse(value), _parse(background)
+    if colour.a < 1:
+        colour = base.blend(colour.with_alpha(1.0), colour.a)
+    return colour.hex
+
+
+ADAPTED_THEMES = sorted(textual_themes())
+
+
+def test_every_theme_the_registry_offers_defines_the_whole_palette() -> None:
+    """Not just τ's four — the registry is what a swap can reach."""
+    for name, theme in build_theme_registry().items():
+        assert set(_palette(theme)) == set(TAU_PALETTE_KEYS), name
+
+
+def test_adapting_a_theme_does_not_mutate_the_original() -> None:
+    """``BUILTIN_THEMES`` holds one shared ``Theme`` per name for the process.
+
+    ``Theme`` is a plain mutable dataclass, so writing the derived palette into
+    ``theme.variables`` instead of a copy would give τ's palette to every other
+    Textual app in the same interpreter — and, worse, make a second call see
+    values it derived from itself.
+    """
+    before = dict(BUILTIN_THEMES["nord"].variables)
+    adapted = adapt_theme(BUILTIN_THEMES["nord"])
+    assert BUILTIN_THEMES["nord"].variables == before
+    assert adapted.variables != before
+
+
+def test_adapting_a_theme_that_already_has_a_palette_keeps_it() -> None:
+    """The derivation fills what is absent; it never overrides a designed colour."""
+    mocha = tau_themes()["mocha"]
+    assert _palette(adapt_theme(mocha)) == _palette(mocha)
+
+
+@pytest.mark.parametrize("theme_name", ADAPTED_THEMES)
+def test_an_adapted_theme_reads_every_colour_off_its_own_tokens(theme_name: str) -> None:
+    """No hue is invented. Every derived value is one the theme already carries.
+
+    This is what keeps an adapted theme *that theme* rather than mocha wearing
+    someone else's name — the failure would look fine in one screenshot and wrong
+    in every other, because the palette would agree with the Footer nowhere.
+    """
+    theme = textual_themes()[theme_name]
+    generated = set(theme.to_color_system().generate().values())
+    generated |= {value.split(" ")[0] for value in generated}
+    for key, value in sorted(_palette(theme).items()):
+        assert value.split(" ")[0] in generated, (
+            f"{theme_name}: {key}={value} is not a theme colour"
+        )
+
+
+@pytest.mark.parametrize("theme_name", ADAPTED_THEMES)
+def test_an_adapted_themes_text_ramp_runs_one_way(theme_name: str) -> None:
+    """The one property of the ramp the stylesheet actually depends on.
+
+    Derived from the same argument as ``test_the_text_ramp_runs_one_way``: the
+    stylesheet uses position in the ramp to say how loud a piece of chrome is. It
+    is asserted separately because an adapted theme cannot be held to the *ratios*
+    a designed one is — ``solarized-dark``'s brightest foreground is 4.75:1
+    against its own background, so its "dim" step cannot clear 3:1 and no
+    derivation can make it. Monotonic is the part that is ours to get right, and
+    it is why the ramp is alpha rather than ``$foreground-darken-*`` (three of
+    these themes invert with the mixed ramp).
+    """
+    palette = _palette(textual_themes()[theme_name])
+    if not palette["bg"].startswith("#"):
+        pytest.skip("ANSI palette: the RGB is the terminal's, not ours to measure")
+    ramp = ("text", "text-soft", "text-dim", "text-quiet", "text-muted", "text-faint")
+    ratios = [_contrast(_over(palette[step], palette["bg"]), palette["bg"]) for step in ramp]
+    assert ratios == sorted(ratios, reverse=True), f"{theme_name} ramp: {ratios}"
+
+
+@pytest.mark.parametrize("theme_name", ADAPTED_THEMES)
+def test_an_adapted_theme_keeps_its_text_legible_on_its_own_pane(theme_name: str) -> None:
+    """The floor an adapted theme is held to, and the whole floor.
+
+    ``text`` on ``bg`` is the pairing that decides whether the app can be read at
+    all, and it is the one every theme author already got right for their own
+    palette — so a failure here means the derivation picked the wrong pair of
+    tokens, not that the theme is dim. The role hues are deliberately *not*
+    checked: τ needs ten and Textual defines six, so an adapted theme spends hues
+    twice and cannot be tuned the way ``latte`` was.
+    """
+    palette = _palette(textual_themes()[theme_name])
+    if not palette["bg"].startswith("#"):
+        pytest.skip("ANSI palette: the RGB is the terminal's, not ours to measure")
+    ratio = _contrast(palette["text"], palette["bg"])
+    assert ratio >= 4.0, f"{theme_name}: text on bg is {ratio:.2f}:1"
+
+
+def test_the_ansi_themes_reuse_taus_ansi_palette() -> None:
+    """``ansi-dark`` and ``ansi-light`` have no colour ramp to derive from.
+
+    Every surface they generate is ``transparent`` and every hue is an ANSI name,
+    so the token derivation would give them invisible borders on invisible panes.
+    τ already designed the palette for a terminal it cannot see; reusing it makes
+    ``ansi-light`` the light-terminal ANSI theme ``themes._ANSI_PALETTE``'s note
+    says you would otherwise write by hand.
+    """
+    expected = _palette(tau_themes()["ansi"])
+    adapted = textual_themes()
+    assert _palette(adapted["ansi-dark"]) == expected
+    assert _palette(adapted["ansi-light"]) == expected
+    assert adapted["ansi-light"].dark is False, "the light one has to say so"
+
+
+# ---------------------------------------------------------------------------
 # Fail Early: a name that does not exist
 # ---------------------------------------------------------------------------
 
@@ -396,7 +536,9 @@ def test_a_user_theme_replaces_a_builtin_of_the_same_name(tmp_path: Path) -> Non
     (tmp_path / "mocha.json").write_text(json.dumps({"palette": {"bg": "#000000"}}))
     registry = build_theme_registry(tmp_path)
     assert _palette(registry["mocha"])["bg"] == "#000000"
-    assert set(registry) == set(tau_themes()), "replacing a built-in must not add or drop a name"
+    assert set(registry) == set(build_theme_registry()), (
+        "replacing a built-in must not add or drop a name"
+    )
 
 
 def test_a_theme_file_that_will_not_parse_says_which_file(tmp_path: Path) -> None:
@@ -729,6 +871,51 @@ async def test_the_command_palette_offers_every_theme_and_marks_the_active_one(
         theme_entries = [title for title in titles if title.startswith("Theme: ")]
         expected = [
             f"Theme: {name}" + (" (active)" if name == DEFAULT_THEME_NAME else "")
-            for name in sorted(tau_themes())
+            for name in sorted(build_theme_registry())
         ]
         assert theme_entries == expected
+        # Textual's own themes are in there, adapted — the list is the registry
+        # and the registry is what a swap can reach.
+        assert "Theme: nord" in theme_entries
+
+
+@pytest.mark.parametrize("theme_name", sorted(build_theme_registry()))
+async def test_every_theme_the_app_offers_applies_to_the_real_stylesheet(
+    make_app, theme_name: str
+) -> None:
+    """The regression test for ``reference to undefined variable '$tau-bg'``.
+
+    Registering a theme and *applying* it are different failures: a theme with a
+    hole in its palette registers cleanly and then stops the app when
+    ``parley.tcss`` is re-parsed against it. So this drives the real swap on the
+    real stylesheet, once per theme, and reads a colour back off a widget.
+    """
+    app = make_app()
+    async with app.run_test():
+        app.action_set_theme(theme_name)
+        assert app.theme == theme_name
+        assert _screen_background(app).startswith("#")
+
+
+async def test_textuals_own_theme_palette_reaches_the_same_themes(make_app) -> None:
+    """Textual's "Theme" system command assigns ``app.theme`` directly.
+
+    It never goes through ``action_set_theme``, so the palette τ registers is the
+    only thing standing between that command and the crash. Setting the reactive
+    is exactly what ``ThemeProvider`` does.
+    """
+    app = make_app()
+    async with app.run_test() as pilot:
+        app.theme = "solarized-light"
+        await pilot.pause()
+        assert _screen_background(app) == "#fdf6e3"
+
+
+async def test_a_theme_set_the_textual_way_is_remembered(make_app, tau_home: Path) -> None:
+    """Two theme lists in one palette, one of which forgot the choice at the next
+    launch, would be worse than either behaviour on its own."""
+    app = make_app()
+    async with app.run_test() as pilot:
+        app.theme = "nord"
+        await pilot.pause()
+    assert json.loads((tau_home / "config.json").read_text())[THEME_CONFIG_KEY] == "nord"

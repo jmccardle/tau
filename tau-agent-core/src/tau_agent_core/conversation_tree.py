@@ -42,6 +42,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+from tau_llm.docs import agent_facing
 
 # Kinds that carry a ``summary`` field (for previews + subtree extraction). NOTE:
 # ``compaction`` is a splice anchor AND has a summary; ``branch_summary`` has a
@@ -164,6 +165,7 @@ def _tools_phrase(tools: list[str]) -> str:
     return f"{len(tools)} {noun}: {shown}{suffix}"
 
 
+@agent_facing(topic="sessions")
 @dataclass
 class TreeNode:
     """A node in the browsable session tree (pi ``SessionTreeNode``)."""
@@ -177,6 +179,7 @@ class TreeNode:
     children: list[TreeNode] = field(default_factory=list)
 
 
+@agent_facing(topic="sessions")
 class ConversationTree:
     """Pure, I/O-free view over an append-only session entry log + a cursor.
 

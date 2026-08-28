@@ -65,11 +65,13 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from tau_agent_core.events import AgentEvent
+from tau_llm.docs import agent_facing
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from tau_agent_core.agent_session import AgentSession
 
 
+@agent_facing(topic="runs")
 @dataclass(frozen=True)
 class PromptLatencySample:
     """One ``prompt()`` call, timed and classified.
@@ -111,6 +113,7 @@ def _nearest_rank(sorted_values: list[int], quantile: float) -> int:
     return sorted_values[rank - 1]
 
 
+@agent_facing(topic="runs")
 def summarize(values: list[int]) -> dict[str, Any]:
     """§9's shape: ``median/p90/p99/max, never a single number``.
 
@@ -146,6 +149,7 @@ class _Window:
     event_types: list[str] = field(default_factory=list)
 
 
+@agent_facing(topic="runs")
 class PromptLatencyCollector:
     """Times ``prompt()`` calls on one session and partitions the results.
 

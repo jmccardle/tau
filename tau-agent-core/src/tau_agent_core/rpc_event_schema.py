@@ -53,7 +53,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from tau_agent_core.events import AgentEvent
+from tau_agent_core.events import AgentEndReason, AgentEvent
 from tau_agent_core.submission import SubmissionSource
 
 # ---------------------------------------------------------------------------
@@ -88,6 +88,16 @@ from tau_agent_core.submission import SubmissionSource
 #   through both classifications this comment otherwise accounts for every
 #   field by. See tests/test_rpc_event_schema.py's TestNoFieldSilentlyDropped
 #   for the anti-drift check that closes the hole that let this happen once.
+# - end_reason — HOW an agent_end closed when the loop did NOT raise: 'done',
+#   'terminate', 'aborted', 'max_turns', 'repeat_tool_calls' or 'error'.
+#   Bounded: one of six literal strings, or None on every other event type.
+#   `error` above answers "did it raise"; this answers "and if not, why did it
+#   stop", which is the only way a host can tell a TRUNCATED answer (a ceiling
+#   was hit, or the loop gave up on a model repeating a failing call) from a
+#   finished one. Reuses `AgentEndReason` from tau_agent_core.events verbatim
+#   rather than a hand-copied Literal — like `source` and unlike `type`, this
+#   is a value vocabulary the loop owns, and the loop gaining a new way to stop
+#   without the wire saying so is the failure worth avoiding here.
 # - blocked — the S50 extension-veto flag, a *distinct* presentation from a
 #   generic error per the events.py docstring. Bounded boolean.
 # - blocked_by — names the vetoing extension, paired with blocked. Bounded:
@@ -224,6 +234,16 @@ class WireEvent(BaseModel):
         "close; always paired with is_error=True when set. Without it 'the "
         "agent finished' and 'the agent died mid-turn' are the same event on "
         "the wire.",
+    )
+    end_reason: AgentEndReason | None = Field(
+        default=None,
+        description="How an agent_end closed: 'done' (the model had nothing more "
+        "to say), 'terminate' (a tool asked to stop), 'aborted', 'max_turns' "
+        "(the ceiling truncated the run), 'repeat_tool_calls' (the loop stopped "
+        "itself because the model kept repeating an identical, wholly-failing "
+        "batch) or 'error'. None on every other event type. `error` says whether "
+        "the loop raised; this says how it stopped when it did not, which is what "
+        "tells a host that an answer is TRUNCATED rather than finished.",
     )
     blocked: bool = Field(
         default=False,

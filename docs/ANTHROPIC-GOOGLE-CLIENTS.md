@@ -629,3 +629,59 @@ for `openai-responses`. `backend: "anthropic"` alone is now a working config.
 
 Covered by `tau-coding-agent/tests/test_config_names_a_wire.py`, whose first
 class asserts that every config shape that worked before builds the same Model.
+
+### The first real call failed — and the tests could not have caught it
+
+The section above closes with "Not verified against the live API… A first real
+call is still worth making." It was made, against an `anthropic-messages`
+gateway, and it did not reach the network:
+
+```
+TypeError: AsyncMessages.stream() got an unexpected keyword argument 'temperature'
+```
+
+Three separate things had to be true for a provider this heavily tested to fail
+on every real request.
+
+**1. The agent loop sent a temperature nobody chose.** `AgentLoopConfig`
+defaulted `temperature` to `0.7` and `AgentLoop._build_options` put it in
+`options` unconditionally. The value was unreachable from config: `Model` had no
+`temperature` field, so `agent_session`'s `getattr(self._model, "temperature",
+0.7)` always fell through to the literal, and a `temperature` key in
+`~/.tau/config.json` was dropped by pydantic without a word. pi does not do this
+— `simple-options.ts:32` forwards `options?.temperature`, which is undefined
+unless a caller sets one, and pi's agent never sets one.
+
+**2. This provider splatted options into a typed Python method.** The OpenAI
+provider builds a JSON body and posts it, so a key it does not recognise is the
+server's business and the server answers. This one calls
+`client.messages.stream(**request)`. `anthropic` 1.0.0 removed `temperature`,
+`top_p` and `top_k` from that signature — the Messages API returns 400 for them
+on Opus 5, Opus 4.8, Opus 4.7, Sonnet 5 and Fable 5 — and declares no
+`**kwargs`. `Model.extra_body` was splatted the same way, so the operator escape
+hatch this module documents was equally broken on this wire.
+
+**3. The stub accepted anything.** `_FakeClient`'s `def stream(self, **kwargs)`
+takes every keyword the real SDK rejects. Seventy-odd tests drove it and none of
+them could see the defect. This is the general shape: a stub that is more
+permissive than the thing it stands for does not test the boundary, it hides it.
+
+What changed:
+
+* `Model.temperature: float | None = None`, read by `agent_session` and carried
+  by `build_model_from_config`. `None` means τ sends none and the endpoint
+  applies its own — pi parity, and the only default that is right for llama.cpp
+  (0.8), the OpenAI wire (1.0) and a Messages model that removed the parameter.
+  `AgentLoopConfig.temperature` and `Settings.temperature` default to `None` too.
+* `_accepted_stream_params` asks the INSTALLED SDK what
+  `client.messages.stream` declares. `Model.extra_body` is then split rather
+  than splatted: a key the SDK declares rides as that keyword argument, which
+  keeps per-call options able to override it, and a key it does not declare goes
+  into `extra_body`, where it lands in the JSON body and the server answers.
+  A per-call option the SDK does not declare raises, names itself, and names
+  `models.<name>.extra_body` as the way to send it anyway — τ does not guess
+  that an undeclared keyword argument belongs in the body.
+* The stub's `stream` is generated from `SDK_STREAM_PARAMS`, so it rejects what
+  the SDK rejects, and one test compares that tuple against the real signature
+  (skipped when the optional extra is absent). That test is what keeps the rest
+  of the file honest.

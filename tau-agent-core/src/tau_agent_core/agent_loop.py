@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -43,14 +44,16 @@ from tau_agent_core.agent_loop_types import (
     AgentLoopConfig,
     PreparedToolCall,
 )
-from tau_agent_core.events import AgentEvent
+from tau_agent_core.events import AgentEndReason, AgentEvent
 from tau_agent_core.messages import convert_to_llm, create_custom_message
 from tau_agent_core.tools.base import AgentTool, AgentToolResult, ToolBatchResult
+from tau_llm.docs import agent_facing
 
 if TYPE_CHECKING:
     from tau_agent_core.extensions.runner import ExtensionRunner
 
 
+@agent_facing(topic="agent-loop")
 class BlockedCall:
     """A tool call that was blocked (e.g., argument validation failed).
 
@@ -68,6 +71,7 @@ class BlockedCall:
         self.blocked_by_extension = blocked_by_extension
 
 
+@agent_facing(topic="agent-loop")
 class ErrorCall:
     """A tool call that raised an error during preparation."""
 
@@ -93,6 +97,7 @@ ABORTED_TOOL_RESULT = "Operation aborted"
 COMPLETED_MESSAGES_ATTR = "tau_completed_messages"
 
 
+@agent_facing(topic="agent-loop")
 def completed_messages(exc: BaseException) -> list[Any]:
     """The messages an agent-loop run had already completed when *exc* ended it.
 
@@ -110,6 +115,7 @@ def completed_messages(exc: BaseException) -> list[Any]:
 # ---------------------------------------------------------------------------
 
 
+@agent_facing(topic="agent-loop")
 class AgentLoop:
     """The core agent loop.
 
@@ -235,10 +241,17 @@ class AgentLoop:
 
         turn_index = 0
         final_messages: list[Any] = []
+        # The previous turn's tool batch, as (signature, all_errored), and how many
+        # turns in a row have now produced that same all-failing batch. Reset by
+        # any turn that differs or that got a single non-error result.
+        prev_batch: tuple[str, bool] | None = None
+        repeat_count = 1
+        end_reason: AgentEndReason = "done"
 
         try:
             while not self._turn_ceiling_reached(turn_index):
                 if self._abort_signal and self._abort_signal.is_aborted():
+                    end_reason = "aborted"
                     break
 
                 await self._emit(
@@ -364,9 +377,35 @@ class AgentLoop:
                 )
 
                 if batch.terminate:
+                    end_reason = "terminate"
+                    break
+
+                # Repeat detection (docs/PLAN-0.9.3.md §4.2 item 2). Runs AFTER
+                # turn_end and the mutating turn_end hook, so a turn the loop
+                # refuses to follow is still fully observed and fully persisted —
+                # the stop is a decision about the NEXT turn, not a reason to hide
+                # this one.
+                signature = self._batch_signature(tool_calls, batch)
+                if prev_batch == signature and signature[1]:
+                    repeat_count += 1
+                else:
+                    repeat_count = 1
+                prev_batch = signature
+                if (
+                    self.config.repeat_tool_call_limit is not None
+                    and repeat_count >= self.config.repeat_tool_call_limit
+                ):
+                    end_reason = "repeat_tool_calls"
                     break
 
                 turn_index += 1
+
+            else:
+                # The `while` condition went false rather than a `break` firing,
+                # which for this loop means one thing: `max_turns` stopped it.
+                # Every other exit above breaks with its own reason. This is the
+                # case that used to be indistinguishable from a finished run.
+                end_reason = "max_turns"
 
         except BaseException as exc:
             # The bracket closes however the loop ended — see _emit_agent_end.
@@ -382,7 +421,7 @@ class AgentLoop:
             await self._emit_agent_end(final_messages, exc)
             raise
 
-        await self._emit_agent_end(final_messages)
+        await self._emit_agent_end(final_messages, end_reason=end_reason)
 
         return final_messages
 
@@ -405,12 +444,18 @@ class AgentLoop:
         messages = list(context)
         turn_index = self._turn_index
         final_messages: list[Any] = []
+        # See run(): a continuation is a turn like any other, so a runaway started
+        # from here is the same runaway and gets the same bound.
+        prev_batch: tuple[str, bool] | None = None
+        repeat_count = 1
+        end_reason: AgentEndReason = "done"
 
         await self._emit(AgentEvent(type="agent_start", timestamp=int(time.time() * 1000)))
 
         try:
             while not self._turn_ceiling_reached(turn_index):
                 if self._abort_signal and self._abort_signal.is_aborted():
+                    end_reason = "aborted"
                     break
 
                 await self._emit(
@@ -509,9 +554,28 @@ class AgentLoop:
                 )
 
                 if batch.terminate:
+                    end_reason = "terminate"
+                    break
+
+                # Repeat detection — see run() for the rule and why it sits here.
+                signature = self._batch_signature(tool_calls, batch)
+                if prev_batch == signature and signature[1]:
+                    repeat_count += 1
+                else:
+                    repeat_count = 1
+                prev_batch = signature
+                if (
+                    self.config.repeat_tool_call_limit is not None
+                    and repeat_count >= self.config.repeat_tool_call_limit
+                ):
+                    end_reason = "repeat_tool_calls"
                     break
 
                 turn_index += 1
+
+            else:
+                # See run(): falling out of the `while` condition means `max_turns`.
+                end_reason = "max_turns"
 
         except BaseException as exc:
             # The bracket closes however the loop ended — see _emit_agent_end.
@@ -527,7 +591,7 @@ class AgentLoop:
             await self._emit_agent_end(final_messages, exc)
             raise
 
-        await self._emit_agent_end(final_messages)
+        await self._emit_agent_end(final_messages, end_reason=end_reason)
 
         return final_messages
 
@@ -549,10 +613,45 @@ class AgentLoop:
         """
         return self.config.max_turns is not None and turn_index >= self.config.max_turns
 
+    @staticmethod
+    def _batch_signature(tool_calls: list[ToolCall], batch: ToolBatchResult) -> tuple[str, bool]:
+        """Reduce one turn's tools to ``(what was asked for, did all of it fail)``.
+
+        The signature is the turn's ``(name, arguments)`` pairs, sorted and
+        JSON-encoded with sorted keys, so two turns compare equal when they ask
+        for the same work — argument key order and call order do not matter,
+        because neither changes what the tools do. ``default=str`` keeps an
+        unserializable argument from raising here: this is a comparison key, and
+        a key built from a repr beats a key that cannot be built.
+
+        The names and arguments come from the CALLS and the error-ness from the
+        RESULTS, because those live on different objects:
+        :class:`~tau_agent_core.tools.base.AgentToolResult` records what a tool
+        returned, never what it was passed.
+
+        The second element is whether EVERY result is an error. It is what keeps
+        the check off a model that is working: a turn with one success in it made
+        progress, whatever else it repeated.
+
+        Args:
+            tool_calls: The calls the assistant asked for this turn.
+            batch: The results of executing them.
+
+        Returns:
+            The comparison key, and whether every result errored. A turn with no
+            results reports ``False`` — no results is not "all of them failed".
+        """
+        calls = sorted(
+            json.dumps([tc.name, tc.arguments], sort_keys=True, default=str) for tc in tool_calls
+        )
+        all_errored = bool(batch.tool_results) and all(r.is_error for r in batch.tool_results)
+        return "\n".join(calls), all_errored
+
     async def _emit_agent_end(
         self,
         final_messages: list[Any],
         error: BaseException | None = None,
+        end_reason: AgentEndReason | None = None,
     ) -> None:
         """Close the ``agent_start`` bracket, however the loop ended.
 
@@ -573,6 +672,13 @@ class AgentLoop:
         because it has a real final message to attach; here the turn was abandoned
         mid-flight and a ``turn_end`` carrying ``tool_results=[]`` would assert
         that a turn completed with no tools, which is a claim, not an observation.
+
+        Args:
+            final_messages: What the loop produced before it closed.
+            error: The exception that ended the loop, if one did.
+            end_reason: How a non-raising loop stopped. Ignored when ``error`` is
+                set — that case is ``"error"`` by definition, and taking the
+                caller's word for it would let the two fields disagree.
         """
         detail = str(error) if error is not None else ""
         await self._emit(
@@ -588,6 +694,7 @@ class AgentLoop:
                     if error is None
                     else (f"{type(error).__name__}: {detail}" if detail else type(error).__name__)
                 ),
+                end_reason=("error" if error is not None else end_reason),
             )
         )
 
@@ -771,7 +878,12 @@ class AgentLoop:
         # options["api_key"] to construct the provider, which then strips it from
         # the request body. Only included when set, so None means "rely on the
         # env/provider default" rather than sending an empty override.
-        options: dict[str, Any] = {"temperature": self.config.temperature}
+        options: dict[str, Any] = {}
+        # Only when set. `None` means "no temperature" — not "0.7" — so an
+        # endpoint that has its own default keeps it, and a wire that removed the
+        # parameter (anthropic-messages) is not handed one it cannot carry.
+        if self.config.temperature is not None:
+            options["temperature"] = self.config.temperature
         if self.config.api_key:
             options["api_key"] = self.config.api_key
         # Forward the requested thinking level; the provider clamps it and emits

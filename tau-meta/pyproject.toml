@@ -28,7 +28,7 @@ authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
 # deliberately absent -- it needs a running server, and an install that pulls one
 # in by default would be answering a question nobody asked.
 dependencies = [
-    "ffwf-tau-coding-agent[tui]==0.9.4",
+    "ffwf-tau-coding-agent[tui]==0.9.5",
 ]
 
 # The PUBLIC repository only. This tree has a second, private git remote whose

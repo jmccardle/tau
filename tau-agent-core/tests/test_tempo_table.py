@@ -104,14 +104,22 @@ def _text_assistant(text: str, usage: Usage | None = None) -> AssistantMessage:
 
 
 def _tool_call_assistant(call_id: str, usage: Usage | None = None) -> AssistantMessage:
-    """An assistant with one (unregistered) ``write`` call → error result, loop continues."""
+    """An assistant with one (unregistered) ``write`` call → error result, loop continues.
+
+    The path is derived from ``call_id`` so that consecutive calls differ. These
+    tests are about hook cadence, not about repeats, and an identical failing call
+    repeated is now a shape the loop stops on
+    (``AgentLoopConfig.repeat_tool_call_limit``) — which would end the run early
+    and change the counts these tests pin, for a reason unrelated to what they
+    measure.
+    """
     return AssistantMessage(
         content=[
             ToolCall(
                 type="toolCall",
                 id=call_id,
                 name="write",
-                arguments={"path": "f.py", "content": "x"},
+                arguments={"path": f"{call_id}.py", "content": "x"},
             )
         ],
         api="openai-completions",

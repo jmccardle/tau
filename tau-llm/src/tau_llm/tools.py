@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from typing import Annotated, Any, Callable, Literal, Protocol
 
 from pydantic import BaseModel, WithJsonSchema
+from tau_llm.docs import agent_facing
 
 #: ``execute`` is a live Python callable, so it has no JSON representation — and
 #: without this annotation ``model_json_schema()`` does not merely omit it, it
@@ -105,6 +106,7 @@ def _validate_json_schema(schema: dict[str, Any], data: dict[str, Any]) -> dict[
         raise ValueError(f"Schema validation failed: {e}")
 
 
+@agent_facing(topic="tools")
 class ToolDefinition(BaseModel):
     """Tool definition for the LLM API.
 
@@ -121,6 +123,7 @@ class ToolDefinition(BaseModel):
     execution_mode: Literal["sequential", "parallel"] = "parallel"
 
 
+@agent_facing(topic="tools")
 class ToolSpec(Protocol):
     """What a provider needs in order to put a tool on the wire.
 
@@ -240,6 +243,7 @@ def _check_parameters_schema(parameters: Any) -> None:
             )
 
 
+@agent_facing(topic="tools")
 def define_tool(definition: Mapping[str, Any] | None = None, /, **fields: Any) -> ToolDefinition:
     """Build a validated :class:`ToolDefinition`.
 
@@ -371,6 +375,7 @@ def define_tool(definition: Mapping[str, Any] | None = None, /, **fields: Any) -
     return ToolDefinition(**values)
 
 
+@agent_facing(topic="tools")
 def validate_tool_arguments(tool: Any, tool_call: Any) -> dict[str, Any]:
     """Validate tool call arguments against tool schema.
 

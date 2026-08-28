@@ -20,8 +20,10 @@ import json
 from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict, Field, SkipValidation, model_validator
+from tau_llm.docs import agent_facing
 
 
+@agent_facing(topic="constraints")
 class ConstraintViolation(RuntimeError):
     """A constrained generation did not satisfy its constraint.
 
@@ -35,6 +37,7 @@ class ConstraintViolation(RuntimeError):
         self.output = output
 
 
+@agent_facing(topic="constraints")
 class DecodeConstraints(BaseModel):
     """A decode constraint for one completion.
 

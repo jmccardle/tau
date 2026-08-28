@@ -411,10 +411,28 @@ class GoogleGenerativeAIProvider(Provider):
         Anthropic client does: splitting the results of a parallel call across
         several turns teaches the model to stop making parallel calls.
         """
-        name = msg.get("toolName") if isinstance(msg, dict) else getattr(msg, "toolName", "")
-        call_id = msg.get("toolCallId") if isinstance(msg, dict) else getattr(msg, "toolCallId", "")
-        is_error = msg.get("isError") if isinstance(msg, dict) else getattr(msg, "isError", False)
-        output = msg.get("output") if isinstance(msg, dict) else getattr(msg, "output", "")
+
+        # τ's field names, not pi's. ``ToolResultMessage`` (types.py) declares
+        # ``tool_name`` / ``tool_call_id`` / ``is_error`` / ``content`` and has no
+        # aliases, so ``model_dump()`` emits snake_case and pi's camelCase spelling
+        # read ``None`` from every field on every call. The visible failure was a
+        # 400 — ``function_response.name: Name cannot be empty`` — on the first
+        # turn after any tool call; the silent one was worse, since ``output``
+        # never resolved either and the model was sent an empty result for work it
+        # had actually done. The other two clients read the same message correctly
+        # (anthropic.py:429, openai.py:1161), which is what makes this the odd one
+        # out rather than a convention question.
+        def field(name: str, default: Any = "") -> Any:
+            if isinstance(msg, dict):
+                value = msg.get(name, default)
+            else:
+                value = getattr(msg, name, default)
+            return default if value is None else value
+
+        name = field("tool_name")
+        call_id = field("tool_call_id")
+        is_error = bool(field("is_error", False))
+        output = field("content", "")
 
         text, images = _split_tool_output(output)
         # The documented key pair: "output" for success, "error" for failure.

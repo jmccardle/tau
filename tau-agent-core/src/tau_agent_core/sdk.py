@@ -38,6 +38,7 @@ from tau_agent_core.tools.grep import GrepTool
 from tau_agent_core.tools.ls import LsTool
 from tau_agent_core.tools.read import ReadTool
 from tau_agent_core.tools.write import WriteTool
+from tau_llm.docs import agent_facing
 
 # ─── Default model definitions ───────────────────────────────────────
 
@@ -72,6 +73,7 @@ _DEFAULT_MODELS: dict[str, Model] = {
 }
 
 
+@agent_facing(topic="sdk")
 def resolve_model(
     model: str,
     provider: str = "openai",
@@ -269,6 +271,7 @@ _TOUCHES_BUS_ATTR = "TOUCHES_BUS"
 _SUBJECTS_ATTR = "SUBJECTS"
 
 
+@agent_facing(topic="extensions")
 class ExtensionCapabilityError(Exception):
     """A bus-touching extension's declaration is missing or cannot be honoured.
 
@@ -288,6 +291,7 @@ class ExtensionCapabilityError(Exception):
     """
 
 
+@agent_facing(topic="extensions")
 @dataclass
 class LoadedExtension:
     """A successfully loaded extension.
@@ -315,6 +319,7 @@ class LoadedExtension:
     touches_bus: bool = False
 
 
+@agent_facing(topic="extensions")
 @dataclass
 class ExtensionLoadError:
     """A discovered extension that failed to load (pi types.ts:1590 errors[])."""
@@ -323,6 +328,7 @@ class ExtensionLoadError:
     error: str
 
 
+@agent_facing(topic="extensions")
 @dataclass
 class LoadExtensionsResult:
     """Result of loading extensions — port of pi ``LoadExtensionsResult``.
@@ -335,6 +341,7 @@ class LoadExtensionsResult:
     errors: list[ExtensionLoadError] = field(default_factory=list)
 
 
+@agent_facing(topic="extensions")
 @dataclass
 class ExtensionInfo:
     """Read-only summary of one loaded extension for the ``/extensions`` surface.
@@ -361,6 +368,7 @@ class ExtensionInfo:
     subjects: tuple[str, ...] = ()
 
 
+@agent_facing(topic="extensions")
 def summarize_extensions(result: LoadExtensionsResult) -> list[ExtensionInfo]:
     """Per-extension name/path/tools/commands/hooks from a ``LoadExtensionsResult``.
 
@@ -792,6 +800,7 @@ CONTEXT_FILE_NAMES: tuple[str, ...] = (
 TAU_SYSTEM_FILE = "SYSTEM.md"
 
 
+@agent_facing(topic="sdk")
 class ContextFileError(RuntimeError):
     """A context file was found but could not be used.
 
@@ -805,6 +814,7 @@ class ContextFileError(RuntimeError):
     """
 
 
+@agent_facing(topic="sdk")
 @dataclass(frozen=True)
 class ContextFile:
     """One discovered context file: its resolved path and its text."""
@@ -945,6 +955,7 @@ def _find_shadowed_context_file(cwd: Path) -> Path | None:
     return _canonicalize(main_repo_root / worktree_context_file.name)
 
 
+@agent_facing(topic="sdk")
 def load_project_context_files(
     cwd: str | Path | None = None,
     agent_dir: str | Path | None = None,
@@ -1019,6 +1030,7 @@ def load_project_context_files(
     return context_files
 
 
+@agent_facing(topic="sdk")
 def append_system_prompt(base: str, sections: list[str] | None) -> str:
     """Append ``--append-system-prompt`` sections to a base system prompt.
 
@@ -1038,6 +1050,7 @@ def append_system_prompt(base: str, sections: list[str] | None) -> str:
     return "\n\n".join(parts)
 
 
+@agent_facing(topic="sdk")
 class SystemPromptFieldError(ValueError):
     """A ``{{field}}`` in a system prompt names something τ cannot supply.
 
@@ -1261,6 +1274,7 @@ def _build_system_prompt(
     return "\n".join(lines)
 
 
+@agent_facing(topic="sdk")
 def create_agent_session(
     model: str | Model = "gpt-4o",
     provider: str = "openai",

@@ -11,8 +11,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field, fields as dataclass_fields
 from pathlib import Path
+from tau_llm.docs import agent_facing
 
 
+@agent_facing(topic="sdk")
 @dataclass
 class Settings:
     """τ settings (from ~/.tau/settings.json).
@@ -27,7 +29,7 @@ class Settings:
         custom_system_prompt: Optional custom system prompt override
         tool_execution_mode: Default tool execution mode ("parallel", "sequential")
         max_retries: Maximum number of retries for failed LLM calls
-        temperature: Default sampling temperature
+        temperature: Default sampling temperature (None = let the endpoint choose)
         max_tokens: Maximum output tokens (None = provider default)
         reasoning_level: Reasoning mode ("off", "low", "high")
     """
@@ -43,7 +45,7 @@ class Settings:
     custom_system_prompt: str | None = None
     tool_execution_mode: str = "parallel"
     max_retries: int = 3
-    temperature: float = 0.7
+    temperature: float | None = None
     max_tokens: int | None = None
     reasoning_level: str = "off"
 

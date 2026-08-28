@@ -58,12 +58,14 @@ import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncIterator, Protocol
+from tau_llm.docs import agent_facing
 
 if TYPE_CHECKING:
     from tau_llm.tools import ToolSpec
     from tau_llm.types import Model
 
 
+@agent_facing(topic="providers")
 class StreamEventStream(Protocol):
     """Structural return type for ``Provider.stream_chat``.
 
@@ -77,6 +79,7 @@ class StreamEventStream(Protocol):
     def __aiter__(self) -> AsyncIterator[Any]: ...
 
 
+@agent_facing(topic="providers")
 class Provider(ABC):
     """Abstract base class for LLM chat providers.
 
@@ -148,22 +151,12 @@ class Provider(ABC):
         return None
 
 
+@agent_facing(topic="providers")
 class ApiFactory(Protocol):
     """Builds a :class:`Provider` for one wire protocol, bound to one endpoint.
 
     Keyword-only, so a factory can ignore what it does not need and so adding a
     field later does not silently shift a positional argument.
-
-    Args:
-        provider_id: Vendor id to stamp onto ``Provider.id``.
-        name: Vendor display name to stamp onto ``Provider.name``.
-        base_url: Fully resolved endpoint — the caller has already applied the
-            model's own ``base_url`` and any vendor default, so a factory must
-            NOT substitute one of its own.
-        api_key: Resolved credential, or None when neither the call, the model
-            nor the vendor's environment variables supplied one. A factory that
-            requires a key raises at request time (Fail-Early: no fabricated
-            credential).
     """
 
     def __call__(
@@ -173,9 +166,27 @@ class ApiFactory(Protocol):
         name: str,
         base_url: str,
         api_key: str | None,
-    ) -> Provider: ...
+    ) -> Provider:
+        """Build the provider.
+
+        Args:
+            provider_id: Vendor id to stamp onto ``Provider.id``.
+            name: Vendor display name to stamp onto ``Provider.name``.
+            base_url: Fully resolved endpoint — the caller has already applied
+                the model's own ``base_url`` and any vendor default, so a
+                factory must NOT substitute one of its own.
+            api_key: Resolved credential, or None when neither the call, the
+                model nor the vendor's environment variables supplied one. A
+                factory that requires a key raises at request time (Fail-Early:
+                no fabricated credential).
+
+        Returns:
+            A provider bound to that endpoint.
+        """
+        ...
 
 
+@agent_facing(topic="providers")
 @dataclass(frozen=True)
 class ProviderSpec:
     """One vendor, as data.
@@ -233,6 +244,7 @@ _API_FACTORIES: dict[str, ApiFactory] = {}
 _PROVIDER_SPECS: dict[str, ProviderSpec] = {}
 
 
+@agent_facing(topic="providers")
 def register_api(api: str, factory: ApiFactory, *, replace: bool = False) -> None:
     """Register the factory that builds clients for one wire protocol.
 
@@ -256,6 +268,7 @@ def register_api(api: str, factory: ApiFactory, *, replace: bool = False) -> Non
     _API_FACTORIES[api] = factory
 
 
+@agent_facing(topic="providers")
 def unregister_api(api: str) -> None:
     """Remove a wire-protocol registration.
 
@@ -269,11 +282,13 @@ def unregister_api(api: str) -> None:
     del _API_FACTORIES[api]
 
 
+@agent_facing(topic="providers")
 def registered_apis() -> tuple[str, ...]:
     """Every registered wire-protocol id, sorted."""
     return tuple(sorted(_API_FACTORIES))
 
 
+@agent_facing(topic="providers")
 def get_api_factory(api: str) -> ApiFactory:
     """The factory for ``api``.
 
@@ -292,6 +307,7 @@ def get_api_factory(api: str) -> ApiFactory:
     return factory
 
 
+@agent_facing(topic="providers")
 def register_provider(spec: ProviderSpec, *, replace: bool = False) -> None:
     """Register a vendor's defaults.
 
@@ -312,6 +328,7 @@ def register_provider(spec: ProviderSpec, *, replace: bool = False) -> None:
     _PROVIDER_SPECS[spec.id] = spec
 
 
+@agent_facing(topic="providers")
 def unregister_provider(provider_id: str) -> None:
     """Remove a vendor registration.
 
@@ -323,11 +340,13 @@ def unregister_provider(provider_id: str) -> None:
     del _PROVIDER_SPECS[provider_id]
 
 
+@agent_facing(topic="providers")
 def registered_providers() -> tuple[str, ...]:
     """Every registered vendor id, sorted."""
     return tuple(sorted(_PROVIDER_SPECS))
 
 
+@agent_facing(topic="providers")
 def get_provider_spec(provider_id: str) -> ProviderSpec | None:
     """The vendor's spec, or None if it was never registered.
 

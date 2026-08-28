@@ -85,12 +85,14 @@ from typing import Any, Literal
 from tau_llm.types import Model
 
 from tau_agent_core.compaction import DEFAULT_COMPACTION_SETTINGS, CompactionSettings
+from tau_llm.docs import agent_facing
 
 #: The three admissible policies of §16.8. There is deliberately no fourth value
 #: meaning "whatever the harness defaults to" — that is the option §16.8 removes.
 PolicyMode = Literal["disabled", "local_summarizer", "turn_cap"]
 
 
+@agent_facing(topic="compaction")
 class CompactionPolicyError(Exception):
     """A compaction policy declaration is inadmissible.
 
@@ -100,6 +102,7 @@ class CompactionPolicyError(Exception):
     """
 
 
+@agent_facing(topic="compaction")
 class CompactionPolicyViolation(CompactionPolicyError):
     """A bound run exceeded the budget its policy declared.
 
@@ -113,6 +116,7 @@ class CompactionPolicyViolation(CompactionPolicyError):
     """
 
 
+@agent_facing(topic="compaction")
 @dataclass(frozen=True)
 class CompactionPolicy:
     """One run's declared answer to "what happens when the context fills up?".
@@ -416,6 +420,7 @@ SCENARIO_POLICY_MODES: dict[str, PolicyMode] = {
 }
 
 
+@agent_facing(topic="compaction")
 def policy_for_scenario(
     scenario: str, *, max_turns: int, max_tokens_per_turn: int
 ) -> CompactionPolicy:

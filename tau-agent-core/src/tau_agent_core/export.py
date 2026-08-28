@@ -18,6 +18,7 @@ import json
 import time
 from dataclasses import dataclass
 from typing import Any, Literal
+from tau_llm.docs import agent_facing
 
 # ---------------------------------------------------------------------------
 # Message types used by the exporters (from tau_llm.types)
@@ -28,6 +29,7 @@ from typing import Any, Literal
 # and tau-llm at import time.
 
 
+@agent_facing(topic="export")
 @dataclass
 class ExportConfig:
     """Configuration for session export.
@@ -135,6 +137,7 @@ def _format_timestamp(timestamp: int | None) -> str:
 # ---------------------------------------------------------------------------
 
 
+@agent_facing(topic="export")
 class MarkdownExporter:
     """Export session messages to Markdown format.
 
@@ -235,6 +238,7 @@ _HTML_STYLES = """\
 """
 
 
+@agent_facing(topic="export")
 class HTMLExporter:
     """Export session messages to HTML format.
 
@@ -376,6 +380,7 @@ def _html_escape(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+@agent_facing(topic="export")
 def export_session(
     messages: list[dict],
     config: ExportConfig | None = None,

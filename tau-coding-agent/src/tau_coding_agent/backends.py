@@ -899,6 +899,12 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
         # a bad value raises here at config load rather than mid-turn.
         stream=config.get("stream", True),
         request_timeout=config.get("request_timeout"),
+        # Same story as the two above, one step worse: `temperature` was read by
+        # `agent_session` through a `getattr` against a field `Model` did not
+        # have, so the config key was accepted, dropped, and replaced by a
+        # hardcoded 0.7 on every request. Absent means absent — τ sends no
+        # temperature and the endpoint applies its own.
+        temperature=config.get("temperature"),
         compat=compat,
     )
 

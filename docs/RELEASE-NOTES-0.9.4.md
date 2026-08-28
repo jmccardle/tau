@@ -661,6 +661,54 @@ surfaces, the failure behaviour and the user-theme format.
 
 ---
 
+## Textual's own 21 themes stopped crashing
+
+**This section is in the wrong file, and is kept here as the record of that.**
+The fix (`cf3920a`) landed *after* the 0.9.4 tag was cut — it is not an ancestor
+of `v0.9.4-fullhistory` — and this file was extended to describe it anyway. It
+shipped in **0.9.5**, not 0.9.4. If you are on 0.9.4, the crash below is still
+present. See `docs/RELEASE-NOTES-0.9.5.md`.
+
+Textual registers its themes (`nord`, `dracula`, `tokyo-night`,
+`solarized-light`, …) on every app, and its `ctrl+p` → "Theme" entry lists every
+registered theme. None of them knows what `$tau-bg` is, so τ's four worked and
+picking any of the other 21 stopped the app with:
+
+```
+reference to undefined variable '$tau-bg'
+```
+
+τ now derives a `$tau-*` palette for each of them from the design tokens they
+already carry, and re-registers the result under the same name. **All 24 themes
+are selectable**, from all three surfaces — `--theme nord`, `"theme": "nord"` in
+`config.json`, and either theme list in the command palette.
+
+Nothing in the derivation names a colour. Surfaces come from
+`$background`/`$surface`/`$panel` and the ramps around them, so a τ sidebar
+matches the Footer directly under it. The six-step text ramp is the theme's own
+foreground at six opacities, which needs no light/dark direction and cannot
+invert. Role hues come from `$text-primary`, `$text-warning` and the rest — the
+forms Textual derives to be legible against that theme's background, which
+matters because τ paints roles as whole rows of text and not only as borders.
+
+Two limits, on the record. τ has ten role hues where Textual defines six, so four
+roles double up — every pairing is one τ's own themes already make somewhere.
+And the contrast is whatever the theme's author chose: τ's four are tuned against
+a measured floor, and an adapted one is held only to "the ramp runs one way" and
+"body text clears 4:1 on the chat pane".
+
+`ansi-dark` and `ansi-light` have no colour ramp to derive from — every surface
+they generate is `transparent` — so both reuse τ's own `ansi` palette. That makes
+`ansi-light` exactly the light-terminal ANSI theme the 0.9.4 notes above told you
+to write by hand.
+
+One behaviour change beyond the fix: a theme picked from **Textual's** "Theme"
+list is now saved to `config.json` as well. Two theme lists in one palette where
+one sticks and one is forgotten at the next launch is worse than either on its
+own. `--theme` still never reaches the file.
+
+---
+
 ## `--fun` reaches an installed τ
 
 The random startup taglines were on in one artifact and off in every other.

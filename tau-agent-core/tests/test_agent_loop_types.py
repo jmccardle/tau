@@ -185,7 +185,9 @@ class TestAgentLoopConfig:
         assert config.tool_execution_mode == "parallel"
         assert config.max_retries == 3
         assert config.max_turns is None
-        assert config.temperature == 0.7
+        # No temperature unless one is stated: the endpoint applies its own, and
+        # the anthropic-messages wire cannot carry the parameter at all.
+        assert config.temperature is None
 
     def test_create_agent_loop_config_with_all_fields(self):
         """AgentLoopConfig accepts all fields."""

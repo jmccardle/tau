@@ -134,28 +134,88 @@ class _FakeStreamManager:
         return False
 
 
+#: The keyword arguments ``anthropic``'s ``AsyncMessages.stream`` declares, as of
+#: SDK 1.0.0 — copied from ``inspect.signature`` against the installed SDK.
+#:
+#: Duplicated here rather than imported because this module must pass with the
+#: ``anthropic`` import BLOCKED (see the lazy-import test at the bottom of the
+#: file), and because the permissive ``def stream(self, **kwargs)`` this replaced
+#: is what let τ ship a provider that raised ``TypeError`` on every real call:
+#: the SDK removed ``temperature``, ``top_p`` and ``top_k`` from this list and
+#: declares no ``**kwargs``, and a stub that accepts anything cannot see that.
+#: When the SDK's signature changes, update this tuple — that edit is the point.
+SDK_STREAM_PARAMS = (
+    "max_tokens",
+    "messages",
+    "model",
+    "cache_control",
+    "inference_geo",
+    "metadata",
+    "output_config",
+    "output_format",
+    "container",
+    "service_tier",
+    "stop_sequences",
+    "system",
+    "thinking",
+    "tool_choice",
+    "tools",
+    "user_profile_id",
+    "extra_headers",
+    "extra_query",
+    "extra_body",
+    "timeout",
+)
+
+_UNSET = object()
+
+
+def _strict_messages_class(on_call, params):
+    """Build a ``messages`` stub whose ``stream`` declares exactly ``params``.
+
+    The signature is generated rather than written as ``**kwargs`` so the stub
+    REJECTS an undeclared keyword argument the way the real SDK does, and so
+    ``inspect.signature`` reports the same parameter set the provider reads.
+    """
+    signature = ", ".join(f"{name}=_UNSET" for name in params)
+    captured = ", ".join(f"{name!r}: {name}" for name in params)
+    namespace = {"_UNSET": _UNSET, "_on_call": on_call}
+    exec(  # noqa: S102 — a generated signature is the whole point of this stub
+        f"def stream(self, *, {signature}):\n    return _on_call({{{captured}}})\n",
+        namespace,
+    )
+    return type("_Messages", (), {"stream": namespace["stream"]})
+
+
 class _FakeClient:
     """Records the request τ built, and replays a canned stream."""
 
-    def __init__(self, events, final):
+    def __init__(self, events, final, params=SDK_STREAM_PARAMS):
         self.requests = []
         self.closed = False
-        outer = self
 
-        class _Messages:
-            def stream(self, **kwargs):
-                outer.requests.append(kwargs)
-                return _FakeStreamManager(_FakeStream(events, final))
+        def on_call(kwargs):
+            self.requests.append({k: v for k, v in kwargs.items() if v is not _UNSET})
+            return _FakeStreamManager(_FakeStream(events, final))
 
-        self.messages = _Messages()
+        self.messages = _strict_messages_class(on_call, params)()
 
     async def close(self):
         self.closed = True
 
 
-def _run(provider, model, messages, tools=None, options=None, events=(), final=None):
+def _run(
+    provider,
+    model,
+    messages,
+    tools=None,
+    options=None,
+    events=(),
+    final=None,
+    params=SDK_STREAM_PARAMS,
+):
     """Drive one completion and return ``(events, fake_client)``."""
-    client = _FakeClient(events, final if final is not None else _final())
+    client = _FakeClient(events, final if final is not None else _final(), params)
     provider._client = client
 
     async def drive():
@@ -625,9 +685,7 @@ class TestToolConversion:
         tools = _provider()._convert_tools(
             [_tool(name="read", description="Read a file", parameters=schema)]
         )
-        assert tools == [
-            {"name": "read", "description": "Read a file", "input_schema": schema}
-        ]
+        assert tools == [{"name": "read", "description": "Read a file", "input_schema": schema}]
 
 
 # ── streaming ────────────────────────────────────────────────────────────
@@ -730,9 +788,7 @@ class TestFinalMessage:
             [{"role": "user", "content": "list"}],
             final=_final(
                 content=[
-                    SimpleNamespace(
-                        type="tool_use", id="toolu_1", name="ls", input={"path": "."}
-                    )
+                    SimpleNamespace(type="tool_use", id="toolu_1", name="ls", input={"path": "."})
                 ],
                 stop_reason="tool_use",
             ),
@@ -798,9 +854,7 @@ class TestFinalMessage:
             _provider(),
             _model(),
             [{"role": "user", "content": "hi"}],
-            final=_final(
-                content=[SimpleNamespace(type="redacted_thinking", data="blob")]
-            ),
+            final=_final(content=[SimpleNamespace(type="redacted_thinking", data="blob")]),
         )
         block = events[-1].final.content[0]
         assert block.thinking == ""
@@ -836,8 +890,12 @@ class TestFinalMessage:
 class TestStopReasons:
     @pytest.mark.parametrize(
         "raw,expected",
-        [("end_turn", "stop"), ("stop_sequence", "stop"), ("max_tokens", "length"),
-         ("tool_use", "toolUse")],
+        [
+            ("end_turn", "stop"),
+            ("stop_sequence", "stop"),
+            ("max_tokens", "length"),
+            ("tool_use", "toolUse"),
+        ],
     )
     def test_mapping(self, raw, expected):
         events, _ = _run(
@@ -872,7 +930,9 @@ class TestStopReasons:
             _provider(),
             _model(),
             [{"role": "user", "content": "hi"}],
-            final=_final(content=[SimpleNamespace(type="text", text="x")], stop_reason="pause_turn"),
+            final=_final(
+                content=[SimpleNamespace(type="text", text="x")], stop_reason="pause_turn"
+            ),
         )
         final_msg = events[-1].final
         assert final_msg.stop_reason == "error"
@@ -954,13 +1014,78 @@ class TestRequest:
                 "abort_signal": object(),
                 "request_timeout": 30,
                 "stream": True,
-                "temperature": 0.5,
             },
         )
         request = client.requests[0]
         for leaked in ("api_key", "reasoning", "abort_signal", "request_timeout", "stream"):
             assert leaked not in request
+
+    def test_a_sampling_option_the_sdk_dropped_names_itself_and_the_escape_hatch(self):
+        # The SDK removed temperature/top_p/top_k from messages.stream(), so
+        # splatting one in is a TypeError raised inside τ before any request
+        # exists. τ answers in its own words instead, and points at the one
+        # place an operator can still send it.
+        with pytest.raises(ValueError) as exc:
+            _run(
+                _provider(),
+                _model(),
+                [{"role": "user", "content": "hi"}],
+                options={"temperature": 0.5},
+            )
+        message = str(exc.value)
+        assert "temperature" in message
+        assert "extra_body" in message
+
+    def test_extra_body_reaches_the_wire_split_by_what_the_sdk_declares(self):
+        _, client = _run(
+            _provider(),
+            _model(extra_body={"stop_sequences": ["STOP"], "top_k": 40}),
+            [{"role": "user", "content": "hi"}],
+        )
+        request = client.requests[0]
+        # Declared by the SDK, so it rides as that keyword argument and a
+        # per-call option can still override it.
+        assert request["stop_sequences"] == ["STOP"]
+        # Undeclared, so it rides in the body, where the SERVER answers for it.
+        assert request["extra_body"] == {"top_k": 40}
+
+    def test_a_per_call_option_still_beats_model_extra_body(self):
+        _, client = _run(
+            _provider(),
+            _model(extra_body={"stop_sequences": ["FROM_CONFIG"]}),
+            [{"role": "user", "content": "hi"}],
+            options={"stop_sequences": ["FROM_CALL"]},
+        )
+        assert client.requests[0]["stop_sequences"] == ["FROM_CALL"]
+
+    def test_an_sdk_that_accepts_anything_is_left_alone(self):
+        # A stub — or a future SDK — whose stream() declares **kwargs has
+        # nothing to route around, so nothing is rerouted and nothing raises.
+        client = _FakeClient((), _final())
+
+        class _Permissive:
+            def stream(_self, **kwargs):
+                client.requests.append(kwargs)
+                return _FakeStreamManager(_FakeStream((), _final()))
+
+        client.messages = _Permissive()
+        provider = _provider()
+        provider._client = client
+
+        async def drive():
+            stream = await provider.stream_chat(
+                _model(extra_body={"top_k": 40}),
+                [{"role": "user", "content": "hi"}],
+                None,
+                {"temperature": 0.5},
+            )
+            return [event async for event in stream]
+
+        asyncio.run(drive())
+        request = client.requests[0]
         assert request["temperature"] == 0.5
+        assert request["top_k"] == 40
+        assert "extra_body" not in request
 
     def test_tools_ride_as_input_schema(self):
         _, client = _run(
@@ -1006,7 +1131,7 @@ class TestRefusals:
     def test_the_module_never_imports_the_openai_compat_machinery(self):
         """S7 — tau_llm.compat answers OpenAI-wire-only questions. The gate is
         that this module does not participate."""
-        source = (anthropic_mod.__file__ or "")
+        source = anthropic_mod.__file__ or ""
         assert source
         with open(source) as handle:
             text = handle.read()
@@ -1033,9 +1158,7 @@ class TestTheExtraIsOptional:
         with open(anthropic_mod.__file__) as handle:
             lines = handle.read().splitlines()
         at_module_scope = [
-            line
-            for line in lines
-            if line.startswith(("import anthropic", "from anthropic"))
+            line for line in lines if line.startswith(("import anthropic", "from anthropic"))
         ]
         assert not at_module_scope, (
             f"{at_module_scope} sits at module scope, so `import tau_llm` would require "
@@ -1066,6 +1189,28 @@ class TestTheExtraIsOptional:
         monkeypatch.setattr(builtins, "__import__", _blocked)
         with pytest.raises(ModuleNotFoundError, match=r"tau-llm\[anthropic\]"):
             _provider()._get_client()
+
+    def test_the_stub_signature_matches_the_installed_sdk(self):
+        """The one test that keeps ``SDK_STREAM_PARAMS`` honest.
+
+        Every other test in this file drives a stub. If the tuple the stub is
+        generated from drifts from the real ``AsyncMessages.stream``, the suite
+        goes back to proving nothing about what the SDK accepts — which is the
+        state that let the ``temperature`` TypeError ship. Skipped rather than
+        failed when the optional extra is absent: the rest of this module is
+        required to pass without it.
+        """
+        pytest.importorskip("anthropic")
+        from anthropic import AsyncAnthropic
+
+        declared = anthropic_mod._accepted_stream_params(
+            AsyncAnthropic(api_key="sk-ant-test").messages.stream
+        )
+        assert declared == frozenset(SDK_STREAM_PARAMS), (
+            "the installed anthropic SDK's messages.stream() signature has moved; "
+            f"update SDK_STREAM_PARAMS. Added: {sorted(declared - set(SDK_STREAM_PARAMS))}, "
+            f"removed: {sorted(set(SDK_STREAM_PARAMS) - declared)}."
+        )
 
 
 class TestLifetime:

@@ -52,14 +52,21 @@ _spec.loader.exec_module(demo)
 
 
 def _tool_call_assistant(call_id: str, model: str, usage: Usage) -> AssistantMessage:
-    """An assistant message with one ``write`` tool call, carrying model + usage."""
+    """An assistant message with one ``write`` tool call, carrying model + usage.
+
+    The path is derived from ``call_id`` so consecutive calls differ. ``write`` is
+    unregistered here, so every call errors, and an identical failing call
+    repeated is now a shape the loop stops on
+    (``AgentLoopConfig.repeat_tool_call_limit``) — which would cut the run short
+    and cost this test the completions whose usage it counts.
+    """
     return AssistantMessage(
         content=[
             ToolCall(
                 type="toolCall",
                 id=call_id,
                 name="write",
-                arguments={"path": "f.py", "content": "x"},
+                arguments={"path": f"{call_id}.py", "content": "x"},
             )
         ],
         api="openai-completions",

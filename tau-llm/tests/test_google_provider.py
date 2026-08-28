@@ -28,9 +28,45 @@ from tau_llm.providers.google import (
     read_signature_payload,
     signature_payload,
 )
-from tau_llm.types import Model, ToolCall
+from tau_llm.types import Model, ToolCall, ToolResultMessage
 
 SIGNATURE_B64 = base64.b64encode(b"thought-bytes").decode("ascii")
+
+
+def _tool_result(
+    name: str = "read",
+    call_id: str = "c1",
+    content: Any = "ok",
+    *,
+    is_error: bool = False,
+) -> dict[str, Any]:
+    """A toolResult message in the shape τ actually produces.
+
+    Built through :class:`ToolResultMessage` rather than written out as a
+    literal, and that is the point rather than tidiness. These tests used to
+    hand-write pi's camelCase keys — ``toolName``, ``toolCallId``, ``output``,
+    ``isError`` — which the model has never emitted: it declares ``tool_name`` /
+    ``tool_call_id`` / ``content`` / ``is_error`` and carries no aliases. The
+    client read the camelCase spelling, the tests wrote it, the two agreed, and
+    the suite stayed green over a provider that could not send a tool result at
+    all — every field resolved empty, so the first turn after any tool call
+    returned ``400 function_response.name: Name cannot be empty``, and the
+    payload it did send carried no output.
+
+    Constructing the message here means a rename in ``types.py`` breaks this
+    suite rather than hiding in it.
+    """
+    blocks = [{"type": "text", "text": content}] if isinstance(content, str) else content
+    return ToolResultMessage.model_validate(
+        {
+            "role": "toolResult",
+            "tool_call_id": call_id,
+            "tool_name": name,
+            "content": blocks,
+            "is_error": is_error,
+            "timestamp": 0,
+        }
+    ).model_dump()
 
 
 @pytest.fixture(autouse=True)
@@ -260,13 +296,7 @@ def test_a_tool_call_id_is_sent_by_default() -> None:
     """
     assert _model().requires_tool_call_id is True
 
-    message = {
-        "role": "toolResult",
-        "toolName": "read",
-        "toolCallId": "call_1",
-        "output": "ok",
-        "isError": False,
-    }
+    message = _tool_result("read", "call_1", "ok")
     _, contents = _provider()._convert_messages([message], _model())
 
     assert contents[0]["parts"][0]["function_response"]["id"] == "call_1"
@@ -274,7 +304,7 @@ def test_a_tool_call_id_is_sent_by_default() -> None:
 
 def test_the_id_can_be_turned_off_per_model() -> None:
     """The override O2 asked for. No table consults a model name to set it."""
-    message = {"role": "toolResult", "toolName": "read", "toolCallId": "c", "output": "ok"}
+    message = _tool_result("read", "c", "ok")
     _, contents = _provider()._convert_messages([message], _model(requires_tool_call_id=False))
 
     assert "id" not in contents[0]["parts"][0]["function_response"]
@@ -283,14 +313,14 @@ def test_the_id_can_be_turned_off_per_model() -> None:
 def test_an_unsafe_id_is_sanitised() -> None:
     """An id Google rejects fails the whole request, and τ's ids are not the only
     ones that reach here — extensions and other providers mint them too."""
-    message = {"role": "toolResult", "toolName": "read", "toolCallId": "a b/c:d", "output": "x"}
+    message = _tool_result("read", "a b/c:d", "x")
     _, contents = _provider()._convert_messages([message], _model())
 
     assert contents[0]["parts"][0]["function_response"]["id"] == "a_b_c_d"
 
 
 def test_a_long_id_is_truncated_to_64_chars() -> None:
-    message = {"role": "toolResult", "toolName": "r", "toolCallId": "x" * 200, "output": "y"}
+    message = _tool_result("r", "x" * 200, "y")
     _, contents = _provider()._convert_messages([message], _model())
 
     assert len(contents[0]["parts"][0]["function_response"]["id"]) == 64
@@ -304,12 +334,9 @@ def test_images_go_in_a_separate_turn_by_default() -> None:
     """
     assert _model().supports_multimodal_function_response is False
 
-    message = {
-        "role": "toolResult",
-        "toolName": "screenshot",
-        "toolCallId": "c1",
-        "output": [{"type": "image", "mime_type": "image/png", "data": "AAA"}],
-    }
+    message = _tool_result(
+        "screenshot", "c1", [{"type": "image", "mime_type": "image/png", "data": "AAA"}]
+    )
     _, contents = _provider()._convert_messages([message], _model())
 
     assert "parts" not in contents[0]["parts"][0]["function_response"]
@@ -317,12 +344,9 @@ def test_images_go_in_a_separate_turn_by_default() -> None:
 
 
 def test_images_nest_when_the_model_says_it_supports_it() -> None:
-    message = {
-        "role": "toolResult",
-        "toolName": "screenshot",
-        "toolCallId": "c1",
-        "output": [{"type": "image", "mime_type": "image/png", "data": "AAA"}],
-    }
+    message = _tool_result(
+        "screenshot", "c1", [{"type": "image", "mime_type": "image/png", "data": "AAA"}]
+    )
     _, contents = _provider()._convert_messages(
         [message], _model(supports_multimodal_function_response=True)
     )
@@ -362,8 +386,8 @@ def test_consecutive_tool_results_merge_into_one_turn() -> None:
     """Splitting a parallel call's results across turns teaches the model to stop
     making parallel calls. pi merges for the same reason."""
     messages = [
-        {"role": "toolResult", "toolName": "read", "toolCallId": "c1", "output": "a"},
-        {"role": "toolResult", "toolName": "read", "toolCallId": "c2", "output": "b"},
+        _tool_result("read", "c1", "a"),
+        _tool_result("read", "c2", "b"),
     ]
     _, contents = _provider()._convert_messages(messages, _model())
 
@@ -372,13 +396,7 @@ def test_consecutive_tool_results_merge_into_one_turn() -> None:
 
 
 def test_an_error_result_uses_the_error_key() -> None:
-    message = {
-        "role": "toolResult",
-        "toolName": "read",
-        "toolCallId": "c1",
-        "output": "boom",
-        "isError": True,
-    }
+    message = _tool_result("read", "c1", "boom", is_error=True)
     _, contents = _provider()._convert_messages([message], _model())
 
     assert contents[0]["parts"][0]["function_response"]["response"] == {"error": "boom"}

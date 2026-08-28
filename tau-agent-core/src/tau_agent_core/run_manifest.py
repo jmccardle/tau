@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Any
 
 from tau_agent_core.compaction_policy import CompactionPolicy
+from tau_llm.docs import agent_facing
 
 #: The value of ``harness`` for a run driven by this package. §5.2 partitions every
 #: latency number by it; a pi-era number and a τ-era number are different
@@ -58,6 +59,7 @@ from tau_agent_core.compaction_policy import CompactionPolicy
 HARNESS = "tau"
 
 
+@agent_facing(topic="runs")
 def extension_manifest_entries(infos: Sequence[Any]) -> list[dict[str, Any]]:
     """The ``extensions`` manifest fragment (H7, SIM_SPEC_v2 §16.6).
 
@@ -92,6 +94,7 @@ def extension_manifest_entries(infos: Sequence[Any]) -> list[dict[str, Any]]:
     ]
 
 
+@agent_facing(topic="runs")
 def build_run_manifest(
     *,
     harness: str = HARNESS,
@@ -139,6 +142,7 @@ def build_run_manifest(
     return manifest
 
 
+@agent_facing(topic="runs")
 def require_compaction_policy(manifest: dict[str, Any]) -> dict[str, Any]:
     """Return the manifest's compaction block, or raise.
 
@@ -169,6 +173,7 @@ def require_compaction_policy(manifest: dict[str, Any]) -> dict[str, Any]:
     return block
 
 
+@agent_facing(topic="runs")
 def write_run_manifest(path: str | Path, manifest: dict[str, Any]) -> Path:
     """Write ``manifest`` as JSON, refusing one that is not partitionable.
 

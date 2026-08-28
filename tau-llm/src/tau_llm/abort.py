@@ -19,8 +19,10 @@ Usage:
 from __future__ import annotations
 
 import threading
+from tau_llm.docs import agent_facing
 
 
+@agent_facing(topic="providers")
 class AbortSignal:
     """Signal that can be checked during async operations.
 

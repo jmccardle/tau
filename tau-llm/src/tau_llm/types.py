@@ -14,8 +14,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from tau_llm.compat import Compat
+from tau_llm.docs import agent_facing
 
 
+@agent_facing(topic="messages")
 class TextContent(BaseModel):
     """A text content block in a message.
 
@@ -26,6 +28,7 @@ class TextContent(BaseModel):
     text: str
 
 
+@agent_facing(topic="messages")
 class ThinkingContent(BaseModel):
     """A thinking/reasoning content block.
 
@@ -62,6 +65,7 @@ class ThinkingContent(BaseModel):
     thinking_signature: str | dict[str, Any] = ""
 
 
+@agent_facing(topic="messages")
 class ImageContent(BaseModel):
     """An image content block in a message.
 
@@ -73,6 +77,7 @@ class ImageContent(BaseModel):
     mime_type: str
 
 
+@agent_facing(topic="messages")
 class ToolCall(BaseModel):
     """A tool call content block in a message.
 
@@ -104,6 +109,7 @@ class ToolCall(BaseModel):
     provider_signature: dict[str, Any] = Field(default_factory=dict)
 
 
+@agent_facing(topic="messages")
 class Usage(BaseModel):
     """Token usage information for an LLM response.
 
@@ -130,6 +136,7 @@ class Usage(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
+@agent_facing(topic="messages")
 class UserMessage(BaseModel):
     """A user message.
 
@@ -141,6 +148,7 @@ class UserMessage(BaseModel):
     timestamp: int = Field(ge=0)
 
 
+@agent_facing(topic="messages")
 class AssistantMessage(BaseModel):
     """An assistant message from the LLM.
 
@@ -176,6 +184,7 @@ class AssistantMessage(BaseModel):
         return [c for c in self.content if isinstance(c, ToolCall)]
 
 
+@agent_facing(topic="messages")
 class Model(BaseModel):
     """LLM model configuration.
 
@@ -311,6 +320,21 @@ class Model(BaseModel):
     # as-is, but is second-class: no τ-side grammar helpers target it.
     # Set per-model in ~/.tau/config.json (``models.<name>.grammar``).
     grammar_dialect: Literal["llguidance", "gbnf"] | None = None
+    # Sampling temperature for this model. ``None`` (default) means τ sends NO
+    # temperature and the endpoint applies its own — pi parity
+    # (``simple-options.ts:32`` passes ``options?.temperature``, which is
+    # undefined unless a caller sets one, and pi's agent never does).
+    #
+    # It is a field rather than a bare number in the agent config because the
+    # right value is a property of the endpoint, not of the run: llama.cpp
+    # defaults to 0.8, the OpenAI wire to 1.0, and the Anthropic Messages API
+    # removed the parameter outright on Opus 5 / Opus 4.8 / Opus 4.7 / Sonnet 5
+    # / Fable 5, where sending any value is a 400. A single harness-wide default
+    # cannot be right for all three, and the previous one (0.7, fabricated in
+    # ``agent_session`` by a ``getattr`` against a field that did not exist) was
+    # both unreachable from config and fatal on the Anthropic wire.
+    # Set per-model in ~/.tau/config.json (``models.<name>.temperature``).
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     # Static request-body params merged into every payload for this model, BELOW
     # per-call options (per-call wins). Standalone value even without grammars:
     # llama-server knobs like ``cache_prompt``, ``min_p``, sampler settings are
@@ -380,6 +404,7 @@ class Model(BaseModel):
         }
 
 
+@agent_facing(topic="messages")
 class ToolResultMessage(BaseModel):
     """A tool result message.
 

@@ -1720,13 +1720,30 @@ Not in scope unless deliberately pulled in.
   investigating §2, none of them the cause of it. The agent loop runs as an
   async Textual worker on the app's own event loop, with no thread, so anything
   synchronous freezes painting and input directly.
-  - `grep` and `find` do a synchronous `os.walk` with no `to_thread`. `bash` is
-    correctly async.
-  - `read`, `write` and `edit` do synchronous file I/O.
-  - **Worst: persistence at turn end.** `_persist_loop_messages` is a plain sync
+  - ~~`grep` and `find` do a synchronous `os.walk` with no `to_thread`~~ —
+    **fixed 2026-08-28 (`69c5af2`).** Both walk in a worker thread now. The fix
+    turned up two more things this entry had not seen: each declared a `signal`
+    parameter and never read it, so neither could be aborted at all; and `grep`
+    read every file in the tree TWICE, because its binary-file check read each
+    file whole and discarded the result before `_search_file` read it again.
+    `bash` was already correctly async and is untouched.
+  - ~~`read`, `write` and `edit` do synchronous file I/O~~ — **fixed 2026-08-28
+    (`69c5af2`).** `write`'s atomic sequence moves as one unit, so an abort
+    cannot land between `mkstemp` and `os.replace`.
+  - **Worst: persistence at turn end. Still open, and now analysed —
+    `docs/BLOCKING-PERSISTENCE.md`.** `_persist_loop_messages` is a plain sync
     method called after `loop.run()` returns. With the JMFTS store each appended
     message is a synchronous `httpx` POST, so a ten-tool turn issues about 21
     blocking round-trips on the UI thread at the turn boundary.
+
+    Unlike the five above, this one cannot be fixed inside τ. `SessionLog` is a
+    synchronous `Protocol` with fourteen append methods, four in-repo
+    implementors and a published contract suite, so `to_thread`-ing the call
+    site would make thread-safety a new requirement of every implementor — with
+    nothing in the protocol, the contract suite or a version bump saying so. The
+    honest fix is an async protocol, which is a breaking change for external
+    implementors and its own unit of work. The linked doc has the three options
+    and what each costs.
 
   Not the streaming symptom, but a real freeze, and the last one gets worse with
   turn length.
@@ -1746,14 +1763,31 @@ Not in scope unless deliberately pulled in.
   probe found UnoRouter 429s that name their own retry interval, so the
   information needed is on the wire and unused.
 
-* **No repeat-tool-call detection in `agent_loop.py`** (0.9.3 §4.2 item 2). This
-  got worse in this cycle, not better: `max_turns` now defaults to `None`, so
-  the 50-turn ceiling that used to bound a model calling the same tool forever
-  is gone. See `docs/RELEASE-NOTES-0.9.4.md`.
+* ~~**No repeat-tool-call detection in `agent_loop.py`**~~ (0.9.3 §4.2 item 2) —
+  **built 2026-08-28 (`244931c`).** `AgentLoopConfig.repeat_tool_call_limit`,
+  default 3. The rule is narrower than "the model repeated a call": the WHOLE
+  batch must repeat — same names, same arguments, order-insensitive and
+  key-order-insensitive — AND every result in every one of those turns must be
+  an error. A model that fails, fixes, and retries has a different batch in
+  between and never trips it.
 
-* **A stated `--max-turns` ceiling is still reached silently.** Nothing in the
-  event stream distinguishes a truncated run from a finished one. Recorded in
-  `docs/CLI-PLAN.md`.
+  The default is 3 rather than the 2 that §4.2 implies, and an extension is the
+  reason: a `tool_result` hook that reacts to repeated failures can only fire ON
+  the second failure, and exists to change what the model sees before the third
+  attempt. At 2 the run ends in the same turn the guidance was appended, so the
+  guidance is written and never read. `tests/test_reminders.py` is that
+  scenario, and it is what found the number.
+
+  pi has nothing to copy here — it has no turn bound at all.
+
+* ~~**A stated `--max-turns` ceiling is still reached silently.**~~ — **fixed
+  2026-08-28 (`244931c`), in the same change.** `agent_end` now carries
+  `end_reason`: `done` / `terminate` / `aborted` / `max_turns` /
+  `repeat_tool_calls` / `error`. `error` already said whether the loop raised;
+  this says how it stopped when it did not, which is what tells a caller an
+  answer is TRUNCATED rather than finished. Projected onto `WireEvent` too, so
+  an RPC host learns it as well as the TUI — `test_rpc_event_schema.py`'s
+  `TestNoFieldSilentlyDropped` is the guard that required that triage.
 
 * **Multi-vendor §4.4 step 5's remainder** — pluggable auth and a model
   resolver.

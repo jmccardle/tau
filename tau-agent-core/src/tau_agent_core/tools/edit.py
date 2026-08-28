@@ -7,6 +7,7 @@ Reference: PHASE-2-SUBPHASE-3.md, "edit tool" section.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any, Callable, Literal
 
@@ -121,10 +122,10 @@ class EditTool:
                 tool_call_id=tool_call_id,
             ).model_dump()
 
-        # Read original content
+        # Off the event loop (docs/PLAN-0.9.4.md §8) — the agent loop shares the
+        # TUI's loop, so blocking file I/O froze painting and input.
         try:
-            with open(resolved_path, "r", encoding="utf-8") as f:
-                original = f.read()
+            original = await asyncio.to_thread(self._read_text, resolved_path)
         except Exception as e:
             return AgentToolResult.from_error(
                 tool_name=self.name,
@@ -160,8 +161,7 @@ class EditTool:
 
         # Write back
         try:
-            with open(resolved_path, "w", encoding="utf-8") as f:
-                f.write(new_content)
+            await asyncio.to_thread(self._write_text, resolved_path, new_content)
         except Exception as e:
             return AgentToolResult.from_error(
                 tool_name=self.name,
@@ -191,6 +191,34 @@ class EditTool:
             "diff": diff,
         }
         return result_dict
+
+    @staticmethod
+    def _read_text(resolved_path: str) -> str:
+        """Read the file's current contents in a worker thread.
+
+        Args:
+            resolved_path: Absolute path to read.
+
+        Returns:
+            The file's full contents, decoded as UTF-8.
+        """
+        with open(resolved_path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    @staticmethod
+    def _write_text(resolved_path: str, new_content: str) -> None:
+        """Write the edited contents back, in a worker thread.
+
+        This is a plain truncating write, not the atomic rename ``write`` uses.
+        That difference is pre-existing behaviour and is left alone here: moving
+        the call off the event loop must not also change what the call does.
+
+        Args:
+            resolved_path: Absolute path to overwrite.
+            new_content: The full new file contents.
+        """
+        with open(resolved_path, "w", encoding="utf-8") as f:
+            f.write(new_content)
 
     @staticmethod
     def _generate_diff(original: str, new_content: str) -> str:

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Literal
+from tau_llm.docs import agent_facing
 
 #: JSON-RPC 2.0 §5.1 standard error codes. Named here (block [2] Dialect) rather
 #: than in handler.py or commands.py, because they are part of the wire envelope
@@ -112,6 +113,7 @@ REQUEST_TOO_LARGE = -32003
 SESSION_NOT_PERSISTED = -32004
 
 
+@agent_facing(topic="rpc")
 @dataclass
 class RPCRequest:
     """A JSON-RPC 2.0 request message.
@@ -155,6 +157,7 @@ class RPCRequest:
         return cls(**data)
 
 
+@agent_facing(topic="rpc")
 @dataclass
 class RPCResponse:
     """A JSON-RPC 2.0 response message.
@@ -205,6 +208,7 @@ class RPCResponse:
         return self.error is not None
 
 
+@agent_facing(topic="rpc")
 @dataclass
 class RPCEvent:
     """A JSON-RPC 2.0 event notification (fire-and-forget).

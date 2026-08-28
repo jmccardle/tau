@@ -9,4 +9,4 @@ Nothing imports this. ``tau_coding_agent.__version__`` is the version the runnin
 program reports.
 """
 
-__version__ = "0.9.4"
+__version__ = "0.9.5"

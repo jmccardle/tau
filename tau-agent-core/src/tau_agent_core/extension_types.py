@@ -27,6 +27,7 @@ from tau_agent_core.submission import (
     SubmissionResult,
     user_input_permitted,
 )
+from tau_llm.docs import agent_facing
 
 if TYPE_CHECKING:
     from tau_agent_core.events import EventBus
@@ -60,6 +61,7 @@ UNATTRIBUTED_EXTENSION = "<unattributed extension>"
 EXT_CHANNEL_PREFIX = "ext:"
 
 
+@agent_facing(topic="extensions")
 def ext_channel(name: str, topic: str) -> str:
     """The namespaced ``EventBus`` channel for an extension pub/sub topic (E7 §3 / S52).
 
@@ -116,6 +118,7 @@ _FORM_EMPTY_VALUE: dict[str, Any] = {
 }
 
 
+@agent_facing(topic="extensions")
 def validate_form_spec(spec: Any) -> tuple[str, list[dict[str, Any]]]:
     """Validate + normalize a ``ui.form`` spec into ``(title, fields)`` (S66).
 
@@ -179,6 +182,7 @@ def validate_form_spec(spec: Any) -> tuple[str, list[dict[str, Any]]]:
     return title, fields
 
 
+@agent_facing(topic="extensions")
 def form_headless_value(field: dict[str, Any]) -> Any:
     """The ``form=defaults`` headless answer for one validated field (S66).
 
@@ -275,6 +279,7 @@ def _validate_panel_actions(raw: Any) -> list[dict[str, str]]:
     return actions
 
 
+@agent_facing(topic="extensions")
 def validate_panel_spec(spec: Any) -> dict[str, Any]:
     """Validate + normalize a ``ui.panel`` spec into ``{title, body, actions}`` (S68).
 
@@ -309,6 +314,7 @@ def validate_panel_spec(spec: Any) -> dict[str, Any]:
     return {"title": title, "body": body, "actions": actions}
 
 
+@agent_facing(topic="extensions")
 class HeadlessDialogError(RuntimeError):
     """A UI dialog was opened with no human reachable and no explicit ``--ui-defaults`` policy.
 
@@ -332,6 +338,7 @@ class HeadlessDialogError(RuntimeError):
     """
 
 
+@agent_facing(topic="extensions")
 class ExtensionUI:
     """User interaction methods (TUI delegate, or a headless policy).
 
@@ -814,6 +821,7 @@ class ExtensionUI:
             )
 
 
+@agent_facing(topic="extensions")
 @dataclass
 class BranchResult:
     """What a C2/W14 branch sub-agent came back with (``ctx.spawn_branch``).
@@ -837,6 +845,7 @@ class BranchResult:
     error: str | None
 
 
+@agent_facing(topic="extensions")
 class ExtensionContext:
     """Context passed to extension event handlers and tools.
 
@@ -998,12 +1007,18 @@ class ExtensionContext:
         """Switch the active model by NAME, effective next turn (S45).
 
         Delegates to :meth:`AgentSession.set_model` (pi ``setModel`` parity, adapted
-        to τ's name-based resolver). Returns the new :meth:`get_model` projection.
+        to τ's name-based resolver). Whatever the resolver raises for an unknown
+        ``name`` propagates unchanged.
+
+        Args:
+            name: The model name to resolve and switch to.
+
+        Returns:
+            The new :meth:`get_model` projection.
 
         Raises:
             RuntimeError: if no session is bound, or the session has no model
                 resolver bound (both Fail-Early — no registry to resolve ``name``).
-            Whatever the resolver raises for an unknown ``name`` propagates unchanged.
         """
         model: dict[str, Any] = self._require_session().set_model(name)
         return model
@@ -1646,6 +1661,7 @@ class ExtensionContext:
 #: `ExtensionAPI._session` is (see its docstring) — this module must not
 #: import `AgentSession` (a real cycle: `agent_session.py` imports
 #: `ExtensionAPI` from here).
+@agent_facing(topic="extensions")
 def apply_session_name(session: Any, name: str) -> None:
     """Persist ``name`` as ``session``'s durable display name via
     ``append_session_info`` — the SAME entry kind the file-backed
@@ -1681,6 +1697,7 @@ def apply_session_name(session: Any, name: str) -> None:
     log.append_session_info(name)
 
 
+@agent_facing(topic="extensions")
 def read_session_name(session: Any) -> str | None:
     """Read ``session``'s current durable display name, or ``None`` if never
     set.
@@ -1704,6 +1721,7 @@ def read_session_name(session: Any) -> str | None:
     return str(name) if name else None
 
 
+@agent_facing(topic="extensions")
 class ExtensionAPI:
     """Public API exposed to extension modules.
 

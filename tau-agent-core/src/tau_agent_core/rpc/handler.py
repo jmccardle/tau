@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, TextIO
 
 from tau_agent_core.event_projection import MessageDeltaProjector
 from tau_agent_core.rpc import commands, dialect, transport, wire_events
+from tau_llm.docs import agent_facing
 
 if TYPE_CHECKING:
     from tau_agent_core.agent_session import AgentSession
@@ -169,6 +170,7 @@ class _EventCredits:
             self._waiters.remove(waiter)
 
 
+@agent_facing(topic="rpc")
 class RPCHandler:
     """JSON-RPC 2.0 server over stdin/stdout.
 

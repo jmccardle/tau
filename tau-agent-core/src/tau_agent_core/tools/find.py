@@ -7,12 +7,13 @@ Reference: PHASE-2-SUBPHASE-3.md, "find tool" section.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import fnmatch
 import re
 from typing import Any, Callable, Literal
 
-from tau_agent_core.tools.base import AgentToolResult
+from tau_agent_core.tools.base import AgentToolResult, _WalkAborted
 
 
 class FindTool:
@@ -114,37 +115,16 @@ class FindTool:
                     tool_call_id=tool_call_id,
                 ).model_dump()
 
-        # Store raw glob pattern for fnmatch
-        raw_name_pattern = name_pattern
-
-        results = []
-
-        for root, dirs, files in os.walk(search_path):
-            # Check directories
-            for d in dirs:
-                full_path = os.path.join(root, d)
-                rel_path = os.path.relpath(full_path, search_path)
-
-                if not self._matches(rel_path, d, raw_name_pattern, regex_compiled, type_filter):
-                    continue
-
-                if type_filter == "d":
-                    results.append(rel_path)
-
-            # Check files
-            for f in files:
-                full_path = os.path.join(root, f)
-                rel_path = os.path.relpath(full_path, search_path)
-
-                if not self._matches(rel_path, f, raw_name_pattern, regex_compiled, type_filter):
-                    continue
-
-                if type_filter == "f":
-                    results.append(rel_path)
-                elif type_filter == "l" and os.path.islink(full_path):
-                    results.append(rel_path)
-                elif type_filter is None:
-                    results.append(rel_path)
+        # The walk runs in a worker thread, for the reason given in
+        # ``GrepTool.execute``: it is `os.walk` with no await inside it, and on
+        # the TUI's event loop it froze painting and input for its whole duration
+        # (docs/PLAN-0.9.4.md §8).
+        try:
+            results = await asyncio.to_thread(
+                self._collect, search_path, name_pattern, regex_compiled, type_filter, signal
+            )
+        except _WalkAborted:
+            raise asyncio.CancelledError("Find aborted") from None
 
         result_text = "\n".join(results) if results else "No files found"
 
@@ -159,6 +139,70 @@ class FindTool:
             "count": len(results),
         }
         return result_dict
+
+    def _collect(
+        self,
+        search_path: str,
+        name_pattern: Any,
+        regex_compiled: Any,
+        type_filter: Any,
+        signal: Any,
+    ) -> list[str]:
+        """Walk ``search_path`` and collect matching paths, off the event loop.
+
+        Runs entirely in a worker thread, so it must not touch the event loop.
+        ``signal`` is polled directly instead: :class:`~tau_llm.abort.AbortSignal`
+        guards its state with a ``threading.Lock``, so reading it from this thread
+        is safe. The poll is once per directory rather than once per entry —
+        ``find`` does no file I/O per entry, so a directory is the unit that
+        actually costs time here.
+
+        Args:
+            search_path: Absolute directory to walk, and the relative-path base.
+            name_pattern: Raw glob pattern for ``fnmatch``, or ``None``.
+            regex_compiled: Compiled basename regex, or ``None``.
+            type_filter: ``"f"``, ``"d"``, ``"l"``, or ``None`` for any.
+            signal: Optional ``AbortSignal``, polled once per directory.
+
+        Returns:
+            Matching paths, relative to ``search_path``.
+
+        Raises:
+            _WalkAborted: if ``signal`` reports an abort mid-walk.
+        """
+        results: list[str] = []
+
+        for root, dirs, files in os.walk(search_path):
+            if signal is not None and signal.is_aborted():
+                raise _WalkAborted()
+
+            # Check directories
+            for d in dirs:
+                full_path = os.path.join(root, d)
+                rel_path = os.path.relpath(full_path, search_path)
+
+                if not self._matches(rel_path, d, name_pattern, regex_compiled, type_filter):
+                    continue
+
+                if type_filter == "d":
+                    results.append(rel_path)
+
+            # Check files
+            for f in files:
+                full_path = os.path.join(root, f)
+                rel_path = os.path.relpath(full_path, search_path)
+
+                if not self._matches(rel_path, f, name_pattern, regex_compiled, type_filter):
+                    continue
+
+                if type_filter == "f":
+                    results.append(rel_path)
+                elif type_filter == "l" and os.path.islink(full_path):
+                    results.append(rel_path)
+                elif type_filter is None:
+                    results.append(rel_path)
+
+        return results
 
     @staticmethod
     def _matches(

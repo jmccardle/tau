@@ -30,6 +30,7 @@ from typing import Any
 from tau_llm.streaming import AssistantMessageEventStream
 from tau_llm.providers import Provider, get_api_factory, get_provider_spec
 from tau_llm.types import AssistantMessage
+from tau_llm.docs import agent_facing
 
 # ──────────────────────────────────────────────────────────────────────────
 # Dispatch (docs/PLAN-0.9.3.md §4.4).
@@ -206,6 +207,7 @@ def _get_or_create_provider(request: _ProviderRequest) -> Provider:
     return provider
 
 
+@agent_facing(topic="providers")
 async def aclose_providers() -> None:
     """Close and drop every pooled provider for the CURRENT event loop.
 
@@ -224,6 +226,7 @@ async def aclose_providers() -> None:
         await provider.aclose()
 
 
+@agent_facing(topic="providers")
 async def stream_simple(
     model: Any,
     context: dict[str, Any],
@@ -280,6 +283,7 @@ async def stream_simple(
     )
 
 
+@agent_facing(topic="providers")
 async def complete_simple(
     model: Any,
     context: dict[str, Any],

@@ -16,7 +16,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
 dependencies = [
-    "ffwf-tau-llm==0.9.4",
+    "ffwf-tau-llm==0.9.5",
     "pydantic>=2.0",
 ]
 
@@ -37,9 +37,20 @@ bus = ["nats-py>=2.15.0"]
 # install stays pytest-free.
 testing = ["pytest"]
 dev = [
-    "ffwf-tau-agent-core[bus,testing]==0.9.4",
+    "ffwf-tau-agent-core[bus,testing]==0.9.5",
     "pytest-asyncio",
     "ruff",
+    # The agent-facing documentation build (tau_agent_core.docs_build). Reads the
+    # `@agent_facing` marker and every docstring out of the AST, importing
+    # nothing -- which is what lets the reference cover the lazily-imported
+    # provider modules and the Textual TUI in an environment that has neither
+    # SDK installed. Nothing on the request path imports it, so it is dev-only.
+    #
+    # Pinned for the same reason as mypy below: griffe's docstring warnings are
+    # an input to `scripts/check_docs_coverage.py`, so a version bump can turn a
+    # green gate red on code nobody touched. Raise this bound WITH the pass that
+    # clears whatever the new version finds.
+    "griffe==2.2.*",
     # Pinned, unlike every other dev tool here. mypy has no "state your rule set"
     # knob the way ruff does, so its findings move with its version: verified on
     # this tree, 2.1.0 reports 0 errors and 2.3.1 reports 50 across 12 files.

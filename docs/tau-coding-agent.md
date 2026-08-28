@@ -11,11 +11,11 @@ fit and replaced where τ's agent model needed something Parley didn't have.
 
 - **30Hz streaming throttle** — carried forward as-is; still the right
   answer for not thrashing the terminal on token-by-token deltas.
-- **Catppuccin Mocha palette** — real, hardcoded hex values throughout the
-  single stylesheet `parley.tcss` (e.g. `#1e1e2e` base, `#89dceb` on
-  user-message borders, `#f38ba8` on errors). This is true at the color
-  level; it is **not** a swappable theme system — there is no `themes/`
-  directory and no second theme anywhere in the source.
+- **Catppuccin Mocha palette** — still the default look, and byte-identical to
+  Parley's (`#1e1e2e` base, `#89dceb` on user-message borders, `#f38ba8` on
+  errors). The hex is no longer in the stylesheet: 0.9.4 moved it into the
+  `mocha` theme and `parley.tcss` now contains no colour literal at all. See
+  [Colour themes](#colour-themes).
 - **Command palette (Ctrl+P)** — Textual's built-in, listing τ's own
   commands (`app.py`'s `get_system_commands`).
 
@@ -121,11 +121,11 @@ stale.
 
 ## Colour themes
 
-τ ships four: `mocha` (the default), `latte`, `gruvbox`, and `ansi`. A theme is
-a palette, not a stylesheet — `parley.tcss` holds the structure and contains no
-colour literal, and each theme supplies the 25 `$tau-*` role variables the sheet
-names plus the Textual design tokens that colour the Footer, the scrollbars and
-the tree cursor.
+τ designs four: `mocha` (the default), `latte`, `gruvbox`, and `ansi`, and adapts
+Textual's own 21 on top of them. A theme is a palette, not a stylesheet —
+`parley.tcss` holds the structure and contains no colour literal, and each theme
+supplies the 25 `$tau-*` role variables the sheet names plus the Textual design
+tokens that colour the Footer, the scrollbars and the tree cursor.
 
 `ansi` is the odd one. Every colour in it is an ANSI *name*, so the 16 colours
 already configured in the terminal emulator decide what τ looks like, and it
@@ -134,10 +134,43 @@ terminal and invisible on a dark one. Two costs come with that: the six-step
 text ramp collapses to three, and `border` and `border-subtle` become the same
 colour.
 
-Three ways to select one, in increasing durability:
+### Textual's own themes
+
+Textual ships 21 more (`nord`, `dracula`, `tokyo-night`, `solarized-light`, …)
+and registers them on every app, so they appear in the command palette. They do
+not know what `$tau-bg` is, so selecting one used to stop τ with `reference to
+undefined variable '$tau-bg'`.
+
+τ now derives a `$tau-*` palette for each of them from the design tokens it
+already carries, and re-registers the result under the same name. All 24 themes
+are selectable, and by the same three surfaces below. Nothing in the derivation
+names a colour: surfaces come from `$background`/`$surface`/`$panel` and the
+ramps around them, the text ramp is the theme's own foreground at six opacities,
+and the role hues come from `$text-primary`, `$text-warning` and the rest — the
+forms Textual derives to be legible against that theme's background.
+
+A derived palette is not a designed one, and two limits are worth knowing:
+
+- τ has ten role hues and Textual defines six, so four roles double up. Every
+  pairing is one τ's own themes already make somewhere — `gruvbox` spends its one
+  purple on `accent`, `role-system` and `role-foreign`.
+- The contrast is whatever the theme's author chose. `solarized-dark`'s
+  brightest foreground is 4.75:1 against its own background, so its quieter
+  steps are quiet. τ's four are tuned against a measured floor; these are not.
+
+`ansi-dark` and `ansi-light` are the exception: they have no colour ramp to
+derive from, so both reuse τ's `ansi` palette. That makes `ansi-light` the
+light-terminal ANSI theme you would otherwise write by hand.
+
+### Selecting one
+
+Three ways, in increasing durability:
 
 1. `tau --theme gruvbox` — this run only. Never written to disk.
 2. The command palette (`ctrl+p`, "Theme: …") — swaps live and **saves**.
+   Textual's own `ctrl+p` → "Theme" entry opens a second list over the same 24
+   themes and saves the choice too; τ's entries save a keystroke and report the
+   switch by toast.
 3. `"theme": "gruvbox"` in `~/.tau/config.json` — the standing choice.
 
 A theme that cannot be loaded does not stop τ from starting. Each failure — a
@@ -159,7 +192,8 @@ and a file named after a built-in replaces it.
 }
 ```
 
-`extends` names a built-in and supplies both halves. `palette` overrides τ's
+`extends` names a built-in — one of τ's four, or any of Textual's 21 as adapted
+above — and supplies both halves. `palette` overrides τ's
 colours by the role names in `themes.TAU_PALETTE_KEYS`. The optional `textual`
 block overrides Textual's own design tokens, for the widgets `parley.tcss` does
 not reach — `"dark": false` there is what sends Textual's built-in widgets down

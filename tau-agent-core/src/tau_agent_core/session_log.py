@@ -34,8 +34,10 @@ import copy
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Protocol, runtime_checkable
+from tau_llm.docs import agent_facing
 
 
+@agent_facing(topic="sessions")
 @runtime_checkable
 class SessionLog(Protocol):
     """The persistence surface ``AgentSession`` reads from and appends to.
@@ -227,6 +229,7 @@ class SessionLog(Protocol):
         ...
 
 
+@agent_facing(topic="sessions")
 def resolve_cursor(entries: list[dict[str, Any]]) -> str | None:
     """Resolve the persisted cursor (leaf pointer) from the entry log.
 
@@ -260,6 +263,7 @@ def resolve_cursor(entries: list[dict[str, Any]]) -> str | None:
     return str(last["id"])
 
 
+@agent_facing(topic="sessions")
 def agent_spec_in_force(entries: list[dict[str, Any]], leaf_id: str | None) -> str | None:
     """The id of the ``agent_spec`` record governing ``leaf_id``, or ``None``.
 
@@ -320,6 +324,7 @@ def _generate_entry_id(existing: set[str]) -> str:
     return uuid.uuid4().hex  # pragma: no cover — 100 collisions is astronomically unlikely
 
 
+@agent_facing(topic="sessions")
 class InMemorySessionLog:
     """A minimal, RAM-only :class:`SessionLog` for the SDK default path.
 
@@ -509,6 +514,7 @@ class InMemorySessionLog:
         return entry_id
 
 
+@agent_facing(topic="sessions")
 class BranchView:
     """A second cursor over ONE underlying log — the branch sub-agent's handle (C2/W14).
 
@@ -683,6 +689,7 @@ class BranchView:
         return self._append("branch_summary", summary=summary, fromId=from_id)
 
 
+@agent_facing(topic="sessions")
 def open_branch(log: SessionLog, parent_id: str | None, *, label: str) -> BranchView:
     """Open a new branch lane over ``log``, rooted at ``parent_id``.
 

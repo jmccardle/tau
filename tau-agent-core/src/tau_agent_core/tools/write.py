@@ -7,6 +7,7 @@ Reference: PHASE-2-SUBPHASE-3.md, "write tool" section.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 from typing import Any, Callable, Literal
@@ -115,21 +116,14 @@ class WriteTool:
                 tool_call_id=tool_call_id,
             ).model_dump()
 
-        # Atomic write: write to temp file then rename
+        # Off the event loop (docs/PLAN-0.9.4.md §8) — the agent loop shares the
+        # TUI's loop, so a blocking write froze painting and input. The whole
+        # atomic sequence moves as ONE unit: splitting it would leave the temp
+        # file's creation, its write and its rename on different sides of an
+        # await, and an abort landing between them would leave a `.tmp_write_`
+        # file behind with the target untouched.
         try:
-            dir_name = os.path.dirname(resolved_path) or "."
-            fd, temp_path = tempfile.mkstemp(dir=dir_name, prefix=".tmp_write_")
-            try:
-                with os.fdopen(fd, "w", encoding=encoding, errors="replace") as f:
-                    f.write(content)
-                os.replace(temp_path, resolved_path)
-            except Exception:
-                # Clean up temp file on error
-                try:
-                    os.unlink(temp_path)
-                except OSError:
-                    pass
-                raise
+            await asyncio.to_thread(self._atomic_write, resolved_path, content, encoding)
         except Exception as e:
             return AgentToolResult.from_error(
                 tool_name=self.name,
@@ -157,3 +151,30 @@ class WriteTool:
             "bytes": bytes_written,
         }
         return result_dict
+
+    @staticmethod
+    def _atomic_write(resolved_path: str, content: str, encoding: str) -> None:
+        """Write ``content`` to ``resolved_path`` atomically, in a worker thread.
+
+        Writes a temp file in the target's own directory, then renames it over the
+        target, so a reader never sees a half-written file. The temp file is
+        removed if any step fails.
+
+        Args:
+            resolved_path: Absolute path to write.
+            content: Text to write.
+            encoding: Text encoding; undecodable characters are replaced.
+        """
+        dir_name = os.path.dirname(resolved_path) or "."
+        fd, temp_path = tempfile.mkstemp(dir=dir_name, prefix=".tmp_write_")
+        try:
+            with os.fdopen(fd, "w", encoding=encoding, errors="replace") as f:
+                f.write(content)
+            os.replace(temp_path, resolved_path)
+        except Exception:
+            # Clean up temp file on error
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+            raise

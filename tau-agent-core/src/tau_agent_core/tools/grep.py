@@ -7,11 +7,12 @@ Reference: PHASE-2-SUBPHASE-3.md, "grep tool" section.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from typing import Any, Callable, Literal
 
-from tau_agent_core.tools.base import AgentToolResult
+from tau_agent_core.tools.base import AgentToolResult, _WalkAborted
 
 
 class GrepTool:
@@ -110,45 +111,16 @@ class GrepTool:
                 target_path = os.path.join(self.cwd, target_path)
             target_path = os.path.abspath(target_path)
 
-        files_searched = 0
-        matches = []
-
-        if files_list:
-            # Search in specific files
-            for file_path in files_list:
-                if not os.path.isabs(file_path):
-                    file_path = os.path.join(self.cwd, file_path)
-                file_path = os.path.abspath(file_path)
-
-                if not os.path.isfile(file_path):
-                    continue
-
-                files_searched += 1
-                match_lines = self._search_file(file_path, compiled, target_path)
-                matches.extend(match_lines)
-        elif os.path.isfile(target_path):
-            # Single file search
-            files_searched = 1
-            matches = self._search_file(target_path, compiled)
-        else:
-            # Directory search - find all files
-            search_dir = target_path if os.path.isdir(target_path) else self.cwd
-            for root, dirs, filenames in os.walk(search_dir):
-                for fname in filenames:
-                    if fname.startswith("."):
-                        continue
-                    file_path = os.path.join(root, fname)
-
-                    # Skip binary files
-                    try:
-                        with open(file_path, "r", encoding="utf-8") as f:
-                            _ = f.read()
-                    except (UnicodeDecodeError, PermissionError):
-                        continue
-
-                    files_searched += 1
-                    match_lines = self._search_file(file_path, compiled, search_dir)
-                    matches.extend(match_lines)
+        # The whole search runs in a worker thread. It is `os.walk` plus blocking
+        # reads with no await anywhere inside it, so on the TUI's event loop —
+        # which is also the loop painting the screen (docs/PLAN-0.9.4.md §8) — a
+        # grep over a large tree froze painting and input for its whole duration.
+        try:
+            matches, files_searched = await asyncio.to_thread(
+                self._collect, compiled, target_path, files_list, signal
+            )
+        except _WalkAborted:
+            raise asyncio.CancelledError("Grep aborted") from None
 
         if not matches:
             result_text = f"No matches found in {files_searched} file(s)"
@@ -167,16 +139,105 @@ class GrepTool:
         }
         return result_dict
 
+    def _collect(
+        self,
+        compiled: re.Pattern,
+        target_path: str,
+        files_list: list[str] | None,
+        signal: Any,
+    ) -> tuple[list[str], int]:
+        """Walk and search, off the event loop. Returns ``(matches, files_searched)``.
+
+        Runs entirely in a worker thread, so it must not touch the event loop.
+        ``signal`` is polled directly instead: :class:`~tau_llm.abort.AbortSignal`
+        guards its state with a ``threading.Lock``, so reading it from this thread
+        is safe. The poll is per file rather than per directory, because one
+        directory of large files is the case where the walk is slow.
+
+        Args:
+            compiled: The compiled search pattern.
+            target_path: Absolute path to search, used as the relative-path base.
+            files_list: Explicit files to search, overriding ``target_path``.
+            signal: Optional ``AbortSignal``, polled once per file.
+
+        Returns:
+            The match lines (``path:line:text``) and the number of files read.
+
+        Raises:
+            _WalkAborted: if ``signal`` reports an abort mid-walk.
+        """
+        files_searched = 0
+        matches: list[str] = []
+
+        def check_abort() -> None:
+            if signal is not None and signal.is_aborted():
+                raise _WalkAborted()
+
+        if files_list:
+            # Search in specific files
+            for file_path in files_list:
+                check_abort()
+                if not os.path.isabs(file_path):
+                    file_path = os.path.join(self.cwd, file_path)
+                file_path = os.path.abspath(file_path)
+
+                if not os.path.isfile(file_path):
+                    continue
+
+                # An explicitly-named file counts as searched even if it turns out
+                # to be unreadable — the caller named it, so reporting "0 files
+                # searched" for a list of files would be the misleading answer.
+                # That was the old behaviour here and it is kept.
+                files_searched += 1
+                matches.extend(self._search_file(file_path, compiled, target_path) or [])
+        elif os.path.isfile(target_path):
+            # Single file search
+            check_abort()
+            files_searched = 1
+            matches = self._search_file(target_path, compiled) or []
+        else:
+            # Directory search - find all files
+            search_dir = target_path if os.path.isdir(target_path) else self.cwd
+            for root, _dirs, filenames in os.walk(search_dir):
+                for fname in filenames:
+                    check_abort()
+                    if fname.startswith("."):
+                        continue
+                    file_path = os.path.join(root, fname)
+
+                    # Binary files are skipped by _search_file's own decode
+                    # failure. This used to be a separate pre-pass that opened the
+                    # file, read it whole into memory, and threw the result away
+                    # (`_ = f.read()`) purely to see whether it decoded — so every
+                    # file in the tree was read TWICE, and every text file was
+                    # held in memory once at full size for no result. The decode
+                    # error that pre-pass was watching for is the same one
+                    # _search_file already catches.
+                    match_lines = self._search_file(file_path, compiled, search_dir)
+                    if match_lines is None:
+                        continue
+                    files_searched += 1
+                    matches.extend(match_lines)
+
+        return matches, files_searched
+
     @staticmethod
     def _search_file(
         file_path: str, pattern: re.Pattern, base_path: str | None = None
-    ) -> list[str]:
-        """Search a single file for pattern matches."""
+    ) -> list[str] | None:
+        """Search a single file for pattern matches.
+
+        Returns the matching lines, or ``None`` if the file could not be read as
+        UTF-8 text — a binary file, or one the process cannot open. ``None`` and
+        ``[]`` are deliberately different answers: ``[]`` means "read it, no
+        matches" and counts toward ``files_searched``, ``None`` means "not a file
+        this tool can search" and does not.
+        """
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
         except (UnicodeDecodeError, PermissionError, OSError):
-            return []
+            return None
 
         rel_path = file_path
         if base_path and file_path.startswith(base_path):

@@ -54,9 +54,17 @@ local OpenAI-compatible servers as a first-class case, not an afterthought:
 "turn", "off"]` (τ defaults to `"turn"`, not pi's `"all"` — see README's
 "Where τ diverges from pi"), `grammar_dialect: Literal["llguidance",
 "gbnf"] | None`, `extra_body: dict[str, Any]`, `server_features: list[str]`,
-`stream: bool`, `request_timeout: float | None`, `strict_reasoning_formats:
-bool`, `requires_tool_call_id: bool`, `supports_multimodal_function_response:
-bool`, and `compat: Compat | None`.
+`stream: bool`, `request_timeout: float | None`, `temperature: float | None`,
+`strict_reasoning_formats: bool`, `requires_tool_call_id: bool`,
+`supports_multimodal_function_response: bool`, and `compat: Compat | None`.
+
+`temperature` defaults to `None`, and `None` means τ sends no temperature at
+all — the endpoint applies its own. This is pi's position
+(`simple-options.ts:32` forwards `options?.temperature`, which is undefined
+unless a caller sets one) and it is the only correct default across the three
+endpoint families τ speaks to: llama.cpp defaults to 0.8, the OpenAI wire to
+1.0, and the Anthropic Messages API removed the parameter outright on Opus 5,
+Opus 4.8, Opus 4.7, Sonnet 5 and Fable 5, where any value is a 400.
 
 `Model.api`, `AssistantMessage.api` and `AssistantMessage.provider` are `str`.
 They were `Literal["openai"]` until `6e1dfbe`, which was a latent defect rather

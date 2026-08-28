@@ -37,8 +37,10 @@ from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
 from tau_agent_core.session_log import SessionLog
+from tau_llm.docs import agent_facing
 
 
+@agent_facing(topic="sessions")
 @runtime_checkable
 class ConversationSession(SessionLog, Protocol):
     """The frontend surface the concrete file ``Session`` already has, as a Protocol.
@@ -105,6 +107,7 @@ class ConversationSession(SessionLog, Protocol):
     def append_session_info(self, name: str) -> str: ...
 
 
+@agent_facing(topic="sessions")
 @dataclass
 class SessionInfo:
     """Lightweight listing metadata for one session — the picker's fast-list record.
@@ -159,6 +162,7 @@ class SessionInfo:
         return text[:50] + ("..." if len(text) > 50 else "")
 
 
+@agent_facing(topic="sessions")
 class SessionCatalog(ABC):
     """The injected, storage-agnostic seam for constructing/finding sessions.
 
