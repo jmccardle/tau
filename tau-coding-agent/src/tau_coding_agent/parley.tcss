@@ -231,6 +231,22 @@ ModalScreen {
     padding: 0 2;
 }
 
+/* Give the fence back its horizontal scrollbar. Textual 8.2.7's MarkdownFence is
+   already scrollable — `overflow: scroll hidden`, `allow_horizontal_scroll` True —
+   but its own CSS sets `scrollbar-size-horizontal: 0`, so a line wider than the
+   box is clipped with nothing on screen saying so and nothing to drag. Code
+   fences are where τ prints a traceback and a provider's error text, both of
+   which are long single lines; a reader who cannot reach the end of one is
+   reading a truncated error and cannot tell.
+
+   `overflow-x: auto` rather than the widget's own `scroll`, so the bar appears
+   only for a fence that actually overflows — a short code block looks as it did,
+   with no permanently reserved row under it. */
+.chat-message MarkdownFence {
+    overflow-x: auto;
+    scrollbar-size-horizontal: 1;
+}
+
 /* A blockquote's inner BlockQuote carries `margin-top: 1` (its `margin-left: 2`
    is the horizontal inset that makes it read as a quote — kept). */
 .chat-message MarkdownBlockQuote > BlockQuote {
@@ -347,6 +363,51 @@ ModalScreen {
     color: $tau-role-foreign;
 }
 
+/* === Pending steering input (docs/TUI-STEERING.md §3) === */
+/* Text typed during a turn, waiting for its delivery point. Sits between the
+   transcript and the editor; hidden (display:none, set in code) with nothing
+   pending, so an ordinary turn costs no rows. `max-height` rather than a fixed
+   height because the buffer grows by a line per message, and a tall paste must
+   not push the editor off the screen. Dim, and no border: it is a note about
+   the editor below it, not a third pane. */
+#pending-input {
+    margin: 0 1;
+    padding: 0 1;
+    height: auto;
+    max-height: 6;
+    overflow-y: auto;
+    background: $tau-bg-alt;
+    color: $tau-text-dim;
+}
+
+/* === Attached files (docs/FILE-ATTACHMENTS.md §4) === */
+/* Directly above the editor, describing the draft still in it. Hidden
+   (display:none, set in code) when the draft attaches nothing, so an ordinary
+   turn costs no rows. Bounded and scrollable for the same reason #pending-input
+   is: five attached files must not push the editor off the screen. */
+#attachment-bar {
+    margin: 0 1;
+    padding: 0 1;
+    height: auto;
+    max-height: 5;
+    overflow-y: auto;
+    background: $tau-bg-alt;
+    color: $tau-text-dim;
+}
+
+/* One attached file. The whole row is the click target that removes it, so it
+   highlights on hover — a row that does something on click and looks like a
+   label is the affordance failure this hover state exists to prevent. */
+.attachment-row {
+    height: 1;
+    width: 100%;
+}
+
+.attachment-row:hover {
+    background: $tau-bg;
+    color: $tau-text;
+}
+
 /* === Input Styling === */
 #chat-input {
     margin: 0 1 1 1;
@@ -360,6 +421,28 @@ ModalScreen {
 #chat-input:focus {
     border: solid $tau-role-user;  /* Matches user message color */
     background: $tau-bg;
+}
+
+/* === Slash-command completion (docs/SLASH-COMMANDS.md) === */
+/* Under the editor. Hidden (display:none, set in code) unless the line starts
+   with a `/`, so an ordinary turn costs no rows. No border and no max-height:
+   the widget caps its own row count (CommandPopup.MAX_ROWS) so that the SELECTED
+   row is always inside the window — a scrollbar could not do that, because a
+   Static has no selected line to scroll to. */
+#command-popup {
+    margin: 0 1 1 1;
+    padding: 0 1;
+    height: auto;
+    background: $tau-bg-alt;
+    color: $tau-text-dim;
+}
+
+/* The one row that is not a suggestion: this `/…` names no command, so the line
+   will be sent to the model as text. `role-blocked` rather than `role-error` —
+   nothing has failed, and nothing will; the line is simply about to mean
+   something other than what the slash suggests. */
+#command-popup.command-popup-unknown {
+    color: $tau-role-blocked;
 }
 
 /* === System Prompt Editor Modal === */

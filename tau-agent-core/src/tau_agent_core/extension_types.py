@@ -1353,6 +1353,13 @@ class ExtensionContext:
         silently produce a sub-agent that cannot do the job it was spawned for. Naming the
         tools is the only option that cannot fail quietly. Pass ``[]`` to mean none.
 
+        Every name is checked against what the spawning session actually offers the
+        model — ``session._build_turn_tools()``, so the constructor's tools AND the
+        extensions' registrations, resolved exactly as a turn resolves them. A name
+        that is not in that list raises. Consequently ``no_tools="all"`` yields an
+        empty list here, so a non-empty allowlist on such a session raises rather
+        than routing tools around the suppression.
+
         ``system_prompt`` defaults to ``None``, which inherits the spawning session's own
         prompt (``session._system_prompt``) — today's behaviour, unchanged for every
         existing caller. Passing a string forks with a *different* spec instead: the one
@@ -1390,18 +1397,42 @@ class ExtensionContext:
         log = session.session_log
         branch = open_branch(log, parent_id, label=label or prompt[:60])
 
-        missing = [t for t in tools if t not in {getattr(x, "name", None) for x in session._tools}]
+        # What this session HAS is ``_tools`` plus whatever its extensions registered,
+        # and only ``_build_turn_tools`` knows both — it is what
+        # ``AgentSession._run_one_turn`` builds every loop from, so it is by definition
+        # the list the model is offered. Reading ``_tools`` alone made this check
+        # disagree with that list on a session whose tools arrive through an extension:
+        # ``AgentSession(tools=[], no_tools="builtin")`` — the supported way for a host
+        # to suppress the built-ins and keep its own registrations — leaves ``_tools``
+        # empty, so every non-empty allowlist was refused naming a tool the model had
+        # just successfully called, and ``tools=[]`` (a sub-agent that can think and do
+        # nothing) was the only value that did not raise. Silent in the worst way: the
+        # error said "not available on this session" about a session where it was.
+        #
+        # Same list rather than a union computed here, so the two stay one decision:
+        # ``no_tools="all"`` still yields a toolless branch, and a duplicate name in
+        # ``_tools`` still Fails-Early, both because ``_build_turn_tools`` says so.
+        available_tools = session._build_turn_tools()
+
+        missing = [t for t in tools if t not in {getattr(x, "name", None) for x in available_tools}]
         if missing:
             # Fail-Early, and BEFORE any model call: silently running a sub-agent with
             # fewer tools than asked for produces a plausible-looking wrong answer
             # ("I couldn't find it") that reads as a real verdict.
-            available = sorted(str(getattr(x, "name", "?")) for x in session._tools)
+            available = sorted(str(getattr(x, "name", "?")) for x in available_tools)
             raise ValueError(
                 f"spawn_branch: tool(s) {missing!r} are not available on this session "
                 f"(available: {available}). A sub-agent silently missing a tool it was "
                 "told to use would return a confident wrong answer."
             )
-        scoped = [t for t in session._tools if getattr(t, "name", None) in set(tools)]
+        # An extension tool carries an adapter bound to the SPAWNING session's
+        # ``ExtensionContext`` (``_resolve_extension_tools`` closes over
+        # ``self._extension_api.context``), so a registered tool called inside the branch
+        # sees the parent's ``ctx``. That is the pre-existing behaviour of every
+        # extension tool and it is the useful one here — a host's tool closes over host
+        # state, not over whichever lane happens to call it — but it does mean
+        # ``ctx.spawn_branch`` reached from inside a branch opens a lane on the PARENT.
+        scoped = [t for t in available_tools if getattr(t, "name", None) in set(tools)]
 
         sub = AgentSession(
             session_log=branch,

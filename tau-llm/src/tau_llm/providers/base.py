@@ -355,3 +355,82 @@ def get_provider_spec(provider_id: str) -> ProviderSpec | None:
     is unknown cannot be served.
     """
     return _PROVIDER_SPECS.get(provider_id)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Tool-result content — shared by all three clients
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@agent_facing(topic="providers")
+def split_tool_result_content(content: Any) -> tuple[list[str], list[tuple[str, str]]]:
+    """A tool result's content as (text parts, [(mime_type, base64 data), ...]).
+
+    Every client needs the same split, because every client has to put the text
+    somewhere the wire format calls a tool result and the images somewhere it
+    does not. It lives here rather than three times over: the copies in
+    ``openai.py`` and ``google.py`` had already drifted on the join separator and
+    on which non-block shapes they tolerated, and a shape rule that differs per
+    provider is a shape rule nobody can state.
+
+    Accepts the three shapes a tool result reaches a client in: a bare string,
+    a list of pydantic blocks (the live path, ``ToolResultMessage.content``), and
+    a list of raw dicts (the persisted path — a reloaded session arrives as
+    ``model_dump()``ed messages).
+
+    Text parts come back unjoined, because the separator is the caller's: the
+    OpenAI client has always joined with a space and the Google client with an
+    empty string, and quietly changing how a multi-block text result reads is not
+    something an image change should do.
+
+    Args:
+        content: The tool result's content, in any of the three shapes above.
+
+    Returns:
+        A ``(text_parts, images)`` pair. ``images`` holds ``(mime_type, data)``
+        with ``data`` still base64-encoded.
+
+    Raises:
+        TypeError: If ``content`` is neither a string nor an iterable of blocks,
+            or if it holds a block of a type this cannot read. Fabricating text
+            from an unreadable value is how an image became a filename in the
+            first place; a wrong tool result must not reach the model looking
+            like a right one.
+    """
+    if isinstance(content, str):
+        return [content], []
+    if content is None:
+        return [], []
+    if not isinstance(content, (list, tuple)):
+        raise TypeError(
+            f"tool result content must be a string or a list of blocks, got "
+            f"{type(content).__name__}: {content!r}"
+        )
+
+    parts: list[str] = []
+    images: list[tuple[str, str]] = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+            continue
+        if isinstance(block, dict):
+            btype = block.get("type")
+            if btype == "text":
+                parts.append(block.get("text", ""))
+            elif btype == "image":
+                images.append((block.get("mime_type", ""), block.get("data", "")))
+            elif "content" in block:
+                # Preserved from the OpenAI client's dict path, the only place a
+                # nested-content block was ever handled.
+                parts.append(str(block["content"]))
+            else:
+                raise TypeError(f"unreadable tool result block: {block!r}")
+            continue
+        btype = getattr(block, "type", None)
+        if btype == "text":
+            parts.append(block.text)
+        elif btype == "image":
+            images.append((block.mime_type, block.data))
+        else:
+            raise TypeError(f"unreadable tool result block: {block!r}")
+    return parts, images

@@ -33,7 +33,7 @@ import httpx
 from tau_llm import grammar as grammar_mod
 from tau_llm.compat import ResolvedCompat, resolve_compat
 from tau_llm.constraints import ConstraintViolation
-from tau_llm.providers.base import Provider
+from tau_llm.providers.base import Provider, split_tool_result_content
 from tau_llm.json_parse import (
     parse_json_with_repair_info,
     parse_streaming_json,
@@ -77,6 +77,22 @@ _WARNED_FOREIGN_TOOL_SIGNATURES: set[str] = set()
 # (utils/error-body.ts:16): enough to carry a real gateway error page's useful
 # head, bounded so an HTML 502 does not become the whole transcript.
 _MAX_ERROR_BODY_CHARS = 4000
+
+#: What an operator does about a ``stop_reason="length"`` truncation. One wording,
+#: used by the provider's dropped-tool-call warning and by the TUI's notice, so the
+#: log line and the on-screen line cannot say different things.
+#:
+#: The cap is τ's own: ``Model.max_tokens`` goes on the wire as
+#: ``max_tokens``/``max_completion_tokens``, and a config that states none resolves
+#: to 4096. Names the KEY and not a path to it — the config entry is keyed by the
+#: operator's chosen name (``local-llm``), which is not ``Model.id``
+#: (``qwen38-27B``), and printing a path that does not exist is worse than printing
+#: none.
+_TRUNCATION_HINT = (
+    "The model hit the output cap τ sent for it (max_tokens={max_tokens}); "
+    "raise `max_tokens` on this model in ~/.tau/config.json, or lower the "
+    "reasoning budget so the answer fits under it."
+)
 
 
 def _truncate_error_text(text: str, max_chars: int = _MAX_ERROR_BODY_CHARS) -> str:
@@ -655,6 +671,34 @@ def _usage_from_openai(data: dict, timings: dict[str, Any] | None = None) -> Usa
     )
 
 
+def _image_turn(mime: str, data: str) -> dict:
+    """ONE tool-result image as its own user turn.
+
+    One image per turn, never several in one turn. MEASURED 2026-08-28 against
+    llama.cpp (``b1637-9c7a7553``, Qwen3.8-27B-Q4_0, vision on) with two tool
+    results, a red circle holding "7" and a blue square holding "K":
+
+    * both images in ONE user turn under a single label — 3/3 runs answered
+      "alpha.png: red circle K | beta.png: NO IMAGE". The model saw one image and
+      attributed it to both files. This is the shape pi uses
+      (``openai-completions.ts:1380``), so τ diverges here deliberately.
+    * one image per user turn — 3/3 correct, with two images and again with
+      three. Labelling each turn with its filename changed nothing, so it is the
+      turn boundary doing the work, not the text.
+
+    The label is constant because the measurement says the filename is not what
+    carries the association, and the tool result's own text already names the
+    file.
+    """
+    return {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Tool result image:"},
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}},
+        ],
+    }
+
+
 class OpenAICompletionsProvider(Provider):
     """Provider for OpenAI-compatible APIs (OpenAI, Ollama, vLLM, etc.).
 
@@ -783,6 +827,7 @@ class OpenAICompletionsProvider(Provider):
         messages: list,
         reasoning_replay: str = "turn",
         strict_reasoning_formats: bool = False,
+        multimodal_tool_results: bool = False,
     ) -> list[dict]:
         """Convert τ messages to OpenAI API message format.
 
@@ -827,8 +872,43 @@ class OpenAICompletionsProvider(Provider):
                 return False
             return index > last_user_idx  # "turn"
 
+        # Images from tool results, held until the RUN of consecutive tool
+        # results ends. A user turn between two tool messages would split the
+        # run answering one assistant's parallel tool_calls; emitting the images
+        # after the run keeps every tool message adjacent to the assistant that
+        # asked for it, and still gives each image a turn of its own.
+        pending_images: list[tuple[str, str]] = []
+
+        def flush_images() -> None:
+            openai_messages.extend(_image_turn(mime, data) for mime, data in pending_images)
+            pending_images.clear()
+
         for i, msg in enumerate(messages):
             include_reasoning = _replay_for(i)
+            tool_result: tuple[str, Any] | None = None
+            if isinstance(msg, ToolResultMessage):
+                tool_result = (msg.tool_call_id, msg.content)
+            elif isinstance(msg, dict) and msg.get("role") in ("toolResult", "tool"):
+                tool_result = (msg.get("tool_call_id", ""), msg.get("content", ""))
+            elif (
+                not isinstance(msg, (UserMessage, AssistantMessage, dict))
+                and hasattr(msg, "model_dump")
+                and msg.model_dump().get("role") in ("toolResult", "tool")
+            ):
+                d = msg.model_dump()
+                tool_result = (d.get("tool_call_id", ""), d.get("content", ""))
+
+            if tool_result is not None:
+                tool_message, images = self._tool_result_message(
+                    tool_result[0], tool_result[1], multimodal_tool_results
+                )
+                openai_messages.append(tool_message)
+                pending_images.extend(images)
+                continue
+
+            # Anything that is not a tool result ends the run.
+            flush_images()
+
             if isinstance(msg, UserMessage):
                 openai_messages.append(self._convert_user_message(msg))
             elif isinstance(msg, AssistantMessage):
@@ -837,23 +917,25 @@ class OpenAICompletionsProvider(Provider):
                         msg, include_reasoning, strict_reasoning_formats
                     )
                 )
-            elif isinstance(msg, ToolResultMessage):
-                openai_messages.append(self._convert_tool_result(msg))
             elif isinstance(msg, dict):
-                # Convert via _convert_message_dict to handle toolResult → tool,
-                # content list → string, etc.
+                # Convert via _convert_message_dict to handle content list →
+                # string, etc. Tool results never reach here — they are taken
+                # above, where their images can be held for the end of the run.
                 openai_messages.append(
                     self._convert_message_dict(msg, include_reasoning, strict_reasoning_formats)
                 )
             else:
                 # Try to convert via model_dump
                 if hasattr(msg, "model_dump"):
-                    d = msg.model_dump()
                     openai_messages.append(
-                        self._convert_message_dict(d, include_reasoning, strict_reasoning_formats)
+                        self._convert_message_dict(
+                            msg.model_dump(), include_reasoning, strict_reasoning_formats
+                        )
                     )
                 else:
                     openai_messages.append({"role": "user", "content": str(msg)})
+
+        flush_images()
 
         return openai_messages
 
@@ -1109,23 +1191,74 @@ class OpenAICompletionsProvider(Provider):
             list(msg.content), include_reasoning, strict_reasoning_formats
         )
 
-    def _convert_tool_result(self, msg: ToolResultMessage) -> dict:
-        """Convert ToolResultMessage to OpenAI tool role format."""
-        # Join all text content blocks
-        content_parts: list[str] = []
-        for block in msg.content:
-            if isinstance(block, TextContent):
-                content_parts.append(block.text)
-            elif isinstance(block, str):
-                content_parts.append(block)
+    def _tool_result_message(
+        self, tool_call_id: str, content: Any, multimodal_tool_results: bool
+    ) -> tuple[dict, list[tuple[str, str]]]:
+        """One tool result as its ``role: "tool"`` message, plus its homeless images.
 
-        result: dict[str, Any] = {
-            "role": "tool",
-            "tool_call_id": msg.tool_call_id,
-            "content": " ".join(content_parts),
-        }
+        Returns the tool message and the images that still need a turn of their
+        own. The caller — :meth:`_convert_messages_to_openai` — holds those until
+        the whole run of consecutive tool results has been emitted, because a
+        ``user`` message between two ``tool`` messages splits the run answering
+        one assistant's parallel ``tool_calls``. OpenAI's schema says a ``tool``
+        message responds to a preceding message with ``tool_calls``, and the
+        split shape is the one that reading disallows.
 
-        return result
+        Measured 2026-08-28: llama.cpp (``b1637-9c7a7553``) and a glm-5.2
+        endpoint both ACCEPT the split shape and answer correctly, so this is not
+        a bug either of them will report. It is the reading that costs nothing to
+        satisfy, and satisfying it is what lets the images be emitted one per
+        turn — which the same measurement showed is required for the model to
+        attribute each image to the right file. See :func:`_image_turn`.
+
+        When ``multimodal_tool_results`` is set the image nests in the tool
+        message and no image comes back. Measured 2026-08-28 against llama.cpp
+        (Qwen3.8-27B, vision on): the nested form is accepted and described
+        correctly, 3/3, even though that build's ``/props`` reports
+        ``chat_template_caps.supports_typed_content: false``. The default stays
+        False because one permissive data point does not earn a permissive
+        default when the fallback always works.
+
+        Text-only results — every result but a handful — return exactly what they
+        always did: one message, content space-joined.
+
+        Args:
+            tool_call_id: The id of the call this result answers.
+            content: The result's content, in any shape
+                :func:`~tau_llm.providers.base.split_tool_result_content` reads.
+            multimodal_tool_results: :attr:`Model.supports_multimodal_function_response`
+                — whether this endpoint takes a block list as a tool message's content.
+
+        Returns:
+            A ``(tool_message, images)`` pair. ``images`` is empty unless the
+            caller has to place them itself.
+        """
+        parts, images = split_tool_result_content(content)
+        text = " ".join(p for p in parts if p)
+        if not images:
+            return {"role": "tool", "tool_call_id": tool_call_id, "content": text}, []
+
+        if multimodal_tool_results:
+            blocks = [
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}}
+                for mime, data in images
+            ]
+            return (
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": ([{"type": "text", "text": text}] if text else []) + blocks,
+                },
+                [],
+            )
+        return (
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": text or "(see attached image)",
+            },
+            images,
+        )
 
     def _convert_message_dict(
         self,
@@ -1135,11 +1268,17 @@ class OpenAICompletionsProvider(Provider):
     ) -> dict:
         """Convert a generic dict message to OpenAI format.
 
-        Handles toolResult → tool role conversion, extracts tool_call_id,
-        and converts list-type content to a string. ``include_reasoning`` carries
+        Converts list-type content to a string. ``include_reasoning`` carries
         the per-message reasoning-replay scope (this is the persisted/reload path,
         so it is the one that actually accretes stale reasoning on follow-up turns).
         ``strict_reasoning_formats`` carries ``Model.strict_reasoning_formats``.
+
+        Tool results do NOT come here. :meth:`_convert_messages_to_openai` takes
+        them before the dispatch, because their images have to be held until the
+        run of consecutive results ends, and a per-message converter cannot see
+        where a run ends. This method once had a ``toolResult`` branch that
+        dropped every image; it is gone rather than left as a second, quieter
+        answer to the same question.
         """
         role = d.get("role", "")
         content = d.get("content", "")
@@ -1156,29 +1295,6 @@ class OpenAICompletionsProvider(Provider):
             return {"role": "assistant", "content": content}
         elif role == "user":
             return {"role": "user", "content": content}
-        elif role in ("toolResult", "tool"):
-            # Extract tool_call_id
-            tool_call_id = d.get("tool_call_id", "")
-
-            # Convert list-type content to string (e.g. [{"type": "text", "text": "..."}])
-            if isinstance(content, list):
-                text_parts = []
-                for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "text":
-                            text_parts.append(block.get("text", ""))
-                        elif "content" in block:
-                            # Nested content block
-                            text_parts.append(str(block["content"]))
-                    elif isinstance(block, str):
-                        text_parts.append(block)
-                content = " ".join(text_parts)
-
-            return {
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "content": content if isinstance(content, str) else "",
-            }
         else:
             return {"role": role, "content": content}
 
@@ -1301,30 +1417,47 @@ class OpenAICompletionsProvider(Provider):
         """Build the final AssistantMessage with accumulated data."""
         content_blocks: list[Any] = _consolidate_text_and_thinking(accum)
 
-        # An ABORTED stream is not a malformed one, and the two must not be
-        # finalized the same way (docs/PLAN-0.9.4.md §3). The user pressed Esc;
-        # the SSE reader stopped at a line boundary; a tool call that was
-        # mid-`arguments` has a buffer that is *known* truncated. Handing that to
-        # the strict parser below raises, the raise becomes an ErrorEvent, the
-        # ErrorEvent becomes a RuntimeError out of ``AgentLoop._stream_response``
-        # — and every completed message of the turn dies with the frame. The
-        # traceback the user reported was not a side effect of the data loss; it
-        # was the cause of it.
+        # An INCOMPLETE stream is not a malformed one, and the two must not be
+        # finalized the same way (docs/PLAN-0.9.4.md §3, docs/TRUNCATED-TOOL-CALLS.md).
+        # The user pressed Esc; the server hit its output cap; either way a tool
+        # call that was mid-`arguments` has a buffer that is *known* truncated.
+        # Handing that to the strict parser below raises, the raise becomes an
+        # ErrorEvent, the ErrorEvent becomes a RuntimeError out of
+        # ``AgentLoop._stream_response`` — and every completed message of the turn
+        # dies with the frame. The traceback the user reported was not a side
+        # effect of the data loss; it was the cause of it.
         #
-        # So on abort an unfinishable tool call is DROPPED rather than raised on.
-        # Dropped, not repaired: a half-streamed `{"path": "/etc/pas` must never
-        # become an executable call, and `{}` would be a fabricated argument set —
-        # the exact anti-pattern the strict path below exists to prevent. The
-        # message keeps `stop_reason="aborted"`, which is what says it is
-        # incomplete, and `usage.extra["dropped_partial_tool_calls"]` says how
-        # many were lost so the omission is inspectable rather than silent.
+        # TWO stop reasons say the stream is incomplete, and the finalizer already
+        # has both:
+        #
+        # * ``"aborted"`` — the reader stopped at a line boundary because the user
+        #   cancelled.
+        # * ``"length"`` — the server stopped because generation reached the output
+        #   cap τ sent as ``max_tokens``. Measured against llama.cpp with a 4096
+        #   cap and thinking enabled: reasoning consumes the budget, the tool call
+        #   starts, and the buffer ends inside its first string value
+        #   (``{"command":"…``). Nothing about that payload is malformed — it is a
+        #   PREFIX, exactly as ``stop_reason="length"`` on a constrained generation
+        #   is a prefix of a constrained answer (the ConstraintViolation in
+        #   ``stream_chat``). A grammar does not help: constrained decoding binds
+        #   which token comes next, not how many tokens remain.
+        #
+        # So on an incomplete stream an unfinishable tool call is DROPPED rather
+        # than raised on. Dropped, not repaired: a half-streamed
+        # `{"path": "/etc/pas` must never become an executable call, and `{}` would
+        # be a fabricated argument set — the exact anti-pattern the strict path
+        # below exists to prevent. The message keeps its ``stop_reason``, which is
+        # what says it is incomplete, and ``usage.extra["dropped_partial_tool_calls"]``
+        # says how many were lost so the omission is inspectable rather than silent.
         #
         # This branch is narrow ON PURPOSE. It must not become "parse leniently
         # everywhere": strictness on a COMPLETE stream is load-bearing, and
         # docs/TOOL-CALL-PARSING-BUG.md is the corruption bug it exists to
-        # prevent. The condition is `stop_reason == "aborted"` — a fact the
-        # finalizer already had and did not read.
+        # prevent. A `"stop"` or `"toolUse"` finish with a buffer that will not
+        # decode still raises, and now says which tool and what the buffer held.
         aborted = stop_reason == "aborted"
+        truncated = stop_reason == "length"
+        incomplete = aborted or truncated
         dropped_partial = 0
 
         # Repair count over the COMPLETE tool-arg buffers only (not the
@@ -1355,10 +1488,10 @@ class OpenAICompletionsProvider(Provider):
             # silently, which is the same violation wearing a different hat. It has
             # since been deleted; this is now the only place a tool call is built.
             if not tc.name.strip():
-                # On abort, "no name yet" is the ordinary state of a call whose
-                # first chunks had not arrived — not a gateway violating the wire
-                # contract. Nothing downstream can route it, so drop it.
-                if aborted:
+                # On an incomplete stream, "no name yet" is the ordinary state of a
+                # call whose first chunks had not arrived — not a gateway violating
+                # the wire contract. Nothing downstream can route it, so drop it.
+                if incomplete:
                     dropped_partial += 1
                     continue
                 # Which of the two failures this is decides whether the operator
@@ -1398,33 +1531,64 @@ class OpenAICompletionsProvider(Provider):
                 had_tool_call_with_args = True
                 try:
                     args_dict, repaired = parse_json_with_repair_info(args_str)
-                except Exception:
-                    # Truncated mid-`arguments` by the abort. ``repair_json`` cannot
-                    # help here — it fixes control characters and bad escapes, not
-                    # an unterminated string — and there is nothing to recover: the
-                    # call was never issued, so dropping it loses no completed work.
-                    if not aborted:
-                        raise
-                    dropped_partial += 1
-                    continue
+                except Exception as exc:
+                    # Truncated mid-`arguments` by the abort or the output cap.
+                    # ``repair_json`` cannot help here — it fixes control characters
+                    # and bad escapes, not an unterminated string — and there is
+                    # nothing to recover: the call was never issued, so dropping it
+                    # loses no completed work.
+                    if incomplete:
+                        _logger.warning(
+                            "dropping tool call %r (%s) from model %r: arguments were "
+                            "cut off (stop_reason=%r) after %d chars and will not "
+                            "decode. %s",
+                            tc.id,
+                            tc.name or "<unnamed>",
+                            model.id,
+                            stop_reason,
+                            len(args_str),
+                            _TRUNCATION_HINT.format(max_tokens=model.max_tokens)
+                            if truncated
+                            else "The call was never issued.",
+                        )
+                        dropped_partial += 1
+                        continue
+                    # A COMPLETE stream whose arguments will not decode is a real
+                    # fault, and the bare JSONDecodeError names nothing about it:
+                    # `str(e)` is "Unterminated string starting at: line 1 column 12",
+                    # which says neither which tool call nor what the buffer held.
+                    # Every other guard in this loop quotes both; this one did not,
+                    # so a run of them against a local server could not be attributed
+                    # to a tool at all. Multi-line on purpose — the TUI renders an
+                    # error inside a Markdown code fence, which clips one long line.
+                    raise ValueError(
+                        f"Tool call {tc.id!r} ({tc.name!r}) from model {model.id!r} at "
+                        f"{self.base_url!r} sent arguments that are not valid JSON, "
+                        f"and the stream reported a COMPLETE generation "
+                        f"(stop_reason={stop_reason!r}), so they are not merely cut off.\n"
+                        f"  {type(exc).__name__}: {exc}\n"
+                        f"  {len(args_str)} chars received: "
+                        f"{_truncate_error_text(args_str)!r}"
+                    ) from exc
                 if repaired:
                     repairs += 1
                 if not isinstance(args_dict, dict):
                     # Same rule for a buffer that parses but is not an object: on a
                     # complete stream that is a model that emitted the wrong shape;
-                    # on an abort it is a fragment that happened to be valid JSON
-                    # on its own (`"pat` is not, but `123` would be).
-                    if aborted:
+                    # on an incomplete one it is a fragment that happened to be valid
+                    # JSON on its own (`"pat` is not, but `123` would be).
+                    if incomplete:
                         dropped_partial += 1
                         continue
                     raise ValueError(
                         f"Tool call {tc.id!r} ({tc.name!r}) arguments did not decode "
                         f"to a JSON object: {args_str!r}"
                     )
-            elif aborted:
-                # An empty buffer on an abort means the `arguments` had not started.
-                # Executing it with `{}` would invent an argument set the model
-                # never sent; on a complete stream `{}` is what the model MEANT.
+            elif incomplete:
+                # An empty buffer on an incomplete stream means the `arguments` had
+                # not started. Executing it with `{}` would invent an argument set
+                # the model never sent; on a complete stream `{}` is what the model
+                # MEANT.
                 dropped_partial += 1
                 continue
             else:
@@ -1529,7 +1693,10 @@ class OpenAICompletionsProvider(Provider):
 
         # Convert τ messages to OpenAI format
         openai_messages = self._convert_messages_to_openai(
-            messages, model.reasoning_replay, model.strict_reasoning_formats
+            messages,
+            model.reasoning_replay,
+            model.strict_reasoning_formats,
+            model.supports_multimodal_function_response,
         )
 
         # Convert tools to OpenAI format

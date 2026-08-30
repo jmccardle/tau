@@ -85,6 +85,55 @@ List of ToolCall objects found in content blocks.
 
 *No description. This object is marked but undocumented.*
 
+## Attachment
+<!-- agent: yes -->
+
+```python
+class Attachment(token: str, start: int, end: int, kind: AttachmentKind, path: Path | None = None, size: int = 0, mime_type: str = '', note: str = '')
+```
+
+`tau_agent_core.attachments.Attachment`
+
+One ``@file`` reference found in a prompt, and what will become of it.
+
+Frozen, and carrying its own span, because a frontend uses it for two things
+at once: drawing a row that says what is attached, and editing the text that
+produced it when the human removes that row (:func:`remove_attachment`).
+
+**Constructor parameters**
+
+- `token: str` — The reference as typed, without the ``@``. Relative paths stay relative — this is what the ``filename`` attribute of the emitted block says, so the model sees the name the human used.
+- `start: int` — Index of the ``@`` in the text this was scanned from.
+- `end: int` — Index one past the last character of the reference. ``text[start:end]`` is ``"@" + token``, which :func:`remove_attachment` checks before it cuts.
+- `kind: AttachmentKind` — What will be sent. See :data:`AttachmentKind`.
+- `path: Path | None = None` — The resolved absolute path, or ``None`` when ``kind`` is ``"unresolved"``.
+- `size: int = 0` — Size on disk in bytes. 0 when unresolved.
+- `mime_type: str = ''` — The image mime type; ``""`` for everything else.
+- `note: str = ''` — Why this is a ``"reference"`` rather than inline, or why it is unresolved. ``""`` when there is nothing to explain. It is shown to the human AND written into the block, because a model told only "the content is missing" cannot tell a 4 MB file from an unreadable one.
+
+## AttachmentCompletions
+<!-- agent: yes -->
+
+```python
+class AttachmentCompletions(start: int, end: int, token: str, matches: tuple[PathCompletion, ...], total: int)
+```
+
+`tau_agent_core.attachments.AttachmentCompletions`
+
+The candidate paths for the ``@…`` the cursor is inside.
+
+The same shape as :class:`~tau_agent_core.commands.CommandCompletions`, and
+for the same reason: an empty ``matches`` is not "nothing to say", it is the
+warning that this ``@…`` names no file and will be sent as ordinary text.
+
+**Constructor parameters**
+
+- `start: int` — Index of the ``@`` in the text.
+- `end: int` — Index one past the token, i.e. the end of the span a completion replaces. The whole token is replaced even when the cursor sits in the middle of it — one rule, so what Tab does is predictable.
+- `token: str` — The reference as typed so far, without the ``@``.
+- `matches: tuple[PathCompletion, ...]` — The candidates, alphabetical, at most :data:`_COMPLETION_LIMIT`.
+- `total: int` — How many candidates matched before that cap, so a frontend can say that the list is not all of them.
+
 ## ImageContent
 <!-- agent: yes -->
 
@@ -257,6 +306,40 @@ Serialize to OpenAI-compatible format.
 **Returns**
 
 dict with keys compatible with OpenAI API: - id: model identifier - name: human-readable name - provider: provider name - base_url: API endpoint - max_completion_tokens: max tokens for completion
+
+## PathCompletion
+<!-- agent: yes -->
+
+```python
+class PathCompletion(name: str, detail: str, is_dir: bool)
+```
+
+`tau_agent_core.attachments.PathCompletion`
+
+One candidate path for a half-typed ``@…``.
+
+**Constructor parameters**
+
+- `name: str` — What replaces the token after the ``@`` — the whole path as it would be typed, not just the last segment, so inserting it is a single span replacement. Directories end in ``/``.
+- `detail: str` — A short right-hand column for the popup: a human size for a file, ``"dir"`` for a directory.
+- `is_dir: bool` — Whether this candidate is a directory. A directory is inserted without a trailing space, because the next thing the human wants is to keep completing into it.
+
+## RenderedAttachments
+<!-- agent: yes -->
+
+```python
+class RenderedAttachments(prefix: str, images: tuple[dict[str, Any], ...], failures: tuple[str, ...])
+```
+
+`tau_agent_core.attachments.RenderedAttachments`
+
+The prompt prefix and image blocks a set of attachments produced.
+
+**Constructor parameters**
+
+- `prefix: str` — The ``<attachment>``/``<reference>`` blocks, in the order the references appeared, each ending in a newline. Prepended to the user's own text — the human's words stay last, where the model reads them as the instruction rather than as a caption on the final file.
+- `images: tuple[dict[str, Any], ...]` — ``ImageContent``-shaped block dicts (``{"type": "image", "data": <base64>, "mime_type": …}``) to put on ``Submission.images``.
+- `failures: tuple[str, ...]` — One human-readable line per attachment that could not be sent as intended. Empty when everything worked. The frontend shows these; the corresponding block already says the same thing to the model.
 
 ## TextContent
 <!-- agent: yes -->
@@ -509,6 +592,64 @@ supported level (``"off"`` for a non-reasoning model). Mirrors pi
 - `model: Model` — *(no description)*
 - `level: ModelThinkingLevel` — *(no description)*
 
+## complete_attachment
+<!-- agent: yes -->
+
+```python
+complete_attachment(text: str, cursor: int, *, cwd: Path | None = None) -> AttachmentCompletions | None
+```
+
+`tau_agent_core.attachments.complete_attachment`
+
+Candidate paths for the ``@…`` the cursor is inside. ``None`` for "not one".
+
+Pure in the same sense as :func:`~tau_agent_core.commands.complete_command`:
+it reads the filesystem but decides nothing and runs nothing, so an editor, a
+test and another frontend all get the same list.
+
+Matching is a case-sensitive prefix test on the last path segment, which is
+what a shell does. Hidden entries are offered only once the prefix itself
+starts with a dot, so ``@`` in a home directory does not open with forty
+dotfiles.
+
+**Parameters**
+
+- `text: str` — The editor's contents.
+- `cursor: int` — The cursor's character offset into ``text``.
+- `cwd: Path | None = None` — The directory relative references resolve against. Defaults to the process working directory.
+
+**Returns**
+
+class:`AttachmentCompletions` when the cursor is inside a ``@…``, with an empty ``matches`` when nothing matches — that emptiness is the "this names no file" warning, not an absence of information. ``None`` when the cursor is not inside a reference at all.
+
+## elide_attachment_bodies
+<!-- agent: yes -->
+
+```python
+elide_attachment_bodies(text: str) -> str
+```
+
+`tau_agent_core.attachments.elide_attachment_bodies`
+
+Replace inlined attachment bodies with a one-line summary, for display.
+
+A transcript is a conversation, and a 10 KB file pasted into a user bubble
+pushes the conversation off the screen. This is the DISPLAY transform for
+that: the block keeps its header and its shape, and its body becomes a
+visible marker saying how much was elided.
+
+It is deliberately not a lossy record. What was sent is on the wire and in
+the session log, unchanged; this is what the frontend draws. The marker says
+so, rather than leaving a shortened body that reads as the whole file.
+
+**Parameters**
+
+- `text: str` — A prompt that may contain ``<attachment>`` blocks.
+
+**Returns**
+
+The same text with each inlined body replaced by a summary line. Empty (image) attachment blocks are self-closing and are untouched.
+
 ## get_supported_thinking_levels
 <!-- agent: yes -->
 
@@ -544,3 +685,96 @@ True if ``level`` is one of the known levels ("off".."xhigh").
 **Parameters**
 
 - `level: str` — *(no description)*
+
+## remove_attachment
+<!-- agent: yes -->
+
+```python
+remove_attachment(text: str, attachment: Attachment) -> str
+```
+
+`tau_agent_core.attachments.remove_attachment`
+
+Delete one ``@file`` reference from ``text``.
+
+What "remove this attachment" means for a reference typed into a prompt: the
+``@…`` word goes away, because the word IS the attachment. The separator it
+leaves behind is collapsed, so removing the middle of ``look at @a.py and
+@b.py`` does not leave a double space.
+
+**Parameters**
+
+- `text: str` — The text the attachment was scanned from.
+- `attachment: Attachment` — The reference to remove.
+
+**Returns**
+
+``text`` without the reference.
+
+**Raises**
+
+- `ValueError` — ``text`` no longer holds that reference at that span. The caller's text has changed since the scan, and cutting the recorded span would delete something else (Fail-Early).
+
+## render_attachments
+<!-- agent: yes -->
+
+```python
+render_attachments(attachments: Sequence[Attachment], *, max_image_dimension: int = DEFAULT_MAX_IMAGE_DIMENSION) -> RenderedAttachments
+```
+
+`tau_agent_core.attachments.render_attachments`
+
+Build the prompt prefix and the image blocks for ``attachments``.
+
+Reads each file again — :func:`scan_attachments` deliberately keeps no
+content — so what goes to the model is the file as it stands now, and a file
+that has been deleted or chmod-ed since the human typed the ``@`` is reported
+rather than sent as stale bytes.
+
+Images are bounded by :func:`~tau_agent_core.tools.image_resize.resize_image`
+before they are encoded. Pillow missing is NOT a reason to send the image
+unresized (see that module): the attachment degrades to a ``<reference>``
+naming the extra to install, and the frontend is told through ``failures``.
+
+This is CPU-bound for a large image, because bounding one decodes it.
+
+**Parameters**
+
+- `attachments: Sequence[Attachment]` — What :func:`scan_attachments` returned. ``"unresolved"`` entries are skipped — they are prose, and the human's own text already contains them.
+- `max_image_dimension: int = DEFAULT_MAX_IMAGE_DIMENSION` — The largest width or height, in pixels, an attached image may have. Larger images are scaled down.
+
+**Returns**
+
+class:`RenderedAttachments`.
+
+## scan_attachments
+<!-- agent: yes -->
+
+```python
+scan_attachments(text: str, *, cwd: Path | None = None, inline_limit: int = DEFAULT_INLINE_LIMIT) -> tuple[Attachment, ...]
+```
+
+`tau_agent_core.attachments.scan_attachments`
+
+Find the ``@file`` references in ``text`` and say what each one is.
+
+Cheap enough to call on every keystroke, which is what the chat editor does:
+it stats every reference and reads only the files that are within
+``inline_limit``, because deciding "text or binary" has no answer that does
+not look at the bytes. It reads nothing over the limit and returns no file
+contents — :func:`render_attachments` reads again at submit time, so what is
+sent is the file as it stood when the human pressed Enter.
+
+A reference that names nothing is returned with ``kind="unresolved"`` rather
+than dropped, so a caller that wants to say so can. Nothing here raises: an
+unreadable file is a ``"reference"`` carrying the reason.
+
+**Parameters**
+
+- `text: str` — The prompt as typed.
+- `cwd: Path | None = None` — The directory relative references resolve against. Defaults to the process working directory.
+- `inline_limit: int = DEFAULT_INLINE_LIMIT` — The largest file, in bytes, whose content is pasted into the prompt. Larger files become ``<reference>`` blocks.
+
+**Returns**
+
+class:`Attachment` per reference, in the order they appear in ``text``.

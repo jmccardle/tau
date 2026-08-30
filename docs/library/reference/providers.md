@@ -681,6 +681,46 @@ Mirrors pi's ``getCompat`` (``openai-completions.ts:1631``).
 
 - `model: Model` — *(no description)*
 
+## split_tool_result_content
+<!-- agent: yes -->
+
+```python
+split_tool_result_content(content: Any) -> tuple[list[str], list[tuple[str, str]]]
+```
+
+`tau_llm.providers.base.split_tool_result_content`
+
+A tool result's content as (text parts, [(mime_type, base64 data), ...]).
+
+Every client needs the same split, because every client has to put the text
+somewhere the wire format calls a tool result and the images somewhere it
+does not. It lives here rather than three times over: the copies in
+``openai.py`` and ``google.py`` had already drifted on the join separator and
+on which non-block shapes they tolerated, and a shape rule that differs per
+provider is a shape rule nobody can state.
+
+Accepts the three shapes a tool result reaches a client in: a bare string,
+a list of pydantic blocks (the live path, ``ToolResultMessage.content``), and
+a list of raw dicts (the persisted path — a reloaded session arrives as
+``model_dump()``ed messages).
+
+Text parts come back unjoined, because the separator is the caller's: the
+OpenAI client has always joined with a space and the Google client with an
+empty string, and quietly changing how a multi-block text result reads is not
+something an image change should do.
+
+**Parameters**
+
+- `content: Any` — The tool result's content, in any of the three shapes above.
+
+**Returns**
+
+A ``(text_parts, images)`` pair. ``images`` holds ``(mime_type, data)`` with ``data`` still base64-encoded.
+
+**Raises**
+
+- `TypeError` — If ``content`` is neither a string nor an iterable of blocks, or if it holds a block of a type this cannot read. Fabricating text from an unreadable value is how an image became a filename in the first place; a wrong tool result must not reach the model looking like a right one.
+
 ## stream_simple
 <!-- agent: yes -->
 

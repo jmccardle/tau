@@ -149,7 +149,10 @@ _BUILTIN_TOOL_CLASSES: dict[str, _BuiltinToolClass] = {
 }
 
 
-def _resolve_tools(tool_names: list[str] | None) -> list[AgentTool]:
+def _resolve_tools(
+    tool_names: list[str] | None,
+    tool_options: dict[str, dict[str, Any]] | None = None,
+) -> list[AgentTool]:
     """Resolve tool names to :class:`AgentTool` instances.
 
     **The registry holds exactly one type (B1).** This function used to return the
@@ -200,8 +203,21 @@ def _resolve_tools(tool_names: list[str] | None) -> list[AgentTool]:
     Neither route is a workaround for this one; they are the surfaces that take
     objects, while this one takes names.
 
+    **Construction options (``tool_options``).** A built-in used to be
+    constructed with no arguments at all, which meant nothing an operator wrote
+    in ``~/.tau/config.json`` could reach one — not even ``cwd``. ``read``'s
+    image cap is the first setting that has to, so the seam is a mapping of tool
+    name to constructor keyword arguments rather than a parameter named after
+    one tool. An option for a name that was not requested is ignored, because
+    the tool list is a denylist-filtered set the operator did not spell out; an
+    option a tool's ``__init__`` does not accept raises ``TypeError`` from the
+    constructor, which is the Fail-Early answer to a typo in a config file.
+
     Args:
         tool_names: List of BUILT-IN tool name strings (e.g., ["read", "bash"]).
+        tool_options: Optional mapping of built-in tool name to keyword
+            arguments for that tool's constructor, e.g.
+            ``{"read": {"max_image_dimension": 2000}}``.
 
     Returns:
         List of :class:`AgentTool` — one per requested name, in request order.
@@ -213,12 +229,13 @@ def _resolve_tools(tool_names: list[str] | None) -> list[AgentTool]:
     if not tool_names:
         return []
 
+    options = tool_options or {}
     tool_objs: list[AgentTool] = []
     for name in tool_names:
         if name not in _BUILTIN_TOOL_CLASSES:
             raise ValueError(f"Unknown tool: {name}")
 
-        tool_obj = _BUILTIN_TOOL_CLASSES[name]()
+        tool_obj = _BUILTIN_TOOL_CLASSES[name](**options.get(name, {}))
         tool_objs.append(
             AgentTool(
                 definition=ToolDefinition(
@@ -1292,6 +1309,7 @@ def create_agent_session(
     bus_available: bool = False,
     no_tools: Literal["all", "builtin"] | None = None,
     max_turns: int | None = None,
+    tool_options: dict[str, dict[str, Any]] | None = None,
 ) -> AgentSession:
     """Create an AgentSession with all defaults.
 
@@ -1390,6 +1408,11 @@ def create_agent_session(
             exist (a hardcoded 50) was unreachable from every caller τ ships. What
             bounds a runaway run without one is the abort signal: an extension's
             budget guard, or Escape in the TUI.
+        tool_options: Keyword arguments for individual built-in tools, keyed by
+            tool name — e.g. ``{"read": {"max_image_dimension": 2000}}``. Ignored
+            for tools not in ``tools``, and irrelevant when ``no_tools`` is set,
+            since then no built-in is constructed at all. See
+            :func:`_resolve_tools`.
 
     Raises:
         ValueError: if ``no_tools`` is given together with a non-empty ``tools``
@@ -1450,7 +1473,7 @@ def create_agent_session(
     # An INVALID ``no_tools`` value is not checked here. ``AgentSession.__init__``
     # raises on one, and it stays the single validator — a second copy of the literal
     # list is a second thing to keep current.
-    tool_objs: list[AgentTool] = [] if no_tools is not None else _resolve_tools(tools)
+    tool_objs: list[AgentTool] = [] if no_tools is not None else _resolve_tools(tools, tool_options)
 
     # 3. Extensions: inline factory callables are invoked by AgentSession at
     #    construction (pi's loadExtensionFromFactory analog). File-path discovery

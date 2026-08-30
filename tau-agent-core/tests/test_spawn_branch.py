@@ -90,6 +90,81 @@ async def test_the_allowlist_is_a_hard_filter(monkeypatch):
     assert captured["tools"] == ["lookup"], "write must not be handed to the sub-agent"
 
 
+def _extension_session() -> tuple[AgentSession, InMemorySessionLog]:
+    """A session in the shape a host uses when it owns every tool it offers.
+
+    ``tools=[]`` plus ``no_tools="builtin"`` suppresses the built-ins and leaves
+    extension registrations alone — the supported way to hand a model a small,
+    purpose-built vocabulary and nothing else. It is also the shape under which
+    ``session._tools`` is empty while the model is being offered two tools.
+    """
+    log = InMemorySessionLog()
+    session = AgentSession(
+        session_log=log,
+        model=_model(),
+        system_prompt="",
+        tools=[],
+        no_tools="builtin",
+        api_key="k",
+    )
+
+    async def _execute(tool_call_id, params, signal, on_update, ctx):
+        return {"content": [{"type": "text", "text": "ok"}]}
+
+    for name in ("say", "remember"):
+        session._extension_api.register_tool(
+            {
+                "name": name,
+                "description": f"the {name} tool",
+                "parameters": {"type": "object", "properties": {}},
+                "execute": _execute,
+            }
+        )
+    log.append_message({"role": "user", "content": [{"type": "text", "text": "shared prefix"}]})
+    return session, log
+
+
+async def test_a_branch_may_hold_a_tool_that_came_from_an_extension(monkeypatch):
+    """The allowlist must be checked against what the SESSION has, not against `_tools`.
+
+    `_tools` is only the constructor's list; an extension's registrations are merged in
+    by `_build_turn_tools`, which is what every turn's loop is built from. Reading
+    `_tools` here meant that on a session whose tools all arrive that way — `tools=[]`
+    plus `no_tools="builtin"` — every non-empty allowlist raised "not available on this
+    session" naming a tool the model had just successfully called, and `tools=[]` (a
+    sub-agent that can think and do nothing) was the only value that did not.
+    """
+    session, log = _extension_session()
+    assert [t.name for t in session._tools] == [], "the shape the bug needs"
+
+    captured: dict = {}
+
+    async def _fake_prompt(self, text, images=None, context=None):
+        captured["tools"] = [t.name for t in self._tools]
+        return []
+
+    monkeypatch.setattr(AgentSession, "prompt", _fake_prompt)
+    result = await session._extension_api.context.spawn_branch(log.cursor, "go", tools=["remember"])
+
+    assert result.ok
+    assert captured["tools"] == ["remember"], "scoping still applies — `say` must not cross"
+
+
+async def test_the_refusal_still_fires_and_now_names_the_extension_tools():
+    """Fail-Early is unchanged; only the list it is checked against is corrected.
+
+    The `available:` list is the assertion that matters. It used to read `[]` on this
+    session, which is what made the error unactionable — it said "not available on this
+    session" about a session where two tools were.
+    """
+    session, log = _extension_session()
+
+    with pytest.raises(ValueError, match=r"\['bash'\].*available: \['remember', 'say'\]"):
+        await session._extension_api.context.spawn_branch(
+            log.cursor, "go", tools=["remember", "bash"]
+        )
+
+
 async def test_a_failing_sub_agent_is_contained_and_marks_its_branch(monkeypatch):
     """§9.2/5. A raise here would mean one bad evaluator in a fan-out kills the whole
     primary turn. The failure comes back as a RESULT, and the branch records it."""

@@ -20,7 +20,14 @@ import pytest
 
 from tau_agent_core.commands import CommandOutcome, resolve_command
 from tau_agent_core.submission import SubmissionResult
-from tau_coding_agent.app import ChatDisplay, ChatListItem, ChatSelected, ChatSidebar, Parley
+from tau_coding_agent.app import (
+    ChatDisplay,
+    ChatListItem,
+    ChatSelected,
+    ChatSidebar,
+    Parley,
+    PendingInput,
+)
 from tau_coding_agent.backends import TauBackend
 from tau_coding_agent.chat_widgets import ReasoningRegion, ToolBox
 
@@ -376,9 +383,11 @@ async def test_generation_runs_in_worker_and_esc_aborts(blocking_app, wait_for_w
         await app.on_input_submitted(_Submit("hello"))
         await pilot.pause()
 
-        # In flight: worker running (blocked in submit_turn), UI live, input gated.
+        # In flight: worker running (blocked in submit_turn), UI live. The input
+        # stays ENABLED — since docs/TUI-STEERING.md §1 it is how a steering
+        # message gets typed, and it used to be disabled for the whole turn.
         assert app.is_generating is True
-        assert app.query_one("#chat-input").disabled is True
+        assert app.query_one("#chat-input").disabled is False
         assert backend.aborted is False
 
         # Esc → cooperative abort. The backend records it and unblocks the stream.
@@ -388,7 +397,7 @@ async def test_generation_runs_in_worker_and_esc_aborts(blocking_app, wait_for_w
         await wait_for_workers_settled(app)
         await pilot.pause()
 
-        # Worker finalized: input restored, flag cleared, partial answer kept.
+        # Worker finalized: flag cleared, partial answer kept.
         assert app.is_generating is False
         assert app.query_one("#chat-input").disabled is False
         assert app.messages[-1]["content"][0]["text"] == "partial"
@@ -499,8 +508,13 @@ async def test_second_prompt_mid_turn_enqueues_rather_than_dropping(
 
     Before B2-a the generation worker was ``exclusive``: a second submission
     cancelled the first mid-turn, losing the running turn's partial answer AND the
-    new prompt. That is the drop docs/SUBMISSION-LIFECYCLE.md exists to remove. The
-    submissions declare ``multitask_strategy="enqueue"``; the second one waits.
+    new prompt. That is the drop docs/SUBMISSION-LIFECYCLE.md exists to remove.
+
+    Since docs/TUI-STEERING.md the second prompt is HELD by the app rather than
+    admitted straight away: it lands in the pending buffer and is submitted at
+    the strategy's delivery point. This backend runs no tools, so ``"steer"``'s
+    mid-turn delivery point never arrives and the buffer is delivered at the turn
+    edge — which is the outcome this test has always asserted.
     """
     app, backend = blocking_app
     async with app.run_test() as pilot:
@@ -511,23 +525,24 @@ async def test_second_prompt_mid_turn_enqueues_rather_than_dropping(
         await app.on_input_submitted(_Submit("two"))
         await pilot.pause()
 
-        # Both are outstanding; the app is still busy and the input still gated.
+        # The app is busy, and the input stays usable — that is how "two" got typed.
         assert app.is_generating is True
-        assert app.query_one("#chat-input").disabled is True
-        # The second turn has not started yet — it is queued, not dropped. Since
-        # B3-a what makes it wait is ``_working_list_lock`` (self.messages is the
-        # context handed over AND the thing rebuilt at turn end), not a display
-        # lock: rendering no longer serializes anything.
+        assert app.query_one("#chat-input").disabled is False
+        # The second turn has not started, and is not lost: it is in the buffer,
+        # visible in the pending widget.
         assert [s.text for s in backend.submissions] == ["one"]
+        assert app._pending_steer == ["two"]
+        assert app.query_one(PendingInput).display is True
 
-        # Finish the first turn. The second is admitted straight after it.
+        # Finish the first turn. The buffer is delivered as the next turn.
         backend.release()
         await _until(pilot, lambda: len(backend.submissions) == 2)
         assert [s.text for s in backend.submissions] == ["one", "two"]
-        # Still busy: a turn ending while another is outstanding must not re-enable
-        # the input or clear the flag.
+        # Still busy: the delivered turn is outstanding, so the flag stays set and
+        # the pending widget has gone back to hidden.
         assert app.is_generating is True
-        assert app.query_one("#chat-input").disabled is True
+        assert app._pending_steer == []
+        assert app.query_one(PendingInput).display is False
 
         backend.release()
         await wait_for_workers_settled(app)

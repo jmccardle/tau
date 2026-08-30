@@ -1,6 +1,13 @@
-"""Finalizing a stream the user aborted mid-tool-call.
+"""Finalizing a stream that ended mid-tool-call.
 
-Reference: docs/PLAN-0.9.4.md §3 ("`Esc` loses the turn").
+Reference: docs/PLAN-0.9.4.md §3 ("`Esc` loses the turn"),
+docs/TRUNCATED-TOOL-CALLS.md.
+
+Two causes, one branch. The user pressing Esc (``stop_reason="aborted"``) and the
+server reaching the output cap τ sends as ``max_tokens``
+(``stop_reason="length"``) leave the finalizer the same fact: this argument buffer
+is a PREFIX. The second half of this file is the ``"length"`` half, added after
+the same data loss was reported again against llama.cpp.
 
 The reported symptom was "nothing persists to disk, due to a JSON parse
 traceback". The traceback was not a side effect of the loss — it was the cause.
@@ -376,3 +383,106 @@ def test_no_abort_position_produces_an_error_event(monkeypatch, abort_after):
     assert not [e for e in events if isinstance(e, ErrorEvent)], (
         f"aborting after SSE line {abort_after} produced an ErrorEvent"
     )
+
+
+# ---------------------------------------------------------------------------
+# The stream the SERVER cut off: stop_reason == "length"
+# ---------------------------------------------------------------------------
+
+
+def test_a_length_truncation_mid_arguments_finalizes_instead_of_erroring(monkeypatch):
+    """The same loss as the abort bug, reached by the other road.
+
+    Reported against llama.cpp: a repeating
+    ``JSONDecodeError: Unterminated string starting at: line 1 column 12`` that
+    killed the turn. Column 12 is the opening quote of a 7-character first key
+    (``{"command":"…``), so the buffer ends inside the bash tool's command string.
+
+    Nothing about that payload is malformed. The server stopped because
+    generation reached the cap τ sends as ``max_tokens``, which makes the buffer a
+    PREFIX — the same thing ``stop_reason="length"`` already means for a
+    constrained generation, where ``stream_chat`` raises ConstraintViolation
+    rather than pretending the constraint completed.
+    """
+    chunks = [
+        _tool_call_chunk(0, call_id="call_1", name="bash", arguments='{"command":"find / -na'),
+        _finish_chunk("length"),
+    ]
+    events = _run(monkeypatch, _response(chunks))
+
+    assert not [e for e in events if isinstance(e, ErrorEvent)], (
+        "a generation the server cut off at the output cap must not kill the turn"
+    )
+    final = _done(events).final
+    assert final.stop_reason == "length"
+    assert final.get_tool_calls() == []
+    assert final.usage.extra["dropped_partial_tool_calls"] == 1
+
+
+def test_text_written_before_the_cap_survives_it(monkeypatch):
+    """What the raise used to cost. The answer already streamed is completed work."""
+    chunks = [
+        {
+            "id": "chatcmpl-abort",
+            "model": "gpt-4o",
+            "object": "chat.completion.chunk",
+            "created": 1700000000,
+            "choices": [{"index": 0, "delta": {"content": "Let me search for it."}}],
+        },
+        _tool_call_chunk(0, call_id="call_1", name="bash", arguments='{"command":"find / -na'),
+        _finish_chunk("length"),
+    ]
+    final = _done(_run(monkeypatch, _response(chunks))).final
+
+    assert "Let me search for it." in "".join(
+        b.text for b in final.content if getattr(b, "type", "") == "text"
+    )
+
+
+def test_a_call_completed_before_the_cap_still_runs(monkeypatch):
+    """Dropping is per-call. A call whose arguments closed is a call the model made."""
+    chunks = [
+        _tool_call_chunk(0, call_id="call_1", name="read", arguments='{"path": "a.txt"}'),
+        _tool_call_chunk(1, call_id="call_2", name="bash", arguments='{"command":"find / -na'),
+        _finish_chunk("length"),
+    ]
+    final = _done(_run(monkeypatch, _response(chunks))).final
+
+    calls = final.get_tool_calls()
+    assert [c.name for c in calls] == ["read"]
+    assert final.usage.extra["dropped_partial_tool_calls"] == 1
+
+
+def test_a_call_cut_off_before_its_name_arrived_is_dropped_too(monkeypatch):
+    """A cap can land before ``function.name``, and an unroutable call is not a
+    gateway violating the wire contract here — it is the same truncation."""
+    chunks = [
+        _tool_call_chunk(0, call_id="call_1", arguments='{"comm'),
+        _finish_chunk("length"),
+    ]
+    events = _run(monkeypatch, _response(chunks))
+
+    assert not [e for e in events if isinstance(e, ErrorEvent)]
+    assert _done(events).final.usage.extra["dropped_partial_tool_calls"] == 1
+
+
+def test_a_complete_stream_names_the_tool_call_it_refuses(monkeypatch):
+    """The strict path stays strict, and now says what it refused.
+
+    ``str(JSONDecodeError)`` is "Unterminated string starting at: line 1 column
+    12" — it names neither the tool nor the buffer, so a run of these could not be
+    attributed to a tool at all. Every other guard in the finalizer quotes both;
+    this one used to be the exception.
+    """
+    chunks = [
+        _tool_call_chunk(0, call_id="call_1", name="bash", arguments='{"command":"find / -na'),
+        _finish_chunk("tool_calls"),
+    ]
+    errors = [e for e in _run(monkeypatch, _response(chunks)) if isinstance(e, ErrorEvent)]
+
+    assert len(errors) == 1
+    message = errors[0].message
+    assert "call_1" in message
+    assert "bash" in message
+    assert '{"command":"find / -na' in message
+    assert "'toolUse'" in message, "the stop_reason is the evidence that it was NOT cut off"

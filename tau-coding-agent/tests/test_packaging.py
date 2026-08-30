@@ -86,6 +86,7 @@ PROVIDES = {
     "textual": "textual",
     "typer": "typer",
     "pytest": "pytest",  # tau_agent_core.testing, via the [testing] extra
+    "PIL": "pillow",  # tools/image_resize.py, via the [images] extra
 }
 
 
@@ -255,21 +256,35 @@ def test_every_distribution_ships_the_licence(pkg):
 # -- the metapackage --------------------------------------------------------
 
 
-def test_the_metapackage_resolves_to_the_tui_install_and_nothing_else():
+def test_the_metapackage_resolves_to_the_completionist_install_and_nothing_else():
     """``pip install ffwf-tau`` must be one decision, made here.
 
     The name exists because people type it: before it was published, that command
     failed with "could not find a version that satisfies the requirement", which
     reads as a Python-version or index problem and is neither. Having claimed the
-    name, what it installs is a promise -- ``tau`` with the interface it needs to
-    start, and nothing that needs a server.
+    name, what it installs is a promise -- ``tau``, complete, and nothing that
+    needs a server.
 
-    A second dependency added here is a package every casual install silently
-    grows. That is the change this test is here to make deliberate.
+    The list below IS that promise, and the reason this test spells it out rather
+    than checking a property: every entry is a package each casual install
+    silently grows, and the only defensible way to add one is deliberately.
+
+    It held a single entry until 2026-08-29. What changed is the definition of
+    complete: τ speaks three wire protocols and ships a config file that names
+    models on all three, so an install with one SDK fails on two thirds of its own
+    defaults; and ``read`` on a screenshot -- the most obvious thing a person
+    points it at -- needs Pillow to bound the image. Each of those raises an error
+    naming its extra, which is a good failure and still one this name should not
+    hand anybody. ``[jmfts]`` stays out: it needs a running server, which is the
+    line between "works on its own" and "answers a question nobody asked".
     """
     project = tomllib.loads((REPO / "tau-meta/pyproject.toml").read_text())["project"]
     version = _declared_version("tau_coding_agent")
-    assert project["dependencies"] == [f"ffwf-tau-coding-agent[tui]=={version}"]
+    assert project["dependencies"] == [
+        f"ffwf-tau-coding-agent[tui]=={version}",
+        f"ffwf-tau-agent-core[images]=={version}",
+        f"ffwf-tau-llm[anthropic,google]=={version}",
+    ]
     assert "optional-dependencies" not in project, (
         "the metapackage grew an extra; an extra on a name that installs another "
         "package's extra is two indirections to document and one to get wrong."

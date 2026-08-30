@@ -13,6 +13,11 @@ import os
 from typing import Any, Callable, Literal
 
 from tau_agent_core.tools.base import AgentToolResult
+from tau_agent_core.tools.image_resize import (
+    DEFAULT_MAX_IMAGE_DIMENSION,
+    ImageSupportUnavailable,
+    resize_image,
+)
 
 
 class ReadTool:
@@ -62,8 +67,26 @@ class ReadTool:
     DEFAULT_MAX_LINES = 4096
     IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
-    def __init__(self, cwd: str = ".") -> None:
+    def __init__(
+        self,
+        cwd: str = ".",
+        max_image_dimension: int | None = DEFAULT_MAX_IMAGE_DIMENSION,
+    ) -> None:
+        """Construct the read tool.
+
+        Args:
+            cwd: Working directory that relative paths resolve against.
+            max_image_dimension: Largest width or height, in pixels, that an
+                image may have when it reaches the model. ``None`` disables the
+                cap and sends the file at its on-disk resolution — an explicit
+                opt-out, chosen by the operator, and NOT what happens when the
+                resize is merely unavailable. Without Pillow installed, reading
+                an image fails and names the extra. See
+                :mod:`tau_agent_core.tools.image_resize` for why the default is
+                a chosen budget rather than a model property.
+        """
         self.cwd = os.path.abspath(cwd)
+        self.max_image_dimension = max_image_dimension
 
     async def execute(
         self,
@@ -213,10 +236,47 @@ class ReadTool:
         tool_call_id: str,
         signal: Any = None,
     ) -> dict:
-        """Read an image file and return base64-encoded data."""
+        """Read an image file and return it as an image content block.
+
+        The block is ``{"type": "image", ...}`` — the serialised form of
+        :class:`tau_llm.types.ImageContent`, which is what
+        ``ToolResultMessage.content`` has always declared it accepts
+        (``list[TextContent | ImageContent]``). Each provider decides how to put
+        it on the wire.
+
+        **This used to return text**, and the text was
+        ``f"![image]({mime};base64,{b64[:200]}...)"`` — the first 200 characters
+        of the base64 and a literal ellipsis. Nothing downstream could recover
+        the image from that, so a vision model was handed a filename, a mime
+        type and a stub, and did the only thing it could: describe an image it
+        had never seen. Measured on a 1.9 MB PNG, the model received 230
+        characters. The failure is silent, reads as a model hallucinating, and
+        survives any amount of correct multimodal configuration underneath it.
+
+        The text block is kept alongside the image on purpose. All three clients
+        carry the image now, each in the place its wire format has for one — a
+        ``tool_result`` block for Anthropic, ``functionResponse`` plus a user
+        turn for Google, a ``tool`` message plus a user turn for OpenAI — but the
+        text is what a model gets when the image cannot travel: an endpoint that
+        rejects it, or a model with no vision. Then it learns *that* there is an
+        image and what it is, rather than inventing the contents. Degrading to
+        "an image was here" is worth one line of prose.
+
+        The image IS bounded: no side exceeds ``max_image_dimension``, 2000px by
+        default, matching pi's ``autoResizeImages``. That cap exists because an
+        unbounded one took a llama.cpp server down twice — see
+        :mod:`tau_agent_core.tools.image_resize` for the measurement and for why
+        the number is an operator's budget rather than a model property. An
+        image already inside the cap is passed through byte-identical.
+
+        Two limits remain. There is no BYTE budget, so a photographic 2000x2000
+        PNG can still exceed Anthropic's 5 MB inline limit (pi re-encodes down a
+        quality ladder to 4.5 MB; τ does not). And there is still no modality
+        check: τ has no field saying whether a model accepts images at all, so
+        it sends one and lets the endpoint answer.
+        """
         try:
             image_data = await asyncio.to_thread(self._read_bytes, resolved_path)
-            b64_data = base64.b64encode(image_data).decode("utf-8")
             _, ext = os.path.splitext(resolved_path)
             mime_map = {
                 ".jpg": "image/jpeg",
@@ -226,11 +286,41 @@ class ReadTool:
                 ".webp": "image/webp",
             }
             mime_type = mime_map.get(ext.lower(), "application/octet-stream")
-            text = f"![image]({mime_type};base64,{b64_data[:200]}...)"
+            name = os.path.basename(resolved_path)
+
+            # Off the event loop for the same reason the file read is: decoding
+            # and rescaling a large image is CPU-bound, and the agent loop runs
+            # as an async worker on the Textual app's own loop.
+            bounded = None
+            if self.max_image_dimension is not None:
+                bounded = await asyncio.to_thread(
+                    resize_image, image_data, mime_type, self.max_image_dimension
+                )
+                image_data, mime_type = bounded.data, bounded.mime_type
+
+            detail = f"{mime_type}, {len(image_data)} bytes"
+            if bounded is not None:
+                detail += f", {bounded.size[0]}x{bounded.size[1]}"
+                if bounded.resized:
+                    w, h = bounded.original_size
+                    detail += f", resized from {w}x{h}"
+            b64_data = base64.b64encode(image_data).decode("utf-8")
             return AgentToolResult(
                 tool_name=self.name,
                 tool_call_id=tool_call_id,
-                content=[{"type": "text", "text": text}],
+                content=[
+                    {"type": "text", "text": f"[image: {name} ({detail})]"},
+                    {"type": "image", "data": b64_data, "mime_type": mime_type},
+                ],
+            ).model_dump()
+        except ImageSupportUnavailable as e:
+            # Not folded into the generic handler below: this one is actionable,
+            # and prefixing it with "Error reading image" would bury the
+            # instruction that is the whole point of the message.
+            return AgentToolResult.from_error(
+                tool_name=self.name,
+                error_message=str(e),
+                tool_call_id=tool_call_id,
             ).model_dump()
         except Exception as e:
             return AgentToolResult.from_error(

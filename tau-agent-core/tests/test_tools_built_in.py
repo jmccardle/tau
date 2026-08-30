@@ -18,6 +18,7 @@ Reference: PHASE-2-SUBPHASE-3.md, "Testing Strategy" section.
 """
 
 import asyncio
+import base64
 import contextlib
 import inspect
 import os
@@ -170,7 +171,12 @@ class TestReadToolText:
         assert "absolute path content" in result["content"][0]["text"]
 
     async def test_read_image_file(self, tmp_path):
-        """Read tool handles image files (returns base64 preview)."""
+        """Read returns an image BLOCK, plus a line of text naming the file.
+
+        The text block is what a provider that cannot carry images in a tool
+        result falls back to, so the model learns there is an image rather than
+        inventing its contents.
+        """
         test_file = tmp_path / "test.png"
         # Write minimal PNG (1x1 pixel)
         test_file.write_bytes(
@@ -183,7 +189,48 @@ class TestReadToolText:
 
         tool = ReadTool(cwd=str(tmp_path))
         result = await tool.execute("tc1", {"path": "test.png"}, None, None)
-        assert "image/png" in result["content"][0]["text"]
+
+        text, image = result["content"]
+        assert text["type"] == "text" and "image/png" in text["text"]
+        assert "test.png" in text["text"]
+        assert image == {
+            "type": "image",
+            "mime_type": "image/png",
+            "data": base64.b64encode(test_file.read_bytes()).decode(),
+        }
+
+    async def test_read_image_sends_the_whole_image_not_a_stub(self, tmp_path):
+        """The regression this exists for.
+
+        ``_read_image`` used to return ONE text block holding
+        ``f"![image]({mime};base64,{b64[:200]}...)"`` — the first 200 characters
+        of the base64 and an ellipsis. Nothing downstream could recover the
+        image, so a vision model got a filename and a stub and described a
+        picture it had never seen. Measured on a 1.9 MB PNG: 230 characters
+        reached the model. The failure is silent and reads as hallucination, so
+        the assertion is on the byte count, not on the shape.
+        """
+        # A REAL PNG, not a header plus filler. ``read`` now decodes an image to
+        # bound it (tools/image_resize.py), so undecodable bytes are a tool error
+        # rather than a passthrough -- which is the point of that change and
+        # would make this test pass for the wrong reason. 900x900 is comfortably
+        # under the 2000px cap, so the bytes must survive untouched.
+        import io as _io
+
+        from PIL import Image
+
+        buf = _io.BytesIO()
+        Image.effect_noise((900, 900), 64).convert("RGB").save(buf, format="PNG")
+        blob = buf.getvalue()
+        assert len(blob) > 200, "the fixture has to be bigger than the old 200-char stub"
+        (tmp_path / "big.png").write_bytes(blob)
+
+        tool = ReadTool(cwd=str(tmp_path))
+        result = await tool.execute("tc1", {"path": "big.png"}, None, None)
+
+        data = next(b for b in result["content"] if b["type"] == "image")["data"]
+        assert base64.b64decode(data) == blob
+        assert "..." not in data
 
     async def test_read_empty_file(self, tmp_path):
         """Read tool handles empty files."""

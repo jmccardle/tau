@@ -1534,10 +1534,12 @@ async def test_the_summary_survives_the_counter():
 # ---------------------------------------------------------------------------
 
 
-def _message_end(usage: dict | None) -> _FakeEvent:
+def _message_end(usage: dict | None, stop_reason: str | None = None) -> _FakeEvent:
     message: dict = {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}
     if usage is not None:
         message["usage"] = usage
+    if stop_reason is not None:
+        message["stop_reason"] = stop_reason
     return _FakeEvent(type="message_end", timestamp=0, message=message)
 
 
@@ -1554,6 +1556,7 @@ def test_a_completion_boundary_publishes_the_measured_total():
         "lane": "lane-1",
         "output": 30,
         "context": 100,
+        "stop_reason": None,
     }
     second = stream.feed(_message_end({"output_tokens": 12, "input_tokens": 140}))
     assert second[0]["output"] == 42, "summed across completions, like lane_end"
@@ -1577,3 +1580,25 @@ def test_a_message_end_with_no_message_publishes_nothing():
     from tau_coding_agent.backends import TurnStream
 
     assert TurnStream().feed(_FakeEvent(type="message_end", timestamp=0, message=None)) == []
+
+
+def test_the_completion_boundary_carries_the_stop_reason():
+    """``"length"`` is the one stop reason an operator has to act on, and until
+    this it reached only ``--mode json`` (docs/TRUNCATED-TOOL-CALLS.md §3)."""
+    from tau_coding_agent.backends import TurnStream
+
+    stream = TurnStream()
+    events = stream.feed(_message_end({"output_tokens": 30}, stop_reason="length"))
+    assert events[0]["stop_reason"] == "length"
+
+
+def test_the_duplicate_message_end_does_not_clear_the_stop_reason():
+    """The second emit carries neither usage nor stop_reason. Reading it
+    unguarded would report the truncated completion as having no stop reason —
+    which is how the notice would go missing on every tool-bearing turn."""
+    from tau_coding_agent.backends import TurnStream
+
+    stream = TurnStream()
+    stream.feed(_message_end({"output_tokens": 30}, stop_reason="length"))
+    again = stream.feed(_message_end(None))
+    assert again[0]["stop_reason"] == "length"

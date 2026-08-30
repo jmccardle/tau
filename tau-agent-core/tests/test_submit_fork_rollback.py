@@ -144,6 +144,45 @@ class TestForkAdmission:
         # Done-callback cleanup: the registry does not accumulate finished tasks.
         assert session._forked_tasks == {}
 
+    async def test_a_fork_carries_the_extension_tools_too(self, monkeypatch):
+        """ "THIS session's own tools" has to mean all of them, extensions included.
+
+        A fork is "a second full agent, not a scoped-down evaluator" — it continues the
+        same job, so it needs the same vocabulary. `_spawn_fork` read `self._tools`,
+        which omits every extension registration, so on a session that keeps its tools
+        that way the fork arrived with none at all: a continuation that cannot perform
+        any part of what it was forked to continue, and nothing anywhere says so.
+        """
+        log = InMemorySessionLog()
+        log.append_message({"role": "user", "content": [{"type": "text", "text": "hi"}]})
+        session = AgentSession(session_log=log, model=_model(), tools=[], no_tools="builtin")
+
+        async def _execute(tool_call_id, params, signal, on_update, ctx):
+            return {"content": [{"type": "text", "text": "ok"}]}
+
+        session._extension_api.register_tool(
+            {
+                "name": "say",
+                "description": "the say tool",
+                "parameters": {"type": "object", "properties": {}},
+                "execute": _execute,
+            }
+        )
+
+        captured: dict = {}
+
+        async def _capture(self, text, images=None, context=None):
+            captured["tools"] = [t.name for t in self._tools]
+            return []
+
+        monkeypatch.setattr(AgentSession, "prompt", _capture)
+
+        result = await session.submit(_sub("carry on", "fork-8", multitask_strategy="fork"))
+        assert result.accepted is True
+        await asyncio.wait_for(session._forked_tasks["fork-8"], timeout=1.0)
+
+        assert captured["tools"] == ["say"], "the fork must be able to do the job"
+
     async def test_fork_does_not_move_or_touch_the_primary_cursor(self, monkeypatch):
         log = InMemorySessionLog()
         log.append_message({"role": "user", "content": [{"type": "text", "text": "hi"}]})

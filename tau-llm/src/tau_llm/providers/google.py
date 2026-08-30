@@ -44,7 +44,7 @@ import time
 from typing import TYPE_CHECKING, Any, AsyncIterator, Literal, cast
 
 from tau_llm.models import clamp_thinking_level
-from tau_llm.providers.base import Provider
+from tau_llm.providers.base import Provider, split_tool_result_content
 from tau_llm.streaming import (
     DoneEvent,
     ErrorEvent,
@@ -434,7 +434,8 @@ class GoogleGenerativeAIProvider(Provider):
         is_error = bool(field("is_error", False))
         output = field("content", "")
 
-        text, images = _split_tool_output(output)
+        parts_, images = split_tool_result_content(output)
+        text = "".join(parts_)
         # The documented key pair: "output" for success, "error" for failure.
         payload_key = "error" if is_error else "output"
         value = text or ("(see attached image)" if images else "")
@@ -456,15 +457,22 @@ class GoogleGenerativeAIProvider(Provider):
         if images and not nested:
             # The conservative branch (O2 default): a separate user turn, which
             # every model accepts. pi does the same below Gemini 3.
-            contents.append(
-                {
-                    "role": "user",
-                    "parts": [
-                        {"text": "Tool result image:"},
-                        *[_inline_data(m, d) for m, d in images],
-                    ],
-                }
-            )
+            #
+            # ONE turn per image, not one turn holding every image. MEASURED
+            # 2026-08-28 on the OpenAI client's equivalent branch (llama.cpp
+            # b1637, Qwen3.8-27B): two images under a single label in one turn
+            # made the model describe one image and report the other missing,
+            # 3/3, while one image per turn was correct 3/3 with two images and
+            # with three. Not re-measured on Gemini — the same converter
+            # question, and the shape that was wrong there has nothing to
+            # recommend it here.
+            for mime, data in images:
+                contents.append(
+                    {
+                        "role": "user",
+                        "parts": [{"text": "Tool result image:"}, _inline_data(mime, data)],
+                    }
+                )
 
     def _convert_tools(self, tools: list[ToolSpec]) -> list[dict[str, Any]]:
         """τ tools → one Google ``Tool`` holding every declaration."""
@@ -805,25 +813,6 @@ def _holds_tool_results(content: dict[str, Any]) -> bool:
 
 def _inline_data(mime_type: str, data: str) -> dict[str, Any]:
     return {"inline_data": {"mime_type": mime_type, "data": data}}
-
-
-def _split_tool_output(output: Any) -> tuple[str, list[tuple[str, str]]]:
-    """A tool result's output as (text, [(mime_type, data), ...])."""
-    if isinstance(output, str):
-        return output, []
-
-    text_parts: list[str] = []
-    images: list[tuple[str, str]] = []
-    for block in output or []:
-        btype = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
-        if btype == "text":
-            text_parts.append(block.get("text", "") if isinstance(block, dict) else block.text)
-        elif btype == "image":
-            if isinstance(block, dict):
-                images.append((block.get("mime_type", ""), block.get("data", "")))
-            else:
-                images.append((block.mime_type, block.data))
-    return "".join(text_parts), images
 
 
 def _usage_from_google(usage: Any) -> Usage:

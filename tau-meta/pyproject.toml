@@ -11,7 +11,7 @@ name = "ffwf-tau"
 # ``0.0.0`` in four pyprojects while ``tau --version`` said ``0.9.1``. A one-line
 # module is cheaper than an exception to the rule that caught that.
 dynamic = ["version"]
-description = "τ: the guessable name. Installs ffwf-tau-coding-agent[tui] — the `tau` command with its TUI."
+description = "τ: the guessable name. The `tau` command with its TUI, all three wire protocols, and image support."
 requires-python = ">=3.11"
 readme = "README.md"
 # SPDX expression + the file itself (PEP 639), which is why build-system below
@@ -22,13 +22,25 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
-# The whole distribution. `[tui]` and not the bare package, because someone who
-# types the shortest name wants the program: `tau` with no arguments launches the
-# TUI, and without this extra that is the one thing it cannot do. `[jmfts]` is
-# deliberately absent -- it needs a running server, and an install that pulls one
-# in by default would be answering a question nobody asked.
+# The whole distribution: the completionist client. Someone who types the
+# shortest name wants the program, working, against whatever they point it at.
+#
+# `[tui]` and not the bare package, because `tau` with no arguments launches the
+# TUI and without that extra it is the one thing it cannot do. `[anthropic]` and
+# `[google]` because a client that speaks one of three wire protocols out of the
+# box is a client that fails on two thirds of the config file it ships. Those
+# providers import their SDK lazily and raise an error naming the extra, which is
+# a good failure and still a failure the guessable install should not have.
+# `[images]` because `read` on a screenshot is the most obvious thing a person
+# does, and without Pillow it errors.
+#
+# `[jmfts]` stays deliberately absent -- it needs a running server, and an install
+# that pulls one in by default would be answering a question nobody asked. That is
+# the line: this name installs everything that works on its own.
 dependencies = [
-    "ffwf-tau-coding-agent[tui]==0.9.5",
+    "ffwf-tau-coding-agent[tui]==0.9.6",
+    "ffwf-tau-agent-core[images]==0.9.6",
+    "ffwf-tau-llm[anthropic,google]==0.9.6",
 ]
 
 # The PUBLIC repository only. This tree has a second, private git remote whose

@@ -1,9 +1,12 @@
 # Cutting a τ release
 
 Written 2026-08-20 while cutting 0.9.2, from what the release actually did.
-Every command here was run and every value was read off the thing it configures,
-with one exception, called out where it appears: the trusted-publishing upload
-in step 6 has never run. 0.9.2 went to both indexes by hand.
+Every command here was run and every value was read off the thing it configures.
+
+Revised 2026-08-28 while cutting 0.9.5, which closed the two things this document
+still did not know. The TestPyPI rehearsal in step 6 had never run; it has now,
+and it uploaded. The final `git push origin vX.Y.Z` in step 7 was wrong and is
+removed — publishing the draft already creates that tag.
 
 ## The two repositories
 
@@ -356,13 +359,26 @@ The two GitHub environments already exist and hold no secrets and no protection
 rules. The environment name is part of the publisher identity, so it has to
 match exactly.
 
-Rehearse on TestPyPI first — this is the run that has not happened yet, and the
-only way to find out whether the ten registrations are right before a tag push
-makes it expensive. Register the five TestPyPI publishers, then:
+Rehearse on TestPyPI first — the only way to find out whether the ten
+registrations are right before a tag push makes it expensive:
 
 ```bash
 gh workflow run publish.yml --repo jmccardle/tau --ref master -f target=testpypi
 ```
+
+**The rehearsal path is proven, as of run 33179990481 (2026-08-28, 0.9.5).** This
+document said for two releases that this run had not happened yet. It has now,
+and it *wrote*: all ten artifacts uploaded to TestPyPI and the job reported
+success, so the five TestPyPI publishers are correct and the OIDC exchange works
+on that index too. Unlike the PyPI proof above — which is a `400 File already
+exists` read as success of everything before it — this one is an actual upload.
+
+The same run also confirms the guard: `Publish to PyPI` reported `skipped`,
+because its condition is `github.event_name == 'push' || inputs.target == 'pypi'`
+and a dispatch is not a push.
+
+A TestPyPI version cannot be reused either, so a rehearsal costs the version it
+rehearses. Run it once per release, after the local gate, not while iterating.
 
 It runs the same test and build jobs as a real release. `publish-pypi` is
 skipped, because its condition is `github.event_name == 'push' || inputs.target
@@ -387,13 +403,33 @@ A draft creates no tag, so nothing is triggered — the notes and the asset sit
 staged until you publish it. `--target` wants a branch name or a **full** SHA;
 an abbreviated one is rejected with `Release.target_commitish is invalid`.
 
-Publishing the draft creates the tag, and that tag push is the real release.
-
-Then push the tag, which is the only step that reaches real PyPI:
+Publishing the draft creates the tag, and that tag push is the real release. It
+is the only step that reaches real PyPI.
 
 ```bash
-cd ~/Development/tau_public && git push origin v0.9.3
+gh release edit v0.9.5 --repo jmccardle/tau --draft=false
 ```
+
+**Do not then push the local tag.** Every version of this document up to 0.9.5
+ended with `cd ~/Development/tau_public && git push origin vX.Y.Z`. That step is
+wrong, and it has been wrong since drafts were introduced: publishing the draft
+already created `refs/tags/vX.Y.Z` on the remote, through the API, as a
+**lightweight** tag pointing straight at the commit. The local tag was made with
+`git tag -a`, so it is a tag *object* — a different sha for the same commit — and
+the push is rejected:
+
+```
+ ! [rejected]        v0.9.5 -> v0.9.5 (already exists)
+```
+
+Measured at 0.9.5, and `git ls-remote --tags origin` shows 0.9.4 has the same
+shape, so it happened there too and nobody wrote it down. Only `v0.9.3` carries a
+`^{}` peeled line, from the era when the tag really was pushed by hand.
+
+Do **not** `--force` past this. The remote tag names the right commit, the
+workflow has already run from it, and replacing it would move a published release
+ref to make two objects agree about a commit they already agree about. Leave the
+annotated tag local; it is the internal record, alongside `vX.Y.Z-fullhistory`.
 
 A PyPI version number cannot be reused, and `skip-existing` is deliberately left
 off, so a second attempt at the same version fails rather than quietly doing

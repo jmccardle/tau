@@ -2602,6 +2602,14 @@ class AgentSession:
         per-session) — see the work item's report for whether that is a gap or a
         documented choice.
 
+        "Own tools" means everything a turn of THIS session is built from,
+        extension registrations included: a continuation missing half the
+        vocabulary cannot perform the job it was forked to continue. That is not
+        in tension with the line above — the extensions themselves do not carry,
+        so no hook, command or subscription runs in the fork; an extension's
+        TOOL does, still bound to the parent's ``ctx``, which is what an
+        extension tool closes over wherever it is called from.
+
         Errors are surfaced, never silently swallowed (Fail-Early): ``spawn_branch``
         itself contains a failing branch as a ``BranchResult(ok=False, ...)``, so
         the task should not normally raise — if it somehow does anyway (a bug,
@@ -2615,7 +2623,12 @@ class AgentSession:
             self._extension_api.context.spawn_branch(
                 fork_point,
                 sub.text,
-                tools=[t.name for t in self._tools],
+                # ``_build_turn_tools()``, not ``_tools``, for the reason spelled out
+                # at ``spawn_branch``'s own resolution of the same question: ``_tools``
+                # omits every extension-registered tool, so on a session that keeps its
+                # tools that way this forked "second full agent" arrived with none at
+                # all — a continuation of the same job that cannot perform any of it.
+                tools=[t.name for t in self._build_turn_tools()],
                 max_turns=self._max_turns,
             )
         )

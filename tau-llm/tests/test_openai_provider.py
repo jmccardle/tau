@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tau_llm.providers.base import split_tool_result_content
 from tau_llm.providers.openai import OpenAICompletionsProvider
 from tau_llm.streaming import DoneEvent, ErrorEvent, TextDeltaEvent, ToolCallDeltaEvent
 from tau_llm.tools import ToolDefinition
@@ -440,6 +441,243 @@ class TestConvertMessagesImageContent:
 
         content = result[0]["content"][0]["image_url"]["url"]
         assert "data:image/png;base64,existingbase64data" in content
+
+
+class TestToolResultImages:
+    """An image returned BY A TOOL has to reach the model.
+
+    ``ToolResultMessage.content`` has always been typed
+    ``list[TextContent | ImageContent]``, but the conversion collected text and
+    dropped everything else — silently, with no error and no placeholder. A
+    vision model was handed the tool's accompanying prose and nothing to look
+    at, and did the only thing left: describe an image it had never seen. Found
+    live 2026-08-28 against llama.cpp + mmproj, where the same image described
+    perfectly through a plain user message.
+    """
+
+    def setup_method(self):
+        self.provider = OpenAICompletionsProvider(api_key="sk-test")
+
+    @staticmethod
+    def _result(content):
+        return ToolResultMessage(
+            tool_call_id="c1", tool_name="read", content=content, timestamp=0
+        )
+
+    def test_a_text_only_result_is_unchanged(self):
+        """Every result but a handful. One message, space-joined, as always —
+        an image patch must not quietly change how text results concatenate."""
+        messages = [self._result([TextContent(text="hello"), TextContent(text="world")])]
+        result = self.provider._convert_messages_to_openai(messages)
+
+        assert result == [{"role": "tool", "tool_call_id": "c1", "content": "hello world"}]
+
+    def test_an_image_travels_in_a_user_turn_by_default(self):
+        """OpenAI's schema says a tool message's content is a string, so the
+        portable shape is a text result followed by a user turn — the same
+        conservative branch google.py takes, on the same flag."""
+        messages = [
+            self._result(
+                [
+                    TextContent(text="[image: a.png]"),
+                    ImageContent(data="AAA", mime_type="image/png"),
+                ]
+            )
+        ]
+        result = self.provider._convert_messages_to_openai(messages)
+
+        assert len(result) == 2
+        assert result[0] == {"role": "tool", "tool_call_id": "c1", "content": "[image: a.png]"}
+        assert result[1]["role"] == "user"
+        assert result[1]["content"][1]["image_url"]["url"] == "data:image/png;base64,AAA"
+
+    def test_an_image_nests_when_the_model_says_it_can(self):
+        """Measured against llama.cpp (Qwen3-VL + mmproj) 2026-08-28: a tool
+        message whose content is a block list is accepted and described."""
+        messages = [
+            self._result(
+                [
+                    TextContent(text="[image: a.png]"),
+                    ImageContent(data="AAA", mime_type="image/png"),
+                ]
+            )
+        ]
+        result = self.provider._convert_messages_to_openai(messages, multimodal_tool_results=True)
+
+        assert len(result) == 1
+        assert result[0]["role"] == "tool"
+        assert result[0]["content"][0] == {"type": "text", "text": "[image: a.png]"}
+        assert result[0]["content"][1]["image_url"]["url"] == "data:image/png;base64,AAA"
+
+    def test_an_image_with_no_text_still_says_something_in_the_tool_slot(self):
+        """A tool message with empty content is rejected by some servers, and
+        says nothing to the model on the rest."""
+        messages = [self._result([ImageContent(data="AAA", mime_type="image/png")])]
+        result = self.provider._convert_messages_to_openai(messages)
+
+        assert result[0]["content"] == "(see attached image)"
+
+    def test_the_persisted_dict_path_carries_images_too(self):
+        """The path that actually runs. ``ToolBatchResult`` ships
+        ``model_dump()``ed messages, so a tool result usually reaches the
+        provider as a dict rather than as the pydantic model — a fix that only
+        handled ``ToolResultMessage`` would look right and change nothing."""
+        messages = [
+            {
+                "role": "toolResult",
+                "tool_call_id": "c1",
+                "tool_name": "read",
+                "content": [
+                    {"type": "text", "text": "[image: a.png]"},
+                    {"type": "image", "mime_type": "image/png", "data": "AAA"},
+                ],
+            }
+        ]
+        result = self.provider._convert_messages_to_openai(messages)
+
+        assert len(result) == 2
+        assert result[1]["content"][1]["image_url"]["url"] == "data:image/png;base64,AAA"
+
+
+class TestToolResultImageOrdering:
+    """Where the image turns go when ONE assistant turn made SEVERAL calls.
+
+    Two rules, and they pull against each other:
+
+    1. A ``user`` message must not land between two ``tool`` messages answering
+       the same assistant's ``tool_calls``. OpenAI's schema says a ``tool``
+       message responds to a preceding message with ``tool_calls``.
+    2. Each image needs a user turn OF ITS OWN. MEASURED 2026-08-28 against
+       llama.cpp (b1637-9c7a7553, Qwen3.8-27B, vision on) with a red circle "7"
+       and a blue square "K": both images in one turn produced
+       "alpha.png: red circle K | beta.png: NO IMAGE", 3/3. One image per turn
+       was correct 3/3, and again with three images.
+
+    pi satisfies (1) and breaks (2) — it batches every image of a run into one
+    user turn (``openai-completions.ts:1380``). Both are satisfied by holding the
+    images until the run ends, then emitting one turn each.
+    """
+
+    def setup_method(self):
+        self.provider = OpenAICompletionsProvider(api_key="sk-test")
+
+    @staticmethod
+    def _result(call_id, name, data=None):
+        content = [TextContent(text=f"[image: {name}]")]
+        if data:
+            content.append(ImageContent(data=data, mime_type="image/png"))
+        return ToolResultMessage(
+            tool_call_id=call_id, tool_name="read", content=content, timestamp=0
+        )
+
+    def test_the_tool_result_run_is_never_split_by_an_image_turn(self):
+        """Rule 1. The failing input is a parallel call whose FIRST result has an
+        image and whose second does not — the image turn used to land between
+        the two tool messages."""
+        messages = [
+            self._result("c1", "alpha.png", "AAA"),
+            self._result("c2", "beta.png"),
+        ]
+        result = self.provider._convert_messages_to_openai(messages)
+
+        assert [m["role"] for m in result] == ["tool", "tool", "user"]
+        assert [m.get("tool_call_id") for m in result[:2]] == ["c1", "c2"]
+
+    def test_each_image_gets_a_turn_of_its_own(self):
+        """Rule 2. Two images in a run means two user turns, not one turn
+        holding two images — the shape measured wrong 3/3."""
+        messages = [
+            self._result("c1", "alpha.png", "AAA"),
+            self._result("c2", "beta.png", "BBB"),
+        ]
+        result = self.provider._convert_messages_to_openai(messages)
+
+        assert [m["role"] for m in result] == ["tool", "tool", "user", "user"]
+        urls = [m["content"][1]["image_url"]["url"] for m in result[2:]]
+        assert urls == ["data:image/png;base64,AAA", "data:image/png;base64,BBB"]
+        for turn in result[2:]:
+            assert sum(1 for b in turn["content"] if b["type"] == "image_url") == 1
+
+    def test_the_images_land_before_whatever_follows_the_run(self):
+        """A run is ended by the next non-tool-result message, and the image
+        turns belong to the run — not after the message that ended it."""
+        messages = [
+            self._result("c1", "alpha.png", "AAA"),
+            UserMessage(content=[TextContent(text="and now this")], timestamp=0),
+        ]
+        result = self.provider._convert_messages_to_openai(messages)
+
+        assert [m["role"] for m in result] == ["tool", "user", "user"]
+        assert result[1]["content"][1]["image_url"]["url"] == "data:image/png;base64,AAA"
+        assert result[2]["content"][0]["text"] == "and now this"
+
+    def test_the_persisted_dict_path_keeps_the_run_intact_too(self):
+        """The path that actually runs, since a reloaded session arrives as
+        dicts. A fix that only handled the pydantic messages would look right."""
+        messages = [
+            {
+                "role": "toolResult",
+                "tool_call_id": "c1",
+                "content": [
+                    {"type": "text", "text": "[image: alpha.png]"},
+                    {"type": "image", "mime_type": "image/png", "data": "AAA"},
+                ],
+            },
+            {"role": "toolResult", "tool_call_id": "c2", "content": "plain text"},
+        ]
+        result = self.provider._convert_messages_to_openai(messages)
+
+        assert [m["role"] for m in result] == ["tool", "tool", "user"]
+        assert result[1]["content"] == "plain text"
+
+    def test_nesting_needs_no_image_turns_at_all(self):
+        """With ``multimodal_tool_results`` the image rides in the tool message,
+        so the run question does not arise."""
+        messages = [
+            self._result("c1", "alpha.png", "AAA"),
+            self._result("c2", "beta.png", "BBB"),
+        ]
+        result = self.provider._convert_messages_to_openai(
+            messages, multimodal_tool_results=True
+        )
+
+        assert [m["role"] for m in result] == ["tool", "tool"]
+
+
+class TestToolResultContentSplit:
+    """``split_tool_result_content`` must not invent text it cannot read.
+
+    The old dict path answered ``""`` for a content it did not understand and
+    the first version of this change answered with the DICT'S KEYS — a tool
+    result reading ``content: "type text"`` reaches the model looking like a
+    real answer. Fail Early: an unreadable block is an error.
+    """
+
+    def test_a_bare_string_is_one_text_part(self):
+        assert split_tool_result_content("hi") == (["hi"], [])
+
+    def test_none_is_empty_rather_than_an_error(self):
+        """A result with no content is ordinary; a result with a WRONG content
+        is not."""
+        assert split_tool_result_content(None) == ([], [])
+
+    def test_pydantic_and_dict_blocks_read_the_same(self):
+        pydantic = [TextContent(text="t"), ImageContent(data="AAA", mime_type="image/png")]
+        raw = [
+            {"type": "text", "text": "t"},
+            {"type": "image", "mime_type": "image/png", "data": "AAA"},
+        ]
+        assert split_tool_result_content(pydantic) == split_tool_result_content(raw)
+        assert split_tool_result_content(raw) == (["t"], [("image/png", "AAA")])
+
+    def test_a_content_that_is_not_a_block_list_raises(self):
+        """A dict content used to be iterated as a sequence of its KEYS."""
+        with pytest.raises(TypeError, match="must be a string or a list"):
+            split_tool_result_content({"type": "text", "text": "hi"})
+
+    def test_an_unreadable_block_raises(self):
+        with pytest.raises(TypeError, match="unreadable tool result block"):
+            split_tool_result_content([{"type": "video", "data": "AAA"}])
 
 
 # ═══════════════════════════════════════════════════════════════════════════

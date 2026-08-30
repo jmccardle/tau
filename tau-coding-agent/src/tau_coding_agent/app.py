@@ -6,6 +6,7 @@ Clean, simple, fast. Built with Textual.
 
 from rich import box
 from rich.console import RenderableType
+from rich.markup import escape
 from rich.style import Style
 from rich.table import Table
 from rich.text import Text
@@ -36,7 +37,7 @@ from textual.widgets.markdown import MarkdownStream
 from textual.widgets.tree import TreeNode as WidgetTreeNode
 from textual.binding import Binding
 from textual.reactive import reactive
-from textual import events, work
+from textual import events, on, work
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.timer import Timer
@@ -49,11 +50,12 @@ import os
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Literal, Optional
+from typing import Any, Callable, ClassVar, Literal, Optional, Sequence
 from uuid import uuid4
 
 from tau_coding_agent.backends import (
     DEFAULT_LANE,
+    DEFAULT_MAX_TOKENS,
     Backend,
     RenderRouter,
     create_backend,
@@ -73,7 +75,7 @@ from tau_coding_agent.headless import resolve_extensions_config
 # store either.
 from tau_agent_core.agent_session_runtime import AgentSessionRuntime
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, SessionInfo
-from tau_coding_agent.config import TAU_DIR, bootstrap_config, update_config
+from tau_coding_agent.config import TAU_DIR, ConfigError, bootstrap_config, update_config
 from tau_coding_agent.session_picker import SessionPickerModal
 from tau_coding_agent.session_store import (
     subscribe_session_events,
@@ -117,11 +119,30 @@ from tau_agent_core.submission import Submission
 # ``AgentSession.submit``; performing a frontend-shaped outcome (a modal, a panel, a
 # transcript re-render) is this app's, and failing to be able to is an exception.
 from tau_agent_core.commands import (
+    CommandCompletions,
     CommandOutcome,
     UnsupportedCommandError,
+    complete_command,
     resolve_command,
     unsupported_command_message,
 )
+
+# ``@file`` attachments (docs/FILE-ATTACHMENTS.md). Same split as commands: the
+# core decides what a ``@word`` is and what block it becomes; this app draws the
+# bar, cycles the Tab candidates, and puts the result on the submission.
+from tau_agent_core.attachments import (
+    DEFAULT_INLINE_LIMIT,
+    SENDABLE_KINDS,
+    Attachment,
+    AttachmentCompletions,
+    complete_attachment,
+    elide_attachment_bodies,
+    human_size,
+    remove_attachment,
+    render_attachments,
+    scan_attachments,
+)
+from tau_agent_core.tools.image_resize import DEFAULT_MAX_IMAGE_DIMENSION
 
 # Collapsible chat components. MessageBox (below) is the universal per-message
 # host; these are the children it composes — one reasoning region and N tool
@@ -266,7 +287,7 @@ class LaneStrip(Static):
     Same idiom as that bar, though — an insertion-ordered dict of live entries,
     joined by a thin separator, hidden (``display = False``) at zero entries so it
     costs no rows on an ordinary session. Only foreign lanes are listed: the
-    frontend's own typed turn already has the input disabled and the header
+    frontend's own typed turn already has its exchange on screen and the header
     subtitle to say it is working, and a strip that lit up for every prompt would
     be the noise the badge rules exist to avoid.
     """
@@ -325,6 +346,330 @@ class LaneStrip(Static):
         summary = self.summary
         self.display = bool(summary)
         self.update(summary)
+
+
+class PendingInput(Static):
+    """The lines typed during a turn that have not reached the model yet.
+
+    Reference: docs/TUI-STEERING.md §3.
+
+    It sits between the transcript and the input box, and it is the ONLY place a
+    steering message is visible between the Enter that wrote it and the boundary
+    that delivers it. Without it the input box would accept text during a turn
+    and appear to swallow it: the transcript cannot show the line yet, because
+    the model has not been given it yet.
+
+    Hidden (``display = False``) with nothing pending, like :class:`LaneStrip`,
+    so an ordinary turn costs no rows. It holds no state of its own — the app
+    owns the buffer and calls :meth:`show` — because the buffer has to survive
+    the reclaim gesture, which empties the widget and refills the editor.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("", id="pending-input")
+        self._text = ""
+        self.display = False
+
+    @property
+    def text(self) -> str:
+        """The line this widget currently shows — ``""`` when it is hidden.
+
+        Same idiom as :attr:`LaneStrip.summary`: the widget's own text is set
+        from here, so what it says and what it was told cannot drift, and a
+        caller asking what is on screen does not have to reach into Textual's
+        rendering internals to find out.
+        """
+        return self._text
+
+    def show(self, lines: list[str], note: str) -> None:
+        """Display ``lines`` under ``note``, or hide the widget when there are none.
+
+        Args:
+            lines: The pending messages, oldest first — the app's buffer verbatim.
+            note: When these will be delivered, in words. The app writes it from
+                the steering strategy in force, because "after the tool it is
+                running" and "when this turn ends" are the two different promises
+                the two strategies make, and a widget that named neither would
+                leave the reader unable to tell which one they are waiting for.
+        """
+        self.display = bool(lines)
+        if not lines:
+            self._text = ""
+            self.update("")
+            return
+        body = "\n".join(f"› {line}" for line in lines)
+        self._text = f"{note}  ·  ↑ to edit\n{body}"
+        self.update(self._text)
+
+
+def attachment_row_text(attachment: Attachment) -> str:
+    """The one line :class:`AttachmentRow` shows for one attached file.
+
+    Three shapes, because there are three things that can happen to a ``@file``
+    and a bar that showed only the name would hide the two that matter: the image
+    that will cost a vision call, and the file whose CONTENT is not being sent.
+
+    Args:
+        attachment: A sendable attachment (:data:`~tau_agent_core.attachments.SENDABLE_KINDS`).
+
+    Returns:
+        Rich markup for the row, starting with the ``✕`` that removes it.
+    """
+    name = escape(attachment.token)
+    if attachment.kind == "image":
+        detail = f"image · {human_size(attachment.size)}"
+    elif attachment.kind == "reference":
+        detail = f"path only · {escape(attachment.note)}"
+    else:
+        detail = human_size(attachment.size)
+    return f"[b]✕[/b]  {name}  [dim]{detail}[/dim]"
+
+
+class AttachmentRow(Static):
+    """One attached file in the bar above the editor.
+
+    Reference: docs/FILE-ATTACHMENTS.md §4.
+
+    Clicking it removes the attachment, which means deleting the ``@…`` word from
+    the editor — the word IS the attachment, so there is no second place for the
+    two to disagree. The whole row is the click target rather than the ``✕``
+    glyph alone: a one-line row inside a bordered bar leaves a two-cell target
+    that is easy to miss, and the cost of a mis-click is retyping one path.
+    """
+
+    def __init__(self, attachment: Attachment) -> None:
+        self._text = attachment_row_text(attachment)
+        super().__init__(self._text, classes="attachment-row")
+        self.attachment = attachment
+
+    @property
+    def text(self) -> str:
+        """The markup this row shows.
+
+        Same idiom as :attr:`PendingInput.text`: the widget's own content is set
+        from here, so a caller asking what is on screen does not have to reach
+        into Textual's rendering internals.
+        """
+        return self._text
+
+    def on_click(self, event: events.Click) -> None:
+        """Ask the app to remove this attachment from the editor's text."""
+        event.stop()
+        self.post_message(AttachmentBar.Remove(self.attachment))
+
+
+class AttachmentBar(Vertical):
+    """The files the draft in the editor will attach, and how to drop one.
+
+    Reference: docs/FILE-ATTACHMENTS.md §4.
+
+    It sits between :class:`PendingInput` and the editor, and it holds no state
+    the editor does not: :meth:`show` is called from the editor's ``Changed``
+    handler with whatever :func:`~tau_agent_core.attachments.scan_attachments`
+    found, so the bar is a VIEW of the draft rather than a second buffer that
+    could drift from it. That is what makes removal simple — it edits the text,
+    the text change redraws the bar.
+
+    Hidden (``display = False``) with nothing attached, like :class:`LaneStrip`
+    and :class:`PendingInput`, so an ordinary line costs no rows.
+
+    Unresolved references are deliberately NOT shown. A ``@word`` that names no
+    file is ordinary prose on its way to the model — the same answer an
+    unrecognised ``/…`` gets — and the popup under the editor is where that is
+    said, while the cursor is still in the word.
+    """
+
+    class Remove(Message):
+        """A row was clicked. The app deletes the reference from the editor."""
+
+        def __init__(self, attachment: Attachment) -> None:
+            super().__init__()
+            self.attachment = attachment
+
+    def __init__(self) -> None:
+        super().__init__(id="attachment-bar")
+        self._attachments: tuple[Attachment, ...] = ()
+        self.display = False
+
+    @property
+    def attachments(self) -> tuple[Attachment, ...]:
+        """What the bar is currently showing, in the order it shows them."""
+        return self._attachments
+
+    def show(self, attachments: Sequence[Attachment]) -> None:
+        """Redraw the bar from a scan of the editor's text.
+
+        Args:
+            attachments: Every reference the scan found, unresolved ones
+                included. This method does the filtering, so a caller cannot
+                accidentally show a row for a word that attaches nothing.
+        """
+        sendable = tuple(a for a in attachments if a.kind in SENDABLE_KINDS)
+        if sendable == self._attachments:
+            # Called on every keystroke. Re-mounting identical rows would flicker
+            # the bar under the cursor for no change.
+            return
+        self._attachments = sendable
+        self.remove_children()
+        self.display = bool(sendable)
+        if sendable:
+            self.mount_all([AttachmentRow(a) for a in sendable])
+
+
+class CommandPopup(Static):
+    """The slash commands — or the file paths — a half-typed line could become.
+
+    Reference: docs/SLASH-COMMANDS.md, docs/FILE-ATTACHMENTS.md §3.
+
+    It serves two vocabularies through two methods, :meth:`show` and
+    :meth:`show_files`, and the name is historical: it was the command popup
+    before ``@file`` existed. Only one vocabulary can apply at a time, so one
+    widget is one row of chrome rather than two.
+
+    It sits under the editor and answers one question the editor could not: is
+    this ``/…`` a command τ knows, or ordinary text on its way to the model? An
+    unknown slash resolves to ``None`` and is sent as a prompt
+    (:func:`~tau_agent_core.commands.resolve_command`), which is the right
+    behaviour — refusing every unrecognised slash would break pasting a file path
+    — but it is silent, and a user who mistypes ``/exntesions`` finds out by
+    reading the model's guess at what they meant. This widget says so before the
+    Enter key.
+
+    Hidden (``display = False``) with nothing to say, like :class:`LaneStrip` and
+    :class:`PendingInput`, so an ordinary line costs no rows. It holds no state:
+    :class:`ChatInput` owns the Tab cycle, because the cycle has to survive the
+    text edits that redraw this.
+    """
+
+    #: Rows shown at once. The window scrolls to keep the selected row inside it
+    #: rather than the widget scrolling, because a ``Static`` has no notion of a
+    #: selected line to scroll to and a Tab cycle that walked off the bottom of a
+    #: fixed viewport would leave the reader watching a list that never moves.
+    MAX_ROWS = 8
+
+    def __init__(self) -> None:
+        super().__init__("", id="command-popup")
+        self._text = ""
+        self.display = False
+
+    @property
+    def text(self) -> str:
+        """What this widget currently shows — ``""`` when it is hidden.
+
+        Same idiom as :attr:`LaneStrip.summary` and :attr:`PendingInput.text`: the
+        widget's own content is set from here, so what it says and what it was
+        told cannot drift, and a test does not have to reach into Textual's
+        rendering internals to read it.
+        """
+        return self._text
+
+    def show(self, completions: CommandCompletions | None, selected: int | None = None) -> None:
+        """Display ``completions``, or hide the widget when there are none.
+
+        Args:
+            completions: What :func:`~tau_agent_core.commands.complete_command`
+                said about the editor's current text. ``None`` hides the widget.
+                A value with an EMPTY ``matches`` does not hide it — that is the
+                unknown-command warning, and it is the case this widget exists
+                for.
+            selected: Index into ``completions.matches`` of the candidate a Tab
+                press has inserted, or ``None`` when no cycle is running. Marks
+                the row and decides which slice of a long list is visible.
+        """
+        if completions is None:
+            self.display = False
+            self._text = ""
+            self.update("")
+            return
+
+        self.display = True
+        self.set_class(not completions.matches, "command-popup-unknown")
+        if not completions.matches:
+            shown = escape(f"/{completions.token}".replace("\n", "↵"))
+            self._text = f"{shown} is not a command — this line goes to the model as text"
+            self.update(self._text)
+            return
+
+        self._show_rows(
+            [
+                (f"/{escape(match.name)}", escape(match.description))
+                for match in completions.matches
+            ],
+            selected,
+        )
+
+    def show_files(
+        self, completions: AttachmentCompletions | None, selected: int | None = None
+    ) -> None:
+        """Display path candidates for a half-typed ``@…`` (docs/FILE-ATTACHMENTS.md §3).
+
+        The same widget as the command list, because only one of the two can be
+        relevant at a time: the cursor is either inside a ``@…`` or it is not, and
+        :meth:`Parley._refresh_command_popup` asks in that order. Two popups would
+        be two rows of chrome to answer one question.
+
+        Args:
+            completions: What :func:`~tau_agent_core.attachments.complete_attachment`
+                said. ``None`` hides the widget. An EMPTY ``matches`` does not —
+                that is the warning that this ``@…`` names no file, which is the
+                same service this widget performs for an unknown ``/…``.
+            selected: Index into ``completions.matches`` of the candidate a Tab
+                press has inserted, or ``None`` when no cycle is running.
+        """
+        if completions is None:
+            self.display = False
+            self._text = ""
+            self.update("")
+            return
+
+        self.display = True
+        self.set_class(not completions.matches, "command-popup-unknown")
+        if not completions.matches:
+            shown = escape(f"@{completions.token}".replace("\n", "↵"))
+            self._text = f"{shown} matches no file — this word goes to the model as text"
+            self.update(self._text)
+            return
+
+        rows = [(f"@{escape(match.name)}", escape(match.detail)) for match in completions.matches]
+        hidden = completions.total - len(completions.matches)
+        self._show_rows(rows, selected, extra_hidden=hidden)
+
+    def _show_rows(
+        self,
+        rows: list[tuple[str, str]],
+        selected: int | None,
+        extra_hidden: int = 0,
+    ) -> None:
+        """Render ``(label, detail)`` rows, windowed around ``selected``.
+
+        Shared by both vocabularies so the marker, the window and the "… N more"
+        line cannot drift between them.
+
+        Args:
+            rows: The candidates, already escaped and already prefixed with the
+                sigil their vocabulary uses.
+            selected: Which row a running Tab cycle has inserted, or ``None``.
+            extra_hidden: Candidates the caller did not pass at all (a listing cap
+                upstream), added to the count of those scrolled out of the window.
+        """
+        start = 0
+        if selected is not None and selected >= self.MAX_ROWS:
+            start = selected - self.MAX_ROWS + 1
+        window = rows[start : start + self.MAX_ROWS]
+
+        lines = []
+        for offset, (label, detail) in enumerate(window):
+            marker = "▸" if selected == start + offset else " "
+            row = f"{marker} [b]{label}[/b]"
+            if detail:
+                row += f"  {detail}"
+            lines.append(row)
+        hidden = len(rows) - start - len(window) + extra_hidden
+        if hidden:
+            lines.append(f"  … {hidden} more")
+
+        self._text = "\n".join(lines)
+        self.update(self._text)
 
 
 def render_panel_body(body: dict[str, Any]) -> RenderableType:
@@ -2453,8 +2798,10 @@ class RollbackPromptModal(ModalScreen[Optional[str]]):
     "stop, un-path what that turn did, and run THIS instead", and the core has no
     way to express the first two halves without the third: ``submit()`` needs the
     replacement text, and it must be submitted while the doomed turn still holds
-    the turn slot. So the affordance has to ask for text, and the input widget is
-    disabled for the duration of a turn, which leaves a modal.
+    the turn slot. So the affordance has to ask for text. It asks in a modal
+    rather than in the chat editor: since docs/TUI-STEERING.md that editor is
+    usable during a turn and may hold a half-typed steering message, and taking
+    it over for the rollback prompt would destroy what is in it.
 
     Prefilled with the aborted turn's own prompt, because the two things a person
     wants here are "run that again from before it went wrong" (accept the prefill)
@@ -2823,6 +3170,59 @@ ROLE_LABELS: dict[str, str] = {
 #: a source nobody has heard of is still visually foreign; the box's border TITLE
 #: names which source it actually was.
 LANE_FOREIGN_CLASS = "lane-foreign"
+
+#: config.json key naming when text typed during a turn is delivered
+#: (docs/TUI-STEERING.md §2).
+STEERING_CONFIG_KEY = "steering_strategy"
+
+#: The values it accepts. Both are
+#: :data:`~tau_agent_core.submission.MultitaskStrategy` members, spelled exactly
+#: as the core spells them, because this setting IS the field the app puts on the
+#: submission — a second vocabulary here would be one more thing to keep in step.
+STEERING_STRATEGIES = ("steer", "enqueue")
+
+#: pi's binding for Enter during a turn (``interactive-mode.ts:3129``,
+#: ``streamingBehavior: "steer"``), and τ's default for the same reason: the
+#: point of typing mid-turn is to change what the agent is doing, and a message
+#: that waits for the turn to end is a follow-up rather than steering.
+DEFAULT_STEERING_STRATEGY = "steer"
+
+#: config.json key naming what the Enter key does in the chat editor
+#: (docs/ENTER-KEY.md).
+ENTER_KEY_CONFIG_KEY = "enter_key"
+
+#: The values it accepts, named for what Enter itself does:
+#:
+#: - ``"newline"`` — Enter inserts a line break, Ctrl+J sends.
+#: - ``"submit"`` — Enter sends, Shift+Enter and Ctrl+J insert a line break.
+#:   This is pi's pair (``tui/src/keybindings.ts:143``: ``tui.input.submit`` is
+#:   ``enter``, ``tui.input.newLine`` is ``["shift+enter", "ctrl+j"]``) and the
+#:   one every other terminal coding agent uses.
+ENTER_KEY_MODES = ("newline", "submit")
+
+#: τ's default, and a deliberate divergence from pi.
+#:
+#: A prompt is usually several lines, and Enter is the key a text editor already
+#: spends on a line break. The cost of the other choice is not symmetric: sending
+#: half a prompt is unrecoverable, while an unwanted line break costs a Backspace.
+#: The value of this setting is that the divergence is now a choice rather than
+#: an assumption — a user who moves between τ and another agent all day can spell
+#: ``"submit"`` and stop losing the coin flip.
+DEFAULT_ENTER_KEY_MODE = "newline"
+
+#: The key that inserts a line break while Enter sends, when the terminal can
+#: report it. It reaches Textual as ``shift+enter`` ONLY under the kitty keyboard
+#: protocol, which Textual requests at startup
+#: (``textual/drivers/linux_driver.py``, flags 1|8|16) and which a terminal is
+#: free to ignore. Legacy encoding has no room for a modifier on Enter: the byte
+#: is CR either way. Ctrl+J is therefore kept as the second newline key in this
+#: mode and is the only one that works everywhere — it is a distinct byte (LF)
+#: rather than a modifier, which is exactly why it survives.
+NEWLINE_KEYS_IN_SUBMIT_MODE = ("shift+enter", "ctrl+j")
+
+#: config.json key bounding how large a text file may be before ``@file`` sends a
+#: pointer to it instead of its contents (docs/FILE-ATTACHMENTS.md §2). In bytes.
+ATTACHMENT_LIMIT_CONFIG_KEY = "attachment_inline_limit"
 
 
 def format_tool_call_body(name: str, arguments: object) -> str:
@@ -3210,6 +3610,16 @@ class ChatSelected(Message):
         self.chat_ref = chat_ref
 
 
+class ReclaimPending(Message):
+    """alt+up: put the pending steering buffer back in the editor.
+
+    Reference: docs/TUI-STEERING.md §4. A message rather than a direct call
+    because this variant of the gesture works with a draft in the box, and
+    combining the two texts is the app's job — the editor knows what it holds,
+    the app knows what is pending, and only one of them can be told to do it.
+    """
+
+
 class ChatSidebar(Container):
     """Sidebar showing this directory's recent sessions, grouped by date."""
 
@@ -3592,6 +4002,52 @@ class MessageList(VerticalScroll):
     implementation was kept in step by hand.
     """
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # Whether new content should pull the view down with it. See
+        # :meth:`scroll_to_tail`. True at construction because an empty list is
+        # at its own tail, and because that is the reading position every
+        # transcript starts in.
+        self._follow_tail: bool = True
+
+    # -- following the tail, and letting go of it ---------------------------
+
+    def scroll_to_tail(self) -> None:
+        """Show the newest content, but ONLY if the reader is already there.
+
+        Every renderer in this class and in :class:`ChatDisplay` calls this
+        instead of ``scroll_end``. The difference is the whole of "you can read
+        while it writes": a turn that streams for ninety seconds used to yank
+        the view back to the bottom on every delta, so scrolling up to re-read a
+        tool result was impossible until the turn ended.
+
+        :attr:`_follow_tail` is maintained by :meth:`watch_scroll_y` rather than
+        being decided here, because "is the reader at the bottom" has to be
+        sampled when the READER moves, not when content arrives: content arriving
+        while detached grows ``max_scroll_y`` without moving ``scroll_y``, which
+        would make a check at this moment answer "no" forever after the first
+        delta, and a check after the mount answer "yes" every time.
+        """
+        if self._follow_tail:
+            self.scroll_end(animate=False)
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        """Re-decide whether to follow the tail, on every vertical scroll.
+
+        Textual's own watcher, extended. It fires for a scroll from any cause —
+        wheel, keys, scrollbar drag, and this class's own
+        :meth:`scroll_to_tail` — and the rule is the same for all of them:
+        following means the view is at the bottom right now.
+
+        So scrolling up releases the tail on the next delta, and scrolling back
+        down re-attaches it, with no separate gesture to learn. Textual's own
+        ``anchor()`` implements almost this, but its release is wired into
+        ``scroll_to``'s ``release_anchor`` argument rather than into the
+        position, so this class's own ``scroll_end`` calls would release it.
+        """
+        super().watch_scroll_y(old_value, new_value)
+        self._follow_tail = self.is_vertical_scroll_end
+
     def add_message(self, role: str, content: str, subtitle: str = "", *, source: ContentSource):
         """Add a finished (non-streaming) message box to the display.
 
@@ -3601,7 +4057,7 @@ class MessageList(VerticalScroll):
         """
         box = MessageBox(role, content, subtitle, source=source)
         self.mount(box)
-        self.scroll_end(animate=False)
+        self.scroll_to_tail()
         return box
 
     def add_persisted_message(self, msg: dict) -> list[MessageBox]:
@@ -3650,6 +4106,12 @@ class MessageList(VerticalScroll):
 
         content = msg.get("content", "")
         if isinstance(content, str):
+            # Same display fold a live user bubble gets, so a reloaded chat and
+            # the chat it was reloaded from look alike (docs/FILE-ATTACHMENTS.md
+            # §6). Only a user turn can hold an inlined attachment; an assistant
+            # turn's markdown is left exactly as the model wrote it.
+            if role == "user":
+                content = elide_attachment_bodies(content)
             return [self.add_message(role, content, source=text_source)]
         if isinstance(content, list):
             # Assistant turns interleave text and tool calls. Accumulate text
@@ -3662,7 +4124,17 @@ class MessageList(VerticalScroll):
                     continue
                 btype = block.get("type")
                 if btype == "text":
-                    text_buf.append(block.get("text", ""))
+                    text = block.get("text", "")
+                    text_buf.append(elide_attachment_bodies(text) if role == "user" else text)
+                elif btype == "image":
+                    # A terminal cannot show the pixels, and this branch used to
+                    # skip the block entirely — a user turn that was ONLY an image
+                    # reloaded as an empty box. One line naming it is the honest
+                    # minimum; the ``<attachment>`` marker in the same message
+                    # says which file it came from.
+                    encoded = block.get("data", "")
+                    size = human_size(len(encoded) * 3 // 4)
+                    text_buf.append(f"[{block.get('mime_type', 'image')}, {size}]")
                 elif btype == "toolCall":
                     if text_buf:
                         boxes.append(self.add_message(role, "".join(text_buf), source=text_source))
@@ -4140,7 +4612,7 @@ class ChatDisplay(MessageList):
         self._lanes[lane] = state
         await self.mount(exchange)
         self._sync_live_timer()
-        self.scroll_end(animate=False)
+        self.scroll_to_tail()
 
     async def handle_stream_event(self, event: dict) -> None:
         """Render one normalized backend lifecycle event in arrival order.
@@ -4168,6 +4640,8 @@ class ChatDisplay(MessageList):
             await self._on_tool_call(state, event)
         elif kind == "tool_result":
             self._on_tool_result(state, event)
+        elif kind == "steer_message":
+            await self._on_steer_message(state, event.get("text", ""))
         elif kind == "completion_end":
             # A completion boundary: what was estimated is now measured, and
             # nothing is in flight until the next delta. Reasoning and answer
@@ -4221,7 +4695,7 @@ class ChatDisplay(MessageList):
         await box.finish_stream()
         if state.active_text:
             box.update_content(state.active_text)
-        self.scroll_end(animate=False)
+        self.scroll_to_tail()
 
     async def _collapse_active_reasoning(self, state: _LaneRender) -> None:
         """Freeze + collapse the lane's active reasoning once the answer begins.
@@ -4248,7 +4722,7 @@ class ChatDisplay(MessageList):
         state.active_text = ""
         state.active_reasoning = ""
         state.active_box = self._start_step(state)
-        self.scroll_end(animate=False)
+        self.scroll_to_tail()
 
     async def _on_reasoning_delta(self, state: _LaneRender, delta: str) -> None:
         if not delta or state.active_box is None:
@@ -4265,7 +4739,7 @@ class ChatDisplay(MessageList):
         # mount-time seed) and 299 Markdown.append() calls totalling 1,196
         # chars -- i.e. almost exactly the document size, not a multiple of it.
         await region.append_delta(delta)
-        self.scroll_end(animate=False)
+        self.scroll_to_tail()
 
     async def _on_text_delta(self, state: _LaneRender, delta: str) -> None:
         if not delta or state.active_box is None:
@@ -4274,7 +4748,32 @@ class ChatDisplay(MessageList):
         await self._collapse_active_reasoning(state)
         state.active_text += delta
         await state.active_box.append_content_delta(delta)
-        self.scroll_end(animate=False)
+        self.scroll_to_tail()
+
+    async def _on_steer_message(self, state: _LaneRender, text: str) -> None:
+        """Show a steering message the running turn has just been given.
+
+        Reference: docs/TUI-STEERING.md §5. The core weaves it into the context
+        and the log between one tool result and the next call to the model
+        (``AgentLoop._deliver_steer``), so the transcript has to show it in the
+        same place — a user line that appeared only after a reload would make the
+        model's next answer read as a non-sequitur.
+
+        It mounts as a step INSIDE the open exchange, in arrival order, rather
+        than as a top-level bubble: this is a user turn that happened inside
+        somebody else's exchange, and hoisting it out would put it above content
+        that preceded it.
+        """
+        await self._flush(state)
+        await self._collapse_active_reasoning(state)
+        box = MessageBox("user", text, source="verbatim")
+        if state.exchange is not None:
+            state.exchange.add_step(box)
+        else:
+            self.mount(box)
+        # The next completion opens its own step; this one is not it.
+        state.active_box = None
+        self.scroll_to_tail()
 
     async def _on_tool_call(self, state: _LaneRender, event: dict) -> None:
         # Preamble reasoning/text for this step is complete; show it, fold the
@@ -4287,7 +4786,7 @@ class ChatDisplay(MessageList):
         state.active_box.add_tool_call(event.get("name", ""), event.get("arguments", {}), tc_id)
         if tc_id:
             state.tool_routes[tc_id] = state.active_box
-        self.scroll_end(animate=False)
+        self.scroll_to_tail()
 
     def _on_tool_result(self, state: _LaneRender, event: dict) -> None:
         tc_id = event.get("id", "") or ""
@@ -4302,7 +4801,7 @@ class ChatDisplay(MessageList):
         if box is not None and box.set_tool_result(
             tc_id, result_text, is_error, blocked=blocked, blocked_by=blocked_by
         ):
-            self.scroll_end(animate=False)
+            self.scroll_to_tail()
             return
         # No matching tool box: the call always precedes its result in the live
         # loop, so this means an id we never saw a call for. Don't fabricate a
@@ -4355,7 +4854,7 @@ class ChatDisplay(MessageList):
             telemetry=telemetry,
             label=state.label,
         )
-        self.scroll_end(animate=False)
+        self.scroll_to_tail()
 
     @staticmethod
     def _exchange_subtitle(
@@ -4411,10 +4910,16 @@ class ChatDisplay(MessageList):
         """
         steps = list(exchange.query(MessageBox))
         tool_count = sum(len(b.tool_boxes) for b in steps)
+        # An exchange's steps are the model's, except for a steering message
+        # woven into the middle of it (docs/TUI-STEERING.md §5), which is a USER
+        # box. Only an assistant step can be the answer: promoting a user box
+        # would render the person's own words as the model's reply, which is what
+        # happens whenever a steer is the last thing to arrive in a turn.
+        answers = [b for b in steps if b.role == "assistant"]
         # The terminal turn is the no-tool-call answer; pull it out so it stays
         # visible. If the last step still has tools (e.g. max_turns hit mid-
         # tool), there is no clean final answer — leave everything collapsed.
-        final = steps[-1] if steps and not steps[-1].tool_boxes else None
+        final = answers[-1] if answers and not answers[-1].tool_boxes else None
         # An entirely empty terminal step (no text, no reasoning) is not a real
         # answer — don't promote a blank box (Fail-Early: render nothing, not a
         # placeholder).
@@ -4425,11 +4930,16 @@ class ChatDisplay(MessageList):
         if final is not None:
             promoted = await self._promote_answer(final, after=exchange, label=label)
 
-        if tool_count == 0:
+        if tool_count == 0 and len(answers) == len(steps):
             # Nothing worth grouping — drop the wrapper entirely (this also
             # removes the original `final` box it still contains). A trivial
             # span has no summary line, so the (real) token + duration would be
             # lost — stamp them on the answer's subtitle instead of hiding them.
+            #
+            # An exchange holding a steering message is never trivial, whatever
+            # its tool count: unwrapping destroys every box it contains, and only
+            # the promoted answer survives that. The user's own line would be the
+            # casualty.
             if promoted is not None:
                 promoted.set_subtitle(
                     self._exchange_subtitle(context, output, seconds, telemetry, label)
@@ -4571,7 +5081,11 @@ class ChatDisplay(MessageList):
                     i += 1
                 if span:
                     await self._reload_exchange(span)
-        self.scroll_end(animate=False)
+        # A reload REPLACES the transcript — resume, compact, rollback, a branch
+        # swap — so it re-attaches the tail rather than honouring a scroll
+        # position taken in a document that no longer exists.
+        self._follow_tail = True
+        self.scroll_to_tail()
 
     @property
     def elided_count(self) -> int:
@@ -4659,10 +5173,19 @@ class ChatDisplay(MessageList):
 
 
 class ChatInput(TextArea):
-    """Custom input with multiline support and history navigation."""
+    """Custom input with multiline support and history navigation.
+
+    Enter and Ctrl+J trade places according to :data:`ENTER_KEY_CONFIG_KEY`; see
+    :meth:`on_key` for why the swap lives in a key handler rather than in
+    ``BINDINGS``, and ``docs/ENTER-KEY.md`` for what the terminal can and cannot
+    tell us about a modifier on Enter.
+    """
 
     BINDINGS = [
-        Binding("ctrl+j", "submit", "Send", show=False),  # Ctrl+Enter
+        # Reached only in ``"newline"`` mode: in ``"submit"`` mode :meth:`on_key`
+        # consumes ctrl+j first, and a stopped key never reaches the binding
+        # check, which Textual runs at App level after the event has bubbled.
+        Binding("ctrl+j", "submit", "Send", show=False),
     ]
 
     def __init__(self, *args, **kwargs):
@@ -4670,6 +5193,224 @@ class ChatInput(TextArea):
         self.command_history: list[str] = []
         self.command_history_index = -1
         self.current_draft = ""
+        # Set by the app after mount (docs/TUI-STEERING.md §4). Returns the
+        # pending steering text and empties the app's buffer, or ``None`` when
+        # there is nothing pending. A callback rather than a reach into
+        # ``self.app`` so this widget stays constructible on its own, which is
+        # how most of its tests build it.
+        self.reclaim_pending: Callable[[], str | None] | None = None
+        # Set by the app after mount, same reasoning as ``reclaim_pending``, and
+        # a callback rather than a bool because the app derives it from config on
+        # every read — a config assigned after construction (every sandboxed app)
+        # is the one that decides.
+        self.enter_key_mode: Callable[[], str] | None = None
+        # Set by the app after mount, same reasoning again. Returns the candidate
+        # commands for the given text — the app supplies it because the extension
+        # half of the vocabulary lives on the backend, which this widget must not
+        # reach for. Unset, Tab keeps its Textual default of moving focus.
+        self.command_completions: Callable[[str], CommandCompletions | None] | None = None
+        # Set by the app after mount, same reasoning again: the candidate PATHS
+        # for the ``@…`` the cursor is inside (docs/FILE-ATTACHMENTS.md §3). It
+        # takes the text and the cursor offset, because which reference is being
+        # completed is a question about where the cursor is, not about the line.
+        # Unset, Tab falls through to the command vocabulary.
+        self.attachment_completions: Callable[[str, int], AttachmentCompletions | None] | None = (
+            None
+        )
+        # The Tab cycle (docs/SLASH-COMMANDS.md §3). ``_completion_inserted`` is
+        # the exact text the last Tab wrote; the cycle continues only while the
+        # editor still holds it, which is how ANY other keystroke ends the cycle
+        # without a key handler or a mode flag to clear.
+        self._completion_prefix = ""
+        self._completion_index: int | None = None
+        self._completion_inserted: str | None = None
+        # Where the cursor was when the running cycle started. Only the ``@…``
+        # vocabulary needs it — a command is always the first word — but it is
+        # part of the same cycle state, so it is stored and cleared with it.
+        self._completion_cursor: int = 0
+
+    @property
+    def completion_index(self) -> int | None:
+        """Which candidate the running Tab cycle has inserted, or ``None``.
+
+        Read by the app to mark the row in :class:`CommandPopup`. It is set BEFORE
+        the text is replaced, so the ``TextArea.Changed`` the replacement posts
+        already sees the new value.
+
+        Guarded by the same test :meth:`_complete` uses to decide whether a cycle
+        is still running, rather than by the raw field: the marker must vanish the
+        moment the user types a character, and typing does not run any code of
+        ours that could clear the field.
+        """
+        if self._completion_inserted is not None and self.text == self._completion_inserted:
+            return self._completion_index
+        return None
+
+    @property
+    def cursor_offset(self) -> int:
+        """The cursor's character offset into :attr:`text`.
+
+        ``TextArea`` counts in ``(row, column)``; the attachment vocabulary is
+        defined on the flat string, because a file reference is a word and words
+        do not know about rows. This is the translation between the two.
+
+        Computed from ``document.lines`` and ``document.newline`` rather than from
+        ``Document.get_index_from_location``, which is not on the ``DocumentBase``
+        the ``document`` property is typed as.
+        """
+        row, column = self.cursor_location
+        separator = len(self.document.newline)
+        lines = self.document.lines
+        return sum(len(line) + separator for line in lines[:row]) + column
+
+    def _location_of_offset(self, offset: int) -> tuple[int, int]:
+        """The ``(row, column)`` for a character offset into :attr:`text`.
+
+        The inverse of :attr:`cursor_offset`. An offset past the end of the text
+        clamps to the end, which is where a caller that computed it from a string
+        it just built would want the cursor anyway.
+        """
+        separator = len(self.document.newline)
+        remaining = offset
+        lines = self.document.lines
+        for row, line in enumerate(lines):
+            if remaining <= len(line):
+                return row, remaining
+            remaining -= len(line) + separator
+        last = max(len(lines) - 1, 0)
+        return last, len(lines[last]) if lines else 0
+
+    def _complete(self) -> bool:
+        """Insert the next candidate — a path if the cursor is in a ``@…``, else a
+        command. True if it did.
+
+        A press with a cycle already running advances to the next candidate and
+        wraps at the end; a press without one starts a cycle at the first. The
+        cycle is identified by the editor still holding exactly what the previous
+        press wrote — a user who typed a character since then gets a fresh cycle
+        from the new prefix, which is what they meant by typing it.
+
+        The two vocabularies are asked in the order the cursor decides
+        (docs/FILE-ATTACHMENTS.md §3), and they cannot both apply: a command is
+        the first word of the line, and a ``@…`` the cursor is inside is not it.
+        Asking the attachment side first is what makes ``/fork @notes.txt``
+        complete the path rather than re-completing the command.
+        """
+        cycling = self._completion_inserted is not None and self.text == self._completion_inserted
+        source = self._completion_prefix if cycling else self.text
+        cursor = self._completion_cursor if cycling else self.cursor_offset
+
+        if self._complete_attachment(source, cursor, cycling):
+            return True
+        return self._complete_command(source, cycling)
+
+    def _complete_attachment(self, source: str, cursor: int, cycling: bool) -> bool:
+        """Replace the ``@…`` the cursor is inside with the next candidate path.
+
+        Unlike a command, a reference can sit anywhere in the line, so this
+        replaces a SPAN rather than the whole text and leaves the cursor just
+        after what it inserted — the human is usually mid-sentence.
+
+        A directory is inserted without a trailing space, because the next thing
+        they want is to keep completing into it; a file gets one, like a command.
+
+        Args:
+            source: The text the cycle started from (the editor's current text
+                when no cycle is running).
+            cursor: The cursor offset within ``source``.
+            cycling: Whether a Tab cycle is already running.
+
+        Returns:
+            True when a candidate was inserted.
+        """
+        if self.attachment_completions is None:
+            return False
+        completions = self.attachment_completions(source, cursor)
+        if completions is None or not completions.matches:
+            return False
+
+        if cycling and self._completion_index is not None:
+            index = (self._completion_index + 1) % len(completions.matches)
+        else:
+            index = 0
+
+        match = completions.matches[index]
+        insert = f"@{match.name}" if match.is_dir else f"@{match.name} "
+        text = source[: completions.start] + insert + source[completions.end :]
+
+        self._completion_prefix = source
+        self._completion_cursor = cursor
+        self._completion_index = index
+        self._completion_inserted = text
+        self.text = text
+        self.move_cursor(self._location_of_offset(completions.start + len(insert)))
+
+        if len(completions.matches) == 1:
+            # Nothing to cycle through, so the next Tab means something else: with
+            # one candidate it is "go on from here", which for a directory is the
+            # only way to reach what is inside it. Ending the cycle makes that
+            # press re-scan from the text this one just wrote.
+            self._reset_completion()
+        return True
+
+    def _complete_command(self, source: str, cycling: bool) -> bool:
+        """Insert the next candidate command. True if it did.
+
+        The inserted text keeps its trailing space (pi's ``applyCompletion``, at
+        ``tui/src/autocomplete.ts:393``): a command taking arguments is then ready
+        for them, and one taking none resolves identically, because
+        :func:`~tau_agent_core.commands.parse_command` strips.
+
+        Args:
+            source: The text the cycle started from.
+            cycling: Whether a Tab cycle is already running.
+
+        Returns:
+            True when a candidate was inserted.
+        """
+        if self.command_completions is None:
+            return False
+
+        completions = self.command_completions(source)
+        if completions is None or not completions.matches:
+            # Nothing to insert. Tab is left alone so it keeps moving focus, which
+            # is what it did here before completion existed.
+            self._reset_completion()
+            return False
+
+        if cycling and self._completion_index is not None:
+            index = (self._completion_index + 1) % len(completions.matches)
+        else:
+            index = 0
+
+        inserted = f"/{completions.matches[index].name} "
+        self._completion_prefix = source
+        self._completion_index = index
+        self._completion_inserted = inserted
+        self.text = inserted
+        self.move_cursor(self.document.end)
+        return True
+
+    def _reset_completion(self) -> None:
+        """Forget the running Tab cycle, so the next Tab starts a new one."""
+        self._completion_prefix = ""
+        self._completion_index = None
+        self._completion_inserted = None
+        self._completion_cursor = 0
+
+    def _enter_sends(self) -> bool:
+        """True when Enter submits and Ctrl+J inserts a line break.
+
+        Unconfigured — a ``ChatInput`` built without the app, which is how its
+        own unit tests build it — is τ's documented default rather than an error:
+        this reports a *setting*, and :data:`DEFAULT_ENTER_KEY_MODE` is what the
+        setting is when nobody set it. The Fail-Early check on a misspelled value
+        is one layer up, in :meth:`Parley._configured_enter_key_mode`, where there
+        is a config to be wrong about.
+        """
+        if self.enter_key_mode is None:
+            return DEFAULT_ENTER_KEY_MODE == "submit"
+        return self.enter_key_mode() == "submit"
 
     def action_submit(self):
         """Submit the current message."""
@@ -4677,11 +5418,93 @@ class ChatInput(TextArea):
         if text:
             self.post_message(Input.Submitted(self, text))
 
+    def _insert_newline(self) -> None:
+        """Insert a line break at the cursor, as Enter does in ``"newline"`` mode.
+
+        ``TextArea._on_key`` is what normally does this, and in ``"submit"`` mode
+        it is exactly what we have suppressed, so the two newline keys have to do
+        it themselves. ``_replace_via_keyboard`` rather than ``insert`` because it
+        is the method TextArea's own Enter uses: it respects a selection and the
+        read-only flag, and it records a single undo step.
+        """
+        start, end = self.selection
+        self._replace_via_keyboard("\n", start, end)
+
+    def _try_reclaim(self) -> bool:
+        """Pull pending steering text back into the editor. True if it did.
+
+        The gesture is Up on an EMPTY editor: pending input is the newest thing
+        the user wrote, so it sits one step in front of the history that Up
+        otherwise walks. Requiring the editor to be empty is what keeps the two
+        apart without a mode — with a draft in the box, Up still means history,
+        and reclaiming would have overwritten the draft.
+        """
+        if self.text or self.reclaim_pending is None:
+            return False
+        text = self.reclaim_pending()
+        if not text:
+            return False
+        self.text = text
+        self.move_cursor(self.document.end)
+        return True
+
     def on_key(self, event: events.Key) -> None:
-        """Handle key events for history navigation."""
+        """Handle history navigation, and the Enter/Ctrl+J swap.
+
+        The swap is here and not in ``BINDINGS`` because a ``Binding("enter", …)``
+        on a ``TextArea`` never fires. ``TextArea._on_key`` claims Enter, inserts
+        ``"\\n"``, and calls ``event.stop()``; Textual checks non-priority bindings
+        only once the key has bubbled up to the App, which a stopped key does not
+        do. ``priority=True`` would fire, but it is checked before the event is
+        forwarded to *any* widget, so it would take Enter away from every other
+        editor on the screen too.
+
+        A handler is the right seam instead of a workaround. Textual walks the MRO
+        for handlers and takes ``_on_key`` over ``on_key`` per class, so the order
+        is ``ChatInput.on_key`` then ``TextArea._on_key``, and ``prevent_default``
+        ends the walk. This method therefore gets Enter first and decides.
+        """
+
+        if event.key == "tab":
+            # Only consumed when there is a command to insert. With no ``/`` in
+            # the box, or a ``/…`` that names nothing, the key is left alone and
+            # keeps Textual's ``tab_behavior="focus"`` — the one thing Tab did in
+            # this editor before completion existed, and the reason completion
+            # could claim it (docs/SLASH-COMMANDS.md §3).
+            if self._complete():
+                event.prevent_default()
+                event.stop()
+            return
+
+        if event.key == "enter" and self._enter_sends():
+            # Before ``TextArea._on_key`` can insert the line break.
+            event.prevent_default()
+            event.stop()
+            self.action_submit()
+            return
+
+        if event.key in NEWLINE_KEYS_IN_SUBMIT_MODE and self._enter_sends():
+            # ``stop()`` matters for ctrl+j specifically: unstopped it would bubble
+            # to the App, where the ``BINDINGS`` entry above would submit the very
+            # message this keystroke was meant to keep editing.
+            event.prevent_default()
+            event.stop()
+            self._insert_newline()
+            return
+
+        # alt+up is pi's binding for this (``app.message.dequeue``), and it works
+        # with a draft in the box, where bare Up cannot: it has to leave that case
+        # to history.
+        if event.key == "alt+up":
+            self.post_message(ReclaimPending())
+            event.prevent_default()
+            return
 
         # Up/Down for history (only when on first/last line)
         if event.key == "up":
+            if self._try_reclaim():
+                event.prevent_default()
+                return
             cursor_row, _ = self.cursor_location
             if (
                 cursor_row == 0
@@ -4753,7 +5576,13 @@ class Parley(App):
         Binding("ctrl+g", "browse_tree", "Tree"),
         Binding("ctrl+r", "toggle_reasoning", "Reasoning", priority=True),
         Binding("ctrl+t", "toggle_tools", "Tools", priority=True),
-        Binding("ctrl+j", "focus_and_send", "^Enter=Send", show=True),
+        # One of these two is live at a time, chosen by ``check_action`` from
+        # ``enter_key`` (docs/ENTER-KEY.md). Both are listed so the Footer names the
+        # key that actually sends, in either mode. The dead one is not merely
+        # unadvertised: a falsy ``check_action`` also stops it consuming the key,
+        # so in "submit" mode ctrl+j does not send from a non-editor focus either.
+        Binding("ctrl+j", "focus_and_send", "^J=Send", show=True),
+        Binding("enter", "focus_and_send_on_enter", "Enter=Send", show=True),
         Binding("ctrl+p", "command_palette", "Commands", show=False),
         # NOT bound straight to `quit` any more: one mistimed press ended a session
         # with a draft in the input and no warning. See `action_interrupt` for the
@@ -4770,12 +5599,18 @@ class Parley(App):
         Binding("escape", "escape", "Cancel", show=False, priority=True),
         # Esc's "and un-path what it did" variant (docs/SUBMISSION-LIFECYCLE.md
         # decision 2). ctrl+z is TextArea's undo, and this steals it ONLY while a
-        # turn is generating — which is exactly when the input is disabled and that
-        # undo is unreachable anyway: ``check_action`` returns False otherwise, and a
+        # turn is generating: ``check_action`` returns False otherwise, and a
         # priority binding whose check_action is False does not consume the key
         # (textual app.py ``_check_bindings`` → ``run_action``), so it falls through
         # to the editor untouched. The same False hides it from the Footer, so the
         # label appears exactly when pressing it would do something.
+        #
+        # That steal used to cost nothing, because the editor was disabled for the
+        # length of a turn and its undo was unreachable anyway. Since
+        # docs/TUI-STEERING.md the editor IS usable then, so the two uses now
+        # genuinely contend, and rollback wins: the Footer says ``^z Rollback``
+        # for exactly as long as this binding is live, and a key doing what the
+        # Footer promises beats an unadvertised undo.
         Binding("ctrl+z", "rollback_turn", "Rollback", show=True, priority=True),
     ]
 
@@ -4840,10 +5675,17 @@ class Parley(App):
         # How many submissions this app has handed to the backend and not yet seen
         # finish. Almost always 0 or 1; >1 only when a second prompt is submitted
         # while a turn is outstanding, which the core queues (the submissions
-        # declare ``multitask_strategy="enqueue"``). ``is_generating`` and the
-        # input-disabled state are functions of "is this zero", so a turn ending
-        # while another is still queued must NOT re-enable the input.
+        # declare ``multitask_strategy="enqueue"``). ``is_generating`` is a
+        # function of "is this zero", so a turn ending while another is still
+        # queued must NOT report the app as idle.
         self._submissions_in_flight: int = 0
+        # Lines typed DURING a turn, oldest first, that have not been handed to
+        # the backend yet (docs/TUI-STEERING.md §2). The app owns them rather
+        # than the core, because the reclaim gesture has to be able to take them
+        # back, and only text this side of ``submit()`` can be taken back.
+        # Emptied by :meth:`_flush_pending_steer` at the strategy's delivery
+        # point, and by :meth:`_reclaim_pending_steer` when the user asks for it.
+        self._pending_steer: list[str] = []
         # B3-a: the persistent render subscription. ONE attach for the life of a
         # backend (``_bind_backend_session``), not one per awaited turn — which is
         # what makes a turn this app never initiated renderable at all. Rebound
@@ -4933,6 +5775,15 @@ class Parley(App):
         self.load_config()
         if cli_overrides:
             self._apply_cli_overrides(cli_overrides)
+
+        # Resolve the steering strategy once here and throw the value away: it is
+        # read from :attr:`_steering_strategy` on every use, and this call is the
+        # STARTUP CHECK. A misspelt value should fail while τ is starting, with
+        # the spelling in the message, rather than at the first mid-turn
+        # keystroke half an hour later.
+        self._configured_steering_strategy()
+        # Same startup check, same reason, for the Enter key.
+        self._configured_enter_key_mode()
 
         # === Colour theme (docs/PLAN-0.9.4.md §6) ===
         # Registered and applied HERE, in ``__init__``, and not in ``on_mount``:
@@ -5058,6 +5909,141 @@ class Parley(App):
             self._theme_errors.append(str(exc))
             return DEFAULT_THEME_NAME
 
+    @property
+    def _steering_strategy(self) -> str:
+        """The steering strategy in force right now.
+
+        Derived from :attr:`config` on every read rather than cached in
+        ``__init__``, so a config the app was handed after construction — every
+        sandboxed app, since ``testing.sandbox.build_parley`` assigns
+        ``app.config`` once the app exists — is the one that decides. ``__init__``
+        still calls :meth:`_configured_steering_strategy` for the startup check.
+        """
+        return self._configured_steering_strategy()
+
+    def _configured_steering_strategy(self) -> str:
+        """The delivery point for text typed during a turn (docs/TUI-STEERING.md §2).
+
+        Reads ``steering_strategy`` from config.json. The two values are
+        :data:`~tau_agent_core.submission.MultitaskStrategy` members, and they are
+        spelled the way the core spells them because they ARE the field this app
+        puts on the submission:
+
+        - ``"steer"`` (the default) — the running turn takes the message before
+          its next call to the model, which is after the tool results it is
+          waiting on. pi binds Enter to this.
+        - ``"enqueue"`` — the message waits for the turn to end and then runs as
+          its own turn.
+
+        Fail-Early: an unrecognised value RAISES rather than falling back to the
+        default. The two strategies put the message in different places at
+        different times, so a typo that silently selected the other one would be
+        invisible until a steering message did not land where it was aimed.
+        """
+        configured = self.config.get(STEERING_CONFIG_KEY, DEFAULT_STEERING_STRATEGY)
+        if configured not in STEERING_STRATEGIES:
+            raise ConfigError(
+                f"config key {STEERING_CONFIG_KEY!r} = {configured!r} is not a "
+                f"steering strategy. Use one of {', '.join(sorted(STEERING_STRATEGIES))}."
+            )
+        return str(configured)
+
+    @property
+    def _enter_key_mode(self) -> str:
+        """What Enter does in the chat editor right now.
+
+        Derived from :attr:`config` on every read, for the same reason
+        :attr:`_steering_strategy` is.
+        """
+        return self._configured_enter_key_mode()
+
+    def _configured_enter_key_mode(self) -> str:
+        """Read ``enter_key`` from config.json (docs/ENTER-KEY.md).
+
+        - ``"newline"`` (the default) — Enter inserts a line break, Ctrl+J sends.
+        - ``"submit"`` — Enter sends, Shift+Enter and Ctrl+J insert a line break.
+          pi's pair, and what every other terminal coding agent does.
+
+        Fail-Early: an unrecognised value RAISES. Guessing here would hand the user
+        an editor whose Enter key does the opposite of what they configured, and
+        the way they would find out is by sending half a prompt.
+        """
+        configured = self.config.get(ENTER_KEY_CONFIG_KEY, DEFAULT_ENTER_KEY_MODE)
+        if configured not in ENTER_KEY_MODES:
+            raise ConfigError(
+                f"config key {ENTER_KEY_CONFIG_KEY!r} = {configured!r} is not an "
+                f"Enter-key mode. Use one of {', '.join(sorted(ENTER_KEY_MODES))}."
+            )
+        return str(configured)
+
+    @property
+    def _attachment_inline_limit(self) -> int:
+        """How large a ``@file`` may be before only its path is sent, in bytes.
+
+        Reads ``attachment_inline_limit`` from config.json, derived on every read
+        for the same reason :attr:`_steering_strategy` is.
+
+        Fail-Early: a value that is not a positive integer RAISES rather than
+        falling back to the default. The setting decides whether a file's CONTENT
+        reaches the model, so a typo that silently restored 10 KB would be
+        invisible until a large file was quietly summarised as a path.
+        """
+        configured = self.config.get(ATTACHMENT_LIMIT_CONFIG_KEY, DEFAULT_INLINE_LIMIT)
+        if not isinstance(configured, int) or isinstance(configured, bool) or configured <= 0:
+            raise ConfigError(
+                f"config key {ATTACHMENT_LIMIT_CONFIG_KEY!r} = {configured!r} is not a "
+                "positive integer number of bytes."
+            )
+        return configured
+
+    @property
+    def _max_image_dimension(self) -> int:
+        """The pixel cap an attached image is scaled down to.
+
+        The same ``max_image_dimension`` key the ``read`` tool is configured with
+        (``backends.py``), read here so an image the human attaches and an image
+        the agent reads are bounded by one number rather than two.
+        """
+        configured = self.config.get("max_image_dimension", DEFAULT_MAX_IMAGE_DIMENSION)
+        if not isinstance(configured, int) or isinstance(configured, bool) or configured <= 0:
+            raise ConfigError(
+                f"config key 'max_image_dimension' = {configured!r} is not a positive "
+                "integer number of pixels."
+            )
+        return configured
+
+    def _expand_attachments(self, text: str) -> tuple[str, list[dict[str, Any]] | None]:
+        """Resolve ``@file`` references in ``text`` into the prompt actually sent.
+
+        Reference: docs/FILE-ATTACHMENTS.md §2. Called once per submission, at the
+        moment the submission is built, so the content sent is the file as it
+        stands then — not as it stood when the human typed the ``@``.
+
+        The blocks go in FRONT of what the human wrote, and the ``@word`` stays
+        where they typed it: the model reads the material first and the
+        instruction last, and the instruction still names the file the way the
+        human did.
+
+        A file that could not be read is reported to the human here AND appears in
+        the prompt as a ``<reference … error="…">``, so neither side is left
+        believing an attachment landed when it did not.
+
+        Args:
+            text: The submission text as typed.
+
+        Returns:
+            ``(text_to_send, images)``. ``images`` is ``None`` when there are
+            none, which is what :class:`~tau_agent_core.submission.Submission`
+            expects for "no images".
+        """
+        attachments = self._scan_attachments(text)
+        if not any(a.kind in SENDABLE_KINDS for a in attachments):
+            return text, None
+        rendered = render_attachments(attachments, max_image_dimension=self._max_image_dimension)
+        for failure in rendered.failures:
+            self.notify(f"Attachment failed: {failure}", severity="warning")
+        return rendered.prefix + text, list(rendered.images) or None
+
     def _apply_theme(self, name: str) -> None:
         """Make *name* the live theme, at construction time or mid-session.
 
@@ -5177,7 +6163,21 @@ class Parley(App):
 
             with Vertical(id="main-area"):
                 yield ChatDisplay(self._session_facts)
+                # Between the transcript and the editor, because that is where
+                # what-you-typed-but-has-not-been-sent belongs: it is no longer
+                # in the box and not yet in the conversation. Hides itself when
+                # empty, so an ordinary turn looks exactly as it did.
+                yield PendingInput()
+                # Directly above the editor, because it describes the draft that
+                # is still in it: the ``@file`` words in the box, resolved. Hides
+                # itself when the draft attaches nothing.
+                yield AttachmentBar()
                 yield ChatInput(id="chat-input")
+                # Under the editor, so the eye travels down from the half-typed
+                # line into the list of what it could become — which is where
+                # every shell and every editor puts one. Hides itself when the
+                # line is not a ``/…``, so an ordinary turn looks as it did.
+                yield CommandPopup()
 
             # The extension panel host (E10 §6 / S68) sits to the right of the main
             # area; it hides itself until an extension opens a panel.
@@ -5196,7 +6196,24 @@ class Parley(App):
         # there for why they cannot wait until mount.
 
         # Focus input
-        self.query_one("#chat-input", ChatInput).focus()
+        chat_input = self.query_one("#chat-input", ChatInput)
+        chat_input.focus()
+        # Up on an empty editor takes back whatever is waiting to be steered
+        # (docs/TUI-STEERING.md §4). Wired here rather than in ``compose`` so the
+        # editor exists and the app owns the buffer it hands back.
+        chat_input.reclaim_pending = self._reclaim_pending_steer
+        # Whether Enter sends or breaks the line (docs/ENTER-KEY.md). The property
+        # is passed, not its value, so a mid-session ``/config`` edit takes effect
+        # on the next keystroke rather than at the next restart.
+        chat_input.enter_key_mode = lambda: self._enter_key_mode
+        # The candidate commands Tab cycles through (docs/SLASH-COMMANDS.md). The
+        # app supplies them because half the vocabulary is registered by
+        # extensions on the backend, which the widget must not reach for.
+        chat_input.command_completions = self._command_completions
+        # The candidate PATHS Tab cycles through (docs/FILE-ATTACHMENTS.md §3).
+        # The app supplies them for the same reason: the working directory and the
+        # inline limit are the app's, not the widget's.
+        chat_input.attachment_completions = self._attachment_completions
 
         # The first frame is a layout decision like any later one: an app started at
         # 80x24 with a panel already open must not render the starved chat once
@@ -5343,10 +6360,13 @@ class Parley(App):
         than a private route into ``prompt()``: ``source="interactive"``,
         ``submitter="human"`` so every event this turn emits is attributable to a
         person at a terminal (phase 2's provenance stamp), and
-        ``multitask_strategy="enqueue"`` per decision 1 — pi's TUI eventually binds
-        Enter→steer and Alt+Enter→followUp, and because the strategy is a field on
-        the record, the second keybinding is a one-line change here when ``steer``
-        lands in phase 4.
+        ``multitask_strategy="enqueue"`` per decision 1.
+
+        **While a turn is in flight this method does not submit at all.** The text
+        goes into :attr:`_pending_steer` and :meth:`_flush_pending_steer` submits
+        it later, under the configured steering strategy
+        (docs/TUI-STEERING.md §2). The buffer is what makes the text
+        reclaimable: once ``submit()`` has taken it, no frontend can get it back.
 
         ``expand_commands=True`` (B2-b): the slash-command block that used to sit in
         this method is gone. ``AgentSession.submit`` resolves ``/compact`` / ``/tree``
@@ -5387,12 +6407,48 @@ class Parley(App):
         if not message:
             return
 
+        # Peek: will this dispatch as a command instead of starting a turn? Pure —
+        # it runs nothing. ``submit()`` remains the authority and resolves again on
+        # the post-``input``-hook text; this only decides whether to render a user
+        # turn. An unknown "/…" resolves to None and falls through to the model
+        # exactly as it always has.
+        is_command = resolve_command(message, self._extension_command_names()) is not None
+
+        # Typed during a turn (docs/TUI-STEERING.md §2).
+        #
+        # Prose is held for the steering strategy to deliver. A COMMAND is
+        # refused and left in the editor instead: ``/compact`` and ``/fork``
+        # rewrite the very context the running turn is being answered from, and
+        # steering delivers through the same door that dispatches them, so
+        # queueing one would run it mid-turn. Left in the editor rather than
+        # dropped — pressing Enter again once the turn ends is the whole fix, and
+        # the notice says so.
+        if self.is_generating:
+            if is_command:
+                self.notify(
+                    f"{message.split()[0]} runs between turns. Press Enter again "
+                    "when this one finishes.",
+                    severity="warning",
+                )
+                return
+            input_widget.add_to_history(message)
+            input_widget.clear_input()
+            self._queue_pending_steer(message)
+            return
+
         input_widget.add_to_history(message)
         input_widget.clear_input()
 
+        # ``@file`` references become the blocks that actually go to the model
+        # (docs/FILE-ATTACHMENTS.md §2). Gated on the peek, because a command is
+        # not a prompt: ``/fork`` attaches nothing, and expanding anyway would
+        # read files for a line no model will ever see.
+        text, images = (message, None) if is_command else self._expand_attachments(message)
+
         # The submission record. See the docstring for every field's reason.
         submission = Submission(
-            text=message,
+            text=text,
+            images=images,
             source="interactive",
             submitter="human",
             submission_id=uuid4().hex,
@@ -5400,13 +6456,6 @@ class Parley(App):
             expand_commands=True,
             allow_user_input=True,
         )
-
-        # Peek: will this dispatch as a command instead of starting a turn? Pure —
-        # it runs nothing. ``submit()`` remains the authority and resolves again on
-        # the post-``input``-hook text; this only decides whether to render a user
-        # turn. An unknown "/…" resolves to None and falls through to the model
-        # exactly as it always has.
-        is_command = resolve_command(message, self._extension_command_names()) is not None
 
         # Session materialisation — the spec's submit() step 4, which that method's
         # own docstring assigns to the FRONTEND ("e.g. the TUI's action_new_chat").
@@ -5424,12 +6473,27 @@ class Parley(App):
             await self._dispatch_command_submission(submission)
             return
 
+        self._start_turn(submission)
+
+    def _start_turn(self, submission: Submission) -> None:
+        """Put ``submission``'s text in the working list and run it in a worker.
+
+        The tail of :meth:`on_input_submitted`, extracted so
+        :meth:`_flush_pending_steer` starts a turn on exactly the same terms
+        rather than on a second, drifting copy of them.
+
+        Args:
+            submission: An admitted-shape prompt submission — ``expand_commands``
+                already resolved to "not a command" by the caller, since this
+                appends a user turn to the working list and a command produces
+                none.
+        """
         # Add the user turn to the working list so it is part of the context sent
         # to the model this turn. Do NOT persist it here: the AgentSession (bound to
         # this live Session, E3-ctx / D3) is the sole persister — it records the user
         # turn when the loop runs. The working list is reconciled back to the
         # authoritative log at turn-end (``self.messages = session.context``).
-        self.messages.append({"role": "user", "content": message})
+        self.messages.append({"role": "user", "content": submission.text})
 
         # The user BUBBLE is NOT rendered here any more (B3-a). It is rendered from
         # the ``lane_start`` this submission produces, like every other source's,
@@ -5445,13 +6509,223 @@ class Parley(App):
         # Run the turn in a worker so the event loop stays free while the model
         # streams — that is what lets Esc-to-cancel be processed mid-response
         # (a direct `await` here parked the App message pump for the whole turn).
-        # Input is disabled for the duration; the LAST worker to finish re-enables
-        # it (``_submissions_in_flight``).
-        input_widget.disabled = True
+        # The input is NOT disabled: typing during a turn is how a steering
+        # message gets written (docs/TUI-STEERING.md §1).
         self._submissions_in_flight += 1
         self.is_generating = True
         self.sub_title = "Thinking… (Esc to cancel)"
         self._generate_response(submission)
+
+    # -- steering: text typed during a turn (docs/TUI-STEERING.md) ----------
+
+    def _queue_pending_steer(self, message: str) -> None:
+        """Hold ``message`` until the steering strategy's delivery point.
+
+        One buffer, appended to, per the "all at once" convention: a second line
+        typed while the first is still waiting joins it, and both are delivered
+        as ONE message. pi reaches the same place from the other side — it queues
+        each separately and drains the whole queue at the delivery point
+        (``PendingMessageQueue`` mode ``"all"``, ``agent.ts:142``) — but joining
+        here is what makes the reclaim gesture able to hand back everything the
+        user typed as one editable block. τ has no "one at a time" mode: the
+        core's own ``_deliver_steer`` drains the whole queue unconditionally, so
+        there is nothing behind a setting that promised otherwise.
+        """
+        self._pending_steer.append(message)
+        self._refresh_pending_input()
+
+    def _reclaim_pending_steer(self) -> str | None:
+        """Take the pending steering text back. ``None`` when there is none.
+
+        Bound to Up on an empty editor (:meth:`ChatInput._try_reclaim`). Clears
+        the buffer, so the text is in exactly one place afterwards — the editor —
+        and the user can edit it, re-send it, or delete it.
+        """
+        if not self._pending_steer:
+            return None
+        text = "\n\n".join(self._pending_steer)
+        self._pending_steer.clear()
+        self._refresh_pending_input()
+        return text
+
+    def _refresh_pending_input(self) -> None:
+        """Redraw the pending-input widget from the buffer."""
+        self.query_one(PendingInput).show(self._pending_steer, self._steering_note())
+
+    def on_reclaim_pending(self, message: ReclaimPending) -> None:
+        """alt+up in the editor: hand the pending buffer back (pi's dequeue key)."""
+        self._return_pending_to_the_editor()
+
+    def _return_pending_to_the_editor(self) -> None:
+        """Put the pending buffer back in the editor, keeping any draft in front.
+
+        The same move as :meth:`_reclaim_pending_steer`, for the two events that
+        make a pending message undeliverable rather than merely early: Esc, and a
+        session swap. Both mean the turn the message was aimed at is gone.
+
+        Delivering it anyway is the wrong answer to both. After Esc it would
+        launch a turn the user just stopped; after a swap it would put a line
+        written about one conversation into another. Dropping it is the other
+        wrong answer — the user typed it. So it goes back where they can see it,
+        BEFORE whatever draft is already there rather than over the top of it:
+        the pending message was typed first, and pi combines the two the same way
+        round (``restoreQueuedMessagesToEditor``).
+        """
+        reclaimed = self._reclaim_pending_steer()
+        if reclaimed is None:
+            return
+        editor = self.query_one("#chat-input", ChatInput)
+        editor.text = f"{reclaimed}\n\n{editor.text}" if editor.text else reclaimed
+        editor.move_cursor(editor.document.end)
+
+    def _steering_note(self) -> str:
+        """What the pending widget promises about delivery, in words.
+
+        Both strategies can end up delivering at the turn edge — ``"steer"`` does
+        when the running turn makes no further tool calls — so this names the
+        strategy's own delivery point and lets :meth:`_flush_pending_steer` be
+        the thing that reports what actually happened.
+        """
+        if self._steering_strategy == "steer":
+            return "steering, at this turn's next tool call"
+        return "waiting for this turn to end"
+
+    def _flush_pending_steer(self, *, at_tool_call: bool) -> None:
+        """Deliver the pending buffer, if this is its delivery point.
+
+        Called from exactly two places, which are the two delivery points:
+
+        - ``at_tool_call=True`` — the running turn just started a tool. Only the
+          ``"steer"`` strategy delivers here, as a ``multitask_strategy="steer"``
+          submission: the core queues it and the running loop takes it before its
+          next call to the model, which is after this turn's tool results have
+          been appended.
+        - ``at_tool_call=False`` — the app has gone idle. Both strategies deliver
+          here, as an ordinary turn. For ``"enqueue"`` that is the whole
+          contract; for ``"steer"`` it is what happens when the turn ended
+          without making another tool call, and the message becomes its own turn
+          rather than being stranded in a queue no further turn would drain.
+
+        With no backend or no session there is nowhere to deliver, so the text
+        goes back to the editor instead. That is not reachable from either call
+        site today — a turn cannot be in flight or have just ended without both —
+        and it is here because the alternative to a wrong answer is not a
+        silently emptied buffer.
+
+        Args:
+            at_tool_call: Whether this is the mid-turn delivery point.
+        """
+        if not self._pending_steer:
+            return
+        if at_tool_call and self._steering_strategy != "steer":
+            return
+        if self.current_backend is None or self.current_session is None:
+            self._return_pending_to_the_editor()
+            return
+        raw = "\n\n".join(self._pending_steer)
+        self._pending_steer.clear()
+        self._refresh_pending_input()
+        # A steering message attaches files exactly as a typed prompt does
+        # (docs/FILE-ATTACHMENTS.md §5). Expanded HERE rather than when the line
+        # was queued, so the file is read at the moment it is delivered, and so
+        # several queued lines that each attach something arrive as one message
+        # carrying all of them — which is what the core's own steer path builds
+        # (``AgentSession._queued_content_to_user``).
+        text, images = self._expand_attachments(raw)
+        submission = Submission(
+            text=text,
+            images=images,
+            source="interactive",
+            submitter="human",
+            submission_id=uuid4().hex,
+            multitask_strategy="steer" if at_tool_call else "enqueue",
+            # A steering message is prose aimed at the model, and the door it
+            # goes through is the one that dispatches commands. A line that
+            # resolved to one was refused at :meth:`on_input_submitted` rather
+            # than queued, so nothing here should resolve to a command — but the
+            # `input` hook chain runs on this text too and could rewrite it into
+            # one, and running ``/compact`` inside a live turn is exactly what
+            # this flag being False prevents.
+            expand_commands=False,
+            allow_user_input=True,
+        )
+        if at_tool_call:
+            self._deliver_steering(submission, raw_text=raw)
+            return
+        self._start_turn(submission)
+
+    @work(group="generation")
+    async def _deliver_steering(self, submission: Submission, raw_text: str) -> None:
+        """Hand a ``"steer"`` submission to the core. Starts no turn of its own.
+
+        A worker, not an ``await`` in the render path, because
+        :meth:`AgentSession.submit` runs this submission through the whole
+        ``input`` hook chain before queueing it and a hook is arbitrary code.
+
+        It deliberately does NOT take :attr:`_working_list_lock`: the running
+        turn holds that for its whole duration, so waiting for it would defer
+        every steering message to the turn edge — the exact behaviour the
+        ``"steer"`` strategy exists to avoid. The context it passes is a snapshot
+        for the one case in which the core would use it: the turn finished
+        between the tool-call event and this call, in which case ``submit()``
+        takes the free turn slot and runs an ordinary turn instead of queueing.
+        That is reported rather than hidden — the working list is reconciled
+        against the session afterwards, exactly as
+        :meth:`_get_assistant_response` does it.
+
+        Args:
+            submission: The steering submission, with ``@file`` references already
+                expanded into blocks (docs/FILE-ATTACHMENTS.md §5).
+            raw_text: The same message as the human typed it, before expansion.
+                Carried separately because the one path that puts a message back
+                on the pending buffer must put back something that can be expanded
+                again exactly once.
+        """
+        if self.current_backend is None:
+            # The backend went away between the flush and this worker starting.
+            # The text is in hand and must not evaporate, so it goes back on the
+            # buffer, which the next delivery point or an Up press empties. The
+            # RAW text goes back, not the submission's: the buffer holds what the
+            # human typed, and re-queueing the expanded form would attach every
+            # ``@file`` a second time at the next delivery point.
+            self._queue_pending_steer(raw_text)
+            return
+        self._submissions_in_flight += 1
+        try:
+            result = await self.current_backend.submit_turn(submission, list(self.messages))
+            if not result.accepted:
+                self.notify(
+                    result.rejection_reason or "The steering message was refused",
+                    severity="warning",
+                )
+                return
+            if result.messages:
+                # The fall-through above: this ran a turn. Reconcile the working
+                # list against what the session actually recorded.
+                async with self._working_list_lock:
+                    if self.current_session is not None:
+                        self.messages = list(self.current_session.context)
+        except Exception as e:
+            self.notify(f"Steering failed: {e}", severity="error")
+            self.log.error(f"Steering failed: {e}")
+            self.log.error(traceback.format_exc())
+        finally:
+            self._settle_submission()
+
+    def _settle_submission(self) -> None:
+        """One submission finished; report the app idle if it was the last.
+
+        A turn ending while another submission is still outstanding must NOT
+        report idle: Esc has to keep reaching the turn that is running, and the
+        pending buffer must not be flushed into the middle of it.
+        """
+        self._submissions_in_flight -= 1
+        if self._submissions_in_flight > 0:
+            return
+        self._submissions_in_flight = 0
+        self.is_generating = False
+        self.query_one("#chat-input", ChatInput).focus()
+        self._flush_pending_steer(at_tool_call=False)
 
     def _extension_command_names(self) -> list[str]:
         """The names extensions have registered as slash commands, for the peek.
@@ -5463,10 +6737,98 @@ class Parley(App):
         ``/…`` has always done. The built-in commands need no backend at all; they
         are τ's own vocabulary, hardcoded in :mod:`tau_agent_core.commands`.
         """
+        return list(self._extension_command_table())
+
+    def _extension_command_table(self) -> dict[str, str]:
+        """Extension-registered command names mapped to their descriptions.
+
+        The same backend read as :meth:`_extension_command_names`, kept whole
+        because completion shows the description and dispatch only needs the name.
+        ``getattr``-guarded for the same reason as every other backend-capability
+        read in this class: a test double or a backend built before extensions
+        loaded simply has none.
+        """
         lister = getattr(self.current_backend, "get_extension_commands", None)
         if lister is None:
-            return []
-        return [name for name, _description in lister()]
+            return {}
+        return {name: description for name, description in lister()}
+
+    def _command_completions(self, text: str) -> CommandCompletions | None:
+        """Candidate commands for ``text``, for the editor's Tab cycle and popup."""
+        return complete_command(text, self._extension_command_table())
+
+    def _attachment_completions(self, text: str, cursor: int) -> AttachmentCompletions | None:
+        """Candidate paths for the ``@…`` at ``cursor``, for the Tab cycle and popup."""
+        return complete_attachment(text, cursor, cwd=Path.cwd())
+
+    @on(TextArea.Changed, "#chat-input")
+    @on(TextArea.SelectionChanged, "#chat-input")
+    def _refresh_command_popup(self) -> None:
+        """Redraw the popup whenever the editor's text or cursor changes.
+
+        ``TextArea`` posts ``Changed`` on every document edit AND from the ``text``
+        setter (``_text_area.py:1214``, ``:1701``), so this covers typing, the Tab
+        cycle's own replacement, history navigation and ``clear_input`` with one
+        handler and no polling. ``SelectionChanged`` is the second trigger the
+        ``@…`` vocabulary needs: which reference is being completed depends on
+        where the cursor is, and an arrow key into an existing ``@…`` moves the
+        cursor without changing a character.
+
+        The two vocabularies are asked in the same order :meth:`ChatInput._complete`
+        asks them — attachment first, decided by the cursor — so what the popup
+        offers and what Tab inserts cannot disagree.
+
+        The Tab cycle's selection is read back off the editor rather than tracked
+        here, because the editor sets it before replacing the text and the
+        replacement is what posts the message that runs this.
+        """
+        editor = self.query_one("#chat-input", ChatInput)
+        popup = self.query_one("#command-popup", CommandPopup)
+        files = self._attachment_completions(editor.text, editor.cursor_offset)
+        if files is not None:
+            popup.show_files(files, editor.completion_index)
+            return
+        popup.show(self._command_completions(editor.text), editor.completion_index)
+
+    @on(TextArea.Changed, "#chat-input")
+    def _refresh_attachment_bar(self) -> None:
+        """Redraw the attachment bar from the draft (docs/FILE-ATTACHMENTS.md §4).
+
+        A second handler on the same message rather than a branch inside the first,
+        because the two answer different questions: the popup is about the word the
+        cursor is in, the bar is about the whole draft. Only this one needs the
+        filesystem scan, and only the popup needs the cursor.
+        """
+        editor = self.query_one("#chat-input", ChatInput)
+        self.query_one(AttachmentBar).show(self._scan_attachments(editor.text))
+
+    def _scan_attachments(self, text: str) -> tuple[Attachment, ...]:
+        """The ``@file`` references in ``text``, resolved against the working directory."""
+        return scan_attachments(text, cwd=Path.cwd(), inline_limit=self._attachment_inline_limit)
+
+    @on(AttachmentBar.Remove)
+    def _remove_attachment(self, message: AttachmentBar.Remove) -> None:
+        """A bar row was clicked: delete its ``@…`` word from the editor.
+
+        The text is the single source of truth for what is attached, so removal is
+        a text edit and the redraw follows from it. A stale span — the human typed
+        between the redraw and the click — raises rather than cutting the wrong
+        characters, and is reported instead of crashing the app: the fix is
+        visible (edit the word), and the bar is about to be redrawn correctly by
+        the very keystroke that invalidated it.
+        """
+        editor = self.query_one("#chat-input", ChatInput)
+        try:
+            editor.text = remove_attachment(editor.text, message.attachment)
+        except ValueError:
+            self.notify(
+                f"@{message.attachment.token} moved while you were typing — "
+                "delete it in the editor instead.",
+                severity="warning",
+            )
+            return
+        editor.move_cursor(editor.document.end)
+        editor.focus()
 
     async def _dispatch_command_submission(self, submission: Submission) -> None:
         """Admit a command submission through the one door and perform its outcome.
@@ -5586,9 +6948,11 @@ class Parley(App):
     async def _generate_response(self, submission: Submission) -> None:
         """Background worker: admit one submission and render the turn it starts.
 
-        Replaces the old inline ``await``. The ``finally`` restores the input
+        Replaces the old inline ``await``. The ``finally`` settles the submission
         regardless of how the turn ended (normal, error, or cooperative abort —
-        which returns the partial answer rather than raising).
+        which returns the partial answer rather than raising), which is also
+        where a pending steering message becomes its own turn
+        (:meth:`_settle_submission`).
 
         **Not ``exclusive`` any more, and that is the fix, not a relaxation.** An
         exclusive group cancels the group's other workers when a new one starts, so
@@ -5603,7 +6967,6 @@ class Parley(App):
         ``finally``, which is what keeps the partial answer and the persistence
         consistent.
         """
-        input_widget = self.query_one("#chat-input", ChatInput)
         try:
             await self._get_assistant_response(submission)
         except Exception as e:
@@ -5618,16 +6981,7 @@ class Parley(App):
                 source="verbatim",
             )
         finally:
-            # A turn ending while another submission is still outstanding must not
-            # re-enable the input or clear ``is_generating``: the app is still busy,
-            # Esc must still reach the turn that is running, and typing into a live
-            # queue is exactly how the second prompt used to get lost.
-            self._submissions_in_flight -= 1
-            if self._submissions_in_flight <= 0:
-                self._submissions_in_flight = 0
-                self.is_generating = False
-                input_widget.disabled = False
-                input_widget.focus()
+            self._settle_submission()
             # Show the running conversation rollup (tools · tokens) next to the
             # model, refreshed now that this exchange has been appended + saved.
             self._refresh_subtitle()
@@ -5651,6 +7005,11 @@ class Parley(App):
         if not self.is_generating or self.current_backend is None:
             return
         self.current_backend.abort()
+        # A steering message aimed at the turn being cancelled must not become the
+        # turn that runs next (docs/TUI-STEERING.md §4). pi does the same on
+        # interrupt — ``clearAllQueues()`` and refill the editor
+        # (``interactive-mode.ts:4350``).
+        self._return_pending_to_the_editor()
         self.sub_title = "Cancelling…"
 
     # -- "press it again": two keys that ask before doing something big -------
@@ -5760,9 +7119,10 @@ class Parley(App):
         widget.
 
         - **``rollback_turn`` needs a turn to roll back.** Idle, ``ctrl+z`` falls
-          through to the ``ChatInput`` TextArea as its ordinary undo; generating, the
-          input is disabled and that undo is unreachable anyway, so the two uses never
-          contend.
+          through to the ``ChatInput`` TextArea as its ordinary undo; generating, it
+          is Rollback, which is what the Footer says it is for exactly that long.
+          The two uses DO contend now that the editor is usable during a turn
+          (docs/TUI-STEERING.md §1) — see the binding's own comment.
         - **Neither survives a modal.** A ``priority=True`` App binding beats a modal's
           own bindings (the priority pass walks ``reversed(_binding_chain)``, and the
           App is at the far end of it), so while a dialog is up ``escape`` reached
@@ -5781,6 +7141,11 @@ class Parley(App):
             return False
         if action == "rollback_turn":
             return self.is_generating
+        # The Enter/Ctrl+J pair: exactly one sends, and the Footer names that one.
+        if action == "focus_and_send":
+            return self._enter_key_mode == "newline"
+        if action == "focus_and_send_on_enter":
+            return self._enter_key_mode == "submit"
         return super().check_action(action, parameters)
 
     def watch_is_generating(self, generating: bool) -> None:
@@ -6033,6 +7398,54 @@ class Parley(App):
         text = str(source or "").strip()
         return text or "unknown"
 
+    def _report_truncation(self, display: ChatDisplay) -> None:
+        """Say that the last completion stopped at the output cap, not at an answer.
+
+        Reference: docs/TRUNCATED-TOOL-CALLS.md §3.
+
+        ``stop_reason="length"`` is the one stop reason an operator has to act on,
+        and until this it was visible only in ``--mode json``: on screen a
+        completion the server cut off mid-sentence looked exactly like one that
+        finished. When the cut lands inside a tool call's ``arguments`` the
+        provider drops the call (it is a prefix, not a payload — see
+        ``_build_final_message``), so the turn simply ends with nothing run, which
+        is the version of this that reads as the model losing interest.
+
+        A durable box rather than only a toast, for the same reason the error path
+        mounts one: a toast that has faded cannot be scrolled back to.
+        """
+        cap = self._configured_max_tokens()
+        cap_text = "unknown" if cap is None else str(cap)
+        display.add_message(
+            "system",
+            "**The model stopped at its output cap, not at the end of an answer.**\n\n"
+            f"The server reported `stop_reason: length` for this completion, at "
+            f"`max_tokens = {cap_text}`. Anything it was still writing — including a "
+            "tool call, which is dropped rather than run on a truncated argument "
+            "list — is missing from the turn above.\n\n"
+            "Raise `max_tokens` for this model in `~/.tau/config.json`, or lower the "
+            "reasoning budget so the answer fits under the cap.",
+            source="markdown",
+        )
+        self.notify(f"Model output truncated at max_tokens={cap_text}", severity="warning")
+
+    def _configured_max_tokens(self) -> int | None:
+        """The output cap τ sends for the default model, or ``None`` if unresolvable.
+
+        Read from the same config entry :meth:`_apply_run_config` resolves for the
+        backend, through the same default, so the number on screen is the number on
+        the wire. ``None`` (rather than a stand-in figure) when the entry is missing
+        or states a cap this build would refuse — reporting a cap that is not the
+        one in force is worse than reporting that it is not known.
+        """
+        entry = self.config.get("models", {}).get(self.config.get("default_model", ""))
+        if not isinstance(entry, dict):
+            return None
+        cap = self._apply_run_config(entry).get("max_tokens", DEFAULT_MAX_TOKENS)
+        if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0:
+            return None
+        return cap
+
     async def _on_render_event(self, event: dict) -> None:
         """Render one lane-tagged event from the persistent bus subscription.
 
@@ -6055,8 +7468,18 @@ class Parley(App):
             # The submission text verbatim: whoever (or whatever) submitted it
             # typed lines, not markdown, and this bubble is the record of what
             # was actually sent.
+            #
+            # With ONE display fold: an inlined ``@file`` body is replaced by a
+            # line saying how much of it is not shown (docs/FILE-ATTACHMENTS.md
+            # §6). A 10 KB file pasted into a bubble pushes the conversation off
+            # the screen, and the elision is visible rather than silent — the
+            # block keeps its header, and the wire and the session log keep the
+            # whole thing.
             bubble = display.add_message(
-                role, event.get("text", ""), subtitle=label or "", source="verbatim"
+                role,
+                elide_attachment_bodies(event.get("text", "")),
+                subtitle=label or "",
+                source="verbatim",
             )
             if label is not None:
                 bubble.add_class(LANE_FOREIGN_CLASS)
@@ -6092,6 +7515,15 @@ class Parley(App):
                 self.messages = list(self.current_session.context)
             self._refresh_subtitle()
             return
+        if kind == "completion_end" and event.get("stop_reason") == "length":
+            self._report_truncation(display)
+        if kind == "tool_call":
+            # The ``"steer"`` strategy's delivery point (docs/TUI-STEERING.md §2).
+            # A tool call means this turn will make at least one more call to the
+            # model, which is where the core delivers a steering message — so this
+            # is the last moment at which handing it over still lands it inside
+            # THIS turn rather than after it.
+            self._flush_pending_steer(at_tool_call=True)
         await display.handle_stream_event(event)
 
     def _bind_render_subscription(self) -> None:
@@ -6203,6 +7635,13 @@ class Parley(App):
         # something a turn brings with it, so it has to be bound where the backend
         # is, not where a prompt is.
         self._bind_render_subscription()
+
+        # A pending steering message belongs to the conversation it was typed
+        # into, and this method is every way a session is replaced (new chat,
+        # clear, resume, model swap). Delivering it after the swap would put a
+        # line written about one conversation into another; it goes back to the
+        # editor instead (docs/TUI-STEERING.md §4).
+        self._return_pending_to_the_editor()
 
     def _build_session_runtime(
         self, backend: Any, model: str, backend_name: str
@@ -6775,6 +8214,16 @@ class Parley(App):
             input_widget.action_submit()
         else:
             input_widget.focus()
+
+    def action_focus_and_send_on_enter(self):
+        """The same action, under a second name, for the Enter binding.
+
+        Two names rather than one because :meth:`check_action` is told which
+        ACTION is being offered, never which key offered it. The Enter and Ctrl+J
+        bindings must be gated in opposite directions, so they cannot share an
+        action name and still be told apart.
+        """
+        self.action_focus_and_send()
 
     def get_system_commands(self, screen):
         """Provide commands for the command palette."""

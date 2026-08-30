@@ -44,7 +44,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from tau_llm.models import clamp_thinking_level
-from tau_llm.providers.base import Provider
+from tau_llm.providers.base import Provider, split_tool_result_content
 from tau_llm.streaming import (
     DoneEvent,
     ErrorEvent,
@@ -478,6 +478,26 @@ class AnthropicMessagesProvider(Provider):
         }
 
     def _tool_result_block(self, msg: Any) -> dict[str, Any]:
+        """One tool result as an Anthropic ``tool_result`` block.
+
+        Images ride INSIDE the block, which is where the Messages API takes them:
+        ``content`` is either a string or a list of ``text``/``image`` blocks, and
+        an ``image`` block carries ``source: {type: "base64", media_type, data}``.
+        pi does the same (``anthropic-messages.ts`` ``convertContentBlocks``), so
+        no separate user turn is needed here and the parallel-call run is never
+        split — the problem the OpenAI client has to work around does not exist
+        on this wire.
+
+        This used to collect text and drop every image silently, which meant a
+        vision model was handed the tool's prose and nothing to look at.
+
+        Args:
+            msg: A ``ToolResultMessage`` or its ``model_dump()``ed dict.
+
+        Returns:
+            The ``tool_result`` block. ``content`` stays a plain string when
+            there are no images, so text-only results are unchanged on the wire.
+        """
         if isinstance(msg, dict):
             tool_call_id = msg.get("tool_call_id", "")
             is_error = bool(msg.get("is_error", False))
@@ -487,22 +507,26 @@ class AnthropicMessagesProvider(Provider):
             is_error = bool(getattr(msg, "is_error", False))
             content = getattr(msg, "content", "")
 
-        parts: list[str] = []
-        if isinstance(content, str):
-            parts.append(content)
+        parts, images = split_tool_result_content(content)
+        text = " ".join(p for p in parts if p)
+
+        payload: Any
+        if images:
+            payload = [{"type": "text", "text": text}] if text else []
+            payload += [
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": mime, "data": data},
+                }
+                for mime, data in images
+            ]
         else:
-            for block in content or []:
-                if isinstance(block, TextContent):
-                    parts.append(block.text)
-                elif isinstance(block, str):
-                    parts.append(block)
-                elif isinstance(block, dict) and block.get("type") == "text":
-                    parts.append(block.get("text", ""))
+            payload = text
 
         return {
             "type": "tool_result",
             "tool_use_id": tool_call_id,
-            "content": " ".join(p for p in parts if p),
+            "content": payload,
             "is_error": is_error,
         }
 

@@ -47,6 +47,13 @@ DEFAULT_LANE = "main"
 #: on screen would be the one that lied.
 DEFAULT_TOOL_NAMES: tuple[str, ...] = ("read", "write", "edit", "bash", "ls", "grep", "find")
 
+#: The output cap a model entry that states no ``max_tokens`` resolves to. Since
+#: τ started putting ``Model.max_tokens`` on the wire, this figure is what a local
+#: server receives as ``n_predict`` — so it is the number a truncated turn has to
+#: quote back at the user, and the TUI's truncation notice reads it from here
+#: rather than repeating the literal (docs/TRUNCATED-TOOL-CALLS.md §2).
+DEFAULT_MAX_TOKENS = 4096
+
 #: A render event handler. Sync or async — :class:`RenderRouter` awaits whatever
 #: it gets back, so a Textual app can mount widgets from it.
 RenderHandler = Callable[[dict[str, Any]], Awaitable[None] | None]
@@ -212,6 +219,13 @@ class TurnStream:
         # forced-share are per-COMPLETION, not summable like tokens, so only the
         # final completion's dict is kept — never a merge or an average.
         self.last_extra: dict[str, Any] = {}
+        #: The LAST completion's ``stop_reason``, as reported on its ``message_end``
+        #: (agent_loop step S8). Carried because ``"length"`` is the one stop reason
+        #: an operator has to act on and the only place it was visible was the
+        #: ``--mode json`` stream — in the TUI a completion cut off at the output
+        #: cap looked exactly like one that finished (docs/TRUNCATED-TOOL-CALLS.md).
+        #: ``None`` until a completion reports one.
+        self.last_stop_reason: str | None = None
         # The cumulative-message -> delta projection (suffix-diffing "text" and
         # "thinking" blocks, including the defensive replace-not-extend case)
         # lives in tau_agent_core.event_projection — extracted so a non-TUI
@@ -237,6 +251,8 @@ class TurnStream:
             # (assistant text after a tool call ends up after it, not pinned above).
             self._delta_projector.reset()
             return [self._tag({"kind": "turn_start", "turn_index": event.turn_index})]
+        if event.type == "message_start":
+            return self._feed_message_start(event)
         if event.type == "message_update":
             return self._feed_message_update(event)
         if event.type == "message_end":
@@ -261,6 +277,34 @@ class TurnStream:
     def _tag(self, structured: dict[str, Any]) -> dict[str, Any]:
         structured["lane"] = self.lane
         return structured
+
+    def _feed_message_start(self, event: Any) -> list[dict[str, Any]]:
+        """Normalize a ``message_start`` — only a USER one produces a render event.
+
+        Reference: docs/TUI-STEERING.md §5. The agent loop emits ``message_start``
+        for an assistant completion (``_stream_response``) and for a provider
+        error, and both are rendered off the deltas and the ``message_end`` that
+        follow them, so this drops those.
+
+        A ``message_start`` whose message is a USER one has exactly one producer:
+        ``AgentLoop._deliver_steer`` weaving a steering message into the running
+        turn. It carries content that will never appear in any other event on
+        this lane — the deltas that follow belong to the model's answer to it —
+        so a renderer that ignored it would show the answer and not the question.
+        """
+        message = getattr(event, "message", None)
+        if not message or message.get("role") != "user":
+            return []
+        content = message.get("content", "")
+        if isinstance(content, str):
+            text = content
+        else:
+            text = "\n".join(
+                block.get("text", "")
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+        return [self._tag({"kind": "steer_message", "text": text})]
 
     def _feed_message_update(self, event: Any) -> list[dict[str, Any]]:
         message = getattr(event, "message", None)
@@ -323,6 +367,12 @@ class TurnStream:
             # clear the prior reading, so take whatever this completion carried.
             extra = usage.get("extra")
             self.last_extra = extra if isinstance(extra, dict) else {}
+            # `stop_reason` rides the same per-completion message_end (step S8) and
+            # takes the same replace-don't-merge rule. Gated on `usage` for the same
+            # reason: the duplicate run() emit carries neither, so reading it
+            # unguarded would clear a real "length" with the duplicate's None.
+            reason = message.get("stop_reason")
+            self.last_stop_reason = reason if isinstance(reason, str) else None
         # The boundary itself, with whatever is measured at it. A completion that
         # reported no usage still ends here, and the totals it publishes are the
         # ones that ARE measured — a provider that never reports usage publishes
@@ -333,6 +383,10 @@ class TurnStream:
                     "kind": "completion_end",
                     "output": self.usage_totals["output_tokens"],
                     "context": self.context_tokens,
+                    # Additive; existing consumers read "output"/"context" and
+                    # ignore this. `None` means the completion reported no
+                    # stop_reason, which is NOT the same as reporting "stop".
+                    "stop_reason": self.last_stop_reason,
                 }
             )
         ]
@@ -869,7 +923,7 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
         raise ValueError(
             f"models.<name>.context_window must be a positive integer; got {context_window!r}"
         )
-    max_tokens = config.get("max_tokens", 4096)
+    max_tokens = config.get("max_tokens", DEFAULT_MAX_TOKENS)
     if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
         raise ValueError(f"models.<name>.max_tokens must be a positive integer; got {max_tokens!r}")
 
@@ -1201,7 +1255,19 @@ class TauBackend(Backend):
         # denylist — pi's excludeTools targets the built-in registry.
         tool_names = resolve_tool_names(config)
         if tool_names:
-            tools = _resolve_tools(tool_names)
+            # ``max_image_dimension`` is the first config key that reaches a
+            # built-in tool's constructor. It bounds an image ``read`` sends: an
+            # unbounded one took a vision server down twice (see
+            # tau_agent_core.tools.image_resize). Absent from the config means
+            # the tool's own default, 2000px, NOT "no cap" — a missing key is
+            # ambivalence, and the answer to ambivalence is the safe default.
+            # A literal ``null`` is the explicit opt-out, and says so.
+            tools = _resolve_tools(
+                tool_names,
+                {"read": {"max_image_dimension": config["max_image_dimension"]}}
+                if "max_image_dimension" in config
+                else None,
+            )
         else:
             tools = []
 

@@ -73,6 +73,23 @@ def test_format_telemetry_fork_timings_includes_forced_share():
     assert "forced=75%" in line  # 15 / 20
 
 
+def test_format_telemetry_reports_dropped_tool_calls():
+    """A dropped call is the one telemetry figure that is a LOSS, not a rate.
+
+    The provider refuses to build a tool call from a truncated argument buffer
+    (docs/TRUNCATED-TOOL-CALLS.md) — correct, and on its own silent. This row is
+    the only place a user learns the model asked for something that never ran.
+    """
+    line = format_telemetry({"timings": _STOCK_TIMINGS, "dropped_partial_tool_calls": 1})
+    assert line == "41.2 t/s · dropped=1"
+
+
+def test_format_telemetry_omits_dropped_when_nothing_was_lost():
+    """Absent, never ``dropped=0``. The provider writes the key only when it
+    dropped something, and "no drops" must not look like a measured zero."""
+    assert "dropped" not in (format_telemetry({"timings": _STOCK_TIMINGS}) or "")
+
+
 def test_format_telemetry_empty_or_none_is_none():
     # Nothing measured → None; the caller shows the summary exactly as pre-G4.
     assert format_telemetry({}) is None

@@ -1746,6 +1746,33 @@ class TestSDKHelpers:
             assert hasattr(t, "execute")
             assert callable(t.execute)
 
+    def test_resolve_tools_passes_options_to_the_constructor(self):
+        """The seam that lets a config key reach a built-in.
+
+        Until this existed, ``_resolve_tools`` called ``cls()`` with no arguments
+        at all, so nothing an operator wrote in ``~/.tau/config.json`` could
+        change a built-in's behaviour. ``read``'s image cap is the first setting
+        that has to.
+        """
+        from tau_agent_core.tools.read import ReadTool
+
+        with patch.object(ReadTool, "__init__", return_value=None) as init:
+            _resolve_tools(["read"], {"read": {"max_image_dimension": 512}})
+        init.assert_called_once_with(max_image_dimension=512)
+
+    def test_resolve_tools_ignores_options_for_a_tool_not_requested(self):
+        """The tool list is a denylist-filtered set the operator did not spell
+        out, so a config that caps ``read`` must not fail merely because
+        ``--exclude-tools read`` removed it."""
+        tools = _resolve_tools(["ls"], {"read": {"max_image_dimension": 512}})
+        assert [t.name for t in tools] == ["ls"]
+
+    def test_resolve_tools_rejects_an_option_the_tool_does_not_take(self):
+        """A typo in a config file is a fault, not a setting to drop. The
+        constructor raises and nothing catches it."""
+        with pytest.raises(TypeError):
+            _resolve_tools(["read"], {"read": {"max_image_dimensions": 512}})
+
     def test_resolve_tools_unknown_raises(self):
         """_resolve_tools() raises ValueError for unknown tools."""
         with pytest.raises(ValueError, match="Unknown tool"):

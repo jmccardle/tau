@@ -178,6 +178,8 @@ def format_telemetry(extra: dict[str, Any]) -> str | None:
     * effective decode speed — ``timings.predicted_per_second`` as ``N.N t/s``;
     * the tool-arg JSON-repair count, when the completion reported one
       (``repairs``);
+    * the number of tool calls dropped because the stream ended mid-``arguments``
+      (``dropped_partial_tool_calls``), when the completion dropped any;
     * the forced-token share ``n_ff_total / predicted_n`` as ``forced=NN%`` — but
       ONLY when ``n_ff_total`` is present. Stock llama.cpp builds never send it (a
       jump-forward-fork-only field); omitting it is the honest move, never a
@@ -197,6 +199,17 @@ def format_telemetry(extra: dict[str, Any]) -> str | None:
     repairs = extra.get("repairs")
     if isinstance(repairs, int):
         parts.append(f"repairs={repairs}")
+
+    # Tool calls the provider refused to finish building because the stream was
+    # incomplete — cancelled, or cut off at the output cap. The key is present ONLY
+    # when something was actually dropped (``_build_final_message``), so this row
+    # never reads "dropped=0"; its absence is what says nothing was lost. Without
+    # it the drop is silent, which is the half of the Fail-Early contract the
+    # provider cannot fulfil on its own: it declines to fabricate the call, and
+    # this is the only place a user finds out one went missing.
+    dropped = extra.get("dropped_partial_tool_calls")
+    if isinstance(dropped, int):
+        parts.append(f"dropped={dropped}")
 
     # n_ff_total is the fork-only forced-token count. Absent on stock builds —
     # omit the figure entirely rather than default it to 0 (Fail-Early: a 0%

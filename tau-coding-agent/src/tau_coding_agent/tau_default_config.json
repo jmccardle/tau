@@ -19,5 +19,8 @@
     }
   },
   "default_model": "local-llm",
-  "theme": "mocha"
+  "theme": "mocha",
+  "steering_strategy": "steer",
+  "enter_key": "newline",
+  "attachment_inline_limit": 10240
 }

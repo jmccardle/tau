@@ -1062,6 +1062,13 @@ retrieval evaluator ``write`` and ``bash``; and defaulting to ``[]`` would just 
 silently produce a sub-agent that cannot do the job it was spawned for. Naming the
 tools is the only option that cannot fail quietly. Pass ``[]`` to mean none.
 
+Every name is checked against what the spawning session actually offers the
+model — ``session._build_turn_tools()``, so the constructor's tools AND the
+extensions' registrations, resolved exactly as a turn resolves them. A name
+that is not in that list raises. Consequently ``no_tools="all"`` yields an
+empty list here, so a non-empty allowlist on such a session raises rather
+than routing tools around the suppression.
+
 ``system_prompt`` defaults to ``None``, which inherits the spawning session's own
 prompt (``session._system_prompt``) — today's behaviour, unchanged for every
 existing caller. Passing a string forks with a *different* spec instead: the one

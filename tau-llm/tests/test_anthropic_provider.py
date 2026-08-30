@@ -319,6 +319,69 @@ class TestSystemPrompt:
         assert "system" not in client.requests[0]
 
 
+class TestToolResultImages:
+    """An image returned by a tool rides INSIDE the ``tool_result`` block.
+
+    That is where the Messages API takes it, and where pi puts it
+    (``anthropic-messages.ts`` ``convertContentBlocks``). This client used to
+    collect the text blocks and drop the images with no error and no
+    placeholder, so a vision model got the tool's prose and nothing to look at.
+
+    No separate user turn, unlike the OpenAI client: because the image stays in
+    the block, a parallel call's results are never split and the ordering
+    question that client has to solve does not arise here.
+    """
+
+    @staticmethod
+    def _messages(content):
+        return [
+            {"role": "user", "content": "look"},
+            {
+                "role": "assistant",
+                "content": [{"type": "toolCall", "id": "t1", "name": "read", "arguments": {}}],
+            },
+            {"role": "toolResult", "tool_call_id": "t1", "content": content},
+        ]
+
+    def test_an_image_reaches_the_wire(self):
+        _, messages = _convert(
+            _provider(),
+            self._messages(
+                [
+                    {"type": "text", "text": "[image: a.png]"},
+                    {"type": "image", "mime_type": "image/png", "data": "AAA"},
+                ]
+            ),
+        )
+        block = messages[-1]["content"][0]
+
+        assert block["content"][0] == {"type": "text", "text": "[image: a.png]"}
+        assert block["content"][1] == {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": "AAA"},
+        }
+
+    def test_an_image_with_no_text_carries_only_the_image(self):
+        _, messages = _convert(
+            _provider(),
+            self._messages([{"type": "image", "mime_type": "image/png", "data": "AAA"}]),
+        )
+        content = messages[-1]["content"][0]["content"]
+
+        assert len(content) == 1
+        assert content[0]["type"] == "image"
+
+    def test_a_text_only_result_still_sends_a_plain_string(self):
+        """Every result but a handful. The wire shape for text must not change
+        because images became possible."""
+        _, messages = _convert(
+            _provider(),
+            self._messages([{"type": "text", "text": "a.py"}, {"type": "text", "text": "b.py"}]),
+        )
+
+        assert messages[-1]["content"][0]["content"] == "a.py b.py"
+
+
 class TestToolResults:
     def test_a_tool_result_becomes_a_user_message(self):
         _, messages = _convert(

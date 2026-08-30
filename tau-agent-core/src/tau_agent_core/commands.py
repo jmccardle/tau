@@ -47,8 +47,9 @@ vocabulary; every frontend is answerable for them, and one that is not says so o
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Literal
 
 #: Who runs a resolved command. ``"core"`` = ``AgentSession`` ran it and produced text;
@@ -171,6 +172,96 @@ def resolve_command(
     if name in extension_commands:
         return CommandInvocation(name=name, args=args, performer="core")
     return None
+
+
+#: The empty extension-command table, as the default for :func:`complete_command`. A module
+#: constant rather than a literal in the signature because a mutable default is a shared
+#: object; ``MappingProxyType`` makes the sharing harmless by construction.
+NO_EXTENSION_COMMANDS: Mapping[str, str] = MappingProxyType({})
+
+
+@dataclass(frozen=True)
+class CommandCompletion:
+    """One candidate in a completion list: a command, and what it does.
+
+    ``performer`` is carried because it is already known here and a frontend may want to
+    say so; nothing in τ's own UI renders it today.
+    """
+
+    name: str  # the command word, without the leading "/"
+    description: str  # what it does, for the reader — may be "" for an extension command
+    performer: CommandPerformer
+
+
+@dataclass(frozen=True)
+class CommandCompletions:
+    """What a completion UI should show for a half-typed line.
+
+    ``matches`` is EMPTY for a ``/…`` that names nothing, and that is the case the whole
+    function exists for: an unknown slash is sent to the model as ordinary text
+    (:func:`resolve_command`), which is deliberate but invisible. A frontend that shows an
+    empty ``matches`` as "this will be sent as text" turns a silent fallthrough into a
+    visible statement, without changing what the fallthrough does.
+    """
+
+    token: str  # the first word as typed, without the leading "/" (may be "")
+    matches: tuple[CommandCompletion, ...]
+
+
+def complete_command(
+    text: str, extension_commands: Mapping[str, str] = NO_EXTENSION_COMMANDS
+) -> CommandCompletions | None:
+    """Candidate commands for a partly-typed line. ``None`` means "show nothing".
+
+    Pure, and the same shape as :func:`resolve_command`: it takes the text plus the
+    extension vocabulary rather than reading either off a session, so a frontend, a test,
+    and an embedded UI all get the same answer from the same code. It runs nothing and
+    decides nothing — ``resolve_command`` remains the only thing that says whether a line
+    IS a command.
+
+    Matching is a case-sensitive prefix test on the first word, because that is what
+    ``resolve_command`` does with the finished line. A ``/`` on its own has an empty
+    prefix and therefore matches everything, which is how the whole vocabulary becomes
+    browsable. Built-ins come first and an extension that registered a built-in's name is
+    dropped, mirroring the resolution order exactly: such a name is unreachable, so
+    offering it would advertise a command the user cannot run.
+
+    Args:
+        text: The editor's contents as typed. Stripped here, the way ``parse_command``
+            strips, so the two agree about what the first word is.
+        extension_commands: Extension-registered command names mapped to their
+            descriptions (``AgentSession.get_extension_commands``). A frontend with no
+            backend yet passes nothing and gets the built-ins.
+
+    Returns:
+        A :class:`CommandCompletions` while the first word is still worth commenting on,
+        or ``None`` when it is not. ``None`` covers two cases: the line is not
+        ``/``-prefixed at all, and the line has an unknown first word FOLLOWED BY A SPACE.
+        The second is the "pasted a file path" case — once a space is typed after a word
+        that names no command, the line is committed to being prose and a warning about it
+        would be noise.
+    """
+    stripped = text.strip()
+    if not stripped.startswith("/"):
+        return None
+    body = stripped[1:]
+    space = body.find(" ")
+    token = body if space == -1 else body[:space]
+
+    matches: list[CommandCompletion] = [
+        CommandCompletion(name=name, description=description, performer="frontend")
+        for name, description in FRONTEND_COMMANDS.items()
+        if name.startswith(token)
+    ]
+    matches.extend(
+        CommandCompletion(name=name, description=description, performer="core")
+        for name, description in extension_commands.items()
+        if name.startswith(token) and name not in FRONTEND_COMMANDS
+    )
+
+    if not matches and space != -1:
+        return None
+    return CommandCompletions(token=token, matches=tuple(matches))
 
 
 def unsupported_command_message(outcome: CommandOutcome, frontend: str) -> str:

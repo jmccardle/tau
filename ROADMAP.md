@@ -206,6 +206,20 @@ names off a τ message (`947918b`). `docs/ANTHROPIC-GOOGLE-CLIENTS.md` is the
 design record. This closes 0.9.3 §4's "non-OpenAI clients" item. **Remainder
 still open:** §4.4 step 5's pluggable auth and model resolver.
 
+### TUI steering — typing while the model generates — shipped 2026-08-29
+
+`docs/TUI-STEERING.md`. The core has had `multitask_strategy="steer"` since the
+submission lifecycle's phase 4; nothing in the TUI could reach it, because a
+turn disabled the editor and pinned the transcript to the bottom. Both locks are
+off: `MessageList` follows the tail only while the reader is at the bottom, and a
+line typed during a turn lands in `Parley._pending_steer`, shown in a new
+`PendingInput` widget and reclaimable with Up on an empty editor. `config.json`'s
+`steering_strategy` picks the delivery point — `steer` (default, the running
+turn's next tool call) or `enqueue` (the turn edge). A delivered steering message
+is rendered inside the open exchange, which it was not before: `TurnStream`
+consumed no `message_start`, so it reached the model and the log without
+appearing on screen until a reload.
+
 ### Session UX sprint — Phases B and C — shipped, confirmed 2026-08-28
 
 Both were listed as open below and were not. `session_picker.py` defines

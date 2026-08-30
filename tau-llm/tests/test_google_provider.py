@@ -343,6 +343,32 @@ def test_images_go_in_a_separate_turn_by_default() -> None:
     assert contents[1]["parts"][1]["inline_data"]["data"] == "AAA"
 
 
+def test_each_image_gets_a_turn_of_its_own() -> None:
+    """Not one turn holding every image.
+
+    MEASURED 2026-08-28 on the OpenAI client's equivalent branch (llama.cpp
+    b1637, Qwen3.8-27B): two images under one label in a single turn made the
+    model describe one and report the other missing, 3/3; one image per turn was
+    correct 3/3. Not re-measured on Gemini — the same converter question, and
+    the shape that was wrong there has nothing to recommend it here.
+    """
+    message = _tool_result(
+        "screenshot",
+        "c1",
+        [
+            {"type": "image", "mime_type": "image/png", "data": "AAA"},
+            {"type": "image", "mime_type": "image/png", "data": "BBB"},
+        ],
+    )
+    _, contents = _provider()._convert_messages([message], _model())
+
+    assert len(contents) == 3  # the functionResponse turn, then one turn per image
+    assert contents[1]["parts"][1]["inline_data"]["data"] == "AAA"
+    assert contents[2]["parts"][1]["inline_data"]["data"] == "BBB"
+    for turn in contents[1:]:
+        assert sum(1 for p in turn["parts"] if "inline_data" in p) == 1
+
+
 def test_images_nest_when_the_model_says_it_supports_it() -> None:
     message = _tool_result(
         "screenshot", "c1", [{"type": "image", "mime_type": "image/png", "data": "AAA"}]

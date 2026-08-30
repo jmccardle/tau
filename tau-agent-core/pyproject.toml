@@ -16,7 +16,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
 dependencies = [
-    "ffwf-tau-llm==0.9.5",
+    "ffwf-tau-llm==0.9.6",
     "pydantic>=2.0",
 ]
 
@@ -36,8 +36,19 @@ bus = ["nats-py>=2.15.0"]
 # pytest at module scope. Consumers install `ffwf-tau-agent-core[testing]`; a plain
 # install stays pytest-free.
 testing = ["pytest"]
+# Bounding an image before it reaches a model. `read` caps an image at 2000px a
+# side (tools/image_resize.py); doing that means decoding it, and decoding means
+# Pillow. An extra rather than a hard dependency because Pillow carries native
+# wheels for every platform this installs on, and a headless run that only ever
+# reads source files should not pay for them.
+#
+# Without it, reading an image FAILS and the error names this extra. It does not
+# send the image unresized: that is the silent fallback the cap exists to remove,
+# and the measured cost of an unbounded image was a dead vision server, not a
+# large bill. `ffwf-tau` includes this extra, so the guessable install has it.
+images = ["pillow>=10.0"]
 dev = [
-    "ffwf-tau-agent-core[bus,testing]==0.9.5",
+    "ffwf-tau-agent-core[bus,testing,images]==0.9.6",
     "pytest-asyncio",
     "ruff",
     # The agent-facing documentation build (tau_agent_core.docs_build). Reads the
