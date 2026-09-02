@@ -72,6 +72,13 @@ EXPOSED: dict[str, str] = {
     ### begin tier-b:compact
     "compact": "compact",
     ### end tier-b:compact
+    ### begin tier-b:complete_path
+    # Deliberately empty (protocol 1.4). The verb touches no AgentSession or
+    # AgentSessionRuntime member at all — public or private: it calls the pure
+    # `attachments.complete_attachment` against the process working directory.
+    # There is nothing for wiring it to make newly reachable, which is also
+    # why it needs no D-1 guard and answers mid-turn.
+    ### end tier-b:complete_path
     ### begin tier-b:get_last_assistant_text
     # B6: left EMPTY on purpose — get_last_assistant_text reads
     # AgentSession.messages, which "messages": "get_messages" above already
@@ -380,6 +387,10 @@ NOT_EXPOSED: dict[str, str] = {
     # most Tier B units are expected to leave this region empty.
     ### begin tier-b:compact
     ### end tier-b:compact
+    ### begin tier-b:complete_path
+    # Deliberately empty, symmetric with the EXPOSED region above: the verb
+    # defers no AgentSession method because it reaches none.
+    ### end tier-b:complete_path
     ### begin tier-b:get_last_assistant_text
     # B6: left EMPTY, symmetric with the EXPOSED region above — this verb
     # does not name a deferred AgentSession method either; "messages" is

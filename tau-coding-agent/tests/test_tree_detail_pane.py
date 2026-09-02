@@ -356,14 +356,21 @@ async def test_the_pane_is_reachable_from_the_keyboard() -> None:
 
 
 async def test_the_help_line_says_how() -> None:
-    """Both pane keys are named there — `Tab` to focus it, `^D` to fold it away.
+    """The pane key is named there, and the line still fits on one row.
 
-    Shortened from "Tab: detail pane" when `^E` and `^D` pushed the line to 94
-    columns and it wrapped to two rows, taking a row from the tree to tell it
-    about a key.
+    It was "Tab: detail pane", then "Tab/^D: pane" when `^E` and `^D` pushed the
+    line to 94 columns and it wrapped — taking a row from the tree to tell it about
+    a key. Branch, copy and paste (TREE-BROWSER-AS-EDITOR.md §6, §7) needed three
+    more keys on the same row, so the separators went to one space, the verbs got
+    shorter, and `Tab` — which also focuses the pane — came off the line. `^D` is
+    the key that FOLDS the pane, which is the one worth naming.
     """
     async with open_scene(get_scene("tree-modal"), WIDE) as (app, _pilot):
-        assert "Tab/^D: pane" in render_text(app)
+        rendered = render_text(app)
+        assert "^D pane" in rendered
+        assert "^B branch" in rendered
+        assert "c copy" in rendered
+        assert "v paste" in rendered
 
 
 # ---------------------------------------------------------------------------

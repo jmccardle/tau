@@ -14,12 +14,14 @@ rather than restating them, so renaming a project keeps the test true.
 
 Path installs (``pip install -e ./tau-jmfts``) are left alone: they name a
 directory in a checkout, not an index entry.
+
+The file list is walked, not asked of ``git``. See ``_shipped_python`` for why:
+the release matrix tests a ``git archive`` export, which has no ``.git``.
 """
 
 from __future__ import annotations
 
 import re
-import subprocess
 import tomllib
 from pathlib import Path
 
@@ -50,15 +52,32 @@ def _distribution_names() -> set[str]:
     return names
 
 
-def _tracked_python() -> list[str]:
-    out = subprocess.run(
-        ["git", "ls-files", "-z"], cwd=REPO, capture_output=True, text=True, check=True
-    ).stdout
-    return [
-        p
-        for p in out.split("\0")
-        if p and p.endswith(".py") and any(p.startswith(tree) for tree in SHIPPED)
-    ]
+#: Directory names that are build output rather than source. ``*.egg-info``
+#: lives INSIDE ``<package>/src`` after an editable install.
+NOT_SOURCE = {"__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
+
+
+def _shipped_python() -> list[str]:
+    """Every shipped ``.py`` file, enumerated from the filesystem.
+
+    This used to ask ``git ls-files``, which cost the release matrix a failure
+    per Python version: `docs/RELEASING.md` §2 builds the candidate with
+    ``git archive``, so the tree under test has no ``.git`` and the subprocess
+    raised. Walking is also the stricter question — an install hint naming a
+    project that does not exist is just as broken in a file that has been
+    written but not yet added.
+    """
+    found: list[str] = []
+    for tree in SHIPPED:
+        root = REPO / tree
+        # A missing shipped tree would silently shrink this test's scope.
+        assert root.is_dir(), f"{tree} is not in this checkout, so the scan would be incomplete"
+        for path in sorted(root.rglob("*.py")):
+            parts = path.relative_to(REPO).parts
+            if any(part in NOT_SOURCE or part.endswith(".egg-info") for part in parts):
+                continue
+            found.append(path.relative_to(REPO).as_posix())
+    return found
 
 
 def _is_path_install(name: str) -> bool:
@@ -69,7 +88,7 @@ def test_every_install_hint_names_a_real_distribution() -> None:
     known = _distribution_names()
     offenders = []
 
-    for path in _tracked_python():
+    for path in _shipped_python():
         if path in ALLOWED:
             continue
         text = (REPO / path).read_text(encoding="utf-8")
@@ -85,6 +104,14 @@ def test_every_install_hint_names_a_real_distribution() -> None:
         + "\n  ".join(offenders)
         + f"\npublished names are: {sorted(known)}"
     )
+
+
+def test_the_scan_actually_reaches_the_shipped_trees() -> None:
+    """An enumeration that returns nothing passes the test above vacuously."""
+    found = _shipped_python()
+    assert len(found) > 50, f"the walk found only {len(found)} files; it is not reaching the tree"
+    assert "tau-llm/src/tau_llm/streaming.py" in found
+    assert not [p for p in found if ".egg-info" in p]
 
 
 def test_the_pattern_would_catch_the_defect_it_was_written_for() -> None:

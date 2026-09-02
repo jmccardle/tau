@@ -580,6 +580,45 @@ class SessionLogContractTests:
         assert by_id[branched]["parentId"] == anchor, "parented where told, not at the leaf"
         assert log.cursor == tip, "the leaf did NOT move"
 
+    def test_a_copied_message_keeps_its_provenance_and_folds_like_any_other(self, log):
+        """``copiedFrom`` survives the round trip, and changes nothing about the fold.
+
+        TREE-BROWSER-AS-EDITOR.md §7.1: a copy is written as an ordinary ``message``
+        entry with one extra payload field naming its source
+        (``tau_agent_core.tree_surgery.copy_of``), so every walker treats it as the
+        message it is without being taught a new kind. The obligation on a store is
+        therefore small and easy to miss: **pass the unknown field through**. A store
+        that drops it loses the only record that two identical messages are one
+        message copied — which, on a store where an entry id is also a search
+        document id, is what tells a query the duplicate is not a second event.
+
+        The id is deliberately NOT required to name an entry in this log. A copy's
+        source is usually outside whatever region was copied, and unlike a splice
+        anchor's ``firstKeptId`` nothing folds on it: a dangling one costs a reader
+        one hop of history, not a region of context.
+        """
+        source = log.append_message(_msg("user", "the original"))
+        copy_id = log.append_at(
+            log.cursor,
+            "message",
+            {"message": _msg("user", "the original"), "copiedFrom": source},
+        )
+
+        by_id = {e["id"]: e for e in log.entries()}
+        assert by_id[copy_id]["copiedFrom"] == source
+        assert by_id[copy_id]["type"] == "message", "a copy is not a kind of its own"
+
+        log.append_navigate(copy_id)
+        context = ConversationTree(log.entries(), log.cursor).context_for()
+        assert _texts(context) == ["the original", "the original"], (
+            "the copy folds into the context as an ordinary message"
+        )
+
+        reloaded = self.reload(log)
+        if reloaded is None:
+            return
+        assert {e["id"]: e for e in reloaded.entries()}[copy_id]["copiedFrom"] == source
+
     def test_the_cursor_is_the_last_entry_whoever_wrote_it(self, log):
         """``resolve_cursor`` is pi's rule: last entry wins, with no notion of which
         cursor produced it (session-manager.ts:855-859).

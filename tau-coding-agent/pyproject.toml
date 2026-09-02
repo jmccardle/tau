@@ -16,7 +16,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
 dependencies = [
-    "ffwf-tau-agent-core==0.9.6",
+    "ffwf-tau-agent-core==0.9.7",
 ]
 
 [project.optional-dependencies]
@@ -38,9 +38,9 @@ tui = [
 # extra is only a convenience spelling for it. store_factory.py imports it lazily
 # and converts a missing package into a StoreError that names this extra, so
 # `--store jmfts` without it fails with an instruction rather than a traceback.
-jmfts = ["ffwf-tau-jmfts==0.9.6"]
+jmfts = ["ffwf-tau-jmfts==0.9.7"]
 dev = [
-    "ffwf-tau-coding-agent[tui,jmfts]==0.9.6",
+    "ffwf-tau-coding-agent[tui,jmfts]==0.9.7",
     "pytest",
     "pytest-asyncio",
     "ruff",

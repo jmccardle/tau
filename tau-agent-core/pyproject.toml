@@ -16,7 +16,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
 dependencies = [
-    "ffwf-tau-llm==0.9.6",
+    "ffwf-tau-llm==0.9.7",
     "pydantic>=2.0",
 ]
 
@@ -48,7 +48,7 @@ testing = ["pytest"]
 # large bill. `ffwf-tau` includes this extra, so the guessable install has it.
 images = ["pillow>=10.0"]
 dev = [
-    "ffwf-tau-agent-core[bus,testing,images]==0.9.6",
+    "ffwf-tau-agent-core[bus,testing,images]==0.9.7",
     "pytest-asyncio",
     "ruff",
     # The agent-facing documentation build (tau_agent_core.docs_build). Reads the

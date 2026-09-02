@@ -268,15 +268,21 @@ async def test_resume_of_compacted_session_hands_spliced_context_to_backend(env)
     )
 
     ctx = env["backend"].messages
-    # Summary first, the kept assistant turn, then this run's user message.
-    assert ctx[0]["content"] == [{"type": "text", "text": "[[Compaction summary: OLD-SUMMARY]]"}]
+    # The system prompt, then the summary, then the kept assistant turn, then this
+    # run's user message. The system prompt precedes the boundary and so was folded
+    # away here until the fold started carrying it across a splice
+    # (``conversation_tree.is_system_message``); the model was still given one,
+    # because the loop re-inserts the CONFIG's prompt when the context does not open
+    # with a system message, so what this line pins is that the two are now the same
+    # string from the same place.
+    assert ctx[0] == {"role": "system", "content": "You are helpful."}
+    assert ctx[1]["content"] == [{"type": "text", "text": "[[Compaction summary: OLD-SUMMARY]]"}]
     assert {"role": "assistant", "content": [{"type": "text", "text": "r"}]} in ctx
     assert ctx[-1] == {"role": "user", "content": "next"}
     # The dropped prefix is absent from the model context — the actual fix …
-    assert {"role": "system", "content": "You are helpful."} not in ctx
     assert {"role": "user", "content": "a1"} not in ctx
     # … even though it is still on disk (the linear fold would have re-fed it).
-    assert {"role": "system", "content": "You are helpful."} in Session.load(a.path).messages
+    assert {"role": "user", "content": "a1"} in Session.load(a.path).messages
 
 
 async def test_session_by_path_selects_specific(env):

@@ -13,7 +13,7 @@ Reference: SUBPHASE-0.0.md, "AgentSession Interface" section.
 # read this literal, so the number a user sees and the number on the wheel cannot
 # disagree. The other three packages carry the same line; tests/test_packaging.py
 # holds all four against each other, because they are released in lockstep.
-__version__ = "0.9.6"
+__version__ = "0.9.7"
 
 from tau_agent_core import (
     AgentSession,

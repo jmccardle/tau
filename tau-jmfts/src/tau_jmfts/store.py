@@ -168,6 +168,20 @@ def _build_header(
 #: branch point) and must survive as ``None``, not be mistaken for a broken link.
 _CROSS_REF_FIELDS = ("targetId", "firstKeptId", "fromId")
 
+#: Payload fields that hold an entry id as PROVENANCE rather than as structure.
+#: ``copiedFrom`` (TREE-BROWSER-AS-EDITOR.md §7.1, written by
+#: ``tau_agent_core.tree_surgery.copy_of``) says where a copy's content came from.
+#: Nothing folds on it, so an unresolvable one costs a reader one hop of history,
+#: not a region of context — which is why it is remapped *when it can be* and left
+#: alone when it cannot, instead of raising like :data:`_CROSS_REF_FIELDS`.
+#:
+#: **Unresolvable is the NORMAL case here.** A copy's source is usually outside the
+#: subtree being copied — that is what makes it a copy rather than a move — so a
+#: fork that demanded every ``copiedFrom`` resolve would refuse to fork any tree
+#: anyone had pasted into. ``agentSpecId`` is left out of both tuples for the same
+#: reason it is not validated at the appender (§8): it is a record, never read back.
+_PROVENANCE_REF_FIELDS = ("copiedFrom",)
+
 
 def _remap_cross_refs(
     structured_content: dict[str, Any], old_to_new: dict[int, int]
@@ -199,6 +213,19 @@ def _remap_cross_refs(
                 "reference would silently drop a region of the forked context."
             )
         tau[field] = str(old_to_new[old_id])
+
+    for field in _PROVENANCE_REF_FIELDS:
+        ref = tau.get(field)
+        if ref is None or not str(ref).isdigit():
+            # Not a doc id at all — an imported log's provenance still naming a
+            # file-store id. It was already outside this store's numbering, so
+            # there is nothing here to point it at.
+            continue
+        moved = old_to_new.get(int(ref))
+        # Kept as-is when the source is outside the copied subtree: it still names
+        # the entry the content came from, in the tree it came from.
+        if moved is not None:
+            tau[field] = str(moved)
     return sc
 
 

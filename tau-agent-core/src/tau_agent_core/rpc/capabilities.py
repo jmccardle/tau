@@ -83,7 +83,23 @@ from tau_agent_core import rpc_event_schema
 #: `set_model`'s cursor needs to know whether it may READ `addressable` or
 #: must instead treat -32004 as the only signal. That is exactly K2's
 #: "refuse to run rather than discover it on first failure".
-PROTOCOL_VERSION = "1.3"
+#: `1.4`: the two halves of a usable chat editor, for a head that is not the
+#: TUI. `complete_path` (a new Tier B verb) and `expand_attachments` (a new
+#: optional property on `submit`/`prompt`, with a matching optional
+#: `attachments` key on their result). Additive on all three counts — a host
+#: that does not recognize the verb never calls it, and one that does not set
+#: the flag gets byte-identical behaviour to 1.3.
+#:
+#: It earns the bump on the same "needed to be USEFUL rather than merely
+#: permitted" ground `limits` did at 1.2. Before this, `@notes.txt` sent over
+#: this wire reached the model as those eleven literal characters: expansion
+#: was a FRONTEND job (docs/FILE-ATTACHMENTS.md §2, `Parley._expand_attachments`)
+#: and the RPC wire had no frontend to do it. A head therefore had to choose
+#: between re-implementing the `<attachment>`/`<reference>` vocabulary in its
+#: own language and shipping an editor whose `@` did nothing. `protocol_version`
+#: is how it now decides which, without discovering the answer by watching a
+#: model fail to see a file it was told about.
+PROTOCOL_VERSION = "1.4"
 
 #: D1 — the one native dialect (JSON-RPC 2.0). `--rpc-dialect pi` (G8's
 #: stated-expiry compat shim) does not exist yet; when it does, a host that

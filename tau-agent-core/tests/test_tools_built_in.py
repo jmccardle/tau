@@ -23,6 +23,7 @@ import contextlib
 import inspect
 import os
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -688,16 +689,72 @@ class TestBashToolAbort:
 # ============================================================================
 
 
+#: Whether this kernel publishes process state under ``/proc``. Read once, at
+#: import, so the choice of reader below is a fact about the platform rather
+#: than about one pid — a per-pid ``/proc/<pid>/stat`` that is missing means the
+#: process is gone, which is a different answer and must not pick a reader.
+_HAS_PROC = os.path.exists("/proc/self/stat")
+
+
+def _process_state(pid: int) -> str:
+    """The kernel's one-letter state for `pid`, or `""` if it is gone.
+
+    Two readers for one question, chosen by what the platform publishes:
+    Linux answers from ``/proc``, macOS has no ``/proc`` and answers ``ps``.
+    That is a platform branch, not a fallback — neither one is a guess at what
+    the other would have said.
+    """
+    if _HAS_PROC:
+        try:
+            with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError:
+            return ""
+        # Field 2 is the executable name, parenthesised, and it may itself
+        # contain spaces and a ')'. So the state is the first field after the
+        # LAST ')', not the third whitespace-separated token.
+        _, _, rest = text.rpartition(") ")
+        return rest.split(maxsplit=1)[0] if rest else ""
+
+    out = subprocess.run(
+        ["ps", "-o", "state=", "-p", str(pid)], capture_output=True, text=True, check=False
+    )
+    # `ps` decorates the state on BSD ("Z+", "S<"); the first letter is the state.
+    return out.stdout.strip()[:1]
+
+
 def _process_is_alive(pid: int) -> bool:
-    """True if `pid` refers to a live process, checked without side effects."""
+    """True if `pid` refers to a live process, checked without side effects.
+
+    **A zombie is not alive.** `os.kill(pid, 0)` succeeds on one — the pid slot
+    is still held until someone reaps it — so the cheap probe alone cannot tell
+    "killed, not yet reaped" from "still running", and those are opposite
+    answers to the question this suite asks.
+
+    Where the difference bites: an orphan is reparented to PID 1, and only PID 1
+    can reap it. On a normal host that is an init which reaps within
+    milliseconds, so the flaw never shows. In a container whose PID 1 is the
+    test runner itself, nothing reaps the orphan for the life of the run, and a
+    `sleep 300` that WAS killed reads as a survivor forever. Measured
+    2026-09-02 in `python:3.11-bookworm`: after `killpg` the backgrounded
+    grandchild sits in state `Z` while `os.kill(pid, 0)` returns without error.
+    That is what made these two tests fail in every release-matrix container,
+    against code that was doing exactly what it should.
+
+    Reading a zombie as dead is also the substantively right answer, not a
+    concession to the harness: a zombie has already released its file
+    descriptors, so it cannot hold open the output pipe whose EOF this class
+    exists to protect.
+    """
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
-        # Exists (owned by someone else) — still alive from our perspective.
+        # Exists (owned by someone else) — still alive from our perspective,
+        # and not ours to inspect further.
         return True
-    return True
+    return _process_state(pid) not in ("", "Z")
 
 
 async def _wait_for_process_death(
@@ -760,6 +817,31 @@ class TestBashToolProcessGroupKill:
     `asyncio.wait_for`-bounded: a regression must fail this test, not wedge
     the suite.
     """
+
+    def test_a_zombie_reads_as_dead(self):
+        """The liveness probe itself, against a real zombie.
+
+        A guard nobody has seen fail is a guard nobody knows works, and this one
+        was wrong for as long as it existed — it just never showed on a host
+        whose init reaps. An unwaited-for child that has exited IS a zombie, so
+        this makes one directly rather than describing it.
+        """
+        child = subprocess.Popen(["true"])
+        try:
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if _process_state(child.pid) == "Z":
+                    break
+                time.sleep(0.02)
+            else:
+                pytest.fail("the child never became a zombie, so this proves nothing")
+
+            # The pid slot is still held, which is exactly why os.kill(pid, 0)
+            # is not enough on its own.
+            os.kill(child.pid, 0)
+            assert _process_is_alive(child.pid) is False
+        finally:
+            child.wait()
 
     async def test_timeout_kills_backgrounded_grandchild(self, tmp_path):
         """Bash tool timeout kills the whole group, not just the shell."""

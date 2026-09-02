@@ -9,7 +9,7 @@ Client: stream_simple() / complete_simple() / aclose_providers()
 
 # This distribution's version, read at build time by pyproject.toml's
 # [tool.setuptools.dynamic]. Kept in lockstep with the other three packages.
-__version__ = "0.9.6"
+__version__ = "0.9.7"
 
 from tau_llm.types import (
     UserMessage,

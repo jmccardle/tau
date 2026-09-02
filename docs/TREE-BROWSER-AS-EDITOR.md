@@ -1,7 +1,7 @@
 # The tree browser is an editor, not a picker
 
-**Status: partly built (2026-08-23).** Build-order steps 1, 2, 3, 5, 6 and most of 4 have
-landed. Step 7 has not started, and one piece of step 4 — the fold header, §4.1 — is
+**Status: built except for the fold header (2026-08-30).** Build-order steps 1, 2, 3,
+5, 6, 7 and most of 4 have landed. One piece of step 4 — the fold header, §4.1 — is
 deliberately still undecided. §10 carries the per-step status, what is left, and the
 verification the built steps were measured against; it is the one place to read all of
 that. Each section that has been built says
@@ -504,6 +504,46 @@ selection total may only state an estimate, and must say so.
 
 ## 6. The general model: plan, then commit
 
+> **Built (2026-08-30), with the plan DERIVED rather than edited.** The algebra is
+> `tau_agent_core/tree_surgery.py` (pure, holds no `SessionLog`); the durable half is
+> `TauBackend.commit_branch`, a sibling of `elide_span`; the gesture is `ctrl+B` in the
+> browser and a two-button `BranchModeModal` after it. §6.3's four steps are performed
+> in that order, and `append_at`'s "does not move the leaf" is what makes the mint
+> atomic from the cursor's point of view, exactly as the section argues.
+>
+> **The one divergence: nothing edits the plan.** §6.2 describes an ordered list of
+> `keep(id)` / `copy(id)` items, which implies a buffer the reader adds to, reorders and
+> commits. What is built derives that list from the marked set — the longest run of
+> marks that is already a real ancestor chain is kept, everything after the first gap is
+> copied — and commits it in one gesture. The reason is that no gesture vocabulary for
+> editing the list survived contact with the keyboard this browser has left (§6.4): the
+> reader would need keys for "add here", "reorder", "make this one a copy", and the
+> screen has `Enter`, `Space`, `←→`, `^E`, `^D` and `Esc` already spent. Deriving the
+> split loses the ability to force a copy of a message that could have been kept — which
+> nothing has asked for, since a keep is strictly better when it is available (same id,
+> same recorded usage, no duplicate search document).
+>
+> **Case A is detected and preferred, as §6.3 says it must be.** A contiguous selection
+> mints nothing: `commit_branch` finds `copies == ()` and the commit becomes a navigate
+> plus an elide. `test_commit_branch_mints_nothing_for_a_contiguous_selection` pins it,
+> because the day that stops being true is the day every branch starts littering.
+>
+> **What the two modes are.** §6 does not say what happens to the context ABOVE the
+> plan, and both answers are wanted: "keep the context above them" appends no elide, and
+> "keep only the system prompt" appends one resuming at the root-most mark. The second is
+> only worth having because the fold now carries system messages across a splice
+> (`docs/SYSTEM-PROMPT-IN-THE-FOLD.md`) — before that, "keep only the system prompt"
+> would have produced a context with no system prompt in it.
+>
+> **A third mode is missing, and the gap is worth naming.** "Select which parts of a
+> region go into a summary, then summarize exactly those" does not compose out of what is
+> built: summarizing a branch summarizes its SUBTREE (`subtree_text`), which is the copied
+> messages only — the reused ones are the branch's ancestors — and a contiguous selection
+> copies nothing at all. The pieces for the mode exist (`planned_messages` is the exact
+> message list, `summarize_branch` is the summarizer, `append_branch_summary` is the
+> node); what it needs is a decision about where the resulting summary hangs, which is the
+> same question §4.1 is still parked on for the fold header.
+
 ### 6.1 Why an intermediate step is load-bearing
 
 Take a chain `m1 → m2 → m3 → m4 → m5` and a desired path `m1, m4, m5`.
@@ -578,11 +618,80 @@ optimization the commit step detects and prefers, because it is the only form th
 mints nothing and preserves identity. Compaction does not reduce to copies at all — it
 replaces a span with new content, so its summary is a new entry under any model.
 
+### 6.4 The gesture vocabulary
+
+> **Decided and built (2026-08-30).** §10 required this to be designed before step 7
+> started; it is recorded here rather than in §5 because it is what the plan is made OF.
+
+Three keys, and the constraint that shaped all three is that the browser's keyboard was
+nearly full before this step: `Enter`, `Space`, `←`, `→`, `^E`, `^D`, `Tab` and `Esc`
+were spent, and the help line — one row, 76 columns of dialog interior — had already
+wrapped once and been shortened.
+
+| Key | Gesture | Why this key |
+|---|---|---|
+| `ctrl+B` | Branch from the marked messages | Beside `ctrl+E`. The two are one family: an elide keeps a contiguous run, a branch keeps a selection with gaps. A reader who has found one should find the other next to it. |
+| `c` | Copy the subtree under the cursor | Bare letters are free on this screen — there is no text input — and `c`/`v` are what the gesture is called everywhere else. |
+| `v` | Paste the copied subtree under the cursor | As above. |
+
+All three are `priority`, like `Enter` and `Space` before them: `Tree` binds no letters
+in textual 8.2.7, and relying on that staying true across an upgrade is how a key
+silently changes meaning.
+
+**Where the plan is displayed: nowhere, and that is the point.** The marks ARE the plan
+(§6's built note), so the display of the plan is the zone colouring that already exists
+— marked rows are green, the clipboard's subtree is mauve. What the readout adds is one
+OFFER line, on the same rule §5's elide offer follows: the offer appears exactly when the
+key would do something. Three gestures can now apply to one row and two of their offers
+do not fit on a row together, so they are ordered by how specific the state that produced
+them is — a pending paste beats a legal elide beats a branch — and only one is shown.
+
+**Marks pair with their tool group at SELECTION time.** Marking an assistant message that
+made tool calls also marks the results answering it, and marking a result marks the call.
+This was chosen over refusing the half-selection at the commit: the commit's refusal
+teaches the rule one attempt at a time, while the expansion shows the group on the rows
+at the moment the reader presses `Space`. The commit still checks
+(`tree_surgery.admission_reason`), because a caller that assembles ids itself — the RPC
+surface, a test, a second head — does not go through the browser at all.
+
+**A paste does not move the cursor.** It edits the tree; the context changes only when
+the reader presses `Enter` on something. The consequence is that returning to the
+conversation after a paste would show an unchanged transcript, so `action_browse_tree`
+re-opens the browser instead — carrying the clipboard, which is what lets one copy reach
+several places. That loop is also the shape §1.3's "set the active leaf — an action that
+runs and returns to the browser" asked for, arrived at from the other direction.
+
 ---
 
 ## 7. Copy entries
 
 ### 7.1 Shape
+
+> **Built (2026-08-30), with one correction.** The shape is exactly as written, minted by
+> `tree_surgery.copy_of` and appended by `TauBackend.paste_subtree`. Three notes.
+>
+> **`copiedFrom` did NOT join `_CROSS_REF_FIELDS`, and must not.** That tuple is the set
+> of fields a fork *must* be able to resolve, and `_remap_cross_refs` RAISES on one it
+> cannot — correctly, because a dangling `firstKeptId` silently drops a region of context.
+> A copy's source is normally OUTSIDE the subtree being copied; that is what makes it a
+> copy rather than a move. Putting `copiedFrom` in that tuple would have made
+> `JmftsSessionLog.fork` refuse to fork any tree anyone had ever pasted into. It went into
+> a second tuple, `_PROVENANCE_REF_FIELDS`, whose rule is "remap when resolvable, leave
+> alone when not" — the same reasoning §8's built note gives for `agentSpecId` not being
+> validated: nothing folds on it, so a stale one costs a reader one hop of history rather
+> than a region of context. The importer follows the same rule.
+>
+> **The copyable kinds are `message`, `customMessage` and `branch_summary`.** A copied
+> `branch_summary` drops its `fromId`: that field names the branch point the summary was
+> written at, which the copy is not at, and carrying it over would state a relation to a
+> node the copy has no edge to. The two splice anchors and `navigate` are NOT copyable at
+> all, for the reason that makes the whole §7 shape work in reverse — they carry an id
+> naming a position the copy's new path does not have, and `_active_path_entries` reads an
+> unreachable `firstKeptId` as "keep nothing".
+>
+> **A subtree cannot be pasted into itself.** The copy and the original would then share a
+> root→leaf path, and a duplicated `tool_call_id` on one path stops naming one call. This
+> is the only structural refusal `plan_paste` makes.
 
 A copy is `{"type": "message", "message": {…}, "copiedFrom": "<source id>"}`.
 
@@ -777,7 +886,7 @@ non-identical to the request that was actually sent.
 
 ## 10. Build order
 
-Status as of 2026-08-23. This is the one place to read it.
+Status as of 2026-08-30. This is the one place to read it.
 
 | # | Step | Sections | Status |
 |---|---|---|---|
@@ -790,11 +899,19 @@ Status as of 2026-08-23. This is the one place to read it.
 | 4d | Compaction fold header | §4.1 | **not started — undecided**, see below |
 | 5 | The hover divergence highlight | §3 | **built** |
 | 6 | Anchor provenance fields | §8, §11.3 | **built** |
-| 7 | The plan buffer, copy entries and the commit algorithm | §6, §7 | not started |
+| 7 | The plan, copy entries and the commit algorithm | §6, §6.4, §7 | **built**, plan derived rather than edited |
 
-Verified with everything above landed: whole suite **4647 passed, 140 skipped, 6
+Verified with steps 1–6 landed: whole suite **4647 passed, 140 skipped, 6
 deselected, 7 snapshots passed**; `ruff check`, `ruff format --check` and `mypy` over all
 four `src` trees in one call all clean.
+
+Verified with step 7 landed (2026-08-30): whole suite **5231 passed, 145 skipped, 6
+deselected, 7 snapshots passed**, of which 43 tests are new — 25 in
+`tau-agent-core/tests/test_tree_surgery.py` (the pure algebra), 18 in
+`tau-coding-agent/tests/test_tree_branch_and_paste.py` (the gestures, the two commits and
+the two flows) — plus one case added to the `SessionLog` contract suite. `mypy` over the
+four `src` trees in one call, `ruff check` and `ruff format --check` all clean. Two
+snapshots were re-recorded, and the only pixels that moved are the help line's.
 
 1 and 2 were independent and small, as predicted. 3 is the step that decides whether 6
 and 7 are cheap or expensive, and 6 was built in parallel with it only because §11.3
@@ -805,9 +922,13 @@ to the other.
 
 - **The archive gesture** (§11.2's built note). `hidden` covers collapse only; no key
   marks a branch done and nothing is excluded from counts.
-- **`tree--zone-copied` has no producer** until step 7, by design.
+- **The plan cannot be inspected or edited before it is committed** (§6's built note).
+  `ctrl+B` derives the keep/copy split and commits in one gesture. The reader sees the
+  result in the notification, not the plan in advance.
 
-Everything else outstanding is step 4d (undecided) and step 7 (not started).
+`tree--zone-copied` has a producer as of step 7: the clipboard's subtree.
+
+Everything else outstanding is step 4d (undecided).
 
 **`tree--zone-path` moved from step 5 to step 3.** §2 removes the guide-hover ancestry
 highlight and §3 calls itself "the replacement, not an embellishment", so shipping step 3
@@ -829,11 +950,30 @@ Step 7 will widen the return type. That was the stated cost of the option §11.1
 and it is small — but the gesture vocabulary (which keys produce plan items, where the
 plan is displayed) is not designed in this document and must be before step 7 starts.
 
+> **Resolved (2026-08-30), and the return type did NOT have to widen.** The gesture
+> vocabulary is §6.4. `TreeIntent` grew two action names and nothing else: `branch` carries
+> the marked ids and `paste` carries `(copied, target)`, both of which the existing
+> `(action, ids)` shape says perfectly well. The plan is derived from the ids by
+> `tree_surgery.plan_branch`, so the ordered keep/copy list never has to cross the screen
+> boundary — which is the same reasoning §11.1 used to keep the log out of the modal,
+> applied one layer further out.
+
 **Test obligations.** A commit-algorithm case per branch of §6.3. A refusal test for a
 plan that fails turn-completeness, asserting the log is byte-identical afterwards. A
 `copiedFrom` remapping case in the `SessionLog` contract suite
 (`testing/session_log_contract.py`), because §7.1 adds a cross-reference field and the
 suite is what makes a new store implementor aware of it.
+
+> **All three are met (2026-08-30), the third in a different form.** Case A and case B are
+> `test_commit_branch_mints_nothing_for_a_contiguous_selection` and
+> `test_commit_branch_keeps_the_prefix_and_mints_the_rest`; the refusal test is
+> `test_commit_branch_refuses_half_a_tool_call_and_appends_nothing`, which compares
+> `log.entries()` against a copy taken before the call. The contract case is
+> `test_a_copied_message_keeps_its_provenance_and_folds_like_any_other` — a
+> *pass-through* case, not a *remapping* one, because §7.1's built note establishes that
+> `copiedFrom` is provenance rather than structure and must NOT be remapped-or-raise. What
+> the suite makes a store implementor aware of is that the field has to survive the round
+> trip at all.
 
 ---
 

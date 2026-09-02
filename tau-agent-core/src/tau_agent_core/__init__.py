@@ -12,7 +12,7 @@ Reference: SUBPHASE-0.0.md
 
 # This distribution's version, read at build time by pyproject.toml's
 # [tool.setuptools.dynamic]. Kept in lockstep with the other three packages.
-__version__ = "0.9.6"
+__version__ = "0.9.7"
 
 from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.session import (

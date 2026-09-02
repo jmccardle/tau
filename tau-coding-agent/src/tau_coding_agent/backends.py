@@ -11,7 +11,7 @@ AgentSession runs against a scratch InMemorySessionLog, caller owns persistence)
 import re
 import sys
 from abc import ABC, abstractmethod
-from typing import Any, Awaitable, Callable, Literal, cast
+from typing import Any, Awaitable, Callable, Literal, Sequence, cast
 from uuid import uuid4
 from tau_llm.compat import Compat
 from tau_llm.models import EXTENDED_THINKING_LEVELS, is_valid_thinking_level
@@ -1658,7 +1658,7 @@ class TauBackend(Backend):
             ValueError: an unknown anchor or resume point, a resume point that is
                 not on the anchor's path, or a span that would hide nothing.
         """
-        from tau_agent_core.conversation_tree import ConversationTree
+        from tau_agent_core.conversation_tree import ConversationTree, is_system_message
 
         entries = session.entries()
         known = {e["id"] for e in entries}
@@ -1682,7 +1682,11 @@ class TauBackend(Backend):
         # against context_entries, not the raw path, so a span already hidden by an
         # earlier anchor is not counted twice.
         kept = set(path_ids[path_ids.index(first_kept_id) :])
-        hidden = [e for e in tree.context_entries(anchor_id) if e["id"] not in kept]
+        hidden = [
+            e
+            for e in tree.context_entries(anchor_id)
+            if e["id"] not in kept and not is_system_message(e)
+        ]
         if not hidden:
             raise ValueError(
                 f"elide from anchor {anchor_id!r} resuming at {first_kept_id!r} would hide "
@@ -1716,6 +1720,140 @@ class TauBackend(Backend):
         )
 
         return ConversationTree(session.entries(), session.cursor).context_for()
+
+    def commit_branch(
+        self, session: SessionLog, ids: Sequence[str], *, drop_context: bool
+    ) -> list[dict]:
+        """Build a branch out of the marked messages and continue on it.
+
+        The durable half of TREE-BROWSER-AS-EDITOR.md §6. ``tau_agent_core
+        .tree_surgery`` decides what the branch IS — which marks are kept in place,
+        which are minted as copies, whether an elide follows — and this performs it,
+        in the order §6.3 fixes:
+
+        1. move the leaf to the plan's attach point (the last kept mark);
+        2. mint each copy with ``append_at``, parented at the previous one;
+        3. move the leaf onto the last minted entry;
+        4. append the elide, when the reader asked to keep only the selection.
+
+        **Step 2 is invisible until step 3 lands.** ``append_at`` does not move the
+        leaf, so a mint that fails partway leaves orphan entries hanging off the
+        attach point and the cursor exactly where it was — the commit is atomic from
+        the cursor's point of view, which is the property §6.3 is built around and the
+        reason the copies are not appended one gesture at a time.
+
+        Nothing is re-parented and nothing is erased. I1 holds because every entry's
+        ``parentId`` is still written once, at append (§6.1's argument for why a plan
+        exists at all rather than a sequence of edits).
+
+        Args:
+            session: The live session log to write to.
+            ids: The marked entry ids, in any order — ``selection_order`` puts them
+                into the order the browser drew them.
+            drop_context: Whether the branch keeps only the selection. ``True``
+                appends an elide resuming at the root-most mark, so the context
+                becomes the system prompt plus the branch. ``False`` leaves
+                everything above the attach point in context.
+
+        Returns:
+            ``ConversationTree.context_for(cursor)`` — the new flat message list, the
+            same re-render seam :meth:`elide_span` and :meth:`navigate_tree` use.
+
+        Raises:
+            ValueError: The selection is empty, names an unknown entry, contains an
+                entry no branch can carry, or composes a path that is not
+                turn-complete. Checked before the first append, so a refusal leaves
+                the log byte-identical.
+        """
+        from tau_agent_core.conversation_tree import ConversationTree, is_system_message
+        from tau_agent_core.tree_surgery import (
+            branch_refusal_reason,
+            copy_of,
+            plan_branch,
+        )
+
+        entries = session.entries()
+        tree = ConversationTree(entries, session.cursor)
+        refusal = branch_refusal_reason(tree, ids, drop_context=drop_context)
+        if refusal is not None:
+            raise ValueError(f"cannot branch from this selection: {refusal}")
+        plan = plan_branch(tree, ids, drop_context=drop_context)
+
+        if session.cursor != plan.attach:
+            session.append_navigate(plan.attach)
+
+        parent = plan.attach
+        for source_id in plan.copies:
+            kind, payload = copy_of(tree.entry(source_id))
+            parent = session.append_at(parent, kind, payload)
+        if plan.copies:
+            session.append_navigate(parent)
+
+        if plan.elide_from is not None:
+            # Recomputed against the POST-MINT tree rather than carried over from the
+            # plan: the anchor is now the minted tip, and the covered span is the one
+            # figure ``append_elide`` records that nothing can recompute afterwards
+            # (§8.2). Same arithmetic as :meth:`elide_span`, on the same basis.
+            after = session.entries()
+            grown = ConversationTree(after, session.cursor)
+            path_ids = [e["id"] for e in grown.path(session.cursor)]
+            kept = set(path_ids[path_ids.index(plan.elide_from) :])
+            hidden = [
+                e
+                for e in grown.context_entries(session.cursor)
+                if e["id"] not in kept and not is_system_message(e)
+            ]
+            session.append_elide(
+                plan.elide_from,
+                covered_entries=len(hidden),
+                covered_tokens=estimate_span_tokens(hidden),
+                agent_spec_id=agent_spec_in_force(after, str(session.cursor)),
+            )
+
+        return ConversationTree(session.entries(), session.cursor).context_for()
+
+    def paste_subtree(self, session: SessionLog, source_id: str, target_id: str) -> list[str]:
+        """Re-create the subtree at ``source_id`` under ``target_id``.
+
+        The durable half of TREE-BROWSER-AS-EDITOR.md §7. Every copied entry is a new
+        entry carrying ``copiedFrom``, minted with ``append_at`` so the paste never
+        moves the leaf: a paste edits the TREE, and what the model sees changes only
+        when the reader navigates onto the copy. That split is why this returns ids
+        rather than a message list — nothing about the current context changed.
+
+        Parents are minted before children (``plan_paste`` orders them that way), and
+        a source→new id map re-hangs each child under its copied parent, so the copy
+        keeps the original's shape including its forks.
+
+        Args:
+            session: The live session log to write to.
+            source_id: The copied node — the root of the subtree.
+            target_id: The entry the copy hangs from.
+
+        Returns:
+            The ids minted, in the order they were appended. The first is the copy of
+            ``source_id`` itself.
+
+        Raises:
+            ValueError: An unknown id, a source whose kind cannot be copied, a target
+                inside the source's own subtree, or a copied tool result whose call is
+                on neither the target's path nor the copied run. Checked before the
+                first append.
+        """
+        from tau_agent_core.conversation_tree import ConversationTree
+        from tau_agent_core.tree_surgery import paste_refusal_reason, plan_paste
+
+        tree = ConversationTree(session.entries(), session.cursor)
+        plan = plan_paste(tree, source_id, target_id)
+        refusal = paste_refusal_reason(tree, plan)
+        if refusal is not None:
+            raise ValueError(f"cannot paste here: {refusal}")
+
+        minted: dict[str, str] = {}
+        for mint in plan.mints:
+            parent = plan.target if mint.parent_source_id is None else minted[mint.parent_source_id]
+            minted[mint.source_id] = session.append_at(parent, mint.kind, mint.payload)
+        return [minted[mint.source_id] for mint in plan.mints]
 
     async def rollback_turn(self, text: str) -> SubmissionResult:
         """Abort the in-flight turn, un-path what it produced, and run ``text`` instead.

@@ -1280,6 +1280,31 @@ docstring) applies here — never acquire this from a hook running on the
 session's own current turn task, or it deadlocks exactly as a reentrant
 ``submit()`` call would.
 
+## BranchPlan
+<!-- agent: yes -->
+
+```python
+class BranchPlan(attach: str, keeps: tuple[str, ...], copies: tuple[str, ...], elide_from: str | None, hidden: int)
+```
+
+`tau_agent_core.tree_surgery.BranchPlan` · since 0.9.7
+
+A branch worked out from a set of marked nodes, before anything is written.
+
+**Constructor parameters**
+
+- `attach: str` — The existing entry the branch grows from — the last kept item. The commit moves the cursor here before minting anything.
+- `keeps: tuple[str, ...]` — Marked entries used IN PLACE, root-most first. Always at least one: the root-most mark is an existing entry and is trivially a chain of one. These keep their identity, their ids, and their recorded usage.
+- `copies: tuple[str, ...]` — Marked entries to be minted as new entries under ``attach``, in order. Empty when the whole selection was already a real ancestor chain — §6.3's case A, the shape that mints nothing.
+- `elide_from: str | None` — The entry an ``elide`` should resume at once the branch is minted, or ``None`` when no elide is wanted or when one would hide nothing. Set only for ``drop_context=True``.
+- `hidden: int` — How many entries that elide would remove from the fold. ``0`` whenever ``elide_from`` is ``None``.
+
+### mints
+
+`tau_agent_core.tree_surgery.BranchPlan.mints: int` · since 0.9.7
+
+How many new entries the commit will append for the copies.
+
 ## BranchSummary
 <!-- agent: yes -->
 
@@ -1764,6 +1789,52 @@ log is never mutated — ``navigate`` only moves the in-memory cursor.
 
 - `entries: list[dict[str, Any]]` — *(no description)*
 - `cursor: str | None` — *(no description)*
+
+### children_of
+
+```python
+children_of(entry_id: str | None) -> list[str]
+```
+
+`tau_agent_core.conversation_tree.ConversationTree.children_of`
+
+The ids parented at ``entry_id``, oldest first.
+
+The downward edge, where :meth:`path` walks upward. ``tree_surgery`` needs it
+to copy a subtree — the shape below a node is part of what a copy re-creates
+— and reading it from the index built at construction is what keeps that walk
+from re-scanning every entry per node.
+
+**Parameters**
+
+- `entry_id: str | None` — The parent id, or ``None`` for the root-level entries.
+
+**Returns**
+
+The child ids sorted by timestamp, the same order :meth:`tree` puts them in. An unknown id has no children, which is the same answer as a leaf — this is a graph reader, not a validator (see :meth:`contains`).
+
+### contains
+
+```python
+contains(entry_id: str) -> bool
+```
+
+`tau_agent_core.conversation_tree.ConversationTree.contains`
+
+Whether ``entry_id`` names an entry in this tree.
+
+The question :meth:`entry` answers by raising. It exists for callers that
+are validating a caller-supplied id and want to say what is wrong with it
+(``tree_surgery.selection_order`` names every unknown id at once, which a
+``try``/``except KeyError`` per id cannot do).
+
+**Parameters**
+
+- `entry_id: str` — The id to look for.
+
+**Returns**
+
+``True`` when the id names an entry.
 
 ### context_entries
 
@@ -2385,6 +2456,41 @@ Reference: SUBPHASE-0.0.md, "6. Session Entry JSON Schema" section.
 `tau_agent_core.session.MessageEntry.type: Literal['message']`
 
 *No description. This object is marked but undocumented.*
+
+## PasteMint
+<!-- agent: yes -->
+
+```python
+class PasteMint(source_id: str, parent_source_id: str | None, kind: str, payload: dict[str, Any])
+```
+
+`tau_agent_core.tree_surgery.PasteMint` · since 0.9.7
+
+One entry a paste will mint, and where it hangs.
+
+**Constructor parameters**
+
+- `source_id: str` — The entry being copied. Written into the new entry as ``copiedFrom``.
+- `parent_source_id: str | None` — The source id of this mint's parent, or ``None`` when it hangs directly from the paste target. Source ids, not new ids, because the new ones do not exist until the commit runs — the commit keeps a source→new map as it walks the mints in order.
+- `kind: str` — The entry type to append, always one of :data:`COPYABLE_KINDS`.
+- `payload: dict[str, Any]` — The append payload, ready for ``SessionLog.append_at``, including ``copiedFrom``.
+
+## PastePlan
+<!-- agent: yes -->
+
+```python
+class PastePlan(target: str, mints: tuple[PasteMint, ...], skipped: tuple[str, ...])
+```
+
+`tau_agent_core.tree_surgery.PastePlan` · since 0.9.7
+
+A subtree copy worked out against the tree, before anything is written.
+
+**Constructor parameters**
+
+- `target: str` — The entry the copied subtree hangs from.
+- `mints: tuple[PasteMint, ...]` — The entries to append, parents before children.
+- `skipped: tuple[str, ...]` — Source entries left out because their kind is not copyable (:data:`COPYABLE_KINDS`). Their children re-parent onto the nearest copied ancestor, so the copy is shorter than the original rather than broken — and the count is reported to the reader rather than swallowed.
 
 ## SessionCatalog
 <!-- agent: yes -->
@@ -3416,6 +3522,38 @@ A node in the browsable session tree (pi ``SessionTreeNode``).
 - `is_leaf: bool` — *(no description)*
 - `children: list[TreeNode] = list()` — *(no description)*
 
+## admission_reason
+<!-- agent: yes -->
+
+```python
+admission_reason(messages: list[dict[str, Any]]) -> str | None
+```
+
+`tau_agent_core.tree_surgery.admission_reason` · since 0.9.7
+
+Why this message sequence would be rejected as a turn, or ``None``.
+
+The plan-level counterpart of
+:meth:`~tau_agent_core.conversation_tree.ConversationTree.fork_admission_reason`,
+which asks the same question of a real path. Two faults, and the first is the one
+a hand-built selection produces:
+
+* an **orphan result** — a ``toolResult`` whose ``tool_call_id`` no preceding
+  assistant message declared. Copying a result without its call, or eliding the
+  call out from under it, both land here;
+* a **pending call** — the sequence ends on an assistant message with tool calls
+  that nothing answered. This is what ``fork_admission_reason`` rejects, and it
+  matters here for the same reason: the branch's tip becomes the cursor, so the
+  next turn starts from exactly this prefix.
+
+**Parameters**
+
+- `messages: list[dict[str, Any]]` — The composed message list, root→leaf.
+
+**Returns**
+
+A sentence naming the offending call, or ``None`` when the sequence is turn-complete.
+
 ## agent_spec_in_force
 <!-- agent: yes -->
 
@@ -3456,6 +3594,108 @@ is what keeps that answer distinct from a caller who never looked.
 - `entries: list[dict[str, Any]]` — *(no description)*
 - `leaf_id: str | None` — *(no description)*
 
+## branch_refusal_reason
+<!-- agent: yes -->
+
+```python
+branch_refusal_reason(tree: ConversationTree, ids: Iterable[str], *, drop_context: bool) -> str | None
+```
+
+`tau_agent_core.tree_surgery.branch_refusal_reason` · since 0.9.7
+
+Why the marked selection cannot become a branch, or ``None`` if it can.
+
+Every refusal the commit would raise, computed while the reader can still see
+the tree they marked. Three of them:
+
+* a marked node whose kind cannot be copied (:data:`COPYABLE_KINDS`) — a
+  ``navigate`` or a splice anchor carries an id pointing at a path the copy
+  will not be on;
+* a system message among the COPIES, which would mint a second system prompt in
+  the middle of the branch beside the one every fold carries anyway. As the
+  root-most mark it is a *keep* and stays legal — that is how "hang these
+  messages straight off the system prompt" is said;
+* a composed path that is not turn-complete (:func:`admission_reason`).
+
+The last should be rare: the browser expands a mark to its :func:`tool_group`,
+so a reader cannot easily select half a tool call. It is still checked, because
+"rare" and "impossible" are different and the log is what pays the difference.
+
+**Parameters**
+
+- `tree: ConversationTree` — The tree the marks belong to.
+- `ids: Iterable[str]` — The marked entry ids, in any order.
+- `drop_context: bool` — As :func:`plan_branch` — it changes what the composed path is, and therefore what turn-completeness means for it.
+
+**Returns**
+
+A sentence naming the problem, or ``None``.
+
+**Raises**
+
+- `ValueError` — The selection is empty, or an id names no entry.
+
+## copy_of
+<!-- agent: yes -->
+
+```python
+copy_of(entry: dict[str, Any]) -> tuple[str, dict[str, Any]]
+```
+
+`tau_agent_core.tree_surgery.copy_of` · since 0.9.7
+
+The ``(kind, payload)`` an ``append_at`` needs to re-mint ``entry`` elsewhere.
+
+A copied message keeps ``type: "message"`` rather than gaining a kind of its own
+(§7.1): a copy IS an ordinary message on an ordinary path, and every existing
+walker should treat it as one without being taught anything. The provenance is
+one extra field, ``copiedFrom``, which joins the JMFTS store's cross-reference
+fields so a query can dedupe two documents with identical text.
+
+A ``branch_summary`` copy drops ``fromId``. That field names the branch point the
+summary was written at, which the copy is not at; carrying it over would state a
+relation to a node the copy has no edge to.
+
+**Parameters**
+
+- `entry: dict[str, Any]` — The source entry, whose kind must be in :data:`COPYABLE_KINDS`.
+
+**Returns**
+
+The entry type and the payload to append.
+
+**Raises**
+
+- `ValueError` — The entry's kind cannot be copied.
+
+## entries_to_messages
+<!-- agent: yes -->
+
+```python
+entries_to_messages(entries: list[dict[str, Any]]) -> list[dict[str, Any]]
+```
+
+`tau_agent_core.conversation_tree.entries_to_messages` · since 0.9.7
+
+Convert already-folded path entries into the loop's message list.
+
+The second half of :meth:`ConversationTree.context_for`, split out so a caller
+holding a *hypothetical* entry list — the branch a plan would produce, before
+any of it is appended (``tau_agent_core.tree_surgery``) — converts it by the
+same rules the live fold uses. A second conversion written beside the planner
+would be a second answer to "what will the model see", and the whole point of
+checking a plan before committing it is that the two cannot differ.
+
+Mirrors ``SessionManager.get_active_messages`` (``session_manager.py:191-221``).
+
+**Parameters**
+
+- `entries: list[dict[str, Any]]` — Folded path entries, root→leaf — the output of :meth:`ConversationTree.context_entries`, or a planned equivalent.
+
+**Returns**
+
+The messages those entries contribute, in order. Entry kinds that carry no message at all (``navigate``, ``customEntry``, ``model_change``) contribute nothing, and an ``elide`` contributes nothing by design: it is a splice anchor with no payload to render.
+
 ## open_branch
 <!-- agent: yes -->
 
@@ -3482,6 +3722,123 @@ It is a runtime routing key only; nothing durable carries it.
 - `log: SessionLog` — *(no description)*
 - `parent_id: str | None` — *(no description)*
 - `label: str` — *(no description)*
+
+## paste_refusal_reason
+<!-- agent: yes -->
+
+```python
+paste_refusal_reason(tree: ConversationTree, plan: PastePlan) -> str | None
+```
+
+`tau_agent_core.tree_surgery.paste_refusal_reason` · since 0.9.7
+
+Why the pasted subtree would be malformed where it lands, or ``None``.
+
+One fault: a copied ``toolResult`` whose call is on neither the target's path nor
+the copied run above it. Every message below such a result is unusable, and the
+reader cannot see why from the rows.
+
+A copied line that ENDS on an unanswered tool call is deliberately not refused. A
+paste does not move the cursor, so no turn starts there until someone navigates
+onto it — and navigating onto a node with a pending call is a state an ordinary
+interrupted turn reaches too. Refusing it here would invent a rule the rest of
+the browser does not apply.
+
+**Parameters**
+
+- `tree: ConversationTree` — The tree the plan was made against.
+- `plan: PastePlan` — The paste plan to check.
+
+**Returns**
+
+A sentence naming the offending result, or ``None``.
+
+## plan_branch
+<!-- agent: yes -->
+
+```python
+plan_branch(tree: ConversationTree, ids: Iterable[str], *, drop_context: bool) -> BranchPlan
+```
+
+`tau_agent_core.tree_surgery.plan_branch` · since 0.9.7
+
+Work out the branch a marked selection asks for.
+
+The keep/copy split is read off the tree (§6.3 step 2): the longest run of marks
+starting at the root-most one where each is the real ``parentId`` child of the
+one before is KEPT, and everything after the first gap is COPIED. A selection
+that is already a contiguous ancestor chain therefore mints nothing at all and
+the commit is a cursor move plus, at most, an elide — case A, the only form that
+preserves every id's identity.
+
+**Parameters**
+
+- `tree: ConversationTree` — The tree the marks belong to.
+- `ids: Iterable[str]` — The marked entry ids, in any order (ordered by :func:`selection_order`).
+- `drop_context: bool` — Whether the branch should keep only the selection. ``True`` plans an ``elide`` resuming at the root-most mark, so the context becomes the system prompt plus the branch; ``False`` leaves everything above the attach point in context.
+
+**Returns**
+
+The plan. Ask :func:`branch_refusal_reason` first — this function assumes the selection is legal and describes what would happen, rather than judging it.
+
+**Raises**
+
+- `ValueError` — The selection is empty, or an id names no entry.
+
+## plan_paste
+<!-- agent: yes -->
+
+```python
+plan_paste(tree: ConversationTree, source_id: str, target_id: str) -> PastePlan
+```
+
+`tau_agent_core.tree_surgery.plan_paste` · since 0.9.7
+
+Work out the subtree copy a paste asks for.
+
+The whole subtree, not one node: a paste re-creates what hangs below the copied
+node, including its forks, because a conversation branch's shape is part of what
+was copied. Parents come before children, so the commit can walk the mints once
+keeping a source→new id map.
+
+**Parameters**
+
+- `tree: ConversationTree` — The tree both ids belong to.
+- `source_id: str` — The copied node — the root of the subtree.
+- `target_id: str` — The entry the copy hangs from.
+
+**Returns**
+
+The plan.
+
+**Raises**
+
+- `ValueError` — Either id is unknown, the source's kind cannot be copied, or the target is inside the source's own subtree — that last one would put the copy and the original on one root→leaf path, where a duplicated ``tool_call_id`` stops meaning one call.
+
+## planned_messages
+<!-- agent: yes -->
+
+```python
+planned_messages(tree: ConversationTree, plan: BranchPlan) -> list[dict[str, Any]]
+```
+
+`tau_agent_core.tree_surgery.planned_messages` · since 0.9.7
+
+The message list the branch would hand the model, if it were committed.
+
+Built from the same fold the live session uses (:func:`entries_to_messages`), so
+a plan that validates here cannot fail differently once appended. The copies
+contribute their source entries' messages, because that is what a copy IS — the
+same content at a new id.
+
+**Parameters**
+
+- `tree: ConversationTree` — The tree the plan was made against.
+- `plan: BranchPlan` — The plan to project.
+
+**Returns**
+
+The composed root→leaf message list.
 
 ## resolve_cursor
 <!-- agent: yes -->
@@ -3519,6 +3876,36 @@ usually the intended continuation rather than an accident (§2).
 
 - `entries: list[dict[str, Any]]` — *(no description)*
 
+## selection_order
+<!-- agent: yes -->
+
+```python
+selection_order(tree: ConversationTree, ids: Iterable[str]) -> tuple[str, ...]
+```
+
+`tau_agent_core.tree_surgery.selection_order` · since 0.9.7
+
+Put marked ids into the order the browser draws them.
+
+The reader marks nodes in whatever order they find them; a branch built from
+"the order I happened to click" would be a different conversation depending on
+how the reader navigated. Row order is the tree's own order — a preorder walk
+of :meth:`ConversationTree.tree`, whose children are already sorted by
+timestamp — so the branch reads down the screen exactly as it was selected.
+
+**Parameters**
+
+- `tree: ConversationTree` — The tree the ids belong to.
+- `ids: Iterable[str]` — The marked entry ids, in any order. Duplicates collapse.
+
+**Returns**
+
+The same ids, root-most first, in row order.
+
+**Raises**
+
+- `ValueError` — An id names no entry in this tree. Fail-Early: a plan built around a dangling id would mint a branch missing a message the reader asked for, and say nothing.
+
 ## summarize_branch
 <!-- agent: yes -->
 
@@ -3553,3 +3940,40 @@ Reference: SESSION-TREE-IMPLEMENTATION.md §3.1, §3.3.
 **Returns**
 
 ``(summary, usage)`` — the text AND what producing it cost. This is a real LLM call made outside the agent loop, so nothing else can observe its tokens; if it does not report them, they go uncounted (see :mod:`tau_agent_core.usage`).
+
+## tool_group
+<!-- agent: yes -->
+
+```python
+tool_group(tree: ConversationTree, entry_id: str) -> frozenset[str]
+```
+
+`tau_agent_core.tree_surgery.tool_group` · since 0.9.7
+
+``entry_id`` together with the entries that cannot be separated from it.
+
+An assistant message that declares tool calls and the ``toolResult`` entries
+answering them are one unit as far as any provider is concerned: a copy of one
+without the other is a prefix that gets rejected. Rather than let the reader
+build that selection and refuse it at the commit, the browser expands a mark to
+this set — selecting either end selects both, and the reader SEES the group
+light up on the rows.
+
+The pairing is structural: an assistant's results are looked for among its
+DESCENDANTS, and a result's declaring assistant among its ANCESTORS, which is
+the only relation that means "answered this call on this line". The first match
+per ``tool_call_id`` in row order wins, so an assistant whose call was re-run on
+two branches pulls in one result, not a group spanning both.
+
+**Parameters**
+
+- `tree: ConversationTree` — The tree ``entry_id`` belongs to.
+- `entry_id: str` — The entry the reader marked.
+
+**Returns**
+
+The ids to mark, always including ``entry_id``. A message with no tool calls and no ``tool_call_id`` is its own group, so this is the identity for the ordinary case.
+
+**Raises**
+
+- `KeyError` — No entry has that id.

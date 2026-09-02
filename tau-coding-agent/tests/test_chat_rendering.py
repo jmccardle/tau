@@ -1312,6 +1312,122 @@ async def test_a_reload_ends_scrolled_to_the_newest_message():
         assert display.scroll_y >= display.max_scroll_y - 0.5
 
 
+def _tool_transcript(turns: int) -> list[dict]:
+    """``turns`` user→answer spans, each with one tool call and its result.
+
+    The shape :func:`_transcript` cannot produce and the one every real coding
+    session has. It matters here because the two rebuild through different code:
+    a plain answer is an ``add_persisted_message`` (which scrolls to the tail on
+    its way past), a tool span is an ``ExchangeBox`` built by
+    ``_reload_exchange`` (which does not, and whose ``Collapsible`` settles its
+    height after the last scroll anybody performs).
+    """
+    msgs: list[dict] = [{"role": "system", "content": "s"}]
+    for i in range(turns):
+        msgs.append({"role": "user", "content": f"q{i}"})
+        msgs.append(
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": f"working on {i}\n" * 4},
+                    {"type": "toolCall", "id": f"c{i}", "name": "read", "arguments": {}},
+                ],
+            }
+        )
+        msgs.append(
+            {
+                "role": "toolResult",
+                "tool_call_id": f"c{i}",
+                "content": [{"type": "text", "text": f"result {i}\n" * 4}],
+            }
+        )
+        msgs.append({"role": "assistant", "content": [{"type": "text", "text": f"answer {i}"}]})
+    return msgs
+
+
+async def test_a_reload_of_a_transcript_with_tool_calls_also_ends_at_the_newest_message():
+    """The same claim as the test above, on the shape that broke it.
+
+    Reported as "the window only ever lands at the top or bottom": a resumed
+    session opened at the FIRST message of a 46-message conversation. The final
+    ``scroll_to_tail`` runs against ``max_scroll_y``, which is derived from a
+    ``virtual_size`` the batch has not recomputed yet, so it clamps to 0 and does
+    nothing — and ``_follow_tail`` is left saying the reader is at the bottom
+    while they are at the top. ``ChatDisplay._size_updated`` takes the second
+    chance once the layout is real.
+
+    A plain-message transcript hides this, which is why the test above passed
+    throughout: every ``add_message`` scrolls to the tail on its way down, and the
+    last one runs late enough to find a measured layout.
+    """
+    async with _Harness().run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.reload_messages(_tool_transcript(6))
+        for _ in range(3):
+            await pilot.pause()
+        assert display.max_scroll_y > 0, "the transcript is taller than the window"
+        assert display.scroll_y >= display.max_scroll_y - 0.5
+
+
+async def test_content_growing_under_a_reader_who_scrolled_away_does_not_move_them():
+    """The other half of the same hook, and the one it must not break.
+
+    Growing content pulls the view down only for a reader who is already at the
+    bottom. Scrolling up releases the tail (``watch_scroll_y``), and from then on
+    a mount must leave the view exactly where it is — that is the whole of
+    docs/TUI-STEERING.md §1.
+    """
+    async with _Harness().run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.reload_messages(_tool_transcript(6))
+        for _ in range(3):
+            await pilot.pause()
+
+        display.scroll_to(y=10, animate=False)
+        await pilot.pause()
+        assert display._follow_tail is False
+
+        display.add_message("assistant", "a new answer arrives", source="verbatim")
+        for _ in range(3):
+            await pilot.pause()
+        assert display.scroll_y == 10
+
+
+async def test_a_box_folding_itself_shut_does_not_move_a_reader_who_scrolled_back():
+    """The turn that ends while you are reading history must leave you there.
+
+    ``Collapsible._watch_collapsed`` ends with
+    ``call_after_refresh(self.scroll_visible)``, and this transcript collapses
+    boxes without being asked: ``_close_exchange`` folds every finished exchange,
+    ``_fold_reasoning`` folds a thinking region when the answer starts. Each of
+    those dragged a reader who had scrolled back into history down to whichever
+    box had just closed — mid-sentence, on the model's schedule.
+    """
+    async with _Harness().run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(ChatDisplay)
+        await display.reload_messages(_tool_transcript(8))
+        for _ in range(3):
+            await pilot.pause()
+
+        display.scroll_to(y=12, animate=False)
+        await pilot.pause()
+        assert display._follow_tail is False
+
+        # A box further down folds itself shut, exactly as a finishing turn does.
+        last = list(display.query(ExchangeBox))[-1]
+        last.collapsed = False
+        for _ in range(3):
+            await pilot.pause()
+        assert display.scroll_y == 12, "an expansion elsewhere moved the reader"
+        last.collapsed = True
+        for _ in range(3):
+            await pilot.pause()
+        assert display.scroll_y == 12, "a collapse elsewhere moved the reader"
+
+
 async def test_an_uncapped_reload_costs_a_handful_of_layout_passes_not_one_each():
     """The batch, measured by the thing that costs the time.
 

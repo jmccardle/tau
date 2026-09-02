@@ -13,7 +13,8 @@ renamed kwarg must not silently break every host.
 runtime-host trio `new_session`, `fork`, `switch_session` (H1,
 docs/REMOTE-CONTROL.md §4[6] — backed by `AgentSessionRuntime`,
 `agent_session_runtime.py`).
-**Tier B** (parity — docs/RPC-TIER-B.md): `compact`, `get_last_assistant_text`,
+**Tier B** (parity — docs/RPC-TIER-B.md): `compact`, `complete_path`,
+`get_last_assistant_text`,
 `get_models`, `get_session_name`, `get_session_stats`, `list_sessions`,
 `set_auto_compaction`, `set_model`, `set_session_name`. All of them are wired;
 nothing in this table describes a Tier B verb as pending. (`get_models` and
@@ -46,6 +47,7 @@ import asyncio
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Literal
 from uuid import uuid4
 
@@ -469,6 +471,20 @@ _SUBMISSION_PROPERTIES: dict[str, Any] = {
         "type": "boolean",
         "description": "Whether a leading '/' is command-dispatched. Defaults to False.",
     },
+    "expand_attachments": {
+        "type": "boolean",
+        "description": (
+            "Whether `@file` references in `text` are resolved into "
+            "<attachment>/<reference> blocks before the Submission is built, "
+            "the way the TUI's editor does (docs/FILE-ATTACHMENTS.md §2). "
+            "Defaults to False, which sends `@notes.txt` to the model as those "
+            "eleven literal characters. NOT a Submission field: expansion "
+            "happens HERE, so what is persisted and what the model saw are the "
+            "same string. Attached images are appended to `images`. Files are "
+            "read at this moment, not when the host composed the text. See the "
+            "`attachments` key on the result for what expansion did."
+        ),
+    },
     "allow_user_input": {
         "type": "boolean",
         "description": "Whether this submission's turn may open a blocking dialog.",
@@ -547,6 +563,22 @@ SUBMIT_RESULT_SCHEMA: dict[str, Any] = {
                 "synchronously with no turn started, so there is no later agent_end "
                 "to carry it. {name, args, performer, output}. Absent for an "
                 "ordinary turn — poll get_messages / watch for agent_end instead."
+            ),
+        },
+        "attachments": {
+            "type": "object",
+            "description": (
+                "Present exactly when the request set expand_attachments: true — "
+                "absent is 'expansion did not run', which is a different "
+                "statement from 'expansion found nothing'. "
+                "{expanded: int, images: int, unresolved: [str], failures: [str]}. "
+                "`unresolved` names the @words that matched no file and were "
+                "therefore left in the text as prose. `failures` names the ones "
+                "that resolved but could not be sent, each with the reason; the "
+                'model is told the same thing through a <reference error="…"> '
+                "block, so neither side is left believing an attachment landed "
+                "when it did not. A host that shows neither list turns a visible "
+                "failure back into a silent one."
             ),
         },
     },
@@ -797,20 +829,99 @@ def _reject_unsupported_multitask_strategy(params: dict[str, Any]) -> None:
         raise RPCError(INVALID_PARAMS, reason, data={"multitask_strategy": strategy})
 
 
-def _submission_from_params(params: dict[str, Any]) -> Submission:
+def _expanded_text_and_images(
+    params: dict[str, Any],
+) -> tuple[str, list[dict[str, Any]] | None, dict[str, Any]]:
+    """Resolve `@file` references in `params["text"]`, the way the TUI's editor does.
+
+    The RPC counterpart of `Parley._expand_attachments` (app.py), and
+    deliberately the same two calls in the same order: `scan_attachments` to
+    decide what each `@word` IS, then `render_attachments` to read the files
+    at THIS moment. docs/FILE-ATTACHMENTS.md §2 puts expansion in the frontend
+    because the core decides and the frontend performs — over this wire τ IS
+    the frontend, which is the whole reason a head cannot do this for itself
+    without re-implementing the block vocabulary in another language.
+
+    Returns:
+        `(text, images, report)`. `images` is `None` for "none", which is what
+        `Submission` expects. `report` is the result's `attachments` key.
+    """
+    from tau_agent_core.attachments import (
+        SENDABLE_KINDS,
+        render_attachments,
+        scan_attachments,
+    )
+
+    text: str = params["text"]
+    # The process working directory, which is what --mode rpc's own `--cwd`
+    # already set and what every path-taking tool in this session resolves
+    # against. Reading it here rather than taking it as a param keeps ONE
+    # answer to "relative to what?" for the agent's tools, `complete_path`'s
+    # listing and this expansion — three places that must not disagree about
+    # which file `@notes.txt` names.
+    attachments = scan_attachments(text, cwd=Path.cwd())
+    unresolved = [a.token for a in attachments if a.kind == "unresolved"]
+    sendable = [a for a in attachments if a.kind in SENDABLE_KINDS]
+
+    if not sendable:
+        # No blocks to build, so nothing is prepended and the host's text goes
+        # out as typed. The report still goes back: `unresolved` non-empty is
+        # exactly the "you asked for expansion and got prose" case a host has
+        # to be able to see.
+        return text, None, {"expanded": 0, "images": 0, "unresolved": unresolved, "failures": []}
+
+    rendered = render_attachments(attachments)
+    images = list(rendered.images) or None
+    incoming = params.get("images")
+    if incoming:
+        # The host's own images come FIRST: it composed them, and an attachment
+        # this call resolved is the later addition. Concatenating rather than
+        # letting either win is the only reading that loses neither.
+        images = list(incoming) + list(rendered.images)
+    return (
+        rendered.prefix + text,
+        images,
+        {
+            "expanded": len(sendable),
+            "images": len(rendered.images),
+            "unresolved": unresolved,
+            "failures": list(rendered.failures),
+        },
+    )
+
+
+def _submission_from_params(params: dict[str, Any]) -> tuple[Submission, dict[str, Any] | None]:
     """Build a `Submission` from wire params. Provenance is ALWAYS present on
     the constructed record — defaulted when the caller omits it (`prompt`'s
     contract), never simply absent — regardless of which verb called this;
     it is each verb's `params_schema.required` list, not this function, that
     makes `submit` demand provenance on the wire (§10 decision 10).
+
+    Returns:
+        `(submission, attachment_report)`. The report is `None` when the
+        request did not set `expand_attachments`, which is why the result's
+        `attachments` key is ABSENT in that case rather than an empty summary
+        claiming an expansion ran and found nothing.
     """
     _reject_unsupported_multitask_strategy(params)
+    text: str = params["text"]
+    images: list[dict[str, Any]] | None = params.get("images")
+    report: dict[str, Any] | None = None
+    if params.get("expand_attachments"):
+        text, images, report = _expanded_text_and_images(params)
+
     kwargs: dict[str, Any] = {
-        "text": params["text"],
+        "text": text,
         "source": params.get("source", "rpc"),
         "submitter": params.get("submitter", "rpc-client"),
         "submission_id": params.get("submission_id") or str(uuid4()),
     }
+    if report is not None:
+        # Expansion already decided both, including the case where it merged
+        # the host's own images with the attached ones; letting the loop below
+        # copy `params["images"]` over the merged list would silently drop
+        # every attached image.
+        kwargs["images"] = images
     for optional_field in (
         "images",
         "multitask_strategy",
@@ -821,12 +932,20 @@ def _submission_from_params(params: dict[str, Any]) -> Submission:
         "correlation",
         "depth",
     ):
-        if optional_field in params:
+        if optional_field in params and optional_field not in kwargs:
             kwargs[optional_field] = params[optional_field]
-    return Submission(**kwargs)
+    # `expand_attachments` is deliberately NOT in that loop: it is a wire-level
+    # instruction to this function, not a Submission field, and passing it
+    # through would raise on a model that has never heard of it.
+    return Submission(**kwargs), report
 
 
-def _accept_result(submission_id: str, *, command: CommandOutcome | None = None) -> dict[str, Any]:
+def _accept_result(
+    submission_id: str,
+    *,
+    command: CommandOutcome | None = None,
+    attachments: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """The C3 acceptance payload. Never carries the turn's messages (C3:
     "the response must NOT carry the turn's messages") — those are pulled via
     `get_messages` (E2).
@@ -841,12 +960,21 @@ def _accept_result(submission_id: str, *, command: CommandOutcome | None = None)
     A `performer="frontend"` outcome never reaches here — see
     `_submit_and_acknowledge`'s tail, which raises `RPCError` for that case
     instead of calling this function.
+
+    `attachments` is `_submission_from_params`'s report, set exactly when the
+    request asked for expansion. It rides the ACCEPTANCE and not a later event
+    because expansion happened before admission: by the time an `agent_end`
+    could carry it, the model has already read the blocks, and a host told
+    then that a file failed would be learning it too late to say so beside the
+    message it typed.
     """
     result: dict[str, Any] = {
         "accepted": True,
         "submission_id": submission_id,
         "rejection_reason": None,
     }
+    if attachments is not None:
+        result["attachments"] = attachments
     if command is not None:
         result["command"] = {
             "name": command.name,
@@ -858,7 +986,11 @@ def _accept_result(submission_id: str, *, command: CommandOutcome | None = None)
 
 
 async def _submit_and_acknowledge(
-    handler: "RPCHandler", msg_id: int | None, method: str, sub: Submission
+    handler: "RPCHandler",
+    msg_id: int | None,
+    method: str,
+    sub: Submission,
+    attachments: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Drive `AgentSession.submit()` as a background task and get the C3
     acceptance response onto the wire the instant admission is decided —
@@ -937,7 +1069,10 @@ async def _submit_and_acknowledge(
             {
                 "jsonrpc": "2.0",
                 "id": msg_id,
-                "result": {**_accept_result(sub.submission_id), "method": method},
+                "result": {
+                    **_accept_result(sub.submission_id, attachments=attachments),
+                    "method": method,
+                },
             }
         )
         admitted.set_result(None)
@@ -1011,8 +1146,8 @@ async def _submit_and_acknowledge(
                 unsupported_command_message(outcome.command, "the τ RPC wire"),
                 data={"submission_id": sub.submission_id, "command": outcome.command.name},
             )
-        return _accept_result(sub.submission_id, command=outcome.command)
-    return _accept_result(sub.submission_id)
+        return _accept_result(sub.submission_id, command=outcome.command, attachments=attachments)
+    return _accept_result(sub.submission_id, attachments=attachments)
 
 
 @command(
@@ -1031,7 +1166,8 @@ async def _submit_and_acknowledge(
 async def _handle_submit(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any] | None:
-    return await _submit_and_acknowledge(handler, msg_id, "submit", _submission_from_params(params))
+    sub, attachments = _submission_from_params(params)
+    return await _submit_and_acknowledge(handler, msg_id, "submit", sub, attachments)
 
 
 @command(
@@ -1051,7 +1187,8 @@ async def _handle_submit(
 async def _handle_prompt(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any] | None:
-    return await _submit_and_acknowledge(handler, msg_id, "prompt", _submission_from_params(params))
+    sub, attachments = _submission_from_params(params)
+    return await _submit_and_acknowledge(handler, msg_id, "prompt", sub, attachments)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -2528,6 +2665,112 @@ async def _handle_compact(
 
 
 ### end tier-b:compact
+
+### begin tier-b:complete_path
+COMPLETE_PATH_PARAMS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "text": {
+            "type": "string",
+            "description": "The editor's contents as typed, NOT just the @word.",
+        },
+        "cursor": {
+            "type": "integer",
+            "minimum": 0,
+            "description": (
+                "The cursor's character offset into `text`. Which @reference is "
+                "being completed is decided from this, so a host that sends the "
+                "@word alone with cursor 0 gets `completion: null` rather than a "
+                "listing — the cursor is not optional and is not defaulted."
+            ),
+        },
+    },
+    "required": ["text", "cursor"],
+    "additionalProperties": False,
+}
+
+COMPLETE_PATH_RESULT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "completion": {
+            "type": ["object", "null"],
+            "description": (
+                "`null` when the cursor is not inside an @reference at all — "
+                "the host shows no popup. Otherwise "
+                "{start, end, token, matches, total}: `start`/`end` are the "
+                "character span of the whole @word, so a host replaces that "
+                "span rather than guessing where the token began; `matches` is "
+                "a list of {name, detail, is_dir}, `name` being the text that "
+                "goes AFTER the @ (directories end in '/'); `total` is how many "
+                "entries matched before the list was bounded, so a host can say "
+                "'12 of 340' instead of implying it showed everything. "
+                "An EMPTY `matches` with a non-null completion is the "
+                "'this names no file' warning, not an absence of information."
+            ),
+        },
+    },
+    "required": ["completion"],
+}
+
+
+@command(
+    "complete_path",
+    tier="B",
+    since="1.4",
+    notes=(
+        "The @file half of what a chat editor needs to be usable, and the "
+        "counterpart of `get_commands` for the slash half. A host cannot "
+        "compute this for itself: a browser has no filesystem at all, and even "
+        "a host that does have one (a VS Code extension) would be listing ITS "
+        "filesystem, which under Remote SSH or a devcontainer is the wrong "
+        "machine. This answers from the process working directory — the same "
+        "directory the agent's own tools resolve against and the same one "
+        "`submit {expand_attachments: true}` reads, so the listing, the "
+        "expansion and the tools cannot disagree about which file @notes.txt "
+        "names. "
+        "A thin wrapper over `attachments.complete_attachment`, which the TUI's "
+        "own editor calls: one implementation of the matching rules (case-"
+        "sensitive prefix on the last path segment, hidden entries only once "
+        "the prefix itself starts with a dot), not two that drift. "
+        "Read-only and pure apart from reading directory entries: no D-1 "
+        "turn_safety_guard (it mutates nothing, so it answers mid-turn), no "
+        "`cursor` (E5 binds mutators), no require_durable_session (D-7: it "
+        "appends nothing, and it answers the same under --no-session). "
+        "G3, 'nothing unbounded is pushed': `matches` is bounded by "
+        "attachments._COMPLETION_LIMIT and `total` reports the true count, so a "
+        "host is told when it is seeing a prefix of the answer instead of "
+        "silently shown one. "
+        "SCOPE, stated not hidden: an absolute or ../ token lists outside the "
+        "working directory, exactly as it does in the TUI. That is not a new "
+        "hole — this same connection can run `bash` through the agent — but a "
+        "host serving this to a browser on a shared network is publishing a "
+        "directory lister to whoever holds the token, and should know it."
+    ),
+    params_schema=COMPLETE_PATH_PARAMS_SCHEMA,
+    result_schema=COMPLETE_PATH_RESULT_SCHEMA,
+)
+async def _handle_complete_path(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    from tau_agent_core.attachments import complete_attachment
+
+    completion = complete_attachment(params["text"], params["cursor"], cwd=Path.cwd())
+    if completion is None:
+        return {"completion": None}
+    return {
+        "completion": {
+            "start": completion.start,
+            "end": completion.end,
+            "token": completion.token,
+            "matches": [
+                {"name": m.name, "detail": m.detail, "is_dir": m.is_dir} for m in completion.matches
+            ],
+            "total": completion.total,
+        }
+    }
+
+
+### end tier-b:complete_path
 
 ### begin tier-b:get_last_assistant_text
 #: B6 (docs/RPC-TIER-B.md §3 table): read-only, no D-1 guard — `session

@@ -485,7 +485,8 @@ def test_the_table_has_exactly_the_2a_2c_phase3_and_tier_b_verbs():
     docs/RPC-TIER-B.md §3; `get_models` was added by finding 7 of the Tier B
     review, which found `set_model`'s config-NAME param undiscoverable from
     the wire; and `list_sessions` by finding 8, which found the same of
-    `switch_session`'s session-id param) — no more, no less."""
+    `switch_session`'s session-id param) — plus protocol 1.4's
+    `complete_path`, which makes it ten — no more, no less."""
     assert set(commands.COMMAND_TABLE) == {
         "submit",
         "prompt",
@@ -506,6 +507,7 @@ def test_the_table_has_exactly_the_2a_2c_phase3_and_tier_b_verbs():
         "export_html",
         "bash",
         "compact",
+        "complete_path",
         "get_last_assistant_text",
         "get_models",
         "get_session_name",

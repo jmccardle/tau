@@ -52,7 +52,13 @@ from pathlib import Path
 from typing import Any
 
 from tau_jmfts.client import JmftsClient
-from tau_jmfts.store import _CROSS_REF_FIELDS, _HEADER_REQUIRED, _content_for, _title_for
+from tau_jmfts.store import (
+    _CROSS_REF_FIELDS,
+    _HEADER_REQUIRED,
+    _PROVENANCE_REF_FIELDS,
+    _content_for,
+    _title_for,
+)
 from tau_jmfts.store import JmftsSessionLog
 
 # Cross-reference fields that name ANOTHER entry by id (Sec2.3) -- these must
@@ -162,6 +168,15 @@ def import_session(
                 continue
             old_ref = payload[field]
             payload[field] = old_to_new[old_ref] if old_ref is not None else None
+        for field in _PROVENANCE_REF_FIELDS:
+            # Remapped when the source came in with the file (the ordinary case for
+            # a whole-log import), kept as it was when it did not. Unlike a splice
+            # anchor, ``copiedFrom`` is history rather than structure: nothing folds
+            # on it, so an id this import cannot resolve costs a hop of provenance
+            # and not a region of context. See ``store._PROVENANCE_REF_FIELDS``.
+            old_ref = payload.get(field)
+            if old_ref is not None and old_ref in old_to_new:
+                payload[field] = old_to_new[old_ref]
 
         tau_payload: dict[str, Any] = {"type": kind, "timestamp": entry["timestamp"], **payload}
         doc = client.create_document(

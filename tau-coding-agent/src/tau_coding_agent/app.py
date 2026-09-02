@@ -12,6 +12,7 @@ from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult, SystemCommand
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.geometry import Size
 from textual.widget import Widget
 from textual.widgets import (
     Static,
@@ -42,6 +43,7 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.worker import get_current_worker
+from bisect import bisect_right
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 import asyncio
@@ -93,6 +95,15 @@ from tau_coding_agent.themes import (
 # The pure session-tree algebra lives in tau-agent-core (the loop's package, not
 # the TUI); the tree-browser (§3) is a view over ConversationTree.tree().
 from tau_agent_core.conversation_tree import ConversationTree, TreeNode
+from tau_agent_core.tree_surgery import (
+    COPYABLE_KINDS,
+    branch_refusal_reason,
+    paste_refusal_reason,
+    plan_branch,
+    plan_paste,
+    selection_order,
+    tool_group,
+)
 
 # The declarative ``ui.form`` spec validator — the single source of truth the
 # generic ``ExtensionFormScreen`` shares with ``ExtensionUI.form`` (E10 §6 / S66).
@@ -922,7 +933,14 @@ def _elide(text: str, width: int) -> str:
 #: :class:`TreeModeModal`, which asked for the second id by re-opening this same
 #: browser — a second full-screen modal for a question the first one could answer
 #: with a key (PLAN-0.9.4 §4, the elide feedback).
-TreeAction = Literal["navigate", "revise", "elide"]
+#:
+#: ``branch`` and ``paste`` are §6 and §7 of TREE-BROWSER-AS-EDITOR.md, the step the
+#: build order left for last. ``branch`` carries the marked set — every id, in row
+#: order, so :func:`~tau_agent_core.tree_surgery.plan_branch` can work out which of
+#: them are already an ancestor chain — and is the one action whose id count is not
+#: fixed. ``paste`` carries ``(copied, target)``: two ids like ``elide``, and for the
+#: same reason :attr:`TreeIntent.sole_id` raises rather than picking one.
+TreeAction = Literal["navigate", "revise", "elide", "branch", "paste"]
 
 
 @dataclass(frozen=True)
@@ -1182,11 +1200,12 @@ class TreeZones:
        appended for either, and this is computed from the modal, never read from
        the log.
 
-    ``copied`` is §7's set. It is carried here and declared in
-    :attr:`ZoneTree.COMPONENT_CLASSES` so the renderer is complete, and it has no
-    producer until copy entries exist — see §10 step 7. No default value: a
-    constructor that quietly fills in an empty set is how a real producer gets
-    forgotten.
+    ``copied`` is §7's set: the node ``c`` put on the clipboard and everything under
+    it, which is what ``v`` would re-create. It was declared here, and in
+    :attr:`ZoneTree.COMPONENT_CLASSES`, for two steps before it had a producer —
+    with no default value, because a constructor that quietly fills in an empty set
+    is how a real producer gets forgotten. :meth:`SessionTreeModal._copied_zone` is
+    that producer.
 
     ``summary``/``abandoned`` are §4.3's pair, and ``hover_common``/
     ``hover_divergent`` are §3's hover divergence (§10 step 5). Both arrived after
@@ -1330,8 +1349,8 @@ class ZoneTree(Tree[str]):
         "tree--zone-marked",
         # Collapsed or archived (§11.2: view state, never read from the log).
         "tree--zone-hidden",
-        # §7's copies. DECLARED WITH NO PRODUCER: copy entries do not exist yet, so
-        # `TreeZones.copied` is always empty. The class is here so §7 adds a
+        # §7's clipboard: the copied node and its subtree, which is what `v` mints.
+        # Declared two steps before it had a producer, so that step 7 added one
         # producer rather than a producer plus a stylesheet plus a renderer branch.
         "tree--zone-copied",
         # §4.3's pair: a `branch_summary` row, and the head of the abandoned branch
@@ -1709,6 +1728,18 @@ class SessionTreeModal(ModalScreen[Optional[TreeIntent]]):
         # one would win anyway, but relying on which of two non-priority bindings
         # textual reaches first is how a key silently changes meaning.
         Binding("ctrl+e", "elide", "Elide", priority=True, show=False),
+        # Build a branch out of the marked messages (§6). `ctrl+B` beside `ctrl+E`
+        # because the two are the same family — one keeps a contiguous span, the
+        # other keeps a selection with gaps in it — and a reader who has found one
+        # should find the other next to it.
+        Binding("ctrl+b", "branch", "Branch from marks", priority=True, show=False),
+        # Copy and paste (§7). Bare letters, and the only ones on this screen: there
+        # is no text input here, so a letter is free, and `c`/`v` are what the
+        # gesture is called everywhere else. Priority for the same reason the rest
+        # are — `Tree` binds no letters today, and relying on that staying true is
+        # how a key silently changes meaning on a Textual upgrade.
+        Binding("c", "copy", "Copy subtree", priority=True, show=False),
+        Binding("v", "paste", "Paste subtree", priority=True, show=False),
     ]
 
     #: Terminal HEIGHT at or above which the detail pane is drawn. The pane is
@@ -1736,8 +1767,18 @@ class SessionTreeModal(ModalScreen[Optional[TreeIntent]]):
         # columns at 80 — and a help line that wraps takes a row from the tree to
         # tell it about a key.
         help_text: str = (
-            "Enter: choose  Space: mark  ←/→: fold  ^E: elide  Tab/^D: pane  Esc: cancel"
+            # 71 columns. The dialog's interior is 76 at an 80-column terminal and
+            # this must stay ONE row: it wrapped once already, when `^E` and `^D`
+            # pushed it to 94, and a wrapped help line costs the tree a row to tell
+            # it about a key. Three gestures joined it (§6, §7), so the separators
+            # went from two spaces to one and the verbs got shorter — every key is
+            # still named, which is the property worth the crowding. `Tab` also
+            # focuses the pane and `Esc` cancels; both are conventional enough to
+            # survive being unlabelled here, and the readout below names the
+            # gestures that apply to the row you are on.
+            "↵ pick Space mark ←→ fold ^E elide ^B branch c copy v paste ^D pane Esc"
         ),
+        copied: Optional[str] = None,
     ) -> None:
         super().__init__()
         self._tree = tree
@@ -1768,6 +1809,18 @@ class SessionTreeModal(ModalScreen[Optional[TreeIntent]]):
         # divergence after a CURSOR move — the divergence is a relation between two
         # nodes and either end moving makes the painted one stale.
         self._hovered: Optional[str] = None
+        # The node `c` copied, if any — §7's clipboard, and the producer
+        # `tree--zone-copied` was declared without in step 3. One node, not a set: a
+        # copy names a subtree root, and a clipboard holding several roots would have
+        # to answer what order they paste in and where relative to each other. It is
+        # per-open like the marks, for the same reason (§11.1): the modal owns no
+        # log, so nothing it holds can outlive it. The CALLER may hand one back when
+        # it re-opens the browser after a paste, which is how a single copy reaches
+        # more than one destination without being re-copied — the clipboard survives
+        # the re-open because the caller carried it, not because this screen did.
+        self._copied: Optional[str] = (
+            copied if copied is not None and tree.contains(copied) else None
+        )
         # Whether the reader has folded the detail pane away to see more tree
         # (PLAN-0.9.4 §4a). A CHOICE, kept separate from the height rule in
         # `_apply_detail_pane` that also hides the pane: a terminal that grows
@@ -2215,17 +2268,111 @@ class SessionTreeModal(ModalScreen[Optional[TreeIntent]]):
         nothing to it. Marks are in-memory and per-open: §11.1 keeps the modal free
         of a ``SessionLog``, so nothing here is durable and closing the browser
         forgets them.
+
+        **A mark takes its tool group with it**
+        (:func:`~tau_agent_core.tree_surgery.tool_group`). An assistant message that
+        made tool calls and the results answering them are one unit to every
+        provider, so marking either end marks both, and unmarking either unmarks
+        both. The alternative — let the reader build the half-selection and refuse it
+        at the commit — teaches the rule by rejection, one attempt at a time; this
+        way the group lights up on the rows and the reader can see what a branch
+        would have to carry.
         """
         node = self.query_one("#tree-browser-tree", Tree).cursor_node
         if node is None or node.data is None:
             return
         entry_id = str(node.data)
+        group = tool_group(self._tree, entry_id)
         if entry_id in self._marked:
-            self._marked.remove(entry_id)
+            self._marked -= group
         else:
-            self._marked.add(entry_id)
+            self._marked |= group
         self._elide_line = self._line_through(self._elide_other_end())
         self._refresh_zones()
+
+    # -- branch, copy and paste (TREE-BROWSER-AS-EDITOR.md §6, §7) -------------
+
+    def action_branch(self) -> None:
+        """``ctrl+B``: build a branch out of the marked messages.
+
+        Dismisses with every marked id, in row order. The caller asks which of the
+        two attach modes the reader wants and performs the commit
+        (:meth:`Parley._branch_flow`); this screen still writes nothing (§11.1).
+
+        Refused here, with the reason, while the tree is still on screen — the same
+        rule ``ctrl+E`` follows. The refusals are
+        :func:`~tau_agent_core.tree_surgery.branch_refusal_reason`'s, computed
+        against the tree this browser was built from, so an offer made here is one
+        the backend accepts.
+        """
+        if not self._marked:
+            self.app.notify(
+                "Nothing marked. Space marks the row under the cursor; ^B branches "
+                "from every marked message.",
+                severity="warning",
+            )
+            return
+        # ``drop_context=False`` for the check: the mode is chosen after this screen
+        # closes, and the two modes differ only in whether an elide follows. Every
+        # refusal that depends on the mode is re-checked by the backend, which is the
+        # side that knows which mode was picked.
+        refusal = branch_refusal_reason(self._tree, self._marked, drop_context=False)
+        if refusal is not None:
+            self.app.notify(f"Cannot branch from this selection: {refusal}", severity="warning")
+            return
+        self.dismiss(TreeIntent("branch", selection_order(self._tree, self._marked)))
+
+    def action_copy(self) -> None:
+        """``c``: copy the subtree rooted at the cursor node.
+
+        Nothing is written and the browser stays open: a copy is a note about which
+        node ``v`` will re-create, held in :attr:`_copied` until the browser closes.
+        The copied rows are painted with ``tree--zone-copied``, which until now was a
+        declared class with no producer.
+        """
+        node = self.query_one("#tree-browser-tree", Tree).cursor_node
+        if node is None or node.data is None:
+            return
+        entry_id = str(node.data)
+        kind = str(self._resolve_entry(entry_id).get("type", ""))
+        if kind not in COPYABLE_KINDS:
+            self.app.notify(
+                f"A {kind!r} entry cannot be copied — it is structure, not a message.",
+                severity="warning",
+            )
+            return
+        self._copied = entry_id
+        self._refresh_zones()
+
+    def action_paste(self) -> None:
+        """``v``: re-create the copied subtree under the cursor node.
+
+        Dismisses with ``(copied, target)``; the caller performs the mint and
+        re-opens this browser so the copy can be seen and navigated onto. The paste
+        does NOT move the cursor — it edits the tree, and what the model sees changes
+        only when the reader chooses a node with ``Enter``.
+        """
+        node = self.query_one("#tree-browser-tree", Tree).cursor_node
+        target = None if node is None or node.data is None else str(node.data)
+        if self._copied is None:
+            self.app.notify(
+                "Nothing copied. `c` copies the subtree under the cursor, `v` pastes it.",
+                severity="warning",
+            )
+            return
+        if target is None:
+            self.app.notify("Put the cursor on the node to paste under.", severity="warning")
+            return
+        try:
+            plan = plan_paste(self._tree, self._copied, target)
+            refusal = paste_refusal_reason(self._tree, plan)
+        except ValueError as exc:
+            self.app.notify(str(exc), severity="warning")
+            return
+        if refusal is not None:
+            self.app.notify(f"Cannot paste here: {refusal}", severity="warning")
+            return
+        self.dismiss(TreeIntent("paste", (self._copied, target)))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -2279,6 +2426,24 @@ class SessionTreeModal(ModalScreen[Optional[TreeIntent]]):
             line.add(node.id)
             stack.extend(node.children)
         return frozenset(line)
+
+    def _copied_zone(self) -> frozenset[str]:
+        """The copied node and its descendants — what ``v`` would re-create.
+
+        The whole subtree, not the one row, because that is what a paste mints
+        (:func:`~tau_agent_core.tree_surgery.plan_paste`) and the reader should be
+        able to see the size of what they are about to duplicate before they press
+        the key.
+        """
+        if self._copied is None:
+            return frozenset()
+        zone = {self._copied}
+        stack = list(self._by_id[self._copied].children)
+        while stack:
+            node = stack.pop()
+            zone.add(node.id)
+            stack.extend(node.children)
+        return frozenset(zone)
 
     def _elide_ineligible(self) -> frozenset[str]:
         """Rows to grey out: everything off the line, while a span is being chosen.
@@ -2414,9 +2579,10 @@ class SessionTreeModal(ModalScreen[Optional[TreeIntent]]):
                 folded=folded,
                 covered=covered,
                 hidden=self._hidden(),
-                # §7 mints these; there is no copy entry to be in the set yet, and
-                # an empty frozenset is the truth rather than a placeholder.
-                copied=frozenset(),
+                # §7's producer, added with the copy gesture: the copied node and
+                # everything under it, which is what `v` would re-create. Empty until
+                # `c` is pressed, which is the truth rather than a placeholder.
+                copied=self._copied_zone(),
                 summary=self._summary_zone,
                 abandoned=self._abandoned_zone,
                 ineligible=self._elide_ineligible(),
@@ -2643,16 +2809,25 @@ class SessionTreeModal(ModalScreen[Optional[TreeIntent]]):
         ``input_tokens``; a selection total may only state an estimate, and must say
         so". So this prints ``~N tokens (estimate)`` and never a bare number.
 
-        **The elide offer goes FIRST when there is one.** This line is one row
+        **The offer goes FIRST when there is one.** This line is one row
         (``#tree-browser-marks`` is ``height: 1``), so it clips rather than
         wrapping — and the readout plus the offer runs to about 96 columns, which
         on an 80-column terminal means whatever is last is what disappears. The
         offer is the only part of the line that is an action.
+
+        **At most ONE offer, and which one is a priority, not a merge.** Three
+        gestures can apply to the same row now (§6, §7) and two of their offers do
+        not fit on one row together, so they are ordered by how specific the state
+        that produced them is: a pending paste (the reader is mid-gesture and the
+        clipboard is holding something) beats a legal elide (which needs a legal pair
+        of ends) beats a branch (which needs only a mark). The narrow collision is
+        one mark with a legal elide, where the branch offer is not shown and the help
+        line is what names ``^B``.
         """
-        elide = self._elide_offer(cursor)
+        offer = self._paste_offer(cursor) or self._elide_offer(cursor) or self._branch_offer()
         if not self._marked:
             base = "nothing marked · space marks the row under the cursor"
-            return f"{elide} · {base}" if elide else base
+            return f"{offer} · {base}" if offer else base
         count = len(self._marked)
         noun = "node" if count == 1 else "nodes"
         folded_away = len(self._marked & self._hidden())
@@ -2663,7 +2838,42 @@ class SessionTreeModal(ModalScreen[Optional[TreeIntent]]):
             f"{count} {noun} marked{out_of_sight} · {where} · "
             f"~{self._estimated_tokens(self._marked)} tokens (estimate)"
         )
-        return f"{elide} · {line}" if elide else line
+        return f"{offer} · {line}" if offer else line
+
+    def _branch_offer(self) -> str:
+        """``^B: branch from 3 marked messages`` — or ``""`` when nothing is marked.
+
+        Same rule as :meth:`_elide_offer`: the offer appears exactly when pressing
+        the key would do something. It states the COUNT rather than the shape of the
+        branch, because the shape (which marks are kept in place and which are
+        copied) is worked out by
+        :func:`~tau_agent_core.tree_surgery.plan_branch` and is not something the
+        reader has to decide or predict — what they chose is the set.
+        """
+        if not self._marked:
+            return ""
+        noun = "message" if len(self._marked) == 1 else "messages"
+        return f"^B: branch from {len(self._marked)} marked {noun}"
+
+    def _paste_offer(self, cursor: Optional[str]) -> str:
+        """``v: paste 4 entries under this node`` — or ``""``.
+
+        Shown while the clipboard holds something and the cursor is somewhere the
+        copy can legally land. "Legally" here is only the cheap half of the check —
+        that the target is outside the copied subtree, which is the refusal a reader
+        walks into by moving one row. The tool-result check
+        (:func:`~tau_agent_core.tree_surgery.paste_refusal_reason`) needs the whole
+        plan and is run on the key press, where paying for it once is right; running
+        it per cursor move would cost a subtree walk per arrow key to hide an offer
+        that is almost always legal.
+        """
+        if self._copied is None or cursor is None:
+            return ""
+        zone = self._copied_zone()
+        if cursor in zone:
+            return ""
+        noun = "entry" if len(zone) == 1 else "entries"
+        return f"v: paste {len(zone)} copied {noun} under this node"
 
     def _elide_offer(self, cursor: Optional[str]) -> str:
         """``ctrl+E: keep this span, drop the other 14`` — or ``""``.
@@ -2761,6 +2971,43 @@ class TreeModeModal(ModalScreen[Optional[str]]):
             "mode-summarize": "summarize",
             "mode-custom": "custom",
         }
+        self.dismiss(mapping.get(event.button.id or ""))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class BranchModeModal(ModalScreen[Optional[str]]):
+    """How much context the branch from the marked messages keeps (§6).
+
+    Two modes, and the difference is one ``elide``:
+
+    * ``"keep"`` — the branch hangs off the deepest mark that is already on the
+      path, and everything above that stays in context. This is "carefully choose
+      what is added to what is already here".
+    * ``"only"`` — the same branch, followed by an elide resuming at the root-most
+      mark, so the context becomes the system prompt plus the marked messages and
+      nothing else. This is "start again from these, and only these".
+
+    Named as a separate screen rather than a fourth button on :class:`TreeModeModal`
+    for the reason that took the elide off that screen: the three buttons there
+    treat one node as a branch point and choose what to do about the branch being
+    abandoned, while this chooses what a *new* branch inherits. Same shape, opposite
+    question.
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def compose(self) -> ComposeResult:
+        with Container(id="tree-mode-dialog"):
+            yield Static("Branch from the marked messages", id="tree-mode-title")
+            with Vertical(id="tree-mode-buttons"):
+                yield Button("Keep the context above them", variant="primary", id="branch-keep")
+                yield Button("Keep only the system prompt", id="branch-only")
+                yield Button("Cancel", id="branch-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        mapping = {"branch-keep": "keep", "branch-only": "only"}
         self.dismiss(mapping.get(event.button.id or ""))
 
     def action_cancel(self) -> None:
@@ -4409,18 +4656,77 @@ class ChatDisplay(MessageList):
         #: reference so :meth:`show_all_messages` can re-render the WHOLE
         #: transcript. It is the caller's own list object, not a copy — there is
         #: no second source of truth to fall out of step.
+        #:
+        #: Two writers, both meaning the same thing: :meth:`reload_messages` when
+        #: it is handed a transcript, and :meth:`_refresh_transcript` at every
+        #: turn edge. It would otherwise go stale the moment a live turn ended —
+        #: the app REBINDS its working list
+        #: (``self.messages = list(session.context)``) rather than appending to
+        #: it, so a reference taken at the last reload answers for a conversation
+        #: that has moved on, and :meth:`show_all_messages` would restore LESS
+        #: than the reader already had.
         self._reload_source: list[dict] = []
-        #: How many messages the last reload declined to MOUNT. Zero when the
-        #: whole transcript is on screen.
+        #: Where :meth:`_refresh_transcript` re-reads it from. A callable and not
+        #: a snapshot for the same reason :attr:`_facts_source` is one: the list
+        #: object itself is replaced after every turn. Set by
+        #: :meth:`set_transcript_source`; ``None`` on a bare renderer harness,
+        #: which has no app behind it and keeps what it was handed.
+        self._transcript_source: Callable[[], list[dict]] | None = None
+        #: How many messages the last reload — or the last :meth:`trim_to_cap` —
+        #: declined to MOUNT, ABOVE the window. Zero when the whole transcript is
+        #: on screen.
         self._elided = 0
+        #: The same count BELOW the window, which is non-zero only while the
+        #: reader has slid the window back into history. The two are separate
+        #: because they are two different rows saying two different things, and
+        #: because ``elided_count`` has always meant the first one.
+        self._elided_after = 0
+        #: The mounted region of :attr:`_reload_source`, as ``[start, end)``
+        #: message indices. ``0, 0`` before anything is rendered. Attached to the
+        #: tail means ``_window_end == len(_reload_source)``, which is the state
+        #: every live turn requires and :attr:`_elided_after` reports the negative
+        #: of.
+        self._window_start = 0
+        self._window_end = 0
+        #: Claimed synchronously by :meth:`watch_scroll_y` before it schedules a
+        #: move, and released by :meth:`move_window`. A move re-renders, which
+        #: moves ``scroll_y``, which re-enters the watcher — and one flick of the
+        #: wheel posts several scroll events, so without a claim taken in the
+        #: watcher itself one gesture would queue several moves.
+        self._window_moving = False
+        #: Bumped by every :meth:`_render_window`. A move is SCHEDULED by the
+        #: scroll watcher and RUNS a tick later, and in between the window can be
+        #: rebuilt under it — a reload, a snap back to the tail for a starting
+        #: turn. The scheduled call carries the generation it was decided in and
+        #: declines to act on a different one, which is what stops a queued
+        #: "one turn back" from undoing the reload that overtook it.
+        self._window_generation = 0
+        #: Message index of each mounted turn → the top-level widget that opens
+        #: it. Built by :meth:`_render_window` and valid ONLY for the tree it just
+        #: built: the live path mounts turns without registering them, and
+        #: :meth:`trim_to_cap` removes them without unregistering. That is not a
+        #: leak to fix — the map exists to hold a scroll position across ONE
+        #: re-render, and every reader of it runs directly after one.
+        self._turn_anchors: dict[int, Widget] = {}
+        #: A trim that came due while the reader was scrolled up, held until they
+        #: return to the tail. Evicting the head moves everything under a reader
+        #: who is mid-sentence, which is the one thing docs/TUI-STEERING.md's
+        #: scroll release exists to prevent.
+        self._trim_deferred = False
+        #: True while :meth:`_render_window` is assembling the transcript, cleared
+        #: by :meth:`_finish_build` a refresh later — which is also where a build
+        #: that wanted the tail finally lands on it.
+        self._building = False
         #: Repaints every open exchange's live counter. Created paused in
         #: :meth:`on_mount` and only running while a lane is open, so an idle
         #: chat costs nothing. ``None`` on a display that was never mounted (a
         #: bare renderer harness), which simply has no counter.
         self._live_timer: Timer | None = None
 
-    #: Bound on how much of a reloaded transcript is mounted as widgets.
-    #: Whichever limit is reached first walking BACKWARDS from the end wins.
+    #: Bound on how much of a transcript is mounted as widgets — on RELOAD
+    #: (:meth:`reload_messages`) and, since the live window, as a turn ENDS
+    #: (:meth:`trim_to_cap`). Whichever limit is reached first walking BACKWARDS
+    #: from the end wins.
     #:
     #: This is a RENDERING bound and nothing else. The whole conversation is
     #: still loaded, still in the session log, and still what the model is sent;
@@ -4429,11 +4735,66 @@ class ChatDisplay(MessageList):
     #: tree-as-truth invariant), which is why the cap lives here on the display
     #: and touches no message list.
     #:
-    #: The numbers matter because the render cost is quadratic in the mounted
+    #: The numbers matter because the render cost is superlinear in the mounted
     #: widget count: an 800-message reload takes over four minutes, and the same
     #: mounted tree throttles streaming to a couple of tokens per second.
+    #:
+    #: Applying the cap only on reload was the gap the live window closes. One
+    #: turn costs about 66 widgets (an exchange, its steps, their reasoning and
+    #: tool boxes, and every ``MarkdownBlock`` inside them), and until a reload
+    #: happened nothing ever took any of them back. Measured on this tree,
+    #: Textual 8.2.7, feeding 200 deltas at 40/s — a stream a perfect renderer
+    #: finishes in 5.0s:
+    #:
+    #: ===============  =========  ==========
+    #: mounted turns    widgets    wall clock
+    #: ===============  =========  ==========
+    #: 0                        1       5.2 s
+    #: 20                    1321       7.7 s
+    #: 40                    2641      11.7 s
+    #: 60                    3961      18.9 s
+    #: ===============  =========  ==========
+    #:
+    #: The cost is not this widget's own. Every ``MarkdownBlock.update`` reaches
+    #: ``Widget.refresh`` → ``_set_dirty`` → ``self.size`` →
+    #: ``Screen.find_widget`` → ``_compositor.full_map``, and ``full_map``
+    #: arranges the ENTIRE screen tree with ``visible_only=False``. A delta
+    #: changes the layout, which invalidates the cached map, so the next block
+    #: update rebuilds it over every widget in the transcript. Nothing τ writes
+    #: can skip that call — only make the tree it walks smaller.
+    #:
+    #: Which is why the window EVICTS rather than hides. Measured at a
+    #: 60-exchange backlog, per delta: ``display: none`` on the old exchanges
+    #: 417 → 301 ms, dropping the collapsed exchanges' interiors 417 → 286 ms,
+    #: flattening each finished ``Markdown`` to one ``Static`` 436 → 225 ms,
+    #: coalescing the stream writes to 10 Hz 18.9 → 15.5 s of wall clock — and
+    #: evicting whole turns 417 → 58 ms, which is the empty-transcript cost.
+    #: Only removal works, because only removal is what ``full_map`` counts.
     RENDER_CAP_TURNS = 4
-    RENDER_CAP_MESSAGES = 50
+    #: 100, raised from 50 (2026-08-31) — see docs/TRANSCRIPT-WINDOW.md §9.
+    #:
+    #: §5 named ``RENDER_CAP_TURNS`` as the number to revisit first. It was the
+    #: wrong one: in a tool-heavy conversation the MESSAGE bound is what binds,
+    #: because one turn of 48 tool calls is 88 messages on its own. At 50 the
+    #: turn cap never got a chance to matter, and the windows either side of such
+    #: a turn were 2 and 4 messages — positions that show almost nothing while
+    #: claiming a hundred hidden below.
+    #:
+    #: Measured on two real sessions (205 and 283 messages), reloading the tail
+    #: window and taking one step back:
+    #:
+    #: =====  ===============  =========  ==========  =========
+    #: cap    smallest window  widgets    reload      one step
+    #: =====  ===============  =========  ==========  =========
+    #: 50                   2      212       634 ms     2343 ms
+    #: 100                 16      212       699 ms     2271 ms
+    #: 150                 16     1179      3604 ms     3436 ms
+    #: =====  ===============  =========  ==========  =========
+    #:
+    #: 100 is free and 150 is a cliff, and the cliff is not gradual: at 150
+    #: ``render_cap_start`` moves back past the 88-message turn, so the window a
+    #: session OPENS in swallows it. That is the number to hold the line at.
+    RENDER_CAP_MESSAGES = 100
 
     #: How often the live exchange counter repaints, in seconds. Deliberately
     #: decoupled from the delta rate: the counter must keep moving through a
@@ -4553,6 +4914,17 @@ class ChatDisplay(MessageList):
         # a count for a transcript that is no longer on screen.
         await self.query(".chat-fold").remove()
         self._elided = 0
+        self._elided_after = 0
+        # An empty display shows no span of anything. _render_window sets real
+        # bounds straight after this; every other caller leaves a display that
+        # genuinely has no window.
+        self._window_start = 0
+        self._window_end = 0
+        self._turn_anchors = {}
+        # A trim held for a reader who scrolled up is about a transcript that is
+        # no longer on screen. Running it later would cut a conversation it never
+        # measured.
+        self._trim_deferred = False
         self._lanes = {}
         # Every exchange the counter had to draw has just been removed.
         self._sync_live_timer()
@@ -4606,6 +4978,7 @@ class ChatDisplay(MessageList):
         exchange, because every box the lane mounts wears it (B3-b): the exchange
         outlives neither the promoted answer nor, for a no-tool span, itself.
         """
+        await self.snap_window_to_tail()
         exchange = ExchangeBox(label=label)
         state = _LaneRender(exchange, label)
         state.started = time.monotonic()
@@ -4613,6 +4986,33 @@ class ChatDisplay(MessageList):
         await self.mount(exchange)
         self._sync_live_timer()
         self.scroll_to_tail()
+
+    async def snap_window_to_tail(self) -> bool:
+        """Put the window back on the end of the transcript. Returns whether it
+        had to move.
+
+        A no-op unless the reader has slid the window back into history, which is
+        the only state this exists for. It is called from :meth:`begin_exchange`,
+        and it is the answer to the one question a slid window cannot otherwise
+        answer: a turn is starting, and the live state machine mounts into the
+        END of this display — so a window showing turn 5 of 40 would grow a live
+        exchange directly under turn 8, in a place that means nothing.
+
+        It DOES pull a reader out of history, and that is the cost. It is the
+        cheaper of the two costs: the alternative is a live turn rendering where
+        the reader cannot see it, and the state machine having to tolerate
+        streaming into a box that is not on screen. A turn beginning is the
+        present changing, and the present is what the tail shows.
+        """
+        if not self._elided_after:
+            return False
+        self._refresh_transcript()
+        messages = self._reload_source
+        start = self.render_cap_start(messages)
+        await self._render_window(messages, start, self.window_end(messages, start))
+        self._follow_tail = True
+        self.scroll_to_tail()
+        return True
 
     async def handle_stream_event(self, event: dict) -> None:
         """Render one normalized backend lifecycle event in arrival order.
@@ -4854,7 +5254,152 @@ class ChatDisplay(MessageList):
             telemetry=telemetry,
             label=state.label,
         )
+        await self._maybe_trim()
         self.scroll_to_tail()
+
+    async def _maybe_trim(self) -> None:
+        """Run the live window, if this is a moment at which it is safe to.
+
+        Two conditions, and both are about not moving something a reader or a
+        renderer is holding:
+
+        * every lane must be closed. Evicting while another lane streams could
+          take out that lane's own exchange, and :meth:`trim_to_cap` cuts by
+          transcript position, which says nothing about which lane a widget
+          belongs to.
+        * the reader must be at the tail. Removing the head shifts every row
+          under someone who scrolled up to read, which is precisely what
+          docs/TUI-STEERING.md's scroll release exists to prevent. The trim is
+          held instead, and :meth:`watch_scroll_y` runs it when they come back.
+
+        The transcript is re-read FIRST, before either guard. A turn edge is the
+        moment the app's list is known to be current, and a held trim must be
+        held against what the conversation is now — not against what it was when
+        the reader last stood at the bottom.
+        """
+        self._refresh_transcript()
+        if self._lanes:
+            return
+        if not self._follow_tail:
+            self._trim_deferred = True
+            return
+        self._trim_deferred = False
+        await self.trim_to_cap()
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        """Re-decide tail-following, then run a trim this scroll made safe.
+
+        Extends :meth:`MessageList.watch_scroll_y`, which owns the tail decision
+        itself. The trim runs through ``call_later`` because this watcher is
+        synchronous and the eviction is not — and because the eviction moves
+        ``scroll_y``, which would re-enter this method. :attr:`_trim_deferred` is
+        cleared before the call is scheduled, so the re-entry finds nothing to do.
+
+        Sliding the window is NOT decided here; see :meth:`_slide_at_edge` for
+        why a scroll position is the wrong signal for it.
+        """
+        super().watch_scroll_y(old_value, new_value)
+        if self._window_moving or self._lanes:
+            return
+        if self._trim_deferred and self._follow_tail:
+            self._trim_deferred = False
+            self.call_later(self.trim_to_cap)
+
+    def _size_updated(
+        self, size: Size, virtual_size: Size, container_size: Size, layout: bool = True
+    ) -> bool:
+        """Re-assert the tail once the mounted content actually has a height.
+
+        :meth:`MessageList.scroll_to_tail` scrolls to ``max_scroll_y``, and
+        ``max_scroll_y`` is derived from ``virtual_size`` — which is still the
+        PREVIOUS layout's answer at the moment the renderers call it, because
+        :meth:`_render_window` mounts inside ``App.batch_update`` and the batch is
+        what holds the layout off. A scroll against a stale (usually zero) maximum
+        clamps and silently does nothing, so ``reload_messages`` opened the reader
+        at the TOP of the conversation they resumed to continue, with
+        :attr:`_follow_tail` still saying they were at the bottom of it.
+
+        This hook is where ``ScrollView`` learns its new virtual size, so it is the
+        earliest point at which the answer can be right —
+        :meth:`TreeDetailPane._size_updated` takes the same second chance, for the
+        same reason, and its comment records the same clamp.
+
+        **Only while following.** A reader who has scrolled away released the tail
+        in :meth:`watch_scroll_y`, and this must not drag them back: growing content
+        pulls the view down only for someone already at the bottom, which is the
+        whole of "you can read while it writes" (docs/TUI-STEERING.md §1).
+
+        Why it was invisible in the tests: a transcript of plain messages lands on
+        the tail anyway, because every ``add_message`` on the way down calls
+        ``scroll_to_tail`` and the last of them runs late enough to find a measured
+        layout. A transcript with tool calls rebuilds its answers through
+        ``_reload_exchange`` instead, whose final height arrives with the
+        ``Collapsible`` — after the last scroll anybody performs.
+        """
+        changed = super()._size_updated(size, virtual_size, container_size, layout)
+        if self._follow_tail and self.scroll_y < self.max_scroll_y:
+            self.scroll_end(animate=False, immediate=True)
+        return changed
+
+    # -- sliding the window: a scroll that pushes PAST an edge ----------------
+
+    def _slide_at_edge(self, turns: int) -> bool:
+        """Schedule a slide if this scroll is a push against an edge, else False.
+
+        The trigger is the gesture, not the position. A reader who scrolls to the
+        top ARRIVES at the top; sliding there would mean the ``⋯ N earlier`` row
+        can never be looked at, let alone clicked — reaching it would load more
+        and scroll it away, every time. So the first scroll takes them to the
+        edge and the next one, which has nowhere left to go, moves the window.
+
+        This is also why the trigger is not in :meth:`watch_scroll_y`. A push
+        against an edge does not change ``scroll_y``, so the watcher cannot see
+        it; and the watcher sees a great deal that is not a reader — mounting
+        content, a resize, this class's own ``scroll_end`` — each of which lands
+        on an edge and none of which is someone asking for more transcript.
+
+        The claim is taken here, synchronously, for the reason
+        :attr:`_window_moving` exists: one flick of a wheel is several events.
+        """
+        if self._window_moving or self._lanes:
+            return False
+        if turns < 0:
+            if self.scroll_offset.y > 0 or self._window_start <= 0:
+                return False
+        elif not self.is_vertical_scroll_end or not self._elided_after:
+            return False
+        self._window_moving = True
+        self.call_later(self.move_window, turns, self._window_generation)
+        return True
+
+    def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        if self._slide_at_edge(-1):
+            event.stop()
+            return
+        super()._on_mouse_scroll_up(event)
+
+    def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        if self._slide_at_edge(1):
+            event.stop()
+            return
+        super()._on_mouse_scroll_down(event)
+
+    def action_scroll_up(self) -> None:
+        """Up-arrow at the top edge loads older turns, exactly as the wheel does.
+
+        The keyboard half. Without it a reader who never touches the mouse can
+        reach the ``⋯`` row and find no way past it.
+        """
+        if self._slide_at_edge(-1):
+            return
+        super().action_scroll_up()
+
+    def action_scroll_down(self) -> None:
+        """Down-arrow at the bottom edge loads newer turns. The keyboard half of
+        :meth:`_on_mouse_scroll_down`."""
+        if self._slide_at_edge(1):
+            return
+        super().action_scroll_down()
 
     @staticmethod
     def _exchange_subtitle(
@@ -5024,6 +5569,265 @@ class ChatDisplay(MessageList):
         by_count = within[0] if within else users[-1]
         return max(by_turns, by_count)
 
+    def window_end(self, messages: list[dict], start: int) -> int:
+        """One past the last message a window starting at *start* mounts.
+
+        The forward twin of :meth:`render_cap_start`, bound by the same two caps,
+        and required to AGREE with it at the tail::
+
+            window_end(m, render_cap_start(m)) == len(m)
+
+        That identity is what lets one pair of numbers describe both a window the
+        cap placed and a window the reader slid — without it, attaching to the
+        tail would leave a phantom ``⋯ 0 later`` row, or a reload and a
+        scrolled-back-then-forward window would mount different things.
+
+        Turns are counted from the window's FIRST turn, not from *start*. The two
+        differ when a leading system message sits above it: ``start`` is then 0
+        and the first turn opens at 1, and counting from ``start`` would spend one
+        of the four turns on a message that renders nothing.
+        """
+        n = len(messages)
+        users = [i for i, m in enumerate(messages) if m.get("role", "") == "user" and i >= start]
+        if not users:
+            return n
+        # Every turn boundary strictly after the window's own first turn. The
+        # window holds RENDER_CAP_TURNS turns, so it ends where the next begins.
+        later = [u for u in users if u > users[0]]
+        by_turns = later[self.RENDER_CAP_TURNS - 1] if len(later) >= self.RENDER_CAP_TURNS else n
+        limit = start + self.RENDER_CAP_MESSAGES
+        if limit >= n:
+            # The rest of the transcript is within the message bound, so that
+            # bound cuts nothing. Stated explicitly because the general branch
+            # below would answer the LAST turn boundary instead of the end, and
+            # break the identity above.
+            by_count = n
+        else:
+            within = [u for u in later if u <= limit]
+            # Nothing within the bound means this one turn is longer than it.
+            # Mount the turn whole rather than cut it, matching
+            # render_cap_start's own rule for the same case.
+            by_count = within[-1] if within else (later[0] if later else n)
+        return min(by_turns, by_count)
+
+    def turn_starts(self, messages: list[dict]) -> list[int]:
+        """Every message index a window may legally start at, ascending.
+
+        The user messages, plus 0 — the same candidate set
+        :meth:`render_cap_start` picks from, so a window the reader slides can
+        only ever land where the cap could have put it. Sliding is therefore
+        movement along this list, one entry per step, which is why a move never
+        cuts a turn in half and never needs to ask how tall anything is.
+        """
+        users = [i for i, m in enumerate(messages) if m.get("role", "") == "user"]
+        return sorted({0, *users})
+
+    async def _render_window(self, messages: list[dict], start: int, end: int) -> None:
+        """Mount ``messages[start:end]`` as the whole transcript view.
+
+        The one renderer. :meth:`reload_messages` calls it with the tail, and
+        :meth:`move_window` with a span the reader slid to; neither has a second
+        way to build a box, which is what keeps a scrolled-back view identical to
+        the view a reload of the same span would produce.
+
+        The mounting runs inside ``App.batch_update``, which holds off the screen
+        layout until it is done. Without it every awaited mount hands control
+        back to the event loop, Textual's screen timer fires, and the ENTIRE
+        widget tree is re-arranged — 78 to 104 full layout passes on a
+        200-message reload, each over a tree that is still growing. Batched it is
+        5, and the reader sees the finished transcript rather than it being
+        assembled a message at a time.
+
+        Leaves the scroll position alone. The two callers want different ones —
+        a reload re-attaches to the tail, a move holds the reader's place — and
+        neither can be derived from the span.
+        """
+        # Cleared by ``_finish_build`` one refresh later, which is where a build
+        # that wanted the tail lands on it — after everything this build schedules.
+        self._building = True
+        # Cleared FIRST: clear_messages resets the counts and the bounds, so
+        # setting them before this would hand the rows a zero.
+        await self.clear_messages()
+        self._window_start = start
+        self._window_end = end
+        # Any move decided against the window this replaces is now about a tree
+        # that no longer exists.
+        self._window_generation += 1
+        # System messages never render, so counting them would claim more is
+        # hidden than a reader could ever get back.
+        self._elided = sum(1 for m in messages[:start] if m.get("role", "") != "system")
+        self._elided_after = sum(1 for m in messages[end:] if m.get("role", "") != "system")
+        anchors: dict[int, Widget] = {}
+        # Every add_message on the way down calls scroll_to_tail, which would pin
+        # a window the reader slid BACK to its own bottom edge — and the bottom
+        # edge is where the watcher slides it forward again. Detached for the
+        # build; both callers set the value they want straight afterwards.
+        self._follow_tail = False
+        with self.app.batch_update():
+            if self._elided:
+                await self.mount(self._earlier_row())
+            i = start
+            while i < end:
+                role = messages[i].get("role", "")
+                if role == "system":
+                    i += 1
+                    continue
+                turn_at = i
+                if role == "user":
+                    # The user box sits above the exchange, as in the live path.
+                    boxes = self.add_persisted_message(messages[i])
+                    if boxes:
+                        anchors[turn_at] = boxes[0]
+                    i += 1
+                # Collect the answer span (assistant + toolResult) up to the next
+                # user/system message, and rebuild it as one exchange.
+                span: list[dict] = []
+                while i < end and messages[i].get("role") not in ("user", "system"):
+                    span.append(messages[i])
+                    i += 1
+                if span:
+                    await self._reload_exchange(span)
+            if self._elided_after:
+                await self.mount(self._later_row())
+        if start not in anchors:
+            # A window whose first message renders no box of its own — start 0
+            # with a leading system message is the everyday case. Anchor it on
+            # whatever came first, so a move back still has somewhere to put the
+            # reader.
+            content = [c for c in self.children if isinstance(c, (MessageBox, ExchangeBox))]
+            if content:
+                anchors[start] = content[0]
+        self._turn_anchors = anchors
+        self.call_after_refresh(self._finish_build)
+
+    def _finish_build(self) -> None:
+        """End the build, and land where the build's own scrolling was aiming.
+
+        Clears :attr:`_building`, and re-asserts the tail for a caller that wanted
+        it. The re-assertion is not belt-and-braces: the collapses performed during
+        the build each schedule a ``scroll_visible`` of their own
+        (``Collapsible._watch_collapsed``), and those were queued BEFORE this
+        callback, so the last word about the scroll position would otherwise
+        belong to whichever box happened to fold last — three rows short of the
+        newest message, in the case that started this.
+
+        Only when following. :meth:`move_window` rebuilds through the same method
+        with :attr:`_follow_tail` false and puts the reader back itself
+        (:meth:`_settle_move`), which runs after this.
+        """
+        self._building = False
+        if self._follow_tail:
+            self.scroll_to_tail()
+
+    async def move_window(self, turns: int, generation: int | None = None) -> bool:
+        """Slide the mounted window *turns* turns along the transcript.
+
+        Negative moves back into history, positive forward toward the tail.
+        Returns whether it actually moved: at either end of the transcript, with
+        a lane still streaming, during another move, or — when *generation* is
+        given — if the window has been rebuilt since the move was decided on.
+
+        *generation* is how :meth:`watch_scroll_y` says "act on the window I saw".
+        The watcher decides synchronously and the move runs a tick later, and a
+        reload or a :meth:`snap_window_to_tail` can land in between; without the
+        check, a queued step back undoes whichever of them overtook it. A caller
+        that means "now", including every test, passes nothing.
+
+        **The window is bounded, not anchored.** Sliding back mounts older turns
+        and drops the same number of newer ones, so the mounted count — which is
+        the only thing the render cost depends on (docs/TRANSCRIPT-WINDOW.md §1)
+        — does not change. That is what makes reading history free rather than a
+        slow return of the defect the window was built to fix.
+
+        Movement is along :meth:`turn_starts`, one entry per step, so a step is
+        always one whole turn and never asks how tall anything is.
+
+        The reader's place is held across the re-render by scrolling a turn they
+        were already looking at back under the viewport's top edge: moving back
+        that is the turn that WAS at the top, moving forward it is the last turn
+        of the old window. Either way something they had just read stays on
+        screen, which is what makes repeated steps read as scrolling rather than
+        as paging.
+        """
+        self._window_moving = True
+        handed_off = False
+        try:
+            if generation is not None and generation != self._window_generation:
+                return False
+            if self._lanes:
+                return False
+            messages = self._reload_source
+            if not messages:
+                return False
+            candidates = self.turn_starts(messages)
+            # The window's own start is always one of these — every writer of it
+            # takes it from render_cap_start or from this list — but bisect
+            # answers correctly for any index rather than raising on a transcript
+            # that was spliced under us (a compaction, a branch swap).
+            position = max(0, bisect_right(candidates, self._window_start) - 1)
+            # Forward stops at the tail-anchored start and no further. Without
+            # this a window already ON the tail slides past it, mounting a span
+            # that ends before the newest turn — the display would show a
+            # conversation with its own present missing.
+            last = max(0, bisect_right(candidates, self.render_cap_start(messages)) - 1)
+            moved_to = min(max(position + turns, 0), last)
+            new_start = candidates[moved_to]
+            if new_start == self._window_start:
+                return False
+            old_start = self._window_start
+            old_last = max((c for c in candidates if c < self._window_end), default=old_start)
+
+            await self._render_window(messages, new_start, self.window_end(messages, new_start))
+
+            # The new tree has no geometry yet — it was mounted inside
+            # batch_update, and every widget's region is computed on the refresh
+            # that follows. scroll_to_widget here would silently do nothing,
+            # leave the view where the mounts left it, and (at the bottom) have
+            # the watcher immediately slide the window back. So the restore waits
+            # for the refresh, and it — not this method — releases the claim.
+            self.call_after_refresh(
+                self._settle_move,
+                old_start if turns < 0 else old_last,
+                self._window_generation,
+            )
+            handed_off = True
+            return True
+        finally:
+            if not handed_off:
+                self._window_moving = False
+
+    def _settle_move(self, anchor_at: int, generation: int) -> None:
+        """Put the reader back on *anchor_at* once the moved window has laid out.
+
+        The second half of :meth:`move_window`, split off because the first half
+        cannot see where anything is. Releases :attr:`_window_moving`, which is
+        what re-arms :meth:`watch_scroll_y` — deliberately last, so the scroll
+        this method performs is not read as the reader asking for another move.
+
+        Carries the same generation check :meth:`move_window` does, and for a
+        sharper reason: a reload that lands between the move and this refresh has
+        already scrolled the view where it wants it, and an anchor scroll from
+        the window it replaced would drag the reader off the tail it just
+        attached to.
+        """
+        if generation != self._window_generation:
+            self._window_moving = False
+            return
+        try:
+            anchor = self._turn_anchors.get(anchor_at)
+            if anchor is not None:
+                # immediate=True: the default defers the scroll to after the NEXT
+                # screen refresh, and this method already runs on one. Deferring
+                # again lands the jump a frame later than the content it belongs
+                # to, and leaves the line below reading a position that is about
+                # to change.
+                self.scroll_to_widget(anchor, top=True, animate=False, immediate=True)
+            # Re-decide from where the move actually left the view, rather than
+            # inheriting the answer from the position it was taken at.
+            self._follow_tail = self.is_vertical_scroll_end
+        finally:
+            self._window_moving = False
+
     async def reload_messages(self, messages: list[dict], *, cap: bool = True) -> None:
         """Render a saved chat as exchanges, matching the finalized live look.
 
@@ -5043,65 +5847,237 @@ class ChatDisplay(MessageList):
         writes a ``⋯ N earlier`` row above it; ``cap=False`` mounts everything.
         The whole list is loaded either way — see :attr:`RENDER_CAP_MESSAGES`.
 
-        The mounting runs inside ``App.batch_update``, which holds off the screen
-        layout until it is done. Without it every awaited mount hands control
-        back to the event loop, Textual's screen timer fires, and the ENTIRE
-        widget tree is re-arranged — 78 to 104 full layout passes on a
-        200-message reload, each over a tree that is still growing. Batched it is
-        5, and the reader sees the finished transcript rather than it being
-        assembled a message at a time.
+        A reload always lands on the TAIL, whatever the reader had slid the
+        window to. It replaces the transcript — resume, compact, rollback, a
+        branch swap — so a window position taken in the old document names
+        nothing in the new one.
         """
         self._reload_source = messages
         start = self.render_cap_start(messages) if cap else 0
-        # Cleared FIRST: clear_messages resets the elided count, so setting it
-        # before this would hand the row a zero.
-        await self.clear_messages()
-        # System messages never render, so counting them in "N earlier" would
-        # claim more is hidden than a reader could ever get back.
-        self._elided = sum(1 for m in messages[:start] if m.get("role", "") != "system")
-        with self.app.batch_update():
-            if self._elided:
-                await self.mount(self._earlier_row())
-            n = len(messages)
-            i = start
-            while i < n:
-                role = messages[i].get("role", "")
-                if role == "system":
-                    i += 1
-                    continue
-                if role == "user":
-                    # The user box sits above the exchange, as in the live path.
-                    self.add_persisted_message(messages[i])
-                    i += 1
-                # Collect the answer span (assistant + toolResult) up to the next
-                # user/system message, and rebuild it as one exchange.
-                span: list[dict] = []
-                while i < n and messages[i].get("role") not in ("user", "system"):
-                    span.append(messages[i])
-                    i += 1
-                if span:
-                    await self._reload_exchange(span)
-        # A reload REPLACES the transcript — resume, compact, rollback, a branch
-        # swap — so it re-attaches the tail rather than honouring a scroll
-        # position taken in a document that no longer exists.
+        end = self.window_end(messages, start) if cap else len(messages)
+        await self._render_window(messages, start, end)
+        # Re-attaches the tail rather than honouring a scroll position taken in a
+        # document that no longer exists.
         self._follow_tail = True
         self.scroll_to_tail()
 
     @property
     def elided_count(self) -> int:
-        """How many messages the last reload declined to mount. 0 when all are on."""
+        """How many messages are hidden ABOVE the window. 0 at the top of the chat.
+
+        Set by :meth:`reload_messages` (what the reload declined to mount),
+        :meth:`trim_to_cap` (what the live window has since evicted) and
+        :meth:`move_window` (what the reader has slid past). One number for all
+        three, because they hide the head of the same transcript for the same
+        reason.
+
+        This is the count the ``⋯ N earlier`` row states, and it deliberately
+        does NOT include what a slid window hides BELOW it — see
+        :attr:`later_count`. Two rows, two questions, two numbers.
+        """
         return self._elided
+
+    @property
+    def later_count(self) -> int:
+        """How many messages are hidden BELOW the window.
+
+        Non-zero only while the reader has slid the window back into history:
+        every other state has the window on the tail, where there is nothing
+        below it. :meth:`snap_window_to_tail` reads this to decide whether a
+        starting turn has anything to snap back from.
+        """
+        return self._elided_after
+
+    @property
+    def hidden_count(self) -> int:
+        """Everything :meth:`show_all_messages` would mount, both directions."""
+        return self._elided + self._elided_after
+
+    def set_transcript_source(self, source: Callable[[], list[dict]]) -> None:
+        """Tell this display where to read the app's CURRENT transcript.
+
+        A callable, not a list: the app rebinds its working list after every turn
+        (``self.messages = list(session.context)``), so a display holding the list
+        object answers for the conversation as it stood at the last reload. That
+        staleness is only a bug once something reads the transcript BETWEEN
+        reloads, which is exactly what the live window does —
+        :meth:`trim_to_cap` decides where to cut from it, and
+        :meth:`show_all_messages` mounts it back.
+
+        Optional. A bare renderer harness that never calls this keeps the old
+        behaviour: :attr:`_reload_source`, whatever the last reload was handed.
+
+        Not read here and now. :meth:`_refresh_transcript` calls it at each turn
+        edge, which is the moment the app's list is known to be current — reading
+        it at any other moment is how a display ends up holding a transcript that
+        belongs to neither the screen nor the session.
+        """
+        self._transcript_source = source
+
+    def _refresh_transcript(self) -> None:
+        """Re-read the app's transcript into :attr:`_reload_source`.
+
+        Called at every turn edge (:meth:`_maybe_trim`), which is what keeps that
+        attribute meaning "the transcript this display is a view of" rather than
+        "the list the last reload happened to be handed". The two writers are this
+        and :meth:`reload_messages`, and they write the same kind of thing.
+
+        A display with no source — a bare renderer harness — keeps whatever
+        ``reload_messages`` gave it. That is not a fallback for a missing value:
+        such a display has no app behind it, so the list it was handed is the only
+        transcript in existence.
+        """
+        if self._transcript_source is not None:
+            self._reload_source = self._transcript_source()
+
+    async def trim_to_cap(self) -> int:
+        """Evict the head of a LIVE transcript down to the same cap a reload uses.
+
+        Returns the number of top-level widgets removed; 0 when this display has
+        no transcript, when the one it has already fits the cap, or when the cut
+        the cap names is already the top of the mounted tree.
+
+        It runs again after :meth:`show_all_messages`, at the end of the next
+        turn. That is deliberate rather than overlooked: "show them" mounts the
+        whole conversation to be READ, and the reader is not prompting while they
+        read, so the re-trim lands when they have moved on. Suppressing the
+        window after an explicit show-all would be the unbounded transcript back,
+        by request.
+
+        A live session grew without bound before this existed. Only
+        :meth:`reload_messages` ever applied :attr:`RENDER_CAP_TURNS`, so a
+        transcript that was capped when it was opened climbed straight back past
+        the cap as the reader worked in it — and the render cost climbs with it
+        (see the cap's own comment for the measurements).
+
+        **The cut point is a user message, in both representations at once.**
+        :meth:`render_cap_start` names it as an index into the message list; this
+        walks the top-level children backwards for the same user box. That is
+        what makes the eviction and the ``⋯ N earlier`` count describe the same
+        place: one top-level user ``MessageBox`` is mounted per user message, so
+        counting user boxes from the end and counting user messages from the end
+        arrive together. Cutting anywhere else — at a widget budget, say, which
+        is what the cost law is actually written in — would strand an
+        :class:`ExchangeBox` above the user turn that opened it, and leave the
+        count with nothing true to say.
+
+        Streams are stopped before the removal, exactly as
+        :meth:`clear_messages` does it. Nothing should be streaming here (the
+        caller only trims with every lane closed), so this is belt and braces
+        rather than a live case — but a ``MarkdownStream`` left running on a
+        removed box leaks its task forever, and that is not a failure worth
+        risking on a should.
+        """
+        messages = self._reload_source
+        if not messages:
+            return 0
+        if self._elided_after:
+            # The reader has slid the window back, so what is mounted is not the
+            # tail — and this method's whole arithmetic is "count user boxes back
+            # from the end and cut there", which would answer for a span that is
+            # not on screen. The window is bounded already; there is nothing here
+            # to evict. begin_exchange snaps back before any turn streams, so a
+            # slid window is never the state a live trim needs to handle.
+            return 0
+        start = self.render_cap_start(messages)
+        if start == 0:
+            return 0
+        keep_users = sum(1 for m in messages[start:] if m.get("role", "") == "user")
+        if keep_users == 0:
+            return 0
+
+        content = [c for c in self.children if isinstance(c, (MessageBox, ExchangeBox))]
+        # Walk backwards to the user box that opens the oldest turn still within
+        # the cap. That box is the first one KEPT; everything before it goes.
+        seen = 0
+        cut = 0
+        for index in range(len(content) - 1, -1, -1):
+            child = content[index]
+            if isinstance(child, MessageBox) and child.role == "user":
+                seen += 1
+                if seen == keep_users:
+                    cut = index
+                    break
+        if cut == 0:
+            return 0
+
+        evicted = content[:cut]
+        for child in evicted:
+            boxes = list(child.query(MessageBox))
+            if isinstance(child, MessageBox):
+                boxes.append(child)
+            # Not ``box``: that name is a module-level import here (ruff F402).
+            for message_box in boxes:
+                if message_box.reasoning is not None:
+                    await message_box.reasoning.finish_stream()
+                await message_box.finish_stream()
+            await child.remove()
+
+        # The identical line reload uses. System messages never render, so
+        # counting them would claim more is hidden than a reader could get back.
+        self._elided = sum(1 for m in messages[:start] if m.get("role", "") != "system")
+        # This method evicts in place instead of re-rendering, so it has to state
+        # the bounds _render_window would have set. They are what
+        # :meth:`move_window` starts its next step from, and what
+        # :attr:`_elided_after` being 0 means: still attached to the tail.
+        self._window_start = start
+        self._window_end = len(messages)
+        await self._sync_earlier_row()
+        self.scroll_to_tail()
+        return len(evicted)
+
+    async def _sync_earlier_row(self) -> None:
+        """Put the ``⋯ N earlier`` row above the transcript, or update the one there.
+
+        Updated in place when it already exists, rather than removed and
+        remounted: the row is a widget like any other, and churning it every turn
+        is the cost this whole window exists to stop paying.
+        """
+        existing = self.query(".chat-fold")
+        if existing:
+            existing.first(Static).update(self._earlier_text())
+            return
+        row = self._earlier_row()
+        survivors = [c for c in self.children if isinstance(c, (MessageBox, ExchangeBox))]
+        if survivors:
+            await self.mount(row, before=survivors[0])
+        else:
+            await self.mount(row)
+
+    def _earlier_text(self) -> str:
+        """What the top ``⋯`` row says. Shared so the mounted row and an updated
+        one cannot word the same count differently."""
+        return f"⋯ {self._elided} earlier · scroll up to load, click for all"
+
+    def _later_text(self) -> str:
+        """What the bottom ``⋯`` row says. Present only while the reader has slid
+        the window back, which is the only way messages end up BELOW it."""
+        return f"⋯ {self._elided_after} later · scroll down to load, click for all"
 
     def _earlier_row(self) -> Static:
         """The ``⋯ N earlier`` row that stands where the elided messages would be.
 
         A count rather than a blank gap, matching :class:`TreeDetailPane`'s row,
-        because a gap does not say anything and this does. It names its own
-        gesture: the row is clickable, and the same action is in the command
-        palette, so neither the mouse nor the keyboard is a dead end.
+        because a gap does not say anything and this does. It names BOTH its
+        gestures: scrolling into it slides the window one turn back
+        (:meth:`move_window`), and clicking it mounts the whole conversation. The
+        second is also in the command palette, so neither the mouse nor the
+        keyboard is a dead end.
         """
-        row = Static(f"⋯ {self._elided} earlier · click to show them", classes="chat-fold")
-        row.tooltip = "Mount the whole conversation. On a long one this takes a while."
+        row = Static(self._earlier_text(), classes="chat-fold")
+        row.tooltip = "Scroll into this row to load older turns, or click to mount them all."
+        return row
+
+    def _later_row(self) -> Static:
+        """The ``⋯ N later`` row, the bottom half of a slid window.
+
+        Carries ``chat-fold`` as well as its own class so it gets the same
+        styling, the same click, and the same removal in :meth:`clear_messages` —
+        the two rows are one idea pointing in two directions, and giving the new
+        one its own vocabulary would be two things to keep in step.
+        """
+        row = Static(self._later_text(), classes="chat-fold chat-fold-later")
+        row.tooltip = "Scroll into this row to load newer turns, or click to mount them all."
         return row
 
     async def on_click(self, event: events.Click) -> None:
@@ -5111,14 +6087,26 @@ class ChatDisplay(MessageList):
             await self.show_all_messages()
 
     async def show_all_messages(self) -> None:
-        """Re-render the last reloaded transcript with no cap.
+        """Re-render the WHOLE current transcript, with no cap.
 
         A no-op when nothing was elided, so the palette entry is safe to invoke
         at any time. It is deliberately not cheap: mounting the rest costs the
-        same quadratic layout the cap avoided, which is why it is a gesture the
+        same superlinear layout the cap avoided, which is why it is a gesture the
         reader asks for rather than something scrolling triggers.
+
+        :attr:`_reload_source` is re-read from the app at every turn edge
+        (:meth:`_refresh_transcript`), so what this mounts includes the live turns
+        the window put behind the ``⋯`` row and no reload ever saw. Before that
+        refresh existed this method could only restore the conversation as it
+        stood when it was opened: the reader would ask to see more and be shown
+        less.
+
+        Guarded on :attr:`hidden_count`, not on :attr:`elided_count`: a reader who
+        has slid the window all the way back to the top has nothing hidden above
+        them and most of the conversation hidden below, and the row they clicked
+        to get here is the ``⋯ N later`` one.
         """
-        if not self._elided:
+        if not self.hidden_count:
             return
         await self.reload_messages(self._reload_source, cap=False)
 
@@ -6214,6 +7202,13 @@ class Parley(App):
         # The app supplies them for the same reason: the working directory and the
         # inline limit are the app's, not the widget's.
         chat_input.attachment_completions = self._attachment_completions
+
+        # Where the live window reads the transcript it cuts from, and where
+        # "show them" mounts it back from (ChatDisplay.set_transcript_source).
+        # A lambda over the attribute, not the list: ``self.messages`` is REBOUND
+        # after every turn, so a display handed today's list object would trim
+        # against a conversation that stopped growing at the last reload.
+        self.query_one(ChatDisplay).set_transcript_source(lambda: self.messages)
 
         # The first frame is a layout decision like any later one: an app started at
         # 80x24 with a panel already open must not render the starved chat once
@@ -7956,11 +8951,14 @@ class Parley(App):
         bounds what is MOUNTED, and this lifts that bound for the current view.
         """
         display = self.query_one(ChatDisplay)
-        elided = display.elided_count
-        if not elided:
+        hidden = display.hidden_count
+        if not hidden:
             self.notify("The whole conversation is already on screen.")
             return
-        self.notify(f"Mounting {elided} earlier messages…")
+        # hidden_count, not elided_count: a reader who slid the window back to the
+        # top has everything hidden BELOW them, and reporting 0 there would read
+        # as "nothing to do" on the one gesture that had plenty to do.
+        self.notify(f"Mounting {hidden} messages…")
         await display.show_all_messages()
 
     def action_show_extensions(self) -> None:
@@ -8541,6 +9539,13 @@ class Parley(App):
 
         The ``elide`` mode (W3) branches off to :meth:`_elide_span_flow` after the
         mode pick, because it needs a second node id rather than a summarizer.
+
+        **A ``paste`` re-opens the browser instead of returning** (§7). Pasting
+        edits the tree without moving the cursor, so returning to the conversation
+        would show the reader the same transcript they left and no sign that
+        anything happened; re-opening puts the copied rows on screen where they
+        landed. The clipboard rides along, so one copy can be pasted in several
+        places. Every other intent leaves the browser, as before.
         """
         session = self.current_session
         if session is None:
@@ -8553,26 +9558,41 @@ class Parley(App):
             self.notify("This backend does not support tree navigation", severity="warning")
             return
 
-        tree = ConversationTree(session.entries(), session.cursor)
-        roots = tree.tree()
-        if not roots:
-            self.notify("Conversation tree is empty", severity="warning")
-            return
+        copied: Optional[str] = None
+        while True:
+            tree = ConversationTree(session.entries(), session.cursor)
+            roots = tree.tree()
+            if not roots:
+                self.notify("Conversation tree is empty", severity="warning")
+                return
 
-        # The modal returns an INTENT, not a bare id (§5.3 / §11.1). ``sole_id`` is
-        # the node the reader pointed at under either action, and it raises rather
-        # than silently taking ids[0] if a later gesture starts answering with a set.
-        intent = await self.push_screen_wait(SessionTreeModal(tree))
-        if intent is None:
-            return
-        if intent.action == "elide":
-            # Both ends already, and already checked against the same rules
-            # ``elide_span`` will apply (``SessionTreeModal._elide_plan``). No mode
-            # chooser: "elide" was never one of the three branch modes, and the
-            # second browse it used to need is the key that produced this intent.
-            anchor_id, first_kept_id = intent.ids
-            await self._elide_span_flow(session, anchor_id, first_kept_id)
-            return
+            # The modal returns an INTENT, not a bare id (§5.3 / §11.1). ``sole_id``
+            # is the node the reader pointed at under either single-node action, and
+            # it raises rather than silently taking ids[0] now that three of the five
+            # actions answer with more.
+            intent = await self.push_screen_wait(SessionTreeModal(tree, copied=copied))
+            if intent is None:
+                return
+            if intent.action == "elide":
+                # Both ends already, and already checked against the same rules
+                # ``elide_span`` will apply (``SessionTreeModal._elide_plan``). No
+                # mode chooser: "elide" was never one of the three branch modes, and
+                # the second browse it used to need is the key that produced this
+                # intent.
+                anchor_id, first_kept_id = intent.ids
+                await self._elide_span_flow(session, anchor_id, first_kept_id)
+                return
+            if intent.action == "branch":
+                await self._branch_flow(session, intent.ids)
+                return
+            if intent.action == "paste":
+                source_id, target_id = intent.ids
+                if not await self._paste_flow(session, source_id, target_id):
+                    return
+                copied = source_id
+                continue
+            break
+
         picked_id = intent.sole_id
         # ``revise``: the reader named a USER message, which means fork from its
         # PARENT and hand the old text back to edit (PLAN-0.9.4 §4, item 2).
@@ -8647,6 +9667,104 @@ class Parley(App):
         editor.move_cursor(editor.document.end)
         editor.focus()
         self.notify("Forked from before that message — edit it and send.")
+
+    async def _branch_flow(
+        self,
+        session: ConversationSession,
+        ids: tuple[str, ...],
+    ) -> None:
+        """Ask how much context the branch keeps, then commit it (§6).
+
+        The mode chooser is a screen of its own (:class:`BranchModeModal`) rather
+        than a key in the browser, because it is a question about the branch as a
+        whole and both answers are legal on the same selection — unlike the elide,
+        whose legality depends on the two nodes and therefore has to be judged where
+        they are visible.
+
+        The plan is computed HERE, before the commit, so the notification can state
+        what happened in the reader's terms — how many messages were reused in place
+        and how many were copied. Recomputing it afterwards would describe a
+        different tree. It is computed from the session as it stands NOW rather than
+        from the tree the browser opened with: the mode chooser is a screen, a turn
+        can finish while it is up, and a count read off a stale snapshot would
+        describe a commit that did not happen.
+        """
+        commit_branch = getattr(self.current_backend, "commit_branch", None)
+        if commit_branch is None:
+            self.notify("This backend does not support branching", severity="warning")
+            return
+
+        mode = await self.push_screen_wait(BranchModeModal())
+        if mode is None:
+            return
+        drop_context = mode == "only"
+
+        try:
+            tree = ConversationTree(session.entries(), session.cursor)
+            plan = plan_branch(tree, ids, drop_context=drop_context)
+        except ValueError as exc:
+            self.notify(f"Cannot branch from this selection: {exc}", severity="warning")
+            return
+
+        self.sub_title = "Building branch…"
+        try:
+            new_messages = commit_branch(session, ids, drop_context=drop_context)
+        except Exception as e:
+            self.notify(f"Branch failed: {e}", severity="error")
+            self.log.error(f"Branch failed: {e}")
+            self.log.error(traceback.format_exc())
+            self._refresh_subtitle()
+            return
+
+        # The same re-render seam every other tree operation uses (§3.4).
+        self.messages = new_messages
+        await self.query_one(ChatDisplay).reload_messages(self.messages)
+        self._refresh_subtitle()
+        copied = f"{plan.mints} copied" if plan.mints else "nothing copied"
+        folded = f", {plan.hidden} entries folded away" if plan.elide_from else ""
+        self.notify(f"Branched from {len(ids)} marked messages — {copied}{folded}.")
+
+    async def _paste_flow(
+        self,
+        session: ConversationSession,
+        source_id: str,
+        target_id: str,
+    ) -> bool:
+        """Re-create the copied subtree under ``target_id`` (§7).
+
+        Returns whether the browser should re-open. A paste changes the tree and not
+        the context, so there is nothing to re-render and no cursor to move: the
+        reader goes back to the rows to see where the copy landed and to decide
+        whether to navigate onto it.
+
+        A failure here is a stale-tree case — the modal checked the same rules
+        against the tree it opened with — so it is reported and the browser closes,
+        which is what :meth:`_elide_span_flow` does with the same class of failure.
+        """
+        paste_subtree = getattr(self.current_backend, "paste_subtree", None)
+        if paste_subtree is None:
+            self.notify("This backend does not support pasting", severity="warning")
+            return False
+
+        try:
+            # Planned against the live session, like the branch above: this runs
+            # straight off the browser's dismissal, but the plan and the commit
+            # reading the same entries is what makes the reported count the one that
+            # was written.
+            plan = plan_paste(
+                ConversationTree(session.entries(), session.cursor), source_id, target_id
+            )
+            minted = paste_subtree(session, source_id, target_id)
+        except Exception as e:
+            self.notify(f"Paste failed: {e}", severity="error")
+            self.log.error(f"Paste failed: {e}")
+            self.log.error(traceback.format_exc())
+            return False
+
+        noun = "entry" if len(minted) == 1 else "entries"
+        left_out = f" ({len(plan.skipped)} structural entries left out)" if plan.skipped else ""
+        self.notify(f"Pasted {len(minted)} {noun} under {target_id}{left_out}.")
+        return True
 
     async def _elide_span_flow(
         self,

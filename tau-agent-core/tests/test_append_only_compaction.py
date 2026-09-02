@@ -58,12 +58,14 @@ def test_context_for_splices_tip_appended_compaction() -> None:
     entries = _linear_then_appended_compaction()
     tree = ConversationTree(entries, cursor="c06")
     msgs = tree.context_for()
-    assert msgs[0] == {
+    assert msgs[0] == {"role": "system", "content": [{"type": "text", "text": "sys"}]}
+    assert msgs[1] == {
         "role": "user",
         "content": [{"type": "text", "text": "[[Compaction summary: SUMMARY]]"}],
     }
-    # sys/u1/a1 precede the boundary (e04) → dropped; the summary + kept region remain.
-    assert [m["content"][0]["text"] for m in msgs[1:]] == ["u2", "a2"]
+    # u1/a1 precede the boundary (e04) → dropped. sys precedes it too and is carried
+    # to the front: the tip-appended shape gets the same treatment as every other.
+    assert [m["content"][0]["text"] for m in msgs[2:]] == ["u2", "a2"]
 
 
 def test_navigate_behind_boundary_restores_pre_compaction_messages() -> None:

@@ -1,6 +1,8 @@
 # The tree editor — draft manual
 
-**Status: draft, and describes 2026-08-24.** This says what the browser does
+**Status: draft, and describes 2026-08-30.** Branching from marks (§9a) and
+copy/paste (§9b) landed on that date, along with the fold change that keeps the
+system prompt (§9). This says what the browser does
 today, including what it does not finish doing. It is not a design document —
 `docs/TREE-BROWSER-AS-EDITOR.md` is that, and it says *why*. This one says
 *how*.
@@ -134,15 +136,30 @@ One consequence worth knowing before you complain about the layout:
 | `Esc` | Cancel. Closes the browser and changes nothing. |
 | `←` | Fold the turn or fork the cursor is on. If it is neither, move out to the row that contains it. |
 | `→` | Unfold the turn or fork the cursor is on. Does not move the cursor into it. |
-| `Space` | Mark or unmark the row. See §6. |
+| `Space` | Mark or unmark the row, with its tool group. See §6. |
 | `Ctrl+E` | Elide the span between the cursor and the other end. See §9. |
+| `Ctrl+B` | Build a branch out of the marked rows. See §9a. |
+| `c` | Copy the subtree under the cursor. See §9b. |
+| `v` | Paste the copied subtree under the cursor. See §9b. |
 | `Ctrl+D` | Fold the detail pane away, or bring it back. See §5. |
 | `Tab` | Move focus to the detail pane, so you can scroll it and open collapsibles. |
 | double-click the pane's border | The same as `Ctrl+D`. |
 
-`Enter`, `Space`, `Ctrl+E` and `Ctrl+D` are priority bindings, which is how they
-take those keys from Textual's own tree widget and from the app underneath.
-`Space` used to expand and collapse; that moved to `←` and `→`.
+`Enter`, `Space`, `Ctrl+E`, `Ctrl+B`, `c`, `v` and `Ctrl+D` are priority
+bindings, which is how they take those keys from Textual's own tree widget and
+from the app underneath. `Space` used to expand and collapse; that moved to `←`
+and `→`. `c` and `v` are the only bare letters on this screen, which is safe
+because there is no text input on it.
+
+The line at the bottom names all of them:
+
+```
+↵ pick Space mark ←→ fold ^E elide ^B branch c copy v paste ^D pane Esc
+```
+
+That line has to stay one row — a wrapped one costs the tree a row to tell it
+about a key — so it is 71 columns and every verb on it is short. `Tab` is not on
+it and still works.
 
 `Ctrl+D` and not the `Ctrl+M` that would have been the obvious choice: a terminal
 sends the same byte for `Enter` and `Ctrl+M`, and Textual says so — its
@@ -211,12 +228,24 @@ request. A total over an arbitrary set of entries can only ever be a
 row you want to pair it with, and press `Ctrl+E`. While exactly one row is
 marked, every row that cannot be that pair is greyed out.
 
-> **Partly unfinished.** A set of two or more marks is not consumed by anything.
-> You can mark several rows, see the count, see where they converge and see what
-> they are estimated to cost — and then the only thing you can do is close the
-> browser, which forgets them. `Enter` commits the **cursor**, not the marks.
-> The operation a whole marked set is for is step 7 of
-> `docs/TREE-BROWSER-AS-EDITOR.md`, which is not built.
+**Any number of marks is a branch** (§9a). Mark the messages you want, in any
+order, and press `Ctrl+B`.
+
+### A mark takes its tool group with it
+
+Marking an assistant message that made tool calls also marks the tool results
+that answered them, and marking a result also marks the message that made the
+call — with its other results. Unmarking either end releases the whole group.
+
+That is not tidiness. To every provider, a tool call and its result are one
+unit: a branch carrying the call without the result, or the result without the
+call, is a prefix the API rejects. Pairing at the moment you press `Space` means
+you see the group light up on the rows, instead of learning the rule from a
+refusal after you have finished selecting.
+
+The pairing follows the tree, not the file: an assistant's results are looked
+for below it, a result's call above it. If the same call was re-run on two
+branches, one result comes with it, not both.
 
 ---
 
@@ -255,7 +284,7 @@ you have done to a row outranks what the row is.
 | 1 | green, bold | Marked. You put it there, so it outranks everything. |
 | 2 | faint grey | Cannot be the other end of the elide you have started. Only ever painted while exactly one row is marked. See §9. |
 | 3 | dark grey, italic | Hidden — archived and excluded from counts. |
-| 4 | mauve, italic | Copied. |
+| 4 | mauve, italic | Copied — on the clipboard, waiting for `v`. The whole subtree wears it, because the whole subtree is what pastes. |
 | 5 | peach, struck through | Covered: the cursor is **on** a fold anchor, and these are the rows it hides. |
 | 6 | grey, struck through | Folded: on your path, but some anchor dropped it from the model's input. |
 | 7 | cyan | A branch summary. |
@@ -279,9 +308,8 @@ That is the answer to "what would I be picking up if I went there?".
 Point at a row, do not click. Hovering costs almost nothing and recomputes only
 when the pointer crosses into a different row.
 
-> **Unfinished.** The `copied` row of that table can never appear today —
-> nothing mints a copied entry. The rule exists so that building the producer is
-> one change instead of three.
+The `copied` row was in this table for months before anything could produce it;
+`c` is what fills it in (§9b).
 
 ---
 
@@ -403,6 +431,130 @@ backend against the live session.
 On success the browser closes and the status line reports `Elided 128 → 41
 messages`.
 
+### The system prompt is always kept
+
+An elide drops everything on the path before the row you resumed at — except a
+system message, which is carried across the fold and stays first in the model's
+input. So "keep only the last two turns" means the system prompt and the last
+two turns.
+
+This was not always true: until 2026-08-30 the fold dropped the system prompt
+with the rest of the span, and the model kept receiving one only because the
+agent loop put the *config's* prompt back when the context did not start with a
+system message. `docs/SYSTEM-PROMPT-IN-THE-FOLD.md` is the whole of it. The
+count in the offer line does not count the system message, because it is not
+one of the entries being dropped.
+
+---
+
+## 9a. Branching from marks
+
+An elide keeps a contiguous run. `Ctrl+B` keeps a **selection**, with gaps in
+it, by making copies of the messages that no longer follow one another.
+
+1. Mark the messages you want, in any order (`Space`).
+2. Press `Ctrl+B`.
+3. Choose how much context the branch keeps.
+
+The messages go into the branch in the order they appear in the tree, top to
+bottom — not the order you marked them.
+
+### The two modes
+
+**Keep the context above them.** The branch hangs off the deepest marked message
+that is already on its own line, and everything above that stays in the model's
+input. Use it to add chosen messages to the history you already have.
+
+**Keep only the system prompt.** The same branch, followed by an elide, so the
+model's input becomes the system prompt plus the messages you marked and
+nothing else. Use it to start again from a hand-picked set.
+
+### What it does to the log
+
+Nothing is deleted and nothing is moved. Marks that already form an unbroken
+chain are used **in place** — same entries, same ids, same recorded token
+counts. Only the messages after the first gap are copied, and each copy records
+which entry it was copied from.
+
+So a selection that happens to be the last four messages of one line costs zero
+copies: it becomes a cursor move and an elide, which is exactly the operation
+§9 describes. A selection with a gap in it cannot be that, and the copies are
+what pay for the gap.
+
+The conversation then continues on the branch. Whatever was newer than the
+attach point on the old line is still in the tree, as a sibling — it is out of
+the model's input, not gone, and `Enter` on it brings you back.
+
+The notification says which happened:
+
+```
+Branched from 5 marked messages — 3 copied, 12 entries folded away.
+```
+
+### What it refuses
+
+* **Nothing marked.** `Ctrl+B` says so and the browser stays open.
+* **A structural row.** A `navigate`, `compaction` or `elide` row cannot go into
+  a branch: it names a position in the tree the new branch is not at.
+* **Half a tool call.** The mark expansion (§6) makes this hard to reach by
+  hand, and it is still checked before anything is written.
+
+Every refusal happens with the browser open, and nothing is appended.
+
+---
+
+## 9b. Copy and paste
+
+`c` copies the subtree under the cursor. `v` re-creates it under the cursor.
+
+1. Put the cursor on the node you want and press `c`. That row and everything
+   below it turn mauve.
+2. Move the cursor to where you want the copy.
+3. Press `v`.
+
+The readout offers it while it is legal:
+
+```
+v: paste 4 copied entries under this node
+```
+
+**A paste changes the tree, not the conversation.** The copy is minted where you
+said, the cursor does not move, and the model's input is exactly what it was.
+The browser re-opens on the grown tree so you can see the copy and, if you want
+it in context, press `Enter` on it. The clipboard survives that re-open, so one
+copy can go to several places.
+
+**The whole subtree comes with it**, forks included, and each new entry records
+the entry it was copied from. Rows that are structure rather than message — a
+`navigate`, a fold anchor — are left out, and their children hang from the
+nearest copied ancestor instead. The notification says how many were left out.
+
+### What it refuses
+
+* **Pasting into the copy's own subtree**, including onto the copied node
+  itself. The copy and the original would then be on one line of the
+  conversation, where a repeated tool-call id stops naming one call.
+* **A structural row as the source.** `c` says so rather than copying it.
+* **A tool result whose call is not coming with it** — that is, a copy that
+  would land a result on a path where nothing made that call.
+
+### What this is for
+
+Copying a `branch_summary` drops its `fromId` — the summary keeps its text, and
+stops claiming to be about a branch point the copy is not next to. That is what
+makes "summarize part of a conversation and put the summary on another line"
+possible at all.
+
+> **The summarize step does not cover a whole selection.** Building a branch with
+> `Ctrl+B` and then summarizing it summarizes the branch's **subtree**, which is
+> the *copied* messages only — the marks that were reused in place are ancestors
+> of the branch, not descendants, so they are not in the text the summarizer
+> reads. A fully contiguous selection copies nothing at all, and then there is no
+> subtree to summarize.
+>
+> There is no gesture that summarizes exactly the marked set. That is the missing
+> third mode on the branch chooser, and it is not built.
+
 ---
 
 ## 10. What the tree editor cannot do yet
@@ -410,11 +562,18 @@ messages`.
 Collected so that feedback can distinguish "this is broken" from "this was never
 built".
 
-* **A marked SET leads nowhere.** One mark is the elide's other end; two or
-  more are counted and nothing more. §6.
-* **There is no copy, and no plan buffer.** You cannot assemble an ordered
-  keep/copy plan and commit it. `Enter` answers with one action and one node id,
-  which is the only shape the return type can currently express.
+* **The plan cannot be edited before it is committed.** `Ctrl+B` works out which
+  marks are kept and which are copied, and commits. You cannot see that split,
+  reorder it, or force a message to be copied rather than reused. The design
+  (`TREE-BROWSER-AS-EDITOR.md` §6.2) allows an editable list of keep/copy items;
+  what is built derives it from the marks instead.
+* **The clipboard holds one node and does not survive the browser.** `c` replaces
+  what was on it. Closing the browser forgets it — nothing about a copy is
+  written until you paste.
+* **Nothing summarizes a marked set.** The branch chooser has two modes and
+  neither of them writes a summary; summarizing a branch you have just built
+  covers its copied messages only (§9b). "Select what goes into the summary, then
+  summarize exactly that" is one mode away and is not built.
 * **There is no archive gesture.** Archiving was decided to be view state rather
   than something written to the log, and the collapse half exists — but no key
   marks a branch as done, and nothing is excluded from any count.
@@ -433,8 +592,10 @@ built".
 
 * `docs/TREE-BROWSER-AS-EDITOR.md` — the design document. §2 is the
   fork-counting rule, §3 the colour zones, §5 the keys and the four selection
-  sets, §6 and §7 the unbuilt plan buffer, §10 the status table, §11 the
+  sets, §6 and §7 the plan buffer and the copies, §10 the status table, §11 the
   rejected alternatives.
+* `docs/SYSTEM-PROMPT-IN-THE-FOLD.md` — why a fold used to lose the system
+  prompt, and what carries it now.
 * `docs/PLAN-0.9.4.md` §4 — the four things the owner reported after working
   this browser against a real forked session, what each turned out to be, and
   the three-step build that answered them. The candidate diagnoses that predated

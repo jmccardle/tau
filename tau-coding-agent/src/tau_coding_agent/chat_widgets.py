@@ -228,7 +228,43 @@ def format_telemetry(extra: dict[str, Any]) -> str | None:
 # ──────────────────────────────────────────────────────────────────────────
 
 
-class ReasoningRegion(Collapsible):
+class QuietCollapsible(Collapsible):
+    """A ``Collapsible`` that does not scroll its container when it folds.
+
+    Textual's own (8.2.7) ends ``_watch_collapsed`` with::
+
+        if self.is_mounted:
+            self.call_after_refresh(self.scroll_visible)
+
+    which is right for a page of collapsibles a reader is clicking through, and
+    wrong for a transcript: **these boxes fold without anyone asking.** A finished
+    exchange folds behind its summary when a turn ends, a reasoning region folds
+    when the answer starts, and a reload folds one of each per rebuilt span. Every
+    one of those scrolled the transcript to put that box on screen — dragging a
+    reader who was deliberately reading history, on the model's schedule, and
+    landing a freshly reloaded conversation three rows short of its newest
+    message.
+
+    So the scroll is dropped and the two state-keeping lines are kept verbatim.
+    The messages still post, so anything that wants to react to a fold still can;
+    what changes is that the transcript decides where the transcript scrolls
+    (``ChatDisplay._size_updated``, ``_finish_build``), which is the same
+    ownership rule the window already follows.
+
+    Keyboard focus is unaffected: ``Screen.set_focus`` brings a widget into view
+    with ``scroll_to_center``, not with ``scroll_visible`` (verified, textual
+    8.2.7), so tabbing to an off-screen box still scrolls to it.
+    """
+
+    def _watch_collapsed(self, collapsed: bool) -> None:
+        self._update_collapsed(collapsed)
+        if self.collapsed:
+            self.post_message(self.Collapsed(self))
+        else:
+            self.post_message(self.Expanded(self))
+
+
+class ReasoningRegion(QuietCollapsible):
     """A collapsible reasoning/thinking block that streams live.
 
     Kept distinct from the answer so it can be reviewed and collapsed
@@ -361,7 +397,7 @@ class ReasoningRegion(Collapsible):
         self.title = "Thought" if seconds is None else f"Thought for {format_duration(seconds)}"
 
 
-class ToolBox(Collapsible):
+class ToolBox(QuietCollapsible):
     """A tool call paired with its result in ONE collapsible.
 
     Collapsed (the default — matching pi's default-collapsed tool output) shows
@@ -435,7 +471,7 @@ class ToolBox(Collapsible):
             self.add_class("box-error")
 
 
-class ExchangeBox(Collapsible):
+class ExchangeBox(QuietCollapsible):
     """Groups one user→answer exchange's steps (reasoning, tool calls, the final
     answer) under a single summary line.
 

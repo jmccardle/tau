@@ -16,7 +16,7 @@
 
 ## Version negotiation
 
-- **Protocol version:** `1.3`
+- **Protocol version:** `1.4`
 - **Dialect:** `jsonrpc-2.0`
 
 Call get_capabilities (no params) first on every new connection, before any mutating command. Compare protocol_version's MAJOR component against what this host was built against; refuse to send anything else on a mismatch rather than discovering it on the first failing request.
@@ -35,7 +35,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 69,440 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 75,098 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -444,6 +444,10 @@ what rides on top of this on every response):
       "minimum": 0,
       "type": "integer"
     },
+    "expand_attachments": {
+      "description": "Whether `@file` references in `text` are resolved into <attachment>/<reference> blocks before the Submission is built, the way the TUI's editor does (docs/FILE-ATTACHMENTS.md \u00a72). Defaults to False, which sends `@notes.txt` to the model as those eleven literal characters. NOT a Submission field: expansion happens HERE, so what is persisted and what the model saw are the same string. Attached images are appended to `images`. Files are read at this moment, not when the host composed the text. See the `attachments` key on the result for what expansion did.",
+      "type": "boolean"
+    },
     "expand_commands": {
       "description": "Whether a leading '/' is command-dispatched. Defaults to False.",
       "type": "boolean"
@@ -517,6 +521,10 @@ what rides on top of this on every response):
     "accepted": {
       "description": "Always true here \u2014 a rejected submission is an RPCError, not this shape.",
       "type": "boolean"
+    },
+    "attachments": {
+      "description": "Present exactly when the request set expand_attachments: true \u2014 absent is 'expansion did not run', which is a different statement from 'expansion found nothing'. {expanded: int, images: int, unresolved: [str], failures: [str]}. `unresolved` names the @words that matched no file and were therefore left in the text as prose. `failures` names the ones that resolved but could not be sent, each with the reason; the model is told the same thing through a <reference error=\"\u2026\"> block, so neither side is left believing an attachment landed when it did not. A host that shows neither list turns a visible failure back into a silent one.",
+      "type": "object"
     },
     "command": {
       "description": "Present ONLY when this acceptance is also the submission's only completion: a core (extension-registered) slash command resolved synchronously with no turn started, so there is no later agent_end to carry it. {name, args, performer, output}. Absent for an ordinary turn \u2014 poll get_messages / watch for agent_end instead.",
@@ -630,6 +638,55 @@ what rides on top of this on every response):
   "required": [
     "accepted",
     "compaction_id"
+  ],
+  "type": "object"
+}
+```
+
+#### `complete_path`
+
+*Since 1.4.* The @file half of what a chat editor needs to be usable, and the counterpart of `get_commands` for the slash half. A host cannot compute this for itself: a browser has no filesystem at all, and even a host that does have one (a VS Code extension) would be listing ITS filesystem, which under Remote SSH or a devcontainer is the wrong machine. This answers from the process working directory — the same directory the agent's own tools resolve against and the same one `submit {expand_attachments: true}` reads, so the listing, the expansion and the tools cannot disagree about which file @notes.txt names. A thin wrapper over `attachments.complete_attachment`, which the TUI's own editor calls: one implementation of the matching rules (case-sensitive prefix on the last path segment, hidden entries only once the prefix itself starts with a dot), not two that drift. Read-only and pure apart from reading directory entries: no D-1 turn_safety_guard (it mutates nothing, so it answers mid-turn), no `cursor` (E5 binds mutators), no require_durable_session (D-7: it appends nothing, and it answers the same under --no-session). G3, 'nothing unbounded is pushed': `matches` is bounded by attachments._COMPLETION_LIMIT and `total` reports the true count, so a host is told when it is seeing a prefix of the answer instead of silently shown one. SCOPE, stated not hidden: an absolute or ../ token lists outside the working directory, exactly as it does in the TUI. That is not a new hole — this same connection can run `bash` through the agent — but a host serving this to a browser on a shared network is publishing a directory lister to whoever holds the token, and should know it.
+
+**Params schema:**
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "cursor": {
+      "description": "The cursor's character offset into `text`. Which @reference is being completed is decided from this, so a host that sends the @word alone with cursor 0 gets `completion: null` rather than a listing \u2014 the cursor is not optional and is not defaulted.",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "text": {
+      "description": "The editor's contents as typed, NOT just the @word.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "text",
+    "cursor"
+  ],
+  "type": "object"
+}
+```
+
+**Result schema** (see [Response envelope](#response-envelope) for
+what rides on top of this on every response):
+
+```json
+{
+  "properties": {
+    "completion": {
+      "description": "`null` when the cursor is not inside an @reference at all \u2014 the host shows no popup. Otherwise {start, end, token, matches, total}: `start`/`end` are the character span of the whole @word, so a host replaces that span rather than guessing where the token began; `matches` is a list of {name, detail, is_dir}, `name` being the text that goes AFTER the @ (directories end in '/'); `total` is how many entries matched before the list was bounded, so a host can say '12 of 340' instead of implying it showed everything. An EMPTY `matches` with a non-null completion is the 'this names no file' warning, not an absence of information.",
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "completion"
   ],
   "type": "object"
 }
@@ -1006,6 +1063,10 @@ what rides on top of this on every response):
       "minimum": 0,
       "type": "integer"
     },
+    "expand_attachments": {
+      "description": "Whether `@file` references in `text` are resolved into <attachment>/<reference> blocks before the Submission is built, the way the TUI's editor does (docs/FILE-ATTACHMENTS.md \u00a72). Defaults to False, which sends `@notes.txt` to the model as those eleven literal characters. NOT a Submission field: expansion happens HERE, so what is persisted and what the model saw are the same string. Attached images are appended to `images`. Files are read at this moment, not when the host composed the text. See the `attachments` key on the result for what expansion did.",
+      "type": "boolean"
+    },
     "expand_commands": {
       "description": "Whether a leading '/' is command-dispatched. Defaults to False.",
       "type": "boolean"
@@ -1082,6 +1143,10 @@ what rides on top of this on every response):
     "accepted": {
       "description": "Always true here \u2014 a rejected submission is an RPCError, not this shape.",
       "type": "boolean"
+    },
+    "attachments": {
+      "description": "Present exactly when the request set expand_attachments: true \u2014 absent is 'expansion did not run', which is a different statement from 'expansion found nothing'. {expanded: int, images: int, unresolved: [str], failures: [str]}. `unresolved` names the @words that matched no file and were therefore left in the text as prose. `failures` names the ones that resolved but could not be sent, each with the reason; the model is told the same thing through a <reference error=\"\u2026\"> block, so neither side is left believing an attachment landed when it did not. A host that shows neither list turns a visible failure back into a silent one.",
+      "type": "object"
     },
     "command": {
       "description": "Present ONLY when this acceptance is also the submission's only completion: a core (extension-registered) slash command resolved synchronously with no turn started, so there is no later agent_end to carry it. {name, args, performer, output}. Absent for an ordinary turn \u2014 poll get_messages / watch for agent_end instead.",

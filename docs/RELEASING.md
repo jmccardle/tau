@@ -43,12 +43,16 @@ exist in a three-commit checkout. They will not.
 
 The rule is about **history**, not about `git` itself — 0.9.2's blanket "no test
 runs `git`" was wrong when it was written. Several tests build a throwaway repo
-under `tmp_path`, which is self-contained and safe anywhere, and one queries the
-repository the suite is running in: `test_no_host_addresses.py` reads `git
-ls-files` to enumerate the tracked shipped files. That one is fine, because a
-shallow squashed checkout still tracks every file — depth is what it does not
-have. It does mean the suite needs a real checkout, so it fails outside a work
-tree: a tarball, or an unpacked `git archive`, is not enough.
+under `tmp_path`, which is self-contained and safe anywhere.
+
+**No test now queries the repository it is running in.** Two did:
+`test_no_host_addresses.py` and `test_install_hints_name_real_projects.py` both
+read `git ls-files` to enumerate the shipped files. A shallow squashed checkout
+tracks every file, so CI was fine — but §2's matrix unpacks a `git archive`,
+which has no `.git` at all, and both tests raised there on every Python version
+for four releases. They walk the filesystem now (2026-09-02). The suite runs
+against an unpacked tarball, and adding a test that needs a work tree would
+undo that.
 
 ## Steps
 
@@ -88,30 +92,99 @@ back. 0.9.3 was tagged, went red on 3.13, and had to be recut.
 Run all four locally first:
 
 ```bash
-tar -cf /tmp/src.tar --exclude=./venv --exclude=__pycache__ \
-    --exclude='*.egg-info' --exclude=./.git --exclude='*.tar.gz' .
+git archive master -o /tmp/src.tar
 for v in 3.11 3.12 3.13 3.14; do
+  echo "=== python $v ==="
   docker run --rm -v /tmp/src.tar:/src.tar:ro python:$v-bookworm bash -c '
     mkdir /work && tar -xf /src.tar -C /work && cd /work &&
     pip install -q -e ./tau-llm -e "./tau-agent-core[dev]" \
                    -e "./tau-coding-agent[dev]" -e ./tau-jmfts &&
-    python -m pytest -q' | tail -3
+    python -m pytest -q -rf --tb=line' | tail -40
 done
 ```
 
-**Read 3.11 as the control, not as a pass.** Four tests fail in this harness on
-every version, and they are artifacts of it rather than defects:
+**A version is clean at zero failures.** All four must agree, and they must
+agree on `0 failed`. Anything else is a real difference and blocks the tag.
 
-| Test | Why it fails here |
-|---|---|
-| `test_no_host_addresses_in_shipped_trees` | shells out to `git ls-files`; the tar has no `.git` |
-| `test_every_install_hint_names_a_real_distribution` | same |
-| `TestBashToolProcessGroupKill::test_timeout_kills_backgrounded_grandchild` | no real init to reap a process group |
-| `TestBashToolProcessGroupKill::test_abort_kills_backgrounded_grandchild` | same |
+**Two details of that command are load-bearing, and 0.9.7 paid for both.**
 
-A version is clean when its output is **identical to 3.11's**. At 0.9.3 all
-four gave `4551 passed, 4 failed, 151 skipped`. Anything else is a real
-difference and blocks the tag.
+`git archive master` is the tree step 4 publishes, so the matrix tests the
+artifact rather than a snapshot of a working directory. The `tar --exclude=…`
+form this document carried until 0.9.7 excluded `venv` and `.git` but nothing
+else, so it swept up every untracked tree in the checkout — measured once at
+**370 MB** against 11 MB of tracked source. It also silently tested files that
+were never going to ship.
+
+`-rf --tb=line` and `tail -40` are what make a failure *nameable*. The old
+`python -m pytest -q | tail -3` printed the count and threw the identity away.
+0.9.7 hit exactly that: one run of 3.14 reported `1 failed, 5268 passed` and
+there was no way to learn which test, because the pipeline had already discarded
+it. A gate that can say "something broke" but not "what broke" cannot be acted
+on — the releaser's only remaining move is to run it again and hope, which is
+how an intermittent failure gets rationalised into a pass.
+
+#### The unnamed 3.14 failure of 0.9.7, recorded rather than explained
+
+It is not resolved, and this section exists so the next person does not
+rediscover it as a surprise. Measured on the 0.9.7 release tree — the bumped
+tree, plus one full matrix on the same source at 0.9.6 version literals:
+
+| Python | runs on the release tree | result |
+|---|---|---|
+| 3.11 | 1 (+1 pre-bump) | `5269 passed, 0 failed` |
+| 3.12 | 1 (+1 pre-bump) | `5269 passed, 0 failed` |
+| 3.13 | 1 (+1 pre-bump) | `5269 passed, 0 failed` |
+| 3.14 | 5 (+1 pre-bump) | `5269 passed, 0 failed` ×4, `1 failed, 5268 passed` ×1 |
+
+The failing run was the first, under the old command, so its name is lost. Four
+subsequent 3.14 runs on the byte-identical tarball were clean. No ordering
+plugin is installed — `pytest-randomly` and `pytest-order` are both absent — so
+collection order is the same in all five runs, which rules out ordering and
+leaves the wall clock. 31 test files sleep against it
+(`test_rpc_transport.py` alone has 15 sleeps), so there is no shortage of
+candidates and no evidence naming one.
+
+Machine load does not explain it either, which is worth stating because it is
+the comfortable answer. A second matrix was running on the same host that
+afternoon, but it finished at 13:00 and the failing 3.14 run was 13:15–13:22 —
+so the one run that failed was not the one under contention.
+
+If a `1 failed` appears again on any version, the command above now prints
+`FAILED <nodeid>` and one line of traceback. Record it here, then fix the test —
+do not add a retry, and do not read a re-run's pass as a refutation of the
+failure.
+
+#### The four that used to fail here, and no longer do
+
+Until 2026-09-02 this section said the opposite: four tests failed in every
+container on every version, and a release read `4 failed` as clean. That was
+wrong twice over. It asked a human to hold four names in their head and match
+them by eye, which is the check that quietly stops being done — and in both
+cases the *test* was making a claim the harness could not answer, which is a
+defect in the test and not in the harness.
+
+| Test | What it did | What it does now |
+|---|---|---|
+| `test_no_host_addresses_in_shipped_trees` | asked `git ls-files`, which raises in an export with no `.git` | walks the shipped trees, excluding `__pycache__` and `*.egg-info` |
+| `test_every_install_hint_names_a_real_distribution` | same | same |
+| `TestBashToolProcessGroupKill::test_timeout_kills_backgrounded_grandchild` | probed liveness with `os.kill(pid, 0)`, which succeeds on a **zombie** | reads the process state and treats `Z` as dead |
+| `TestBashToolProcessGroupKill::test_abort_kills_backgrounded_grandchild` | same | same |
+
+The zombie one is worth understanding before anyone "fixes" it back. An orphan
+is reparented to PID 1 and only PID 1 can reap it. On a normal host that is an
+init which reaps within milliseconds, so `os.kill(pid, 0)` starts failing almost
+at once and the flaw is invisible. In a container PID 1 is the test runner
+itself, nothing reaps the orphan for the life of the run, and a `sleep 300` that
+*was* killed reads as a survivor forever. A zombie has already released its file
+descriptors, so it cannot hold open the pipe whose EOF that class exists to
+protect: dead is the right answer, not a concession to the harness.
+
+Walking rather than asking `git` is also the stricter question. `git ls-files`
+sees TRACKED files, and a host address or a bad install hint is just as baked in
+while the file is still untracked — which is the state every one of those files
+passes through. Both tests now carry a companion that asserts the walk actually
+reached the trees, because an enumeration that silently returns nothing passes a
+scan-for-offenders test with the same green dot as a real pass.
 
 The two failures that actually cost 0.9.3 its first tag are worth knowing,
 because both are shapes a 3.11-only gate cannot see:

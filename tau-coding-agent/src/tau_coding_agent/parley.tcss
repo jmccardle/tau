@@ -136,11 +136,15 @@ ModalScreen {
     color: $tau-text;
 }
 
-/* "⋯ 750 earlier · click to show them" — the row that stands where a capped
-   reload declined to mount the older messages (docs/PLAN-0.9.4.md §1). Same
-   muted, centered, italic treatment as the tree pane's fold rows, because it is
-   the same statement: this is a fold marker, not another message. `link`-less
-   but clickable, so the underline of a real link does not promise a URL. */
+/* "⋯ 750 earlier · scroll up to load, click for all" — the row that stands where
+   the window declined to mount the older messages (docs/PLAN-0.9.4.md §1,
+   docs/TRANSCRIPT-WINDOW.md). Its twin `.chat-fold-later` says the same thing
+   pointing down, and is present only while the reader has slid the window back
+   into history; it carries `.chat-fold` too, so this one rule dresses both.
+   Same muted, centered, italic treatment as the tree pane's fold rows, because
+   it is the same statement: this is a fold marker, not another message.
+   `link`-less but clickable, so the underline of a real link does not promise a
+   URL. */
 #chat-display .chat-fold {
     height: auto;
     color: $tau-text-muted;
@@ -667,9 +671,10 @@ ZoneTree > .tree--zone-hidden {
     text-style: italic;
 }
 
-/* Minted by a copy (§7). DECLARED WITH NO PRODUCER: copy entries do not exist
-   yet, so nothing is ever in this zone. It is here so §7 adds a producer and not
-   a producer plus a stylesheet plus a renderer branch. */
+/* On the clipboard (§7): the node `c` copied and everything under it — what `v`
+   would re-create. The producer landed with the copy gesture
+   (`SessionTreeModal._copied_zone`); the rule is unchanged from the one declared
+   ahead of it, which is what the declaration was for. */
 ZoneTree > .tree--zone-copied {
     color: $tau-accent;
     text-style: italic;

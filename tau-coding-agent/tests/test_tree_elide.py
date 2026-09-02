@@ -138,6 +138,21 @@ def _kept_ids(session) -> list[str]:
     return [e["id"] for e in ConversationTree(session.entries(), session.cursor).context_entries()]
 
 
+def _system_id(session) -> str:
+    """The id of the session's system-prompt entry.
+
+    It leads every folded context now: a splice drops the pre-boundary span but
+    CARRIES its system messages (``conversation_tree.is_system_message``), because
+    τ stores the system prompt as an entry and folding it away made the fold
+    disagree with what the loop actually sent.
+    """
+    return next(
+        e["id"]
+        for e in session.entries()
+        if e.get("type") == "message" and e.get("message", {}).get("role") == "system"
+    )
+
+
 def _texts(messages: list[dict]) -> list[str]:
     out = []
     for m in messages:
@@ -182,9 +197,12 @@ async def test_elide_action_skips_exactly_the_span_and_keeps_every_entry(
         assert elides[0]["parentId"] == anchor
         assert [e for e in session.entries() if e.get("type") == "navigate"] == []
 
-        # The context skips EXACTLY the span: the anchor plus u3, a3 — nothing else.
-        assert _kept_ids(session) == [elides[0]["id"], ids[4], ids[5]]
-        assert _texts(app.messages) == ["u3", "a3"]
+        # The context skips EXACTLY the span: the system prompt (carried), the
+        # anchor, then u3, a3 — nothing else.
+        assert _kept_ids(session) == [_system_id(session), elides[0]["id"], ids[4], ids[5]]
+        assert _texts(app.messages)[-2:] == ["u3", "a3"]
+        assert app.messages[0]["role"] == "system"
+        assert len(app.messages) == 3
 
         # T5: every id ever minted is still in entries().
         assert before_ids <= {e["id"] for e in session.entries()}
@@ -219,10 +237,13 @@ async def test_elide_at_an_interior_anchor_navigates_first(app, wait_for_workers
         elides = [e for e in session.entries() if e.get("type") == "elide"]
         assert [n["targetId"] for n in navigates] == [anchor]
         assert elides[0]["parentId"] == anchor
-        # Kept: the anchor's line from u2 through a2. u3/a3 are off the new path
-        # (the cursor moved back), u1/a1 and the system prompt are elided.
-        assert _kept_ids(session) == [elides[0]["id"], ids[2], ids[3]]
-        assert _texts(app.messages) == ["u2", "a2"]
+        # Kept: the system prompt (carried across the splice), then the anchor's
+        # line from u2 through a2. u3/a3 are off the new path (the cursor moved
+        # back) and u1/a1 are elided.
+        assert _kept_ids(session) == [_system_id(session), elides[0]["id"], ids[2], ids[3]]
+        assert _texts(app.messages)[-2:] == ["u2", "a2"]
+        assert app.messages[0]["role"] == "system"
+        assert len(app.messages) == 3
 
 
 async def test_elide_anchored_at_the_current_cursor_is_not_refused(app, wait_for_workers_settled):

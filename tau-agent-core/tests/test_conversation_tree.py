@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from tau_agent_core.conversation_tree import ConversationTree, TreeNode
+from tau_agent_core.conversation_tree import ConversationTree, TreeNode, is_system_message
 from tau_agent_core.session_manager import SessionManager
 
 # --- synthetic entry builders (System B / camelCase shape) -----------------
@@ -77,6 +77,26 @@ def _oracle_messages(entries: list[dict[str, Any]], leaf: str | None) -> list[di
     mgr._memory_store = _to_snake(entries)
     mgr._active_entry_id = leaf
     return mgr.get_active_messages()
+
+
+def _expected_from_oracle(entries: list[dict[str, Any]], leaf: str | None) -> list[dict[str, Any]]:
+    """The oracle's fold plus τ's ONE deliberate divergence from it.
+
+    A splice drops everything on the path before ``firstKeptId``, and in τ — unlike
+    pi and unlike the System-A oracle — the system prompt is an ENTRY on that path
+    (``Session._init_state``), so the oracle's fold silently loses it.
+    ``ConversationTree`` carries system messages across the splice and emits them
+    first (``_active_path_entries``).
+
+    Stating the divergence as a transformation OF the oracle rather than deleting
+    the compaction trees from the battery keeps the rest of the fold pinned: every
+    other message, and their order, must still match System A exactly.
+    """
+    oracle = _oracle_messages(entries, leaf)
+    path = ConversationTree(entries, cursor=leaf).path()
+    carried = [e["message"] for e in path if is_system_message(e)]
+    missing = [m for m in carried if m not in oracle]
+    return [*missing, *oracle]
 
 
 # --- the synthetic trees ----------------------------------------------------
@@ -156,7 +176,9 @@ def test_context_for_matches_system_a_oracle(tree_name: str) -> None:
     entries = ALL_TREES[tree_name]()
     for leaf in _all_leaves(entries):
         tree = ConversationTree(entries, cursor=leaf)
-        assert tree.context_for() == _oracle_messages(entries, leaf), f"{tree_name} @ leaf={leaf}"
+        assert tree.context_for() == _expected_from_oracle(entries, leaf), (
+            f"{tree_name} @ leaf={leaf}"
+        )
 
 
 @pytest.mark.parametrize("tree_name", list(ALL_TREES))
@@ -164,13 +186,35 @@ def test_context_for_explicit_leaf_matches_oracle(tree_name: str) -> None:
     entries = ALL_TREES[tree_name]()
     tree = ConversationTree(entries, cursor=None)
     for leaf in _all_leaves(entries):
-        assert tree.context_for(leaf) == _oracle_messages(entries, leaf)
+        assert tree.context_for(leaf) == _expected_from_oracle(entries, leaf)
 
 
 def test_context_for_none_cursor_falls_back_to_root_like_oracle() -> None:
     entries = _linear()
     tree = ConversationTree(entries, cursor=None)
     assert tree.context_for() == _oracle_messages(entries, None)
+
+
+def test_the_only_divergence_from_the_oracle_is_the_carried_system_message() -> None:
+    """Pins what :func:`_expected_from_oracle` is allowed to add.
+
+    A helper that "adjusts" the oracle can hide any regression it is written wide
+    enough to absorb. This asserts the adjustment is EMPTY wherever no splice drops
+    a system message — every leaf of the two uncompacted trees, and the leaves of a
+    compacted tree that sit above its anchor — so the battery still compares the
+    port against System A byte for byte on those, and the carry is the single
+    difference on the rest.
+    """
+    for tree_name in ("linear", "branched"):
+        entries = ALL_TREES[tree_name]()
+        for leaf in _all_leaves(entries):
+            assert _expected_from_oracle(entries, leaf) == _oracle_messages(entries, leaf)
+
+    entries = _single_compaction()
+    for leaf in ("e01", "e02", "e03"):  # above the compaction: nothing is spliced
+        assert _expected_from_oracle(entries, leaf) == _oracle_messages(entries, leaf)
+    # e07 is below it, and the difference is exactly one message: the system prompt.
+    assert len(_expected_from_oracle(entries, "e07")) == len(_oracle_messages(entries, "e07")) + 1
 
 
 def test_context_for_empty_tree() -> None:
@@ -184,12 +228,15 @@ def test_single_compaction_drops_pre_boundary_and_keeps_summary() -> None:
     entries = _single_compaction()
     tree = ConversationTree(entries, cursor="e07")
     msgs = tree.context_for()
-    # sys(e01) + u1(e02) + a1(e03) precede the boundary → dropped; summary + kept.
-    assert msgs[0] == {
+    # u1(e02) + a1(e03) precede the boundary → dropped. sys(e01) precedes it too and
+    # is CARRIED, ahead of the summary, because a system message that survives has to
+    # be first for the provider and because the fold is what the model is sent.
+    assert msgs[0] == {"role": "system", "content": [{"type": "text", "text": "sys"}]}
+    assert msgs[1] == {
         "role": "user",
         "content": [{"type": "text", "text": "[[Compaction summary: SUMMARY-1]]"}],
     }
-    texts = [m["content"][0]["text"] for m in msgs[1:]]
+    texts = [m["content"][0]["text"] for m in msgs[2:]]
     assert texts == ["a2", "u3", "a3"]
 
 
@@ -197,9 +244,89 @@ def test_multi_compaction_anchors_on_last() -> None:
     entries = _multi_compaction()
     tree = ConversationTree(entries, cursor="e09")
     msgs = tree.context_for()
-    # SUMMARY-2 wins; SUMMARY-1 and its kept region are gone.
-    assert msgs[0]["content"][0]["text"] == "[[Compaction summary: SUMMARY-2]]"
-    assert [m["content"][0]["text"] for m in msgs[1:]] == ["a3", "u4"]
+    # SUMMARY-2 wins; SUMMARY-1 and its kept region are gone. The system prompt is
+    # carried by whichever anchor wins, exactly once — not once per anchor.
+    assert [m["content"][0]["text"] for m in msgs] == [
+        "sys",
+        "[[Compaction summary: SUMMARY-2]]",
+        "a3",
+        "u4",
+    ]
+
+
+# --- the system prompt survives a splice ------------------------------------
+#
+# τ stores the system prompt as an entry (``Session._init_state``) where pi keeps
+# it in the request frame, so τ's splice — and only τ's — could drop it. It did:
+# every compaction and every elide removed it from the fold, and the model kept
+# seeing a system prompt only because ``AgentLoop._call_llm`` re-inserted the
+# CONFIG's when the context did not start with one. These pin the fix.
+
+
+def _elide(entry_id: str, parent: str | None, first_kept_id: str | None) -> dict[str, Any]:
+    return {
+        "id": entry_id,
+        "type": "elide",
+        "parentId": parent,
+        "timestamp": f"2026-07-03T00:00:{int(entry_id[-2:]):02d}Z",
+        "firstKeptId": first_kept_id,
+    }
+
+
+def test_elide_carries_the_system_prompt() -> None:
+    entries = [
+        _msg("e01", None, "system", "sys"),
+        _msg("e02", "e01", "user", "u1"),
+        _msg("e03", "e02", "assistant", "a1"),
+        _msg("e04", "e03", "user", "u2"),
+        _elide("e05", "e04", "e04"),
+    ]
+    msgs = ConversationTree(entries, cursor="e05").context_for()
+    # An elide renders nothing of its own, so this is the whole context: the system
+    # prompt and the kept region. u1/a1 are hidden.
+    assert [(m["role"], m["content"][0]["text"]) for m in msgs] == [
+        ("system", "sys"),
+        ("user", "u2"),
+    ]
+
+
+def test_a_system_message_below_the_boundary_is_not_duplicated() -> None:
+    """The carry takes only what the splice DROPS.
+
+    A system entry inside the kept region is emitted once, by the kept region, in
+    its own position — carrying it as well would send the provider two system
+    messages and put the second one somewhere it never was.
+    """
+    entries = [
+        _msg("e01", None, "user", "u1"),
+        _msg("e02", "e01", "system", "sys"),
+        _msg("e03", "e02", "assistant", "a1"),
+        _elide("e04", "e03", "e02"),
+    ]
+    msgs = ConversationTree(entries, cursor="e04").context_for()
+    assert [(m["role"], m["content"][0]["text"]) for m in msgs] == [
+        ("system", "sys"),
+        ("assistant", "a1"),
+    ]
+
+
+def test_a_custom_message_is_not_carried() -> None:
+    """``customMessage`` is conversation, not frame (:func:`is_system_message`)."""
+    entries = [
+        _msg("e01", None, "system", "sys"),
+        {
+            "id": "e02",
+            "type": "customMessage",
+            "parentId": "e01",
+            "timestamp": "2026-07-03T00:00:02Z",
+            "customType": "reminder",
+            "message": {"role": "custom", "content": [{"type": "text", "text": "note"}]},
+        },
+        _msg("e03", "e02", "user", "u1"),
+        _elide("e04", "e03", "e03"),
+    ]
+    msgs = ConversationTree(entries, cursor="e04").context_for()
+    assert [m["content"][0]["text"] for m in msgs] == ["sys", "u1"]
 
 
 # --- branch_summary is an INLINE node, NOT a splice anchor (Decision 5, §5) --
@@ -247,7 +374,8 @@ def test_mixed_compaction_and_branch_summary_path() -> None:
     msgs = ConversationTree(entries, cursor="e08").context_for()
     texts = [m["content"][0]["text"] for m in msgs]
     assert texts == [
-        "[[Compaction summary: COMP]]",  # prefix (sys/u1/a1) dropped by the compaction
+        "sys",  # carried across the compaction; u1/a1 were not
+        "[[Compaction summary: COMP]]",  # prefix (u1/a1) dropped by the compaction
         "a2",
         "u3",
         "[[Branch summary: BR]]",  # inline — drops nothing
@@ -335,9 +463,11 @@ def test_tree_node_previews_and_roles() -> None:
     # TREE-BROWSER-AS-EDITOR.md §4.2: the compaction row states the span it folds
     # BEFORE its summary. Here ``firstKeptId=e05`` is a DESCENDANT of the anchor
     # (``SessionManager.apply_compaction``'s re-parented shape), so the fold keeps
-    # nothing from before e08 and the count is the whole parent context e01..e03.
+    # nothing from before e08 and the count is the parent context e01..e03 LESS the
+    # system message, which the fold carries rather than folds — a row that counted
+    # it would disagree with the context it describes.
     assert by_id["e08"].kind == "compaction"
-    assert by_id["e08"].preview == "folds 3 entries, resumes at e05 — SUMMARY-1"
+    assert by_id["e08"].preview == "folds 2 entries, resumes at e05 — SUMMARY-1"
     assert by_id["e08"].role is None
 
 
@@ -362,18 +492,23 @@ def test_compaction_preview_states_the_span_it_folds() -> None:
         _compaction("e05", "e04", "e04", "SUMMARY-1\nsecond line"),
         _msg("e06", "e05", "assistant", "a2"),
     ]
-    # e01..e03 fold away, e04 is the resume point; only the summary's FIRST line
-    # survives, and it lands after the span rather than displacing it.
-    assert _preview(entries, "e05", "e06") == "folds 3 entries, resumes at e04 — SUMMARY-1"
+    # e02 and e03 fold away, e04 is the resume point; e01 is carried, not folded, so
+    # it is not counted. Only the summary's FIRST line survives, and it lands after
+    # the span rather than displacing it.
+    assert _preview(entries, "e05", "e06") == "folds 2 entries, resumes at e04 — SUMMARY-1"
 
 
 def test_compaction_preview_singular_entry() -> None:
+    # Three entries, not two: the system message is carried across the splice and no
+    # longer counts toward the span, so a fixture that folds only it now reads
+    # "folds 0 entries" and says nothing about the singular noun this test is for.
     entries = [
         _msg("e01", None, "system", "sys"),
         _msg("e02", "e01", "user", "u1"),
-        _compaction("e03", "e02", "e02", "S"),
+        _msg("e03", "e02", "assistant", "a1"),
+        _compaction("e04", "e03", "e03", "S"),
     ]
-    assert _preview(entries, "e03", "e03") == "folds 1 entry, resumes at e02 — S"
+    assert _preview(entries, "e04", "e04") == "folds 1 entry, resumes at e03 — S"
 
 
 def test_compaction_preview_reports_an_unreachable_resume_point() -> None:
@@ -402,9 +537,10 @@ def test_compaction_preview_without_a_summary_is_just_the_span() -> None:
     entries = [
         _msg("e01", None, "system", "sys"),
         _msg("e02", "e01", "user", "u1"),
-        _compaction("e03", "e02", "e02", ""),
+        _msg("e03", "e02", "assistant", "a1"),
+        _compaction("e04", "e03", "e03", ""),
     ]
-    assert _preview(entries, "e03", "e03") == "folds 1 entry, resumes at e02"
+    assert _preview(entries, "e04", "e04") == "folds 1 entry, resumes at e03"
 
 
 def test_elide_preview_is_unchanged_by_the_shared_arithmetic() -> None:
@@ -414,18 +550,22 @@ def test_elide_preview_is_unchanged_by_the_shared_arithmetic() -> None:
         _msg("e01", None, "system", "sys"),
         _msg("e02", "e01", "user", "u1"),
         _msg("e03", "e02", "assistant", "a1"),
+        _msg("e04", "e03", "user", "u2"),
         {
-            "id": "e04",
+            "id": "e05",
             "type": "elide",
-            "parentId": "e03",
-            "timestamp": "2026-07-03T00:00:04Z",
-            "firstKeptId": "e03",
+            "parentId": "e04",
+            "timestamp": "2026-07-03T00:00:05Z",
+            "firstKeptId": "e04",
         },
     ]
-    assert _preview(entries, "e04", "e04") == "hides 2 entries, resumes at e03"
+    # Two hidden entries, u1 and a1. The fixture gained u2 when the system message
+    # stopped counting toward the span, so the plural row this test is about is
+    # still the row being asserted.
+    assert _preview(entries, "e05", "e05") == "hides 2 entries, resumes at e04"
 
-    entries[3]["firstKeptId"] = None
-    assert _preview(entries, "e04", "e04") == (
+    entries[4]["firstKeptId"] = None
+    assert _preview(entries, "e05", "e05") == (
         "elide → None: resume point is not on this path (hides everything)"
     )
 
@@ -498,5 +638,6 @@ def test_reads_camelcase_parent_and_first_kept_fields() -> None:
     entries = _single_compaction()
     assert "parentId" in entries[1] and "firstKeptId" in entries[4]
     msgs = ConversationTree(entries, cursor="e07").context_for()
-    assert msgs[0]["content"][0]["text"] == "[[Compaction summary: SUMMARY-1]]"
-    assert [m["content"][0]["text"] for m in msgs[1:]] == ["a2", "u3", "a3"]
+    assert msgs[0]["content"][0]["text"] == "sys"  # carried across the splice
+    assert msgs[1]["content"][0]["text"] == "[[Compaction summary: SUMMARY-1]]"
+    assert [m["content"][0]["text"] for m in msgs[2:]] == ["a2", "u3", "a3"]

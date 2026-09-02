@@ -76,6 +76,29 @@ _SPLICE_ANCHOR_KINDS = ("compaction", "elide")
 _SPLICE_VERBS = {"compaction": "folds", "elide": "hides"}
 
 
+def is_system_message(entry: dict[str, Any]) -> bool:
+    """Whether this entry is the session's system prompt, stored as a message.
+
+    ``Session._init_state`` writes the system prompt as the first ``message``
+    entry (``session_store.py``), which pi never does — pi keeps the prompt in the
+    request frame and out of the log entirely. Storing it as an entry put it on the
+    path, and anything on the path before a splice anchor's ``firstKeptId`` was
+    dropped by :meth:`ConversationTree._active_path_entries`, so **every compaction
+    and every elide silently removed the system prompt from the fold**. The model
+    kept receiving one only because ``AgentLoop._call_llm`` re-inserts
+    ``config.system_prompt`` when the context does not start with a system message
+    — the CONFIG's prompt substituting for the TREE's, with nothing saying so.
+
+    A ``customMessage`` is deliberately not included: an extension-injected node
+    carries ``role: "custom"`` and is remapped to ``user`` at the wire, so it is
+    ordinary conversation and a splice is entitled to fold it away.
+    """
+    if entry.get("type") != "message":
+        return False
+    message = entry.get("message")
+    return isinstance(message, dict) and message.get("role") == "system"
+
+
 def _compaction_message(summary: str) -> dict[str, Any]:
     """Render a compaction anchor as the loop-consumable user message. Mirrors
     ``SessionManager.get_active_messages`` (``session_manager.py:208-220``) so the
@@ -95,6 +118,60 @@ def _branch_summary_message(summary: str) -> dict[str, Any]:
         "role": "user",
         "content": [{"type": "text", "text": f"[[Branch summary: {summary}]]"}],
     }
+
+
+@agent_facing(topic="sessions", since="0.9.7")
+def entries_to_messages(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert already-folded path entries into the loop's message list.
+
+    The second half of :meth:`ConversationTree.context_for`, split out so a caller
+    holding a *hypothetical* entry list — the branch a plan would produce, before
+    any of it is appended (``tau_agent_core.tree_surgery``) — converts it by the
+    same rules the live fold uses. A second conversion written beside the planner
+    would be a second answer to "what will the model see", and the whole point of
+    checking a plan before committing it is that the two cannot differ.
+
+    Mirrors ``SessionManager.get_active_messages`` (``session_manager.py:191-221``).
+
+    Args:
+        entries: Folded path entries, root→leaf — the output of
+            :meth:`ConversationTree.context_entries`, or a planned equivalent.
+
+    Returns:
+        The messages those entries contribute, in order. Entry kinds that carry no
+        message at all (``navigate``, ``customEntry``, ``model_change``) contribute
+        nothing, and an ``elide`` contributes nothing by design: it is a splice
+        anchor with no payload to render.
+    """
+    messages: list[dict[str, Any]] = []
+    for entry in entries:
+        kind = entry.get("type")
+        if kind == "message":
+            messages.append(entry.get("message", {}))
+        elif kind == "customMessage":
+            # Extension-injected durable node (E5 §3.1 / S29): the stored
+            # message carries ``role: "custom"`` (rendered as extension-origin);
+            # it folds onto the path like a plain message (NOT a splice anchor)
+            # and is remapped custom→user at the wire (agent_loop convert_to_llm).
+            messages.append(entry.get("message", {}))
+        elif kind == "compaction":
+            messages.append(_compaction_message(str(entry.get("summary", ""))))
+        elif kind == "branch_summary":
+            # Inline node, not a splice (Decision 5, §5): rendered in place.
+            messages.append(_branch_summary_message(str(entry.get("summary", ""))))
+        elif kind == "elide":
+            # Summary-less splice anchor (W3): it occupies the anchor slot in
+            # ``_active_path_entries`` exactly like ``compaction`` so the SAME
+            # splice runs, but there is no summary text to inject — so, unlike
+            # ``compaction``, it renders NOTHING. The excluded span is gone from
+            # this fold; the anchor and everything it hid stay fully present in
+            # ``entries()`` (Decision 7, T5).
+            pass
+        # ``customEntry`` (durable extension backplane state, E6 §2 / S39) is
+        # deliberately NOT rendered here: it is a non-message node on the path,
+        # so it emits no loop message and thus never reaches ``convert_to_llm``
+        # / the model. It stays readable through ``ctx.entries()`` and the tree.
+    return messages
 
 
 def _message_text(message: dict[str, Any]) -> str:
@@ -300,36 +377,7 @@ class ConversationTree:
         boundary); the entry→message conversion is ``get_active_messages``.
         ``leaf=None`` uses the stored cursor.
         """
-        leaf_id = self._cursor if leaf is None else leaf
-        messages: list[dict[str, Any]] = []
-        for entry in self._active_path_entries(leaf_id):
-            kind = entry.get("type")
-            if kind == "message":
-                messages.append(entry.get("message", {}))
-            elif kind == "customMessage":
-                # Extension-injected durable node (E5 §3.1 / S29): the stored
-                # message carries ``role: "custom"`` (rendered as extension-origin);
-                # it folds onto the path like a plain message (NOT a splice anchor)
-                # and is remapped custom→user at the wire (agent_loop convert_to_llm).
-                messages.append(entry.get("message", {}))
-            elif kind == "compaction":
-                messages.append(_compaction_message(str(entry.get("summary", ""))))
-            elif kind == "branch_summary":
-                # Inline node, not a splice (Decision 5, §5): rendered in place.
-                messages.append(_branch_summary_message(str(entry.get("summary", ""))))
-            elif kind == "elide":
-                # Summary-less splice anchor (W3): it occupies the anchor slot in
-                # ``_active_path_entries`` exactly like ``compaction`` so the SAME
-                # splice runs, but there is no summary text to inject — so, unlike
-                # ``compaction``, it renders NOTHING. The excluded span is gone from
-                # this fold; the anchor and everything it hid stay fully present in
-                # ``entries()`` (Decision 7, T5).
-                pass
-            # ``customEntry`` (durable extension backplane state, E6 §2 / S39) is
-            # deliberately NOT rendered here: it is a non-message node on the path,
-            # so it emits no loop message and thus never reaches ``convert_to_llm``
-            # / the model. It stays readable through ``ctx.entries()`` and the tree.
-        return messages
+        return entries_to_messages(self.context_entries(leaf))
 
     def context_entries(self, leaf: str | None = None) -> list[dict[str, Any]]:
         """Root→leaf *entry* list with the compaction/branch_summary splice applied.
@@ -383,15 +431,28 @@ class ConversationTree:
         # kept region trails it — the frozen System-A oracle's shape. Identical for
         # ``elide``: the boundary search does not care whether the anchor renders a
         # summary, only where it sits.
-        result: list[dict[str, Any]] = [anchor]
+        #
+        # **One divergence from pi, and it exists because τ diverged first.** The
+        # system prompt is an ENTRY here (``Session._init_state``) where in pi it is
+        # request frame, so pi's splice can drop the whole pre-boundary prefix without
+        # ever touching it and τ's could not. System messages in the dropped span are
+        # therefore carried across the splice and emitted FIRST — before the anchor,
+        # which is where a system message has to sit for the provider and where
+        # ``AgentSession.compact_messages`` already puts it (``[*system_msgs,
+        # summary_msg, *kept]``). Without this the fold quietly handed the loop a
+        # context with no system message, and the loop quietly substituted the
+        # config's prompt for the tree's (see :func:`is_system_message`).
+        carried: list[dict[str, Any]] = []
+        kept: list[dict[str, Any]] = []
         found = False
         for entry in path[:anchor_idx]:
             if entry["id"] == boundary:
                 found = True
             if found:
-                result.append(entry)
-        result.extend(path[anchor_idx + 1 :])
-        return result
+                kept.append(entry)
+            elif is_system_message(entry):
+                carried.append(entry)
+        return [*carried, anchor, *kept, *path[anchor_idx + 1 :]]
 
     def _walk(self, start_id: str | None) -> list[dict[str, Any]]:
         """Leaf→root ``parentId`` walk with a cycle guard, reversed to root→leaf."""
@@ -425,6 +486,42 @@ class ConversationTree:
                 same entries, so a miss is a broken index, not a missing body.
         """
         return self._by_id[entry_id]
+
+    def contains(self, entry_id: str) -> bool:
+        """Whether ``entry_id`` names an entry in this tree.
+
+        The question :meth:`entry` answers by raising. It exists for callers that
+        are validating a caller-supplied id and want to say what is wrong with it
+        (``tree_surgery.selection_order`` names every unknown id at once, which a
+        ``try``/``except KeyError`` per id cannot do).
+
+        Args:
+            entry_id: The id to look for.
+
+        Returns:
+            ``True`` when the id names an entry.
+        """
+        return entry_id in self._by_id
+
+    def children_of(self, entry_id: str | None) -> list[str]:
+        """The ids parented at ``entry_id``, oldest first.
+
+        The downward edge, where :meth:`path` walks upward. ``tree_surgery`` needs it
+        to copy a subtree — the shape below a node is part of what a copy re-creates
+        — and reading it from the index built at construction is what keeps that walk
+        from re-scanning every entry per node.
+
+        Args:
+            entry_id: The parent id, or ``None`` for the root-level entries.
+
+        Returns:
+            The child ids sorted by timestamp, the same order :meth:`tree` puts them
+            in. An unknown id has no children, which is the same answer as a leaf —
+            this is a graph reader, not a validator (see :meth:`contains`).
+        """
+        children = list(self._children.get(entry_id, []))
+        children.sort(key=lambda child: self._by_id[child].get("timestamp", 0))
+        return children
 
     def message_text(self, entry_id: str) -> str:
         """``entry_id``'s message flattened to plain text, or ``""`` if it has none.
@@ -587,8 +684,16 @@ class ConversationTree:
         else:
             return f"{kind} → {boundary}: resume point is not on this path ({verb} everything)"
 
+        # A system message in the span is CARRIED across the splice, not folded
+        # (:meth:`_active_path_entries`), so counting it here would report a row that
+        # disagrees with the fold it describes — "folds 4 entries" over a span the
+        # reader can still see the first of.
         hidden = (
-            [e for e in self.context_entries(parent) if e["id"] not in kept]
+            [
+                e
+                for e in self.context_entries(parent)
+                if e["id"] not in kept and not is_system_message(e)
+            ]
             if parent is not None
             else []
         )
