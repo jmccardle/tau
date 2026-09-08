@@ -25,7 +25,7 @@ The **Core** set below is now implemented in `tau-coding-agent/src/tau_coding_ag
   `{"kind":"done", ...}`. (`rpc` deferred.)
 - `--model`/`-m` with `provider/id` shorthand; resolves against the config `models`
   map, else constructs an ad-hoc entry. Wired into **both** headless and the TUI
-  (via `Parley(cli_overrides=...)`).
+  (via `TauApp(cli_overrides=...)`).
 - `--provider` (long-only), `--tools`/`-t`, `--no-tools`/`-nt`, `--system-prompt`.
 - `--version`/`-v` (pi-aligned: `-v` is version; τ's old `-v`=verbose is dropped),
   `--verbose` (long-only), `--help`/`-h`.
@@ -147,7 +147,7 @@ pi derives env-var names from `APP_NAME` (`config.ts:475`, default `"pi"`). The 
 
 ## 2. tau's current CLI surface (what `cli.py` actually does today)
 
-`tau-coding-agent/src/tau_coding_agent/cli.py`, hand-rolled `parse_cli_args()` (`cli.py:35-87`). It builds a `CLIArgs` dataclass but **`main()` ignores almost all of it** — `main()` only checks `args.verbose` for debug prints, then launches `Parley()` with no arguments (`cli.py:90-111`). The TUI manages its own config/backend. So in practice the flags are *parsed but inert*.
+`tau-coding-agent/src/tau_coding_agent/cli.py`, hand-rolled `parse_cli_args()` (`cli.py:35-87`). It builds a `CLIArgs` dataclass but **`main()` ignores almost all of it** — `main()` only checks `args.verbose` for debug prints, then launches `TauApp()` with no arguments (`cli.py:90-111`). The TUI manages its own config/backend. So in practice the flags are *parsed but inert*.
 
 | tau flag | short | wired into behavior? | divergence from pi |
 |---|---|---|---|

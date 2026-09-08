@@ -2,10 +2,12 @@
 
 Two claims, proven against real ``AgentSession`` / ``AgentLoop`` machinery:
 
-1. ``AgentSession.set_ui_delegate`` flips the session's ONE shared
-   ``ExtensionUI`` into TUI mode, so EVERY bound extension's ``api.ui.notify(...)``
-   reaches the delegate (they all share ``_extension_api.context``). With NO
-   delegate the same ``notify`` falls to the headless stderr sink.
+1. ``AgentSession.set_ui_delegate`` binds the delegate on the session's ONE
+   shared ``ExtensionUI``, so EVERY bound extension's ``api.ui.notify(...)``
+   reaches it (they all share ``_extension_api.context``). With NO delegate the
+   same ``notify`` falls to the headless stderr sink. There is no second mode
+   flag: docs/EXTENSION-LOCKS.md §8.2 removed ``_mode``, so a bound delegate is
+   what ``interactive`` means.
 2. A ``tool_call`` veto now emits a ``tool_execution_start`` (in addition to the
    ``tool_execution_end(is_error=True)`` it always emitted) — the render signal a
    front-end needs to mount a widget for the blocked call. Before S33 the veto
@@ -26,6 +28,9 @@ from tau_llm.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 def _model() -> Model:
     return Model(
@@ -37,11 +42,6 @@ def _model() -> Model:
         context_window=128000,
         max_tokens=4096,
     )
-
-
-# ---------------------------------------------------------------------------
-# 1. set_ui_delegate wiring
-# ---------------------------------------------------------------------------
 
 
 class _RecordingDelegate:
@@ -70,8 +70,8 @@ def test_set_ui_delegate_wires_notify_for_every_bound_extension() -> None:
     delegate = _RecordingDelegate()
     session.set_ui_delegate(delegate)
 
-    # The shared ExtensionUI flipped into TUI mode, and BOTH bound apis expose it.
-    assert session._extension_api.context._ui._mode == "tui"
+    # The shared ExtensionUI took the delegate, and BOTH bound apis expose it.
+    assert session._extension_api.context._ui.interactive is True
     assert apis[0].ui is apis[1].ui
 
     apis[0].ui.notify("from a", "warning")
@@ -92,7 +92,7 @@ def test_headless_notify_falls_to_stderr_when_no_delegate(capsys) -> None:
         model=_model(),
         extensions=[ext],
     )
-    assert session._extension_api.context._ui._mode == "headless"
+    assert session._extension_api.context._ui.interactive is False
 
     apis[0].ui.notify("headless message", "error")
 
@@ -101,13 +101,8 @@ def test_headless_notify_falls_to_stderr_when_no_delegate(capsys) -> None:
     assert "error" in err
 
 
-# ---------------------------------------------------------------------------
-# 1b. Headless dialog policy on the shared session UI (S48)
-# ---------------------------------------------------------------------------
-
-
 async def test_headless_dialog_raises_by_default_for_bound_extension() -> None:
-    """A bound extension's ``ctx.ui.confirm`` RAISES headless with no policy (S48)."""
+    """A bound extension's ``ctx.ui.form`` RAISES headless with no policy (S48)."""
     from tau_agent_core.extension_types import HeadlessDialogError
 
     apis: list[Any] = []
@@ -124,7 +119,7 @@ async def test_headless_dialog_raises_by_default_for_bound_extension() -> None:
     import pytest
 
     with pytest.raises(HeadlessDialogError):
-        await apis[0].ui.confirm("Delete?", "are you sure")
+        await apis[0].ui.form({"fields": [{"name": "sure", "kind": "confirm"}]})
 
 
 async def test_set_headless_ui_defaults_honored_for_every_bound_extension() -> None:
@@ -142,13 +137,13 @@ async def test_set_headless_ui_defaults_honored_for_every_bound_extension() -> N
         model=_model(),
         extensions=[ext_a, ext_b],
     )
-    session.set_headless_ui_defaults({"confirm": "yes", "select": "first", "input": "default"})
+    session.set_headless_ui_defaults({"form": "defaults"})
 
     # Both bound apis share the one shared ExtensionUI, so the policy reaches both.
+    spec = {"fields": [{"name": "x", "kind": "text", "default": "d"}]}
     assert apis[0].ui is apis[1].ui
-    assert await apis[0].ui.confirm("t", "m") is True
-    assert await apis[1].ui.select("t", ["x", "y"]) == "x"
-    assert await apis[0].ui.input("t", "def") == "def"
+    assert await apis[0].ui.form(spec) == {"x": "d"}
+    assert await apis[1].ui.form(spec) == {"x": "d"}
 
 
 def test_set_headless_ui_defaults_rejects_bad_policy() -> None:
@@ -160,12 +155,7 @@ def test_set_headless_ui_defaults_rejects_bad_policy() -> None:
         model=_model(),
     )
     with pytest.raises(ValueError):
-        session.set_headless_ui_defaults({"confirm": "maybe"})
-
-
-# ---------------------------------------------------------------------------
-# 2. A veto emits a render signal (tool_execution_start)
-# ---------------------------------------------------------------------------
+        session.set_headless_ui_defaults({"form": "maybe"})
 
 
 def _text_assistant(text: str) -> AssistantMessage:
@@ -175,7 +165,7 @@ def _text_assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -187,7 +177,7 @@ def _tool_call_assistant(call_id: str, name: str, args: dict[str, Any]) -> Assis
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 

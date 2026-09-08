@@ -183,8 +183,6 @@ async def test_a_failing_sub_agent_is_contained_and_marks_its_branch(monkeypatch
 
     marks = [e for e in log.entries() if e.get("customType") == "branch_error"]
     assert len(marks) == 1, "the branch is marked, so the failure is visible in the tree"
-    # The lane is in the mark's PAYLOAD (what the branch was), not a marker on the
-    # entry (who wrote it) — docs/LANE-REMOVAL.md §4.
     assert marks[0]["data"]["lane"] == result.lane
     assert "branchOf" not in marks[0]
 
@@ -255,11 +253,6 @@ async def test_max_turns_bounds_the_sub_agent(monkeypatch):
     await session._extension_api.context.spawn_branch(log.cursor, "go", tools=[], max_turns=3)
 
     assert captured["max_turns"] == 3
-
-
-# ---------------------------------------------------------------------------
-# The branch's terminal bracket: ``branch_end``, emitted from a ``finally``.
-# ---------------------------------------------------------------------------
 
 
 def _branch_ends(session: AgentSession) -> list[dict]:

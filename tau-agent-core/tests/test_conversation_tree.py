@@ -126,8 +126,6 @@ def _branched() -> list[dict[str, Any]]:
 
 
 def _single_compaction() -> list[dict[str, Any]]:
-    # Compaction c08 splices in before e05 (firstKeptId=e05); its parent is e04's
-    # former parent (e03). Tip continues at e07 (child of e06→e05).
     return [
         _msg("e01", None, "system", "sys"),
         _msg("e02", "e01", "user", "u1"),
@@ -228,9 +226,6 @@ def test_single_compaction_drops_pre_boundary_and_keeps_summary() -> None:
     entries = _single_compaction()
     tree = ConversationTree(entries, cursor="e07")
     msgs = tree.context_for()
-    # u1(e02) + a1(e03) precede the boundary → dropped. sys(e01) precedes it too and
-    # is CARRIED, ahead of the summary, because a system message that survives has to
-    # be first for the provider and because the fold is what the model is sent.
     assert msgs[0] == {"role": "system", "content": [{"type": "text", "text": "sys"}]}
     assert msgs[1] == {
         "role": "user",
@@ -244,23 +239,12 @@ def test_multi_compaction_anchors_on_last() -> None:
     entries = _multi_compaction()
     tree = ConversationTree(entries, cursor="e09")
     msgs = tree.context_for()
-    # SUMMARY-2 wins; SUMMARY-1 and its kept region are gone. The system prompt is
-    # carried by whichever anchor wins, exactly once — not once per anchor.
     assert [m["content"][0]["text"] for m in msgs] == [
         "sys",
         "[[Compaction summary: SUMMARY-2]]",
         "a3",
         "u4",
     ]
-
-
-# --- the system prompt survives a splice ------------------------------------
-#
-# τ stores the system prompt as an entry (``Session._init_state``) where pi keeps
-# it in the request frame, so τ's splice — and only τ's — could drop it. It did:
-# every compaction and every elide removed it from the fold, and the model kept
-# seeing a system prompt only because ``AgentLoop._call_llm`` re-inserted the
-# CONFIG's when the context did not start with one. These pin the fix.
 
 
 def _elide(entry_id: str, parent: str | None, first_kept_id: str | None) -> dict[str, Any]:
@@ -282,8 +266,6 @@ def test_elide_carries_the_system_prompt() -> None:
         _elide("e05", "e04", "e04"),
     ]
     msgs = ConversationTree(entries, cursor="e05").context_for()
-    # An elide renders nothing of its own, so this is the whole context: the system
-    # prompt and the kept region. u1/a1 are hidden.
     assert [(m["role"], m["content"][0]["text"]) for m in msgs] == [
         ("system", "sys"),
         ("user", "u2"),
@@ -329,20 +311,7 @@ def test_a_custom_message_is_not_carried() -> None:
     assert [m["content"][0]["text"] for m in msgs] == ["sys", "u1"]
 
 
-# --- branch_summary is an INLINE node, NOT a splice anchor (Decision 5, §5) --
-#
-# The 1b test here asserted branch_summary spliced *like* compaction (the §2.4
-# unification). That was verified WRONG against pi (Decision 5, fix 2): pi's
-# buildSessionContext anchors the drop-prefix splice on ``compaction`` alone
-# (session-manager.ts:367); branch_summary is emitted inline via
-# createBranchSummaryMessage (:390-397). These tests lock the pi-correct topology.
-
-
 def test_branch_summary_is_inline_not_a_splice_yields_A_B_S() -> None:
-    # A real summarized branch: root A → point B, with an abandoned child C.
-    # branchWithSummary parents the summary S at the branch point B (fix 1), so the
-    # active path is A → B → S and C drops out purely via the parentId walk — NOT a
-    # splice. pi gives context [A, B, S]; the old unified splice wrongly gave [S, B].
     entries = [
         _msg("e01", None, "system", "rootA"),
         _msg("e02", "e01", "user", "pointB"),
@@ -358,9 +327,6 @@ def test_branch_summary_is_inline_not_a_splice_yields_A_B_S() -> None:
 
 
 def test_mixed_compaction_and_branch_summary_path() -> None:
-    # Both kinds on one path: compaction drops the pre-boundary prefix; the later
-    # branch_summary renders inline (no prefix drop). Matches pi buildSessionContext
-    # (compaction is the sole anchor; the post-anchor branch_summary is appendMessage'd).
     entries = [
         _msg("e01", None, "system", "sys"),
         _msg("e02", "e01", "user", "u1"),
@@ -460,12 +426,6 @@ def test_tree_node_previews_and_roles() -> None:
     by_id: dict[str, TreeNode] = {}
     _index(roots, by_id)
     assert by_id["e02"].role == "user" and by_id["e02"].preview == "u1"
-    # TREE-BROWSER-AS-EDITOR.md §4.2: the compaction row states the span it folds
-    # BEFORE its summary. Here ``firstKeptId=e05`` is a DESCENDANT of the anchor
-    # (``SessionManager.apply_compaction``'s re-parented shape), so the fold keeps
-    # nothing from before e08 and the count is the parent context e01..e03 LESS the
-    # system message, which the fold carries rather than folds — a row that counted
-    # it would disagree with the context it describes.
     assert by_id["e08"].kind == "compaction"
     assert by_id["e08"].preview == "folds 2 entries, resumes at e05 — SUMMARY-1"
     assert by_id["e08"].role is None
@@ -492,16 +452,10 @@ def test_compaction_preview_states_the_span_it_folds() -> None:
         _compaction("e05", "e04", "e04", "SUMMARY-1\nsecond line"),
         _msg("e06", "e05", "assistant", "a2"),
     ]
-    # e02 and e03 fold away, e04 is the resume point; e01 is carried, not folded, so
-    # it is not counted. Only the summary's FIRST line survives, and it lands after
-    # the span rather than displacing it.
     assert _preview(entries, "e05", "e06") == "folds 2 entries, resumes at e04 — SUMMARY-1"
 
 
 def test_compaction_preview_singular_entry() -> None:
-    # Three entries, not two: the system message is carried across the splice and no
-    # longer counts toward the span, so a fixture that folds only it now reads
-    # "folds 0 entries" and says nothing about the singular noun this test is for.
     entries = [
         _msg("e01", None, "system", "sys"),
         _msg("e02", "e01", "user", "u1"),
@@ -527,8 +481,7 @@ def test_compaction_preview_reports_an_unreachable_resume_point() -> None:
         _compaction("e04", "e03", "e02", "SUMMARY-1"),
     ]
     assert _preview(entries, "e04", "e04") == (
-        "compaction → e02: resume point is not on this path "
-        "(folds everything) — SUMMARY-1"
+        "compaction → e02: resume point is not on this path (folds everything) — SUMMARY-1"
     )
 
 
@@ -559,9 +512,6 @@ def test_elide_preview_is_unchanged_by_the_shared_arithmetic() -> None:
             "firstKeptId": "e04",
         },
     ]
-    # Two hidden entries, u1 and a1. The fixture gained u2 when the system message
-    # stopped counting toward the span, so the plural row this test is about is
-    # still the row being asserted.
     assert _preview(entries, "e05", "e05") == "hides 2 entries, resumes at e04"
 
     entries[4]["firstKeptId"] = None
@@ -633,11 +583,84 @@ def test_subtree_text_unknown_id_is_empty() -> None:
 
 
 def test_reads_camelcase_parent_and_first_kept_fields() -> None:
-    # If context_for read snake_case, the compaction boundary would misresolve
-    # (firstKeptId ignored → whole prefix kept) and the parent chain would break.
     entries = _single_compaction()
     assert "parentId" in entries[1] and "firstKeptId" in entries[4]
     msgs = ConversationTree(entries, cursor="e07").context_for()
     assert msgs[0]["content"][0]["text"] == "sys"  # carried across the splice
     assert msgs[1]["content"][0]["text"] == "[[Compaction summary: SUMMARY-1]]"
     assert [m["content"][0]["text"] for m in msgs[2:]] == ["a2", "u3", "a3"]
+
+
+# --- the message_id enumerator (capabilities.DOMAINS["message_id"]) ---------
+
+
+class TestCompleteMessageId:
+    """The enumerator behind the ``message_id`` domain: scope, search, and bounds."""
+
+    def test_in_session_offers_every_entry_with_its_text(self) -> None:
+        found = ConversationTree(_branched(), cursor="e05").complete_message_id()
+        assert [m.entry_id for m in found.matches] == [f"e0{n}" for n in range(1, 8)]
+        assert found.total == 7
+        assert found.matches[3].preview == "path A"
+
+    def test_ancestors_scope_is_the_parent_chain_root_first(self) -> None:
+        found = ConversationTree(_branched(), cursor="e05").complete_message_id(
+            "ancestors_of_cursor"
+        )
+        assert [m.entry_id for m in found.matches] == ["e01", "e02", "e03", "e04", "e05"]
+
+    def test_descendants_scope_excludes_the_anchor_and_spans_both_forks(self) -> None:
+        found = ConversationTree(_branched(), cursor="e05").complete_message_id(
+            "descendants_of_cursor", "e03"
+        )
+        assert [m.entry_id for m in found.matches] == ["e04", "e06", "e05", "e07"]
+
+    def test_a_passed_cursor_beats_the_trees_own(self) -> None:
+        """A caller enumerating for a sub-agent scopes to THAT agent's cursor."""
+        tree = ConversationTree(_branched(), cursor="e05")
+        theirs = tree.complete_message_id("ancestors_of_cursor", "e07")
+        assert [m.entry_id for m in theirs.matches] == ["e01", "e02", "e03", "e06", "e07"]
+
+    def test_the_query_completes_an_id_by_prefix(self) -> None:
+        found = ConversationTree(_linear(), cursor="e05").complete_message_id(query="e04")
+        assert [m.entry_id for m in found.matches] == ["e04"]
+
+    def test_the_query_searches_the_text_case_insensitively(self) -> None:
+        found = ConversationTree(_branched(), cursor="e05").complete_message_id(query="PATH")
+        assert [m.entry_id for m in found.matches] == ["e04", "e06"]
+
+    def test_an_empty_query_matches_everything_in_scope(self) -> None:
+        tree = ConversationTree(_linear(), cursor="e05")
+        assert tree.complete_message_id(query="").total == 5
+
+    def test_the_limit_bounds_matches_while_total_reports_the_truth(self) -> None:
+        found = ConversationTree(_branched(), cursor="e05").complete_message_id(limit=2)
+        assert len(found.matches) == 2
+        assert found.total == 7
+
+    def test_a_scope_anchored_on_an_unknown_entry_raises(self) -> None:
+        """Fail-Early: an empty list here would read as 'nothing matched'."""
+        tree = ConversationTree(_linear(), cursor="e05")
+        with pytest.raises(KeyError, match="cannot scope"):
+            tree.complete_message_id("ancestors_of_cursor", "nope")
+
+    def test_in_session_needs_no_cursor_at_all(self) -> None:
+        assert ConversationTree(_linear(), cursor=None).complete_message_id().total == 5
+
+
+class TestDescendantsOf:
+    def test_parents_come_before_their_children(self) -> None:
+        assert ConversationTree(_branched(), cursor="e05").descendants_of("e03") == [
+            "e04",
+            "e06",
+            "e05",
+            "e07",
+        ]
+
+    def test_a_leaf_has_none_and_so_does_an_unknown_id(self) -> None:
+        tree = ConversationTree(_branched(), cursor="e05")
+        assert tree.descendants_of("e05") == []
+        assert tree.descendants_of("nope") == []
+
+    def test_none_is_the_whole_tree(self) -> None:
+        assert len(ConversationTree(_branched(), cursor="e05").descendants_of(None)) == 7

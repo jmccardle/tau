@@ -62,11 +62,6 @@ def _raise(exc: Exception):
     return _body
 
 
-# ---------------------------------------------------------------------------
-# EventBus: stop swallowing (G3)
-# ---------------------------------------------------------------------------
-
-
 def test_bus_surfaces_raising_handler_to_on_error_listener():
     """A raising notify handler reaches on_error with ``(exc, channel)``."""
     bus = EventBus()
@@ -80,8 +75,6 @@ def test_bus_surfaces_raising_handler_to_on_error_listener():
     asyncio.run(bus.emit(AgentEvent(type="agent_start", timestamp=0)))
 
     assert seen == [("boom", "agent_start")]
-    # The failure surfaces but does NOT abort the sibling handler (fire-and-forget
-    # for the siblings; visible for the failure).
     assert sibling_ran == ["ran"]
 
 
@@ -137,11 +130,6 @@ def test_bus_on_error_unsubscribe_stops_delivery():
     assert seen == []
 
 
-# ---------------------------------------------------------------------------
-# AgentSession: wire the runner + bus onto one on_error surface (G12 + G3)
-# ---------------------------------------------------------------------------
-
-
 def test_session_routes_mutating_hook_error_to_tui_delegate():
     """A raising ``tool_result`` hook paints a TUI warning notice (G12)."""
 
@@ -152,8 +140,6 @@ def test_session_routes_mutating_hook_error_to_tui_delegate():
     delegate = _CapturingDelegate()
     session.set_ui_delegate(delegate)
 
-    # The runner catches the handler exception and surfaces it; the patch result is
-    # still None (nothing modified), and the loop would pass the original through.
     result = asyncio.run(session._extension_runner.emit_tool_result({"content": "x"}))
     assert result is None
 

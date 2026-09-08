@@ -52,7 +52,7 @@ during a turn.
 ## 2. Where a mid-turn line goes
 
 `on_input_submitted` does not submit while `is_generating`. The text goes into
-`Parley._pending_steer`, and `_flush_pending_steer` submits it later.
+`TauApp._pending_steer`, and `_flush_pending_steer` submits it later.
 
 **The buffer is the app's, not the core's.** Once `submit()` has taken content,
 no frontend can get it back, and the reclaim gesture in §4 is the reason to keep

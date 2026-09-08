@@ -22,7 +22,7 @@ from __future__ import annotations
 from textual.app import App
 from textual.widgets import Checkbox, Input, RadioSet, SelectionList
 
-from tau_coding_agent.app import ExtensionFormScreen, _ExtensionUIDelegate
+from tau_coding_agent import modals, extension_ui
 
 _SPEC = {
     "title": "New task",
@@ -34,11 +34,6 @@ _SPEC = {
         {"name": "points", "kind": "number", "default": 3},
     ],
 }
-
-
-# ---------------------------------------------------------------------------
-# 1. the generic form screen in isolation
-# ---------------------------------------------------------------------------
 
 
 class _ModalHarness(App):
@@ -57,7 +52,7 @@ class _ModalHarness(App):
 
 
 async def test_form_defaults_prefill_every_field() -> None:
-    harness = _ModalHarness(ExtensionFormScreen(_SPEC))
+    harness = _ModalHarness(modals.ExtensionFormScreen(_SPEC))
     async with harness.run_test() as pilot:
         await pilot.pause()
         screen = harness.screen
@@ -72,7 +67,7 @@ async def test_form_defaults_prefill_every_field() -> None:
 
 
 async def test_form_submit_returns_answers_dict() -> None:
-    harness = _ModalHarness(ExtensionFormScreen(_SPEC))
+    harness = _ModalHarness(modals.ExtensionFormScreen(_SPEC))
     async with harness.run_test() as pilot:
         await pilot.pause()
         # Edit the free-text field; leave everything else on its default.
@@ -91,7 +86,7 @@ async def test_form_submit_returns_answers_dict() -> None:
 
 
 async def test_form_confirm_toggle_and_number_edit() -> None:
-    harness = _ModalHarness(ExtensionFormScreen(_SPEC))
+    harness = _ModalHarness(modals.ExtensionFormScreen(_SPEC))
     async with harness.run_test() as pilot:
         await pilot.pause()
         harness.screen.query_one("#ext-form-field-3", Checkbox).value = False
@@ -105,7 +100,7 @@ async def test_form_confirm_toggle_and_number_edit() -> None:
 
 async def test_form_number_float_parses() -> None:
     spec = {"fields": [{"name": "ratio", "kind": "number", "default": 0}]}
-    harness = _ModalHarness(ExtensionFormScreen(spec))
+    harness = _ModalHarness(modals.ExtensionFormScreen(spec))
     async with harness.run_test() as pilot:
         await pilot.pause()
         harness.screen.query_one("#ext-form-field-0", Input).value = "1.5"
@@ -117,7 +112,7 @@ async def test_form_number_float_parses() -> None:
 
 async def test_form_escape_returns_none() -> None:
     # Fail-Early: a cancelled form is not a fabricated answer set.
-    harness = _ModalHarness(ExtensionFormScreen(_SPEC))
+    harness = _ModalHarness(modals.ExtensionFormScreen(_SPEC))
     async with harness.run_test() as pilot:
         await pilot.pause()
         await pilot.press("escape")
@@ -126,17 +121,12 @@ async def test_form_escape_returns_none() -> None:
 
 
 async def test_form_cancel_button_returns_none() -> None:
-    harness = _ModalHarness(ExtensionFormScreen(_SPEC))
+    harness = _ModalHarness(modals.ExtensionFormScreen(_SPEC))
     async with harness.run_test() as pilot:
         await pilot.pause()
         await pilot.click("#ext-form-cancel")
         await pilot.pause()
     assert harness.result is None
-
-
-# ---------------------------------------------------------------------------
-# 2. the delegate end-to-end (what an extension hook awaits)
-# ---------------------------------------------------------------------------
 
 
 class _DelegateHarness(App):
@@ -145,7 +135,7 @@ class _DelegateHarness(App):
 
 async def test_delegate_form_flows_answers_back() -> None:
     app = _DelegateHarness()
-    delegate = _ExtensionUIDelegate(app)  # type: ignore[arg-type]
+    delegate = extension_ui._ExtensionUIDelegate(app)  # type: ignore[arg-type]
     box: dict[str, object] = {}
 
     async with app.run_test() as pilot:
@@ -172,7 +162,7 @@ async def test_delegate_form_flows_answers_back() -> None:
 
 async def test_delegate_form_cancel_returns_none() -> None:
     app = _DelegateHarness()
-    delegate = _ExtensionUIDelegate(app)  # type: ignore[arg-type]
+    delegate = extension_ui._ExtensionUIDelegate(app)  # type: ignore[arg-type]
     box: dict[str, object] = {"value": "UNSET"}
 
     async with app.run_test() as pilot:

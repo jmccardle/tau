@@ -192,11 +192,6 @@ class AssistantMessageEventStream:
         self._final: AssistantMessage | None = None
         self._usage = Usage()
         self._error: str | None = None
-        # The ORIGINAL exception, preserved so ``result()`` can re-raise it with its
-        # type and attributes intact. Flattening everything to ``Exception(str(e))``
-        # destroyed information callers need — a ConstraintViolation loses its
-        # ``.output``, and an httpx timeout becomes indistinguishable from any other
-        # failure. The ErrorEvent still carries the message for event consumers.
         self._error_exc: BaseException | None = None
         self._event_queue: asyncio.Queue[Any] = asyncio.Queue()
         self._collector_task: asyncio.Task[None] | None = None
@@ -242,8 +237,6 @@ class AssistantMessageEventStream:
         try:
             async for chunk in self._provider_stream:
                 await self._process_chunk(chunk)
-                # If the provider yielded its own DoneEvent or ErrorEvent,
-                # we should not emit our own wrapper. Otherwise keep going.
                 if self._done:
                     break
             # Only emit our own DoneEvent if the provider didn't.
@@ -324,8 +317,6 @@ class AssistantMessageEventStream:
                 re-raised with its type intact (e.g. ``ConstraintViolation``, which
                 carries the offending output), not flattened to a bare ``Exception``.
         """
-        # Ensure the collector task is running (may have been called
-        # directly without iterating the stream first).
         await self._ensure_collector()
         if not self._done:
             await self._wait_for_done()
@@ -356,8 +347,6 @@ class AssistantMessageEventStream:
                 self._error = event.message
                 self._done = True
                 return
-            # Any other event type is stored in the queue for iteration;
-            # keep waiting for done/error.
 
     def abort(self) -> None:
         """Stop consuming the stream locally. Does NOT cancel the HTTP request.

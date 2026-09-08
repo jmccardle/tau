@@ -28,6 +28,9 @@ from tau_coding_agent.backends import (
     prompt_tokens,
 )
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 def _backend() -> TauBackend:
     """A real TauBackend (and therefore a real AgentSession) against no network."""
@@ -55,18 +58,18 @@ def _stub_turn(backend: TauBackend) -> None:
     async def fake_run_one_turn(
         text, images, context, queued=None, strip_ref_text=None, persist=True
     ):
-        await session._emit_stamped(AgentEvent(type="turn_start", timestamp=0, turn_index=0))
+        await session._emit_stamped(AgentEvent(type="turn_start", timestamp=_TS, turn_index=0))
         await session._emit_stamped(
             AgentEvent(
                 type="message_update",
-                timestamp=0,
+                timestamp=_TS,
                 message={"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
             )
         )
         await session._emit_stamped(
             AgentEvent(
                 type="message_end",
-                timestamp=0,
+                timestamp=_TS,
                 message={
                     "role": "assistant",
                     "content": [{"type": "text", "text": "ok"}],
@@ -83,15 +86,10 @@ def _text_event(lane: str, text: str) -> AgentEvent:
     """A ``message_update`` carrying the full accumulated text, as the loop sends it."""
     return AgentEvent(
         type="message_update",
-        timestamp=0,
+        timestamp=_TS,
         message={"role": "assistant", "content": [{"type": "text", "text": text}]},
         submission_id=lane,
     )
-
-
-# ---------------------------------------------------------------------------
-# prompt_tokens — one completion's context, read the same way live and on reload.
-# ---------------------------------------------------------------------------
 
 
 class TestPromptTokens:
@@ -139,11 +137,6 @@ class TestPromptTokens:
         assert prompt_tokens({}) == 0
 
 
-# ---------------------------------------------------------------------------
-# TurnStream — the normalizer, extracted so it can exist once per lane.
-# ---------------------------------------------------------------------------
-
-
 class TestTurnStream:
     def test_text_deltas_are_the_suffix_beyond_what_this_lane_saw(self):
         """The loop re-sends the whole accumulated partial text every update."""
@@ -156,7 +149,7 @@ class TestTurnStream:
     def test_turn_start_resets_the_accumulator_so_turns_do_not_concatenate(self):
         stream = TurnStream()
         stream.feed(_text_event("x", "first"))
-        stream.feed(AgentEvent(type="turn_start", timestamp=0, turn_index=1, submission_id="x"))
+        stream.feed(AgentEvent(type="turn_start", timestamp=_TS, turn_index=1, submission_id="x"))
         out = stream.feed(_text_event("x", "second"))
         assert [e["delta"] for e in out] == ["second"]
 
@@ -173,7 +166,7 @@ class TestTurnStream:
         stream.feed(
             AgentEvent(
                 type="message_end",
-                timestamp=0,
+                timestamp=_TS,
                 message={
                     "role": "assistant",
                     "content": [{"type": "toolCall", "id": "c1", "name": "ls", "arguments": {}}],
@@ -185,7 +178,7 @@ class TestTurnStream:
         out = stream.feed(
             AgentEvent(
                 type="tool_execution_end",
-                timestamp=0,
+                timestamp=_TS,
                 tool_call_id="c1",
                 tool_name="ls",
                 result="a.py",
@@ -195,11 +188,6 @@ class TestTurnStream:
         assert out[0]["kind"] == "tool_result" and out[0]["result"] == "a.py"
         assert stream.tool_calls[0]["result"] == "a.py"
         assert stream.usage_totals["total_tokens"] == 11
-
-
-# ---------------------------------------------------------------------------
-# RenderRouter — the demultiplexer.
-# ---------------------------------------------------------------------------
 
 
 class TestRenderRouterLanes:
@@ -271,7 +259,7 @@ class TestRenderRouterLanes:
         await router.on_agent_event(
             AgentEvent(
                 type="message_end",
-                timestamp=0,
+                timestamp=_TS,
                 message={
                     "role": "assistant",
                     "content": [],
@@ -296,6 +284,8 @@ class TestRenderRouterLanes:
             "submitter": "human",
             "context": 400,
             "output": 42,
+            "seconds": None,
+            "cache_notice": None,
             "extra": {},
         }
 
@@ -312,7 +302,7 @@ class TestRenderRouterLanes:
             await router.on_agent_event(
                 AgentEvent(
                     type="message_end",
-                    timestamp=0,
+                    timestamp=_TS,
                     message={
                         "role": "assistant",
                         "content": [],

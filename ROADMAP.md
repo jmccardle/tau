@@ -20,8 +20,8 @@ M4/M5, two flags (`--list-models`, `--session-id`), and the `docs/PLAN-0.9.4.md`
 316/758 (41.7%), 0 drift.
 
 **Release state (2026-08-28).** `v0.9.4` is public: the tag resolves to
-`c5fff1f` on the `github` remote, matching the local tag. **`origin`
-(`dev.ffwf.net`) carries no tags at all** — `git ls-remote --tags origin`
+`c5fff1f` on the `github` remote, matching the local tag. **`origin` (the
+private development host) carries no tags at all** — `git ls-remote --tags origin`
 returns empty and exits 0, so the release tags live on `github` and in the local
 clone only. That is consistent with `docs/RELEASING.md`'s two-repository split
 but is worth stating, because an empty tag listing reads like an unreachable
@@ -212,7 +212,7 @@ still open:** §4.4 step 5's pluggable auth and model resolver.
 submission lifecycle's phase 4; nothing in the TUI could reach it, because a
 turn disabled the editor and pinned the transcript to the bottom. Both locks are
 off: `MessageList` follows the tail only while the reader is at the bottom, and a
-line typed during a turn lands in `Parley._pending_steer`, shown in a new
+line typed during a turn lands in `TauApp._pending_steer`, shown in a new
 `PendingInput` widget and reclaimable with Up on an empty editor. `config.json`'s
 `steering_strategy` picks the delivery point — `steer` (default, the running
 turn's next tool call) or `enqueue` (the turn edge). A delivered steering message
@@ -226,7 +226,7 @@ Both were listed as open below and were not. `session_picker.py` defines
 `SessionPickerModal` (`session_picker.py:128`); `--resume` is a real TUI flag
 that opens it over the first frame (`cli.py:774-787`); the palette carries
 "Resume session…" (`app.py:6796` → `app.py:7076`); the sidebar defaults closed
-(`parley.tcss:42-43`, `display: none`). `--resume` is now rejected only with
+(`tau.tcss:42-43`, `display: none`). `--resume` is now rejected only with
 `--print`, where there is no screen to draw a picker on — narrowed from the old
 blanket "isn't available headlessly".
 
@@ -249,9 +249,9 @@ counter stopped re-billing every earlier turn (`b8e26bb`). `04c8003` adds
 ### Tier 10 — the themes leg only — shipped 2026-08-24
 
 `tau-coding-agent/src/tau_coding_agent/themes.py` + `--theme`. Structure stays
-in `parley.tcss`, colour moves to `textual.theme.Theme`, so a theme is a palette
+in `tau.tcss`, colour moves to `textual.theme.Theme`, so a theme is a palette
 and not a thousand-line stylesheet fork. `tests/test_themes.py` fails if a
-colour literal appears in `parley.tcss`, which is what keeps the split real.
+colour literal appears in `tau.tcss`, which is what keeps the split real.
 Ships three themes, a live swap, a user theme file, and per-run `--theme`;
 one bad theme file no longer costs the whole TUI (`eb01f48`). Post-tag fix:
 Textual's own 21 built-in themes crashed the app on `$tau-bg` (`cf3920a`).

@@ -4,7 +4,7 @@ The iteration loop this exists for:
 
 1. Run ``python -m tau_coding_agent.devshot --scene tools --size 120x40``.
 2. Look at ``shots/tools@120x40.png``.
-3. Edit ``parley.tcss``.
+3. Edit ``tau.tcss``.
 4. Repeat step 1.
 
 Nothing here touches a real terminal, a real ``~/.tau``, or the network. Scenes
@@ -18,9 +18,6 @@ from __future__ import annotations
 
 import os
 
-# Textual reads TEXTUAL_ANIMATIONS once, at import time, so this must run before
-# anything imports textual. A moving frame is a frame that screenshots differently
-# on every run.
 os.environ.setdefault("TEXTUAL_ANIMATIONS", "none")
 
 import argparse  # noqa: E402
@@ -128,10 +125,6 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(exc.args[0]))
 
     sizes = args.sizes or list(DEFAULT_SIZES)
-    # ``[None]`` rather than ``["mocha"]``: with no flag the scene renders in
-    # whatever theme the app resolves for itself, which is what every caller
-    # before the flag existed got, and what a developer checking a change to
-    # parley.tcss wants.
     themes: list[str | None] = list(args.themes) if args.themes else [None]
     asyncio.run(run(scenes, sizes, args.out, png=not args.no_png, themes=themes))
     return 0

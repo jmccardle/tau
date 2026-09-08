@@ -38,9 +38,8 @@ from tau_agent_core.sdk import (
     _load_extensions,
 )
 
-# =============================================================================
-# Test 1: AgentSession creation
-# =============================================================================
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
 
 
 class TestAgentSessionCreation:
@@ -162,11 +161,6 @@ class TestAgentSessionCreation:
         assert state.status == "idle"
 
 
-# =============================================================================
-# Test 2: Subscribe and unsubscribe
-# =============================================================================
-
-
 class TestSubscribeUnsubscribe:
     """Tests for AgentSession.subscribe() and unsubscribe."""
 
@@ -276,11 +270,6 @@ class TestSubscribeUnsubscribe:
         received.clear()
         await session._events.emit(AgentEvent(type="agent_end", timestamp=100))
         assert len(received) == 0  # handler only listens to agent_start
-
-
-# =============================================================================
-# Test 3: Prompt runs agent loop
-# =============================================================================
 
 
 @pytest.mark.usefixtures("fake_llm")
@@ -666,11 +655,6 @@ class TestToolExecutionModeThreadedToLoop:
         assert captured["kwargs"]["tool_execution_mode"] == "parallel"
 
 
-# =============================================================================
-# Test 4: Abort during prompt
-# =============================================================================
-
-
 @pytest.mark.usefixtures("fake_llm")
 class TestAbortDuringPrompt:
     """Tests for AgentSession.abort() during prompt execution."""
@@ -729,11 +713,6 @@ class TestAbortDuringPrompt:
         session.abort()
         assert session._abort_signal.is_aborted()
         assert session.is_streaming is False
-
-
-# =============================================================================
-# Test 5: Continue conversation
-# =============================================================================
 
 
 @pytest.mark.usefixtures("fake_llm")
@@ -823,11 +802,6 @@ class TestContinueConversation:
 
         asyncio.run(abort_then_continue())
         assert session.is_streaming is False
-
-
-# =============================================================================
-# Test 6: create_agent_session with model string
-# =============================================================================
 
 
 class TestCreateAgentSession:
@@ -984,11 +958,6 @@ class TestCreateAgentSession:
         assert session._tool_execution_mode == "parallel"
 
 
-# =============================================================================
-# Test 7: Extensions are loaded and receive API
-# =============================================================================
-
-
 class TestExtensions:
     """Tests for extension loading and API."""
 
@@ -1036,8 +1005,6 @@ class TestExtensions:
             )
 
         self.create_session(extensions=[my_ext])
-        # The ExtensionAPI tracks tools internally
-        # We verify by checking the ExtensionAPI instance
 
     def test_extension_can_subscribe_to_events(self):
         """api.on() subscribes to the session's LIVE event bus, not an orphan.
@@ -1115,7 +1082,7 @@ class TestExtensions:
                 provider="openai",
                 model="gpt-4o",
                 stop_reason=stop_reason,
-                timestamp=0,
+                timestamp=_TS,
                 usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
             )
 
@@ -1395,11 +1362,6 @@ class TestExtensions:
         assert session.get_extension_shortcuts() == []
 
 
-# =============================================================================
-# Test 8: In-memory session is isolated
-# =============================================================================
-
-
 @pytest.mark.usefixtures("fake_llm")
 class TestInMemoryIsolation:
     """Tests for in-memory session isolation."""
@@ -1498,11 +1460,6 @@ class TestInMemoryIsolation:
             assert user_msgs[0].get("content")[0].get("text") == f"prompt {i}"
 
 
-# =============================================================================
-# Additional: Compact test
-# =============================================================================
-
-
 class TestCompact:
     """Tests for AgentSession.compact()."""
 
@@ -1550,11 +1507,6 @@ class TestCompact:
         types = [e.type for e in events]
         assert "agent_start" in types
         assert "agent_end" in types
-
-
-# =============================================================================
-# Additional: EventBus tests
-# =============================================================================
 
 
 class TestEventBus:
@@ -1697,11 +1649,6 @@ class TestEventBus:
         assert set(bus._listeners.keys()) == expected_types
 
 
-# =============================================================================
-# Additional: SDK helper functions
-# =============================================================================
-
-
 class TestSDKHelpers:
     """Tests for SDK helper functions."""
 
@@ -1778,21 +1725,6 @@ class TestSDKHelpers:
         with pytest.raises(ValueError, match="Unknown tool"):
             _resolve_tools(["nonexistent"])
 
-
-# =============================================================================
-# B1 (tau-004): _resolve_tools returns ONE type.
-#
-# The hole this closes is not a behaviour, it is a *shape*. Before B1 the seven
-# built-ins came back as raw plain classes while extension tools came back as
-# AgentTool, and AgentLoop annotated `dict[str, AgentTool]` over a `list`-typed
-# seam -- so mypy had no edge to check and the suite only ever exercised the
-# half of the registry that happened to have `.definition`. tau-001's rejected
-# commit read `self._tools[tc.name].definition.execution_mode`; every built-in
-# tool call died on `AttributeError: 'LsTool' object has no attribute
-# 'definition'`, and pytest and mypy both stayed green over it.
-#
-# These tests pin the type itself, so the shape cannot drift back silently.
-# =============================================================================
 
 _ALL_BUILTIN_NAMES = ["read", "write", "edit", "bash", "ls", "grep", "find"]
 

@@ -65,9 +65,6 @@ async def test_fork_export_writes_a_new_file_and_leaves_source_untouched(tmp_pat
     # The source log is never touched (append-only fork copies, §5.5).
     assert live.entries() == source_entries_before
 
-    # The fork is a self-contained copy whose header parent is the source id,
-    # carrying the same message entries as the source (plus the init entries
-    # Session.create writes — model_change / session_info).
     forked = Session.load(Path(new_path))
     assert forked.parent == live.id
     assert [e["type"] for e in forked.entries() if e["type"] == "message"] == [
@@ -88,8 +85,6 @@ async def test_fork_export_positions_cursor_at_entry_id(tmp_path):
     new_path = await ctx.fork(first_asst, mode="export")
 
     forked = Session.load(Path(new_path))
-    # The fork copied every entry, then a navigate positioned its cursor at the
-    # requested branch point, so its active context is truncated there.
     assert forked.cursor == first_asst
     assert len(forked.context) == 2
     # Source cursor is unchanged.

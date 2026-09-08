@@ -41,16 +41,13 @@ import pytest
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.submission import Submission
-from tau_coding_agent.app import (
-    LANE_FOREIGN_CLASS,
-    ChatDisplay,
-    ChatPlaceholder,
-    LaneStrip,
-    MessageBox,
-    Parley,
-)
+from tau_coding_agent.app import TauApp
 from tau_coding_agent.backends import TauBackend
-from tau_coding_agent.chat_widgets import ExchangeBox
+from tau_coding_agent.chat_widgets import ExchangeBox, MessageBox
+from tau_coding_agent import editor_widgets, transcript
+
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
 
 
 class _Submit:
@@ -76,18 +73,18 @@ def _script(backend: TauBackend, gate: asyncio.Event | None = None) -> None:
         if gate is not None:
             await gate.wait()
         answer = f"answer to {text}"
-        await session._emit_stamped(AgentEvent(type="turn_start", timestamp=0, turn_index=0))
+        await session._emit_stamped(AgentEvent(type="turn_start", timestamp=_TS, turn_index=0))
         await session._emit_stamped(
             AgentEvent(
                 type="message_update",
-                timestamp=0,
+                timestamp=_TS,
                 message={"role": "assistant", "content": [{"type": "text", "text": answer}]},
             )
         )
         await session._emit_stamped(
             AgentEvent(
                 type="message_end",
-                timestamp=0,
+                timestamp=_TS,
                 message={
                     "role": "assistant",
                     "content": [{"type": "text", "text": answer}],
@@ -102,7 +99,7 @@ def _script(backend: TauBackend, gate: asyncio.Event | None = None) -> None:
 
 @pytest.fixture
 def scripted(make_app):
-    """A Parley wired to a real TauBackend with a scripted loop, plus its gate."""
+    """A TauApp wired to a real TauBackend with a scripted loop, plus its gate."""
     gate = asyncio.Event()
     gate.set()  # ungated by default; a test that wants to block clears it
     holder: dict[str, TauBackend] = {}
@@ -132,7 +129,7 @@ async def _until(pilot, predicate, tries: int = 200) -> None:
     raise AssertionError("condition never became true")
 
 
-def _top_level(display: ChatDisplay) -> list:
+def _top_level(display: transcript.ChatDisplay) -> list:
     """The display's top-level TRANSCRIPT boxes, in order.
 
     ``ChatPlaceholder`` is filtered out because it is chrome, not transcript: it
@@ -141,26 +138,15 @@ def _top_level(display: ChatDisplay) -> list:
     message. What this helper is asked about is what the user's conversation
     rendered as.
     """
-    return [c for c in display.children if not isinstance(c, ChatPlaceholder)]
+    return [c for c in display.children if not isinstance(c, transcript.ChatPlaceholder)]
 
 
-#: Roles that are NOT a submission bubble — the answer side of a span, plus the
-#: chrome (a system notice, an extension's durable node). Everything else is a
-#: bubble: role ``"user"`` for a human at this frontend and, since B3-b, the
-#: SOURCE for every other lane — so "the bubbles" cannot be a ``role == "user"``
-#: filter any more, and must not become a source allow-list either (a novel
-#: source has to count, which is the whole point).
 _NOT_A_BUBBLE = {"assistant", "pending", "toolCall", "toolResult", "system", "custom"}
 
 
-def _user_boxes(display: ChatDisplay) -> list[MessageBox]:
+def _user_boxes(display: transcript.ChatDisplay) -> list[MessageBox]:
     """Every submission bubble, whatever source opened its lane."""
     return [b for b in display.query(MessageBox) if b.role not in _NOT_A_BUBBLE]
-
-
-# ---------------------------------------------------------------------------
-# Regression: an ordinary turn looks exactly as it did.
-# ---------------------------------------------------------------------------
 
 
 async def test_one_ordinary_turn_renders_exactly_as_before(scripted, wait_for_workers_settled):
@@ -176,7 +162,7 @@ async def test_one_ordinary_turn_renders_exactly_as_before(scripted, wait_for_wo
         await wait_for_workers_settled(app)
         await pilot.pause()
 
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         top = _top_level(display)
         assert isinstance(top[0], MessageBox) and top[0].role == "user"
         assert top[0].content_text == "hello"
@@ -202,14 +188,9 @@ async def test_a_dispatched_command_still_renders_no_user_turn(scripted):
         await app.on_input_submitted(_Submit("/extensions"))
         await pilot.pause()
 
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         assert _user_boxes(display) == []
         assert app.is_generating is False
-
-
-# ---------------------------------------------------------------------------
-# Two lanes: no interleaving.
-# ---------------------------------------------------------------------------
 
 
 async def test_two_lanes_do_not_interleave_into_one_transcript(scripted):
@@ -240,7 +221,7 @@ async def test_two_lanes_do_not_interleave_into_one_transcript(scripted):
         )
         await pilot.pause()
 
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         answers = [b.content_text for b in display.query(MessageBox) if b.role == "assistant"]
         assert "AAAaaa" in answers, answers
         assert "BBB" in answers, answers
@@ -270,8 +251,6 @@ async def test_a_tool_result_folds_into_its_own_lanes_box(scripted):
                 }
             )
             await app._on_render_event({"kind": "turn_start", "lane": lane, "turn_index": 0})
-            # The live loop is network-paced, so Textual settles the step's mount
-            # between events; a synchronous burst is a cadence no backend produces.
             await pilot.pause()
             await app._on_render_event(
                 {"kind": "tool_call", "lane": lane, "id": "c1", "name": "ls", "arguments": {}}
@@ -282,17 +261,12 @@ async def test_a_tool_result_folds_into_its_own_lanes_box(scripted):
         )
         await pilot.pause()
 
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         lane_a = display.active_step("a")
         lane_b = display.active_step("b")
         assert lane_a is not None and lane_b is not None
         assert lane_a.tool_boxes["c1"].has_result is True
         assert lane_b.tool_boxes["c1"].has_result is False
-
-
-# ---------------------------------------------------------------------------
-# Jupyter's rule: a foreign source is rendered, differently — never dropped.
-# ---------------------------------------------------------------------------
 
 
 async def test_a_bus_submission_is_rendered_not_dropped(scripted):
@@ -315,12 +289,9 @@ async def test_a_bus_submission_is_rendered_not_dropped(scripted):
         )
         await pilot.pause()
 
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         users = _user_boxes(display)
         assert [u.content_text for u in users] == ["run the nightly"]
-        # Rendered DIFFERENTLY: badged with where it came from, so "the agent just
-        # said something nobody typed" is legible rather than mysterious. The role
-        # is the SOURCE (B3-b), so the border reads "Timer" over text no user typed.
         assert users[0].role == "timer"
         assert users[0].border_subtitle == "timer · cron:nightly"
         answers = [b.content_text for b in display.query(MessageBox) if b.role == "assistant"]
@@ -341,7 +312,7 @@ async def test_a_forked_branch_gets_its_own_labelled_lane(scripted):
             "branch_event",
             lane="lane-2",
             label="explore",
-            event=AgentEvent(type="turn_start", timestamp=0, turn_index=0),
+            event=AgentEvent(type="turn_start", timestamp=_TS, turn_index=0),
         )
         await session._events.emit_channel(
             "branch_event",
@@ -349,13 +320,13 @@ async def test_a_forked_branch_gets_its_own_labelled_lane(scripted):
             label="explore",
             event=AgentEvent(
                 type="message_update",
-                timestamp=0,
+                timestamp=_TS,
                 message={"role": "assistant", "content": [{"type": "text", "text": "forked"}]},
             ),
         )
         await pilot.pause()
 
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         users = _user_boxes(display)
         assert users[0].role == "agent"
         assert users[0].border_subtitle == "agent · fork:explore"
@@ -383,7 +354,7 @@ async def test_a_failed_fork_closes_its_lane_instead_of_hanging_on_working(scrip
         session = holder["backend"].agent_session
 
         async def _boom(self, text, images=None, context=None):
-            await self._events.emit(AgentEvent(type="turn_start", timestamp=0, turn_index=0))
+            await self._events.emit(AgentEvent(type="turn_start", timestamp=_TS, turn_index=0))
             raise RuntimeError("the provider dropped the connection")
 
         monkeypatch.setattr(AgentSession, "prompt", _boom)
@@ -393,17 +364,12 @@ async def test_a_failed_fork_closes_its_lane_instead_of_hanging_on_working(scrip
         await pilot.pause()
 
         assert result.ok is False, "the failure is contained, as it always was"
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         assert display._lanes == {}, "the lane's render state must not be leaked"
         titles = [e.title for e in display.query(ExchangeBox)]
         assert not any("Working…" in t for t in titles), titles
-        assert app.query_one(LaneStrip).lanes == {}
-        assert app.query_one(LaneStrip).display is False
-
-
-# ---------------------------------------------------------------------------
-# Cancel still targets the turn that is generating.
-# ---------------------------------------------------------------------------
+        assert app.query_one(editor_widgets.LaneStrip).lanes == {}
+        assert app.query_one(editor_widgets.LaneStrip).display is False
 
 
 async def test_esc_aborts_the_generating_turn_and_leaves_a_foreign_lane_alone(
@@ -444,7 +410,7 @@ async def test_esc_aborts_the_generating_turn_and_leaves_a_foreign_lane_alone(
         await wait_for_workers_settled(app)
         await pilot.pause()
 
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         # The foreign lane is untouched by the cancel: still open, still "Working…".
         assert "bus-1" in display._lanes
         titles = [e.title for e in display.query(ExchangeBox)]
@@ -452,29 +418,24 @@ async def test_esc_aborts_the_generating_turn_and_leaves_a_foreign_lane_alone(
         assert app.is_generating is False
 
 
-# ---------------------------------------------------------------------------
-# B3-b: the origin survives every stage of the render.
-# ---------------------------------------------------------------------------
-
-
 def test_lane_role_types_a_bubble_by_its_source_and_never_invents_one():
     """Pure. The bubble's role IS the submission source, so ``ROLE_LABELS`` gives
     it a border title of its own; an unlisted source passes through verbatim (and
     ``MessageBox.on_mount`` capitalizes it) rather than being mapped to a known
     one, and a missing source says ``unknown`` rather than borrowing ``user``."""
-    assert Parley._lane_role("bus") == "bus"
-    assert Parley._lane_role("agent") == "agent"
+    assert TauApp._lane_role("bus") == "bus"
+    assert TauApp._lane_role("agent") == "agent"
     # Novel source: rendered generically, NOT dropped and NOT relabelled.
-    assert Parley._lane_role("carrier-pigeon") == "carrier-pigeon"
-    assert Parley._lane_role(None) == "unknown"
-    assert Parley._lane_role("   ") == "unknown"
+    assert TauApp._lane_role("carrier-pigeon") == "carrier-pigeon"
+    assert TauApp._lane_role(None) == "unknown"
+    assert TauApp._lane_role("   ") == "unknown"
 
 
 def test_lane_strip_reports_only_foreign_lanes_and_collapses_when_idle():
     """Pure. The strip costs zero rows on an ordinary session: this frontend's own
     typed lane (``label=None``) is not something it reports, because the reader is
     already looking at it and the input is already disabled."""
-    strip = LaneStrip()
+    strip = editor_widgets.LaneStrip()
     assert strip.display is False
 
     strip.open_lane("mine", None)
@@ -519,28 +480,26 @@ async def test_a_forks_answer_stays_attributed_after_its_exchange_is_unwrapped(s
                 "branch_event", lane="lane-9", label="explore", event=event
             )
 
-        await branch(AgentEvent(type="turn_start", timestamp=0, turn_index=0))
+        await branch(AgentEvent(type="turn_start", timestamp=_TS, turn_index=0))
         await branch(
             AgentEvent(
                 type="message_update",
-                timestamp=0,
+                timestamp=_TS,
                 message={"role": "assistant", "content": [{"type": "text", "text": "sub-answer"}]},
             )
         )
         await pilot.pause()
 
-        display = app.query_one(ChatDisplay)
-        # While it streams, the step itself is marked — not only the exchange
-        # around it, which a reader may well have collapsed or scrolled past.
+        display = app.query_one(transcript.ChatDisplay)
         step = display.active_step("branch:lane-9")
         assert step is not None
-        assert step.has_class(LANE_FOREIGN_CLASS)
+        assert step.has_class(transcript.LANE_FOREIGN_CLASS)
         assert step.border_subtitle == "agent · fork:explore"
 
         await branch(
             AgentEvent(
                 type="message_end",
-                timestamp=0,
+                timestamp=_TS,
                 message={
                     "role": "assistant",
                     "content": [{"type": "text", "text": "sub-answer"}],
@@ -557,7 +516,7 @@ async def test_a_forks_answer_stays_attributed_after_its_exchange_is_unwrapped(s
         # … and the answer it left behind still says whose it is.
         answers = [b for b in display.query(MessageBox) if b.role == "assistant"]
         assert [b.content_text for b in answers] == ["sub-answer"]
-        assert answers[0].has_class(LANE_FOREIGN_CLASS)
+        assert answers[0].has_class(transcript.LANE_FOREIGN_CLASS)
         subtitle = answers[0].border_subtitle or ""
         assert subtitle.startswith("agent · fork:explore · ")
         assert "90 ctx · 11 out" in subtitle
@@ -575,17 +534,17 @@ async def test_an_ordinary_typed_turn_carries_no_badge_at_all(scripted, wait_for
         await wait_for_workers_settled(app)
         await pilot.pause()
 
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         boxes = list(display.query(MessageBox))
         assert boxes, "the turn rendered"
-        assert not any(b.has_class(LANE_FOREIGN_CLASS) for b in boxes)
+        assert not any(b.has_class(transcript.LANE_FOREIGN_CLASS) for b in boxes)
         bubble = _user_boxes(display)[0]
         assert bubble.role == "user"
         assert bubble.border_subtitle in (None, "")
         # The answer's subtitle is the stats line and ONLY the stats line.
         answer = [b for b in boxes if b.role == "assistant"][0]
         assert (answer.border_subtitle or "").startswith("80 ctx · 7 out")
-        assert app.query_one(LaneStrip).display is False
+        assert app.query_one(editor_widgets.LaneStrip).display is False
 
 
 async def test_a_source_this_build_never_heard_of_still_renders(scripted):
@@ -612,18 +571,16 @@ async def test_a_source_this_build_never_heard_of_still_renders(scripted):
         await app._on_render_event({"kind": "text_delta", "lane": "x1", "delta": "coo"})
         await pilot.pause()
 
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         bubble = _user_boxes(display)[0]
         assert bubble.content_text == "a message arrived by bird"
         assert bubble.role == "carrier-pigeon"
-        # No ROLE_LABELS entry exists for it, so the border title is the honest
-        # capitalization of what it called itself — never a mapped-to-known label.
         assert bubble.border_title == "Carrier-pigeon"
         assert bubble.border_subtitle == "carrier-pigeon · coop-3"
-        assert bubble.has_class(LANE_FOREIGN_CLASS)
+        assert bubble.has_class(transcript.LANE_FOREIGN_CLASS)
         step = display.active_step("x1")
-        assert step is not None and step.has_class(LANE_FOREIGN_CLASS)
-        assert app.query_one(LaneStrip).lanes == {"x1": "carrier-pigeon · coop-3"}
+        assert step is not None and step.has_class(transcript.LANE_FOREIGN_CLASS)
+        assert app.query_one(editor_widgets.LaneStrip).lanes == {"x1": "carrier-pigeon · coop-3"}
 
 
 async def test_the_strip_announces_a_foreign_lane_for_exactly_as_long_as_it_runs(scripted):
@@ -634,7 +591,7 @@ async def test_the_strip_announces_a_foreign_lane_for_exactly_as_long_as_it_runs
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.action_new_chat()
-        strip = app.query_one(LaneStrip)
+        strip = app.query_one(editor_widgets.LaneStrip)
         assert strip.display is False
 
         await app._on_render_event(

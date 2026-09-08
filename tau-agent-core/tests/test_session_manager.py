@@ -22,10 +22,6 @@ import pytest
 
 from tau_agent_core.session_manager import SessionInfo, SessionManager, SessionState
 
-# =============================================================================
-# Test 1: Session creation and loading
-# =============================================================================
-
 
 class TestSessionCreation:
     """Tests for session creation and loading."""
@@ -137,11 +133,6 @@ class TestSessionCreation:
                 if line:
                     # Should not raise
                     json.loads(line)
-
-
-# =============================================================================
-# Test 2: Append and retrieve messages
-# =============================================================================
 
 
 class TestAppendMessages:
@@ -279,11 +270,6 @@ class TestAppendMessages:
         assert isinstance(messages, list)
         assert isinstance(messages[0], dict)
         assert messages[0]["role"] == "assistant"
-
-
-# =============================================================================
-# Test 3: Tree structure — navigate
-# =============================================================================
 
 
 class TestTreeNavigation:
@@ -526,11 +512,6 @@ class TestTreeNavigation:
         assert "m3" not in forked_ids
 
 
-# =============================================================================
-# Test 5: Compaction entry handling
-# =============================================================================
-
-
 class TestCompaction:
     """Tests for compaction entry handling in the active path."""
 
@@ -695,11 +676,6 @@ class TestCompaction:
         assert compaction["tokens_saved"] == 200
 
 
-# =============================================================================
-# Test 6: In-memory mode
-# =============================================================================
-
-
 class TestInMemoryMode:
     """Tests for in-memory session mode."""
 
@@ -810,15 +786,7 @@ class TestInMemoryMode:
             }
         )
 
-        # fork() writes to _sessions_dir which is still file-based
-        # This tests that the file operations work alongside memory operations
-        # Note: in-memory mode still uses file system for new session creation
-        # The memory store is only for the active session
         entries_before = list(mgr._memory_store)
-
-        # Fork will create a file
-        # This is by design — fork creates a new file on disk
-        # The in-memory store tracks the current session's entries
 
     def test_in_memory_compaction(self):
         """Compaction handling works in in-memory mode."""
@@ -867,11 +835,6 @@ class TestInMemoryMode:
         methods = [m for m in dir(file_mgr) if not m.startswith("_")]
         mem_methods = [m for m in dir(mem_mgr) if not m.startswith("_")]
         assert set(methods) == set(mem_methods)
-
-
-# =============================================================================
-# Test 7: Session listing
-# =============================================================================
 
 
 class TestSessionListing:
@@ -956,11 +919,6 @@ class TestSessionListing:
         assert len(sessions) == 2
         # Sessions should be sorted by creation timestamp (newest first)
         assert sessions[0].created_at >= sessions[1].created_at
-
-
-# =============================================================================
-# Test: Clone
-# =============================================================================
 
 
 class TestClone:
@@ -1049,11 +1007,6 @@ class TestClone:
             mgr.clone("any-id")
 
 
-# =============================================================================
-# Test: SessionState
-# =============================================================================
-
-
 class TestSessionState:
     """Tests for the SessionState dataclass."""
 
@@ -1084,11 +1037,6 @@ class TestSessionState:
         assert state.model == "gpt-4"
         assert state.cwd == "/home/user"
         assert state.session_name == "My Session"
-
-
-# =============================================================================
-# Test: SessionInfo
-# =============================================================================
 
 
 class TestSessionInfo:
@@ -1122,19 +1070,12 @@ class TestSessionInfo:
         assert info.message_count == 5
 
 
-# =============================================================================
-# Test: Edge cases and error handling
-# =============================================================================
-
-
 class TestEdgeCases:
     """Tests for edge cases and error handling."""
 
     def test_append_to_no_active_session(self, tmp_path):
         """append_entry() on a session with no active session path is a no-op."""
         mgr = SessionManager(sessions_dir=str(tmp_path))
-        # Don't create a session — just try to append
-        # In-memory mode will catch this
         pass  # File mode: append without session path does nothing harmful
 
     def test_get_active_messages_no_session(self):

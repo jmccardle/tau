@@ -1,11 +1,11 @@
 """Shared, hermetic fixtures for the ``tau-coding-agent`` TUI suite.
 
-Seventeen test modules used to hand-roll the same ``Parley`` fixture, and they
+Seventeen test modules used to hand-roll the same ``TauApp`` fixture, and they
 did not agree on how to sandbox it. Two of the idioms in circulation were
 outright no-ops:
 
 * ``monkeypatch.setattr("tau_coding_agent.app.TAU_DIR", tmp_path)`` patches a
-  *from-import binding* that nothing reads — ``Parley.load_config`` delegates to
+  *from-import binding* that nothing reads — ``TauApp.load_config`` delegates to
   ``config.bootstrap_config``, which resolves its own module-level name.
 * ``monkeypatch.setattr("tau_coding_agent.config.TAU_DIR", tmp_path)`` is no
   better: ``config.CONFIG_PATH`` is computed at import time (``TAU_DIR /
@@ -13,17 +13,17 @@ outright no-ops:
 
 The net effect was that several modules read the developer's real
 ``~/.tau/config.json``. On a machine whose config selects the ``jmfts`` session
-store that is not a cosmetic problem: ``Parley.__init__`` resolves a catalog
+store that is not a cosmetic problem: ``TauApp.__init__`` resolves a catalog
 through ``build_session_catalog``, which performs a live health check and then
 writes every session the test creates into the running JMFTS server.
 
-There are exactly three moves that isolate a ``Parley``. They now live in
+There are exactly three moves that isolate a ``TauApp``. They now live in
 :mod:`tau_coding_agent.testing.sandbox` (the ``devshot`` screenshot tool needs the
 same isolation), and this docstring remains their explanation:
 
 1. ``config.CONFIG_PATH`` — the only name ``bootstrap_config`` actually reads.
 2. ``session_store.TAU_DIR`` — where the file store roots its ``sessions/`` dir.
-3. An **injected** ``session_catalog``. ``Parley.__init__`` takes one and
+3. An **injected** ``session_catalog``. ``TauApp.__init__`` takes one and
    documents that it "always wins over resolving one", so injecting it means the
    config-driven ``build_session_catalog`` branch — and its network health check
    — never runs at all. Sandboxing paths alone never achieved this.
@@ -43,14 +43,9 @@ import pytest
 from textual.app import App
 from textual.worker import WorkerCancelled
 
-from tau_coding_agent.app import Parley
-from tau_coding_agent.testing.sandbox import DEFAULT_CONFIG, build_parley, sandbox_tau_home
+from tau_coding_agent.app import TauApp
+from tau_coding_agent.testing.sandbox import DEFAULT_CONFIG, build_tau_app, sandbox_tau_home
 
-# The three sandbox moves themselves now live in
-# ``tau_coding_agent.testing.sandbox``, because this suite is no longer their only
-# caller: the ``devshot`` screenshot tool needs the same isolation, and a second
-# hand-rolled copy is how the two would drift apart. The fixtures below stay here
-# — they are pytest plumbing — but the isolation they apply is shared.
 __all__ = ["DEFAULT_CONFIG"]
 
 
@@ -65,8 +60,8 @@ def tau_home(tmp_path: Path) -> Iterator[Path]:
 
 
 @pytest.fixture
-def make_app(monkeypatch: pytest.MonkeyPatch, tau_home: Path) -> Callable[..., Parley]:
-    """Build a hermetic ``Parley``.
+def make_app(monkeypatch: pytest.MonkeyPatch, tau_home: Path) -> Callable[..., TauApp]:
+    """Build a hermetic ``TauApp``.
 
     ``create_backend`` stubs ``app.create_backend`` (most callers pass something
     that never touches the network). ``config`` is merged over
@@ -81,13 +76,10 @@ def make_app(monkeypatch: pytest.MonkeyPatch, tau_home: Path) -> Callable[..., P
         discover_extensions: bool = False,
         extension_paths: Iterable[str] = (),
         **kwargs: Any,
-    ) -> Parley:
+    ) -> TauApp:
         if create_backend is not None:
             monkeypatch.setattr("tau_coding_agent.app.create_backend", create_backend)
-        # ``kwargs`` reaches ``Parley.__init__`` (``cli_run_config``, ``fun``, …) the
-        # same way ``build_parley``'s does, so a test needing a run-level flag does
-        # not have to drop out of the fixture to get one.
-        app: Parley = build_parley(
+        app: TauApp = build_tau_app(
             tau_home,
             config=config,
             discover_extensions=discover_extensions,

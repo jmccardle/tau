@@ -39,7 +39,7 @@ HTTP SSE  ──►  OpenAICompletionsProvider.stream_chat   (tau-llm/providers/
                  • tool_execution_end → attach result text to the matching tool call
                         │
                         ▼
-            Parley._get_assistant_response               (tau-coding-agent/app.py)
+            TauApp._get_assistant_response               (tau-coding-agent/app.py)
                  • stream text into a ChatMessage at 30 Hz
                  • display.add_tool_call(name, arguments) / add_tool_result(...)
 ```

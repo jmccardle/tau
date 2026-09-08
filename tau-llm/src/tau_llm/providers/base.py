@@ -98,12 +98,6 @@ class Provider(ABC):
             Releases whatever the instance holds open.
     """
 
-    #: Vendor id this instance talks to ("openai", "groq"). Stamped by the
-    #: factory registered with :func:`register_api`; empty on an instance
-    #: constructed directly, which is honest — such an instance was never told
-    #: which vendor it serves. Deliberately a plain attribute rather than an
-    #: abstract property: making it abstract would break every direct
-    #: ``MyProvider()`` construction, including this module's own docstring.
     id: str = ""
     #: Human-readable vendor label ("OpenAI", "Groq"). Same stamping rule.
     name: str = ""
@@ -234,12 +228,6 @@ class ProviderSpec:
         return None
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# The registries. Process-global and mutable on purpose: an embedding
-# application registers its vendors at import time, exactly as it would with
-# pi's provider factories.
-# ──────────────────────────────────────────────────────────────────────────
-
 _API_FACTORIES: dict[str, ApiFactory] = {}
 _PROVIDER_SPECS: dict[str, ProviderSpec] = {}
 
@@ -357,11 +345,6 @@ def get_provider_spec(provider_id: str) -> ProviderSpec | None:
     return _PROVIDER_SPECS.get(provider_id)
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Tool-result content — shared by all three clients
-# ──────────────────────────────────────────────────────────────────────────
-
-
 @agent_facing(topic="providers")
 def split_tool_result_content(content: Any) -> tuple[list[str], list[tuple[str, str]]]:
     """A tool result's content as (text parts, [(mime_type, base64 data), ...]).
@@ -420,8 +403,6 @@ def split_tool_result_content(content: Any) -> tuple[list[str], list[tuple[str, 
             elif btype == "image":
                 images.append((block.get("mime_type", ""), block.get("data", "")))
             elif "content" in block:
-                # Preserved from the OpenAI client's dict path, the only place a
-                # nested-content block was ever handled.
                 parts.append(str(block["content"]))
             else:
                 raise TypeError(f"unreadable tool result block: {block!r}")

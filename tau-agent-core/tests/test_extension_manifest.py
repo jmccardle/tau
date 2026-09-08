@@ -75,8 +75,6 @@ def register(api):
     api.register_command("speak", {"description": "publish a demo event"})
 """
 
-# Declares itself bus-touching with an explicitly empty SUBJECTS (H7 omission,
-# the other spelling of "forgot to fill this in").
 _BUS_EXT_EMPTY_SUBJECTS = """
 TOUCHES_BUS = True
 SUBJECTS = ()
@@ -111,8 +109,6 @@ class TestSubjectsIsRequiredForABusTouchingExtension:
         with pytest.raises(ExtensionCapabilityError):
             await session.load_extensions([str(ext)], discover=False)
 
-        # The command register() would have added is simply absent — not a
-        # rollback of a partial registration, because none ever started.
         assert session.list_managed_extensions() == []
 
     async def test_valid_declaration_loads_and_reports_subjects(self, tmp_path):
@@ -151,8 +147,6 @@ class TestCapabilityPreflightRefusesAtTheFactory:
         with pytest.raises(ExtensionCapabilityError, match="bus_available=False"):
             await session.load_extensions([str(ext)], discover=False)
 
-        # Refused, not degraded: nothing got registered, and it is not sitting
-        # in the loaded-extensions map under some "disabled" half-state.
         assert session.list_managed_extensions() == []
 
     async def test_loads_when_session_declares_bus_available(self, tmp_path):
@@ -195,9 +189,6 @@ class TestContentIdentityIsNotJustPath:
         hash_v1 = summarize_extensions(result_v1)[0].content_hash
         assert hash_v1  # never empty for a real file
 
-        # Same path, different content — the case §16.6 names by name. Reload
-        # (rather than a second load_extensions call) is the realistic path: it
-        # re-imports the file fresh, which is exactly what must re-hash.
         _write(ext, _PLAIN_EXT + "\n# a harmless edit\n")
         action = await session.reload_extension(str(ext))
         assert action.ok

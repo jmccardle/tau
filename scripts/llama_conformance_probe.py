@@ -37,21 +37,10 @@ from typing import Any
 
 import httpx
 
-# The server under test belongs to whoever is running the probe, so there is
-# no default address here. Unset means "no endpoint", which probe() reports as
-# Unreachable — the same outcome as a server that is down, and a skip upstream.
 DEFAULT_URL = os.environ.get("TAU_LLAMA_TEST_URL", "")
 
-# Short, and it reasons far more than it answers: baseline reasoning is ~500 tokens
-# against a 3-token answer, so "did the knob shorten the thinking" has a wide, cheap
-# signal. A prompt whose ANSWER is long would spend minutes measuring the wrong half
-# (see the `content_tokens` column in a hard-prompt run: reasoning 2062, content 9844).
 PROMPT = "What is 17*23? Answer with just the number."
 
-# Every generation is greedy and seeded. Without this, "the output did not change"
-# is unfalsifiable — two samples from a temperature>0 model differ whether or not
-# the knob did anything. The determinism control below verifies the server actually
-# honors it before any verdict is trusted.
 BASE_BODY: dict[str, Any] = {
     "model": "probe",
     "messages": [{"role": "user", "content": PROMPT}],
@@ -119,13 +108,6 @@ def _server_info(url: str) -> dict[str, Any]:
     props = _post_get(url, "/props")
     settings = props.get("default_generation_settings", {}).get("params", {})
     return {
-        # The build string is the ONLY provenance this endpoint publishes. It is not
-        # enough, and the gap is load-bearing: `thinking_budget_tokens: 0` changes
-        # meaning with the server's `--reasoning-budget-message` LAUNCH flag, and no
-        # /props field, generation param, or endpoint reports that flag. Two runs of
-        # this script against one build can therefore disagree on the zero verdict
-        # with nothing in either report explaining why. Record the build so the
-        # disagreement is at least legible as "same build, different launch".
         "build_info": props.get("build_info"),
         "model_path": props.get("model_path"),
         "n_ctx": props.get("default_generation_settings", {}).get("n_ctx"),
@@ -162,9 +144,6 @@ def probe(url: str = DEFAULT_URL) -> dict[str, Any]:
     }
     measurements: dict[str, Any] = report["measurements"]
 
-    # ── Control: is the endpoint deterministic under temperature 0 + seed? ──
-    # Runs FIRST because every "ignored" verdict below is an argument from two
-    # identical outputs, and that argument is worthless against a sampling server.
     baseline = _generate(url, {})
     repeat = _generate(url, {})
     measurements["baseline"] = baseline
@@ -175,10 +154,6 @@ def probe(url: str = DEFAULT_URL) -> dict[str, Any]:
     )
     report["deterministic"] = deterministic
 
-    # ── reasoning_effort: τ's ONLY current wire representation ──
-    # An invalid value is included on purpose. A server that honors the parameter
-    # should refuse "banana"; one that returns the baseline generation for it is
-    # not validating the field, which is itself the evidence that it never reads it.
     efforts = {}
     for level in ("high", "low", "banana"):
         efforts[level] = _generate(url, {"reasoning_effort": level})
@@ -199,24 +174,6 @@ def probe(url: str = DEFAULT_URL) -> dict[str, Any]:
     )
     report["verdicts"]["thinking_budget_tokens"] = "honored" if budget_moved else "ignored"
 
-    # ── budget 0: the value whose documented meaning is "immediate end" ──
-    # Measured separately from the sweep because the failure mode being checked for
-    # is an INVERSION — a value that reads as "none" behaving as "unbounded". That
-    # is not a smaller version of "ignored"; it is the most expensive request on the
-    # wire wearing the name of the cheapest, so it gets its own verdict string.
-    #
-    # THIS VERDICT IS A PROPERTY OF THE SERVER'S LAUNCH, NOT OF ITS BUILD. Confirmed
-    # on one machine: budget 0 produced 10187 reasoning tokens in 60.4 s, then 14
-    # tokens in 7.0 s after a restart whose only change was the
-    # `--reasoning-budget-message` flag. Nothing in /props, the generation params, or
-    # any other endpoint reports that flag, so this script cannot record WHICH launch
-    # it measured — see `_server_info`. Read this verdict as "what this running
-    # process does", never as "what this version does".
-    #
-    # The consequence for a client is the whole reason the distinction is written
-    # here rather than left in a chat log: a client cannot ask which behavior it is
-    # about to get. `1` is unambiguous under both launches (15 reasoning tokens here,
-    # versus 14 for `0`), so one token buys independence from invisible state.
     zero = _generate(url, {"thinking_budget_tokens": 0})
     measurements["thinking_budget_zero"] = zero
     smallest = min(budgets[str(b)]["reasoning_tokens"] for b in BUDGET_SWEEP)
@@ -228,20 +185,6 @@ def probe(url: str = DEFAULT_URL) -> dict[str, Any]:
         zero_verdict = "partial"
     report["verdicts"]["thinking_budget_zero"] = zero_verdict
 
-    # ── Encoding sensitivity: is a MALFORMED budget refused, or ignored? ──
-    # Added after a reported "budget 0 is unbounded" failed to reproduce here. It
-    # is reproducible with one character changed: `"0"` as a JSON string behaves
-    # byte-for-byte like not sending the parameter at all — same generation, same
-    # token counts, same timing, HTTP 200. So do `null`, `-1`, and a misspelled
-    # key. Any client that stringifies numeric params (a JS `String(v)`, a config
-    # value read as text, a shell template) turns "no thinking" into "unbounded
-    # thinking" and gets a success response for it.
-    #
-    # This is the more dangerous property, and the one worth carrying forward: the
-    # failure is not a specific bad VALUE, it is that EVERY malformed spelling
-    # degrades to the most expensive behavior and nothing on the wire says so. A
-    # guard against a literal 0 would not have fired, because the client that trips
-    # this was never sending 0 — it was sending "0".
     encodings = {
         "string_zero": {"thinking_budget_tokens": "0"},
         "null": {"thinking_budget_tokens": None},
@@ -250,9 +193,6 @@ def probe(url: str = DEFAULT_URL) -> dict[str, Any]:
     }
     encoded = {name: _generate(url, body) for name, body in encodings.items()}
     measurements["thinking_budget_encodings"] = encoded
-    # "indistinguishable from absent" is the finding, so it is measured against the
-    # baseline rather than against a threshold: matching the no-knob generation IS
-    # the evidence the server discarded the parameter.
     ignored_encodings = sorted(
         name
         for name, result in encoded.items()
@@ -263,10 +203,6 @@ def probe(url: str = DEFAULT_URL) -> dict[str, Any]:
         "silently-ignored" if ignored_encodings else "refused"
     )
 
-    # ── chat_template_kwargs.enable_thinking ──
-    # The knob τ's own docs have listed as unreachable since the first RPC review
-    # (PI_RPC_REPLACEMENT.md §3.3). Nested, which is why a flat "name the field"
-    # config shape cannot express it.
     ctk = _generate(url, {"chat_template_kwargs": {"enable_thinking": False}})
     measurements["chat_template_enable_thinking_false"] = ctk
     report["verdicts"]["chat_template_enable_thinking"] = (

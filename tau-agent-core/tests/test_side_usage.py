@@ -26,6 +26,9 @@ from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.usage import add_usage, usage_of, zero_usage
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 def _model() -> Model:
     return Model(
@@ -47,7 +50,7 @@ def _reply(text: str, *, input_tokens: int, output_tokens: int) -> AssistantMess
         provider="openai",
         model="m",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -144,13 +147,6 @@ async def test_an_auto_compaction_lands_on_the_sessions_side_ledger(monkeypatch)
     monkeypatch.setattr("tau_agent_core.compaction.complete_simple", _fake)
 
     log = session.session_log
-    # Each user message is padded to ~5000 estimated tokens so that the six turns
-    # together exceed the SHIPPED keep_recent_tokens (20000) and the cut therefore
-    # leaves a real prefix behind. Twelve two-character messages did not: under
-    # default settings the cut kept everything, and `prepare_compaction` now
-    # reports that as "nothing to compact" (None) instead of spending the
-    # summariser call this test is about. The `result is not None` line below was
-    # already the guard against exactly that, and it is what caught it.
     padding = "x" * 20_000
     for i in range(6):
         log.append_message(
@@ -226,7 +222,7 @@ async def test_a_truncated_completion_is_still_billed(monkeypatch):
             provider="openai",
             model="m",
             stop_reason="length",
-            timestamp=0,
+            timestamp=_TS,
             usage=Usage(input_tokens=500, output_tokens=256, total_tokens=756),
         )
 
@@ -254,7 +250,7 @@ async def test_a_failed_completion_bills_exactly_what_the_provider_reported(monk
             model="m",
             stop_reason="error",
             error_message="boom",
-            timestamp=0,
+            timestamp=_TS,
             usage=Usage(input_tokens=99, output_tokens=0, total_tokens=99),
         )
 

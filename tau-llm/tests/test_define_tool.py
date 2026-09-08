@@ -66,8 +66,6 @@ class TestKeywordForm:
         tool = define_tool(**_fields())
         assert tool.prompt_snippet is None
         assert tool.prompt_guidelines is None
-        # SUBPHASE-0.0.md pins the default; a silent flip to "sequential" would
-        # serialise every tool batch without any error to notice it by.
         assert tool.execution_mode == "parallel"
 
     def test_exported_from_package_root(self):
@@ -116,9 +114,6 @@ class TestCallFormIsExclusive:
             define_tool()
 
     def test_definition_passed_by_keyword_is_reported_with_a_hint(self):
-        # `definition` is positional-only now, so this lands as an unknown field.
-        # The message has to say what to do instead, because the old signature
-        # made `definition=` look right.
         with pytest.raises(ValueError, match="pass a mapping positionally"):
             define_tool(definition=_fields())
 
@@ -144,8 +139,6 @@ class TestRequiredFields:
 
     @pytest.mark.parametrize("field", ["label", "description"])
     def test_blank_text_field_raises(self, field):
-        # Passes pydantic's `str` but is useless at the destination: a blank
-        # chip in the TUI, or a tool the model is told nothing about.
         with pytest.raises(ValueError, match=field):
             define_tool(**_fields(**{field: "   "}))
 
@@ -157,8 +150,6 @@ class TestRequiredFields:
 
 class TestUnknownFields:
     def test_unknown_field_raises_rather_than_being_dropped(self):
-        # ToolDefinition is `extra="ignore"`, so without this check a typo'd
-        # optional field vanishes and the feature silently never happens.
         with pytest.raises(ValueError, match="prompt_snipet"):
             define_tool(**_fields(prompt_snipet="typo"))
 
@@ -175,8 +166,6 @@ class TestParametersSchema:
             define_tool(**_fields(parameters="{}"))
 
     def test_non_object_schema_raises(self):
-        # `_validate_json_schema` reads `required`/`properties` regardless of
-        # `type`, so a non-object schema validates every call vacuously.
         with pytest.raises(ValueError, match="type"):
             define_tool(**_fields(parameters={"type": "string"}))
 
@@ -197,8 +186,6 @@ class TestParametersSchema:
             define_tool(**_fields(parameters={"type": "object", "properties": ["text"]}))
 
     def test_non_dict_property_schema_raises(self):
-        # `_validate_json_schema` calls .get("type") on each property, so this
-        # would be an AttributeError mid-tool-call otherwise.
         with pytest.raises(TypeError, match="text"):
             define_tool(**_fields(parameters={"type": "object", "properties": {"text": "string"}}))
 
@@ -227,8 +214,6 @@ class TestParametersSchema:
             )
 
     def test_required_name_absent_from_properties_raises(self):
-        # The model is never told about `missing`, so it cannot send it, but
-        # validate_tool_arguments demands it — an unbreakable error loop.
         with pytest.raises(ValueError, match="missing"):
             define_tool(
                 **_fields(
@@ -271,15 +256,11 @@ class TestParametersSchema:
 class TestWireSafeName:
     @pytest.mark.parametrize("name", ["word count", "word.count", "", "a" * 65, "naïve"])
     def test_unusable_name_raises(self, name):
-        # The OpenAI API rejects the whole request for one bad tool name, with a
-        # 400 that never mentions which tool caused it.
         with pytest.raises(ValueError, match="name"):
             define_tool(**_fields(name=name))
 
     @pytest.mark.parametrize("name", ["word_count", "wordCount", "word-count", "tool9"])
     def test_usable_names_accepted(self, name):
-        # camelCase is accepted on purpose: snake_case is a convention in
-        # SUBPHASE-0.0.md, not something the runtime or the wire enforces.
         assert define_tool(**_fields(name=name)).name == name
 
 

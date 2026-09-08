@@ -148,6 +148,42 @@ parameters, while an extension tool's `execute` is
 bound `ExtensionContext`. `register_tool` will not accept a `ToolDefinition`,
 and that is deliberate; the two contracts are not interchangeable.
 
+### `CONFIG_SCHEMA` — saying what those keys are
+
+`api.config` is an untyped dict, so on its own it tells a head nothing about
+what may be in it. A module-level `CONFIG_SCHEMA` is the declaration:
+
+```python
+CONFIG_SCHEMA = {
+    "title": "Session logger",
+    "fields": [
+        {"name": "log_file", "kind": "text", "label": "Log file"},
+    ],
+}
+```
+
+It is a `ui.form` spec — the same shape `validate_form_spec` accepts, so the
+TUI's form renderer and the headless `form=defaults` answerer both already
+understand it. It is read at import time and validated at load, beside
+`TOUCHES_BUS`/`SUBJECTS` and for the same reason: an invalid one raises
+`ExtensionCapabilityError` and `register` never runs. Declaring none is fine
+and means "offer no settings screen", which is different from an empty one.
+
+Two capabilities read and write it — `get_extension_config(path)` returns
+`{path, schema, values}`, and `set_extension_config(path, values)` checks every
+value against the schema, replaces the slice wholesale, and reloads the
+extension so `api.config` is rebound. Both are on the RPC wire. An undeclared
+key, a missing declared field, or a wrong type raises rather than being
+dropped.
+
+Two limits, both deliberate. The values are **not persisted**: the core does not
+own `~/.tau/config.json`, so they last for the session and a head that wants
+them durable writes the file. And there is **no slash command or palette entry**
+for it, because a `Flow` declares a fixed tuple of `Argument`s and this
+mutation's second one is a form whose fields are whatever the chosen extension
+declared. Offering it needs a registration path into the capability registry,
+not head code.
+
 ## `ExtensionContext`
 
 ```python

@@ -28,6 +28,9 @@ from tau_llm.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 # ── loop harness (a faked network boundary; everything else is real) ──────────
 
 
@@ -38,7 +41,7 @@ def _text_assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -50,7 +53,7 @@ def _tool_call_assistant(call_id: str, name: str, args: dict[str, Any]) -> Assis
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -136,9 +139,6 @@ def _make_session() -> AgentSession:
 
 # ── extension source fixtures (registered against the LIVE session api) ───────
 
-# A tool + a tool_result hook that appends a marker to the tool's result. If the
-# hook is bound to the session's live runner, the marker appears on the persisted
-# toolResult node the model sees (the durable-hook template, E5 §1.1).
 _TOOL_RESULT_EXT = """
 async def _exec(tool_call_id, params, signal, on_update, ctx):
     return {"content": [{"type": "text", "text": "raw-result"}]}

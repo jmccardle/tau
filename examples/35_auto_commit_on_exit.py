@@ -149,6 +149,4 @@ def auto_commit_on_exit_extension(api: Any) -> None:
     api.on("session_shutdown", on_session_shutdown)
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/35_auto_commit_on_exit.py`` → ``getattr(module, "register")``).
 register = auto_commit_on_exit_extension

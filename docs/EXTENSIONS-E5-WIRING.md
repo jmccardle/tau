@@ -283,7 +283,7 @@ landed). Each step is one green-gated commit (ruff + ruff-format + mypy + `pytes
   bucket path-labelled; async `register` awaited; explicit-raises/discovered-collects.
 - **S27 — wire both run paths + surface errors ✅** (`6ce7fda` headless, `6383fa0`
   TUI). `Backend`/`TauBackend.load_extensions` seam; headless `run_print` loads from
-  `model_config` (`-e`/`-ne`) and prints `errors` to stderr; TUI `Parley` carries
+  `model_config` (`-e`/`-ne`) and prints `errors` to stderr; TUI `TauApp` carries
   run-level `-e`/`-ne` in `cli_run_config` and runs `_load_backend_extensions` after
   every `create_backend` (new-chat + resume, not clear), surfacing errors as notices
   (never stderr). Files: `headless.py`, `backends.py`, `app.py`, `cli.py`. *Verified:*
@@ -300,7 +300,7 @@ landed). Each step is one green-gated commit (ruff + ruff-format + mypy + `pytes
   `--append-system-prompt` folds into the stored session prompt via the shared
   `_append_system_prompt` (fresh runs, both paths); `--no-session` stays
   headless-only (`create_in_memory`). TUI threads these via `cli_run_config` +
-  `Parley._apply_run_config`. Files: `backends.py`, `headless.py`, `app.py`,
+  `TauApp._apply_run_config`. Files: `backends.py`, `headless.py`, `app.py`,
   `cli.py`. *Verified:* `test_backend_tool_filter.py`, `test_app_extension_loading.py`,
   `test_cli.py` (headless append + TUI run_config).
 

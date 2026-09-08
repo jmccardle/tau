@@ -29,9 +29,13 @@ from tau_coding_agent.cli import CLIArgs
 from tau_coding_agent.headless import CLIError, run_print
 from tau_coding_agent.session_store import Session
 
-# TREE-BROWSER-AS-EDITOR.md §8/§11.3: ``append_compaction`` now requires the summary's
-# provenance as keyword-only arguments with no defaults. These tests are about
-# something else, so they name plausible values once here.
+
+def _no_ts(message: dict) -> dict:
+    """A message without its ``timestamp`` — these assertions are about role and
+    content, and the clock is asserted in test_session_store.py."""
+    return {k: v for k, v in message.items() if k != "timestamp"}
+
+
 _PROV = {
     "summarizer_model_id": "test-summarizer",
     "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
@@ -60,8 +64,6 @@ def _config() -> dict:
                 "api_key": "sk-xxx",
             },
         },
-        # default differs from the seeded sessions' model so the resume-keeps-
-        # model test proves the stored model wins over default_model.
         "default_model": "gpt-4o",
         "system_prompt": "You are helpful.",
     }
@@ -81,9 +83,6 @@ class _FakeBackend:
     async def stream_submission(
         self, submission, context, callback, on_event=None, on_pi_event=None
     ):
-        # B2-c: run_print builds its own Submission and admits it through the one
-        # door, so a double stands in for ``stream_submission`` — the caller's record
-        # in, the 4-tuple plus the SubmissionResult out.
         self.submission = submission
         self.messages = context  # capture the context the loop was given
         callback("ANSWER")
@@ -172,7 +171,7 @@ async def test_continue_loads_most_recent_and_updates_in_place(env):
     # Context handed to the backend = B's stored transcript + the new user turn.
     ctx = env["backend"].messages
     assert ctx[:3] == _seeded_convo("b1")
-    assert ctx[-1] == {"role": "user", "content": "next"}
+    assert _no_ts(ctx[-1]) == {"role": "user", "content": "next"}
 
     # No new file; B grew in place; A untouched.
     assert _files(env) == sorted([a.path, b.path])
@@ -180,7 +179,7 @@ async def test_continue_loads_most_recent_and_updates_in_place(env):
     reloaded_b = Session.load(b.path)
     roles = [m["role"] for m in reloaded_b.messages]
     assert roles == ["system", "user", "assistant", "user", "assistant"]
-    assert reloaded_b.messages[-2] == {"role": "user", "content": "next"}
+    assert _no_ts(reloaded_b.messages[-2]) == {"role": "user", "content": "next"}
 
 
 async def test_continue_empty_store_errors(env):
@@ -247,7 +246,7 @@ async def test_session_by_id_prefix_selects_specific(env):
         _config(),
     )
     assert env["backend"].messages[:3] == _seeded_convo("a1")
-    assert Session.load(a.path).messages[-2] == {"role": "user", "content": "go"}
+    assert _no_ts(Session.load(a.path).messages[-2]) == {"role": "user", "content": "go"}
 
 
 async def test_resume_of_compacted_session_hands_spliced_context_to_backend(env):
@@ -268,21 +267,16 @@ async def test_resume_of_compacted_session_hands_spliced_context_to_backend(env)
     )
 
     ctx = env["backend"].messages
-    # The system prompt, then the summary, then the kept assistant turn, then this
-    # run's user message. The system prompt precedes the boundary and so was folded
-    # away here until the fold started carrying it across a splice
-    # (``conversation_tree.is_system_message``); the model was still given one,
-    # because the loop re-inserts the CONFIG's prompt when the context does not open
-    # with a system message, so what this line pins is that the two are now the same
-    # string from the same place.
     assert ctx[0] == {"role": "system", "content": "You are helpful."}
     assert ctx[1]["content"] == [{"type": "text", "text": "[[Compaction summary: OLD-SUMMARY]]"}]
     assert {"role": "assistant", "content": [{"type": "text", "text": "r"}]} in ctx
-    assert ctx[-1] == {"role": "user", "content": "next"}
+    assert _no_ts(ctx[-1]) == {"role": "user", "content": "next"}
     # The dropped prefix is absent from the model context — the actual fix …
-    assert {"role": "user", "content": "a1"} not in ctx
+    assert {"role": "user", "content": "a1"} not in [_no_ts(m) for m in ctx]
     # … even though it is still on disk (the linear fold would have re-fed it).
-    assert {"role": "user", "content": "a1"} in Session.load(a.path).messages
+    assert {"role": "user", "content": "a1"} in [
+        _no_ts(m) for m in Session.load(a.path).messages
+    ]
 
 
 async def test_session_by_path_selects_specific(env):
@@ -335,7 +329,7 @@ async def test_fork_creates_new_file_and_leaves_source(env):
     # The fork carries B's history plus this turn, and points back at its parent.
     assert forked.parent == b.id
     assert forked.messages[:3] == _seeded_convo("b1")
-    assert forked.messages[-2] == {"role": "user", "content": "branch"}
+    assert _no_ts(forked.messages[-2]) == {"role": "user", "content": "branch"}
 
 
 # ── --name ──────────────────────────────────────────────────────────────────

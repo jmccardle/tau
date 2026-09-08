@@ -39,6 +39,9 @@ from tau_llm.types import (
     UserMessage,
 )
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 # ── fixtures and fakes ───────────────────────────────────────────────────
 
 
@@ -134,16 +137,6 @@ class _FakeStreamManager:
         return False
 
 
-#: The keyword arguments ``anthropic``'s ``AsyncMessages.stream`` declares, as of
-#: SDK 1.0.0 — copied from ``inspect.signature`` against the installed SDK.
-#:
-#: Duplicated here rather than imported because this module must pass with the
-#: ``anthropic`` import BLOCKED (see the lazy-import test at the bottom of the
-#: file), and because the permissive ``def stream(self, **kwargs)`` this replaced
-#: is what let τ ship a provider that raised ``TypeError`` on every real call:
-#: the SDK removed ``temperature``, ``top_p`` and ``top_k`` from this list and
-#: declares no ``**kwargs``, and a stub that accepts anything cannot see that.
-#: When the SDK's signature changes, update this tuple — that edit is the point.
 SDK_STREAM_PARAMS = (
     "max_tokens",
     "messages",
@@ -442,7 +435,7 @@ class TestToolResults:
                     tool_name="read",
                     content=[TextContent(text="no such file")],
                     is_error=True,
-                    timestamp=0,
+                    timestamp=_TS,
                 )
             ],
         )
@@ -542,7 +535,7 @@ class TestAssistantBlocks:
             provider="anthropic",
             model="claude-opus-5",
             stop_reason="toolUse",
-            timestamp=0,
+            timestamp=_TS,
         )
         _, messages = _convert(_provider(), [message])
         assert [b["type"] for b in messages[0]["content"]] == ["thinking", "text", "tool_use"]
@@ -553,7 +546,7 @@ class TestAssistantBlocks:
             [
                 UserMessage(
                     content=[ImageContent(data="QUJD", mime_type="image/png")],
-                    timestamp=0,
+                    timestamp=_TS,
                 )
             ],
         )
@@ -570,7 +563,7 @@ class TestAssistantBlocks:
                     content=[
                         ImageContent(data="data:image/png;base64,QUJD", mime_type="image/png")
                     ],
-                    timestamp=0,
+                    timestamp=_TS,
                 )
             ],
         )
@@ -837,8 +830,6 @@ class TestStreaming:
         events = asyncio.run(drive())
         assert isinstance(events[-1], ErrorEvent)
         assert "connection reset" in events[-1].message
-        # The endpoint and the model are named: a fleet behind one config can
-        # have several, and the answer is not in the exception.
         assert "claude-opus-5" in events[-1].message
         assert "api.anthropic.com" in events[-1].message
 
@@ -1084,10 +1075,6 @@ class TestRequest:
             assert leaked not in request
 
     def test_a_sampling_option_the_sdk_dropped_names_itself_and_the_escape_hatch(self):
-        # The SDK removed temperature/top_p/top_k from messages.stream(), so
-        # splatting one in is a TypeError raised inside τ before any request
-        # exists. τ answers in its own words instead, and points at the one
-        # place an operator can still send it.
         with pytest.raises(ValueError) as exc:
             _run(
                 _provider(),
@@ -1106,8 +1093,6 @@ class TestRequest:
             [{"role": "user", "content": "hi"}],
         )
         request = client.requests[0]
-        # Declared by the SDK, so it rides as that keyword argument and a
-        # per-call option can still override it.
         assert request["stop_sequences"] == ["STOP"]
         # Undeclared, so it rides in the body, where the SERVER answers for it.
         assert request["extra_body"] == {"top_k": 40}
@@ -1122,8 +1107,6 @@ class TestRequest:
         assert client.requests[0]["stop_sequences"] == ["FROM_CALL"]
 
     def test_an_sdk_that_accepts_anything_is_left_alone(self):
-        # A stub — or a future SDK — whose stream() declares **kwargs has
-        # nothing to route around, so nothing is rerouted and nothing raises.
         client = _FakeClient((), _final())
 
         class _Permissive:
@@ -1149,6 +1132,38 @@ class TestRequest:
         assert request["temperature"] == 0.5
         assert request["top_k"] == 40
         assert "extra_body" not in request
+
+    def test_prompt_caching_is_on_by_default(self):
+        """The automatic breakpoint rides as the SDK's top-level parameter."""
+        _, client = _run(_provider(), _model(), [{"role": "user", "content": "hi"}])
+        assert client.requests[0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_prompt_cache_false_removes_the_breakpoint(self):
+        """The one operator override; nothing else can suppress it.
+
+        ``prompt_cache_dialect`` is not read here — this wire's caching is a
+        top-level parameter, not a marker written into the body."""
+        _, client = _run(
+            _provider(), _model(prompt_cache=False), [{"role": "user", "content": "hi"}]
+        )
+        assert "cache_control" not in client.requests[0]
+
+    def test_the_dialect_is_unread_on_this_wire(self):
+        _, client = _run(
+            _provider(),
+            _model(prompt_cache=False, prompt_cache_dialect="anthropic"),
+            [{"role": "user", "content": "hi"}],
+        )
+        assert "cache_control" not in client.requests[0]
+
+    def test_extra_body_cache_control_wins(self):
+        """An operator asking for the 1-hour TTL is not overwritten by the default."""
+        _, client = _run(
+            _provider(),
+            _model(extra_body={"cache_control": {"type": "ephemeral", "ttl": "1h"}}),
+            [{"role": "user", "content": "hi"}],
+        )
+        assert client.requests[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
 
     def test_tools_ride_as_input_schema(self):
         _, client = _run(
@@ -1257,11 +1272,21 @@ class TestTheExtraIsOptional:
         """The one test that keeps ``SDK_STREAM_PARAMS`` honest.
 
         Every other test in this file drives a stub. If the tuple the stub is
-        generated from drifts from the real ``AsyncMessages.stream``, the suite
-        goes back to proving nothing about what the SDK accepts — which is the
-        state that let the ``temperature`` TypeError ship. Skipped rather than
-        failed when the optional extra is absent: the rest of this module is
-        required to pass without it.
+        generated from names something the real ``AsyncMessages.stream`` does
+        not accept, the suite goes back to proving nothing about what the SDK
+        accepts — which is the state that let the ``temperature`` TypeError
+        ship.
+
+        A SUBSET, not equality, because ``anthropic>=1.0`` is unbounded and the
+        two directions differ. A name the SDK dropped is the defect this guards:
+        the stub would keep accepting it and no test would notice. A name the
+        SDK *added* is inert — `_accepted_stream_params` asks the installed
+        signature at request time, so τ never sends one — and asserting equality
+        made every upstream release fail this on a parameter τ does not use
+        (measured: 1.0.0 and 1.4.0 disagree by ``workspace_id`` alone).
+
+        Skipped rather than failed when the optional extra is absent: the rest
+        of this module is required to pass without it.
         """
         pytest.importorskip("anthropic")
         from anthropic import AsyncAnthropic
@@ -1269,10 +1294,14 @@ class TestTheExtraIsOptional:
         declared = anthropic_mod._accepted_stream_params(
             AsyncAnthropic(api_key="sk-ant-test").messages.stream
         )
-        assert declared == frozenset(SDK_STREAM_PARAMS), (
-            "the installed anthropic SDK's messages.stream() signature has moved; "
-            f"update SDK_STREAM_PARAMS. Added: {sorted(declared - set(SDK_STREAM_PARAMS))}, "
-            f"removed: {sorted(set(SDK_STREAM_PARAMS) - declared)}."
+        assert declared is not None, (
+            "the installed anthropic SDK's messages.stream() now declares **kwargs, "
+            "so _accepted_stream_params filters nothing and this stub proves nothing"
+        )
+        assert frozenset(SDK_STREAM_PARAMS) <= declared, (
+            "the installed anthropic SDK's messages.stream() no longer accepts a "
+            "parameter the stub declares; update SDK_STREAM_PARAMS. Removed: "
+            f"{sorted(set(SDK_STREAM_PARAMS) - declared)}."
         )
 
 

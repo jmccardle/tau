@@ -94,6 +94,9 @@ from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.session_manager import SessionManager
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -124,7 +127,7 @@ def _assistant_msg(
         model="m",
         stop_reason=stop_reason,  # type: ignore[arg-type]
         usage=usage or Usage(),
-        timestamp=0,
+        timestamp=_TS,
     )
 
 
@@ -579,9 +582,6 @@ def test_prepare_compaction_is_none_when_the_default_cut_would_remove_nothing():
     entries = _linear()  # four ~10-token messages, nowhere near 20000
     assert prepare_compaction(entries, DEFAULT_COMPACTION_SETTINGS) is None
 
-    # ...and it is the SIZE that decides, not something inert about the fixture:
-    # the same entries under a keep_recent_tokens the conversation exceeds do
-    # prepare, and prepare with a non-empty prefix.
     prep = prepare_compaction(entries, CompactionSettings(keep_recent_tokens=15))
     assert prep is not None and prep.messages_to_summarize
 
@@ -598,8 +598,6 @@ def test_generate_summary_builds_the_structured_prompt(monkeypatch):
     messages = [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
     out, usage = asyncio.run(generate_summary(messages, _model(), 16384, "sk-test"))
     assert out == "## Goal\nported"
-    # The summarizer reports what it spent (tau_agent_core.usage) — these tokens
-    # used to be dropped on the floor, understating the session's cost.
     assert set(usage) >= {"input_tokens", "output_tokens", "total_tokens"}
 
     sent = capture[0]["context"]["messages"]
@@ -608,8 +606,6 @@ def test_generate_summary_builds_the_structured_prompt(monkeypatch):
     assert "<conversation>" in user_text
     assert "[User]: hello" in user_text
     assert "## Goal" in user_text  # the structured SUMMARIZATION_PROMPT
-    # api_key + a max_tokens budget are forwarded; the budget is capped by
-    # the model's max_tokens (min(floor(0.8*reserve), model.max_tokens)).
     assert capture[0]["options"]["api_key"] == "sk-test"
     assert capture[0]["options"]["max_tokens"] == min(int(0.8 * 16384), 4096)
 
@@ -717,8 +713,6 @@ def test_generate_turn_prefix_summary_builds_the_prefix_prompt(monkeypatch):
     assert "<conversation>" in user_text
     assert "[User]: partial turn" in user_text
     assert TURN_PREFIX_SUMMARIZATION_PROMPT in user_text
-    # Half the budget of a full summary (0.5*reserve vs 0.8*reserve) — a split
-    # turn spends on TWO completions, so each gets a smaller slice.
     assert capture[0]["options"]["max_tokens"] == min(int(0.5 * 16384), 4096)
 
 
@@ -1058,8 +1052,6 @@ def test_compact_messages_returns_a_shortened_list_for_the_tui_path(monkeypatch)
     """compact_messages (the TUI path) keeps the last user turn and summarizes
     everything before it, returning [system, summary, recent turn]."""
     monkeypatch.setattr("tau_agent_core.compaction.complete_simple", _fake_complete("recap body"))
-    # Default settings — manual compaction is count-based, so it must NOT depend
-    # on a small keep_recent_tokens to do anything.
     session = AgentSession(session_log=InMemorySessionLog(), model=_model(), api_key="sk-test")
     messages = [
         {"role": "system", "content": "you are helpful"},

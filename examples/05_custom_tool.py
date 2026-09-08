@@ -71,8 +71,6 @@ from __future__ import annotations
 
 from typing import Any
 
-#: The greeting text for each supported tone. ``friendly`` is the tone used when
-#: the model omits the optional ``tone`` argument.
 GREETINGS: dict[str, str] = {
     "formal": "Good day, {name}. It is a pleasure to make your acquaintance.",
     "casual": "What's up, {name}! How's it going?",
@@ -114,8 +112,6 @@ def greet_execute(
     }
 
 
-#: The definition handed to ``api.register_tool``. Every key the model sees comes
-#: from here; ``execute`` is the one key that never reaches the model.
 GREET_TOOL: dict[str, Any] = {
     "name": "greet",
     "label": "Greet",
@@ -157,8 +153,4 @@ def greet_tool_extension(api: Any) -> None:
     api.register_tool(GREET_TOOL)
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/05_custom_tool.py`` → ``getattr(module, "register")``), so the demo is
-#: loadable through the public ``-e`` surface, not only by importing
-#: ``greet_tool_extension`` directly.
 register = greet_tool_extension

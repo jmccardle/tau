@@ -30,9 +30,9 @@ from tau_coding_agent.session_store import (
     subscribe_session_events,
 )
 
-# TREE-BROWSER-AS-EDITOR.md §8/§11.3: ``append_compaction`` now requires the summary's
-# provenance as keyword-only arguments with no defaults. These tests are about
-# something else, so they name plausible values once here.
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 _PROV = {
     "summarizer_model_id": "test-summarizer",
     "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
@@ -61,7 +61,7 @@ def _assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
 
@@ -124,13 +124,9 @@ def test_session_satisfies_sessionlog_protocol():
 
 
 def test_agent_session_reads_context_via_conversation_tree(fake_llm):
-    # An in-memory Session (path=None) is the SessionLog; it already carries a
-    # system message from create_in_memory's _init_state.
     store = Session.create_in_memory("/tmp", "gpt-4o", "openai", system_prompt="be brief")
     session = AgentSession(session_log=store, model=_model())
 
-    # AgentSession.messages must be exactly the ConversationTree fold over the
-    # live Session's entries + cursor — not a separate System-A view.
     assert session.messages == ConversationTree(store.entries(), store.cursor).context_for()
     assert session.messages[0] == {"role": "system", "content": "be brief"}
 
@@ -142,8 +138,6 @@ def test_prompt_persists_through_the_live_session(fake_llm):
 
     asyncio.run(session.prompt("hello"))
 
-    # The turn's user + assistant messages were appended to the SAME Session the
-    # TUI/headless persist through (append-only: entries only grow).
     after = store.entries()
     assert len(after) > before
     folded = ConversationTree(store.entries(), store.cursor).context_for()
@@ -185,8 +179,6 @@ async def test_seam3_before_compact_reaches_extension_handler():
         store.append_compaction(
             "summary", first_kept_id=first_kept, tokens_before=42, **_PROV
         )
-        # The bus dispatch is a fire-and-forget task scheduled on the running loop;
-        # yield once so it runs before we assert.
         await asyncio.sleep(0)
     finally:
         unsub()

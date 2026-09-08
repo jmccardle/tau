@@ -141,7 +141,7 @@ unchanged. If a projection and `structured_content.tau` ever disagree, `tau` win
     "type": "session", "version": 1,
     "id": "<uuid4-hex>",            // stable τ session identity (SessionLog.id)
     "timestamp": "<iso>",
-    "cwd": "/home/john/Development/agent-harness-py",
+    "cwd": "/home/dev/Development/agent-harness-py",
     "hostname": "<socket.gethostname()>",   // NEW field, per the objective
     "parent": null                   // fork-source session uuid, as today
   }
@@ -337,7 +337,7 @@ Ranked; CR-1/CR-2 unblock polish, none block Phase 2's core.
   among siblings (branch creation order). Migration: backfill NULL (legacy order
   preserved by the NULLS LAST + created_at fallback).
 - **CR-2 — `structured_content` containment filter on `GET /documents`**, e.g.
-  `?structured_filter={"tau":{"cwd":"/home/john/..."}}` compiled to JSONB `@>`
+  `?structured_filter={"tau":{"cwd":"/home/dev/..."}}` compiled to JSONB `@>`
   (the GIN index already exists, `schema.sql:202`). Gives server-side
   cwd/hostname-scoped conversation discovery; until then the catalog filters
   client-side over `?usetype=tau:conversation`.

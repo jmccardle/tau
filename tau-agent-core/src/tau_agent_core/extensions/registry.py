@@ -30,6 +30,7 @@ persisted onto the session tree as a ``customEntry`` node via
 
 from __future__ import annotations
 
+from tau_agent_core.capabilities import FlowDeclaration
 from tau_agent_core.tools.base import ExtensionToolDefinition
 
 
@@ -63,15 +64,12 @@ class ExtensionRegistry:
 
     def __init__(self) -> None:
         """Initialize the registry with empty collections."""
-        # Models, not dicts, since the tool shape gained a schema
-        # (tools.base.ExtensionToolDefinition). register_tool still ACCEPTS a
-        # plain dict and validates it here, so extensions are unaffected; what
-        # changed is that every reader downstream gets attributes with known
-        # types instead of a mapping it has to guess the keys of.
         self._tools: dict[str, ExtensionToolDefinition] = {}  # name -> definition
         self._commands: dict[str, dict] = {}  # name -> command def
         self._shortcuts: dict[str, dict] = {}  # chord-tail key -> shortcut def
         self._active_tools: set[str] | None = None  # None = all active
+        self._flows: dict[str, FlowDeclaration] = {}  # command name -> what it takes
+        self._flows_revision = 0
 
     def register_tool(self, definition: dict | ExtensionToolDefinition) -> None:
         """Register a tool definition. A duplicate name **raises** (H3).
@@ -165,8 +163,44 @@ class ExtensionRegistry:
         self._commands[name] = command
 
     def unregister_command(self, name: str) -> None:
-        """Remove a registered slash command by name (E10 §6 / S70). Idempotent."""
+        """Remove a registered slash command by name (E10 §6 / S70). Idempotent.
+
+        Drops the command's flow declaration with it, so a disabled extension cannot
+        leave behind a flow a head can step and nothing can perform.
+        """
         self._commands.pop(name, None)
+        if self._flows.pop(name, None) is not None:
+            self._flows_revision += 1
+
+    def register_flow(self, name: str, declaration: FlowDeclaration) -> None:
+        """Declare what an already-registered command TAKES (docs/EXTENSION-FLOWS.md).
+
+        Separate from :meth:`register_command` rather than a key inside the command
+        dict, because the two are read by different callers: the dict carries the
+        handler and only a performer runs it, while this is registry data every head
+        reads to build a form, a completion list or a palette argument.
+
+        Args:
+            name: The command this describes. This does not create the command —
+                ``ExtensionAPI.register_flow`` registers both, so a declaration
+                without a handler is not reachable.
+            declaration: The flow, with the domain and enumerator it needs.
+        """
+        self._flows[name] = declaration
+        self._flows_revision += 1
+
+    def get_flows(self) -> dict[str, FlowDeclaration]:
+        """Every declared extension flow, by command name."""
+        return dict(self._flows)
+
+    @property
+    def flows_revision(self) -> int:
+        """Bumped by every flow registration and removal.
+
+        What ``AgentSession.vocabulary`` caches on: rebuilding the layered registry
+        runs the whole cross-check, and a head asks for it on every keystroke.
+        """
+        return self._flows_revision
 
     def get_command(self, name: str) -> dict | None:
         """Look up a registered slash command by name (``None`` if unknown)."""

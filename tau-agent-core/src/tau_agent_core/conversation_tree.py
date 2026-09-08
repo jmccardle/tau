@@ -41,38 +41,17 @@ EXTENSIONS-ORCHESTRATION-PLAN.md §4 (tree-as-truth).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 from tau_llm.docs import agent_facing
 
-# Kinds that carry a ``summary`` field (for previews + subtree extraction). NOTE:
-# ``compaction`` is a splice anchor AND has a summary; ``branch_summary`` has a
-# summary but renders INLINE, never splicing (Decision 5, §5) — pi's
-# ``buildSessionContext`` sets its ``compaction`` local solely from
-# ``entry.type === "compaction"`` (``session-manager.ts:367``). This tuple is
-# therefore about "has a summary to show", not "drops a prefix"; splice-anchor-hood
-# is the separate, orthogonal ``_SPLICE_ANCHOR_KINDS`` below (``elide`` is a splice
-# anchor with NO summary, so it belongs to that tuple and not to this one).
+MessageIdScope = Literal["in_session", "ancestors_of_cursor", "descendants_of_cursor"]
+
+_COMPLETION_LIMIT = 50
+
 _SUMMARY_KINDS = ("compaction", "branch_summary")
 
-# Kinds the fold in ``_active_path_entries`` treats as a splice ANCHOR — "skip from
-# here back to firstKeptId" (W3, NODE-ADDRESSABLE-AGENTS.md §3). ``compaction`` is
-# the original, summary-bearing anchor; ``elide`` is its summary-less generalization
-# (Decision 2: exclusion is tree shape, not a per-node flag — so it is simply a
-# second entry KIND the same one fold already knows how to anchor on, not a new
-# walker). Last anchor in the path wins, exactly as it always has for compaction
-# alone: with no ``elide`` entries present this tuple degrades to exactly the old
-# ``"compaction"``-only check, so compaction's own behaviour is unchanged.
 _SPLICE_ANCHOR_KINDS = ("compaction", "elide")
 
-# The verb each splice anchor's browser row uses for the span it removes from the
-# fold. Two verbs, deliberately: an ``elide`` HIDES its span (``context_for``'s
-# ``elide`` case renders nothing in its place), while a ``compaction`` FOLDS its
-# span into the summary it renders instead. TREE-BROWSER-AS-EDITOR.md uses exactly
-# that pair for exactly that distinction (§1.2 "hides 42 entries", §4.1 "folds 3
-# entries"), so the verb alone tells a reader scanning rows whether the removed
-# span left anything behind. Keyed by entry ``type``, so a kind added to
-# ``_SPLICE_ANCHOR_KINDS`` without a verb raises here rather than rendering a row
-# that silently omits its span.
 _SPLICE_VERBS = {"compaction": "folds", "elide": "hides"}
 
 
@@ -149,10 +128,6 @@ def entries_to_messages(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if kind == "message":
             messages.append(entry.get("message", {}))
         elif kind == "customMessage":
-            # Extension-injected durable node (E5 §3.1 / S29): the stored
-            # message carries ``role: "custom"`` (rendered as extension-origin);
-            # it folds onto the path like a plain message (NOT a splice anchor)
-            # and is remapped custom→user at the wire (agent_loop convert_to_llm).
             messages.append(entry.get("message", {}))
         elif kind == "compaction":
             messages.append(_compaction_message(str(entry.get("summary", ""))))
@@ -160,17 +135,7 @@ def entries_to_messages(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             # Inline node, not a splice (Decision 5, §5): rendered in place.
             messages.append(_branch_summary_message(str(entry.get("summary", ""))))
         elif kind == "elide":
-            # Summary-less splice anchor (W3): it occupies the anchor slot in
-            # ``_active_path_entries`` exactly like ``compaction`` so the SAME
-            # splice runs, but there is no summary text to inject — so, unlike
-            # ``compaction``, it renders NOTHING. The excluded span is gone from
-            # this fold; the anchor and everything it hid stay fully present in
-            # ``entries()`` (Decision 7, T5).
             pass
-        # ``customEntry`` (durable extension backplane state, E6 §2 / S39) is
-        # deliberately NOT rendered here: it is a non-message node on the path,
-        # so it emits no loop message and thus never reaches ``convert_to_llm``
-        # / the model. It stays readable through ``ctx.entries()`` and the tree.
     return messages
 
 
@@ -254,6 +219,35 @@ class TreeNode:
     preview: str  # first line of text (browser row)
     is_leaf: bool  # == the current cursor
     children: list[TreeNode] = field(default_factory=list)
+
+
+@agent_facing(topic="sessions")
+@dataclass(frozen=True)
+class MessageIdMatch:
+    """One candidate entry id, with the text that lets a person recognise it.
+
+    Attributes:
+        entry_id: The entry's id — the value a caller sends back.
+        preview: The entry's first line, the same row the tree browser draws.
+    """
+
+    entry_id: str
+    preview: str
+
+
+@agent_facing(topic="sessions")
+@dataclass(frozen=True)
+class MessageIdCompletion:
+    """What :meth:`ConversationTree.complete_message_id` returns.
+
+    Attributes:
+        matches: The candidates, in tree order, bounded by the caller's limit.
+        total: How many entries matched BEFORE the limit was applied, so a caller can
+            tell a scope that held nothing from one that held more than it was shown.
+    """
+
+    matches: tuple[MessageIdMatch, ...]
+    total: int
 
 
 @agent_facing(topic="sessions")
@@ -342,9 +336,6 @@ class ConversationTree:
                 continue
             role = message.get("role")
             if role == "assistant":
-                # A NEW assistant message resets what is outstanding — only the
-                # MOST RECENT assistant turn's tool calls can still be pending by
-                # the time a well-formed log reaches `target_id`.
                 content = message.get("content", [])
                 pending = {
                     str(block["id"]): str(block.get("name", "?"))
@@ -400,18 +391,8 @@ class ConversationTree:
         if not entries:
             return []
 
-        # Walk backwards from the leaf (falling back to the root entry when the
-        # cursor is unset), then reverse to root→leaf order (``:568-582``).
         path = self._walk(leaf_id or entries[0]["id"])
 
-        # Anchor on the LAST (most recent) splice-anchor entry in the path —
-        # pi sets its ``compaction`` local solely from ``entry.type === "compaction"``
-        # (``:367``); ``elide`` (W3) is the summary-less generalization of the same
-        # anchor kind, so it is folded in here rather than taught to a second walker
-        # (Decision 2). With iterative compaction/elision each new anchor supersedes
-        # the earlier ones, so anchoring on the last drops the stale summaries/spans
-        # and their kept regions alike. ``branch_summary`` is deliberately excluded
-        # (Decision 5).
         anchor_idx: int | None = None
         for idx, entry in enumerate(path):
             if entry.get("type") in _SPLICE_ANCHOR_KINDS:
@@ -424,24 +405,6 @@ class ConversationTree:
         boundary_value = anchor.get("firstKeptId")
         boundary = str(boundary_value) if boundary_value is not None else None
 
-        # pi ``buildSessionContext`` (``:400-423``): emit the anchor node, then the
-        # kept entries BEFORE it starting at ``firstKeptId``, then every entry AFTER
-        # it. Correct whether the anchor was appended at the tip (append-only: the
-        # boundary is an ancestor, so the kept region precedes the anchor) or its
-        # kept region trails it — the frozen System-A oracle's shape. Identical for
-        # ``elide``: the boundary search does not care whether the anchor renders a
-        # summary, only where it sits.
-        #
-        # **One divergence from pi, and it exists because τ diverged first.** The
-        # system prompt is an ENTRY here (``Session._init_state``) where in pi it is
-        # request frame, so pi's splice can drop the whole pre-boundary prefix without
-        # ever touching it and τ's could not. System messages in the dropped span are
-        # therefore carried across the splice and emitted FIRST — before the anchor,
-        # which is where a system message has to sit for the provider and where
-        # ``AgentSession.compact_messages`` already puts it (``[*system_msgs,
-        # summary_msg, *kept]``). Without this the fold quietly handed the loop a
-        # context with no system message, and the loop quietly substituted the
-        # config's prompt for the tree's (see :func:`is_system_message`).
         carried: list[dict[str, Any]] = []
         kept: list[dict[str, Any]] = []
         found = False
@@ -523,6 +486,100 @@ class ConversationTree:
         children.sort(key=lambda child: self._by_id[child].get("timestamp", 0))
         return children
 
+    def descendants_of(self, entry_id: str | None) -> list[str]:
+        """Every id in the subtree below ``entry_id``, parents before children.
+
+        :meth:`children_of` one level at a time, to the leaves. Breadth-first, so the
+        order is stable and a reader scanning the result meets a node before anything
+        hanging off it — the same order ``tree_surgery.plan_paste`` needs its mints in.
+
+        Args:
+            entry_id: The subtree root, or ``None`` for the whole tree.
+
+        Returns:
+            The descendant ids, EXCLUDING ``entry_id`` itself. An unknown id has no
+            descendants, matching :meth:`children_of`.
+        """
+        out: list[str] = []
+        frontier = self.children_of(entry_id)
+        while frontier:
+            out.extend(frontier)
+            frontier = [child for parent in frontier for child in self.children_of(parent)]
+        return out
+
+    @agent_facing(topic="sessions")
+    def complete_message_id(
+        self,
+        scope: MessageIdScope = "in_session",
+        cursor: str | None = None,
+        query: str = "",
+        limit: int = _COMPLETION_LIMIT,
+    ) -> MessageIdCompletion:
+        """Candidate entry ids for a half-typed ``message_id`` argument, with previews.
+
+        The enumerator for the ``message_id`` domain. A host cannot compute this for
+        itself — it holds no tree — and until it existed, every capability taking an
+        entry id was uncallable by anything that had not first been handed an id by
+        something else, which is the hole ``get_models`` closed for ``set_model`` and
+        ``list_sessions`` for ``switch_session``.
+
+        Pairs, not bare ids. A raw ``a3f9c1`` is not a thing a person can choose
+        between, so every match carries the entry's first line; the caller shows the
+        preview and sends back the id.
+
+        **Two matching rules, because an id and a preview are searched differently.**
+        A match is a case-sensitive PREFIX of the entry id, or a case-insensitive
+        SUBSTRING of its preview. The first is completion (the reader is part-way
+        through an id); the second is search (the reader remembers what the message
+        said, not what it was called). An empty ``query`` matches everything in scope,
+        which is how the scope becomes browsable.
+
+        Bounded, and it says when it truncated: ``matches`` stops at ``limit`` while
+        ``total`` reports what the scope really held, so a caller is told it is seeing
+        a prefix of the answer rather than silently shown one (the G3 rule
+        ``attachments.complete_attachment`` already follows for paths).
+
+        Args:
+            scope: Which entries are candidates. ``"in_session"`` is every entry;
+                ``"ancestors_of_cursor"`` is the parent chain from the root to
+                ``cursor`` inclusive; ``"descendants_of_cursor"`` is the subtree
+                below it, excluding ``cursor`` itself.
+            cursor: The entry the two scoped variants are relative to. ``None`` uses
+                this tree's own cursor. Passed rather than always read, so a caller
+                enumerating for a sub-agent can scope to THAT agent's cursor.
+            query: The typed text. ``""`` matches everything in scope.
+            limit: How many matches to return at most.
+
+        Returns:
+            A :class:`MessageIdCompletion`: the matches in tree order (root-most
+            first), and the true count before the limit was applied.
+
+        Raises:
+            KeyError: ``cursor`` — or this tree's cursor, when ``cursor`` is None —
+                names no entry, and the scope is one that needs it. Fail-Early: a
+                scope relative to a node that does not exist would otherwise return
+                an empty list, which reads as "nothing matched".
+        """
+        if scope == "in_session":
+            candidates = [e["id"] for e in self._entries]
+        else:
+            anchor = self._cursor if cursor is None else cursor
+            if anchor is None or anchor not in self._by_id:
+                raise KeyError(f"cannot scope {scope!r} to unknown entry {anchor!r}")
+            if scope == "ancestors_of_cursor":
+                candidates = [e["id"] for e in self.path(anchor)]
+            else:
+                candidates = self.descendants_of(anchor)
+
+        matched: list[MessageIdMatch] = []
+        needle = query.lower()
+        for entry_id in candidates:
+            preview = self._preview_of(self._by_id[entry_id])
+            if query and not entry_id.startswith(query) and needle not in preview.lower():
+                continue
+            matched.append(MessageIdMatch(entry_id=entry_id, preview=preview))
+        return MessageIdCompletion(matches=tuple(matched[:limit]), total=len(matched))
+
     def message_text(self, entry_id: str) -> str:
         """``entry_id``'s message flattened to plain text, or ``""`` if it has none.
 
@@ -585,9 +642,6 @@ class ConversationTree:
         return entry.get("timestamp", 0)
 
     def _role_of(self, entry: dict[str, Any]) -> str | None:
-        # A ``customMessage`` (extension-injected node, §3.1) carries its role in
-        # the stored message too, so the tree browser tags it ``custom`` (not a
-        # literal ``user`` turn).
         if entry.get("type") not in ("message", "customMessage"):
             return None
         role = entry.get("message", {}).get("role")
@@ -598,10 +652,6 @@ class ConversationTree:
         if kind in ("message", "customMessage"):
             text = _message_text(entry.get("message", {}))
         elif kind in _SPLICE_ANCHOR_KINDS:
-            # BEFORE the ``_SUMMARY_KINDS`` arm: ``compaction`` is in both tuples and
-            # the anchor rendering is the more specific one (it states the span AND
-            # the summary). ``branch_summary`` is in ``_SUMMARY_KINDS`` only — it is
-            # not an anchor and has no span (Decision 5, §5).
             text = self._splice_anchor_preview(entry)
         elif kind in _SUMMARY_KINDS:
             text = str(entry.get("summary", ""))
@@ -684,10 +734,6 @@ class ConversationTree:
         else:
             return f"{kind} → {boundary}: resume point is not on this path ({verb} everything)"
 
-        # A system message in the span is CARRIED across the splice, not folded
-        # (:meth:`_active_path_entries`), so counting it here would report a row that
-        # disagrees with the fold it describes — "folds 4 entries" over a span the
-        # reader can still see the first of.
         hidden = (
             [
                 e
@@ -744,8 +790,6 @@ class ConversationTree:
         """
         data = entry.get("data")
         if not isinstance(data, dict):
-            # A hand-written or future log. Same policy as _splice_span_phrase's
-            # unreachable boundary: report the shape honestly rather than guess.
             return "agent_spec: no frame recorded"
 
         model = _spec_model_id(data)
@@ -783,8 +827,6 @@ class ConversationTree:
             changes.append(f"cwd {prev.get('cwd')} → {data.get('cwd')}")
 
         if not changes:
-            # Two records, same frame. Saying "unchanged" is the informative answer —
-            # it tells a reader who is hunting a swap that this node is not the one.
             return f"agent_spec: {model} · {_tools_phrase(tools)} (unchanged)"
         return "agent_spec: " + "; ".join(changes)
 

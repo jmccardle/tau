@@ -74,27 +74,16 @@ import os
 import sys
 from typing import Any
 
-# ``ext_kit`` lives alongside the numbered examples, not inside an installed
-# package — add ``examples/`` to the path the same way the other ext_kit-using
-# demos (24_budget, 41_bookmarks, S56/S57) do when run standalone or via ``-e``.
 _EXAMPLES_DIR = os.path.dirname(os.path.abspath(__file__))
 if _EXAMPLES_DIR not in sys.path:
     sys.path.insert(0, _EXAMPLES_DIR)
 
 from ext_kit import ledger  # noqa: E402  (path insertion must precede the import)
 
-#: This extension's own file stem — the ``api.config`` slice key (S40) and the
-#: default ``CostLedger`` file stem (S57), matched so an unconfigured run still
-#: gets a stable, discoverable ledger file.
 EXTENSION_STEM = "43_budget_ledger"
 
-#: Deployable-default token ceiling (token mode). Same documented knob as
-#: ``24_budget.DEFAULT_MAX_TOKENS`` — with no ``cost`` block there is nothing to
-#: price, so the default guards on tokens. Override via config.
 DEFAULT_MAX_TOKENS = 500_000
 
-#: Outcome labels this demo writes to the ``CostLedger`` (S57 ``by_outcome``/
-#: ``total_usd`` queries key on these).
 OUTCOME_WARN = "warn"
 OUTCOME_STOP = "stop"
 
@@ -194,13 +183,6 @@ class LedgerGuard:
         self._limit = limit
         self._meter = ledger.UsageMeter(ledger.Pricing(model=None, cost=cost) if cost else None)
         self._cost_ledger = cost_ledger
-        # One-shot latches for the durable append, distinct from the Ceiling's own
-        # crossing state (which never resets) — each pending flag is consumed
-        # exactly once by the following turn_end. Driven by the Ceiling's OWN
-        # on_warn/on_stop callbacks (fired exactly once per crossing) rather than
-        # by re-inspecting ``state`` after every update — the latter would
-        # re-arm on every subsequent update that merely HOLDS at the warn line
-        # (e.g. a later zero-usage completion), double-appending the warning.
         self._pending_warn = False
         self._pending_stop = False
         self._ceiling = ledger.Ceiling(
@@ -342,6 +324,4 @@ def budget_ledger_extension(api: Any) -> None:
     )
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/43_budget_ledger.py`` → ``getattr(module, "register")``).
 register = budget_ledger_extension

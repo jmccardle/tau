@@ -36,12 +36,6 @@ from tau_llm.streaming import (
 )
 from tau_llm.types import Model, TextContent, UserMessage
 
-# ──────────────────────────────────────────────────────────────────────────
-# Harness. One fake client serves BOTH transports: `stream()` feeds SSE lines,
-# `post()` returns a buffered body. Both record the request payload, which is
-# what the "`stream` never arrives as a caller-supplied body key" tests read.
-# ──────────────────────────────────────────────────────────────────────────
-
 
 class _StreamCM:
     def __init__(self, response):
@@ -147,14 +141,6 @@ def _text(message) -> str:
     return "".join(b.text for b in message.content if getattr(b, "type", "") == "text")
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# One logical response, expressed both ways.
-#
-# Text, reasoning, two parallel tool calls, a finish_reason and a usage block —
-# streamed as fragments (the shape a local server actually emits) and buffered
-# as one completion object. Everything a consumer sees must match.
-# ──────────────────────────────────────────────────────────────────────────
-
 _USAGE = {
     "prompt_tokens": 31,
     "completion_tokens": 12,
@@ -257,11 +243,20 @@ def test_non_streaming_produces_the_same_assistant_message_as_streaming():
     Compared as a full ``model_dump()`` rather than field by field, so a field
     added later is covered by this test on the day it is added — the failure mode
     being guarded against is a SECOND construction site drifting from the first.
+
+    ``timestamp`` is excluded from the equality and asserted for SHAPE instead: it
+    is wall-clock at the completion's end, so two runs are equal only by accident
+    of the millisecond. Both modes must still set one, which is the drift this
+    test is really guarding.
     """
     streamed = _final(_streamed_events()).final
     buffered = _final(_buffered_events()).final
 
-    assert buffered.model_dump() == streamed.model_dump()
+    assert isinstance(buffered.timestamp, int)
+    assert isinstance(streamed.timestamp, int)
+    assert buffered.model_dump(exclude={"timestamp"}) == streamed.model_dump(
+        exclude={"timestamp"}
+    )
 
 
 def test_non_streaming_carries_text_thinking_tool_calls_usage_and_stop_reason():
@@ -341,8 +336,6 @@ def test_non_streaming_emits_the_same_event_vocabulary():
 
     assert [e.delta for e in events if isinstance(e, ThinkingDeltaEvent)] == ["let me think"]
     assert [e.delta for e in events if isinstance(e, TextDeltaEvent)] == ["Reading both files."]
-    # One per call as it accumulates, plus the closing one per call that the
-    # shared tail emits from the parsed blocks (the streaming path does both too).
     tool_events = [e for e in events if isinstance(e, ToolCallDeltaEvent)]
     assert len(tool_events) == 4
     assert isinstance(events[-1], DoneEvent)
@@ -352,12 +345,6 @@ def test_non_streaming_emits_the_same_event_vocabulary():
 def test_non_streaming_keeps_thinking_before_text_like_the_stream():
     order = [type(e).__name__ for e in _buffered_events()]
     assert order.index("ThinkingDeltaEvent") < order.index("TextDeltaEvent")
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# The Fail-Early guards on the finalize path must hold in BOTH transports.
-# They are the reason there is no second message builder.
-# ──────────────────────────────────────────────────────────────────────────
 
 
 def test_nameless_tool_call_is_refused_in_non_streaming_mode_too():
@@ -532,11 +519,6 @@ def test_a_non_200_reads_the_same_in_both_transports():
     assert "model not found" in buffered_error.message
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Mode selection: precedence, validation, and the reserved body key.
-# ──────────────────────────────────────────────────────────────────────────
-
-
 def test_streaming_is_the_default_and_model_stream_false_switches_transport():
     client = _FakeClient(
         stream_response=_FakeResponse(lines=_sse(_STREAM_CHUNKS)),
@@ -604,8 +586,6 @@ def test_stream_never_reaches_the_body_as_a_caller_supplied_key():
         )
     assert "stream" in str(exc.value)
 
-    # Through per-call options: accepted as a MODE, and what lands in the body is
-    # τ's resolved boolean — never the caller's object under the same name.
     client = _FakeClient(post_response=_FakeResponse(body=_COMPLETION_BODY))
     _run(client, _model(), stream=False)
     assert client.payload["stream"] is False
@@ -626,15 +606,7 @@ def test_model_stream_rejects_a_value_that_cannot_mean_a_mode():
     ``models.<name>.stream`` names itself there rather than half a turn later."""
     with pytest.raises(ValidationError):
         _model(stream="banana")
-    # pydantic's documented lax coercion still accepts the JSON-ish spellings a
-    # config file realistically contains, and coerces them to a real bool — so
-    # `_resolve_stream_mode` sees a bool from this tier by construction.
     assert _model(stream="false").stream is False
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# The rest of the provider's machinery is transport-agnostic.
-# ──────────────────────────────────────────────────────────────────────────
 
 
 def test_constraints_still_apply_and_are_verified_without_a_stream():
@@ -660,9 +632,6 @@ def test_constraints_still_apply_and_are_verified_without_a_stream():
     assert client.payload["chat_template_kwargs"] == {"enable_thinking": False}
     assert _text(_final(events).final) == "yes"
 
-    # An answer outside the grammar is a ConstraintViolation on this path too —
-    # a server that dropped the constraint must not return an unconstrained
-    # generation as a constrained one.
     client = _FakeClient(
         post_response=_FakeResponse(
             body={

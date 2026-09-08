@@ -29,8 +29,16 @@ from tau_llm.abort import AbortSignal
 from tau_llm.types import Model, UserMessage
 
 from tau_agent_core.events import AgentEvent, EventBus
-from tau_agent_core.extension_types import ExtensionAPI
-from tau_agent_core.messages import CUSTOM_ROLE, create_custom_message
+from tau_agent_core.extension_types import ExtensionAPI, validate_form_values
+from tau_agent_core.extension_locks import (
+    RESPONSE_ENTRY_TYPE,
+    ExtensionRequest,
+    build_response_data,
+    find_request,
+    refusal_reason,
+    request_at_cursor,
+)
+from tau_agent_core.messages import CUSTOM_ROLE, create_custom_message, last_assistant_text
 from tau_agent_core.extensions.registry import ExtensionRegistry
 from tau_agent_core.extensions.runner import (
     MESSAGE_POSITION_BEFORE_USER,
@@ -38,16 +46,22 @@ from tau_agent_core.extensions.runner import (
     ExtensionRunner,
 )
 from tau_agent_core.session import SessionState
-from tau_agent_core.session_log import SessionLog, agent_spec_in_force
+from tau_agent_core.session_log import (
+    SessionLog,
+    agent_spec_in_force,
+    session_log_is_addressable,
+)
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.agent_loop import AgentLoop, completed_messages
 from tau_agent_core.agent_loop_types import AgentLoopConfig
+from tau_agent_core.capabilities import BUILTIN, CAPABILITIES, Vocabulary
 from tau_agent_core.commands import (
     CommandInvocation,
-    CommandOutcome,
     UnsupportedCommandError,
+    dispatch_builtin,
     resolve_command,
 )
+from tau_agent_core.flows import Dispatched, Performed, Ready
 from tau_agent_core.submission import (
     DRIVING_SUBMISSION_DEPTH,
     MAX_SUBMISSION_DEPTH,
@@ -61,6 +75,7 @@ from tau_agent_core.compaction import (
     CompactionPreparation,
     CompactionResult,
     CompactionSettings,
+    ContextUsageEstimate,
     compact as run_compaction,
     estimate_context_tokens,
     estimate_span_tokens,
@@ -74,7 +89,69 @@ from tau_agent_core.tools.base import AgentTool, ToolDefinition
 from tau_llm.docs import agent_facing
 
 if TYPE_CHECKING:
-    from tau_agent_core.sdk import LoadedExtension, LoadExtensionsResult
+    from tau_agent_core.sdk import ExtensionLoadError, LoadedExtension, LoadExtensionsResult
+
+
+@agent_facing(topic="sessions")
+@dataclass(frozen=True)
+class CompactionRecord:
+    """One ``compaction`` entry in the session log, read back as a record.
+
+    What :meth:`AgentSession.get_last_compaction` returns. Field-for-field the
+    entry's own payload with the log's camelCase keys spelled the way the rest of
+    this package spells them, so a reader never has to know that ``firstKeptId``
+    is how it is written on disk.
+
+    Attributes:
+        id: The entry's id.
+        timestamp: When it was appended, ISO-8601.
+        summary: The generated summary text the compaction spliced in.
+        first_kept_id: The entry the context resumes at — everything before it on
+            the path is folded away.
+        tokens_before: The context size the compaction was measured against.
+    """
+
+    id: str
+    timestamp: str
+    summary: str
+    first_kept_id: str | None
+    tokens_before: int | None
+
+
+@agent_facing(topic="sessions")
+@dataclass(frozen=True)
+class SessionStats:
+    """Everything a caller needs to decide whether and when to compact.
+
+    Composed by :meth:`AgentSession.get_session_stats` from five reads that were
+    each already public. It exists because the composition was not: the RPC
+    ``get_session_stats`` verb assembled it inside the wire layer, so a head that
+    was not the wire had to assemble its own and could reach a different answer.
+
+    ``context`` is an ESTIMATE and ``usage`` is what the provider reported for the
+    last completion. They are not the same measurement and neither replaces the
+    other: a caller that wants what the model was actually charged for reads
+    ``usage``; a caller deciding whether the NEXT turn will fit reads ``context``,
+    which covers messages appended since that completion.
+
+    Attributes:
+        context: ``compaction.estimate_context_tokens`` over the active path.
+        context_window: The active model's window, from :meth:`AgentSession.get_model`.
+        context_headroom: ``context_window - context.tokens``. Negative when the
+            path is already over budget — an honest number, never clamped.
+        compaction_settings: The settings in force, as a copy.
+        last_compaction: The newest compaction entry, or ``None`` if this session
+            has never compacted.
+        usage: :meth:`AgentSession.get_usage` — ``None`` before the first
+            completion.
+    """
+
+    context: ContextUsageEstimate
+    context_window: int
+    context_headroom: int
+    compaction_settings: CompactionSettings
+    last_compaction: CompactionRecord | None
+    usage: dict[str, Any] | None
 
 
 @agent_facing(topic="sessions")
@@ -89,6 +166,14 @@ class ExtensionActionResult:
     that is not loaded); ``message`` is the human-readable line the listing box shows.
     A hard failure (a broken file on reload) still raises out of the action —
     ``ok=False`` is reserved for reportable, non-exceptional outcomes (Fail-Early).
+
+    There is no ``cursor`` field, though one action moves it: disabling an
+    extension whose lock is the cursor releases it (docs/EXTENSION-LOCKS.md §6).
+    Both projections of this record already carry the LIVE cursor — the RPC verb
+    reads ``session.session_log.cursor``, and ``AgentSession.performed`` writes it
+    and refuses a caller that hands it one — so a second copy here would be the
+    two-writers drift that method exists to remove. The move is visible in
+    ``message``.
     """
 
     action: str
@@ -340,39 +425,11 @@ class AgentSession:
         bus_available: bool = False,
         no_tools: Literal["all", "builtin"] | None = None,
     ) -> None:
-        # H8 (SIM_SPEC_v2 §16.10): whether this session has a bus transport a
-        # loaded extension may declare TOUCHES_BUS against. Read by
-        # load_extensions -> _load_extensions -> _load_one_extension's factory
-        # preflight; see sdk.ExtensionCapabilityError. False by default because
-        # no NATS wiring exists in this package yet (tau-007).
         self._bus_available = bus_available
         self._session_log = session_log
         self._model = model
         self._system_prompt = system_prompt
-        # One shape, and the annotation says so (B1). `sdk._resolve_tools` and
-        # `_resolve_extension_tools` both produce `AgentTool`, so the docstring's
-        # "List of AgentTool instances" is now a fact rather than an aspiration, and
-        # `AgentLoop`'s `dict[str, AgentTool]` finally has a typed edge behind it.
         self._tools: list[AgentTool] = tools or []
-        # The run's resolved tool-suppression policy (pi ``noTools``, sdk.ts:59).
-        # ONE tri-state rather than two booleans, and it is resolved at the argv
-        # boundary (``headless.resolve_no_tools``) exactly as pi resolves it in
-        # main.ts:424-428 — because ``--no-tools`` and ``--no-builtin-tools``
-        # only mean anything *together*, and two independently-threaded booleans
-        # put that meaning nowhere, which is how they came to be identical.
-        #
-        # - ``"all"``   — offer the model ZERO tools. Built-ins are already gone
-        #   (the caller passes ``tools=[]``); this value is what additionally
-        #   suppresses EXTENSION-registered tools in :meth:`_build_turn_tools`.
-        #   Extensions still load and everything that is not a callable tool —
-        #   lifecycle hooks, the mutating ``tool_call`` hook, event
-        #   subscriptions, slash commands, message injections — keeps working.
-        # - ``"builtin"`` — built-ins only; extension tools survive. Nothing in
-        #   THIS class acts on it: dropping the built-ins is the caller's
-        #   ``tools=[]``. It is carried so the value has one vocabulary end to
-        #   end and a reader here can see that the case was considered.
-        # - ``None`` — no suppression (the default; a direct ``AgentSession``
-        #   caller is unaffected by any of this).
         if no_tools not in (None, "all", "builtin"):
             raise ValueError(
                 f"no_tools must be 'all', 'builtin' or None, got {no_tools!r} — "
@@ -380,134 +437,40 @@ class AgentSession:
                 "would silently mean 'no suppression'."
             )
         self._no_tools = no_tools
-        # Turn ceiling for THIS session's loop (C2/W14: a branch sub-agent can be
-        # bounded, so a looping sub-agent cannot burn the primary run's budget).
-        # ``None`` = the AgentLoopConfig default, which is itself no ceiling; the
-        # loop, not this class, owns that decision.
-        #
-        # Checked HERE and not only by AgentLoopConfig's ``ge=1``, because this is
-        # the point every source of the value passes through — the CLI flag,
-        # ``~/.tau/config.json``, a model entry, the SDK. A bad number from the
-        # config file would otherwise surface as a pydantic ValidationError on the
-        # first prompt, long after the TUI had started and with no mention of where
-        # it came from.
         if max_turns is not None and max_turns < 1:
             raise ValueError(
                 f"max_turns must be at least 1, got {max_turns} — "
                 "no ceiling is spelled None, never 0."
             )
         self._max_turns = max_turns
-        # Batch-level tool execution policy forwarded to every AgentLoopConfig this
-        # session builds (prompt() and continue_conversation()). "parallel" is the
-        # AgentLoopConfig default; a per-tool "sequential" execution_mode on any tool
-        # in a batch still forces that batch to run sequentially regardless of this
-        # setting (see AgentLoop._execute_tool_calls / pi agent-loop.ts:381-384). This
-        # class does not source the value from ~/.tau/settings.json or anywhere else —
-        # it is the caller's job to pass it in.
         self._tool_execution_mode = tool_execution_mode
 
         self._events = EventBus()
-        # Session-owned registry for extension-registered tools/commands/flags.
-        # Bound into the one ExtensionAPI below; read by the loop in a later step.
         self._registry = ExtensionRegistry()
+        self._vocabulary: Vocabulary | None = None
+        self._vocabulary_revision = -1
         self._extensions = extensions or []
-        # Per-extension config map (E6 §2 / S40): ``{"<file-stem>": {…}}``, sourced
-        # from ``~/.tau/config.json`` ``"extensions"`` + per-run ``--ext-config``
-        # overrides. ``_bind_extension_api`` slices the right entry by file stem and
-        # hands it to each extension's ``api.config``. Set BEFORE the inline-factory
-        # bind loop below so constructor-passed extensions see their slice too.
-        # NOT persisted onto the session tree — it is run-scoped runtime config,
-        # re-sourced each run (deliberately excluded from the tree-as-truth path).
         self._extensions_config: dict[str, dict[str, Any]] = extensions_config or {}
-        # Runtime-management bookkeeping (E10 §6 / S70). ``_loaded_extensions`` records
-        # every FILE extension bound via :meth:`load_extensions`, keyed by the path it
-        # was loaded under (== its runner-bucket label), so enable/reload can re-invoke
-        # its ``register`` / re-import its file. ``_disabled_paths`` is the set of those
-        # currently disabled (bucket removed from the runner). Inline-factory extensions
-        # (constructor ``extensions=``) are NOT tracked here — they have no file to
-        # re-import, so runtime management is scoped to file extensions.
         self._loaded_extensions: dict[str, LoadedExtension] = {}
         self._disabled_paths: set[str] = set()
+        self._extension_load_errors: list["ExtensionLoadError"] = []
         self._is_streaming = False
         self._abort_signal = AbortSignal()
-        # The admission gate (docs/SUBMISSION-LIFECYCLE.md "The one door" step 1).
-        # ``submit()`` and ``continue_conversation()`` — the two doors the spec
-        # names — both hold this for the duration of the turn they run; a
-        # concurrent caller sees it via ``locked()`` (multitask_strategy
-        # "reject") or waits on it (``"enqueue"``). A plain ``asyncio.Lock``
-        # rather than a boolean: an uncontended acquire never touches the
-        # running loop (CPython's fast path sets ``_locked`` and returns
-        # synchronously — verified: it does not call ``get_running_loop()``),
-        # so this is safe across the sequential-but-different-event-loop
-        # pattern this test suite uses (``asyncio.run(session.prompt(...))``
-        # called more than once against the same long-lived session). Genuine
-        # cross-loop CONTENTION would bind the lock to whichever loop first
-        # waited on it and then raise on a second, different loop — which is
-        # now unreachable through ``submit()``: phase 4 shipped the boundary
-        # the spec's "Task marshalling" section named, so a live foreign loop
-        # is refused at the door (:meth:`_bind_or_check_loop`) and marshalled
-        # by :meth:`submit_threadsafe` instead of contending here. The
-        # sequential pattern above still works, because a bound loop that is
-        # closed or no longer running is not an owner (see ``_loop`` below).
         self._turn_lock: asyncio.Lock = asyncio.Lock()
-        # docs/SUBMISSION-LIFECYCLE.md "Task marshalling". The loop that owns
-        # this session's state; see :meth:`_bind_loop`. NOT a constructor
-        # argument and not captured here unconditionally: this constructor is
-        # routinely called from plain synchronous code (every ``sdk.create_*``
-        # caller, most of this suite), where there is no loop to capture and
-        # inventing one would be a fabricated answer to "who owns this?".
-        # When a loop IS running at construction it is the honest first
-        # candidate, so take it.
         self._loop: asyncio.AbstractEventLoop | None = None
         try:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
             self._loop = None
-        # The supervised registry for submit_threadsafe()'s marshalled
-        # submissions — see the class docstring.
         self._threadsafe_tasks: dict[str, asyncio.Task[Any]] = {}
-        # See the class docstring. ``None`` until the first submission is
-        # admitted — an honest "nothing has run yet", not a fabricated cursor.
         self._pre_turn_leaf: str | None = None
-        # See the class docstring (review fix, must_fix #1). Counts admitted
-        # turns; NEVER reset — a stale/absent-owner comparison is exactly what
-        # lets a queued rollback detect "someone else's turn ran while I
-        # waited" instead of silently navigating over it.
         self._turn_token_counter: int = 0
         self._current_turn_token: int | None = None
-        # Provenance source for _stamp_event (phase 2, "Provenance on events").
-        # Set at the top of submit()'s try block, cleared in its finally — the
-        # SAME lifetime as _pre_turn_leaf, so an event emitted by a followUp
-        # re-entry (still inside the same submit() call) is stamped identically
-        # to the turn that triggered it.
         self._current_submission: Submission | None = None
-        # See the class docstring (review fix, must_fix #2). Set alongside
-        # _current_submission / by continue_conversation(), cleared in the
-        # SAME finally — this task's identity is what lets submit() tell a
-        # reentrant self-call (hangs forever; the lock is not reentrant)
-        # apart from a second, genuinely concurrent task's submission (which
-        # "enqueue" is supposed to make wait, not raise).
         self._turn_task: asyncio.Task[Any] | None = None
-        # The supervised task registry for multitask_strategy="fork"
-        # (docs/SUBMISSION-LIFECYCLE.md "fork"; see the class docstring).
         self._forked_tasks: dict[str, asyncio.Task[Any]] = {}
-        # Forwarded to the agent loop -> provider. Kept off the Model so it is
-        # never written to the on-disk session JSON. None means "rely on the
-        # env/provider default".
         self._api_key = api_key
-        # Requested thinking level ("off".."xhigh") forwarded to the loop ->
-        # provider as the `reasoning` option. None = don't request reasoning.
         self._reasoning = reasoning
-        # Compaction thresholds; drives both manual compact() and the automatic
-        # post-turn check in prompt(). Defaults to the harness defaults.
-        #
-        # H5 (§16.8): a MEASUREMENT run declares a CompactionPolicy instead, which
-        # supplies these settings and additionally states what happens when the
-        # context fills up — because a compaction is a model call at the tail of a
-        # prompt, and an undeclared one lands inside §5.2's headline number and on
-        # the far side of §11.1's partition. The policy is opt-in and off by
-        # default: nothing below changes for a session that does not declare one,
-        # and nothing about compaction itself is made quieter or more forgiving.
         if compaction_policy is not None and compaction_settings is not None:
             raise ValueError(
                 "pass compaction_policy OR compaction_settings, not both: the policy "
@@ -516,113 +479,31 @@ class AgentSession:
             )
         self._compaction_policy = compaction_policy
         if compaction_policy is not None:
-            # Everything checkable before a token is spent is checked here — a
-            # turn_cap whose arithmetic does not close refuses to construct the
-            # session rather than being discovered at turn 40 of a scenario run.
             compaction_policy.bind_to(model)
             self._compaction_settings = compaction_policy.compaction_settings
         else:
             self._compaction_settings = compaction_settings or DEFAULT_COMPACTION_SETTINGS
-        # User turns (prompt() calls) taken under the policy's bound. Counted here
-        # rather than derived from the tree because the bound is on what this
-        # session DID, and a reloaded log would restate somebody else's run.
         self._policy_turns_used = 0
-        # Model-name resolver for ctx.set_model (E6 §2 / S45). Maps a config model
-        # NAME to a concrete ``Model`` (the frontend binds a closure over its
-        # ``~/.tau/config.json`` ``models`` map; see backends.make_model_resolver).
-        # None until bound: set_model then RAISES (Fail-Early — a name with no
-        # registry to resolve against is a construction gap, not a silent no-op),
-        # exactly like fork(mode="export") on a non-file log.
         self._model_resolver = model_resolver
-        # The most recent completion's token usage (E6 §2 / S45). Recorded from the
-        # per-completion ``message_end`` on this session's own bus so extensions read
-        # it through ctx.get_usage() instead of digging into ``event.message`` or the
-        # private ``ctx._session._model``. None until the first completion lands — an
-        # honest "no completion yet", never a fabricated zero (Fail-Early). NOT model
-        # input and NOT persisted: it is runtime observation state (usage already
-        # lives durably on the assistant tree nodes), so it does not touch the
-        # tree-as-truth path.
         self._last_usage: dict[str, Any] | None = None
 
-        # Cumulative tokens spent on completions that never touch the agent loop —
-        # compaction, branch summaries, ctx.complete(). Starts at a true zero (a
-        # session that has made no side call has spent nothing, which is a fact, not
-        # a placeholder). See record_side_usage / tau_agent_core.usage.
         self._side_usage: dict[str, int] = zero_usage()
 
-        # Injection queues + deferred-op ledger (S20 / decision 3 + 5). A tool
-        # running mid-turn cannot mutate the conversation under the live loop, so
-        # requests are RECORDED here and DRAINED at the tail of prompt() — the
-        # same site as _maybe_auto_compact(), never per-inner-turn:
-        #   _deferred_ops           — deferred compact/fork intents (applied once)
-        #   _pending_follow_up_messages — followUp: re-enter the loop THIS prompt()
-        #   _pending_next_turn_messages — nextTurn: injected on the NEXT prompt()
-        #   _pending_steer_messages     — steer: delivered by the RUNNING loop,
-        #                                 before its next LLM call (phase 4)
         self._deferred_ops: list[dict[str, Any]] = []
         self._pending_follow_up_messages: list[str] = []
         self._pending_next_turn_messages: list[str] = []
-        # The steering queue (docs/SUBMISSION-LIFECYCLE.md phase 4). Unlike the two
-        # above — which this class drains at a boundary IT controls — this list is
-        # handed to every :class:`AgentLoop` this session builds (``steer_queue=``)
-        # and drained by the LOOP, immediately before each provider call. That is
-        # the whole difference between "steer" and "enqueue": the content joins the
-        # conversation the agent is already having, not the next one. Holds
-        # ``UserMessage`` objects rather than strings because the loop appends them
-        # straight into its running context; the str→message conversion happens at
-        # enqueue time, where the images that may accompany a submission still exist.
         self._pending_steer_messages: list[UserMessage] = []
 
-        # Seam-3 bridge (S21 / §E3c.4): strong refs to the fire-and-forget tasks
-        # that route session-lifecycle events onto the extension bus. Held so the
-        # loop keeps them alive until they complete (an un-referenced create_task
-        # may be GC'd mid-flight); each task discards itself on done.
         self._session_event_tasks: set[asyncio.Task[None]] = set()
 
-        # The session-shared ExtensionAPI: bound to this session's real event bus
-        # + registry + live ExtensionContext. Kept for internal consumers (the ctx
-        # the deferred-op drain and tool wrapper reach through). It has NO hook
-        # bucket — the per-extension apis below are the surface factories receive.
         self._extension_api = self._make_extension_api()
-        # The return-collecting hook dispatcher (E2). One per session, bound to
-        # the live ExtensionContext so the mutating-hook handlers receive the
-        # real ctx. Injected into every AgentLoop this session builds
-        # (`hook_dispatcher=`) so the four hook call-sites (S11-S14) can reach
-        # it; empty until extensions register mutating hooks, so has_handlers()
-        # gives every call-site the zero-extension fast path.
         self._extension_runner = ExtensionRunner(context=self._extension_api.context)
-        # S44 (roadmap §2, anchors G3 + G12): wire the error-visibility surface.
-        # The ExtensionRunner already builds an ``ExtensionError`` for every hook /
-        # lifecycle handler that raises but, until now, had NO listener — the error
-        # fell through to a bare stderr print. Bind one listener that routes it to
-        # ``ctx.ui.notify`` at warning level: a TUI warning notice when a delegate
-        # is set (:meth:`set_ui_delegate`), a structured ``[τ] warning: …`` stderr
-        # line headless. The SAME surface catches notify-``EventBus`` handler
-        # exceptions, which used to be swallowed silently (``events.py`` "Fail
-        # silently"); the bus now reports ``(exc, channel)`` here, converted to an
-        # ``ExtensionError`` so an exploding observer is as visible as a failing
-        # mutating hook. Fail-Early: a hook error is never silent.
         self._extension_runner.on_error(self._surface_extension_error)
         self._events.on_error(self._surface_notify_error)
-        # Record the last completion's usage off ``message_end`` (S45). Subscribed
-        # HERE — before the extension-bind loop below and before any post-construction
-        # ``load_extensions`` — so the recorder runs FIRST for each ``message_end`` (the
-        # bus dispatches specific-type handlers in registration order). A budget/ledger
-        # extension's own ``message_end`` handler therefore sees ``ctx.get_usage()``
-        # already updated to this completion's usage.
         self._events.on("message_end", self._record_completion_usage)
-        # Register each extension against its OWN api, bound to its OWN runner
-        # bucket (load order preserved) but SHARING the session registry, event
-        # bus, and live context. This is the S24 bridge: api.on("tool_call"/…)
-        # now lands in a per-extension ExtensionHandlers bucket the runner
-        # dispatches, instead of silently no-op'ing on the notify bus.
         for ext in self._extensions:
             ext(self._bind_extension_api(_extension_factory_label(ext)))
 
-        # W2 (NODE-ADDRESSABLE-AGENTS.md): a non-authoritative provenance record
-        # of the frame this session just constructed — written LAST in __init__,
-        # after extensions are bound, so ``self._extensions`` above reflects the
-        # inline factories that actually registered rather than a pre-bind list.
         self._record_agent_spec()
 
     def _record_agent_spec(self) -> None:
@@ -700,10 +581,6 @@ class AgentSession:
                 "cwd": os.getcwd(),
             },
         )
-
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
 
     @property
     def messages(self) -> list[dict[str, Any]]:
@@ -818,13 +695,6 @@ class AgentSession:
         """
         return self._turn_lock
 
-    # ------------------------------------------------------------------
-    # Model + usage access (E6 §2 / S45 — anchor G14)
-    #
-    # The public surface ctx.get_model()/set_model()/get_usage() delegate to, so
-    # extensions stop reaching the private ``_model`` / hand-parsing event dicts.
-    # ------------------------------------------------------------------
-
     def get_model(self) -> dict[str, Any]:
         """The active model as ``{id, provider, context_window}`` (S45).
 
@@ -851,6 +721,150 @@ class AgentSession:
         (layering) — the resolver is the seam.
         """
         self._model_resolver = resolver
+
+    @property
+    @agent_facing(topic="sessions")
+    def model_resolver(self) -> Callable[[str], Model] | None:
+        """The bound model-name resolver, or ``None`` if none was bound.
+
+        The read behind the ``model_name`` domain: enumerating it means asking the
+        resolver which names it accepts, and the resolver is the only object that
+        knows. ``None`` is the honest answer for a session nobody called
+        :meth:`set_model_resolver` on — :meth:`set_model` would raise on that session
+        too, so a caller learns it before offering a choice rather than after.
+        """
+        return self._model_resolver
+
+    @property
+    @agent_facing(topic="sessions")
+    def tools(self) -> list[AgentTool]:
+        """The tools bound to this session, in the order the loop sees them.
+
+        A fresh list, so a caller listing them cannot append to the session's own.
+        The :class:`~tau_llm.tools.AgentTool` objects themselves are shared — they
+        are what the loop executes, and copying them would hand a reader a tool that
+        is not the one that runs.
+        """
+        return list(self._tools)
+
+    @property
+    @agent_facing(topic="sessions")
+    def compaction_settings(self) -> CompactionSettings:
+        """The compaction settings in force, as a copy.
+
+        A copy because the live object is read by a turn already in flight: handing
+        it out is handing out a way to change a running turn's policy from another
+        thread of control. :meth:`set_auto_compaction` is the way to change it, and
+        it takes the same guard every other mutation takes.
+        """
+        return replace(self._compaction_settings)
+
+    def set_auto_compaction(self, enabled: bool) -> bool:
+        """Turn automatic compaction on or off, and report the effective state.
+
+        Idempotent. Mutates an in-memory field and appends no log entry, so it works
+        on an unpersisted session where the appending mutations refuse — and so the
+        setting does not survive the process.
+
+        Args:
+            enabled: The state to put it in.
+
+        Returns:
+            The state after the call, read back off the settings rather than echoed
+            from the argument.
+        """
+        self._compaction_settings.enabled = bool(enabled)
+        return self._compaction_settings.enabled
+
+    @agent_facing(topic="sessions")
+    def performed(
+        self, mutation: str, data: dict[str, Any], *, flow: str | None = None
+    ) -> Performed:
+        """Stamp a completed mutation with the cursor its capability declares.
+
+        The one place E5 — "a mutation's completion carries a cursor, a read never
+        does" — is applied in process, and it is applied MECHANICALLY: whether the
+        cursor rides in ``data`` is read off
+        :attr:`~tau_agent_core.capabilities.Capability.returns`, not decided per call
+        site. Three copies of that decision is how the Tier B review's findings 5 and
+        6 started, on the wire side, where the same rule is now one helper.
+
+        Args:
+            mutation: The capability that ran, a key of
+                :data:`~tau_agent_core.capabilities.CAPABILITIES`.
+            data: What it returned, keyed as its ``returns`` declares, without the
+                cursor — this adds that.
+            flow: The flow that named the mutation, when one did.
+
+        Returns:
+            A :class:`~tau_agent_core.flows.Performed` carrying ``data`` plus the
+            resulting cursor.
+
+        Raises:
+            KeyError: No capability has that name.
+            ValueError: The named capability is a read, or the caller already put a
+                ``cursor`` in ``data``. Both are Fail-Early: a read reporting a
+                cursor is E5 rule 2 broken, and a hand-supplied cursor is a second
+                answer to the question this method exists to answer.
+        """
+        declared = CAPABILITIES[mutation]
+        if declared.kind != "mutation":
+            raise ValueError(
+                f"performed({mutation!r}) names a read. E5 rule 2: a read never carries "
+                "a cursor, so there is no completion here to stamp."
+            )
+        if "cursor" in data:
+            raise ValueError(
+                f"performed({mutation!r}) was handed a cursor in `data`. This method is "
+                "what puts it there, and two writers of one field is the drift it removes."
+            )
+        cursor = self._session_log.cursor
+        returns = declared.returns or {}
+        carries = "cursor" in returns.get("properties", {})
+        return Performed(
+            flow=flow,
+            mutation=mutation,
+            data={**data, "cursor": cursor} if carries else dict(data),
+            cursor=cursor if carries else None,
+        )
+
+    @agent_facing(topic="sessions")
+    def get_session_name(self) -> str | None:
+        """This session's durable display name, or ``None`` if it was never named.
+
+        Derived from the log's latest ``session_info`` entry at call time, so it is
+        correct across a reload and after another writer renamed the session.
+
+        Returns:
+            The name, or ``None``.
+
+        Raises:
+            RuntimeError: The bound log has no name to read — an in-memory log has
+                nowhere for a ``session_info`` entry to live. Distinct from "never
+                named", which is ``None``.
+        """
+        from tau_agent_core.extension_types import read_session_name
+
+        return read_session_name(self)
+
+    def set_session_name(self, name: str) -> None:
+        """Give this session a durable display name.
+
+        Appends a ``session_info`` entry, which is ambient metadata:
+        :class:`~tau_agent_core.conversation_tree.ConversationTree` never folds one
+        into context, so a rename is persisted and is never model input.
+
+        Args:
+            name: The name to give it. Empty is refused rather than stored.
+
+        Raises:
+            ValueError: ``name`` is empty.
+            RuntimeError: The bound log has no ``append_session_info`` — session
+                naming needs a log with somewhere durable to put it.
+        """
+        from tau_agent_core.extension_types import apply_session_name
+
+        apply_session_name(self, name)
 
     def set_model(self, name: str) -> dict[str, Any]:
         """Switch the active model by NAME, effective on the NEXT turn (S45).
@@ -894,16 +908,8 @@ class AgentSession:
                 "expected a tau_llm.types.Model"
             )
         if self._compaction_policy is not None:
-            # A declared policy was proven against the OLD model's context window
-            # (H5 / §16.8). Switching to a model with a different window silently
-            # invalidates that proof, so re-check before the switch takes effect
-            # rather than after the run has produced numbers under it.
             self._compaction_policy.bind_to(model)
         self._model = model
-        # W2 (NODE-ADDRESSABLE-AGENTS.md): a runtime model switch is a spec swap,
-        # not just a construction — a fresh agent_spec snapshot afterwards is what
-        # lets a transcript reader tell WHERE the model changed underneath a single
-        # unbroken session, rather than only being able to see it at construction.
         self._record_agent_spec()
         return self.get_model()
 
@@ -941,21 +947,6 @@ class AgentSession:
         """
         return copy.deepcopy(self._last_usage) if self._last_usage is not None else None
 
-    # -- Out-of-loop ("side") completions ------------------------------------
-    #
-    # See tau_agent_core.usage for WHY this exists. Short version: the agent loop's
-    # usage rides on `message_end` events and every meter sums those, but compaction,
-    # branch summaries, and ctx.complete() go through `complete_simple`, which has no
-    # event bus and emits nothing. Their tokens were spent and then forgotten, so the
-    # cost τ reported was understated — including for the one call (auto-compaction)
-    # the user never asked for and cannot see.
-    #
-    # A LEDGER rather than a new event type: the AgentEvent Literal is deliberately
-    # closed (S49 — new record families go on a parallel channel, not into the turn
-    # vocabulary), and a completion that is not part of any turn has no business
-    # posing as one. It is also the mechanism with an actual consumer: emitting an
-    # event nothing reads would just relocate the silence.
-
     def record_side_usage(self, usage: dict[str, int]) -> None:
         """Add an out-of-loop completion's tokens to the session's side ledger.
 
@@ -974,6 +965,122 @@ class AgentSession:
         """
         return dict(self._side_usage)
 
+    @property
+    @agent_facing(topic="sessions")
+    def is_addressable(self) -> bool:
+        """Whether this session is one the store can hand back later.
+
+        :func:`~tau_agent_core.session_log.session_log_is_addressable` asked of the
+        bound log. Not a constant: a ``switch_session`` onto an ephemeral session
+        changes it under a reader's feet, exactly as the active model does.
+        """
+        return session_log_is_addressable(self._session_log)
+
+    @agent_facing(topic="sessions")
+    def get_last_assistant_text(self) -> str | None:
+        """The most recent assistant message's text on the active path, or ``None``.
+
+        :func:`~tau_agent_core.messages.last_assistant_text` applied to
+        :attr:`messages`, which is where the two skip rules are documented: a turn
+        aborted before it said anything is passed over, and only ``text`` blocks
+        contribute.
+
+        Returns:
+            The concatenated text, stripped, or ``None`` — which covers both "no
+            assistant message yet" and "the last one carried no text".
+        """
+        return last_assistant_text(self.messages)
+
+    @agent_facing(topic="sessions")
+    async def summarize_and_navigate(
+        self, target_id: str, *, custom_instructions: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Summarize the subtree at ``target_id``, splice the summary on, and move there.
+
+        The one tree mutation with a method here. The other four —
+        :func:`~tau_agent_core.tree_ops.navigate`, ``elide_span``, ``commit_branch``,
+        ``paste_subtree`` — take nothing a caller holding a
+        :class:`~tau_agent_core.session_log.SessionLog` does not already have, so
+        they stay module functions and every head calls them directly. This one
+        needs the summarizer model and its key, which are the session's and are not
+        on its public surface, and it spends tokens that something has to bank.
+
+        Args:
+            target_id: The branch point. The subtree BELOW it is summarized, and the
+                ``branch_summary`` entry is parented at it.
+            custom_instructions: Extra guidance for the summarizer's system prompt.
+
+        Returns:
+            ``ConversationTree.context_for(cursor)`` — the flat message list a head
+            swaps into its transcript.
+
+        Raises:
+            ValueError: The summarizer returned nothing usable. Raised by
+                ``session_manager.summarize_branch``, never fabricated into an
+                empty summary here.
+        """
+        from tau_agent_core.tree_ops import summarize_and_navigate
+
+        model, api_key = self._summarizer()
+        messages, usage = await summarize_and_navigate(
+            self._session_log,
+            target_id,
+            model,
+            api_key=api_key,
+            custom_instructions=custom_instructions,
+        )
+        self.record_side_usage(usage)
+        return messages
+
+    @agent_facing(topic="sessions")
+    def get_last_compaction(self) -> CompactionRecord | None:
+        """The newest ``compaction`` entry in the bound log, or ``None``.
+
+        Scans ``session_log.entries()`` in append order rather than the
+        :class:`~tau_agent_core.conversation_tree.ConversationTree` active path.
+        Stated as a scope note rather than hidden: on a session with a second open
+        lane this would report a compaction that happened on the other lane, and a
+        lane-aware caller wants ``ConversationTree.context_entries`` instead.
+
+        Returns:
+            A :class:`CompactionRecord`, or ``None`` if this session has never
+            compacted — an honest absence, never a fabricated entry.
+        """
+        for entry in reversed(self._session_log.entries()):
+            if entry.get("type") != "compaction":
+                continue
+            return CompactionRecord(
+                id=str(entry["id"]),
+                timestamp=str(entry.get("timestamp", "")),
+                summary=str(entry.get("summary", "")),
+                first_kept_id=entry.get("firstKeptId"),
+                tokens_before=entry.get("tokensBefore"),
+            )
+        return None
+
+    @agent_facing(topic="sessions")
+    def get_session_stats(self) -> SessionStats:
+        """Token accounting for this session, and the compaction settings in force.
+
+        The one call behind the ``get_session_stats`` capability. Every field was
+        already readable one at a time; what this adds is that two heads asking the
+        question get the same answer, computed once.
+
+        Returns:
+            A :class:`SessionStats`. Nothing here mutates, and it answers the same
+            on a persisted and an unpersisted session.
+        """
+        estimate = estimate_context_tokens(self.messages)
+        context_window = int(self.get_model()["context_window"])
+        return SessionStats(
+            context=estimate,
+            context_window=context_window,
+            context_headroom=context_window - estimate.tokens,
+            compaction_settings=self.compaction_settings,
+            last_compaction=self.get_last_compaction(),
+            usage=self.get_usage(),
+        )
+
     def _record_completion_usage(self, event: AgentEvent) -> None:
         """Capture this completion's usage from a ``message_end`` event (S45).
 
@@ -987,13 +1094,7 @@ class AgentSession:
             return
         usage = message.get("usage")
         if isinstance(usage, dict):
-            # Deep: `usage` carries nested dicts (`extra`, `cost`), so a shallow
-            # copy would keep this record aliased to the event's own payload.
             self._last_usage = copy.deepcopy(usage)
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def subscribe(self, handler: Callable[[AgentEvent], Any]) -> Callable[[], None]:
         """Subscribe to agent events. Returns unsubscribe function.
@@ -1178,8 +1279,6 @@ class AgentSession:
         if extensions_config is not None:
             self._extensions_config = extensions_config
 
-        # Lazy import: sdk imports agent_session at module load, so a top-level
-        # import here would be circular.
         from tau_agent_core.sdk import _load_extensions
 
         result = await _load_extensions(
@@ -1190,17 +1289,41 @@ class AgentSession:
             collect_explicit_errors=collect_explicit_errors,
             bus_available=self._bus_available,
         )
-        # Record each loaded file extension for runtime management (E10 §6 / S70):
-        # enable re-invokes the stored ``register`` on a fresh bucket, reload re-imports
-        # the file. Keyed by the path each was loaded under (== its bucket label).
         for loaded in result.extensions:
             self._loaded_extensions[loaded.path] = loaded
             self._disabled_paths.discard(loaded.path)
+        self._extension_load_errors = list(result.errors)
         return result
 
-    # ------------------------------------------------------------------
-    # Runtime extension management (E10 §6 / S70) — lifts D-E5-6 read-only
-    # ------------------------------------------------------------------
+    @agent_facing(topic="extensions")
+    def get_extension_state(self) -> "LoadExtensionsResult":
+        """Every managed extension and every file that failed to load, read LIVE.
+
+        The read the ``/extensions`` listing is built from. It is not the value
+        :meth:`load_extensions` returned: the extensions come from
+        ``_loaded_extensions``, which :meth:`reload_extension` REPLACES, so a listing
+        rendered from this reflects a reload and the load-time snapshot did not — the
+        TUI cached that snapshot and showed the pre-reload tool list.
+
+        Load errors are the one half that cannot be recomputed, so they are kept from
+        the last :meth:`load_extensions` call. A file that failed to import is in here
+        and can never be a legal ``extension_name`` value, which is why this is a read
+        of its own rather than the ``extension_name`` domain: the domain answers "what
+        may I bind", and this answers "what is the state of the extension system".
+
+        Returns:
+            A :class:`~tau_agent_core.sdk.LoadExtensionsResult` — the same type the
+            loader returns, so the listing formatter and the loader cannot disagree
+            about the shape. Whether each extension is currently enabled is the
+            separate read :meth:`list_managed_extensions`; a caller that wants both
+            composes them.
+        """
+        from tau_agent_core.sdk import LoadExtensionsResult
+
+        return LoadExtensionsResult(
+            extensions=list(self._loaded_extensions.values()),
+            errors=list(self._extension_load_errors),
+        )
 
     def list_managed_extensions(self) -> list[tuple[str, bool]]:
         """Every file extension under management as ``(path, enabled)`` in load order.
@@ -1211,6 +1334,90 @@ class AgentSession:
         read — no path effect, display-only.
         """
         return [(path, path not in self._disabled_paths) for path in self._loaded_extensions]
+
+    def get_extension_config(self, path: str) -> dict[str, Any]:
+        """One extension's declared config schema and its current values.
+
+        The read a settings screen is built from. ``schema`` is the extension's
+        ``CONFIG_SCHEMA``, normalized at load into ``{title, fields}`` — the same
+        shape ``ui.form`` takes, so a head that can render a form can render this
+        with no new widget. ``values`` is the live slice ``api.config`` returns
+        for the extension, keyed by file stem.
+
+        Args:
+            path: A managed path or a unique file stem.
+
+        Returns:
+            ``{path, schema, values}``. ``schema`` is ``None`` for an extension
+            that declares none — the honest answer, and the one that tells a head
+            to offer no settings screen rather than an empty one.
+
+        Raises:
+            ValueError: ``path`` resolves to no managed extension.
+        """
+        target = self.resolve_extension_target(path)
+        if target is None:
+            raise ValueError(f"no loaded extension {path!r}")
+        loaded = self._loaded_extensions[target]
+        return {
+            "path": target,
+            "schema": loaded.config_schema,
+            "values": dict(self._extensions_config.get(Path(target).stem, {})),
+        }
+
+    async def set_extension_config(
+        self, path: str, values: dict[str, Any]
+    ) -> ExtensionActionResult:
+        """Replace an extension's config slice and reload it so the values take.
+
+        The write half of :meth:`get_extension_config`. ``values`` is checked
+        against the declared schema first: an undeclared key, or a value whose
+        Python type does not match its field's kind, RAISES rather than being
+        dropped — a settings screen that silently discards a key is the failure
+        this schema exists to prevent.
+
+        The reload is what makes the change visible: ``api.config`` is captured
+        when the extension's API is bound, so a slice written without one would
+        be read by nobody until the next run.
+
+        Persistence is head-local and deliberately not done here. The core does
+        not own ``~/.tau/config.json`` — ``resolve_extensions_config`` in
+        ``tau_coding_agent.headless`` reads it and hands the merged map in — so
+        these values last for this session, and a head that wants them to survive
+        writes the file itself.
+
+        Args:
+            path: A managed path or a unique file stem.
+            values: The complete new slice. Not merged: what is passed is what
+                the extension will read.
+
+        Returns:
+            The reload's :class:`ExtensionActionResult`, with ``action`` set to
+            ``"configure"``.
+
+        Raises:
+            ValueError: ``path`` resolves to nothing, the extension declares no
+                schema, or ``values`` does not satisfy the schema.
+        """
+        target = self.resolve_extension_target(path)
+        if target is None:
+            raise ValueError(f"no loaded extension {path!r}")
+        schema = self._loaded_extensions[target].config_schema
+        if schema is None:
+            raise ValueError(
+                f"{Path(target).stem} declares no CONFIG_SCHEMA, so there is no "
+                "contract to check these values against. Refusing to write a slice "
+                "the extension never said it reads."
+            )
+        from tau_agent_core.extension_types import validate_form_values
+
+        try:
+            validate_form_values(schema["fields"], values)
+        except ValueError as err:
+            raise ValueError(f"{Path(target).stem} config: {err}") from err
+        self._extensions_config[Path(target).stem] = dict(values)
+        result = await self.reload_extension(target)
+        return ExtensionActionResult("configure", result.path, result.ok, result.message)
 
     def resolve_extension_target(self, token: str) -> str | None:
         """Resolve a user token (full path or file stem) to a managed path.
@@ -1267,7 +1474,31 @@ class AgentSession:
         self._extension_runner.remove_extension(target)
         self._unregister_bucket(bucket)
         self._disabled_paths.add(target)
-        return ExtensionActionResult("disable", target, True, f"disabled {Path(target).stem}")
+        message = f"disabled {Path(target).stem}"
+        if self._release_lock_of(target):
+            message += ", releasing its lock on the session"
+        return ExtensionActionResult("disable", target, True, message)
+
+    def _release_lock_of(self, path: str) -> bool:
+        """Move the cursor off ``path``'s locking request, if that is where it sits.
+
+        docs/EXTENSION-LOCKS.md §6, escape 3. Navigation, not a special case in
+        the lock check: the cursor moving IS the release, so this is the same
+        release the user gets by branching, reached by a different gesture.
+        Returns whether it moved anything — false in the ordinary case, where the
+        extension held no lock.
+        """
+        entries = self._session_log.entries()
+        request = request_at_cursor(entries, self._session_log.cursor)
+        if request is None or not request.lock or request.extension != path:
+            return False
+        # The REQUEST's parent, not the cursor's: the cursor may be a provenance node above it.
+        parent = next(
+            (e.get("parentId") for e in reversed(entries) if str(e.get("id")) == request.entry_id),
+            None,
+        )
+        self._session_log.append_navigate(str(parent) if parent is not None else None)
+        return True
 
     async def enable_extension(self, path: str) -> ExtensionActionResult:
         """Re-bind a disabled extension by re-invoking its ``register`` (S70).
@@ -1291,9 +1522,6 @@ class AgentSession:
             await outcome
         from tau_agent_core.sdk import LoadedExtension
 
-        # Re-binds the same already-imported module, not a re-read of the file
-        # (that is reload_extension's job), so its declared identity/capability
-        # (H7/H8) carries forward unchanged rather than resetting to "undeclared".
         self._loaded_extensions[target] = LoadedExtension(
             path=target,
             register=loaded.register,
@@ -1331,8 +1559,6 @@ class AgentSession:
             )
             self._extension_runner.remove_extension(target)
             self._unregister_bucket(bucket)
-        # Re-import the file fresh (new module) so on-disk edits take effect. An import
-        # / register failure propagates (Fail-Early); the extension stays torn down.
         from tau_agent_core.sdk import _load_one_extension
 
         new_loaded = await _load_one_extension(
@@ -1618,8 +1844,6 @@ class AgentSession:
             )
             return
         if not future.set_running_or_notify_cancel():
-            # The caller cancelled between handing this over and the loop
-            # reaching it. Honour that: run nothing.
             return
         task = asyncio.get_running_loop().create_task(
             self._run_threadsafe_submission(sub, context, future)
@@ -1736,42 +1960,61 @@ class AgentSession:
         """
         return resolve_command(text, self._registry.get_commands().keys())
 
-    async def _perform_command(self, invocation: CommandInvocation) -> CommandOutcome:
+    async def _perform_command(self, invocation: CommandInvocation) -> Dispatched:
         """Do the half of a resolved command the CORE can do, and report the rest.
 
-        ``performer="core"`` — an extension-registered command — runs here, through the
-        same :meth:`run_extension_command` the palette and the panel-action path use, so
-        there is one implementation of "invoke a registered command" rather than one per
-        frontend. Its returned value is coerced to display text
-        (:meth:`ExtensionCommandResult.output_text`) because that is a string any
-        frontend can render, including a JSON one.
+        Returns whichever of the four arms the command IS, never a flag saying who
+        should run it:
 
-        ``performer="frontend"`` — a built-in (``/compact``, ``/tree``, ``/fork``,
-        ``/extensions``) — is handed straight back. The core cannot push a Textual
-        screen, and pretending to have run one would be worse than saying it did not.
+        - an extension-registered command RUNS here, through the same
+          :meth:`run_extension_command` the palette and the panel-action path use, so
+          there is one implementation of "invoke a registered command" rather than one
+          per frontend. Its returned value is coerced to display text
+          (:meth:`ExtensionCommandResult.output_text`) because that is a string any
+          frontend can render, and reported as a
+          :class:`~tau_agent_core.flows.Performed` whose ``data`` is ``{"output": …}``.
+        - a built-in FLOW is STEPPED — the typed text bound through
+          :func:`~tau_agent_core.flows.bind_command_args`, then
+          :func:`~tau_agent_core.flows.next_step` — so ``/resume`` with no reference is
+          a :class:`~tau_agent_core.flows.FlowStep` a head renders as its picker, and
+          ``/name the refactor`` is a :class:`~tau_agent_core.flows.Ready`.
+        - a VIEW command is a :class:`~tau_agent_core.flows.View`. The core cannot push
+          a screen, and pretending to have run one would be worse than saying it did
+          not.
+
+        ``/extensions <verb> <target>`` is rewritten here into the flow that verb names
+        (:data:`~tau_agent_core.commands.EXTENSION_VIEW_VERBS`), because a ``View``
+        carries no argument string — a head left holding that sugar would have had the
+        target silently dropped.
 
         Fail-Early: a command that :meth:`resolve_command` found but
         :meth:`run_extension_command` no longer knows (an extension unloaded across the
         ``await`` that got us here) RAISES. Falling through to "send it to the model"
         would ship the user's ``/note buy milk`` to an LLM as a prompt.
         """
-        if invocation.performer == "frontend":
-            return CommandOutcome(name=invocation.name, args=invocation.args, performer="frontend")
-        result = await self.run_extension_command(invocation.name, invocation.args)
+        vocabulary = self.vocabulary
+        if invocation.origin == "builtin" or vocabulary.flow(invocation.name) is not None:
+            dispatched = dispatch_builtin(
+                invocation.name,
+                invocation.args,
+                cursor=self._session_log.cursor,
+                vocabulary=vocabulary,
+            )
+            if isinstance(dispatched, Ready) and invocation.origin == "extension":
+                return await self._run_extension_flow(dispatched)
+            return dispatched
+
+        name, args = invocation.name, invocation.args
+        result = await self.run_extension_command(name, args)
         if not result.handled:
             raise UnsupportedCommandError(
-                f"/{invocation.name} resolved as a registered extension command but "
+                f"/{name} resolved as a registered extension command but "
                 "run_extension_command reports it unknown — it was unregistered between "
                 "the dispatch decision and the dispatch itself (an extension reload or "
                 "disable). Refusing rather than falling through to the model, which "
                 "would send the command text to an LLM as a prompt."
             )
-        return CommandOutcome(
-            name=invocation.name,
-            args=invocation.args,
-            performer="core",
-            output=result.output_text(),
-        )
+        return Performed(flow=None, mutation=name, data={"output": result.output_text()})
 
     async def _apply_input_pipeline(
         self, sub: Submission
@@ -1981,11 +2224,14 @@ class AgentSession:
            is made, ``messages`` is empty, and the decision is reported on
            :attr:`~tau_agent_core.submission.SubmissionResult.command`. An
            extension command is RUN here (:meth:`run_extension_command`) because
-           any frontend can render the string it returns; a built-in is handed
-           back as ``performer="frontend"`` because the core cannot push a Textual
-           screen — and a frontend that cannot perform it must raise
-           :class:`~tau_agent_core.commands.UnsupportedCommandError` rather than
-           return having done nothing. An unrecognised ``/…`` resolves to
+           any frontend can render the string it returns, and reported as a
+           :class:`~tau_agent_core.flows.Performed`; a built-in is STEPPED and
+           reported as the arm it is at — a :class:`~tau_agent_core.flows.FlowStep`,
+           a :class:`~tau_agent_core.flows.Ready` or a
+           :class:`~tau_agent_core.flows.View` — because the core cannot push a
+           Textual screen, and a frontend that cannot perform the arm it got must
+           raise :class:`~tau_agent_core.commands.UnsupportedCommandError` rather
+           than return having done nothing. An unrecognised ``/…`` resolves to
            ``None`` and is sent to the model as ordinary text, unchanged.
 
            ``expand_commands`` defaults to ``False`` and that is a SECURITY
@@ -2109,26 +2355,8 @@ class AgentSession:
                 suppression lands in Block 3 (see step 5). ``store_history=False``
                 is the part that exists today and is not affected.
         """
-        # Phase 4, "Task marshalling", and FIRST because it is a precondition on
-        # the call itself rather than on the submission: everything below this
-        # line touches state only the session's own loop may touch, and one of
-        # the very next statements (asyncio.current_task(), in the reentrancy
-        # guard) would raise a bare "no running event loop" that names neither
-        # the cause nor the fix. A foreign loop or a plain thread is refused
-        # HERE, with submit_threadsafe named. No auto-detection that quietly
-        # reroutes — see _bind_or_check_loop for why the silent fallback is the
-        # bug this spec exists to prevent.
         self._bind_or_check_loop("submit()")
 
-        # Decision 3, the half that used to be missing: DERIVE the depth before
-        # checking it. `Submission.depth` as constructed is a floor (a chain
-        # relayed from outside this process); the depth that actually bounds
-        # self-submission comes from DRIVING_SUBMISSION_DEPTH — set below for the
-        # lifetime of the turn this call admits, and inherited by every task the
-        # turn spawns. Without this the counter was structurally always zero and
-        # the check under it was dead code. `replace` rather than a local so the
-        # admitted record itself — the one `_current_submission` publishes and
-        # `_stamp_event` copies from — reports the depth it was admitted at.
         depth = next_submission_depth(sub.depth)
         if depth != sub.depth:
             sub = replace(sub, depth=depth)
@@ -2145,15 +2373,6 @@ class AgentSession:
             )
 
         if self._turn_task is not None and asyncio.current_task() is self._turn_task:
-            # Review fix, must_fix #2. Before this check, a hook belonging to
-            # the in-flight turn calling ctx.prompt() -> session.prompt() ->
-            # submit(multitask_strategy="enqueue") deadlocked SILENTLY:
-            # "enqueue" awaits _turn_lock, which this exact task already
-            # holds, so nothing — no other task exists to release it — could
-            # ever wake this await. Task identity (not merely
-            # "_current_submission is not None") is what distinguishes this
-            # from a second, genuinely concurrent task's submission, which
-            # "enqueue" is supposed to make wait rather than reject.
             raise RuntimeError(
                 "submit(): reentrant self-submission. This call is running on "
                 "the same asyncio task as the turn currently in flight on this "
@@ -2171,13 +2390,6 @@ class AgentSession:
                 "this raises unconditionally rather than deadlocking."
             )
 
-        # The one field that is threaded and documented but has no implementation
-        # behind it yet. It raises BEFORE admission — nothing is reserved, no turn
-        # runs: a submitter that asks for a capability and silently gets a
-        # different one has been lied to, and under Fail-Early a field that does
-        # nothing is worse than an absent one because it reads as a working
-        # feature. (``multitask_strategy="steer"`` used to raise beside it and no
-        # longer does — phase 4 shipped it.)
         if sub.silent:
             raise NotImplementedError(
                 "silent=True is not implemented yet. Its store_history half is "
@@ -2202,45 +2414,9 @@ class AgentSession:
                     rejection_reason="a turn is already in flight",
                 )
         elif sub.multitask_strategy == "enqueue":
-            # Waits for the in-flight turn (if any) to finish, then holds the
-            # slot itself — LangGraph's "run after the current turn finishes".
-            # Distinct from ``send_user_message(deliver_as="nextTurn")``, which
-            # PARKS content until a human later types; this always runs, within
-            # this call, once admitted.
             await self._turn_lock.acquire()
         elif sub.multitask_strategy == "steer":
-            # Phase 4. Two shapes, decided by whether a turn is actually running —
-            # pi's own split: ``prompt()`` consults ``streamingBehavior`` ONLY
-            # ``if (this.isStreaming)`` (agent-session.ts:1032) and otherwise runs
-            # an ordinary prompt.
-            #
-            # (a) NOTHING in flight. ``_reserve_turn_or_reject`` grants the slot
-            #     without blocking and we fall through to the ordinary turn below.
-            #     This is not a degradation to "enqueue": steer's contract is
-            #     "delivered before the next LLM call", and with no turn running
-            #     the next LLM call is the one this submission is about to make.
-            # (b) A turn IS in flight. The content goes on the steering queue the
-            #     running loop drains immediately before its next provider call
-            #     (:attr:`_pending_steer_messages`), and this returns at once with
-            #     ``accepted=True`` and no messages — the turn belongs to another
-            #     submission, so there is no transcript here to return. The loop is
-            #     never parked waiting for us; that is the shape the spec's
-            #     "Deliberately not adopted" section refuses by name (AutoGen's
-            #     blocking mid-run input, which "put[s] the team in an unstable
-            #     state that cannot be saved or resumed").
-            #
-            # The turn slot is NOT taken in shape (b) and neither
-            # ``_pre_turn_leaf``/``_current_turn_token`` nor ``_current_submission``
-            # /``_turn_task`` are touched: those name the turn that is RUNNING, and
-            # this submission does not run one. Reentrancy is unaffected — the guard
-            # at the top of this method already refused a call from the in-flight
-            # turn's own task, so a hook that wants to steer its own turn uses
-            # ``ctx.send_user_message(deliver_as="steer")``, which reaches the same
-            # queue without pretending to be an admission.
             if not await self._reserve_turn_or_reject():
-                # The same transform/consume pipeline every other source gets, run
-                # under this submission's own depth + user-input capability (a
-                # queued steer runs no turn, so nothing else publishes them).
                 steer_depth_token = DRIVING_SUBMISSION_DEPTH.set(sub.depth)
                 steer_input_token = SUBMISSION_ALLOWS_USER_INPUT.set(sub.allow_user_input)
                 try:
@@ -2253,53 +2429,14 @@ class AgentSession:
                 self._pending_steer_messages.append(self._queued_content_to_user(text, images))
                 return SubmissionResult(accepted=True, submission_id=sub.submission_id, messages=[])
         elif sub.multitask_strategy == "rollback":
-            # Decision 2: suffix-drop, erasing nothing. Read BOTH "is a turn
-            # actually running" and the target/owner it would roll back to
-            # BEFORE this call's own admission overwrites _pre_turn_leaf below
-            # — the value in flight right now belongs to whatever turn is
-            # CURRENTLY running, not to this one (which has not been admitted
-            # yet). No await between the read and the abort signal, so nothing
-            # else can run and change either in between (same reasoning as
-            # ``_reserve_turn_or_reject``). ``aborted_token`` is captured
-            # alongside the target — review fix, must_fix #1 — so the check
-            # below can tell whether the turn we are about to acquire the slot
-            # FROM is still the one we signalled, or a different one entirely.
             was_in_flight = self._turn_lock.locked()
             rollback_target = self._pre_turn_leaf
             aborted_token = self._current_turn_token
             if was_in_flight:
-                # A REQUEST, not a hard stop: the in-flight turn unwinds through
-                # its own try/finally exactly as an ordinary abort() does, which
-                # is what persists whatever it produced up to wherever the
-                # signal was checked (agent_loop.py polls it between turns and
-                # inside the stream) — see the docstring's "Known limitation"
-                # for what this does NOT jump the queue against.
                 self._abort_signal.abort()
-                # Phase 4: drop anything steered at the turn being discarded. pi
-                # does the same on abort (``agent.abort()`` calls
-                # ``clearSteeringQueue()``), and here the reasoning is sharper —
-                # the queue is drained by whichever loop runs NEXT, which after a
-                # rollback is the replacement turn this very submission starts.
-                # Carrying it over would inject an utterance aimed at a turn the
-                # submitter explicitly rolled back past.
                 self._pending_steer_messages.clear()
             await self._turn_lock.acquire()
             if was_in_flight:
-                # Between the read above and this acquire, the FIFO queue on
-                # _turn_lock may have run a DIFFERENT admitted turn to
-                # completion in front of us (the class docstring's "Known
-                # limitation": an "enqueue" submission queued ahead of this
-                # rollback is granted the slot first and runs a FULL turn).
-                # _current_turn_token is bumped by every admitted turn
-                # (submit() and continue_conversation() alike) and never
-                # reset, so if it no longer matches what we captured, or if
-                # the turn we aborted never recorded a target at all (e.g. it
-                # was a continue_conversation(), which now sets both — see
-                # that method — so this branch is reached only by a genuinely
-                # missing target, such as no turn ever having recorded one),
-                # refuse rather than silently navigating to a stale or
-                # nonexistent leaf (review fix, must_fix #1 — the reproduction
-                # was append_navigate(None) un-pathing the whole conversation).
                 if rollback_target is None or self._current_turn_token != aborted_token:
                     self._turn_lock.release()
                     return SubmissionResult(
@@ -2314,25 +2451,8 @@ class AgentSession:
                             "aborted turn's"
                         ),
                     )
-                # The aborted turn's OWN admission already persisted whatever it
-                # produced (agent_session._persist_loop_messages runs
-                # unconditionally once loop.run() returns, abort or not) and
-                # released the lock we just acquired. Navigate the log back to
-                # where THAT turn started: the abandoned suffix — its messages
-                # AND this navigate entry itself, which parents off the
-                # abandoned tip — falls off the parentId walk from the new
-                # cursor. Nothing is deleted; NODE-ADDRESSABLE-AGENTS.md
-                # decision 7 / T5 stays true (entries() is still total).
                 self._session_log.append_navigate(rollback_target)
         elif sub.multitask_strategy == "fork":
-            # Decision 2: the in-flight turn, if any, is genuinely untouched —
-            # no _turn_lock acquire, no wait, no signal. The fork point is
-            # simply the log's current committed tip: _persist_loop_messages
-            # only runs after loop.run() returns (i.e. after a whole turn, tool
-            # round-trips included), so nothing this session's OWN in-flight
-            # turn is doing can be half-visible here — the tip can only be a
-            # prior process's crash-truncated node, which is exactly what the
-            # admission check below catches.
             fork_point = self._session_log.cursor
             reason = ConversationTree(
                 self._session_log.entries(), fork_point
@@ -2341,179 +2461,59 @@ class AgentSession:
                 return SubmissionResult(
                     accepted=False, submission_id=sub.submission_id, rejection_reason=reason
                 )
-            # Publish this submission's depth across the task creation itself
-            # (decision 3): the branch `_spawn_fork` starts is a whole second
-            # agent originated from inside this submission, and its first
-            # `prompt()` must therefore be admitted one deeper — otherwise a
-            # fork chain, which uniquely never touches `_turn_lock` and so has
-            # no other guard at all, recurses unbounded. `asyncio.Task` copies
-            # the context at creation, so the set must span create_task, not
-            # merely precede it.
             fork_depth_token = DRIVING_SUBMISSION_DEPTH.set(sub.depth)
             try:
                 self._spawn_fork(sub, fork_point)
             finally:
                 DRIVING_SUBMISSION_DEPTH.reset(fork_depth_token)
-            # accepted=True — the submission was admitted and IS running, in a
-            # supervised background task (_forked_tasks); there is no caller
-            # left to await it the way spawn_branch's caller does, so there are
-            # no messages to return yet. Observe progress via the branch_event
-            # channel (spawn_branch's existing forwarding), keyed by the lane
-            # ctx.spawn_branch mints once the branch actually starts, and its
-            # completion via branch_end — which fires from a finally, so a fork
-            # cancelled by abort() is observed to end rather than merely going quiet.
             return SubmissionResult(accepted=True, submission_id=sub.submission_id, messages=[])
         else:
-            # Every member of MultitaskStrategy is handled above, so reaching here
-            # means a value outside the Literal was constructed (a str squeezed
-            # past the type checker, a hand-built record). Fail-Early: refuse
-            # rather than fall through to whichever branch happens to be last —
-            # a submitter that asked for a strategy and silently got another one
-            # has been lied to about the concurrency semantics of its own turn.
             raise NotImplementedError(
                 f"multitask_strategy={sub.multitask_strategy!r} is not a known "
                 "strategy. The five docs/SUBMISSION-LIFECYCLE.md names are "
                 "'reject', 'enqueue', 'steer', 'rollback' and 'fork'."
             )
 
-        # docs/REMOTE-CONTROL.md §4[3], C3: every branch above that does NOT fall
-        # through to here already returned its own SubmissionResult — "reject"'s
-        # failure, "steer"'s turn-in-flight delivery, "rollback"'s stale-target
-        # refusal, "fork"'s admission failure or spawn — each a complete, fast
-        # result with nothing further to signal. Reaching this line means
-        # "reject"/"enqueue"/"rollback" acquired the turn slot, or "steer" found
-        # nothing in flight — but that is NOT yet "this call will run a turn":
-        # the `input` hook chain or a resolved slash command (`_apply_input_
-        # pipeline` below) can still consume the submission without ever
-        # reaching the model. `on_admitted` (see its own docstring, phase-2
-        # review B2/S2) must fire ONLY once every one of those has also had its
-        # chance — i.e. after the early-return check just below — or a resolved
-        # command's own `SubmissionResult.command` reaches the host with
-        # `on_admitted` having already told it a turn was starting.
-        #
-        # Decision 3: publish the admitted depth for the whole turn, so anything
-        # the turn originates — a hook spawning a task, an extension reacting to
-        # an event this turn emits — is admitted at depth+1 and the chain is
-        # bounded. Set OUTSIDE the try so the token is certainly bound by the
-        # time the finally resets it (ContextVar.set cannot raise).
         depth_token = DRIVING_SUBMISSION_DEPTH.set(sub.depth)
-        # Jupyter's allow_stdin, enforced: publish the capability for the whole
-        # turn so ExtensionUI's blocking dialogs can tell whether the code asking
-        # is allowed to reach a human. Set here, next to the depth token and for
-        # the same causal reason (a task the turn spawns inherits it; a task that
-        # predates the turn does not) — see SUBMISSION_ALLOWS_USER_INPUT. Nothing
-        # is published outside a submission, which leaves every pre-existing
-        # dialog path (continue_conversation, slash commands, session_start)
-        # exactly as it was.
         user_input_token = SUBMISSION_ALLOWS_USER_INPUT.set(sub.allow_user_input)
         try:
-            # Provenance (phase 2): every AgentEvent this turn's AgentLoop emits
-            # is stamped via _stamp_event, read off THIS attribute — see
-            # _run_one_turn's ``emit=`` binding and the class docstring.
             self._current_submission = sub
-            # must_fix #2: identifies the task a reentrant self-submission
-            # would otherwise deadlock against — see the check at the top of
-            # this method and the class docstring.
             self._turn_task = asyncio.current_task()
 
-            # Decision 2: the pre-turn leaf, recorded now that this submission
-            # actually holds the turn slot (not before — a submission that waited
-            # under "enqueue" must record the cursor as it stands AFTER whatever
-            # ran ahead of it, not the stale value read before the wait).
-            # must_fix #1: the token bumps WITH the leaf so a later rollback can
-            # tell whether the turn it aborted is still the one whose slot it is
-            # now acquiring, or whether a different turn ran to completion first.
             self._turn_token_counter += 1
             self._current_turn_token = self._turn_token_counter
             self._pre_turn_leaf = self._session_log.cursor
 
             self._is_streaming = True
             self._abort_signal = AbortSignal()
-            # Bind the fresh per-turn abort signal onto the live ExtensionContext
-            # so a hook's ``ctx.abort()`` (e.g. the budget guard, example 24 /
-            # step S17) aborts the signal THIS loop actually polls. pi's ctx reads
-            # the live agent signal (agent-session.ts:2254-2261); the signal is
-            # recreated each turn, so rebind here — one captured once at
-            # construction is stale by the next turn.
             self._extension_api.context._signal = self._abort_signal
 
-            # Steps 2 and 3 — the `input` hook chain (S42, roadmap §2 anchor G2;
-            # pi agent-session.ts:1007-1024) and command dispatch (B2-b), both in
-            # :meth:`_apply_input_pipeline` so the "steer" branch above runs the
-            # identical pipeline. The hook transforms {text, images} PRE-NODE (the
-            # transformed value is the SINGLE copy persisted+rendered+sent), or
-            # CONSUMES the input (``handled``): no turn starts, no user node is
-            # persisted, submit() returns accepted=True with no messages. Fires
-            # ONCE per submit(): the followUp/nextTurn re-entries go through
-            # _run_one_turn directly and never re-emit input. ``original_text`` is
-            # kept so the caller's echoed user turn (the TUI passes the full
-            # history) is still detected+stripped against the PRE-transform text.
             original_text = sub.text
             text, images, early = await self._apply_input_pipeline(sub)
             if early is not None:
                 return early
 
-            # docs/REMOTE-CONTROL.md §4[3], C3: the admission decision itself, now
-            # that the `input` hook chain and command dispatch have both had their
-            # chance to consume this submission without a turn (phase-2 review
-            # B2/S2 — moved here from just before this `try:`, where it fired for
-            # a resolved command too and made `on_admitted`'s own "this call is
-            # now committed to running a turn" promise false). Reaching this line
-            # means every branch above AND `_apply_input_pipeline` have declined
-            # to return their own `SubmissionResult`, so this call is now
-            # genuinely committed to the (possibly long) turn below, before
-            # anything is returned. That is the one clean point an admission
-            # signal belongs at, and firing it once here — rather than once per
-            # branch — is what keeps this additive instead of threading a
-            # callback through many differently-shaped return sites. Inside this
-            # `try` (S2): a raising `on_admitted` still unwinds through the
-            # `finally` below, so `_turn_lock` is released rather than wedged.
+            # Commands resolve inside the pipeline above, so the lock cannot refuse its own release.
+            locked = self.pending_request
+            if locked is not None and locked.lock:
+                return SubmissionResult(
+                    accepted=False,
+                    submission_id=sub.submission_id,
+                    rejection_reason=refusal_reason(locked),
+                    lock=locked,
+                )
+
             if on_admitted is not None:
                 on_admitted()
 
-            # Step 4 (session materialisation) is a documented no-op for this class
-            # — see the docstring above.
-
-            # H5 (§16.8) premise P2: a declared policy's turn bound is checked
-            # BEFORE anything is spent, and AFTER command dispatch — a dispatched
-            # command spends no turn (no model call, no node), so counting one
-            # against a scripted scenario's bound would retire a turn that never
-            # happened. Counted in ADMITTED submissions that actually reach the
-            # loop, matching prompt()'s prior placement as the first thing it did.
             if self._compaction_policy is not None:
                 self._policy_turns_used += 1
                 self._compaction_policy.admit_turn(self._policy_turns_used)
 
-            # Drain any pending "nextTurn" messages into THIS turn (S20): a
-            # message queued last turn with ``deliver_as="nextTurn"`` is injected
-            # alongside the user turn, exactly as pi pushes
-            # ``_pendingNextTurnMessages`` after the user message
-            # (agent-session.ts:1096-1099). Snapshot-and-clear so the injection
-            # happens exactly once and does NOT recur on the followUp re-entry.
             next_turn = self._pending_next_turn_messages
             self._pending_next_turn_messages = []
             queued = [self._queued_content_to_user(c) for c in next_turn]
 
-            # B3-a: the submission's own span on the bus. An ``AgentEvent`` marks a
-            # TURN (``agent_start``/``agent_end`` fire once per ``loop.run()``, so a
-            # followUp re-entry produces a second pair inside this one submit()), and
-            # a renderer that groups a whole user→answer exchange needs the SUBMISSION
-            # boundary instead. Emitted on a separate string channel rather than as
-            # two new ``AgentEvent.type`` members, exactly as ``branch_event`` is:
-            # the ``type`` Literal stays closed (S49), ``--mode json`` and every
-            # existing ``subscribe()`` consumer are untouched, and a renderer OPTS IN.
-            #
-            # Placed AFTER the ``input`` hook chain and command dispatch, so ``text``
-            # is what actually goes to the model and a consumed/dispatched submission
-            # opens no span at all.
-            #
-            # Unconditional: ``sub.silent`` still raises before admission (see the
-            # NotImplementedError above), so nothing that reaches here has asked for
-            # suppression. This pair IS the renderer channel that raise names as its
-            # precondition, so honouring ``silent`` by not emitting it is now
-            # implementable — deliberately NOT done in this work item, whose scope is
-            # the renderer, so the field keeps its one honest state (it raises)
-            # instead of gaining a half-implementation.
             side_usage_before = self.side_usage
             await self._events.emit_channel(
                 "submission_start", submission=sub, text=text, images=images
@@ -2529,38 +2529,14 @@ class AgentSession:
                 )
 
                 if sub.store_history:
-                    # End-of-prompt drain (S20 / decision 3): auto-compaction, then
-                    # the deferred compact/fork intents, then followUp messages
-                    # re-enter the loop WITHIN this same submit() call. Skipped for a
-                    # non-persisted submission — there is nothing durable to compact,
-                    # and a followUp re-entry would itself persist (see step 5 above).
                     await self._end_of_prompt_drain(turn_messages)
 
-                    # The USER-TURN boundary (§12.4 / §16.5 correction 2). Fires
-                    # exactly once, here — the boundary §16.5 names. Inside the try:
-                    # a raising turn never reaches it, so no consolidation runs over a
-                    # half-finished turn. Skipped for the same reason as the drain
-                    # above: its returned message becomes a durable customMessage
-                    # node, which a non-persisted submission must not write.
                     await self._run_user_turn_end(turn_messages)
 
                 return SubmissionResult(
                     accepted=True, submission_id=sub.submission_id, messages=turn_messages
                 )
             finally:
-                # In a ``finally`` because a renderer that opened a span on
-                # ``submission_start`` must close it however the turn ended —
-                # including the raise an aborted/failing turn propagates. A span left
-                # open renders as a permanently "Working…" exchange, which is the
-                # silent-hang shape this lifecycle exists to remove.
-                #
-                # ``side_usage`` is the delta this submission spent OFF the agent
-                # loop (auto-compaction's summarizer, an extension's
-                # ``ctx.complete()``). It reaches no ``message_end``, so a renderer
-                # summing the bus alone would report a token count that is
-                # confidently understated — most of all for the one call the user
-                # never asked for. The ledger is the session's, so the delta is
-                # computed here rather than left for each renderer to rediscover.
                 after = self.side_usage
                 await self._events.emit_channel(
                     "submission_end",
@@ -2623,11 +2599,6 @@ class AgentSession:
             self._extension_api.context.spawn_branch(
                 fork_point,
                 sub.text,
-                # ``_build_turn_tools()``, not ``_tools``, for the reason spelled out
-                # at ``spawn_branch``'s own resolution of the same question: ``_tools``
-                # omits every extension-registered tool, so on a session that keeps its
-                # tools that way this forked "second full agent" arrived with none at
-                # all — a continuation of the same job that cannot perform any of it.
                 tools=[t.name for t in self._build_turn_tools()],
                 max_turns=self._max_turns,
             )
@@ -2702,7 +2673,7 @@ class AgentSession:
         **``expand_commands`` is ``True`` again (B2-b), and this method therefore
         RAISES on a command rather than returning one.** Its return type is
         ``list[dict]`` — the turn's messages — which has no channel for a
-        :class:`~tau_agent_core.commands.CommandOutcome`, and a resolved command
+        :class:`~tau_agent_core.flows.Dispatched`, and a resolved command
         produces no messages. Returning ``[]`` would be indistinguishable from a
         turn that said nothing, so ``/compact`` through this method would look like
         a model that ignored you. The check runs BEFORE :meth:`submit`, using the
@@ -2761,12 +2732,6 @@ class AgentSession:
                 submission_id=uuid4().hex,
                 images=images,
                 multitask_strategy="enqueue",
-                # True (B2-b): this is the interactive wrapper, and the spec's
-                # "Interactive frontends pass True" is now a behaviour rather than
-                # an intent. The guard above is what makes it safe to claim — an
-                # `input` hook that rewrites plain text INTO a command is the only
-                # way one reaches submit() from here, and that outcome is surfaced
-                # by the second guard below rather than dropped.
                 expand_commands=True,
                 allow_user_input=True,
             ),
@@ -2774,12 +2739,11 @@ class AgentSession:
         )
         if result.command is not None:
             raise UnsupportedCommandError(
-                f"an `input` hook rewrote this prompt into the command "
-                f"/{result.command.name}, which prompt() cannot return "
-                f"(performer={result.command.performer!r}). Unlike the pre-submit "
-                "check above this fires AFTER admission, so a core-performed command "
-                "has already run — the hook, not the caller, is the culprit. Use "
-                "submit() and read result.command."
+                "an `input` hook rewrote this prompt into a command, which prompt() "
+                f"cannot return ({type(result.command).__name__}). Unlike the "
+                "pre-submit check above this fires AFTER admission, so a command the "
+                "core performs has already run — the hook, not the caller, is the "
+                "culprit. Use submit() and read result.command."
             )
         return result.messages
 
@@ -2824,8 +2788,6 @@ class AgentSession:
         content: list[dict[str, Any]] = [{"type": "text", "text": text}]
         if images:
             content.extend(images)
-        # content holds raw block dicts; model_validate lets pydantic coerce
-        # them into the TextContent | ImageContent union UserMessage declares.
         user_msg = UserMessage.model_validate(
             {
                 "role": "user",
@@ -2837,55 +2799,15 @@ class AgentSession:
         # Get context: use provided context or fall back to session messages.
         if context is not None:
             context_messages = list(context)  # copy to avoid mutation
-            # Did the caller already include this user turn as the final
-            # context message? The TUI passes the full history (which ends
-            # with the latest user turn); a bare prompt("hi") does not. This
-            # flag also drives the persist/return logic below. Compare against
-            # ``strip_ref_text`` (the PRE-``input``-transform text) so a hook that
-            # rewrote ``text`` upstream does not defeat the echo detection — see
-            # the ``strip_ref_text`` note in the docstring.
             strip_ref = strip_ref_text if strip_ref_text is not None else text
             context_ends_with_user = _ends_with_user_text(context_messages, strip_ref)
         else:
             context_messages = self.messages
             context_ends_with_user = False
 
-        # Thread the user message to the loop exactly once — via
-        # prompts=[user_msg] passed to loop.run() below. The context must
-        # therefore NOT also carry a trailing copy, so drop the duplicate the
-        # caller supplied. (pi parity: runAgentLoop concatenates context +
-        # prompts with no dedup, agent-loop.ts:103-106; the old loop-level
-        # strip-compare dedup is removed.)
         if context_ends_with_user:
             context_messages = context_messages[:-1]
 
-        # Fire the before_agent_start hook just before the loop runs (E2,
-        # step S13; pi agent-session.ts:1101-1125). Two return channels:
-        #   - system_prompt CHAINS (last handler wins; each handler sees the
-        #     running value, threaded inside the dispatcher) and replaces the
-        #     base prompt for THIS turn only — the config is rebuilt every
-        #     prompt(), so next turn resets to the base (pi resets to
-        #     _baseSystemPrompt when no handler modifies it);
-        #   - message(s) ACCUMULATE across handlers and are injected as custom
-        #     messages at the DISCOURSE POSITION each one declares (pi pushes
-        #     role:"custom" messages; on the wire they read as user messages —
-        #     messages.ts custom→user).
-        #     They are DURABLE (E5 §3.1 / S29): threaded to the loop this turn AND
-        #     persisted as ``customMessage`` tree nodes below, so a reload replays
-        #     the exact path the model saw (no second history / reload fork).
-        #
-        # DISCOURSE POSITION (§12.4's tempo table, corrected by §16.5). A message
-        # declaring ``position: "before_user"`` is threaded AHEAD of the user's
-        # utterance; the default — and everything pi does — is ``"after_user"``,
-        # behind it. §12.4 maps the *phasic* tempo ("results attached before
-        # deliberation") onto this hook, and the note "runs before the first model
-        # call of the turn" is true; the natural inference that the results
-        # therefore PRECEDE the utterance was not. Attachment held (one model call,
-        # results present); precedence did not. Both positions now exist and the
-        # reflex surface says which one it means, instead of inheriting whichever
-        # the threading happened to produce — a surface written for the other
-        # position still ran, still passed, and read differently to the model.
-        # Gated on has_handlers for the zero-extension fast path.
         turn_system_prompt = self._system_prompt
         pre_user_messages: list[dict[str, Any]] = []
         post_user_messages: list[dict[str, Any]] = []
@@ -2899,9 +2821,6 @@ class AgentSession:
                 if before.get("system_prompt") is not None:
                     turn_system_prompt = before["system_prompt"]
                 for msg in before.get("messages") or []:
-                    # emit_before_agent_start has already rejected any position
-                    # outside MESSAGE_POSITIONS, so this is a two-way split, not a
-                    # lookup that needs a fallback arm.
                     node = self._custom_message_node(msg)
                     if msg.get("position") == MESSAGE_POSITION_BEFORE_USER:
                         pre_user_messages.append(node)
@@ -2918,12 +2837,6 @@ class AgentSession:
             **self._turn_cap(),
         )
 
-        # Create and run the agent loop. ``emit`` is _stamp_event's wrapper, not
-        # the bus directly: every AgentEvent this loop produces is stamped with
-        # _current_submission's provenance before it reaches subscribers
-        # ("Provenance on events", phase 2). continue_conversation() binds
-        # self._events.emit directly instead — it predates the Submission
-        # contract and has no _current_submission to stamp with.
         loop = AgentLoop(
             config=config,
             emit=self._emit_stamped,
@@ -2931,43 +2844,11 @@ class AgentSession:
             model=self._model,
             abort_signal=self._abort_signal,
             hook_dispatcher=self._extension_runner,
-            # Phase 4: the loop drains this immediately before each provider call.
-            # The LIST is shared, not copied — a steer submitted after the loop
-            # started must be visible to it, which is the entire point.
             steer_queue=self._pending_steer_messages,
         )
 
-        # Run the loop — handles LLM call, tool execution, re-tries. The assembled
-        # order is [*before_user, user, *nextTurn, *after_user]: pi's order
-        # ([user, ...nextTurn, ...custom], agent-session.ts:1089-1120) with a
-        # declared-``before_user`` prefix ahead of it. An extension that declares
-        # nothing produces exactly pi's array, unchanged. The loop concatenates
-        # context + prompts.
-        # Persist this turn's messages AND collect them to return. The
-        # return value is THIS turn's new messages only — the user message
-        # (when it wasn't already supplied in the context) plus the
-        # assistant/tool messages the loop produced — NOT the full
-        # accumulated session history.
-        #
-        # Returning the whole history here was a compounding bug: the TUI
-        # appends prompt()'s return to its own message store (which already
-        # holds every prior turn), so each turn re-appended all earlier
-        # assistant/tool messages. The model then saw earlier exchanges
-        # duplicated and got confused about what it had already done.
         turn_messages: list[dict[str, Any]] = []
 
-        # The turn is persisted on BOTH paths (docs/PLAN-0.9.4.md §3). This whole
-        # block used to sit after ``loop.run`` with nothing around it, so a raise
-        # anywhere in the loop skipped every append below — the user's own prompt
-        # included — and the turn vanished. That is what "Esc loses the turn" was:
-        # not the abort, but the exception the abort provoked in the finalizer.
-        #
-        # The requirement is *every complete message or tool result should be
-        # persisted*, so the failure path writes the same things in the same
-        # order, and adds whatever the loop had finished before it died
-        # (``completed_messages``). Then it re-raises, unchanged: the caller still
-        # learns the turn failed, it just no longer learns it by finding the
-        # session empty.
         try:
             final_messages = await loop.run(
                 prompts=[*pre_user_messages, user_msg, *queued, *post_user_messages],
@@ -2984,8 +2865,6 @@ class AgentSession:
             pre_user_messages, user_msg, queued, post_user_messages, turn_messages, persist
         )
 
-        # Assistant responses and tool results produced this turn (plus any durable
-        # ``custom`` nodes the mutating ``turn_end`` hook appended mid-loop, S43).
         self._persist_loop_messages(final_messages, turn_messages, persist=persist)
 
         return turn_messages
@@ -3010,10 +2889,6 @@ class AgentSession:
         success path, which is why an aborted turn lost the user's prompt as well
         as the assistant's reply.
         """
-        # Persist the ``before_user`` injections FIRST — the persisted order must be
-        # the model-visible order or the reload forks (agent_session.py:419-421 —
-        # the next load must rebuild the exact path the model saw). These reached
-        # the model ahead of the user turn, so they are recorded ahead of it.
         for pre_msg in pre_user_messages:
             if persist:
                 self._session_log.append_custom_message(
@@ -3021,39 +2896,17 @@ class AgentSession:
                 )
             turn_messages.append(pre_msg)
 
-        # Persist this turn's user message. AgentSession is the AUTHORITATIVE
-        # persister (E3-ctx / D3): on the live path it appends through the TUI's
-        # own file ``Session`` (bound via ``session_log``), so the user turn is
-        # recorded HERE and nowhere else — the TUI dropped its own
-        # ``append_message`` to resolve the double-write. ``context_ends_with_user``
-        # still governs the loop-threading STRIP above (so the user turn is fed to
-        # the loop exactly once), but NOT persistence: the caller echoing the turn
-        # into the context it passed does not mean the log already holds it. The
-        # message is new to the log exactly once this turn, so append it
-        # unconditionally (a bare ``prompt("hi")`` with no context lands here too).
         user_dict = user_msg.model_dump()
         if persist:
             self._session_log.append_message(user_dict)
         turn_messages.append(user_dict)
 
-        # Persist the injected nextTurn messages too — they are genuine queued
-        # user content that joins the conversation.
         for qmsg in queued:
             qdict = qmsg.model_dump()
             if persist:
                 self._session_log.append_message(qdict)
             turn_messages.append(qdict)
 
-        # Persist the ``after_user`` before_agent_start injections as durable
-        # ``customMessage`` tree nodes (E5 §3.1 / S29). They reached the model as
-        # prompts THIS turn (threaded above, in the same [user, ...nextTurn,
-        # ...custom] order pi uses); recording them as extension-origin nodes here
-        # — in that same order, AFTER the user/queued turns and BEFORE the
-        # assistant response — closes the reload fork (agent_session.py:419-421):
-        # the next load rebuilds the exact path the model saw, with each node's
-        # ``role: "custom"`` rendered as extension-injected and serialized
-        # custom→user on the wire. Each carries the node into the returned
-        # transcript too (so it is visible, not a hidden channel).
         for cmsg in post_user_messages:
             if persist:
                 self._session_log.append_custom_message(cmsg, custom_type=str(cmsg["customType"]))
@@ -3158,19 +3011,8 @@ class AgentSession:
 
         self._is_streaming = True
         self._abort_signal = AbortSignal()
-        # Rebind the fresh abort signal onto the live ExtensionContext (see
-        # prompt(); pi agent-session.ts:2254-2261) so a hook's ctx.abort() reaches
-        # the signal this continuation polls.
         self._extension_api.context._signal = self._abort_signal
-        # must_fix #2: identifies the task a reentrant self-submission would
-        # deadlock against inside submit() — see that method's guard.
         self._turn_task = asyncio.current_task()
-        # must_fix #1: this method never recorded a pre-turn leaf before —
-        # exactly the gap the review's rollback reproduction exploited (a
-        # rollback submitted while THIS method is in flight read a stale or
-        # never-set _pre_turn_leaf and silently un-pathed the whole
-        # conversation). Bumping the token alongside it lets submit()'s
-        # rollback branch tell whether the turn it aborted is still current.
         self._turn_token_counter += 1
         self._current_turn_token = self._turn_token_counter
         self._pre_turn_leaf = self._session_log.cursor
@@ -3197,8 +3039,6 @@ class AgentSession:
                 model=self._model,
                 abort_signal=self._abort_signal,
                 hook_dispatcher=self._extension_runner,
-                # Phase 4: a continuation is a turn, so content steered at it is
-                # delivered before its next LLM call like any other turn's.
                 steer_queue=self._pending_steer_messages,
             )
 
@@ -3207,11 +3047,6 @@ class AgentSession:
                 context=context_messages,
             )
 
-            # Save all new messages (assistant responses, tool results) and
-            # collect them to return. Like prompt(), the return value is only
-            # the messages produced THIS continuation — not the accumulated
-            # session history — so a caller appending the result to its own
-            # store doesn't re-append prior turns.
             turn_messages: list[dict[str, Any]] = []
             self._persist_loop_messages(final_messages, turn_messages)
 
@@ -3279,8 +3114,6 @@ class AgentSession:
         system_msgs = [m for m in messages if m.get("role") == "system"]
         convo = [m for m in messages if m.get("role") != "system"]
 
-        # Keep the most recent user turn (the last user message and everything
-        # after it); summarize everything before it.
         last_user_idx = -1
         for i, m in enumerate(convo):
             if m.get("role") == "user":
@@ -3332,14 +3165,6 @@ class AgentSession:
         path_entries = ConversationTree(
             self._session_log.entries(), self._session_log.cursor
         ).context_entries()
-        # ``prepare_compaction``'s own "path_entries is non-empty" check cannot tell a
-        # real turn apart from a path that holds only non-message bookkeeping/
-        # provenance nodes — and W2 (NODE-ADDRESSABLE-AGENTS.md) means a freshly
-        # constructed session now ALWAYS carries at least one such node (its own
-        # ``agent_spec`` record; a file-backed log already carried a `model_change`
-        # the same way). Pin the actual signal — is there anything to summarize — here,
-        # ahead of the shared, pi-ported ``prepare_compaction``, rather than teach that
-        # function W2's entry kind.
         if not any(e.get("type") in ("message", "customMessage") for e in path_entries):
             return None
         preparation = prepare_compaction(path_entries, self._compaction_settings)
@@ -3354,23 +3179,7 @@ class AgentSession:
             custom_instructions=custom_instructions,
             thinking_level=self._reasoning,
         )
-        # The summarizer's own tokens. This is the path AUTO-compaction takes, so it
-        # is the spend the user never asked for and could not otherwise see.
         self.record_side_usage(result.usage)
-        # Append-only boundary through the same log the caller persists through.
-        # The System-B compaction entry records ``tokensBefore`` (not the retired
-        # manager's tokens_saved/compacted_entry_ids); the read-time splice needs
-        # only the summary + firstKeptId (§2.3).
-        #
-        # Everything after ``tokens_before=`` is TREE-BROWSER-AS-EDITOR.md §8's
-        # provenance, and every value of it was already sitting in this scope and
-        # being dropped on the floor — which is §8.1's complaint stated precisely.
-        # ``summarizer_model`` is two statements up and can differ from
-        # ``self._model`` (a ``local_summarizer`` policy, agent_session.py's
-        # ``_summarizer``); ``result.usage`` is what that call cost and is already
-        # being handed to ``record_side_usage``; the covered span is the prefix of
-        # ``path_entries`` the cut discarded. §11.3 makes them required keywords so
-        # this site cannot regress to silence.
         covered = _covered_span(path_entries, result.first_kept_entry_id)
         self._session_log.append_compaction(
             summary=result.summary,
@@ -3380,10 +3189,6 @@ class AgentSession:
             summary_usage=result.usage,
             covered_entries=len(covered),
             covered_tokens=estimate_span_tokens(covered),
-            # Ancestry from the node this anchor will parent at (the current leaf),
-            # not "the last spec this session wrote": after a navigate the two
-            # disagree, and only the first one describes the frame the covered span
-            # actually ran under (§8.3, session_log.agent_spec_in_force).
             agent_spec_id=agent_spec_in_force(
                 self._session_log.entries(), self._session_log.cursor
             ),
@@ -3409,14 +3214,6 @@ class AgentSession:
         settings = self._compaction_settings
         context_window = getattr(self._model, "context_window", 0) or 0
 
-        # H5 (§16.8) premise P1 and the claim it supports. This runs at the one site
-        # `should_compact` is evaluated and BEFORE the enabled/threshold gates, so a
-        # `turn_cap` run whose premise has broken dies here, with the numbers, rather
-        # than making the full-window model call the policy exists to keep out of
-        # §5.2's headline population — and rather than making it on the far side of
-        # §11.1's partition, where it becomes a CompactionError that reads as a
-        # scenario result. Nothing here softens compaction: a session with no
-        # declared policy (the default) does not even compute the estimate.
         if self._compaction_policy is not None:
             self._compaction_policy.observe_context(
                 turns_used=self._policy_turns_used,
@@ -3439,10 +3236,6 @@ class AgentSession:
             await self._perform_compaction()
         finally:
             await self._events.emit(AgentEvent(type="agent_end", timestamp=self._timestamp()))
-
-    # ------------------------------------------------------------------
-    # Injection queue + deferred ops (S20 / decision 3 + 5)
-    # ------------------------------------------------------------------
 
     def _queue_message(self, content: str, deliver_as: str = "followUp") -> None:
         """Queue a user message for injection (the seam ``send_user_message`` calls).
@@ -3557,20 +3350,9 @@ class AgentSession:
         """
         self._is_streaming = False
         self._abort_signal.abort()
-        # pi parity (``Agent.abort()`` → ``clearSteeringQueue()``): content
-        # steered at the turn being aborted is aimed at a turn that will not make
-        # another LLM call. Leaving it queued would deliver it into whatever turn
-        # runs next — an utterance the aborting caller never asked to carry
-        # forward. The followUp/nextTurn queues are deliberately left alone: those
-        # are pre-existing behaviour with their own drain points, and changing
-        # them is not this work item's business.
         self._pending_steer_messages.clear()
         for task in self._forked_tasks.values():
             task.cancel()
-
-    # ------------------------------------------------------------------
-    # Internal methods
-    # ------------------------------------------------------------------
 
     def _resolve_extension_tools(self) -> list[AgentTool]:
         """Resolve the registry's active extension tools into ``AgentTool``s.
@@ -3609,12 +3391,6 @@ class AgentSession:
 
             resolved.append(
                 AgentTool(
-                    # Rebuilt rather than copied, because ``execute`` must be
-                    # swapped for the adapter: the registered callable has the
-                    # extension's five-argument signature and the loop calls the
-                    # four-argument one. Every other field carries across as-is,
-                    # and ``label`` needs no default here any more -- the model
-                    # already filled it from ``name`` at registration.
                     definition=ToolDefinition(
                         **{**defn.model_dump(exclude={"execute", "source"}), "name": name},
                         execute=_make_adapter(),
@@ -3728,6 +3504,12 @@ class AgentSession:
         This deliberately does NOT create a third model-visible default channel
         (``before_agent_start`` / ``send_user_message`` already serve that).
 
+        The append is announced on the ``custom_message`` channel
+        (:meth:`_announce_append`), because this is the one durable message
+        nothing else on the bus reports: it belongs to no completion and no tool
+        call, so a head built from streaming events would show it only after the
+        next reload (docs/EXTENSION-LOCKS.md §9.1).
+
         Returns the appended entry id.
 
         Raises:
@@ -3751,7 +3533,39 @@ class AgentSession:
             visible_to_model=bool(options.get("visible_to_model", False)),
             timestamp=self._timestamp(),
         )
-        return self._session_log.append_custom_message(node, custom_type=str(message["customType"]))
+        entry_id = self._session_log.append_custom_message(
+            node, custom_type=str(message["customType"])
+        )
+        self._announce_append("custom_message", entry_id=entry_id, message=node)
+        return entry_id
+
+    def _announce_append(self, channel: str, **payload: Any) -> None:
+        """Publish an append that no other bus event reports, fire-and-forget.
+
+        Same dispatch as :meth:`route_session_event`: the appender is
+        synchronous, the bus is async, so the emit is a task on the running loop.
+
+        With NO running loop there is nothing to schedule on, and what that means
+        depends on whether anyone was listening. Nobody subscribed — a headless
+        script building a session — is not a lost event, so it returns. Somebody
+        subscribed is a head that will never hear about a message that is now on
+        the tree, which is the divergence this method exists to prevent, so it
+        raises with the channel named.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            if self._events.has_listeners(channel):
+                raise RuntimeError(
+                    f"an append was announced on {channel!r} from outside the event loop, "
+                    f"and {channel!r} has subscribers that can never be told. The entry is "
+                    "on the tree and every attached head is now behind it. Append from the "
+                    "session's own loop, or from a thread via the threadsafe door."
+                ) from None
+            return
+        task = loop.create_task(self._events.emit_channel(channel, **payload))
+        self._session_event_tasks.add(task)
+        task.add_done_callback(self._session_event_tasks.discard)
 
     def _append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
         """Append a durable, NON-message ``customEntry`` node (``api.append_entry``).
@@ -3779,6 +3593,66 @@ class AgentSession:
         if not isinstance(data, dict):
             raise ValueError(f"append_entry: data must be a dict, got {type(data).__name__}")
         return self._session_log.append_custom_entry(custom_type, data)
+
+    @property
+    def pending_request(self) -> ExtensionRequest | None:
+        """The extension request the cursor points at, or ``None`` (EXTENSION-LOCKS §2).
+
+        The cursor only — never a walk. Every head reads this to decide what to
+        draw, and :meth:`submit` reads it to decide whether to refuse, so the
+        thing a user is looking at and the thing that refused them are one entry.
+        """
+        return request_at_cursor(self._session_log.entries(), self._session_log.cursor)
+
+    async def answer_request(
+        self, request_id: str, action: str, values: dict[str, Any] | None = None
+    ) -> ExtensionCommandResult:
+        """Answer an extension's ask: append the response, then dispatch its action.
+
+        Reference: docs/EXTENSION-LOCKS.md §3, §8. The append is what releases a
+        lock — appending moves the cursor and the cursor is where a lock is read
+        — so the order matters: the handler runs on a session that is already
+        unlocked and may therefore submit a turn of its own.
+
+        Args:
+            request_id: The entry :meth:`~tau_agent_core.extension_types.ExtensionAPI.request_user_action`
+                returned.
+            action: The pressed action's ``label``, which names the command.
+            values: The filled fields, keyed by field name. ``None`` is the empty
+                dict, which is what an ask declaring no fields takes.
+
+        Returns:
+            The dispatched command's :class:`ExtensionCommandResult`. ``handled``
+            is ``False`` when the extension is not loaded — the response entry is
+            still appended and the lock still released, because a lock the owner
+            cannot answer must not become a session nobody can continue.
+
+        Raises:
+            ValueError: no such request, the request carries no ask, an unknown
+                action label, or values that :func:`validate_form_values`
+                rejects. Fail-Early: nothing is coerced and no partial answer is
+                persisted.
+        """
+        request = find_request(self._session_log.entries(), request_id)
+        if request is None:
+            raise ValueError(f"answer_request: no extension request with id {request_id!r}")
+        if request.ask is None:
+            raise ValueError(
+                f"answer_request: request {request_id!r} carries no ask, so there is "
+                "nothing to answer; it is cleared by navigating or by its own command"
+            )
+        actions = {a["label"]: a["command"] for a in request.ask["actions"]}
+        if action not in actions:
+            raise ValueError(
+                f"answer_request: {action!r} is not one of this ask's actions {sorted(actions)}"
+            )
+        answered = dict(values or {})
+        validate_form_values(request.ask["fields"], answered)
+        self._append_custom_entry(
+            RESPONSE_ENTRY_TYPE,
+            build_response_data(request_id, request.extension, answered, action),
+        )
+        return await self.run_extension_command(actions[action], request_id)
 
     def _build_turn_tools(self) -> list[AgentTool]:
         """Merge the built-in tools with the active extension tools for a turn.
@@ -3822,23 +3696,6 @@ class AgentSession:
                 )
             seen[t.name] = index
 
-        # ``--no-tools``: the model is offered nothing at all. Deliberately placed
-        # AFTER the duplicate scan and BEFORE the extension merge.
-        #
-        # After the scan, because the docstring above promises that a broken
-        # ``self._tools`` fails identically whether or not an extension is loaded —
-        # returning early above the scan would make ``--no-tools`` also mean "stop
-        # validating", so a duplicate-name bug would hide until the flag came off.
-        #
-        # Before the merge, because this is the ONLY thing that separates
-        # ``--no-tools`` from ``--no-builtin-tools``: both arrive here with
-        # ``self._tools == []``, and the merge below is precisely what lets an
-        # extension tool through. Without this line the two flags are the same
-        # flag — which is exactly the defect this replaced.
-        #
-        # It does not raise. Suppressing an extension's tool here carries out an
-        # explicit operator instruction; the operator learns which flag emptied
-        # the list from the TUI's session-facts row, not from an exception.
         if self._no_tools == "all":
             return []
 
@@ -3902,10 +3759,6 @@ class AgentSession:
         """
         message = f"extension error in {error.extension_path} ({error.event}): {error.error}"
         try:
-            # ``source`` attributes the record on the headless JSON stream (S49); it
-            # is ignored by the TUI delegate / stderr sinks. Unlike a plain
-            # ``api.ui.notify`` (shared UI, no per-call attribution), the error
-            # surface DOES know which extension failed, so it names it honestly.
             self._extension_api.ui.notify(message, "warning", source=error.extension_path)
         except Exception as report_err:  # noqa: BLE001 — reporter must not crash the loop
             import sys
@@ -3976,11 +3829,77 @@ class AgentSession:
         """
         self._extension_api.context.set_headless_ui_defaults(policy)
 
+    @property
+    def vocabulary(self) -> Vocabulary:
+        """τ's registry, plus the flows this session's extensions declared.
+
+        What every caller reading the flow tables should pass — ``next_step``,
+        ``flow_arguments``, ``enumerate_domain``, ``complete_command_argument`` — so a
+        gesture an extension added is offered and stepped exactly like a built-in.
+        See docs/EXTENSION-FLOWS.md.
+
+        Per-session rather than a mutable global, which is the property that makes it
+        safe: a fork, a ``switch_session`` and a sub-agent are separate sessions in one
+        process, and a global would have let one see another's flows. :data:`BUILTIN`
+        is returned unchanged when nothing declared a flow, so a session with no
+        extensions costs nothing and is the same object every test already reads.
+
+        Cached against the registry's ``flows_revision`` because building it runs the
+        whole registry cross-check and a head asks on every keystroke.
+        """
+        revision = self._registry.flows_revision
+        if self._vocabulary is None or self._vocabulary_revision != revision:
+            declared = self._registry.get_flows().values()
+            built = BUILTIN.extended_with(
+                [entry.flow for entry in declared],
+                domains={entry.domain.name: entry.domain for entry in declared if entry.domain},
+                enumerators={
+                    entry.domain.name: entry.enumerator
+                    for entry in declared
+                    if entry.domain is not None and entry.enumerator is not None
+                },
+            )
+            self._vocabulary = built
+            self._vocabulary_revision = revision
+        return self._vocabulary
+
+    async def _run_extension_flow(self, ready: Ready) -> Dispatched:
+        """Perform a bound extension flow by calling the command's own handler.
+
+        The bound value goes back to text, because the handler contract is
+        ``(args, ctx)`` and declaring a flow does not change it — an extension that
+        adds a declaration to a command it already shipped keeps working for every
+        caller that never learned about the declaration. A flow with no argument
+        passes ``""``, which is what a bare ``/name`` has always passed.
+
+        Args:
+            ready: The bound flow, whose ``flow`` names the registered command.
+
+        Returns:
+            The :class:`~tau_agent_core.flows.Performed` the handler's return value
+            becomes, the same record an undeclared command reports.
+
+        Raises:
+            UnsupportedCommandError: The command was unregistered between the dispatch
+                decision and this call.
+        """
+        values = [str(value) for value in ready.arguments.values()]
+        result = await self.run_extension_command(ready.flow, " ".join(values))
+        if not result.handled:
+            raise UnsupportedCommandError(
+                f"/{ready.flow} declared a flow but run_extension_command reports it "
+                "unknown — it was unregistered between the dispatch decision and the "
+                "dispatch itself. Refusing rather than falling through to the model."
+            )
+        return Performed(
+            flow=ready.flow, mutation=ready.mutation, data={"output": result.output_text()}
+        )
+
     def get_extension_commands(self) -> list[tuple[str, str]]:
         """List extension-registered slash commands (E5 §5 / S35).
 
         Returns ``(name, description)`` for every command an extension registered
-        via ``api.register_command`` — the palette (:meth:`Parley.get_system_commands`)
+        via ``api.register_command`` — the palette (:meth:`TauApp.get_system_commands`)
         reads this to LIST them. Description falls back to the empty string when a
         command omitted one (listing is best-effort chrome, not a durable node).
         """
@@ -4016,7 +3935,7 @@ class AgentSession:
 
         A command may declare ``"args": "<placeholder>"`` in its ``register_command``
         definition to signal that it expects a free-form argument string (parity with
-        typing ``/name args``). The palette (:meth:`Parley.get_system_commands`) reads
+        typing ``/name args``). The palette (:meth:`TauApp.get_system_commands`) reads
         this to decide whether a palette entry, which has no argument line, must first
         open the S47 input modal to collect the arg string before dispatch.
 

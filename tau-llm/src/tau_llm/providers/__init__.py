@@ -130,27 +130,10 @@ def _build_google_generative_ai(
     return provider
 
 
-# The wire protocols τ implements. "openai-responses" is deliberately NOT
-# registered: τ has no Responses client, and a model declaring that api used to
-# be served silently over the completions wire (PLAN-0.9.3 §4.4). It now raises.
 register_api("openai-completions", _build_openai_completions)
 register_api("anthropic-messages", _build_anthropic_messages)
 register_api("google-generative-ai", _build_google_generative_ai)
 
-# The three vendors τ ships, because implementing their wire already claimed them.
-#
-# This is narrower than it looks, and it is not the vendor list this module's
-# docstring refuses. The refusal is about vendors τ does NOT implement — a Groq
-# or an OpenRouter, whose URL and credential variable τ would then have to keep
-# true as they move. These two are different: "openai-completions" and
-# "anthropic-messages" are wire protocols named after their author, so the api
-# registration above is already the claim. Declining to also state the endpoint
-# would only mean every user retyping the same URL.
-#
-# Bedrock, Vertex and Foundry speak Anthropic-shaped protocols behind different
-# endpoints and entirely different auth. They are deliberately absent: each is a
-# vendor τ has not implemented, and each is a `register_provider` call in the
-# embedding application, exactly as the docstring describes.
 register_provider(
     ProviderSpec(
         id="openai",
@@ -169,14 +152,6 @@ register_provider(
         api_key_env=("ANTHROPIC_API_KEY",),
     )
 )
-# Registered as "gemini" rather than "google" because that is what
-# ~/.tau/config.json entries already say (`"backend": "gemini"`), and the
-# shipped config template has said it since before any Google client existed.
-# Renaming the vendor would break those entries to gain nothing.
-#
-# GEMINI_API_KEY is listed before GOOGLE_API_KEY for the same reason the SDK
-# reads them in that order: GOOGLE_API_KEY is set for many Google services, and
-# the more specific name is the one that means this API.
 register_provider(
     ProviderSpec(
         id="gemini",

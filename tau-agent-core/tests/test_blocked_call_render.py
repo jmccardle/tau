@@ -38,6 +38,9 @@ from tau_agent_core.extension_types import ExtensionContext
 from tau_agent_core.extensions.runner import ExtensionRunner
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 def _model() -> Model:
     return Model(
@@ -58,7 +61,7 @@ def _text_assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -70,7 +73,7 @@ def _tool_call_assistant(call_id: str, name: str, args: dict[str, Any]) -> Assis
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -136,11 +139,6 @@ def _make_session(*extensions) -> AgentSession:
         model=_model(),
         extensions=list(extensions),
     )
-
-
-# ---------------------------------------------------------------------------
-# Parallel path (the default execution mode) — through a real AgentSession
-# ---------------------------------------------------------------------------
 
 
 async def test_veto_marks_event_and_emits_veto_record() -> None:
@@ -252,11 +250,6 @@ async def test_arg_validation_block_is_not_a_veto() -> None:
     assert all(e.blocked is False for e in error_ends)
     assert all(e.blocked_by is None for e in error_ends)
     assert records == []
-
-
-# ---------------------------------------------------------------------------
-# Sequential path — driven directly so BOTH execution branches are proven
-# ---------------------------------------------------------------------------
 
 
 async def test_sequential_mode_also_marks_the_veto() -> None:

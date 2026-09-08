@@ -65,7 +65,7 @@ The rule this document proposes:
 |---|---|---|
 | Keyboard, mouse, clipboard | head | It is the hardware in front of the human. Under a multiplexer the human is not on the machine running the agent. |
 | Layout, theme, what a tool call looks like | head | `export_html` was declined for exactly this reason (`commands.py`, Tier D: "a host can render"). |
-| Draft text, pending steering buffer, attachments | head | None of it has reached the model. `Parley._pending_steer` (`app.py:5352`) is the app's buffer, not the core's, and `docs/TUI-STEERING.md` §2 records why. |
+| Draft text, pending steering buffer, attachments | head | None of it has reached the model. `TauApp._pending_steer` (`app.py:5352`) is the app's buffer, not the core's, and `docs/TUI-STEERING.md` §2 records why. |
 | `Submission` construction (source, submitter, strategy) | head | Phase 3 of the submission lifecycle. The head declares who it is. |
 | Admission, hooks, command dispatch | core | `AgentSession.submit` is the door. A head that dispatched its own `/compact` would be a second door. |
 | The tree, the cursor, persistence | core | Decision 6. A head never writes the log. |
@@ -244,7 +244,7 @@ The design that follows from §2:
 - The clipboard reader lives in **`tau-coding-agent`**, head-local. Not in
   `tau-agent-core`. A VS Code head does its own capture through the editor's API
   and never imports it.
-- The attachment buffer lives on `Parley`, beside `_pending_steer`
+- The attachment buffer lives on `TauApp`, beside `_pending_steer`
   (`app.py:5352`), for the same reason that buffer does: nothing that has not
   reached the model belongs to the core, and the removal gesture has to be able
   to take it back.

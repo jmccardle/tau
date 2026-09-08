@@ -94,8 +94,6 @@ def _load_sibling(filename: str, modname: str) -> ModuleType:
 _delegate = _load_sibling("20_delegate.py", "tau_example_delegate")
 _gatekeeper = _load_sibling("22_gatekeeper.py", "tau_example_gatekeeper")
 
-# Re-export the demo-22 veto so a host can load it onto the session's mutating-hook
-# runner alongside the surgeon tools (the E2 safety these tools depend on).
 context_surgeon_gatekeeper = _gatekeeper.gatekeeper_tool_call
 
 
@@ -117,8 +115,6 @@ async def _compact_now_execute(
     """
     custom_instructions = params.get("custom_instructions") or None
     result = await ctx.compact(custom_instructions=custom_instructions, defer=True)
-    # A deferred compact only records intent — Fail-Early: it must NOT have run
-    # under the live loop.
     if result is not None:
         raise RuntimeError("compact_now: deferred compaction unexpectedly ran mid-turn")
     return {
@@ -248,8 +244,6 @@ async def _fork_session_execute(
     delegate_details: dict[str, Any] | None = None
 
     if delegate_task and str(delegate_task).strip():
-        # Compose demo 20: hand the follow-up task to an isolated subagent whose
-        # own context window is separate from this (now forked) one.
         delegate_params: dict[str, Any] = {"task": str(delegate_task)}
         if params.get("delegate_model"):
             delegate_params["model"] = params["delegate_model"]
@@ -332,16 +326,4 @@ def context_surgeon_extension(api: Any) -> None:
     api.register_tool(FORK_SESSION_TOOL)
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/23_context_surgeon.py`` → ``getattr(module, "register")``), so the demo
-#: is loadable through the public ``-e`` surface, not only by importing
-#: ``context_surgeon_extension`` directly.
-#:
-#: NOTE: ``-e`` loads the three TOOLS and nothing else. It does NOT wire
-#: :data:`context_surgeon_gatekeeper` — the ``tool_call`` veto the module docstring
-#: names as the safety these mutation tools depend on. That omission is deliberate
-#: (``context_surgeon_extension`` registers only the tools, by design), so loading
-#: this file ALONE gives the agent compact/summarize/fork with no filesystem fence.
-#: Load ``22_gatekeeper.py`` alongside it — ``tau -e examples/22_gatekeeper.py -e
-#: examples/23_context_surgeon.py`` — or register the veto yourself.
 register = context_surgeon_extension

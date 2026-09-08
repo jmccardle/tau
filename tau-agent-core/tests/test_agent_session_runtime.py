@@ -37,10 +37,9 @@ from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, 
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.submission import Submission
 
-# TREE-BROWSER-AS-EDITOR.md §8/§11.3: ``append_compaction`` now requires the
-# summary's provenance as keyword-only arguments with no defaults. These tests are
-# about something else, so they name plausible values once here rather than at every
-# call — the point of the required keywords is that a REAL caller cannot skip them.
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 _PROV = {
     "summarizer_model_id": "test-summarizer",
     "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
@@ -247,7 +246,7 @@ def _assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="m",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
 
@@ -315,7 +314,7 @@ async def test_new_session_resets_the_documented_set(session: AgentSession, runt
 
     session._pending_steer_messages.append(
         UserMessage.model_validate(
-            {"role": "user", "content": [{"type": "text", "text": "x"}], "timestamp": 0}
+            {"role": "user", "content": [{"type": "text", "text": "x"}], "timestamp": _TS}
         )
     )
     session._deferred_ops.append({"kind": "compact", "custom_instructions": None})
@@ -357,8 +356,6 @@ async def test_survivors_are_left_alone(session: AgentSession, catalog, runtime)
     assert session._extensions is extensions_before
     assert session._events is events_before
     assert session.extension_runner is runner_before
-    # _turn_token_counter is documented as NEVER reset on AgentSession itself;
-    # this runtime must not touch it either.
     assert session._turn_token_counter == 0
 
 
@@ -367,9 +364,7 @@ async def test_last_compaction_anchor_is_cleared_not_rederived(session: AgentSes
     proves it is genuinely GONE, not carried over or recomputed."""
     log = session.session_log
     first = log.append_message({"role": "user", "content": "turn one"})
-    log.append_compaction(
-        summary="a summary", first_kept_id=first, tokens_before=100, **_PROV
-    )
+    log.append_compaction(summary="a summary", first_kept_id=first, tokens_before=100, **_PROV)
     # Sanity: the OLD log really does have a splice anchor before the reset.
     old_active = ConversationTree(log.entries(), log.cursor).context_for()
     assert any(m.get("role") == "user" and "summary" in str(m.get("content")) for m in old_active)
@@ -464,8 +459,6 @@ async def test_new_session_is_atomic_with_respect_to_the_event_stream(
 
         swap_task = asyncio.create_task(runtime.new_session(persist=False))
         await asyncio.sleep(0)
-        # new_session() must be BLOCKED on the turn lock, not racing ahead —
-        # abort() alone doesn't finish a turn synchronously.
         assert not swap_task.done()
 
         gate.set()
@@ -473,13 +466,8 @@ async def test_new_session_is_atomic_with_respect_to_the_event_stream(
         result = await asyncio.wait_for(swap_task, timeout=5.0)
 
     assert result["cancelled"] is False
-    # Every event the turn emitted reached the subscriber strictly before the
-    # swap completed — in particular agent_end, the turn's last event.
     assert "agent_end" in recorded
     agent_end_index = recorded.index("agent_end")
-    # Nothing recorded after the last agent_end belongs to a NEW turn (there
-    # isn't one), and the new, empty session confirms the swap really
-    # happened after that point, not interleaved with it.
     assert recorded[agent_end_index:].count("agent_end") == 1
     assert session.session_log.entries() == []
 
@@ -528,9 +516,6 @@ async def test_new_session_refuses_rather_than_hanging_when_the_turn_never_stops
         await asyncio.sleep(0)
         assert session.is_streaming is True
 
-        # The whole point: this must return, not hang. The outer timeout is a
-        # test safety net (generous relative to the 0.05s the runtime itself
-        # is bounded by), not the behaviour under test.
         result = await asyncio.wait_for(runtime.new_session(persist=False), timeout=5.0)
 
         assert result["cancelled"] is False
@@ -550,9 +535,6 @@ async def test_new_session_refuses_rather_than_hanging_when_the_turn_never_stops
 async def test_fork_carries_history_and_leaves_the_source_untouched(
     session: AgentSession, catalog, runtime
 ):
-    # fork() requires a catalog-produced ConversationSession (see
-    # test_fork_before_any_catalog_session_raises for the bare-log case) —
-    # establish the invariant the same way rpc_mode.py does at startup.
     session.session_log = catalog.create_ephemeral("/work", "m", "openai")
     source_log = session.session_log
     source_log.append_message({"role": "user", "content": "hello"})
@@ -623,8 +605,6 @@ async def test_rebind_runs_after_the_swap_with_the_lock_released(session: AgentS
 
     async def _rebind(rebound_session: AgentSession) -> None:
         calls.append(rebound_session)
-        # Proves the lock is NOT held here: acquiring it would hang forever
-        # if new_session() were still holding it at rebind time.
         await asyncio.wait_for(rebound_session.turn_lock.acquire(), timeout=1.0)
         rebound_session.turn_lock.release()
 

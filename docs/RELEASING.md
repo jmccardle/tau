@@ -64,9 +64,14 @@ pytest tau-coding-agent/tests/test_packaging.py
 git commit -am "release: version 0.9.3"
 ```
 
-The version lives in thirteen places. The script writes all thirteen and refuses
-to run on a dirty tree. Do not add a `version = "..."` literal to a package
-`pyproject.toml` to fix a mismatch — a test forbids the second copy.
+The version lives in fifteen places — five `__version__` literals, one in the root
+`pyproject.toml`, and nine in-repo `ffwf-tau…==<version>` pins. This document and
+the script's own header both said *thirteen* through 0.9.7, and the pin count was
+already nine there, so the number was stale rather than newly wrong. The script
+prints every location it wrote; read that list rather than either number. It
+refuses to run on a dirty tree, ignoring untracked files. Do not add a
+`version = "..."` literal to a package `pyproject.toml` to fix a mismatch — a test
+forbids the second copy.
 
 ### 2. Gate
 
@@ -81,6 +86,25 @@ Those are the four `.githooks/pre-commit` runs. `ruff check .` over the whole
 repo reports findings in `tests/`, `experiments/` and `run_agent_loop.py`; those
 trees are outside the gate on purpose, so run ruff on the five `src` trees, not
 on `.`.
+
+#### The leakage check is inside `pytest`, not a separate step
+
+Step 4 replaces the public tree with `git archive master`, so **everything
+tracked except `CLAUDE.md` is published verbatim** — `docs/` and `ROADMAP.md`
+included, not just the installable packages.
+`tau-coding-agent/tests/test_no_host_addresses.py` holds both scopes: `LEAKS`
+over the five `src` trees plus `examples/` and `scripts/`, and `PROSE_LEAKS`
+(home directories and the private remote's hostname, but not LAN addresses) over
+`docs/`, `ROADMAP.md` and `README.md`. `test_packaging.py` covers the third
+surface, the READMEs and pyprojects that become PyPI metadata; its `PRIVATE_HOST`
+constant is where that hostname is written down, and this file must not repeat
+it — a document describing the pattern is still a document containing it.
+
+Until 0.10.0 the prose scope did not exist and eight lines had been published
+since at least 0.9.7. If a release adds a doc that quotes a path or a server,
+this is where it fails — write `~/…` or a placeholder, and leave a measured
+address in `docs/probe-results/` or `experiments/` alone, because there the
+address is the measurement.
 
 #### Run the matrix BEFORE the tag push, not after
 
@@ -99,6 +123,7 @@ for v in 3.11 3.12 3.13 3.14; do
     mkdir /work && tar -xf /src.tar -C /work && cd /work &&
     pip install -q -e ./tau-llm -e "./tau-agent-core[dev]" \
                    -e "./tau-coding-agent[dev]" -e ./tau-jmfts &&
+    pip install -q -e ./tau-meta &&
     python -m pytest -q -rf --tb=line' | tail -40
 done
 ```
@@ -106,7 +131,18 @@ done
 **A version is clean at zero failures.** All four must agree, and they must
 agree on `0 failed`. Anything else is a real difference and blocks the tag.
 
-**Two details of that command are load-bearing, and 0.9.7 paid for both.**
+**Three details of that command are load-bearing. 0.9.7 paid for two of them
+and 0.10.0 for the third.**
+
+`-e ./tau-meta` is the third, and it is here to make the matrix and `publish.yml`
+install the same set. `tau-meta` pins `ffwf-tau-llm[anthropic,google]`, so it is
+what drags both optional SDKs in; without it neither is present and every test
+guarded by `pytest.importorskip("anthropic")` or `("google.genai")` *skips*.
+0.10.0's rehearsal found that gap the expensive way: a four-version matrix
+reported `0 failed` on a tree whose very next CI run failed on
+`test_the_stub_signature_matches_the_installed_sdk`, because the matrix had
+never installed the SDK that test reads. A gate that skips what CI runs is not
+the gate it appears to be.
 
 `git archive master` is the tree step 4 publishes, so the matrix tests the
 artifact rather than a snapshot of a working directory. The `tar --exclude=…`
@@ -313,7 +349,7 @@ Check the two runtime data files are inside the installed package:
 ```python
 import importlib.resources as r, tau_coding_agent
 r.files(tau_coding_agent).joinpath("tau_default_config.json").is_file()
-r.files(tau_coding_agent).joinpath("parley.tcss").is_file()
+r.files(tau_coding_agent).joinpath("tau.tcss").is_file()
 ```
 
 A wheel missing either installs cleanly and dies on first run.

@@ -1,9 +1,9 @@
 """E10 §6 (S67) — ``ctx.ui.set_status`` paints keyed slots in the footer strip.
 
-Driven through the REAL Parley app (``App.run_test()`` / Pilot), matching
+Driven through the REAL TauApp app (``App.run_test()`` / Pilot), matching
 ``test_extension_notify_and_veto`` (S33): the ``ExtensionStatusBar`` is composed
 into the live layout, and the delegate an extension's ``ctx.ui.set_status`` reaches
-(``_ExtensionUIDelegate.set_status`` → ``Parley.set_extension_status``) updates one
+(``_ExtensionUIDelegate.set_status`` → ``TauApp.set_extension_status``) updates one
 keyed slot in place. Slot semantics under test: first-seen order, in-place update
 on a re-call, clear-on-``None``, and the strip collapsing to zero rows when empty.
 
@@ -17,24 +17,24 @@ from __future__ import annotations
 
 import pytest
 
-from tau_coding_agent.app import ExtensionStatusBar, _ExtensionUIDelegate
+from tau_coding_agent import extension_ui
 
 
 @pytest.fixture
 def app(make_app):
-    """A bare Parley; no backend needed for the strip, and no extension loading —
+    """A bare TauApp; no backend needed for the strip, and no extension loading —
     the strip is exercised directly, not via a demo."""
     return make_app()
 
 
-def _line(bar: ExtensionStatusBar) -> str:
+def _line(bar: extension_ui.ExtensionStatusBar) -> str:
     return str(bar.render())
 
 
 async def test_strip_hidden_until_a_slot_is_set(app) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
-        bar = app.query_one(ExtensionStatusBar)
+        bar = app.query_one(extension_ui.ExtensionStatusBar)
         # Composed into the real layout, but collapsed (zero rows) with no slots.
         assert bar.display is False
         assert _line(bar) == ""
@@ -43,15 +43,13 @@ async def test_strip_hidden_until_a_slot_is_set(app) -> None:
 async def test_set_status_shows_and_updates_slot_in_place(app) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
-        bar = app.query_one(ExtensionStatusBar)
+        bar = app.query_one(extension_ui.ExtensionStatusBar)
 
         app.set_extension_status("budget", "$1.42/2.00")
         await pilot.pause()
         assert bar.display is True
         assert _line(bar) == "$1.42/2.00"
 
-        # Re-calling the SAME key updates that slot in place (ambient live state) —
-        # one slot, not two.
         app.set_extension_status("budget", "$1.90/2.00")
         await pilot.pause()
         assert list(bar._slots) == ["budget"]
@@ -61,24 +59,24 @@ async def test_set_status_shows_and_updates_slot_in_place(app) -> None:
 async def test_multiple_keys_render_in_first_seen_order(app) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
-        bar = app.query_one(ExtensionStatusBar)
+        bar = app.query_one(extension_ui.ExtensionStatusBar)
 
         app.set_extension_status("budget", "$1.42/2.00")
         app.set_extension_status("turn", "Turn 3")
         await pilot.pause()
         assert list(bar._slots) == ["budget", "turn"]
-        assert _line(bar) == f"$1.42/2.00{ExtensionStatusBar._SEPARATOR}Turn 3"
+        assert _line(bar) == f"$1.42/2.00{extension_ui.ExtensionStatusBar._SEPARATOR}Turn 3"
 
         # Updating the first key keeps its original position.
         app.set_extension_status("budget", "$2.00/2.00")
         await pilot.pause()
-        assert _line(bar) == f"$2.00/2.00{ExtensionStatusBar._SEPARATOR}Turn 3"
+        assert _line(bar) == f"$2.00/2.00{extension_ui.ExtensionStatusBar._SEPARATOR}Turn 3"
 
 
 async def test_clear_removes_slot_and_collapses_when_empty(app) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
-        bar = app.query_one(ExtensionStatusBar)
+        bar = app.query_one(extension_ui.ExtensionStatusBar)
 
         app.set_extension_status("budget", "$1.42/2.00")
         app.set_extension_status("turn", "Turn 3")
@@ -100,14 +98,12 @@ async def test_clear_removes_slot_and_collapses_when_empty(app) -> None:
 
 
 async def test_delegate_routes_set_status_to_the_strip(app) -> None:
-    # End-to-end: what a loaded extension's ``ctx.ui.set_status(...)`` awaits —
-    # the delegate forwards to Parley.set_extension_status → the live strip.
     async with app.run_test() as pilot:
         await pilot.pause()
-        delegate = _ExtensionUIDelegate(app)
+        delegate = extension_ui._ExtensionUIDelegate(app)
         delegate.set_status("model", "🤖 gpt-4o")
         await pilot.pause()
-        bar = app.query_one(ExtensionStatusBar)
+        bar = app.query_one(extension_ui.ExtensionStatusBar)
         assert bar.display is True
         assert _line(bar) == "🤖 gpt-4o"
 

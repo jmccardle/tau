@@ -61,8 +61,6 @@ class TestJmftsSessionCatalogContract(SessionCatalogContractTests):
     def _live_server(self, jmfts_url: str, jmfts_token: str | None):
         self._client = JmftsClient(jmfts_url, token=jmfts_token)
         self._roots: list[int] = []
-        # Scopes are run-unique: this server is shared, and a contract test that
-        # asserts "this cwd lists exactly one session" must not see another run's.
         self._run = uuid.uuid4().hex[:8]
         yield
         for root_id in self._roots:

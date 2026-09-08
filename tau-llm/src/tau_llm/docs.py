@@ -56,15 +56,6 @@ from typing import Callable, TypeVar
 
 __all__ = ["DECORATOR_PATH", "agent_facing"]
 
-# The canonical dotted path of the decorator, as griffe resolves it through an
-# import, and the string `tau_agent_core.docs_build` matches on. All three import
-# forms resolve to it:
-#
-#     from tau_llm.docs import agent_facing     ->  @agent_facing(...)
-#     import tau_llm.docs                       ->  @tau_llm.docs.agent_facing(...)
-#     from tau_llm import docs as d             ->  @d.agent_facing(...)
-#
-# Named here, once, so the marker and the build that finds it cannot drift.
 DECORATOR_PATH = "tau_llm.docs.agent_facing"
 
 _T = TypeVar("_T")

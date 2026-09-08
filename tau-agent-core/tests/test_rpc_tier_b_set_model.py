@@ -49,10 +49,6 @@ def _model(name: str = "m1", provider: str = "openai") -> Model:
     )
 
 
-#: The two config names `_resolver` below knows, so `test_set_model_*`
-#: switches between models with DIFFERENT providers — a same-provider switch
-#: would not catch a handler that forgot to read `model["provider"]` off the
-#: resolver's actual return value and instead echoed the OLD model's.
 _MODELS: dict[str, Model] = {
     "m1": _model("m1", "openai"),
     "m2": _model("m2", "anthropic"),
@@ -166,10 +162,6 @@ async def test_set_model_switches_persists_and_returns_the_cursor(handler, sessi
     }
     assert response["result"]["cursor"] == "model-change-1"
     assert response["result"]["method"] == "set_model"
-    # Persisted with the CALLER-supplied name (the config key, matching
-    # headless.py's own append_model_change(model_name, backend_name) —
-    # not model.id, which a config key may alias) and the newly resolved
-    # model's provider (not the old model's).
     assert session.session_log.model_changes == [("m2", "anthropic")]
     # The switch actually took effect, not merely reported.
     assert session.get_model()["id"] == "m2"
@@ -211,9 +203,6 @@ async def test_set_model_raises_when_the_log_has_no_appender(handler, session):
 
     assert response["error"]["code"] == dialect.INTERNAL_ERROR
     assert "append_model_change" in response["error"]["message"]
-    # Blocker 2: both persistence preconditions run BEFORE the switch, so a
-    # refusal is total — this verb never reports "maybe switched, definitely
-    # not persisted" (which is what it DID report until the guards moved).
     assert session.get_model()["id"] == "m1"
 
 
@@ -260,12 +249,6 @@ async def test_set_model_unknown_name_is_invalid_params(handler, session):
 
     assert "result" not in response
     assert response["error"]["code"] == dialect.INVALID_PARAMS
-    # The resolver's own sentence, verbatim — no double-quoting (finding 10
-    # of the Tier B review: `str(KeyError)` is `repr(args[0])`, so this used
-    # to reach the wire as `"unknown model 'no-such-model'; ..."`, quotes
-    # included, inside a JSON string that quotes it again). Pinned as an
-    # equality on the whole message rather than a substring, because a
-    # substring check is exactly what let the quotes through.
     assert (
         response["error"]["message"] == "unknown model 'no-such-model'; configured models: m1, m2"
     )

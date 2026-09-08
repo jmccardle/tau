@@ -118,8 +118,6 @@ def main() -> int:
         f"distribution {dict(sorted(Counter(scores.values()).items()))}"
     )
 
-    # Overwrite this conversation's importance with the retrievability scores. Other
-    # conversations keep whatever they have; we only evaluate this one.
     with factory() as db:
         for doc_id, s in scores.items():
             doc = db.get(Document, doc_id)

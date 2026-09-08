@@ -130,20 +130,12 @@ import os
 import sys
 from typing import Any, Callable
 
-# ── import the kit (it lives alongside the demos in examples/) ───────────────
-# The file-path extension loader (``tau -e examples/24_budget.py``) does not add
-# the extension's own directory to ``sys.path``, and the test harness loads this
-# file by path too — so bootstrap ``examples/`` onto the path before importing the
-# kit, whether run directly, imported, or loaded via ``-e`` (D-E6-3).
 _EXAMPLES_DIR = os.path.dirname(os.path.abspath(__file__))
 if _EXAMPLES_DIR not in sys.path:
     sys.path.insert(0, _EXAMPLES_DIR)
 
 from ext_kit import ledger  # noqa: E402  (path insertion must precede the import)
 
-#: Deployable-default token ceiling (token mode). A documented knob, not a
-#: fallback: with no ``cost`` block there is nothing to price, so the default
-#: guards on tokens. Override via ``make_budget_extension(max_tokens=…)``.
 DEFAULT_MAX_TOKENS = 500_000
 
 
@@ -239,10 +231,6 @@ class BudgetGuard:
         self._max_usd = max_usd
         self._max_tokens = max_tokens
 
-        # S59: the accumulation is an ``ext_kit.ledger.UsageMeter`` (priced in USD
-        # mode, tokens-only otherwise), and the ceiling is an
-        # ``ext_kit.ledger.Ceiling`` fed the running value — the kit primitives that
-        # formalize this demo's hand-rolled totals + one-shot trip (S57).
         if self._mode == "usd":
             assert max_usd is not None
             self._meter = ledger.UsageMeter(ledger.Pricing(model=None, cost=cost))
@@ -251,8 +239,6 @@ class BudgetGuard:
             assert max_tokens is not None
             self._meter = ledger.UsageMeter(None)
             self._ceiling = ledger.Ceiling(limit=float(max_tokens), warn_ratio=1.0)
-        # One-shot abort latch (distinct from the ceiling's value-crossing latch):
-        # set only when the ``tool_result`` hook has appended the warning + aborted.
         self._tripped = False
 
     def _threshold_value(self) -> float:
@@ -358,15 +344,7 @@ def make_budget_extension(
     return budget_extension
 
 
-#: Deployable default: token mode, :data:`DEFAULT_MAX_TOKENS` ceiling. No ``cost``
-#: block, so no dollar figure is fabricated. Swap in ``make_budget_extension`` with
-#: your model's price block + ``max_usd`` to threshold on real spend.
 budget_extension = make_budget_extension(max_tokens=DEFAULT_MAX_TOKENS)
 
 
-#: The module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/24_budget.py`` → ``getattr(module, "register")``). It IS the deployable
-#: token-mode :data:`budget_extension` default; the alias makes the demo loadable
-#: through the public ``-e`` surface used by the live procedures
-#: (EXTENSIONS-LIVE-PROCEDURES.md; EXTENSIONS-E5-WIRING.md §6 / S37).
 register = budget_extension

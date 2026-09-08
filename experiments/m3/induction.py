@@ -40,18 +40,10 @@ from memory_store import InMemoryJmftsClient
 from tau_jmfts.client import JmftsClient
 from tau_jmfts.ext.strategy_store import Family, StrategyStore
 
-# The single strategy family experiment 1 induces into. One family (not per-motif) is
-# correct here: the §4.6 position→motif keying is a later condition (C2 rests on it); C0/C1
-# inject the whole assembled family document per game, so one family holds everything.
 FAMILY_NAME = "los-alamos"
 
 # Terminal reasons that denote a genuine finished draw (mirrors credit._DRAW_REASONS).
 _DRAW_REASONS = frozenset({"stalemate", "insufficient-material", "fifty-move", "threefold"})
-
-
-# =====================================================================================
-# Config
-# =====================================================================================
 
 
 @dataclass(frozen=True)
@@ -88,11 +80,6 @@ class RunConfig:
             raise ValueError("consolidate_every_logs must be >= 1")
 
 
-# =====================================================================================
-# Result schema
-# =====================================================================================
-
-
 @dataclass
 class MeasurementGame:
     """One measured game's record for the plot tool (§8)."""
@@ -103,11 +90,6 @@ class MeasurementGame:
     reason: str
     final_margin: float
     margin_trajectory: list[float]
-    # The full game record, persisted so richer move-quality metrics can be computed
-    # OFFLINE (no GPU) after the fact: ``moves`` enables replay + centipawn-loss vs a
-    # deeper engine search; ``ply_evals`` carries the engine's positional (material +
-    # mobility) eval per half-move — a less cascade-sensitive per-move signal than the
-    # terminal ``final_margin``. See docs/M3-DESIGN.md §4.2/§7.
     moves: list[str] = field(default_factory=list)
     ply_evals: list[PlyEval] = field(default_factory=list)
 
@@ -154,11 +136,6 @@ def _dump_strategy(store: StrategyStore, family: Family) -> dict[str, Any]:
     return {"final_doc": store.assemble(family), "log": log}
 
 
-# =====================================================================================
-# Injection seams (so the whole loop runs with no server under a fake LLM)
-# =====================================================================================
-
-
 class AgentFactory(Protocol):
     """Builds the White (LLM) player for one game, given the strategy read-back + temp."""
 
@@ -201,11 +178,6 @@ class _DryRunDistiller:
 
     def distill(self, game_record: GameRecord, swung: list[Swing], board_start: Board) -> list[str]:
         return [f"dry-run lesson from a {game_record.reason} game with {len(swung)} swung moves"]
-
-
-# =====================================================================================
-# Measurement suite + the material-margin metric
-# =====================================================================================
 
 
 def measurement_suite(m: int) -> list[Board]:
@@ -276,11 +248,6 @@ def _winner_code(winner: str | None) -> str | None:
     return "w" if winner == WHITE else "b"
 
 
-# =====================================================================================
-# The consolidation merge (experiment 1: a plain deterministic text merge, NOT an LLM call)
-# =====================================================================================
-
-
 def merge_consolidated_head(current_head: str, footer_texts: list[str]) -> str:
     """Fold the footer lessons into the head by a deterministic order-preserving merge.
 
@@ -300,11 +267,6 @@ def merge_consolidated_head(current_head: str, footer_texts: list[str]) -> str:
         if lesson and lesson not in seen:
             seen.append(lesson)
     return "\n".join(f"- {lesson}" for lesson in seen)
-
-
-# =====================================================================================
-# The runner
-# =====================================================================================
 
 
 @dataclass
@@ -426,8 +388,6 @@ def run(
 
     if config.condition == "C1":
         title = root_title if root_title is not None else f"m3-{run_label}"
-        # cast: the in-memory backing duck-types the JmftsClient surface StrategyStore
-        # calls; StrategyStore never introspects the concrete client type (see its tests).
         store = StrategyStore(cast(JmftsClient, client), root_title=title)
         family = store.family(FAMILY_NAME)
         training = _train_c1(config, store, family, factory, dstl)
@@ -451,11 +411,6 @@ def run(
     if out_path is not None:
         Path(out_path).write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
     return result
-
-
-# =====================================================================================
-# CLI
-# =====================================================================================
 
 
 def _build_config(args: argparse.Namespace) -> RunConfig:

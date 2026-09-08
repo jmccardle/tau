@@ -86,6 +86,9 @@ from tau_agent_core.rpc.dialect import SESSION_NOT_PERSISTED, TURN_STILL_RUNNING
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_llm.types import Model
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 def _model(context_window: int = 128000) -> Model:
     return Model(
@@ -147,7 +150,7 @@ def _fake_complete_simple(text: str):
             model="m",
             stop_reason="stop",
             usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
-            timestamp=0,
+            timestamp=_TS,
         )
 
     return _impl
@@ -180,14 +183,6 @@ def _multi_turn_session(settings: CompactionSettings) -> AgentSession:
 @pytest.fixture
 def empty_handler(empty_session: AgentSession) -> RPCHandler:
     return RPCHandler(empty_session)
-
-
-# ── driving the dual completion ───────────────────────────────────────────
-#
-# Every behavioural test below goes through these two helpers rather than
-# reading `_output_queue` inline, because C3 splits one call into two
-# observable things (a response, then a notification) and a test that
-# forgets to await the background half would pass vacuously.
 
 
 def _drain_queue(handler: RPCHandler) -> list[dict[str, Any]]:
@@ -816,11 +811,6 @@ async def test_abort_cancels_an_in_flight_compaction_and_says_which(
     assert params["error"] is None
     assert "performed" not in params
     assert params["cursor"] == empty_session.session_log.cursor
-    # The slot is free again, so a host can compact once more — and so is
-    # D-1's lock, which the cancellation unwound through
-    # `turn_safety_guard`'s `finally`. A session left permanently locked by
-    # an abort would refuse every mutator from here on with
-    # TURN_STILL_RUNNING, which is a worse outcome than the bug being fixed.
     assert empty_handler.compaction_in_flight is None
     assert not empty_session.turn_lock.locked()
 
@@ -1324,9 +1314,6 @@ async def test_sigterm_says_what_it_discarded(
 
     err = capsys.readouterr().err
     assert "SIGTERM discarded" in err, f"SIGTERM threw output away silently; stderr: {err!r}"
-    # The count, not just the fact: "some output was lost" a host cannot size
-    # is barely a report at all. Two items: the acknowledgement and the
-    # compaction_end the reap let land.
     assert "discarded 2 queued item(s)" in err, err
 
 
@@ -1453,7 +1440,5 @@ async def test_an_outcome_the_writer_can_no_longer_carry_goes_to_stderr(
     )
     err = capsys.readouterr().err
     assert "no compaction_end could be delivered" in err
-    # The OUTCOME, not just the fact that one happened: this compaction ran
-    # on an empty session, so `performed` is False and `cursor` is None.
     assert "'performed': False" in err, f"stderr does not carry the outcome: {err!r}"
     assert "'request_id': 13" in err

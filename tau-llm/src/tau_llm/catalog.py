@@ -67,9 +67,6 @@ from tau_llm.types import Model
 
 MODELS_DEV_API_URL = "https://models.dev/api.json"
 
-# The τ levels a models.dev "effort" value can name, least → most. "off" is
-# handled separately (it is models.dev's "none"), so this is
-# EXTENDED_THINKING_LEVELS without it.
 _EFFORT_LEVELS: tuple[str, ...] = tuple(
     level for level in EXTENDED_THINKING_LEVELS if level != "off"
 )
@@ -450,8 +447,6 @@ def main(argv: list[str] | None = None) -> int:
             base_url=args.base_url,
             provider=args.provider or provider_id,
         )
-        # The env var names live on the PROVIDER record, not the model, and they
-        # are the one thing an operator still has to act on after pasting this in.
         env_vars = (catalog.get(provider_id) or {}).get("env") or []
         if env_vars:
             print(f"credential: set {' or '.join(env_vars)}", file=sys.stderr)

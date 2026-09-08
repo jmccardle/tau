@@ -27,6 +27,9 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PATH = _REPO_ROOT / "examples" / "70_telemetry.py"
 _spec = importlib.util.spec_from_file_location("telemetry_70_example", _PATH)
@@ -66,7 +69,7 @@ class _CannedStream:
             provider="openai",
             model="local-llm",
             stop_reason="stop",
-            timestamp=0,
+            timestamp=_TS,
             usage=usage,
         )
         self._events = [
@@ -128,8 +131,6 @@ async def test_stock_server_reports_speed_and_omits_the_forced_share(monkeypatch
     line = delegate.status["telemetry"]
     assert line is not None
     assert "80.0 t/s" in line
-    # n_ff_total is absent on a stock build. A `forced=0%` here would be a
-    # fabricated claim that the grammar forced nothing.
     assert "forced" not in line
 
 

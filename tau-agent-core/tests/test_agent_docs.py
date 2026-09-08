@@ -28,8 +28,6 @@ from typing import Protocol, runtime_checkable
 
 import pytest
 
-# Private, and used on purpose: it is the exact set `isinstance` consults for a
-# Protocol, so asserting on it names the regression instead of only its symptom.
 from typing import _get_protocol_attrs  # type: ignore[attr-defined]
 
 from tau_agent_core.docs_build import (
@@ -48,11 +46,6 @@ from tau_llm.docs import agent_facing
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REFERENCE_DIR = REPO_ROOT / "docs" / "library" / "reference"
-
-
-# --------------------------------------------------------------------------
-# 1. The marker is a no-op.
-# --------------------------------------------------------------------------
 
 
 def test_decorator_returns_the_same_object() -> None:
@@ -99,11 +92,6 @@ def test_marking_a_protocol_does_not_change_isinstance() -> None:
 
     assert isinstance(Implementation(), Marked)
     assert _get_protocol_attrs(Marked) == {"go"}
-
-
-# --------------------------------------------------------------------------
-# 2. griffe reads the marker statically, for every import form.
-# --------------------------------------------------------------------------
 
 
 IMPORT_FORMS = '''
@@ -171,8 +159,6 @@ def test_all_three_import_forms_are_found(probe_tree: list[Path]) -> None:
 
 
 def test_the_probe_module_really_cannot_be_imported(probe_tree: list[Path]) -> None:
-    # Guards the point of the previous test. If this module ever became
-    # importable, the static claim would still pass while proving nothing.
     sys.path.insert(0, str(probe_tree[0]))
     try:
         with pytest.raises(ModuleNotFoundError):
@@ -217,11 +203,6 @@ def test_griffe_reports_docstring_signature_drift(tmp_path: Path) -> None:
     assert any("old_name" in w and "does not appear" in w for w in warnings)
 
 
-# --------------------------------------------------------------------------
-# 3. A malformed marker stops the build.
-# --------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
@@ -248,14 +229,7 @@ def test_an_empty_marked_set_is_not_a_pass(tmp_path: Path) -> None:
 
     report = coverage(objects, warnings)
     assert report.total == 0
-    # `fraction` reads 1.0 on an empty set, which is why the CLI checks `total`
-    # before reporting a pass. This asserts the trap is still there to check.
     assert report.fraction == 1.0
-
-
-# --------------------------------------------------------------------------
-# 4. The checked-in reference matches a fresh build.
-# --------------------------------------------------------------------------
 
 
 def _fresh_build() -> dict[Path, str]:

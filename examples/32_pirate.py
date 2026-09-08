@@ -112,6 +112,4 @@ def pirate_extension(api: Any) -> None:
     api.on("before_agent_start", state.on_before_agent_start)
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/32_pirate.py`` → ``getattr(module, "register")``).
 register = pirate_extension

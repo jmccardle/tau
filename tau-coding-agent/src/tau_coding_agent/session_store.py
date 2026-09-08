@@ -3,12 +3,12 @@
 A *session* is one ``.jsonl`` file under
 ``~/.tau/sessions/<dashed-cwd>/<iso-ts>_<uuid4>.jsonl``. Line 1 is a header; lines
 2..N are append-only entries (messages, model/thinking changes, the mutable
-session name, compaction markers). Both the Parley TUI (``app.py``) and ``tau -p``
+session name, compaction markers). Both the TauApp TUI (``app.py``) and ``tau -p``
 (``headless.py``) read and write this format, so a headless run is resumable in
 the TUI and vice-versa.
 
 This is the **coding-agent** session shape (cwd-scoped transcripts), replacing the
-chat-web ``Chat`` blob τ inherited from Parley. The module is deliberately free of
+chat-web ``Chat`` blob τ inherited from TauApp. The module is deliberately free of
 any Textual import: ``tau -p`` must not pull in the TUI just to persist a session.
 
 Reference: docs/SESSION-UX-REDESIGN.md (§5 on-disk format; §9 Phase A seams).
@@ -29,29 +29,17 @@ from typing import Any, Callable
 
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, SessionInfo
-from tau_agent_core.session_log import resolve_cursor
+from tau_agent_core.session_log import (
+    event_iso,
+    normalize_loaded_entries,
+    resolve_cursor,
+)
 
-# τ data dir for config and session storage. Re-exported (not redefined) from the
-# single config module — tests still monkeypatch ``session_store.TAU_DIR``, which
-# rebinds this module global and works exactly as before.
 from tau_coding_agent.config import TAU_DIR, ConfigError
 
-# pi derives this from APP_NAME (config.ts:481-482, PI_CODING_AGENT_SESSION_DIR);
-# a TAU_CODING_AGENT_SESSION_DIR override is reserved but not implemented (§5.1).
 SESSIONS_DIRNAME = "sessions"
 # Header schema version (§5.3). Bumped only on a breaking on-disk change.
 SESSION_VERSION = 1
-
-# ---------------------------------------------------------------------------
-# Seam 3 — session lifecycle events (docs/SESSION-UX-REDESIGN.md §9 Phase A).
-#
-# Session.create/load/fork/append_compaction emit events here. The extension bus
-# is the first consumer (S21 / §E3c.4): the TUI wires each new backend's
-# ``AgentSession.route_session_event`` here (app.py ``_bind_backend_session``), which
-# re-emits the dict onto the session's ``EventBus`` on a separate string channel so an
-# ``api.on("session_before_compact", …)`` extension handler fires. Kept minimal and
-# in-process; no fabricated behaviour (Fail-Early).
-# ---------------------------------------------------------------------------
 
 SESSION_START = "session_start"
 SESSION_BEFORE_FORK = "session_before_fork"
@@ -78,11 +66,6 @@ def _emit_session_event(event_type: str, session: "Session", **extra: Any) -> No
         listener(event)
 
 
-# ---------------------------------------------------------------------------
-# Path / id / time helpers (pi parity cited inline).
-# ---------------------------------------------------------------------------
-
-
 def _sessions_base(base_dir: Path | None) -> Path:
     """The directory that holds the per-cwd subdirs (seam 1: ``base_dir`` slot)."""
     return base_dir if base_dir is not None else TAU_DIR / SESSIONS_DIRNAME
@@ -100,21 +83,6 @@ def session_dir_for_cwd(cwd: str, base_dir: Path | None = None) -> Path:
         "--" + abspath.lstrip("/\\").replace("/", "-").replace("\\", "-").replace(":", "-") + "--"
     )
     return _sessions_base(base_dir) / dashed
-
-
-# ---------------------------------------------------------------------------
-# RPC mode's DEFAULT session base (unit S / docs/RPC-TIER-B.md D-6).
-#
-# `--mode rpc` does not write into the user's `~/.tau/sessions`: every spawn of
-# an editor plugin's τ child would otherwise leave a durable, listable,
-# 0-message session there, and `--continue` (`headless._select_session` ->
-# `catalog.most_recent(cwd)`) would resume THAT instead of the human's work.
-# Separating the LOCATION per mode is the fix (rather than filtering the
-# listing, or reverting the startup session to ephemeral and re-breaking every
-# durability promise D-6 exists to keep). `--session-dir` overrides it in both
-# directions, and `--session-dir ~/.tau/sessions` is how a host says "yes, I
-# really do want these in the user's list".
-# ---------------------------------------------------------------------------
 
 
 class UnsafeSessionDirError(ConfigError):
@@ -152,8 +120,6 @@ def _ensure_private_dir(path: Path) -> None:
         return
     except FileExistsError:
         pass
-    # Racing creator, or a pre-existing entry. Either way, inspect what is
-    # actually there rather than assuming the mkdir lost a benign race.
     st = path.lstat()
     if not stat.S_ISDIR(st.st_mode):
         kind = "symlink" if stat.S_ISLNK(st.st_mode) else "non-directory file"
@@ -269,11 +235,6 @@ def _extract_text(message: dict[str, Any]) -> str:
         ]
         return " ".join(parts)
     return ""
-
-
-# ---------------------------------------------------------------------------
-# Session — wraps one .jsonl file; append-on-message.
-# ---------------------------------------------------------------------------
 
 
 class Session:
@@ -483,7 +444,7 @@ class Session:
                     entries.append(obj)
         if header is None:
             raise ValueError(f"{path}: empty session file (no header)")
-        session = cls(path, header, entries)
+        session = cls(path, header, normalize_loaded_entries(entries))
         _emit_session_event(SESSION_START, session)
         return session
 
@@ -734,7 +695,7 @@ class Session:
             "type": entry_type,
             "id": _generate_entry_id(self._ids),
             "parentId": parent_id,
-            "timestamp": _now_iso(),
+            "timestamp": event_iso(payload, _now_iso),
             **payload,
         }
         self._entries.append(entry)
@@ -751,8 +712,6 @@ class Session:
     def _persist_header(self) -> None:
         if self.path is None:
             return
-        # Exclusive create: the uuid4 filename makes a collision impossible, and
-        # 'x' guarantees we never silently clobber a sibling (Fail-Early).
         with self.path.open("x", encoding="utf-8") as handle:
             handle.write(json.dumps(self._header) + "\n")
 
@@ -761,20 +720,6 @@ class Session:
             return
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry) + "\n")
-
-
-# ---------------------------------------------------------------------------
-# SessionInfo — the picker's lightweight streaming reader (§5.7).
-#
-# The dataclass itself now lives in tau_agent_core.session_catalog (W10): a path
-# for the file store, a doc id for a future JMFTS-backed one — ``ref`` is the
-# storage-agnostic handle, so the type had to move where storage-agnostic code
-# (SessionCatalog.resolve_ref/most_recent) can consume it without importing
-# tau_coding_agent (that import would be circular). The FILE-READING is not
-# storage-agnostic, so ``read_session_info`` (formerly the ``SessionInfo.read``
-# classmethod) stays here — tau-agent-core owns zero file I/O and that must stay
-# true.
-# ---------------------------------------------------------------------------
 
 
 def read_session_info(path: Path) -> SessionInfo | None:
@@ -828,8 +773,6 @@ def read_session_info(path: Path) -> SessionInfo | None:
         if header is None:
             return None
 
-        # Same cursor rule as a real load (resolve_cursor), then the same leaf→root walk
-        # the fold uses — so the picker previews the conversation `tau --resume` opens.
         for entry in ConversationTree(entries, resolve_cursor(entries)).path():
             if entry.get("type") != "message":
                 continue
@@ -861,11 +804,6 @@ def read_session_info(path: Path) -> SessionInfo | None:
         return None
 
 
-# ---------------------------------------------------------------------------
-# Listing & scoping (§5.8).
-# ---------------------------------------------------------------------------
-
-
 def list_sessions(cwd: str | None = None, base_dir: Path | None = None) -> list[SessionInfo]:
     """List sessions, newest (by ``modified``) first.
 
@@ -894,11 +832,6 @@ def most_recent(cwd: str | None = None, base_dir: Path | None = None) -> Path | 
     """The most recently modified session's path (pi ``findMostRecentSession``)."""
     infos = list_sessions(cwd, base_dir)
     return Path(infos[0].ref) if infos else None
-
-
-# ---------------------------------------------------------------------------
-# FileSessionCatalog — the SessionCatalog seam's file-store adapter (W10).
-# ---------------------------------------------------------------------------
 
 
 class FileSessionCatalog(SessionCatalog):
@@ -948,8 +881,6 @@ class FileSessionCatalog(SessionCatalog):
         return Session.load(Path(ref))
 
     def fork(self, source: ConversationSession, cwd: str) -> Session:
-        # A real type gate, not an `assert`: asserts are stripped under `python -O`,
-        # which would turn this into a silently-wrong call on a foreign session.
         if not isinstance(source, Session):
             raise TypeError(
                 f"FileSessionCatalog.fork requires a file-backed Session, got {type(source)!r}"

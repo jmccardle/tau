@@ -61,6 +61,9 @@ from tau_agent_core.extensions.runner import (
 )
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 # ── shared harness (network boundary faked; everything else real) ────────────
 
 
@@ -98,7 +101,7 @@ def _text_assistant(text: str, usage: Usage | None = None) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=usage or Usage(),
     )
 
@@ -126,7 +129,7 @@ def _tool_call_assistant(call_id: str, usage: Usage | None = None) -> AssistantM
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=usage or Usage(),
     )
 
@@ -324,15 +327,8 @@ async def test_persisted_order_matches_model_visible_order() -> None:
 
     wire_order = _user_texts(captured["context"]["messages"])
 
-    # session.messages: the live fold via ConversationTree.context_for(). The
-    # raw fold keeps injected nodes at their durable ``role: "custom"`` (the
-    # custom->user remap is a WIRE-time conversion), so compare via
-    # _discourse_texts, which folds both "user" and "custom" nodes into one
-    # path-order sequence.
     assert _discourse_texts(session.messages) == wire_order
 
-    # A fresh fold over the raw log entries too — the reload path, not the
-    # live cached one.
     reloaded = ConversationTree(
         session.session_log.entries(), session.session_log.cursor
     ).context_for()
@@ -416,9 +412,6 @@ async def test_turn_end_and_user_turn_end_cadence_differ() -> None:
     assert len(user_turn_end_events) == 1  # once per prompt()
     assert len(turn_end_events) != len(user_turn_end_events)
 
-    # Each event states its own firing unit, so a handler holding a bare event
-    # dict can say what it counted instead of inferring the cadence from
-    # documentation about a different hook (§9 rule 1; the ``Trace.arm`` shape).
     assert {e["firing_unit"] for e in turn_end_events} == {FIRING_UNIT_AGENT_LOOP_TURN}
     assert [e["firing_unit"] for e in user_turn_end_events] == [FIRING_UNIT_USER_TURN]
     assert FIRING_UNIT_AGENT_LOOP_TURN != FIRING_UNIT_USER_TURN
@@ -482,9 +475,6 @@ async def test_user_turn_end_durable_append_and_visible_next_prompt() -> None:
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=fake):
         turn_messages_1 = await session.prompt("go")
 
-        # ... visible in prompt()'s own return value for turn 1, and persisted
-        # as a real customMessage tree entry, BEFORE the second prompt fires
-        # (which would append nothing further — the handler is one-shot).
         customs_returned = _custom_nodes(turn_messages_1)
         assert len(customs_returned) == 1
         assert customs_returned[0]["customType"] == "consolidated"
@@ -522,8 +512,6 @@ async def test_user_turn_end_receives_loop_turns_and_messages() -> None:
     # 2 tool round-trips + 1 text completion = 3 assistant completions.
     assert captured_event["loop_turns"] == 3
     assert sum(1 for m in captured_event["messages"] if m.get("role") == "assistant") == 3
-    # No handler returned a message, so nothing was appended after the fact —
-    # the event's messages ARE this turn's final messages.
     assert captured_event["messages"] == turn_messages
 
 
@@ -583,10 +571,6 @@ async def test_user_turn_end_fires_once_across_a_followup_drain() -> None:
         api.on("user_turn_end", lambda event, ctx: user_turn_end_events.append(event))
 
     session = _session(ext)
-    # Queue a followUp BEFORE prompt() starts: prompt() drains "nextTurn"
-    # messages before the first _run_one_turn call but only drains "followUp"
-    # messages AFTER it (_end_of_prompt_drain, S20) — so this one re-enters
-    # the loop for a second assistant completion, WITHIN the same prompt().
     session._queue_message("FOLLOWUP-TEXT", deliver_as="followUp")
 
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_text_stream("reply")):

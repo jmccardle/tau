@@ -22,7 +22,7 @@ Both directions are asserted below against the SAME session, because a test that
 proves nothing about the boundary.
 
 The dataclasses' own construction rules are test_submission.py's; admission/strategy semantics
-are test_submit_admission.py's; the TUI half (performing a ``performer="frontend"`` outcome, and
+are test_submit_admission.py's; the TUI half (performing a ``View`` or a ``Ready``, and
 raising when it cannot) is tau-coding-agent/tests/test_app_command_dispatch.py's.
 """
 
@@ -42,6 +42,7 @@ from tau_agent_core.commands import (
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.submission import Submission
+from tau_agent_core.flows import Performed, Ready
 
 
 def _model() -> Model:
@@ -148,18 +149,18 @@ class TestResolveCommand:
         assert resolve_command("compact the log please") is None
 
     def test_built_ins_resolve_to_the_frontend(self):
-        assert resolve_command("/compact") == CommandInvocation("compact", "", "frontend")
-        assert resolve_command("/tree") == CommandInvocation("tree", "", "frontend")
-        assert resolve_command("/fork") == CommandInvocation("fork", "", "frontend")
+        assert resolve_command("/compact") == CommandInvocation("compact", "", "builtin")
+        assert resolve_command("/tree") == CommandInvocation("tree", "", "builtin")
+        assert resolve_command("/fork") == CommandInvocation("fork", "", "builtin")
 
     def test_arguments_split_on_the_first_space_and_keep_their_spacing(self):
         assert resolve_command("/extensions disable  my ext") == CommandInvocation(
-            "extensions", "disable  my ext", "frontend"
+            "extensions", "disable  my ext", "builtin"
         )
 
     def test_a_registered_extension_command_resolves_to_the_core(self):
         assert resolve_command("/greet world", ["greet"]) == CommandInvocation(
-            "greet", "world", "core"
+            "greet", "world", "extension"
         )
 
     def test_an_unknown_slash_falls_through_to_the_model(self):
@@ -169,7 +170,7 @@ class TestResolveCommand:
 
     def test_a_built_in_cannot_be_shadowed_by_an_extension(self):
         """Resolution order mirrors what on_input_submitted did: built-ins first."""
-        assert resolve_command("/compact", ["compact"]).performer == "frontend"
+        assert resolve_command("/compact", ["compact"]).origin == "builtin"
 
     def test_parse_command_is_purely_syntactic(self):
         assert parse_command("/x") == ("x", "")
@@ -184,7 +185,7 @@ class TestResolveCommand:
 
         _register(session, "greet", [])
 
-        assert session.resolve_command("/greet hi") == CommandInvocation("greet", "hi", "core")
+        assert session.resolve_command("/greet hi") == CommandInvocation("greet", "hi", "extension")
 
 
 # ── the flag IS the boundary: same text, two sources, two meanings ─────────────
@@ -198,8 +199,8 @@ class TestExpandCommandsIsTheSecurityBoundary:
         result = await session.submit(_human("/compact", "h-1"))
 
         assert result.accepted is True
-        assert result.command is not None
-        assert (result.command.name, result.command.performer) == ("compact", "frontend")
+        assert isinstance(result.command, Ready)
+        assert (result.command.flow, result.command.mutation) == ("compact", "compact")
         # No turn: nothing was sent, and no user node joined the log.
         assert result.messages == []
         assert session._session_log.entries() == before
@@ -260,9 +261,9 @@ class TestDispatchOutcomes:
         result = await session.submit(_human("/todos mine", "c-1"))
 
         assert calls == [("todos", "mine")]
-        assert result.command is not None
-        assert result.command.performer == "core"
-        assert result.command.output == "# Todos\n- one"
+        assert isinstance(result.command, Performed)
+        assert result.command.mutation == "todos"
+        assert result.command.data["output"] == "# Todos\n- one"
 
     async def test_a_command_that_returns_nothing_has_no_output(self):
         """A command that ran and had nothing to say — distinct from one that did not
@@ -272,9 +273,8 @@ class TestDispatchOutcomes:
 
         result = await session.submit(_human("/ping", "c-2"))
 
-        assert result.command is not None
-        assert result.command.performer == "core"
-        assert result.command.output is None
+        assert isinstance(result.command, Performed)
+        assert result.command.data["output"] is None
 
     async def test_a_built_in_is_handed_back_unperformed(self):
         """The core cannot push a Textual screen, so it says what the command IS and
@@ -283,11 +283,9 @@ class TestDispatchOutcomes:
 
         result = await session.submit(_human("/extensions disable foo", "c-3"))
 
-        assert result.command is not None
-        assert result.command.name == "extensions"
-        assert result.command.args == "disable foo"
-        assert result.command.performer == "frontend"
-        assert result.command.output is None
+        assert isinstance(result.command, Ready)
+        assert result.command.flow == "disable_extension"
+        assert result.command.arguments == {"path": "foo"}
 
     async def test_an_unknown_slash_still_runs_a_turn(self):
         session = _session()
@@ -379,8 +377,6 @@ class TestPromptRefusesCommands:
         with pytest.raises(UnsupportedCommandError, match="/deploy"):
             await session.prompt("/deploy prod")
 
-        # Checked BEFORE submit(): the handler did not run and then get reported as
-        # an error, which would be a side effect wearing a refusal's clothes.
         assert calls == []
         assert session._session_log.entries() == before
         assert session.is_streaming is False

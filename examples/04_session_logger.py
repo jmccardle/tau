@@ -88,9 +88,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-#: Path used when neither the ``log_file`` argument nor ``api.config`` supplies
-#: one, resolved relative to the session's cwd.
 DEFAULT_LOG_RELPATH = Path(".tau") / "session.log"
+
+CONFIG_SCHEMA = {
+    "title": "Session logger",
+    "fields": [
+        {
+            "name": "log_file",
+            "kind": "text",
+            "label": "Log file (blank = <cwd>/.tau/session.log)",
+        },
+    ],
+}
+"""What ``api.config`` may hold, in the shape ``ui.form`` takes.
+
+Read at import and validated at load, so a head can render a settings screen for
+a key only this file knows about. No ``default``: the fallback is derived from
+the session's cwd at call time, and a literal here would be a second, wrong copy
+of it — blank means "use the derived path", which :func:`resolve_log_path`
+already treats that way.
+"""
 
 
 def resolve_log_path(api: Any, log_file: str | None = None) -> Path:
@@ -147,8 +164,4 @@ def session_logger_extension(api: Any, log_file: str | None = None) -> None:
     api.on("all", on_all_events)
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/04_session_logger.py`` → ``getattr(module, "register")``). ``log_file``
-#: is optional, so the loader's one-argument ``register(api)`` call resolves the
-#: path from ``api.config`` / the session cwd.
 register = session_logger_extension

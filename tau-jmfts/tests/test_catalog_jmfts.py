@@ -70,11 +70,6 @@ def _cleanup(client: JmftsClient, *roots: int) -> None:
             pass
 
 
-# ---------------------------------------------------------------------------
-# create_ephemeral -- the honest, RAM-only answer
-# ---------------------------------------------------------------------------
-
-
 def test_create_ephemeral_writes_nothing_to_jmfts(
     catalog: JmftsSessionCatalog, client: JmftsClient, run_id: str
 ) -> None:
@@ -108,20 +103,10 @@ def test_create_ephemeral_not_backed_by_in_memory_session_log_alone() -> None:
     assert not isinstance(InMemorySessionLog(), ConversationSession)
 
 
-# ---------------------------------------------------------------------------
-# fork
-# ---------------------------------------------------------------------------
-
-
 def test_fork_rejects_non_jmfts_source(catalog: JmftsSessionCatalog, run_id: str) -> None:
     foreign = _EphemeralConversationSession.create(_cwd(run_id), "m", "b")
     with pytest.raises(TypeError, match="JMFTS-backed"):
         catalog.fork(foreign, _cwd(run_id))
-
-
-# ---------------------------------------------------------------------------
-# delete
-# ---------------------------------------------------------------------------
 
 
 def test_delete_removes_conversation(
@@ -133,11 +118,6 @@ def test_delete_removes_conversation(
     with pytest.raises(JmftsError) as excinfo:
         catalog.load(str(root_id))
     assert excinfo.value.status_code == 404
-
-
-# ---------------------------------------------------------------------------
-# resolve_ref: the JMFTS doc-id fast path
-# ---------------------------------------------------------------------------
 
 
 def test_resolve_ref_by_doc_id_fast_path(
@@ -154,11 +134,6 @@ def test_resolve_ref_by_doc_id_fast_path(
 def test_resolve_ref_nonexistent_doc_id_falls_through_to_id_search(
     catalog: JmftsSessionCatalog,
 ) -> None:
-    # An all-digits ref that (overwhelmingly likely) names neither a real doc
-    # id nor a real session-id prefix (session ids are uuid4 hex, essentially
-    # never 12 digits) -- the 404 must fall through cleanly to the
-    # storage-agnostic id search, which then correctly reports no match,
-    # rather than the fast path's JmftsError propagating raw.
     with pytest.raises(LookupError, match="no session matches"):
         catalog.resolve_ref("999999999999", cwd=None)
 
@@ -182,15 +157,7 @@ def test_resolve_ref_malformed_doc_surfaces_loudly_not_reinterpreted(
         client.delete_document(doc["id"])
 
 
-# ---------------------------------------------------------------------------
-# list: cwd scoping, pagination, root-ness, malformed-root tolerance
-# ---------------------------------------------------------------------------
-
-
 def test_list_pages_across_multiple_pages(client: JmftsClient, run_id: str) -> None:
-    # list_page_size=2 forces the paging loop to run multiple round trips for
-    # 5 sessions -- proving list() doesn't silently truncate at the first
-    # (short-of-total) page.
     catalog = JmftsSessionCatalog(client, list_page_size=2)
     scope = _cwd(run_id)
     created = [catalog.create(scope, "test-model", "test-backend") for _ in range(5)]
@@ -206,8 +173,6 @@ def test_list_skips_malformed_root_without_raising(
 ) -> None:
     scope = _cwd(run_id)
     good = catalog.create(scope, "test-model", "test-backend")
-    # Same usetype as a real conversation root, but a header missing required
-    # fields -- must be filtered out client-side (Sec2.4), never raise.
     malformed = client.create_document(
         title=f"[{TEST_PREFIX}] malformed root",
         usetype="tau:conversation",
@@ -220,11 +185,6 @@ def test_list_skips_malformed_root_without_raising(
         assert str(malformed["id"]) not in {i.ref for i in infos}
     finally:
         _cleanup(client, good.root_doc_id, malformed["id"])
-
-
-# ---------------------------------------------------------------------------
-# Cost measurement (W11 report requirement): list()'s per-session query cost.
-# ---------------------------------------------------------------------------
 
 
 def test_list_cost_for_twenty_sessions(
@@ -254,16 +214,6 @@ def test_list_cost_for_twenty_sessions(
         )
     finally:
         _cleanup(client, *[s.root_doc_id for s in created])
-
-
-# ---------------------------------------------------------------------------
-# list(): the three ways a load can fail are three DIFFERENT answers
-#
-# These corrupt / break a real conversation on the live server rather than
-# mocking the store, because the bug being pinned was that the catalog's
-# `except (ValueError, JmftsError): return None` swallowed a REAL integrity
-# violation the store raises on purpose.
-# ---------------------------------------------------------------------------
 
 
 def _forge_second_writer(client: JmftsClient, session: JmftsSessionLog) -> None:

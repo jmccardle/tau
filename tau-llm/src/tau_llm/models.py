@@ -22,8 +22,6 @@ ThinkingLevel = Literal["minimal", "low", "medium", "high", "xhigh"]
 # Including "off". pi: `ModelThinkingLevel` (types.ts:66).
 ModelThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh"]
 
-# Ordered from least to most effort. pi: `EXTENDED_THINKING_LEVELS`
-# (models.ts:51). Order is load-bearing — clamping walks it.
 EXTENDED_THINKING_LEVELS: tuple[ModelThinkingLevel, ...] = (
     "off",
     "minimal",
@@ -33,14 +31,9 @@ EXTENDED_THINKING_LEVELS: tuple[ModelThinkingLevel, ...] = (
     "xhigh",
 )
 
-# Default level when reasoning is requested without a specific level
-# (pi `DEFAULT_THINKING_LEVEL`).
 DEFAULT_THINKING_LEVEL: ModelThinkingLevel = "medium"
 
 
-# Sentinel distinguishing "key absent from the map" from "key present with value
-# None" — the two mean different things (pass-through vs. explicitly
-# unsupported), so a plain ``.get(level)`` returning None would conflate them.
 class _Unset:
     __slots__ = ()
 

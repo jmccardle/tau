@@ -22,10 +22,6 @@ from tau_agent_core.extensions.runner import (
     ExtensionRunner,
 )
 
-# ----------------------------------------------------------------------
-# Fast path — no handlers
-# ----------------------------------------------------------------------
-
 
 async def test_has_handlers_false_when_no_extensions() -> None:
     runner = ExtensionRunner()
@@ -51,11 +47,6 @@ async def test_has_handlers_true_only_for_registered_event() -> None:
     assert runner.has_handlers("tool_result") is False
 
 
-# ----------------------------------------------------------------------
-# tool_call — collect + short-circuit + in-place patch
-# ----------------------------------------------------------------------
-
-
 async def test_tool_call_block_short_circuits() -> None:
     runner = ExtensionRunner()
     seen: list[str] = []
@@ -67,9 +58,6 @@ async def test_tool_call_block_short_circuits() -> None:
 
     result = await runner.emit_tool_call({"type": "tool_call", "input": {}})
 
-    # The block result carries the handler's fields PLUS the S50 attribution:
-    # the runner names the extension that vetoed (its bucket path) so the call-site
-    # can render "⛔ blocked by <ext>" + emit the JSON veto record.
     assert result == {"block": True, "reason": "nope", "extension": "/ext/a.py"}
     assert seen == ["a"]  # second handler never ran (short-circuit)
 
@@ -120,11 +108,6 @@ async def test_tool_call_last_truthy_result_wins_without_block() -> None:
 
     result = await runner.emit_tool_call({"type": "tool_call", "input": {}})
     assert result == {"reason": "second"}
-
-
-# ----------------------------------------------------------------------
-# tool_result — chained field patches, later sees earlier
-# ----------------------------------------------------------------------
 
 
 async def test_tool_result_chained_patch_later_sees_earlier() -> None:
@@ -182,11 +165,6 @@ async def test_tool_result_handler_error_is_surfaced_not_dropped() -> None:
     assert "bad" in errors[0].error
 
 
-# ----------------------------------------------------------------------
-# before_agent_start — system_prompt chains, messages accumulate
-# ----------------------------------------------------------------------
-
-
 async def test_before_agent_start_chains_prompt_and_accumulates_messages() -> None:
     runner = ExtensionRunner()
 
@@ -220,16 +198,6 @@ async def test_before_agent_start_only_messages_leaves_system_prompt_none() -> N
 
     result = await runner.emit_before_agent_start("p", None, "SYS")
     assert result == {"messages": [{"customType": "m"}], "system_prompt": None}
-
-
-# ----------------------------------------------------------------------
-# Ordering + async + ctx threading
-#
-# (These exercise generic dispatcher behaviour — load/registration order,
-# async-await, and the bound ``ExtensionContext`` handed to every handler.
-# They used to ride the ``context`` hook, removed in E5 §3.2 / S30; re-pointed
-# at the surviving ``tool_result`` hook so the coverage is preserved.)
-# ----------------------------------------------------------------------
 
 
 async def test_load_and_registration_order_preserved() -> None:
@@ -296,11 +264,6 @@ async def test_constructor_accepts_prebuilt_extensions_in_order() -> None:
 
     assert order == ["a", "b"]
     assert result == {"content": "b", "details": None, "is_error": None}
-
-
-# ----------------------------------------------------------------------
-# Session-lifecycle hooks — notify-grade, error-surfaced (S41)
-# ----------------------------------------------------------------------
 
 
 def test_lifecycle_events_are_owned_by_the_runner() -> None:

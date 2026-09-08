@@ -22,8 +22,6 @@ from textual.widgets import Input
 
 from tau_coding_agent.backends import create_backend
 
-# A command declaring an ``args`` placeholder; its handler writes a marker capturing
-# the args it was dispatched with — proving the collected string reached the handler.
 _ARGS_EXT = """
 import pathlib
 
@@ -57,7 +55,7 @@ def register(api):
 
 @pytest.fixture
 def app(make_app):
-    """A Parley wired to REAL TauBackends (TauBackend has no network in __init__)."""
+    """A TauApp wired to REAL TauBackends (TauBackend has no network in __init__)."""
     return make_app(create_backend=create_backend)
 
 
@@ -125,8 +123,6 @@ async def test_palette_args_command_cancel_does_not_dispatch(app, tmp_path):
         titles = {cmd.title: cmd for cmd in app.get_system_commands(app.screen)}
         worker = titles["/search"].callback()
         await pilot.pause()
-        # The modal is up; cancel it (Cancel button → dismiss(None)). The command
-        # must not dispatch on an arg the user never confirmed.
         assert app.screen.query_one("#ext-input-field", Input) is not None
         await pilot.click("#ext-input-cancel")
         await worker.wait()
@@ -154,7 +150,5 @@ async def test_palette_plain_command_dispatches_without_modal(app, tmp_path):
         await titles["/now"].callback()
         await pilot.pause()
 
-        # No input modal was pushed (dispatch was direct); the handler ran with the
-        # empty arg string, exactly as the pre-S51 palette dispatch did.
         assert len(app.screen.query("#ext-input-field")) == 0
         assert marker.read_text() == "ran:"

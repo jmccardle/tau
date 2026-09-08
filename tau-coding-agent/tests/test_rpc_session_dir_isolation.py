@@ -50,18 +50,10 @@ from tau_coding_agent.session_store import (
     session_dir_for_cwd,
 )
 
-# Port 1 is always connection-refused (the trick test_store_factory.py already
-# uses): a model entry that RESOLVES without anything ever answering it.
 UNREACHABLE_BASE_URL = "http://127.0.0.1:1/v1"
 
 _CAPABILITIES_REQUEST = {"jsonrpc": "2.0", "id": 1, "method": "get_capabilities"}
 
-#: `dialect.SESSION_NOT_PERSISTED`. Imported as a literal rather than from
-#: `tau_agent_core.rpc.dialect`, on purpose: these tests speak to the child as
-#: a foreign host would, over a pipe, and a host reading the published error
-#: table has the NUMBER, not the module. If the constant is renumbered without
-#: the protocol version moving, this file is one of the places that should go
-#: red rather than follow along silently.
 SESSION_NOT_PERSISTED = -32004
 
 
@@ -293,23 +285,6 @@ def test_rpc_refuses_a_tmp_tau_that_is_a_regular_file(env):
     assert (env["tmpdir"] / rpc_tmp_dirname()).read_text() == "squatted"
 
 
-# ── --no-session: the flag that was parsed, accepted, and never read ─────────
-#
-# `cli.py` has always parsed `--no-session`, and `--mode rpc` has never
-# rejected it — but `rpc_mode.run_rpc` read five `args` fields and `no_session`
-# was not among them, so `tau --mode rpc --no-session` created a PERSISTED
-# session. `run_print` honored the same flag on the same catalog seam, which is
-# what made this an inconsistency between modes rather than a missing feature:
-# every layer below already supported it (`SessionCatalog.create_ephemeral` is
-# on the ABC, both shipped stores implement it honestly, and
-# `SessionCatalogContractTests` pins that an ephemeral session never becomes
-# listable). Only the wiring was absent.
-#
-# These tests drive a real child, because the defect was precisely that a
-# process-level flag did not reach process-level behaviour — a unit test on a
-# patched `run_rpc` could have passed against the broken version.
-
-
 def test_no_session_writes_nothing_to_either_session_directory(env):
     """The flag's whole content: a ``--no-session`` RPC child persists nothing.
 
@@ -472,7 +447,5 @@ def test_no_session_still_reaches_durability_over_the_wire(env):
         "the connection did not move onto the persisted session new_session made"
     )
 
-    # …and only THEN does anything land on disk, in the RPC base rather than
-    # the user's list.
     assert len(_files_under(_rpc_sessions(env))) == 1
     assert _files_under(_user_sessions(env)) == set()

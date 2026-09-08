@@ -13,6 +13,9 @@ import pytest
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.session import SessionEntry
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 @pytest.fixture
 def in_memory_session_manager():
@@ -391,21 +394,6 @@ def sample_clone_result():
     )
 
 
-# ---------------------------------------------------------------------------
-# Fake LLM — run the FULL agent loop without a network call or an API key.
-#
-# Patches only the network boundary (`stream_simple`) with a canned text
-# response, so AgentLoop.run still executes for real: agent_start / turn_start /
-# message_start / message_update / message_end / turn_end / agent_end all fire,
-# messages are assembled and appended, extension handlers run. Tests that
-# exercise session/loop wiring opt in with `@pytest.mark.usefixtures("fake_llm")`
-# on the class. This is the same patch point test_agent_loop.py uses per-test;
-# it also removes those tests' previous hidden dependency on a live OPENAI_API_KEY
-# (which made them 401 in CI). Mirrors the real call signature
-# stream_simple(model, context, options).
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def fake_llm():
     """Patch ``tau_agent_core.agent_loop.stream_simple`` with a canned reply."""
@@ -421,7 +409,7 @@ def fake_llm():
             provider="openai",
             model="gpt-4o",
             stop_reason="stop",
-            timestamp=0,
+            timestamp=_TS,
             usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
         )
 

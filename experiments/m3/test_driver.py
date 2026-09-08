@@ -67,9 +67,6 @@ def test_engine_selfplay_is_deterministic() -> None:
 
 
 def test_checkmate_reason_and_winner() -> None:
-    # Black king a6 is mated: White queen a5 (defended by White king b4) gives
-    # check along the a-file; a5/b5/b6 are all covered, so no escape and no
-    # legal capture. Black to move => the game is already over.
     board = Board.from_piece_map({"b4": "K", "a5": "Q", "a6": "k"}, side=BLACK)
     assert board.is_checkmate()  # precondition sanity
     result = play_game(EngineAgent(2), EngineAgent(2), board=board)
@@ -80,8 +77,6 @@ def test_checkmate_reason_and_winner() -> None:
 
 
 def test_stalemate_reason() -> None:
-    # Black king a6 has no legal move and is NOT in check: White queen b4 covers
-    # a5 (diagonal) and b5/b6 (file); the queen does not attack a6 itself.
     board = Board.from_piece_map({"e1": "K", "b4": "Q", "a6": "k"}, side=BLACK)
     assert board.is_stalemate()  # precondition sanity
     result = play_game(EngineAgent(1), EngineAgent(1), board=board)
@@ -99,8 +94,6 @@ def test_insufficient_material_draw_reason() -> None:
 
 
 def test_max_plies_is_unfinished_not_a_draw() -> None:
-    # A short cutoff from the opening: the game is not remotely over, so this must
-    # be reported as an unfinished max-plies game, never as a silent draw.
     result = play_game(EngineAgent(1), EngineAgent(1), max_plies=4)
     assert result.reason == "max-plies"
     assert result.winner is None

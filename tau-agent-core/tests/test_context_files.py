@@ -31,12 +31,6 @@ from tau_agent_core.sdk import (
 )
 
 
-#: The base prompt's first paragraph, which carries no ``{{field}}`` slots.
-#: ``BASE_SYSTEM_PROMPT`` itself is a TEMPLATE — its ``{{cwd}}``/``{{model}}``
-#: slots are filled at build time — so the raw constant never appears in a
-#: finished prompt, and asserting against it would only test that templating
-#: happened. Derived from the constant rather than pasted, so it follows any
-#: rewording of τ's voice.
 _BASE_OPENING = BASE_SYSTEM_PROMPT.split("\n\n", 1)[0]
 
 
@@ -387,9 +381,6 @@ def test_no_context_files_suppresses_all_of_it(tmp_path):
 
     prompt = _build_system_prompt(str(repo), no_context_files=True, agent_dir=agent_dir)
 
-    # The rendered base and nothing else. Not compared to the raw constant: that
-    # is a template, and its ``{{project_context}}`` slot is dropped rather than
-    # left as a hole when discovery is off — which is the behaviour under test.
     assert prompt.startswith(_BASE_OPENING)
     assert "<project_context>" not in prompt
     assert "{{" not in prompt

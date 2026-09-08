@@ -50,11 +50,6 @@ from tau_jmfts.client import JmftsClient, JmftsError
 from tau_jmfts.store import _HEADER_REQUIRED, SESSION_VERSION, _extract_text
 from tau_jmfts.store import JmftsSessionLog
 
-# Default page size for the list_documents pagination loop (Sec-critical: this
-# is a PAGE size, not a result cap -- list() pages on offset until a short page
-# comes back, so this only trades round-trip count for per-request payload
-# size). Overridable per catalog instance so tests can exercise the paging
-# loop without creating 100+ live sessions.
 DEFAULT_LIST_PAGE_SIZE = 100
 
 
@@ -362,10 +357,6 @@ class JmftsSessionCatalog(SessionCatalog):
         return JmftsSessionLog.load(self._client, ref)
 
     def fork(self, source: ConversationSession, cwd: str) -> JmftsSessionLog:
-        # A real type gate (not `assert`, which `python -O` strips): forking a
-        # non-JMFTS session through this catalog would be a silently-wrong
-        # cross-store call, exactly the failure FileSessionCatalog.fork's own
-        # gate exists to prevent.
         if not isinstance(source, JmftsSessionLog):
             raise TypeError(
                 f"JmftsSessionCatalog.fork requires a JMFTS-backed JmftsSessionLog, "
@@ -421,12 +412,6 @@ class JmftsSessionCatalog(SessionCatalog):
 
     # -- internals ------------------------------------------------------------
 
-    # NOTE: `_List`/`_Tuple` (typing aliases), not bare `list`/`tuple`, in the
-    # two annotations below: this class defines a method named `list` (the ABC
-    # requires that exact name), which shadows the builtin `list` name within
-    # this class body's scope for annotation resolution -- a bare `list[...]`
-    # here resolves to `JmftsSessionCatalog.list` itself, not the builtin, and
-    # mypy correctly rejects that as "not valid as a type".
     def _list_conversation_roots(self) -> _List[_Tuple[dict[str, Any], dict[str, Any]]]:
         """Every well-formed ``tau:conversation`` root, unscoped by cwd.
 
@@ -505,8 +490,6 @@ class JmftsSessionCatalog(SessionCatalog):
                 cwd=header["cwd"],
                 name=_derive_name(doc.get("title"), header),
                 created=created,
-                # No entries were readable, so there is no sound "last activity"
-                # to report. `created` is the one timestamp we actually know.
                 modified=created,
                 message_count=0,
                 first_message="",

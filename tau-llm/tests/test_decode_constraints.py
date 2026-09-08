@@ -36,10 +36,6 @@ def _llg(**overrides):
     return _model(grammar_dialect="llguidance", **overrides)
 
 
-# The shared harness returns a canned "ok" body, which (correctly!) trips constraint
-# verification. These are PAYLOAD-mapping tests — they assert what τ sends, not what
-# comes back — so they use the documented verify opt-out to isolate the send path.
-# Verification itself is covered in test_constraint_verification.py.
 def _unchecked(**kwargs) -> DecodeConstraints:
     return DecodeConstraints(verify=lambda _: True, **kwargs)
 
@@ -165,8 +161,6 @@ class TestToolsConflictGate:
         [
             DecodeConstraints(choices=VERDICTS),
             DecodeConstraints(grammar=grammar_mod.fixed("x")),
-            # The dangerous one: the server would return 200 and quietly stop calling
-            # tools, fabricating a schema-shaped answer.
             DecodeConstraints(json_schema={"type": "object"}),
         ],
         ids=["choices", "grammar", "json_schema"],

@@ -36,27 +36,36 @@ from tau_agent_core.rpc_event_schema import (
     wire_event_schema,
 )
 
-# Fields WireEvent declares that have no AgentEvent counterpart, because
-# E1/E2 require them as bounded REPLACEMENTS for excluded unbounded fields
-# rather than as projections of an existing field. See rpc_event_schema.py's
-# field-by-field comment for the justification of each. Note submission_id/
-# source/submitter/correlation (E4) are NOT here — they exist on AgentEvent
-# already and are copied through 1:1, not derived. `cursor` (E5/F3, phase-2
-# review B1) is also here: unlike delta/block_type/replace/message_count, it
-# is not a REPLACEMENT for an excluded AgentEvent field — AgentEvent carries
-# no cursor at all — but it is exactly as "extra" from AgentEvent's point of
-# view, so it belongs in the same documented-extras set this test enforces.
-DOCUMENTED_DERIVED_FIELDS = {"delta", "block_type", "replace", "message_count", "cursor"}
+DOCUMENTED_DERIVED_FIELDS = {
+    "delta",
+    "block_type",
+    "replace",
+    "message_count",
+    "cursor",
+    "cache_notice",
+    "stop_reason",
+    "dropped_tool_calls",
+}
 
-# Fields AgentEvent declares that WireEvent deliberately does NOT — the
-# EXCLUDED-with-reason set from rpc_event_schema.py's field-by-field comment
-# (G3: unbounded/untyped; E1/E2 name the bounded replacement declared in
-# each one's place). Phase-2 review B3: before this set existed, a field
-# could fall through BOTH "projected" and "declared excluded" silently —
-# AgentEvent.error did, for the whole life of this module, until B3 added it
-# to WireEvent. TestNoFieldSilentlyDropped below is what makes the next such
-# field fail loudly instead of shipping unnoticed.
-DOCUMENTED_EXCLUDED_FIELDS = {"message", "args", "result", "tool_results", "messages"}
+DOCUMENTED_EXCLUDED_FIELDS = {
+    "message",
+    "args",
+    "result",
+    "tool_results",
+    "messages",
+    "details",
+}
+
+
+def _literal_strings(annotation: object) -> set[str]:
+    """Every string a ``Literal[...]`` admits, through one optional union wrapper."""
+    values: set[str] = set()
+    for arg in typing.get_args(annotation):
+        if isinstance(arg, str):
+            values.add(arg)
+        elif typing.get_origin(arg) is typing.Literal:
+            values.update(typing.get_args(arg))
+    return values
 
 
 def _type_literal_values(model: type[BaseModel]) -> set[str]:
@@ -72,14 +81,9 @@ class TestEventTypesReflectAgentEvent:
         assert event_types() == agent_type_args
 
     def test_returns_a_tuple_not_a_set(self):
-        # Ordering must be AgentEvent's declaration order, every call — a set
-        # would make this test itself flaky.
         assert isinstance(event_types(), tuple)
 
     def test_ten_known_event_types_present(self):
-        # Pinned to the current AgentEvent literal (events.py) as a readable
-        # sanity check; the real drift guard is test below, which needs no
-        # hand-maintained list.
         assert set(event_types()) == {
             "agent_start",
             "agent_end",
@@ -94,14 +98,33 @@ class TestEventTypesReflectAgentEvent:
         }
 
     def test_raises_if_agent_event_type_is_no_longer_a_literal(self, monkeypatch):
-        # Fail Early (project standing rule): a widened `type` annotation
-        # must not silently degrade event_types() to an empty tuple, which
-        # would make event_capability_doc() publish a well-formed but false
-        # `events: []`.
         field_info = AgentEvent.model_fields["type"]
         monkeypatch.setattr(field_info, "annotation", str)
         with pytest.raises(TypeError, match="no longer a typing.Literal"):
             event_types()
+
+
+class TestStopReasonMatchesTheProvider:
+    """``stop_reason`` is a second hand-declared duplicate of a closed set, and
+    gets the same anti-drift check ``type`` has.
+
+    The value on the wire comes out of ``AssistantMessage.stop_reason`` by way of
+    the excluded ``message`` dict, so a provider that gained a sixth reason would
+    make ``WireEvent`` raise mid-stream rather than ship an undeclared value —
+    Fail Early, and this test says so before it happens.
+    """
+
+    def test_the_wire_literal_is_the_assistant_messages_literal(self):
+        from tau_llm.types import AssistantMessage
+
+        assert _literal_strings(
+            WireEvent.model_fields["stop_reason"].annotation
+        ) == _literal_strings(AssistantMessage.model_fields["stop_reason"].annotation)
+
+    def test_the_wire_field_admits_none_where_the_providers_does_not(self):
+        """Only the completion's own message_end carries one; every other event
+        and the content-only duplicate carry nothing."""
+        assert type(None) in typing.get_args(WireEvent.model_fields["stop_reason"].annotation)
 
 
 class TestAntiDrift:
@@ -124,18 +147,9 @@ class TestAntiDrift:
         )
 
     def test_event_types_output_matches_wire_event_declaration(self):
-        # Belt-and-braces: the *generated* enumeration (event_types(), read
-        # off AgentEvent) must also match what WireEvent itself declares —
-        # the artifact fed to a host must describe the model that host will
-        # actually receive.
         assert set(event_types()) == _type_literal_values(WireEvent)
 
     def test_drift_is_actually_detectable(self):
-        # Prove the mechanism, not just today's values, by running the SAME
-        # helper (_type_literal_values) the production tests above use
-        # against a real, throwaway pydantic model standing in for "someone
-        # widened AgentEvent.type" — rather than a set-theory tautology like
-        # `X | {new} != X`, which passes no matter what the module does.
         extended_type = typing.Literal[
             "agent_start",
             "agent_end",
@@ -156,10 +170,6 @@ class TestAntiDrift:
         assert _type_literal_values(_ExtendedAgentEventStandIn) != _type_literal_values(WireEvent)
 
     def test_shared_scalar_fields_have_matching_types(self):
-        # Closes the mutation-testing hole: a NAME shared between WireEvent
-        # and AgentEvent is not enough — retyping `blocked` from `bool` to
-        # `str | None` on one side and not the other must fail here even
-        # though every set-of-names comparison in this file stays green.
         agent_fields = AgentEvent.model_fields
         wire_fields = WireEvent.model_fields
         shared_names = (set(wire_fields) & set(agent_fields)) - {"type"}
@@ -177,10 +187,6 @@ class TestWireEventIsAProjection:
 
     def test_excludes_unbounded_fields(self):
         wire_fields = set(WireEvent.model_fields.keys())
-        # G3 "nothing unbounded is ever pushed" / E1 (message, replaced by
-        # `delta`) / E2 (messages, replaced by `message_count`; tool_results,
-        # excluded with no replacement — see rpc_event_schema.py's comment)
-        # / G3 (args, result — Any-typed, unbounded).
         for excluded in ("message", "args", "result", "tool_results", "messages"):
             assert excluded not in wire_fields, (
                 f"{excluded!r} crossed into WireEvent — REMOTE-CONTROL.md D3/E1/E2/G3 "
@@ -203,18 +209,11 @@ class TestWireEventIsAProjection:
             assert included in wire_fields
 
     def test_includes_provenance_quad(self):
-        # E4/G6: every wire event carries the submission provenance quad
-        # when a submission drove it, null otherwise. These are NOT derived
-        # (DOCUMENTED_DERIVED_FIELDS) — they exist on AgentEvent already and
-        # are projected 1:1.
         wire_fields = set(WireEvent.model_fields.keys())
         for included in ("submission_id", "source", "submitter", "correlation"):
             assert included in wire_fields
 
     def test_includes_e1_e2_replacement_fields(self):
-        # E1: message_update carries a delta (plus block_type/replace to
-        # interpret it), never the cumulative message.
-        # E2: agent_end carries counts, not the pushed message array.
         wire_fields = WireEvent.model_fields
         assert "delta" in wire_fields
         assert "block_type" in wire_fields
@@ -222,38 +221,18 @@ class TestWireEventIsAProjection:
         assert "message_count" in wire_fields
 
     def test_block_type_matches_diffable_field_kinds(self):
-        # Anti-drift for WireEvent.block_type — a hand-copied Literal (see
-        # rpc_event_schema.py's field-by-field comment for why it can't be a
-        # shared alias the way `source` is): must enumerate exactly the
-        # block kinds event_projection.MessageDeltaProjector treats as
-        # diffable, no more and no fewer. A new diffable kind added to
-        # _DIFFABLE_FIELD without updating WireEvent.block_type would let a
-        # real delta silently fail WireEvent's own validation, or (the
-        # opposite drift) block_type could name a kind that never actually
-        # appears in a delta.
-        # block_type's annotation is `Literal[...] | None` — a Union of the
-        # Literal and NoneType, not a single flattened Literal — so unwrap
-        # the Union first and read the Literal's own args.
         union_args = typing.get_args(WireEvent.model_fields["block_type"].annotation)
         (literal_type,) = (a for a in union_args if a is not type(None))
         block_type_values = set(typing.get_args(literal_type))
         assert block_type_values == set(_DIFFABLE_FIELD.keys())
 
     def test_extra_wire_fields_are_the_documented_derived_set(self):
-        # The projection is a SUBSET of AgentEvent's real fields, except for
-        # the two fields E1/E2 require as bounded replacements for excluded
-        # unbounded ones. No other invented field is permitted — a new name
-        # showing up here that isn't in DOCUMENTED_DERIVED_FIELDS means
-        # someone added a field to WireEvent without the E1/E2-style
-        # justification this test enforces.
         agent_fields = set(AgentEvent.model_fields.keys())
         wire_fields = set(WireEvent.model_fields.keys())
         extra = wire_fields - agent_fields
         assert extra == DOCUMENTED_DERIVED_FIELDS
 
     def test_is_not_agent_event_itself(self):
-        # D3: "not AgentEvent itself." Guards against a future edit that
-        # collapses the projection back into an alias.
         assert WireEvent is not AgentEvent
 
 
@@ -290,9 +269,6 @@ class TestNoFieldSilentlyDropped:
         )
 
     def test_error_reaches_the_wire(self):
-        # The concrete instance of the bug B3 fixed, pinned so a regression
-        # that re-drops just this one field (rather than the whole mechanism
-        # above) still fails on its own.
         assert "error" in WireEvent.model_fields
         assert (
             WireEvent.model_fields["error"].annotation
@@ -305,8 +281,6 @@ class TestSchemaIsValidJSONSchema:
 
     def test_is_json_serializable(self):
         schema = wire_event_schema()
-        # Round-trips cleanly; no non-JSON types (e.g. a bare set, a Python
-        # type object) leaked into the structure.
         reparsed = json.loads(json.dumps(schema))
         assert reparsed == schema
 
@@ -358,8 +332,6 @@ class TestSchemaIsDeterministic:
         first_keys = list(wire_event_schema()["properties"].keys())
         second_keys = list(wire_event_schema()["properties"].keys())
         assert first_keys == second_keys
-        # And it matches WireEvent's own declaration order (pydantic walks
-        # model_fields in order), not an incidentally-stable dict/set order.
         assert first_keys == list(WireEvent.model_fields.keys())
 
     def test_event_types_order_is_stable_across_calls(self):
@@ -371,13 +343,6 @@ class TestSchemaIsDeterministic:
         assert first == second
 
     def test_property_and_enum_order_stable_across_hash_seeds(self):
-        # The in-process comparisons above cannot see PYTHONHASHSEED-
-        # dependent set-iteration drift: CPython's set order for a fixed
-        # string set is stable within one process and varies only with the
-        # hash seed across processes. Spawn two interpreters with different
-        # seeds and require byte-identical output — this is the check that
-        # would actually fail if the generator's ordering secretly rode on
-        # set iteration instead of the Literal's/model_fields' declared order.
         script = (
             "import json; "
             "from tau_agent_core.rpc_event_schema import event_capability_doc; "
@@ -419,8 +384,6 @@ class TestPureNoIO:
     """Module-level contract: pure, no I/O, no side effects at import."""
 
     def test_functions_are_side_effect_free_and_repeatable(self):
-        # Calling twice must not mutate any module-level state (e.g. a
-        # cached/memoized dict a caller could then mutate).
         doc1 = event_capability_doc()
         doc1["events"].append("mutated")
         doc1["event_schema"]["properties"]["type"]["enum"].append("mutated")

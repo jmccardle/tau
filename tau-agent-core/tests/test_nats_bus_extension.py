@@ -66,13 +66,14 @@ from tau_agent_core.extensions_builtin import nats_bus
 from tau_agent_core.sdk import ExtensionCapabilityError
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 _EXT_PATH = str(Path(nats_bus.__file__))
 
 #: What ``praxis/harness_text.yaml`` drives the responder with.
 _INBOUND = "events.sensation.audio.resolved.clean"
 
-#: tectum's ``audio.stt`` in-flight-hypothesis rail (stt.py:56) — the second,
-#: optional inbound subject that paints instead of submitting.
 _DRAFT = "events.sensation.audio.partial"
 
 
@@ -233,15 +234,6 @@ class TestDeclarationAndPreflightNoNetworkNeeded:
         assert schema.parameters["required"] == ["text"]
 
 
-# ── two producers, one wire (2026-08-01) ────────────────────────────────────
-#
-# VERBS spans tectum's effectors AND McRogueFace's body node. Every fact below
-# was read off running code, and the wire behaviour was confirmed against a
-# headless engine before these were written: a `move_to` acked
-# {"status":"ok","trigger":"DONE","verb":"move_to","world_tick":383} on
-# events.journal.move_to.<bid> and the courier moved to the target cell.
-
-
 class TestWorldVerbs:
     async def test_the_world_verbs_ack_where_the_body_node_publishes(self):
         """Transcribed from ``world/body_node.py`` and seen on the wire.
@@ -293,8 +285,6 @@ class TestWorldVerbs:
         assert properties, f"{verb}: a verb with no parameters publishes an empty payload"
         for name in schema["required"]:
             assert name in properties, f"{verb}: required {name!r} has no property"
-        # non_empty is only meaningful for a required string: τ's validator has
-        # no minLength, which is exactly why this constraint lives in code.
         for name in spec.non_empty:
             assert name in schema["required"], f"{verb}: non_empty {name!r} is not required"
             assert properties[name]["type"] == "string", f"{verb}: non_empty {name!r} is not a str"
@@ -350,17 +340,6 @@ class TestWorldVerbs:
 
         busy = nats_bus._ack_failure({"status": "refused", "verb": "move_to", "trigger": None})
         assert busy is not None and "trigger=" not in busy
-
-
-# ── inbound admission: the core's submission lifecycle, not a local flag ─────
-#
-# These drive the subscription callback directly rather than over a broker: what
-# is under test is what this extension does with an inbound event once it has one
-# (docs/SUBMISSION-LIFECYCLE.md phase 5 — it used to hand-roll a
-# ``state["turn_in_flight"]`` flag and drop silently; it now submits through the
-# one door and reports the core's refusal). The wire format itself is covered
-# against a real nats-server below. The broker is replaced, not faked-in-place:
-# nothing here asserts anything about NATS.
 
 
 class _FakeMsg:
@@ -639,7 +618,7 @@ def _text_assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -651,7 +630,7 @@ def _tool_call_assistant(call_id: str, name: str, args: dict[str, Any]) -> Assis
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -740,9 +719,6 @@ class TestOverARealNatsServer:
         await session.load_extensions([_EXT_PATH], discover=False)
         await session.emit_session_start()
 
-        # An independent connection — stands in for effector.speech, a second
-        # client against the same real broker. It acks what it sees, because
-        # tau-002 means the tool call does not return without one.
         body_node = await nats.connect(real_nats_url)
         received: list[Any] = []
 
@@ -807,8 +783,6 @@ class TestOverARealNatsServer:
             results = _tool_results(messages)
             assert len(results) == 1
             assert results[0]["is_error"] is False
-            # A terminal verb returns tectum's turn-ending sentence, NOT the
-            # transport blob — see test_speak_terminates_the_turn.
             assert "Your turn is over" in results[0]["content"][0]["text"]
         finally:
             await sub.unsubscribe()
@@ -917,8 +891,6 @@ class TestOverARealNatsServer:
                 side_effect=_fake_stream_calling("journal_append", {"text": "a note"}),
             ):
                 messages = await session.prompt("note it")
-            # _fake_stream_calling returns plain text on the turn AFTER the tool
-            # result lands; reaching that text at all proves the loop continued.
             assert any(
                 (m.get("role") if isinstance(m, dict) else None) == "assistant"
                 and "done" in json.dumps(m.get("content"))
@@ -1050,8 +1022,6 @@ class TestOverARealNatsServer:
 
         publisher = await nats.connect(real_nats_url)
         try:
-            # A bare dict — the shape the OLD implementation published. It must
-            # be rejected as an event: not accepted, and not raised.
             await publisher.publish(_INBOUND, json.dumps({"text": "top level"}).encode())
             await publisher.publish(_INBOUND, b"{not json")
 
@@ -1136,8 +1106,6 @@ class TestOverARealNatsServer:
 
         assert len(results) == 1
         assert results[0]["is_error"] is False
-        # move_to is not terminal — walking somewhere and then saying something
-        # about it is one coherent turn.
         assert nats_bus.VERBS["move_to"].terminal is False
         assert "world_tick" in json.dumps(results[0])
 
@@ -1159,8 +1127,6 @@ class TestOverARealNatsServer:
         assert results[0]["is_error"] is True
         rendered = json.dumps(results[0])
         assert "refused" in rendered
-        # WHICH refusal: BLOCKED (it tried and the terrain stopped it) vs an
-        # immediate busy refusal, which carries trigger: null.
         assert "BLOCKED" in rendered
 
 
@@ -1294,8 +1260,6 @@ class TestTau002ZeroOrphans:
             ):
                 messages = await session.prompt("delegate")
             results = _tool_results(messages)
-            # ack_timeout_s is 1s and nothing acked; success here proves the
-            # call did not wait for one.
             assert results[0]["is_error"] is False
             assert "acks nothing" in results[0]["content"][0]["text"]
             deadline = time.time() + 3

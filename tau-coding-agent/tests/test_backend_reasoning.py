@@ -29,9 +29,6 @@ def _cfg(**over) -> dict:
 
 @pytest.fixture(autouse=True)
 def _isolate_cwd(tmp_path, monkeypatch):
-    # TauBackend now persists nothing itself (its AgentSession runs against a
-    # scratch InMemorySessionLog — §2.6). Chdir to a temp dir anyway so any
-    # incidental cwd-relative work stays out of the repo.
     monkeypatch.chdir(tmp_path)
 
 

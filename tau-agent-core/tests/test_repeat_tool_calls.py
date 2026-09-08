@@ -38,10 +38,6 @@ from tau_agent_core.agent_loop_types import AgentLoopConfig
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.tools.base import AgentTool, AgentToolResult, ToolDefinition
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 async def async_emit(events: list, e: AgentEvent) -> None:
     events.append(e)
@@ -188,11 +184,6 @@ def _end_reason(events: list[AgentEvent]) -> str | None:
     ends = [e for e in events if e.type == "agent_end"]
     assert len(ends) == 1, f"expected exactly one agent_end, got {len(ends)}"
     return ends[0].end_reason
-
-
-# ---------------------------------------------------------------------------
-# Repeat detection
-# ---------------------------------------------------------------------------
 
 
 class TestRepeatToolCallDetection:
@@ -445,11 +436,6 @@ class TestRepeatToolCallDetection:
         assert len(final) == 6
 
 
-# ---------------------------------------------------------------------------
-# end_reason, for every way the loop can stop
-# ---------------------------------------------------------------------------
-
-
 class TestEndReason:
     async def test_done_when_the_model_has_nothing_more_to_say(self):
         events: list[AgentEvent] = []
@@ -519,8 +505,6 @@ class TestEndReason:
 
         async def mock_stream_func(model, context, options):
             calls[0] += 1
-            # Abort as the first turn's response is produced, so the loop's
-            # between-turns check is what sees it.
             signal.abort()
             return _MockStream(
                 [DoneEvent(final=_calls_assistant([("c1", "fine", {})]), usage=Usage())]
@@ -568,11 +552,6 @@ class TestEndReason:
         assert [e.end_reason for e in events if e.type != "agent_end"] == [
             None for e in events if e.type != "agent_end"
         ]
-
-
-# ---------------------------------------------------------------------------
-# run_continue takes the same bound
-# ---------------------------------------------------------------------------
 
 
 class TestRunContinue:

@@ -63,8 +63,6 @@ from __future__ import annotations
 
 from typing import Any
 
-#: Auto-derived names are truncated to this many characters (pi parity:
-#: ``Session.display_title()``'s own first-user-message fallback truncates at 50).
 _AUTO_NAME_MAX_LEN = 50
 
 
@@ -149,6 +147,4 @@ def session_autoname_extension(api: Any) -> None:
     )
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/42_session_autoname.py`` → ``getattr(module, "register")``).
 register = session_autoname_extension

@@ -28,6 +28,9 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.sdk import _resolve_tools, create_agent_session
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 _BUILTINS = ["read", "write", "edit", "bash", "ls", "grep", "find"]
 
 
@@ -194,7 +197,7 @@ async def test_under_no_tools_the_extension_still_loads_hooks_and_injections() -
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -212,17 +215,7 @@ async def test_under_no_tools_the_extension_still_loads_hooks_and_injections() -
     assert seen_tools and all(t in (None, []) for t in seen_tools)
     # 2. The hook ran.
     assert fired == ["before_agent_start"]
-    # 3. And its injection reached the payload the provider was handed — the
-    #    hook's effect on the turn, not merely the fact that it was called.
     assert any("HOOK-MARKER" in str(m) for m in seen_messages)
-
-
-# ── the SDK seam (PLAN-0.9.3 §6) ───────────────────────────────────────────
-#
-# Until ``create_agent_session`` took ``no_tools``, the tri-state was reachable
-# only through the CLI: every value above had to be handed to ``AgentSession``
-# directly. The tests below pin the factory's own contract, and in particular the
-# two halves that are NOT just forwarding — the emptying, and the raise.
 
 
 def _sdk_session(**kwargs: Any) -> AgentSession:

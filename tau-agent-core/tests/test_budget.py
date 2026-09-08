@@ -49,6 +49,9 @@ from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 # ── load the example module (its filename is not a valid identifier) ─────────
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _BUDGET_PATH = _REPO_ROOT / "examples" / "24_budget.py"
@@ -77,7 +80,7 @@ def _tool_call_assistant(call_id: str, usage: Usage) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=usage,
     )
 
@@ -152,12 +155,6 @@ def _make_session() -> AgentSession:
         context_window=128000,
         max_tokens=4096,
     )
-    # No tools registered: each `write` call yields an error tool result, so the
-    # loop keeps taking turns — it only ever stops via the budget abort (or
-    # max_turns, which a working abort must beat). Compaction is disabled: the
-    # fake reports large per-completion usage (to cross the budget), which would
-    # otherwise trip auto-compaction — an unrelated code path that needs a real
-    # provider. This test isolates the budget guard.
     return AgentSession(
         session_log=InMemorySessionLog(),
         model=model,
@@ -230,9 +227,6 @@ async def test_usd_budget_warns_then_aborts_through_the_loop() -> None:
     assert "Budget exceeded" not in _message_text_blob(wire_payloads[0])
     # But the warning IS a durable node on the persisted active path.
     assert "Budget exceeded" in _message_text_blob(session.messages)
-    # …and it survives a reload: a fresh tree folded from the persisted entries alone
-    # still carries the warning on a real toolResult node (the tripping result), so the
-    # edit is baked into the durable tree — not an in-memory-only patch.
     warn_node = _reloaded_warning_node(session, "Budget exceeded")
     assert warn_node is not None
     assert warn_node["role"] == "toolResult"
@@ -262,8 +256,6 @@ async def test_token_budget_aborts_through_the_loop() -> None:
     assert len(wire_payloads) == 1
     assert "Budget exceeded" not in _message_text_blob(wire_payloads[0])
     assert "Budget exceeded" in _message_text_blob(session.messages)
-    # Survives a reload: rebuilt from the persisted entries, the warning is still a
-    # durable block on the tripping toolResult node.
     warn_node = _reloaded_warning_node(session, "Budget exceeded")
     assert warn_node is not None
     assert warn_node["role"] == "toolResult"
@@ -443,8 +435,6 @@ def test_default_budget_extension_is_token_mode() -> None:
 
 
 def test_budget_guard_consumes_ledger_primitives() -> None:
-    # The accumulation is an ext_kit.ledger.UsageMeter and the trip an
-    # ext_kit.ledger.Ceiling — USD mode is priced, token mode is unpriced.
     usd = budget.BudgetGuard(cost={"input": 3.0, "output": 15.0}, max_usd=1.0)
     assert isinstance(usd._meter, budget.ledger.UsageMeter)
     assert isinstance(usd._ceiling, budget.ledger.Ceiling)

@@ -22,6 +22,9 @@ from tau_llm.types import (
     Usage,
 )
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 class TestTextContent:
     """Tests for TextContent."""
@@ -170,7 +173,7 @@ class TestUserMessage:
                 TextContent(type="text", text="Hello"),
                 ImageContent(data="base64", mime_type="image/png"),
             ],
-            timestamp=0,
+            timestamp=_TS,
         )
         assert isinstance(msg.content, list)
         assert len(msg.content) == 2
@@ -211,7 +214,7 @@ class TestAssistantMessage:
             model="gpt-4",
             usage=Usage(),
             stop_reason="stop",
-            timestamp=0,
+            timestamp=_TS,
         )
         assert msg.role == "assistant"
 
@@ -232,7 +235,7 @@ class TestAssistantMessage:
             model="gpt-4",
             usage=Usage(),
             stop_reason="toolUse",
-            timestamp=0,
+            timestamp=_TS,
         )
         assert len(msg.content) == 2
         assert isinstance(msg.content[1], ToolCall)
@@ -247,7 +250,7 @@ class TestAssistantMessage:
             usage=Usage(),
             stop_reason="error",
             error_message="API rate limit exceeded",
-            timestamp=0,
+            timestamp=_TS,
         )
         assert msg.stop_reason == "error"
         assert msg.error_message == "API rate limit exceeded"
@@ -261,7 +264,7 @@ class TestAssistantMessage:
             model="gpt-4",
             usage=Usage(),
             stop_reason="stop",
-            timestamp=0,
+            timestamp=_TS,
         )
         assert msg.response_id is None
 
@@ -274,7 +277,7 @@ class TestAssistantMessage:
             model="gpt-4",
             usage=Usage(),
             stop_reason="stop",
-            timestamp=0,
+            timestamp=_TS,
         )
         assert msg.error_message is None
 
@@ -297,7 +300,7 @@ class TestAssistantMessage:
             model="gpt-4",
             usage=Usage(),
             stop_reason=stop_reason,
-            timestamp=0,
+            timestamp=_TS,
         )
         assert msg.stop_reason == stop_reason
 
@@ -326,7 +329,7 @@ class TestToolResultMessage:
             tool_name="y",
             content=[],
             is_error=False,
-            timestamp=0,
+            timestamp=_TS,
         )
         assert msg.role == "toolResult"
 
@@ -337,7 +340,7 @@ class TestToolResultMessage:
             tool_name="bash",
             content=[TextContent(type="text", text="Command failed: exit 1")],
             is_error=True,
-            timestamp=0,
+            timestamp=_TS,
         )
         assert msg.is_error is True
 
@@ -348,7 +351,7 @@ class TestToolResultMessage:
             tool_name="y",
             content=[],
             is_error=False,
-            timestamp=0,
+            timestamp=_TS,
         )
         assert msg.details is None
 
@@ -360,7 +363,7 @@ class TestToolResultMessage:
             content=[TextContent(type="text", text="output")],
             details={"exit_code": 0, "stdout": "hello"},
             is_error=False,
-            timestamp=0,
+            timestamp=_TS,
         )
         assert msg.details["exit_code"] == 0
 
@@ -371,8 +374,6 @@ class TestMessageImmutability:
     def test_user_message_cannot_modify_content(self):
         """UserMessage content should not be directly modifiable."""
         msg = UserMessage(content="hello", timestamp=0)
-        # Pydantic by default allows mutation; use model_copy with frozen=True for true immutability
-        # This test documents the expected behavior
         assert msg.content == "hello"
 
     def test_assistant_message_cannot_modify_content_list(self):
@@ -384,7 +385,7 @@ class TestMessageImmutability:
             model="gpt-4",
             usage=Usage(),
             stop_reason="stop",
-            timestamp=0,
+            timestamp=_TS,
         )
         assert len(msg.content) == 1
 

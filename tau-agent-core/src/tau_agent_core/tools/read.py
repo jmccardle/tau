@@ -57,11 +57,6 @@ class ReadTool:
         },
         "required": ["path"],
     }
-    # Annotated rather than left to inference (B1/tau-004): unannotated,
-    # `execution_mode = "parallel"` infers `str`, and `ToolDefinition`
-    # declares it `Literal["sequential", "parallel"]`. `sdk._resolve_tools`
-    # copies this value into a ToolDefinition, so without the annotation mypy
-    # cannot check that copy — which is the blindness B1 exists to remove.
     execution_mode: Literal["sequential", "parallel"] = "parallel"
 
     DEFAULT_MAX_LINES = 4096
@@ -150,10 +145,6 @@ class ReadTool:
         signal: Any = None,
     ) -> dict:
         """Read a text file with optional truncation."""
-        # Off the event loop (docs/PLAN-0.9.4.md §8): the agent loop runs as an
-        # async Textual worker on the app's own loop, with no thread of its own,
-        # so a blocking read froze painting and input for its duration. A large
-        # file, or one on a slow or network filesystem, is the visible case.
         try:
             content = await asyncio.to_thread(self._read_all, resolved_path, "utf-8")
         except UnicodeDecodeError:
@@ -175,8 +166,6 @@ class ReadTool:
             ).model_dump()
 
         lines = content.split("\n") if content else []
-        # Handle empty file: content="" -> lines=[""] which is 1 empty line
-        # We treat a truly empty file as 0 lines
         if content == "":
             lines = []
 
@@ -288,9 +277,6 @@ class ReadTool:
             mime_type = mime_map.get(ext.lower(), "application/octet-stream")
             name = os.path.basename(resolved_path)
 
-            # Off the event loop for the same reason the file read is: decoding
-            # and rescaling a large image is CPU-bound, and the agent loop runs
-            # as an async worker on the Textual app's own loop.
             bounded = None
             if self.max_image_dimension is not None:
                 bounded = await asyncio.to_thread(
@@ -314,9 +300,6 @@ class ReadTool:
                 ],
             ).model_dump()
         except ImageSupportUnavailable as e:
-            # Not folded into the generic handler below: this one is actionable,
-            # and prefixing it with "Error reading image" would bury the
-            # instruction that is the whole point of the message.
             return AgentToolResult.from_error(
                 tool_name=self.name,
                 error_message=str(e),

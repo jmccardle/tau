@@ -3,7 +3,7 @@
 Four views of the same frame, cheapest first:
 
 1. :func:`render_text` — the composited screen as a plain character grid. This is
-   what you grep ("does the word Parley still appear?") and what you diff between
+   what you grep ("does the word TauApp still appear?") and what you diff between
    two runs. It is the only view with no image dependency at all.
 2. :func:`render_svg` — ``App.export_screenshot()``, colors included.
 3. :func:`render_png` — the SVG rasterized, so a human or a coding agent can
@@ -91,17 +91,8 @@ def render_svg(app: App, *, title: str | None = None) -> str:
     return app.export_screenshot(title=title)
 
 
-#: What Rich writes into an exported SVG, and what has to be replaced before
-#: cairosvg can rasterize it. Rich names a remote web font first and ``monospace``
-#: as the fallback; cairosvg resolves the family name through cairo's toy font
-#: API, which does not understand a comma-separated list, so it matches NEITHER
-#: and lands on a proportional default with no box-drawing glyphs. Every border in
-#: the screenshot then rasterizes as tofu.
 _RICH_SVG_FONT = "font-family: Fira Code, monospace"
 
-#: A locally installed monospace family that does have box-drawing glyphs. If it
-#: is missing from the system, the PNG renders with tofu boxes instead of borders
-#: — visible in the image itself, so it needs no separate check.
 DEFAULT_PNG_FONT = "DejaVu Sans Mono"
 
 
@@ -166,11 +157,6 @@ def save_render(
         written["layout"] = layout_path
 
     return written
-
-
-# ---------------------------------------------------------------------------
-# Layout measurement
-# ---------------------------------------------------------------------------
 
 
 def _spacing(value: Any) -> str:
@@ -256,18 +242,3 @@ def dump_layout(
     lines: list[str] = [f"# {app.size.width}x{app.size.height}  screen={type(app.screen).__name__}"]
     _walk(target, 0, lines, max_depth)
     return "\n".join(lines) + "\n"
-
-
-# A ``chrome_cost(widgets) -> str`` used to sit here: per widget, the rows spent
-# on margin + border + padding versus the rows left for content. It was written
-# for the density pass, `dump_layout` was used instead, and it was never called
-# again — deleted rather than given a caller, for two reasons.
-#
-# It measures nothing `dump_layout` does not already print: same margin, same
-# padding, same border, off the same `styles`, plus the region and scroll extent
-# it left out. And a test cannot use it as it stands, because what it returns is
-# a *report*. Asserting on chrome overhead through a formatted string means
-# parsing the string; the assertions it was meant to serve already exist in
-# `test_tui_appearance.py` and read the numbers straight off the widget —
-# `test_a_collapsed_collapsible_is_one_row` is the vertical case and
-# `test_chat_text_gets_most_of_the_column` the horizontal one.

@@ -164,7 +164,7 @@ needs to say inside a `Text`.
 > `COMPONENT_CLASSES` and overrides `render_label`, layering zone styles over Textual's
 > own as Rich spans on two character ranges — the toggle prefix and the label — which is
 > the per-row partial styling §3 said a `Text` could carry. All colour lives in
-> `parley.tcss`; none is in `app.py`. `set_zones()` is the write path.
+> `tau.tcss`; none is in `app.py`. `set_zones()` is the write path.
 >
 > Four findings a later change should not have to rediscover:
 >
@@ -235,7 +235,7 @@ Two hooks exist, and together they are enough.
 
 1. `COMPONENT_CLASSES` — a class-level frozenset resolved through
    `get_component_styles`. Declared once in a `Tree` subclass; the values live in
-   `parley.tcss`.
+   `tau.tcss`.
 2. `render_label(node, base_style, style) -> Text` (verified, textual 8.2.7) — called
    per row, returns a Rich `Text`.
 

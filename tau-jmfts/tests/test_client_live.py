@@ -20,8 +20,6 @@ from tau_jmfts.client import JmftsClient, JmftsError
 
 pytestmark = pytest.mark.jmfts
 
-# Every document this test creates carries this prefix so a human (or a
-# cleanup script) can find and nuke anything left behind by a crashed run.
 TEST_PREFIX = "tau-jmfts-test"
 
 
@@ -42,8 +40,6 @@ def test_health(client: JmftsClient) -> None:
 def test_context_manager_closes(jmfts_url: str, jmfts_token: str | None) -> None:
     with JmftsClient(jmfts_url, token=jmfts_token) as c:
         assert c.health()["status"] == "ok"
-    # httpx.Client raises RuntimeError on request after close(); confirm the
-    # underlying transport was actually torn down rather than left open.
     with pytest.raises(RuntimeError):
         c.health()
 
@@ -64,8 +60,6 @@ def test_create_read_topology_and_delete_cascade(client: JmftsClient) -> None:
         "cwd": "/home/john/Development/agent-harness-py",
         "hostname": "test-harness",
         "parent": None,
-        # Nested structures + unicode + a float, to make "byte-shape-identical"
-        # a real assertion rather than a string-equality one.
         "nested": {"list": [1, 2, 3], "unicode": "τ agent — café", "flag": True},
         "score": 3.14159,
     }
@@ -145,8 +139,6 @@ def test_create_read_topology_and_delete_cascade(client: JmftsClient) -> None:
         assert by_id[assistant_msg["id"]]["parent_id"] == user_msg["id"]
         assert by_id[branch_msg["id"]]["parent_id"] == root_id
 
-        # structured_content.tau survives byte-shape-identical, including
-        # nested structures/unicode/float -- the load-bearing property.
         assert subtree["root"]["structured_content"]["tau"] == tau_header
         assert by_id[user_msg["id"]]["structured_content"]["tau"] == user_entry
         assert by_id[assistant_msg["id"]]["structured_content"]["tau"] == assistant_entry
@@ -170,8 +162,6 @@ def test_create_read_topology_and_delete_cascade(client: JmftsClient) -> None:
         found = client.list_documents(usetype="tau:conversation", title_prefix=f"[{TEST_PREFIX}]")
         assert any(d["id"] == root_id for d in found)
 
-        # -- update_document: content/title projection can change without
-        # disturbing structured_content.tau --
         updated = client.update_document(user_msg["id"], title="renamed", re_embed=False)
         assert updated["title"] == "renamed"
         assert updated["structured_content"]["tau"] == user_entry

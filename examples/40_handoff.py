@@ -61,9 +61,6 @@ async def _handoff_command(args: str, ctx: Any) -> str:
     custom_instructions = args.strip() or None
 
     entries = ctx.entries()
-    # A brand-new session already carries bookkeeping entries (model change,
-    # etc.) before a single word is exchanged — "nothing to hand off" means no
-    # actual conversation, not a literally-empty log.
     if not any(e.get("type") in ("message", "customMessage") for e in entries):
         return "Nothing to hand off yet — start a conversation first."
     root_id = entries[0]["id"]
@@ -71,8 +68,6 @@ async def _handoff_command(args: str, ctx: Any) -> str:
     ctx.ui.notify("Summarizing conversation for handoff", "info")
     await ctx.summarize_branch(root_id, custom_instructions=custom_instructions)
 
-    # The branch_summary just appended is now the last raw entry (fork below
-    # copies the log verbatim — it does not append to THIS session).
     summary_entry = ctx.entries()[-1]
     summary_text = str(summary_entry.get("summary", ""))
 
@@ -100,6 +95,4 @@ def handoff_extension(api: Any) -> None:
     )
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/40_handoff.py`` → ``getattr(module, "register")``).
 register = handoff_extension

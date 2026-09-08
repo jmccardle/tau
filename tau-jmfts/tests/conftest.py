@@ -23,9 +23,6 @@ import pytest
 JMFTS_TEST_URL = os.environ.get("JMFTS_TEST_URL", "http://192.168.1.100:8100")
 JMFTS_API_TOKEN = os.environ.get("JMFTS_API_TOKEN")
 
-# Every document this test suite creates carries this usetype/title prefix so
-# a human (or a cleanup script) can find and nuke anything left behind by a
-# crashed run without guessing.
 TEST_PREFIX = "tau-jmfts-test"
 
 

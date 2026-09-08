@@ -1,16 +1,24 @@
-"""What ``complete_command`` offers for a half-typed slash command.
+"""What the two completion functions offer for a half-typed slash command.
 
 Reference: docs/SLASH-COMMANDS.md.
 
-The function is pure and decides nothing — ``resolve_command`` remains the only
-thing that says whether a finished line IS a command. What these tests hold is
-that the two agree: a token completion offers must be a token resolution accepts,
-and a token completion warns about must be one resolution sends to the model.
+``complete_command`` completes the command WORD and ``complete_command_argument``
+completes what follows it. Both are pure and neither decides anything —
+``resolve_command`` remains the only thing that says whether a finished line IS a
+command. What these tests hold is that all three agree: a token completion offers
+must be a token resolution accepts, a token completion warns about must be one
+resolution sends to the model, and a value pasted into the span the argument
+function names must resolve to that value.
 """
 
 from __future__ import annotations
 
-from tau_agent_core.commands import FRONTEND_COMMANDS, complete_command, resolve_command
+from tau_agent_core.commands import (
+    FRONTEND_COMMANDS,
+    complete_command,
+    complete_command_argument,
+    resolve_command,
+)
 
 EXTENSIONS = {"todo": "manage the todo list", "bookmark": "save a place in the conversation"}
 
@@ -64,13 +72,13 @@ class TestWhatItOffers:
         """
         offered = names("/tree", {"tree": "an extension that lost"})
         assert offered == ["tree"]
-        assert resolve_command("/tree", {"tree": "…"}).performer == "frontend"
+        assert resolve_command("/tree", {"tree": "…"}).origin == "builtin"
 
     def test_the_description_comes_with_the_name(self):
         completions = complete_command("/todo", EXTENSIONS)
         assert completions is not None
         assert completions.matches[0].description == "manage the todo list"
-        assert completions.matches[0].performer == "core"
+        assert completions.matches[0].origin == "extension"
 
     def test_no_backend_still_offers_the_built_ins(self):
         """τ's own vocabulary needs no extensions loaded, which is what lets the
@@ -106,6 +114,95 @@ class TestTheUnknownSlashWarning:
         assert completions is not None
         assert completions.matches == ()
         assert resolve_command("/tree\nmore", EXTENSIONS) is None
+
+
+class TestWhichArgumentIsBeingTyped:
+    """``complete_command_argument``: the second vocabulary, which starts exactly
+    where the first one runs out of anything to say."""
+
+    def test_a_space_after_a_command_asks_for_its_argument(self):
+        slot = complete_command_argument("/model ")
+        assert slot is not None
+        assert (slot.command, slot.argument.name, slot.domain.name) == (
+            "model",
+            "name",
+            "model_name",
+        )
+        assert slot.query == ""
+
+    def test_a_partial_value_becomes_the_query(self):
+        slot = complete_command_argument("/model loc")
+        assert slot is not None
+        assert slot.query == "loc"
+
+    def test_the_span_covers_the_value_and_nothing_else(self):
+        """A head replaces ``text[start:end]``, so the command word must sit
+        outside it — that is the whole difference from command completion, which
+        rewrites the first word."""
+        text = "   /model  loc "
+        slot = complete_command_argument(text)
+        assert slot is not None
+        assert text[slot.start : slot.end] == "loc "
+        assert text[: slot.start] == "   /model  "
+
+    def test_a_chosen_value_resolves_to_that_value(self):
+        """The join with dispatch: pasting a candidate into the span produces a
+        line ``resolve_command`` reads as that argument."""
+        text = "/model loc"
+        slot = complete_command_argument(text)
+        assert slot is not None
+        chosen = text[: slot.start] + "local-llm" + text[slot.end :]
+        invocation = resolve_command(chosen, EXTENSIONS)
+        assert invocation is not None
+        assert (invocation.name, invocation.args) == ("model", "local-llm")
+
+    def test_the_extensions_verb_sugar_resolves_to_its_flow(self):
+        """``/extensions disable x`` is ``/disable_extension x``
+        (``EXTENSION_VIEW_VERBS``), so the argument being completed belongs to the
+        flow, not to the view that was typed."""
+        slot = complete_command_argument("/extensions disable my_e")
+        assert slot is not None
+        assert (slot.command, slot.domain.name) == ("disable_extension", "extension_name")
+        assert slot.query == "my_e"
+
+
+class TestWhenThereIsNoArgumentToOffer:
+    def test_while_the_name_is_still_being_typed(self):
+        """No space yet, so the command word is what is being completed and the two
+        vocabularies never overlap."""
+        assert complete_command_argument("/mo") is None
+
+    def test_a_free_domain(self):
+        """``/name`` takes any text. A candidate list would state a restriction the
+        binding does not enforce."""
+        assert complete_command_argument("/name my session") is None
+
+    def test_a_flow_with_no_arguments(self):
+        assert complete_command_argument("/fork x") is None
+
+    def test_a_view(self):
+        assert complete_command_argument("/tree x") is None
+
+    def test_an_extension_command(self):
+        """``ExtensionAPI`` has no ``register_flow``, so an extension command
+        declares no arguments to complete (docs/TUI-STYLE-GUIDE.md §6)."""
+        assert complete_command_argument("/todo buy milk") is None
+
+    def test_an_unrecognised_extensions_verb(self):
+        assert complete_command_argument("/extensions bogus x") is None
+
+    def test_an_extensions_verb_still_being_typed(self):
+        assert complete_command_argument("/extensions dis") is None
+
+    def test_a_newline_is_not_the_separator(self):
+        """``parse_command`` splits on the first SPACE, so ``/model\\nloc`` is one
+        word and resolves to prose. Completion must agree, or it would offer models
+        for a line that never reaches the flow."""
+        assert complete_command_argument("/model\nloc") is None
+        assert resolve_command("/model\nloc", EXTENSIONS) is None
+
+    def test_prose(self):
+        assert complete_command_argument("look in src/ for it") is None
 
 
 class TestWhenItShowsNothingAtAll:

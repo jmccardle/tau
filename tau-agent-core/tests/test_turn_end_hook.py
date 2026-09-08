@@ -48,6 +48,9 @@ from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.extensions.runner import ExtensionError, ExtensionRunner
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 class _Stream:
     """Minimal async stream matching the stream_simple contract."""
@@ -83,7 +86,7 @@ def _text_assistant(text: str, usage: Usage | None = None) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=usage or Usage(),
     )
 
@@ -103,7 +106,7 @@ def _tool_call_assistant(call_id: str, usage: Usage | None = None) -> AssistantM
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=usage or Usage(),
     )
 
@@ -205,9 +208,6 @@ async def test_emit_turn_end_observer_returns_nothing() -> None:
     assert seen == [
         {
             "type": "turn_end",
-            # tau-003 (§12.4/§16.5): the event names its own firing unit, so a
-            # handler holding the bare dict can state what it counted rather than
-            # inferring the cadence from documentation about a different hook.
             "firing_unit": "agent_loop_turn",
             "turn_index": 3,
             "usage": {"tokens": 42},

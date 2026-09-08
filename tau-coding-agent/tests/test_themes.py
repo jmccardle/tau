@@ -35,7 +35,7 @@ from tau_coding_agent.themes import (
     textual_themes,
 )
 
-STYLESHEET = Path(tau_coding_agent.__file__).with_name("parley.tcss")
+STYLESHEET = Path(tau_coding_agent.__file__).with_name("tau.tcss")
 
 
 def _declarations(text: str) -> list[tuple[int, str, str]]:
@@ -55,7 +55,7 @@ def _declarations(text: str) -> list[tuple[int, str, str]]:
 def _variables_used() -> set[str]:
     """Every ``$tau-…`` name the stylesheet actually *reads*, comments excluded.
 
-    The prose in ``parley.tcss`` discusses the vocabulary (``$tau-role-*``,
+    The prose in ``tau.tcss`` discusses the vocabulary (``$tau-role-*``,
     ``$tau-text-*``), so scanning the raw file would count glob patterns as
     variable names.
     """
@@ -66,13 +66,8 @@ def _variables_used() -> set[str]:
     }
 
 
-# ---------------------------------------------------------------------------
-# The split is verifiable, not aspirational
-# ---------------------------------------------------------------------------
-
-
 def test_the_structural_stylesheet_names_no_colour() -> None:
-    """No colour literal survives anywhere in ``parley.tcss``.
+    """No colour literal survives anywhere in ``tau.tcss``.
 
     This is the test that makes "a palette layered over one structural
     stylesheet" a real design rather than "a full copy per theme with extra
@@ -129,11 +124,6 @@ def test_the_palette_has_no_variable_the_stylesheet_never_uses() -> None:
     assert not unused, f"palette keys no rule reads: {unused}"
 
 
-# ---------------------------------------------------------------------------
-# The default is load-bearing
-# ---------------------------------------------------------------------------
-
-
 def test_the_default_theme_is_mocha() -> None:
     assert DEFAULT_THEME_NAME == "mocha"
     assert resolve_theme(None, tau_themes()).name == "mocha"
@@ -145,7 +135,7 @@ def test_mocha_carries_textual_darks_design_tokens() -> None:
     ``textual-dark`` is ``App``'s default theme, so it is what the TUI ran under
     before themes existed: the Footer, the scrollbars, the ``Tree`` cursor line
     and the notification toasts are all coloured from these tokens and none of
-    them is mentioned in ``parley.tcss``. If ``mocha`` disagreed with
+    them is mentioned in ``tau.tcss``. If ``mocha`` disagreed with
     ``textual-dark`` on any of them, the seven reference SVGs would be wrong and
     the only symptom would be seven snapshot diffs with no obvious cause.
 
@@ -179,11 +169,6 @@ def test_mocha_is_the_palette_the_stylesheet_used_to_hardcode() -> None:
     assert palette["zone-path"] == "#89b4fa"
 
 
-# ---------------------------------------------------------------------------
-# Every theme answers the whole palette, legibly
-# ---------------------------------------------------------------------------
-
-
 def _palette(theme: Any) -> dict[str, str]:
     return {k[len("tau-") :]: v for k, v in theme.variables.items() if k.startswith("tau-")}
 
@@ -202,9 +187,6 @@ def _is_hex_palette(theme: Any) -> bool:
     return all(value.startswith("#") for value in _palette(theme).values())
 
 
-#: Theme names whose palettes can be measured. Not a hardcoded list: a fifth
-#: hex theme is covered the day it is added, and a second ANSI-style theme is
-#: excluded the same day, without either being remembered here.
 MEASURABLE_THEMES = sorted(name for name, t in tau_themes().items() if _is_hex_palette(t))
 
 
@@ -276,18 +258,6 @@ def _contrast(a: str, b: str) -> float:
     return (high + 0.05) / (low + 0.05)
 
 
-#: ``foreground key -> (backgrounds it is actually painted on, minimum ratio)``.
-#:
-#: The pairings are read off ``parley.tcss``, not assumed: ``$tau-text`` is the
-#: only foreground that lands on a button (``$tau-surface``) or a hovered row
-#: (``$tau-surface-hover``); ``$tau-code-fg`` lands on ``$tau-bg-deep`` and
-#: nowhere else; every role hue lands on the chat pane or a dialog.
-#:
-#: The thresholds are tiered because the ramp is a design: ``text-faint`` is
-#: *supposed* to be barely there (it is the archived-row hue), so holding it to
-#: 4.5:1 would forbid the thing it is for. What each tier forbids is the failure
-#: this test exists for — a hue that reads on a dark background and vanishes on a
-#: light one.
 _LEGIBILITY: dict[str, tuple[tuple[str, ...], float]] = {
     "text": (("bg", "bg-alt", "surface", "surface-hover"), 4.0),
     "text-soft": (("bg", "bg-alt"), 3.0),
@@ -347,16 +317,6 @@ def test_the_text_ramp_runs_one_way() -> None:
         palette = _palette(tau_themes()[name])
         ratios = [_contrast(palette[step], palette["bg"]) for step in ramp]
         assert ratios == sorted(ratios, reverse=True), f"{name} ramp is not monotonic: {ratios}"
-
-
-# ---------------------------------------------------------------------------
-# Textual's own themes, adapted
-# ---------------------------------------------------------------------------
-#
-# The defect these cover: ``App.__init__`` registers Textual's 21 themes and its
-# "Theme" system command lists every registered theme, so selecting one used to
-# stop the app with ``reference to undefined variable '$tau-bg'``. τ's four
-# worked; the other 21 crashed.
 
 
 def _parse(value: str) -> Any:
@@ -487,11 +447,6 @@ def test_the_ansi_themes_reuse_taus_ansi_palette() -> None:
     assert adapted["ansi-light"].dark is False, "the light one has to say so"
 
 
-# ---------------------------------------------------------------------------
-# Fail Early: a name that does not exist
-# ---------------------------------------------------------------------------
-
-
 def test_an_unknown_theme_raises_naming_it_and_listing_the_alternatives() -> None:
     with pytest.raises(ThemeError) as excinfo:
         resolve_theme("mocah", tau_themes())
@@ -504,11 +459,6 @@ def test_a_theme_that_does_not_exist_is_not_silently_the_default() -> None:
     """The point of the rule above, stated as the behaviour it forbids."""
     with pytest.raises(ThemeError):
         resolve_theme("no-such-theme", tau_themes())
-
-
-# ---------------------------------------------------------------------------
-# User themes (~/.tau/themes/*.json)
-# ---------------------------------------------------------------------------
 
 
 def test_a_user_theme_extends_a_builtin_and_overrides_part_of_it(tmp_path: Path) -> None:
@@ -524,7 +474,7 @@ def test_a_user_theme_extends_a_builtin_and_overrides_part_of_it(tmp_path: Path)
 
 
 def test_a_user_theme_may_override_textual_design_tokens(tmp_path: Path) -> None:
-    """The half ``parley.tcss`` cannot reach — the Footer, the scrollbars."""
+    """The half ``tau.tcss`` cannot reach — the Footer, the scrollbars."""
     (tmp_path / "midnight.json").write_text(
         json.dumps({"extends": "mocha", "textual": {"background": "#000000"}})
     )
@@ -584,15 +534,10 @@ def test_the_user_theme_dir_follows_the_sandboxed_config_path(tau_home: Path) ->
     assert user_theme_dir() == tau_home / "themes"
 
 
-# ---------------------------------------------------------------------------
-# The two selection surfaces
-# ---------------------------------------------------------------------------
-
-
 def _write_config(tau_home: Path, **keys: Any) -> None:
     """Seed ``<sandbox>/config.json`` before the app is constructed.
 
-    ``build_parley`` assigns ``app.config`` *after* ``Parley.__init__`` has run,
+    ``build_tau_app`` assigns ``app.config`` *after* ``TauApp.__init__`` has run,
     and the theme is resolved inside ``__init__`` (it has to be — the stylesheet
     is parsed there). So a test about the *config* surface has to put the key on
     disk, which is also what a real user does.
@@ -628,9 +573,6 @@ async def test_switching_themes_at_runtime_changes_the_applied_styles(make_app) 
     """
     app = make_app()
     async with app.run_test() as pilot:
-        # ``on_mount`` focuses the input, so this is the ``#chat-input:focus``
-        # rule — ``border: solid $tau-role-user``, the one place a role hue is
-        # visible on the first frame.
         chat_input = app.query_one("#chat-input")
         assert _screen_background(app) == "#1e1e2e"
         assert chat_input.styles.border_top[1].hex.lower() == "#89dceb"
@@ -689,16 +631,6 @@ async def test_a_runtime_swap_round_trips_through_the_config_file(make_app, tau_
     reopened = make_app()
     async with reopened.run_test():
         assert reopened.theme == "latte"
-
-
-# ---------------------------------------------------------------------------
-# A theme that fails: an error toast and the default, not a dead terminal
-# ---------------------------------------------------------------------------
-#
-# The decision (2026-08-24) is that no theme problem stops τ from starting. The
-# module docstring in ``themes.py`` has the reasoning; what these assert is the
-# pair of things that has to be true for it to be Fail Early rather than a silent
-# fallback: the app runs, AND the user is told why the colours are not theirs.
 
 
 def _toasts(app: Any) -> list[str]:
@@ -806,11 +738,6 @@ async def test_a_clean_start_raises_no_theme_toast(make_app) -> None:
         assert not [message for message in _toasts(app) if "theme" in message.lower()]
 
 
-# ---------------------------------------------------------------------------
-# The three selection surfaces
-# ---------------------------------------------------------------------------
-
-
 async def test_the_theme_flag_selects_the_theme_for_this_run(make_app, tau_home: Path) -> None:
     """``--theme`` beats the config key, which is what an override is."""
     _write_config(tau_home, theme="mocha")
@@ -874,8 +801,6 @@ async def test_the_command_palette_offers_every_theme_and_marks_the_active_one(
             for name in sorted(build_theme_registry())
         ]
         assert theme_entries == expected
-        # Textual's own themes are in there, adapted — the list is the registry
-        # and the registry is what a swap can reach.
         assert "Theme: nord" in theme_entries
 
 
@@ -887,7 +812,7 @@ async def test_every_theme_the_app_offers_applies_to_the_real_stylesheet(
 
     Registering a theme and *applying* it are different failures: a theme with a
     hole in its palette registers cleanly and then stops the app when
-    ``parley.tcss`` is re-parsed against it. So this drives the real swap on the
+    ``tau.tcss`` is re-parsed against it. So this drives the real swap on the
     real stylesheet, once per theme, and reads a colour back off a widget.
     """
     app = make_app()

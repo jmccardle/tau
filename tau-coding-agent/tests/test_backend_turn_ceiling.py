@@ -41,8 +41,6 @@ def test_no_ceiling_in_the_config_means_no_ceiling_in_the_loop():
     """The whole point of the change: a default run is not cut off at any turn."""
     session = TauBackend(_cfg()).agent_session
     assert session._max_turns is None
-    # An empty kwargs dict is how the session declines to name a number, leaving
-    # AgentLoopConfig's own default as the single definition.
     assert session._turn_cap() == {}
 
 

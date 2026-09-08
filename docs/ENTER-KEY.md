@@ -159,7 +159,7 @@ a workaround for a missing one.
 
 An unrecognised value raises `ConfigError` while τ is starting.
 
-The Footer names whichever key sends. `Parley.check_action` keeps exactly one of
+The Footer names whichever key sends. `TauApp.check_action` keeps exactly one of
 the two app-level bindings live, and a falsy `check_action` both hides a binding
 and stops it consuming the key, so in `"submit"` mode Ctrl+J does not send from a
 non-editor focus either.

@@ -45,8 +45,6 @@ from tau_agent_core.compaction_utils import (
 )
 from tau_llm.docs import agent_facing
 
-# Chars assumed per image content block when estimating tokens (pi: utils ↔
-# compaction.ts ESTIMATED_IMAGE_CHARS = 4800).
 ESTIMATED_IMAGE_CHARS = 4800
 
 
@@ -109,18 +107,7 @@ class CompactionResult:
     tokens_before: int
     details: CompactionDetails | None = None
     compacted_entry_ids: list[str] = field(default_factory=list)
-    # Context tokens the compaction REMOVED: the summarized range, less the
-    # summary that replaces it (see ``compact``). Not ``tokens_before`` less the
-    # summary — that counted the kept tail as removed. Signed: a summary bigger
-    # than the prefix it replaced is a negative saving, reported as one.
     tokens_saved: int = 0
-    # What GENERATING this summary cost (see tau_agent_core.usage). Compaction
-    # summarizes the entire conversation, so its input is roughly a full context
-    # window — routinely the most expensive single call in a session, and it fires
-    # automatically. It went through `complete_simple`, which emits no events, so
-    # these tokens reached no meter and the session's displayed cost was understated
-    # by exactly the call the user never asked for. `tokens_saved` says what
-    # compaction bought; this says what it charged.
     usage: dict[str, int] = field(default_factory=zero_usage)
 
 
@@ -273,15 +260,6 @@ def should_compact(context_tokens: int, context_window: int, settings: Compactio
     return context_tokens > context_window - settings.reserve_tokens
 
 
-# ─── Cut-point selection ─────────────────────────────────────────────────
-#
-# Adapted to τ entry dicts. τ carries every conversation message as a
-# ``type=="message"`` entry distinguished by ``message.role`` (user/assistant/
-# toolResult); ``customMessage`` is its own entry type; ``compaction`` marks a
-# prior summary. Valid cut points are the user/assistant turn boundaries — never
-# mid tool-call (a toolResult must stay attached to its assistant turn).
-
-
 def _entry_message_role(entry: dict[str, Any]) -> str | None:
     if entry.get("type") != "message":
         return None
@@ -358,8 +336,6 @@ def find_cut_point(
                     break
             break
 
-    # Walk the cut back over non-message metadata entries so it lands on a real
-    # message/compaction boundary (pi: the while-loop at compaction.ts:358).
     while cut_index > start_index:
         prev = entries[cut_index - 1]
         ptype = prev.get("type")
@@ -539,14 +515,6 @@ async def generate_summary(
     }
     options = _summary_options(model, api_key, max_tokens, thinking_level)
 
-    # The shared completion door (C1). complete_fn is passed explicitly as this
-    # module's own ``complete_simple`` so that a test patching
-    # ``tau_agent_core.compaction.complete_simple`` is honored (the shared primitive
-    # otherwise reaches for ``tau_llm.client.complete_simple``). We keep compaction's
-    # error taxonomy: the shared error/aborted check raises CompletionFailed, which we
-    # translate — preserving the aborted-vs-summarization_failed code split — and a
-    # provider/transport failure below stays ``summarization_failed``. Billing is
-    # caller-side: we return (summary, usage).
     try:
         response = await resolved_complete(
             model, context, options=options, complete_fn=complete_simple
@@ -598,9 +566,6 @@ async def generate_turn_prefix_summary(
     }
     options = _summary_options(model, api_key, max_tokens, thinking_level)
 
-    # See generate_summary: the shared door (C1), with this module's ``complete_simple``
-    # passed so the compaction patch site is honored and the CompactionError taxonomy
-    # (including aborted-vs-summarization_failed) is preserved.
     try:
         response = await resolved_complete(
             model, context, options=options, complete_fn=complete_simple
@@ -666,9 +631,6 @@ def _build_messages_from_entries(entries: list[dict[str, Any]]) -> list[dict[str
     for entry in entries:
         etype = entry.get("type")
         if etype in ("message", "customMessage"):
-            # ``customMessage`` (extension-injected node, E5 §3.1) is sent to the
-            # model too (remapped custom→user at the wire), so it counts toward the
-            # context budget here just like a plain message.
             msg = entry.get("message")
             if isinstance(msg, dict):
                 messages.append(msg)
@@ -691,9 +653,8 @@ def estimate_span_tokens(entries: list[dict[str, Any]]) -> int:
 
     Public because the value must be named at the CALL SITE: §11.3 makes the
     provenance a required keyword argument on the appenders precisely so a caller
-    that cannot compute it fails there, and the two callers live in two packages
-    (``AgentSession._perform_compaction`` here, ``TauBackend.elide_span`` in
-    ``tau-coding-agent``). Computing it inside the five ``SessionLog``
+    that cannot compute it fails there (``AgentSession._perform_compaction`` and
+    ``tree_ops.elide_span`` / ``commit_branch``). Computing it inside the five ``SessionLog``
     implementations instead would put this arithmetic — and the entry→message
     flattening under it — in five places.
 
@@ -751,12 +712,6 @@ def prepare_compaction(
     if prev_compaction_index >= 0:
         prev = path_entries[prev_compaction_index]
         previous_summary = prev.get("summary")
-        # Live/SDK entries are System-B camelCase (``firstKeptId``) — the only
-        # shape every SessionLog writer emits and the sole key ConversationTree's
-        # fold reads (``conversation_tree._anchor_boundary``). No snake_case
-        # (System-A) fallback: that path is retired and reading it here would be
-        # dead, ConversationTree-inconsistent code (Fail-Early, §2.6). Absent id
-        # → prefix-start, no fabrication.
         prev_first_kept = prev.get("firstKeptId") or prev.get("first_kept_id")
         idx = next(
             (j for j, e in enumerate(path_entries) if e.get("id") == prev_first_kept),
@@ -790,36 +745,15 @@ def prepare_compaction(
             if msg is not None:
                 turn_prefix_messages.append(msg)
 
-    # These two lists ARE what leaves the context: everything else in the
-    # replaced range (session/agent_spec/model_change bookkeeping, a superseded
-    # compaction entry) contributes no tokens to the model input in the first
-    # place. Both empty therefore means this "compaction" would remove nothing —
-    # and with the shipped ``keep_recent_tokens`` (20000) that is the ORDINARY
-    # outcome for any conversation smaller than that, i.e. the DEFAULT path of
-    # the manual ``compact`` verb (RPC Tier B B2). Returning a preparation here
-    # made ``compact()`` spend a completion summarizing an empty
-    # ``<conversation>``, append that summary (GROWING the context by it), and
-    # publish a ``tokens_saved`` for a removal that never happened. "Nothing to
-    # compact" already has a spelling on this contract — ``None``, which
-    # ``AgentSession.compact()`` reports as ``performed=false`` — so report the
-    # real outcome instead of fabricating a compaction (Fail Early). The
-    # first-kept-id check above deliberately stays AHEAD of this: an unmigrated
-    # session is a hard error whether or not this particular cut would have
-    # moved anything.
     if not messages_to_summarize and not turn_prefix_messages:
         return None
 
-    # Files touched across the summarized range (pi seeds from the previous
-    # compaction's stored details; τ's CompactionEntry does not persist file
-    # lists, so accumulation starts fresh each compaction — documented divergence).
     file_ops = create_file_ops()
     for msg in messages_to_summarize:
         extract_file_ops_from_message(msg, file_ops)
     for msg in turn_prefix_messages:
         extract_file_ops_from_message(msg, file_ops)
 
-    # Entry ids replaced by this compaction = everything from the boundary up to
-    # (not including) the first kept entry.
     compacted_entry_ids = [
         eid
         for i in range(boundary_start, cut.first_kept_entry_index)
@@ -890,8 +824,6 @@ async def compact(
         summary = (
             f"{history_summary}\n\n---\n\n**Turn Context (split turn):**\n\n{turn_prefix_summary}"
         )
-        # A split turn spends TWO completions. Counting one would understate the
-        # compaction's cost by roughly half.
         usage = add_usage(history_usage, prefix_usage)
     else:
         summary, usage = await generate_summary(
@@ -907,17 +839,6 @@ async def compact(
     read_files, modified_files = compute_file_lists(preparation.file_ops)
     summary += format_file_operations(read_files, modified_files)
 
-    # What this compaction REMOVED from context, which is what the field claims:
-    # the summarized range (history + any split-turn prefix) leaves, and
-    # ``summary`` takes its place. ``tokens_before`` is the whole active path —
-    # it includes the recent context the cut deliberately KEEPS — so subtracting
-    # the summary from it reported the kept tail as saved as well (measured on a
-    # three-turn session: tokens_before=5003, tokens_saved=4953, nothing gone).
-    # Both sides use the same estimator as ``tokens_before`` so the subtraction
-    # is between like quantities, not between the estimator and a len//4 guess.
-    # Deliberately NOT clamped at zero: a summary longer than the prefix it
-    # replaces saved a negative number of tokens, and rounding that up to 0 is
-    # the same fabrication in a smaller denomination (Fail Early).
     tokens_removed = estimate_context_tokens(
         [*preparation.messages_to_summarize, *preparation.turn_prefix_messages]
     ).tokens

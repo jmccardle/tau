@@ -49,6 +49,9 @@ from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 from tau_coding_agent.session_store import Session
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DOC = _REPO_ROOT / "docs" / "EXTENSIONS-LIVE-PROCEDURES.md"
 
@@ -104,8 +107,6 @@ def _example_path(command: str) -> str | None:
 
 # ── (1) doc conformance bound to the REAL loader surface ──────────────────────
 
-# Per demo: the example the command must name, the hooks/tools its observation
-# depends on, and keywords the observation must actually contain (the durable shape).
 _DEMO_EXPECTATIONS = {
     "gatekeeper": {
         "path": "examples/22_gatekeeper.py",
@@ -153,14 +154,10 @@ async def test_doc_lists_a_procedure_per_demo_plus_reload() -> None:
         example = _REPO_ROOT / expect["path"]
         assert example.is_file(), f"{slug}: {example} does not exist"
 
-        # (b) RUNNABLE: the exact file loads through the public -e loader (the same
-        # getattr(module, "register") path `tau -e <file>` uses) — not a wrapper.
         result = await _load_extensions(explicit_paths=[str(example)], discover=False)
         assert not result.errors, f"{slug}: {example} failed to load: {result.errors}"
         info = summarize_extensions(result)[0]
 
-        # (c) the loaded extension registers exactly the surface the doc's observation
-        # relies on — so the promised durable node has a real mechanism behind it.
         assert expect["hooks"] <= set(info.hooks), (
             f"{slug}: expected hooks {expect['hooks']}, got {info.hooks}"
         )
@@ -175,8 +172,6 @@ async def test_doc_lists_a_procedure_per_demo_plus_reload() -> None:
                 f"{slug}: observation must mention {kw!r}; got:\n{observation}"
             )
 
-    # The reload check: two commands (inject via a demo, then --resume) and an
-    # observation naming the invariant's proof (byte-identical, exactly one node).
     reload_section = sections["reload"]
     reload_cmds = _commands(reload_section)
     assert any("examples/21_reminders.py" in c for c in reload_cmds), (
@@ -200,7 +195,7 @@ def _tool_call_assistant(call_id: str, name: str, args: dict[str, Any]) -> Assis
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -212,7 +207,7 @@ def _text_assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -373,8 +368,6 @@ async def test_reload_check_node_survives_byte_identical(tmp_path):
     customs = [e for e in first.entries() if e.get("type") == "customMessage"]
     assert len(customs) == 1
 
-    # On the wire the durable custom node remaps custom→user (the LLM never sees
-    # "custom"), while the preamble text survives as a user message.
     wire = convert_to_llm(ctx_first)
     assert "custom" not in [m.get("role") for m in wire]
     user_texts = []

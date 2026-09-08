@@ -3,7 +3,7 @@
 W3 landed the ``elide`` node in the core — the summary-less generalization of the
 compaction splice anchor — with no way to create one from the TUI, so a human could
 not use it at all. These tests drive it end to end at the action level
-(``Parley.action_browse_tree`` → an ``elide`` :class:`TreeIntent` →
+(``TauApp.action_browse_tree`` → an ``elide`` :class:`TreeIntent` →
 ``TauBackend.elide_span``), and pin the two invariants that make it safe:
 
 * the resulting context skips **exactly** the elided span, and
@@ -36,14 +36,10 @@ from textual.app import App
 from textual.widgets import Button, Static
 
 from tau_agent_core.conversation_tree import ConversationTree
-from tau_coding_agent.app import (
-    ChatDisplay,
-    Parley,
-    SessionTreeModal,
-    TreeIntent,
-    TreeModeModal,
-)
+from tau_coding_agent.app import TauApp
+from tau_coding_agent.tree_browser import SessionTreeModal
 from tau_coding_agent.backends import TauBackend
+from tau_coding_agent import transcript, tree_browser
 
 
 def _backend() -> TauBackend:
@@ -65,7 +61,7 @@ def app(make_app):
     return make_app(create_backend=lambda cfg: _backend())
 
 
-def _script(app: Parley, values: list[Any]) -> list[Any]:
+def _script(app: TauApp, values: list[Any]) -> list[Any]:
     """Answer the flow's modals from a script; return the screens it pushed.
 
     ``action_browse_tree`` is a worker whose every step is a ``push_screen_wait``;
@@ -84,7 +80,7 @@ def _script(app: Parley, values: list[Any]) -> list[Any]:
     return pushed
 
 
-def _pick(node_id: str) -> TreeIntent:
+def _pick(node_id: str) -> tree_browser.TreeIntent:
     """What :class:`SessionTreeModal` answers a node pick with (§5.3 / §11.1).
 
     Spelled out at every call site rather than wrapped inside :func:`_script`,
@@ -92,10 +88,10 @@ def _pick(node_id: str) -> TreeIntent:
     return type: a script that silently boxed a bare id would keep passing against
     an ``action_browse_tree`` that still read one.
     """
-    return TreeIntent("navigate", (node_id,))
+    return tree_browser.TreeIntent("navigate", (node_id,))
 
 
-def _elide(anchor: str, first_kept: str) -> TreeIntent:
+def _elide(anchor: str, first_kept: str) -> tree_browser.TreeIntent:
     """What ``ctrl+E`` in the browser answers with: both ends, in that order.
 
     ``anchor`` is where the fold jumps FROM and the conversation continues;
@@ -103,10 +99,10 @@ def _elide(anchor: str, first_kept: str) -> TreeIntent:
     is what decides which of the two nodes the reader named is which — see the
     modal-level tests below.
     """
-    return TreeIntent("elide", (anchor, first_kept))
+    return tree_browser.TreeIntent("elide", (anchor, first_kept))
 
 
-def _notifications(app: Parley) -> list[tuple[str, str]]:
+def _notifications(app: TauApp) -> list[tuple[str, str]]:
     """Record ``notify`` calls as ``(message, severity)``."""
     seen: list[tuple[str, str]] = []
     original = app.notify
@@ -119,7 +115,7 @@ def _notifications(app: Parley) -> list[tuple[str, str]]:
     return seen
 
 
-async def _seeded(app: Parley) -> tuple[Any, list[str]]:
+async def _seeded(app: TauApp) -> tuple[Any, list[str]]:
     """A fresh chat with six appended messages; returns the session + their ids."""
     await app.action_new_chat()
     session = app.current_session
@@ -189,16 +185,12 @@ async def test_elide_action_skips_exactly_the_span_and_keeps_every_entry(
         await wait_for_workers_settled(app)
         await pilot.pause()
 
-        # Exactly one elide entry, anchored where we said, and NO navigate: the
-        # anchor was already the cursor.
         elides = [e for e in session.entries() if e.get("type") == "elide"]
         assert len(elides) == 1
         assert elides[0]["firstKeptId"] == resume
         assert elides[0]["parentId"] == anchor
         assert [e for e in session.entries() if e.get("type") == "navigate"] == []
 
-        # The context skips EXACTLY the span: the system prompt (carried), the
-        # anchor, then u3, a3 — nothing else.
         assert _kept_ids(session) == [_system_id(session), elides[0]["id"], ids[4], ids[5]]
         assert _texts(app.messages)[-2:] == ["u3", "a3"]
         assert app.messages[0]["role"] == "system"
@@ -209,14 +201,10 @@ async def test_elide_action_skips_exactly_the_span_and_keeps_every_entry(
         # …including every elided one, by name.
         assert set(ids) <= {e["id"] for e in session.entries()}
 
-        # §3.4 re-render seam: the working list IS the new fold, and the display was
-        # reloaded from it.
         assert app.messages == ConversationTree(session.entries(), session.cursor).context_for()
-        assert app.query_one(ChatDisplay) is not None
+        assert app.query_one(transcript.ChatDisplay) is not None
 
-        # ONE screen. No mode chooser (an elide was never one of the three branch
-        # modes) and no second browser (the intent already carries both ends).
-        assert [type(screen) for screen in pushed] == [SessionTreeModal]
+        assert [type(screen) for screen in pushed] == [tree_browser.SessionTreeModal]
 
 
 async def test_elide_at_an_interior_anchor_navigates_first(app, wait_for_workers_settled):
@@ -237,9 +225,6 @@ async def test_elide_at_an_interior_anchor_navigates_first(app, wait_for_workers
         elides = [e for e in session.entries() if e.get("type") == "elide"]
         assert [n["targetId"] for n in navigates] == [anchor]
         assert elides[0]["parentId"] == anchor
-        # Kept: the system prompt (carried across the splice), then the anchor's
-        # line from u2 through a2. u3/a3 are off the new path (the cursor moved
-        # back) and u1/a1 are elided.
         assert _kept_ids(session) == [_system_id(session), elides[0]["id"], ids[2], ids[3]]
         assert _texts(app.messages)[-2:] == ["u2", "a2"]
         assert app.messages[0]["role"] == "system"
@@ -280,9 +265,6 @@ async def test_elide_with_unreachable_resume_point_notifies_and_appends_nothing(
         messages_before = list(app.messages)
         notes = _notifications(app)
 
-        # anchor a1, resume a3 (a descendant). `SessionTreeModal` refuses this pair
-        # by name and never dismisses with it, so the intent is built by hand — the
-        # reachable version of this is a pair that went stale under a live session.
         _script(app, [_elide(ids[1], ids[5])])
         app.action_browse_tree()
         await wait_for_workers_settled(app)
@@ -406,8 +388,6 @@ def test_elide_node_preview_names_the_hidden_span():
     """An ``elide`` carries no summary, so without this it renders as a bare
     ``(elide)`` and is illegible in the browser."""
     log, ids = _linear_log()
-    # §11.3's provenance keywords: what this elide covers, recorded at the write.
-    # m0, m1, m2 at one estimated token each ("m0" is two characters).
     log.append_elide(ids[3], covered_entries=3, covered_tokens=3, agent_spec_id=None)
 
     nodes = {n.id: n for n in _flatten(ConversationTree(log.entries(), log.cursor).tree())}
@@ -417,7 +397,7 @@ def test_elide_node_preview_names_the_hidden_span():
     # m0, m1, m2 are hidden; the fold resumes at m3.
     assert preview == f"hides 3 entries, resumes at {ids[3]}"
     # And the browser row is no longer a bare "(elide)".
-    assert SessionTreeModal._label(nodes[elide_id]).startswith("elide: hides 3 entries")
+    assert tree_browser.SessionTreeModal._label(nodes[elide_id]).startswith("elide: hides 3 entries")
 
 
 def test_elide_node_preview_reports_an_unreachable_boundary():
@@ -425,8 +405,6 @@ def test_elide_node_preview_reports_an_unreachable_boundary():
     row says what that node actually does (keep nothing) rather than counting it."""
     log, ids = _linear_log()
     log.append_navigate(ids[1])
-    # ids[4] is a descendant of the anchor: unreachable, so the span covers nothing
-    # — which is what the recorded provenance says too.
     log.append_elide(ids[4], covered_entries=0, covered_tokens=0, agent_spec_id=None)
 
     nodes = {n.id: n for n in _flatten(ConversationTree(log.entries(), log.cursor).tree())}
@@ -482,7 +460,7 @@ async def test_the_mode_chooser_no_longer_offers_an_elide():
     ``action_browse_tree`` that no longer has a branch for it."""
     from textual.css.query import NoMatches
 
-    harness = _ModalHarness(TreeModeModal())
+    harness = _ModalHarness(tree_browser.TreeModeModal())
     async with harness.run_test() as pilot:
         await pilot.pause()
         with pytest.raises(NoMatches):
@@ -498,7 +476,7 @@ async def test_the_mode_chooser_no_longer_offers_an_elide():
 async def test_tree_modal_shows_the_caption_it_was_given():
     log, _ids = _linear_log()
     view = ConversationTree(log.entries(), log.cursor)
-    modal = SessionTreeModal(
+    modal = tree_browser.SessionTreeModal(
         view,
         title="Elide: pick the resume point",
         help_text="H",
@@ -506,7 +484,7 @@ async def test_tree_modal_shows_the_caption_it_was_given():
     harness = _ModalHarness(modal)
     async with harness.run_test() as pilot:
         await pilot.pause()
-        title = harness.screen.query_one("#tree-browser-title", Static)
+        title = harness.screen.query_one(".tau-dialog-title", Static)
         help_text = harness.screen.query_one("#tree-browser-help", Static)
         assert str(title.content) == "Elide: pick the resume point"
         assert str(help_text.content) == "H"
@@ -515,16 +493,11 @@ async def test_tree_modal_shows_the_caption_it_was_given():
 async def test_tree_modal_default_caption_is_unchanged():
     log, _ids = _linear_log()
     view = ConversationTree(log.entries(), log.cursor)
-    harness = _ModalHarness(SessionTreeModal(view))
+    harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         await pilot.pause()
-        title = harness.screen.query_one("#tree-browser-title", Static)
+        title = harness.screen.query_one(".tau-dialog-title", Static)
         assert str(title.content) == "Browse Conversation Tree"
-
-
-# ---------------------------------------------------------------------------
-# The gesture itself: ctrl+E inside the browser (PLAN-0.9.4 §4)
-# ---------------------------------------------------------------------------
 
 
 def _widget_rows(node):
@@ -590,14 +563,14 @@ async def test_ctrl_e_with_no_mark_folds_the_history_behind_the_current_tip():
         await _goto(harness, pilot, ids[2])
         modal.action_elide()
         await pilot.pause()
-    assert harness.result == TreeIntent("elide", (ids[4], ids[2]))
+    assert harness.result == tree_browser.TreeIntent("elide", (ids[4], ids[2]))
 
 
 async def test_the_deeper_node_is_the_anchor_whichever_order_they_were_marked():
     """The reader marks one end and puts the cursor on the other, and does not have
     to remember which they picked first — the tree decides."""
     log, ids = _linear_log()
-    expected = TreeIntent("elide", (ids[3], ids[1]))
+    expected = tree_browser.TreeIntent("elide", (ids[3], ids[1]))
 
     for mark, cursor in ((ids[1], ids[3]), (ids[3], ids[1])):
         harness, modal = await _open(ConversationTree(log.entries(), log.cursor))
@@ -659,14 +632,14 @@ async def test_marking_one_node_greys_the_rows_that_cannot_pair_with_it():
     which rows could form a span, and greying half the tree at them would be an
     answer to a question nobody put.
     """
-    from tau_coding_agent.app import ZoneTree
+    from tau_coding_agent.tree_browser import ZoneTree
 
     log, u1, a1, u2, a2, b1 = _forked_log()
     harness, modal = await _open(ConversationTree(log.entries(), log.cursor))
     async with harness.run_test() as pilot:
         for _ in range(4):
             await pilot.pause()
-        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        tree = harness.screen.query_one("#tree-browser-tree", tree_browser.ZoneTree)
         assert tree.zones.ineligible == frozenset(), "nothing marked, nothing greyed"
 
         await _goto(harness, pilot, b1)
@@ -699,14 +672,9 @@ async def test_the_help_line_offers_the_elide_only_where_it_is_legal():
         await _goto(harness, pilot, a2)
         assert "ctrl+E" not in str(marks.content), "a cousin cannot be the other end"
 
-        # `u1` is on b1's line but is the FIRST entry, so resuming there hides
-        # nothing and the offer is withheld for the second reason.
         await _goto(harness, pilot, u1)
         assert "ctrl+E" not in str(marks.content)
 
-        # `a1` pairs with the marked `b1`. The fold itself drops only `u1`, but
-        # the anchor is `b1` and the cursor is not there, so `u2` and `a2` leave
-        # the context too — and the line says so, both the count and the move.
         await _goto(harness, pilot, a1)
         assert "ctrl+E: keep this span, drop the other 3 entries, and move back to it" in str(
             marks.content
@@ -743,21 +711,21 @@ async def test_the_ctrl_e_key_actually_reaches_the_action():
         await _goto(harness, pilot, ids[2])
         await pilot.press("ctrl+e")
         await pilot.pause()
-    assert harness.result == TreeIntent("elide", (ids[4], ids[2]))
+    assert harness.result == tree_browser.TreeIntent("elide", (ids[4], ids[2]))
 
 
 async def test_the_ctrl_d_key_folds_the_detail_pane():
     """``ctrl+d``, and not the ``ctrl+m`` that was asked for: a terminal sends the
     same byte for ``Enter`` and ``Ctrl+M`` (textual's ``KEY_ALIASES`` maps
     ``enter`` to ``ctrl+m``), and ``Enter`` is this screen's commit key."""
-    from tau_coding_agent.app import TreeDetailPane
+    from tau_coding_agent.transcript import TreeDetailPane
 
     log, _ids = _linear_log()
     harness, _modal = await _open(ConversationTree(log.entries(), log.cursor))
     async with harness.run_test(size=(120, 40)) as pilot:
         for _ in range(4):
             await pilot.pause()
-        pane = harness.screen.query_one(TreeDetailPane)
+        pane = harness.screen.query_one(transcript.TreeDetailPane)
         assert pane.display is True
         await pilot.press("ctrl+d")
         await pilot.pause()

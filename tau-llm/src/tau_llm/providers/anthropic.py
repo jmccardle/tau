@@ -32,6 +32,12 @@ retries, living under ``client.aclose_providers``. :meth:`aclose` closes it.
   the gate exists to prevent.
 * No compat detection (S7). ``tau_llm.compat`` answers OpenAI-wire questions.
   This module never imports it, which is the whole of the gate.
+
+**Prompt caching needs no dialect here.** Every request carries the top-level
+``cache_control`` the Messages API defines, which places one automatic breakpoint
+on the last cacheable block, so ``Model.prompt_cache_dialect`` is unread in this
+module and ``prompt_cache: false`` is the only way to turn it off.
+docs/PROMPT-CACHING.md §5 has the measurements.
 """
 
 from __future__ import annotations
@@ -72,19 +78,8 @@ _logger = logging.getLogger(__name__)
 #: The wire protocol id this module implements, as it appears in ``Model.api``.
 API = "anthropic-messages"
 
-#: Top-level key under which an Anthropic thinking payload rides on
-#: ``ThinkingContent.thinking_signature`` (S4). The dict form exists precisely so
-#: that this blob never reaches the OpenAI writer's ``result[signature] = …``
-#: line, where it would be written as a JSON field name.
 SIGNATURE_NAMESPACE = "anthropic"
 
-#: Anthropic ``stop_reason`` → τ ``AssistantMessage.stop_reason``.
-#:
-#: ``refusal`` maps to ``error`` on purpose. A refusal arrives as HTTP 200 with a
-#: ``stop_details`` category and little or no content; reporting it as ``stop``
-#: would hand a caller an empty successful answer, and ``ctx.complete()`` would
-#: not raise. ``error`` is the τ stop_reason that ``completion.py`` turns into a
-#: ``CompletionFailed`` the caller can see (Fail-Early).
 _STOP_REASONS: dict[str, str] = {
     "end_turn": "stop",
     "stop_sequence": "stop",
@@ -93,15 +88,11 @@ _STOP_REASONS: dict[str, str] = {
     "refusal": "error",
 }
 
-#: Warn-once bookkeeping, keyed by model id. Both conditions below persist for a
-#: whole session, so warning per request would warn on every turn.
+_CACHE_CONTROL_EPHEMERAL = {"type": "ephemeral"}
+
 _WARNED_REPLAY_OVERRIDE: set[str] = set()
 _WARNED_UNSIGNED_THINKING: set[str] = set()
 
-#: Per-call option keys that configure THIS PROVIDER rather than the request:
-#: a transport credential, a τ-internal thinking level, a cancellation handle, a
-#: constraint object, an HTTP-client setting, and a transport mode. Same list the
-#: OpenAI provider strips (``openai.py:1552``); none of them may reach the wire.
 _INTERNAL_OPTION_KEYS = frozenset(
     {
         "api_key",
@@ -133,8 +124,6 @@ def _accepted_stream_params(stream: Any) -> frozenset[str] | None:
     τ is about to invoke is passed in, rather than a class imported here, so the
     answer describes that object and nothing else.
     """
-    # Cache against the underlying function: a bound method is a fresh object on
-    # every attribute access, so the method itself is not a usable cache key.
     return _accepted_params_of(getattr(stream, "__func__", stream))
 
 
@@ -319,11 +308,6 @@ class AnthropicMessagesProvider(Provider):
         system_parts: list[str] = []
         out: list[dict[str, Any]] = []
 
-        # Reasoning-replay boundary, computed exactly as the OpenAI converter
-        # computes it: the last USER turn. A tool result is not a user turn, so
-        # the whole in-progress assistant/tool sequence sits after this index —
-        # which is what makes "turn" replay the current tool loop's thinking and
-        # drop everything older.
         last_user_idx = -1
         for i, msg in enumerate(messages):
             if isinstance(msg, UserMessage) or (
@@ -345,8 +329,6 @@ class AnthropicMessagesProvider(Provider):
 
             if role in ("toolResult", "tool"):
                 block = self._tool_result_block(msg)
-                # Merge into the previous user message when that message is
-                # itself a run of tool results (see point 2 above).
                 if out and out[-1]["role"] == "user" and _is_tool_result_run(out[-1]):
                     out[-1]["content"].append(block)
                 else:
@@ -355,10 +337,6 @@ class AnthropicMessagesProvider(Provider):
 
             if role == "assistant":
                 blocks = self._assistant_blocks(msg, model, include_reasoning)
-                # An assistant turn that serialises to nothing cannot be sent —
-                # the API rejects empty content. It only arises when the message
-                # held prior-turn thinking and nothing else, which carries no
-                # information the model needs back.
                 if not blocks:
                     _logger.debug("dropping assistant message %d: no blocks survived conversion", i)
                     continue
@@ -609,10 +587,6 @@ class AnthropicMessagesProvider(Provider):
         self.api_key = api_key
 
         if options.get("constraints") is not None and options["constraints"].has_constraint():
-            # S6. Not a "not yet" — the Messages API exposes no decode-constraint
-            # parameter at all, so there is nothing to send and no way to verify
-            # a constraint held. Raising here says so; a best-effort attempt
-            # would return an unconstrained generation as a constrained one.
             raise ValueError(
                 f"Model {model.id!r} speaks {API!r}, which has no decode-constraint "
                 "parameter. A constrained call cannot be honoured on this wire. "
@@ -636,17 +610,6 @@ class AnthropicMessagesProvider(Provider):
         client = self._get_client()
         accepted = _accepted_stream_params(client.messages.stream)
 
-        # Model.extra_body is the operator's escape hatch for anything this
-        # module does not model; per-call options win over it, as on the OpenAI
-        # path. Transport-only and τ-internal keys never reach the wire.
-        #
-        # Both dicts are SPLIT rather than splatted. A key the SDK declares is
-        # passed as that keyword argument, which is what keeps the per-call-wins
-        # precedence intact — the SDK merges `extra_body` over the named
-        # arguments, so a key sitting in `extra_body` would beat the per-call
-        # option meant to override it. A key the SDK does not declare goes into
-        # `extra_body`, where it lands in the JSON body and the SERVER decides,
-        # which is the same contract the OpenAI path gives `Model.extra_body`.
         extra_body: dict[str, Any] = {}
         if accepted is not None:
             for key, value in model.extra_body.items():
@@ -654,17 +617,16 @@ class AnthropicMessagesProvider(Provider):
         else:
             request.update(model.extra_body)
 
+        if model.prompt_cache and not ("cache_control" in request or "cache_control" in extra_body):
+            if accepted is None or "cache_control" in accepted:
+                request["cache_control"] = dict(_CACHE_CONTROL_EPHEMERAL)
+            else:
+                extra_body["cache_control"] = dict(_CACHE_CONTROL_EPHEMERAL)
+
         per_call = {k: v for k, v in options.items() if k not in _INTERNAL_OPTION_KEYS}
-        # `extra_body` is itself one of the SDK's named parameters, so a per-call
-        # one would REPLACE the model's rather than override it key-by-key.
         extra_body.update(per_call.pop("extra_body", {}))
 
         if accepted is not None:
-            # Fail-Early. τ will not guess that an undeclared keyword argument
-            # belongs in the body: `Model.extra_body` is the express way to say
-            # so, and it is one line of config away. The alternative — quietly
-            # rerouting it — turns a caller's `temperature` into a 400 from a
-            # model that removed the parameter, which reads as a τ bug.
             unknown = sorted(k for k in per_call if k not in accepted)
             if unknown:
                 raise ValueError(
@@ -694,14 +656,6 @@ class AnthropicMessagesProvider(Provider):
                             )
                             return
 
-                        # Branch on ``event.type`` directly rather than through a
-                        # local: it is the union's Literal discriminator, so this
-                        # is what narrows the SDK's event type to the member that
-                        # actually carries ``.text`` / ``.thinking`` /
-                        # ``.signature``. Every other member — the raw
-                        # message/content-block events, citations, and the
-                        # ``input_json`` fragments the SDK accumulates into the
-                        # final message for us — needs nothing here.
                         if event.type == "text":
                             state.text_parts.append(event.text)
                             yield TextDeltaEvent(delta=event.text, partial=state.build_message())
@@ -717,10 +671,6 @@ class AnthropicMessagesProvider(Provider):
 
                 final_msg = state.finalize(final)
 
-                # One tool-call delta per call, derived from the finished
-                # message. The SDK accumulates ``input_json`` fragments into the
-                # final block, so — unlike the OpenAI path — there is no partial
-                # argument buffer to re-parse here.
                 for pos, tc in enumerate(final_msg.get_tool_calls()):
                     yield ToolCallDeltaEvent(
                         delta={
@@ -735,9 +685,6 @@ class AnthropicMessagesProvider(Provider):
                 return
 
             except Exception as exc:
-                # Name the model and the endpoint as well as the fault: a fleet
-                # behind one τ config can have several, and the answer is not in
-                # the exception.
                 yield ErrorEvent(
                     message=(
                         f"Streaming error from model {model.id!r} at "
@@ -808,9 +755,6 @@ class _StreamState:
                     )
                 )
             elif btype == "redacted_thinking":
-                # No readable text exists for a redacted block — the payload is
-                # the whole of it, and inventing a placeholder would be a lie
-                # about what the model said.
                 blocks.append(
                     ThinkingContent(
                         thinking="",
@@ -846,10 +790,6 @@ class _StreamState:
                 f": {explanation}" if explanation else ""
             )
         elif raw_stop is not None and raw_stop not in _STOP_REASONS:
-            # An unmapped stop_reason is a wire the client does not fully know —
-            # `pause_turn`, say, which means the turn is resumable and NOT
-            # finished. Reporting it as a clean stop would hand a caller a
-            # truncated answer that looks complete.
             stop_reason = "error"
             error_message = (
                 f"unhandled Anthropic stop_reason {raw_stop!r}; τ cannot tell whether this "
@@ -874,7 +814,8 @@ def _usage_from_anthropic(usage: Any) -> Usage:
 
     Anthropic reports cache reads and cache writes as separate counters and
     excludes both from ``input_tokens``. τ's ``total_tokens`` is computed here
-    rather than read, because the API reports no total.
+    rather than read, because the API reports no total. Either counter being
+    present — rather than non-zero — is what sets ``cache_reported``.
     """
     if usage is None:
         return Usage()
@@ -882,11 +823,16 @@ def _usage_from_anthropic(usage: Any) -> Usage:
     output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
     cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
     cache_write = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+    reported = (
+        getattr(usage, "cache_read_input_tokens", None) is not None
+        or getattr(usage, "cache_creation_input_tokens", None) is not None
+    )
     return Usage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_read_tokens=cache_read,
         cache_write_tokens=cache_write,
+        cache_reported=reported,
         total_tokens=input_tokens + output_tokens + cache_read + cache_write,
     )
 

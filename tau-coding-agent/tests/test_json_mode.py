@@ -32,11 +32,14 @@ from tau_coding_agent.backends import tau_event_to_pi_event
 from tau_coding_agent.cli import CLIArgs
 from tau_coding_agent.headless import run_print
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 # --- the pure serializer ----------------------------------------------------
 
 
 def test_serializer_uses_type_discriminator_not_kind():
-    event = AgentEvent(type="turn_start", timestamp=0, turn_index=0)
+    event = AgentEvent(type="turn_start", timestamp=_TS, turn_index=0)
     out = tau_event_to_pi_event(event)
     assert out is not None
     assert out["type"] == "turn_start"
@@ -45,11 +48,9 @@ def test_serializer_uses_type_discriminator_not_kind():
 
 
 def test_serializer_keeps_usage_bearing_message_end():
-    # The per-completion message_end (agent_loop.py:485) carries usage/model/
-    # stop_reason — pi's one-per-message message_end.
     event = AgentEvent(
         type="message_end",
-        timestamp=0,
+        timestamp=_TS,
         message={
             "role": "assistant",
             "content": [{"type": "text", "text": "hi"}],
@@ -67,24 +68,14 @@ def test_serializer_keeps_usage_bearing_message_end():
 
 
 def test_serializer_drops_duplicate_content_only_message_end():
-    # The run()/run_continue message_end (no usage) is the duplicate pi never
-    # emits — dedup to None so each assistant message yields exactly one.
     event = AgentEvent(
         type="message_end",
-        timestamp=0,
+        timestamp=_TS,
         message={"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
     )
     assert tau_event_to_pi_event(event) is None
 
 
-# --- G4/B: the ``usage.extra`` telemetry LOCK -------------------------------
-#
-# pi's message_end ALREADY carries ``message.usage.extra`` (llama.cpp timings + τ's
-# JSON-repair count) verbatim through the plain-dict passthrough — nothing named it,
-# nothing tested it, so the debt read "empty". These lock it: the serializer must
-# preserve a non-empty ``extra`` and must NEVER fabricate an empty ``{}`` for a
-# completion that carried none. Reuses the stock-timings shape from
-# ``test_70_telemetry.py``.
 STOCK_TIMINGS = {
     "prompt_n": 12,
     "prompt_ms": 40.5,
@@ -95,9 +86,6 @@ STOCK_TIMINGS = {
 
 
 def test_serializer_preserves_usage_extra_timings_and_repairs():
-    # Build the message dict the way the loop does — off the REAL Usage.model_dump —
-    # so ``extra`` is tested against the shape the provider actually emits, not one
-    # invented for the test (Usage.extra is populated at construction).
     usage = Usage(
         input_tokens=12,
         output_tokens=20,
@@ -106,7 +94,7 @@ def test_serializer_preserves_usage_extra_timings_and_repairs():
     )
     event = AgentEvent(
         type="message_end",
-        timestamp=0,
+        timestamp=_TS,
         message={
             "role": "assistant",
             "content": [{"type": "text", "text": "hi"}],
@@ -124,13 +112,9 @@ def test_serializer_preserves_usage_extra_timings_and_repairs():
 
 
 def test_serializer_does_not_fabricate_an_empty_extra_when_absent():
-    # A provider that reported no telemetry yields a usage dict with NO ``extra`` key.
-    # The plain-dict passthrough must leave it absent — never inject ``extra: {}``
-    # (Fail-Early: an empty telemetry dict would read as "measured, and it was empty",
-    # which is a different, false claim from "not measured").
     event = AgentEvent(
         type="message_end",
-        timestamp=0,
+        timestamp=_TS,
         message={
             "role": "assistant",
             "content": [{"type": "text", "text": "hi"}],
@@ -154,7 +138,7 @@ def _assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="qwen",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=1000, output_tokens=500, total_tokens=1500, cache_read_tokens=0),
     )
 
@@ -240,14 +224,9 @@ async def test_run_print_json_is_pi_faithful(fake_llm, capsys):
     # Header FIRST (pi print-mode.ts:113-116).
     assert lines[0]["type"] == "session"
 
-    # ``type`` discriminator everywhere; never the legacy ``kind`` schema, and no
-    # synthetic ``done`` line.
     assert all("kind" not in e for e in lines)
     assert all(e.get("type") != "done" for e in lines)
 
-    # Exactly one message_end (the per-completion one), carrying the real
-    # usage/model/stop_reason the delegate reads — the content-only duplicate the
-    # loop also emits is deduped away.
     message_ends = [e for e in lines if e["type"] == "message_end"]
     assert len(message_ends) == 1
     message = message_ends[0]["message"]
@@ -257,6 +236,4 @@ async def test_run_print_json_is_pi_faithful(fake_llm, capsys):
     assert message["model"] == "qwen"
     assert message["stop_reason"] == "stop"
 
-    # The lifecycle bus flows through: agent_end terminates the stream (pi has no
-    # synthetic ``done``).
     assert lines[-1]["type"] == "agent_end"

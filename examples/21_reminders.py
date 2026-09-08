@@ -124,20 +124,12 @@ import re
 import sys
 from typing import Any
 
-# ── import the kit (it lives alongside the demos in examples/) ───────────────
-# The file-path extension loader (``tau -e examples/21_reminders.py``) does not add
-# the extension's own directory to ``sys.path``, and the test harness loads this
-# file by path too — so bootstrap ``examples/`` onto the path before importing the
-# kit, whether run directly, imported, or loaded via ``-e`` (D-E6-3).
 _EXAMPLES_DIR = os.path.dirname(os.path.abspath(__file__))
 if _EXAMPLES_DIR not in sys.path:
     sys.path.insert(0, _EXAMPLES_DIR)
 
 from ext_kit import steer  # noqa: E402  (path insertion must precede the import)
 
-# ── rule identifiers, order, and per-rule cooldowns ──────────────────────────
-# RULE_ORDER fixes a deterministic drain order (pi iterates rules in a stable
-# order so the injected reminder text is reproducible).
 RULE_ORDER: tuple[str, ...] = (
     "tests-readonly",
     "root-cause-after-2-failures",
@@ -173,14 +165,6 @@ REMINDER_TEXT: dict[str, str] = {
     ),
 }
 
-#: The standing discipline preamble injected ONCE, before the very first LLM call,
-#: via the ``before_agent_start`` hook — the "pre-first-call" case (E5 §1.2 / §3.3 /
-#: S31). The four reactive rules above ride the ``tool_result`` that triggered them,
-#: but the first LLM call of a session has NO preceding ``tool_result`` to carry a
-#: reminder; it is preceded only by the ``before_agent_start`` node. So the proactive
-#: discipline statement rides THAT node instead: it states the bank's disciplines
-#: up-front so the agent carries them from turn zero rather than only learning each
-#: one after it has already tripped the corresponding rule.
 PREAMBLE_TEXT: str = (
     "Coding discipline for this session: tests encode the spec — satisfy them by "
     "changing the implementation under test, never by editing test files. Keep every "
@@ -188,10 +172,6 @@ PREAMBLE_TEXT: str = (
     "same action fails twice in a row, diagnose the root cause before retrying."
 )
 
-#: The extension-origin ``customType`` carried by the durable preamble node
-#: (E5 §3.1 / S29): it marks the injected message as reminder-bank-authored for the
-#: TUI / tree browser, while the wire remaps ``custom`` → ``user`` so it still reaches
-#: the model.
 PREAMBLE_CUSTOM_TYPE: str = "reminder-preamble"
 
 #: Number of consecutive same-tool errors that trips the root-cause rule.
@@ -222,9 +202,6 @@ DEP_MANIFESTS: frozenset[str] = frozenset(
     }
 )
 
-#: A ``bash`` command that installs a package trips ``no-new-deps``. The
-#: ``\binstall\b`` boundary means ``pip uninstall`` does NOT match (no word break
-#: before "install" inside "uninstall").
 _INSTALL_RE = re.compile(
     r"\b(pip3?|python\s+-m\s+pip|poetry|npm|yarn|pnpm|cargo|go|gem|bundle)\b"
     r".*\b(install|add|get)\b"
@@ -293,18 +270,11 @@ class ReminderBank:
     """
 
     def __init__(self) -> None:
-        # The generalized state machine (S58): register the four rules as data, in
-        # RULE_ORDER (which fixes the deterministic drain order the kit preserves).
-        # Each rule uses the default threshold=1, so ``trigger`` (bypassing the
-        # threshold) marks it pending exactly as the demo's old ``trigger`` did.
         self._bank = steer.ReminderBank()
         for rule in RULE_ORDER:
             self._bank.add(rule, REMINDER_TEXT[rule], cooldown=COOLDOWNS[rule])
         # tool name -> consecutive error count (reset on a success).
         self._failures: dict[str, int] = {}
-        # Whether the pre-first-call discipline preamble has been seeded yet. In
-        # memory only: a reload resets it, but the already-seeded custom node
-        # persists in the tree (E5 §3.3 / S31 — the demo's in-memory-state contract).
         self._seeded: bool = False
 
     # -- state transitions ----------------------------------------------------
@@ -412,11 +382,6 @@ class ReminderBank:
             else:
                 self._failures[tool_name] = 0
 
-        # Delegate the drain + durable append to the kit bank: it drains the pending
-        # rules and, when any fire, returns the ``{"content": [...original..., nag]}``
-        # patch (appending — never replacing — so the tool's own output survives
-        # beneath the nag), else ``None`` for an untouched result. The kit renders
-        # the same ``<system-reminder>`` bodies (the rules carry REMINDER_TEXT).
         return self._bank.patch_result(event)
 
 
@@ -447,9 +412,4 @@ def reminders_extension(api: Any) -> None:
     api.on("tool_result", bank.on_tool_result)
 
 
-#: The module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/21_reminders.py`` → ``getattr(module, "register")``). It IS
-#: :func:`reminders_extension` (one fresh :class:`ReminderBank` per load); the alias
-#: makes the demo loadable through the public ``-e`` surface used by the live
-#: procedures (EXTENSIONS-LIVE-PROCEDURES.md; EXTENSIONS-E5-WIRING.md §6 / S37).
 register = reminders_extension

@@ -63,6 +63,9 @@ import pytest
 
 from tau_agent_core.session_manager import SessionManager, SessionState
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 def _seed(mgr: SessionManager, n: int, start_ts: int = 1000) -> None:
     """Append n linear message entries e0..e{n-1} off the current tip."""
@@ -146,13 +149,6 @@ def test_fork_and_clone_require_an_active_session(call):
     fresh = SessionManager()
     with pytest.raises(RuntimeError, match="No active session"):
         call(fresh)
-
-
-# ── clone ────────────────────────────────────────────────────────────────────
-#
-# Most of these pass entry_id equal to the manager's real current tip — the
-# ordinary case, and the shape that could not see the entry_id-ignored bug. The
-# two that do not are the regression tests for it; see the module docstring.
 
 
 def test_clone_duplicates_the_entire_current_active_path(mgr):
@@ -1050,7 +1046,7 @@ def _fake_response(text: str, stop_reason: str = "stop"):
         provider="openai",
         model="gpt-4o",
         stop_reason=stop_reason,
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
 
@@ -1070,10 +1066,6 @@ def _summarize(
         return _fake_response(summary_text, stop_reason)
 
     with patch("tau_llm.client.complete_simple", mock_complete_simple):
-        # summarize_branch returns (text, usage) — it makes a real LLM call
-        # outside the agent loop, so it must report what it spent or those
-        # tokens go uncounted. These tests are about the TEXT; the usage
-        # contract is pinned in test_side_usage.py.
         summary, _usage = asyncio.run(
             summarize_branch(branch_text, mock_model, custom_instructions=custom_instructions)
         )

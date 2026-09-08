@@ -31,6 +31,9 @@ from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 # ── load the example module (its filename is not a valid identifier) ─────────
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _TRIGGER_COMPACT_PATH = _REPO_ROOT / "examples" / "39_trigger_compact.py"
@@ -65,7 +68,7 @@ def _summary_response(text: str):
             provider="openai",
             model="gpt-4o",
             stop_reason="stop",  # type: ignore[arg-type]
-            timestamp=0,
+            timestamp=_TS,
         )
 
     return _impl
@@ -194,8 +197,6 @@ async def test_trigger_compact_command_compacts_immediately_and_reports(monkeypa
     compactions = [e for e in log.entries() if e["type"] == "compaction"]
     assert len(compactions) == 1
 
-    # Reload-invariance: a fresh fold over the raw entries keeps the compaction
-    # boundary — the summary the model would see on reload is unchanged.
     reloaded = ConversationTree(log.entries(), log.cursor).context_for()
     reloaded_texts = "".join(
         block.get("text", "")

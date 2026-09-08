@@ -40,6 +40,9 @@ from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.extensions.runner import ExtensionError
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 class _Stream:
     """Minimal async stream matching the stream_simple contract."""
@@ -75,7 +78,7 @@ def _text_assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -148,9 +151,6 @@ async def test_api_on_input_routes_to_runner_bucket() -> None:
     session = _session(ext)
     result = await session._extension_runner.emit_input("hello", None)
 
-    # source/submitter default to "interactive"/"human" (docs/SUBMISSION-LIFECYCLE.md
-    # "The one door" step 2): a direct emit_input() call with no Submission behind
-    # it is exactly what every prompt() call implied before submit() existed.
     assert seen == [
         {
             "type": "input",
@@ -186,8 +186,6 @@ async def test_transform_is_pre_node_and_durable() -> None:
     wire_user_texts = _user_texts(captured["context"]["messages"])
     assert wire_user_texts == ["Respond briefly: what is TypeScript"]
 
-    # ... and it is the SINGLE copy on the persisted path — exactly one user node,
-    # carrying the transformed text (no separate original node).
     assert _user_texts(session.messages) == ["Respond briefly: what is TypeScript"]
 
 

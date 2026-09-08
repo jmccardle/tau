@@ -23,25 +23,6 @@ from typing import Any
 
 from tau_agent_core.rpc import capabilities, dialect
 
-#: One row per JSON-RPC error code, in PRESENTATION order (the conventional
-#: JSON-RPC 2.0 ordering, then τ's implementation-defined ones) — not a
-#: sort by numeric value, which would put SUBMISSION_REJECTED's -32000 in a
-#: confusing spot relative to the -327xx standard range it deliberately sits
-#: outside of. The numeric values are read live off `dialect`'s own
-#: constants (so a changed code value cannot silently desync the doc from
-#: the wire); the prose descriptions are maintained by hand once, here,
-#: mirroring dialect.py's own inline comments — the same "small, stable
-#: vocabulary, hand-described once" choice `rpc_event_schema.py` already
-#: makes for `WireEvent`'s field docstrings.
-#:
-#: The SET is pinned, not just the rows: `test_rpc_protocol_doc.py` asserts
-#: this list covers exactly the error-code constants `dialect` exports, both
-#: ways. Round-3 finding 2 of the Tier B review is why — `COMMAND_NOT_SUPPORTED`
-#: had been reachable from an ordinary `submit` since Tier C and was never in
-#: this table, and the round that added `REQUEST_TOO_LARGE` pinned that ROW
-#: rather than the set, so nothing could fail when a code existed and was
-#: undocumented. A code a host can meet and cannot look up is the same defect
-#: as a stale sentence; both are prose no test could falsify.
 _ERROR_ORDER: list[tuple[int, str, str]] = [
     (
         dialect.PARSE_ERROR,
@@ -84,13 +65,17 @@ _ERROR_ORDER: list[tuple[int, str, str]] = [
     (
         dialect.COMMAND_NOT_SUPPORTED,
         "COMMAND_NOT_SUPPORTED",
-        "A `submit`/`prompt` with `expand_commands: true` resolved to a command "
-        "whose `performer` is `frontend` — `/tree`, `/fork`, `/extensions`, "
-        "`/compact`. The core identified WHAT it is; the RPC wire has no screen "
-        "to push a panel onto and will not silently no-op it. An expected, "
-        "structured refusal, reachable from an ordinary Tier C call: submit the "
-        "text without `expand_commands`, or use the verb that does the same job "
-        "(`compact` for `/compact`, `fork` for `/fork`).",
+        "A `submit`/`prompt` with `expand_commands: true` resolved to something "
+        "only a head performs, and the message names which of the two it was: a "
+        "STEP, meaning an argument is still unbound, which `next_step` + "
+        "`enumerate_domain` are the loop for; or a READY flow, whose mutation "
+        "this table already publishes as its own verb (`compact` for `/compact`, "
+        "`fork` for `/fork`, `set_model` for `/model`) — call that verb instead "
+        "of submitting the slash line. A VIEW (`/tree`, `/extensions`) is NOT "
+        "this error: it comes back as a success response carrying `view`. An "
+        "expected, structured refusal reachable from an ordinary Tier C call, "
+        "never a silent no-op; submitting the text without `expand_commands` "
+        "sends it to the model as prose.",
     ),
     (
         dialect.TURN_STILL_RUNNING,
@@ -134,18 +119,8 @@ _ERROR_ORDER: list[tuple[int, str, str]] = [
 ]
 
 
-#: The verbs whose response is only an ACKNOWLEDGEMENT, with the real outcome
-#: arriving later on a second message (C3). Named, never counted: this list
-#: went from two members to three when `compact` shipped, and the sentence
-#: beside it ("These two are the whole list") went stale in the same commit.
-#: `test_rpc.py` derives the same set from `COMMAND_TABLE`'s acknowledgement
-#: result schemas and fails if this tuple disagrees, so a fourth such verb
-#: cannot be added without the reference learning about it.
 _DUAL_COMPLETION_VERBS: tuple[str, ...] = ("submit", "prompt", "compact")
 
-#: The verb whose RESPONSE is the largest a host is guaranteed to meet — and
-#: the one K2 says to send first, which is what makes the outbound-size note
-#: in `render()` a live hazard rather than a footnote.
 _LARGEST_RESPONSE_VERB = "get_capabilities"
 
 
@@ -193,11 +168,6 @@ def render() -> str:
     """The full Markdown text of `docs/RPC-PROTOCOL.md`, generated from
     `capabilities.build_capabilities()` plus `dialect`'s error codes.
     """
-    # Deferred for the same reason `capabilities.build_capabilities()` defers
-    # it (see that module's docstring): `commands` imports `capabilities`, so a
-    # module-scope import here would tangle the same cycle. Only the two
-    # `compaction_end` names are needed, and only to keep this hand-written
-    # prose from drifting off the symbols it describes.
     from tau_agent_core.rpc import commands
 
     doc = capabilities.build_capabilities()

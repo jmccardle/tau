@@ -32,35 +32,36 @@ from textual.widgets import Markdown
 from textual.widgets._markdown import MarkdownBlock
 
 from tau_agent_core.submission import SubmissionResult
-from tau_coding_agent.app import ChatDisplay, MessageBox
 from tau_coding_agent.backends import DEFAULT_LANE
-from tau_coding_agent.chat_widgets import ExchangeBox, ToolBox
+from tau_coding_agent.chat_widgets import ExchangeBox, ToolBox, MessageBox
 
-# ---------------------------------------------------------------------------
-# Test harness app: embeds the real ChatDisplay, nothing else.
-# ---------------------------------------------------------------------------
+import time  # noqa: E402
+from tau_coding_agent import transcript
+
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
 
 
 class _Harness(App):
     def compose(self) -> ComposeResult:
-        yield ChatDisplay()
+        yield transcript.ChatDisplay()
 
 
-def _box_roles(display: ChatDisplay) -> list[str]:
+def _box_roles(display: transcript.ChatDisplay) -> list[str]:
     """Roles of the MessageBox widgets in document (== arrival) order."""
     return [b.role for b in display.query(MessageBox)]
 
 
-def _box_texts(display: ChatDisplay) -> list[str]:
+def _box_texts(display: transcript.ChatDisplay) -> list[str]:
     return [b.content_text for b in display.query(MessageBox)]
 
 
-def _top_level(display: ChatDisplay) -> list:
+def _top_level(display: transcript.ChatDisplay) -> list:
     """Immediate children of the display (top-level boxes + exchanges)."""
     return list(display.children)
 
 
-async def _send(display: ChatDisplay, pilot, event: dict) -> None:
+async def _send(display: transcript.ChatDisplay, pilot, event: dict) -> None:
     """Deliver one lifecycle event, then yield a render tick.
 
     This is the PACED cadence: a tick between every event. It is one of the two
@@ -78,7 +79,7 @@ async def _send(display: ChatDisplay, pilot, event: dict) -> None:
     await pilot.pause()
 
 
-async def _send_burst(display: ChatDisplay, events: list[dict]) -> None:
+async def _send_burst(display: transcript.ChatDisplay, events: list[dict]) -> None:
     """Deliver several lifecycle events with NO render tick between them.
 
     Mirrors the agent loop draining a queue that already has events in it. The
@@ -98,7 +99,7 @@ async def _fresh_parse_blocks(pilot, text: str) -> list[str]:
     ``append()``-based streaming must match, block for block.
     """
     md = Markdown("")
-    await pilot.app.query_one(ChatDisplay).mount(md)
+    await pilot.app.query_one(transcript.ChatDisplay).mount(md)
     try:
         await md.update(text)
         await pilot.pause()
@@ -107,12 +108,7 @@ async def _fresh_parse_blocks(pilot, text: str) -> list[str]:
         await md.remove()
 
 
-# A realistic one-turn-with-tools span as produced by TauBackend.stream_chat's
-# on_event sink, now grouped into an exchange:
-#   user already on screen, then the assistant loop runs inside one exchange:
-#     turn 0: preamble text -> tool call -> result   (a step inside the exchange)
-#     turn 1: final answer text                       (snaps OUT below the summary)
-async def _replay_tool_turn(display: ChatDisplay, pilot) -> None:
+async def _replay_tool_turn(display: transcript.ChatDisplay, pilot) -> None:
     display.add_message("user", "list the files", source="verbatim")
     await display.begin_exchange()
 
@@ -145,7 +141,7 @@ async def test_exchange_groups_tools_and_promotes_final_answer():
     out below it, staying visible. Intermediate steps live inside the exchange."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await _replay_tool_turn(display, pilot)
         await pilot.pause()
 
@@ -173,7 +169,7 @@ async def test_no_text_duplication():
     own text, the promoted answer keeps only the final text."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await _replay_tool_turn(display, pilot)
         await pilot.pause()
 
@@ -191,12 +187,10 @@ async def test_messages_and_tools_use_uniform_widgets():
     no bespoke per-kind widget classes."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await _replay_tool_turn(display, pilot)
         await pilot.pause()
 
-        # user + preamble step + promoted answer = 3 MessageBoxes (the tool
-        # call/result do NOT become their own MessageBoxes anymore).
         boxes = list(display.query(MessageBox))
         assert all(type(b) is MessageBox for b in boxes)
         assert _box_roles(display) == ["user", "assistant", "assistant"]
@@ -209,7 +203,7 @@ async def test_trivial_exchange_unwrapped_to_plain_answer():
     plain answer remains (no empty '0 tools' summary line)."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         display.add_message("user", "hi", source="verbatim")
         await display.begin_exchange()
         await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
@@ -230,7 +224,7 @@ async def test_reasoning_streams_into_step_and_collapses_on_text():
     instant answer text begins; the promoted answer keeps the reasoning."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
         await _send(display, pilot, {"kind": "reasoning_delta", "delta": "Let me think. "})
@@ -266,25 +260,11 @@ def _rendered_text(widget) -> str:
     return "".join(b._content.plain for b in widget.query(MarkdownBlock))
 
 
-# ---------------------------------------------------------------------------
-# §2a: mounting under a synchronous burst.
-#
-# Every test above paces its events with a render tick. These do not, because
-# the live loop does not: `_start_step` mounts the step fire-and-forget and the
-# agent loop drains its queue without yielding, so the first reasoning delta or
-# tool call of a turn arrives before the step box has composed. Before the fix
-# `MessageBox.ensure_reasoning` mounted into a slot `compose()` had not created
-# yet, raised `AttributeError` — swallowed by `EventBus.emit` and misreported as
-# an extension error — and left `self._reasoning` pointing at a region that was
-# never mounted, so every later delta accumulated into a widget nobody could see.
-# ---------------------------------------------------------------------------
-
-
 async def test_reasoning_burst_before_the_step_composes_still_renders():
     """The reported §2a bug: 0 of 28 reasoning tokens reached the screen."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         await pilot.pause()
 
@@ -313,7 +293,7 @@ async def test_a_reasoning_burst_reports_no_error():
     the raise itself: handle_stream_event must not throw under a burst."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         await pilot.pause()
         await _send_burst(
@@ -331,7 +311,7 @@ async def test_text_burst_before_the_step_composes_still_renders():
     since the reasoning fix routes through the same on_mount catch-up."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         await pilot.pause()
         await _send_burst(
@@ -359,7 +339,7 @@ async def test_reasoning_then_text_in_one_burst_both_render():
     """
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         await pilot.pause()
         await _send_burst(
@@ -387,10 +367,14 @@ async def test_tool_call_and_result_in_one_burst_both_render():
     """``add_tool_call`` had the identical slot bug one method down, and the
     result body is lost if ``ToolBox.set_result`` runs before the box mounts —
     so buffering the box without buffering its result would trade a crash for
-    silent data loss."""
+    silent data loss.
+
+    Opened before the body is read, because a ``ToolBox`` mounts its bodies on
+    first expand; that is the same assertion it always was — the block tree, not
+    the buffer — now made where the blocks exist."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         await pilot.pause()
         await _send_burst(
@@ -408,6 +392,8 @@ async def test_tool_call_and_result_in_one_burst_both_render():
         assert box.is_mounted
         assert box.has_result
         assert box.title == "✓ ls(path=.)"
+        box.collapsed = False
+        await pilot.pause()
         assert "a.py\nb.py" in _rendered_text(box._result_md)
 
 
@@ -415,7 +401,7 @@ async def test_a_deferred_tool_result_survives_an_error_and_a_block():
     """The error and veto branches write the body through the same buffer."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         await pilot.pause()
         await _send_burst(
@@ -430,10 +416,128 @@ async def test_a_deferred_tool_result_survives_an_error_and_a_block():
         )
         await pilot.pause()
         errored, blocked = list(display.query(ToolBox))
+        errored.collapsed = False
+        blocked.collapsed = False
+        await pilot.pause()
         assert "boom" in _rendered_text(errored._result_md)
         assert errored.has_class("box-error")
         assert "nope" in _rendered_text(blocked._result_md)
         assert blocked.has_class("box-blocked")
+
+
+class TestAToolBoxBuildsItsBodyOnFirstExpand:
+    """A collapsed tool call costs three widgets, not nine.
+
+    Textual arranges hidden widgets as well as visible ones, so the two markdown
+    bodies of a box nobody has opened were paid for on every layout — and the
+    transcript window cannot reach them, because its cut granularity is one user
+    message and 60 tool calls are one turn. docs/TRANSCRIPT-WINDOW.md §10.
+    """
+
+    async def test_a_collapsed_box_mounts_no_body(self):
+        async with _Harness().run_test() as pilot:
+            display = pilot.app.query_one(transcript.ChatDisplay)
+            await display.begin_exchange()
+            await pilot.pause()
+            await _send_burst(
+                display,
+                [
+                    {"kind": "turn_start", "turn_index": 0},
+                    {"kind": "tool_call", "id": "c1", "name": "ls", "arguments": {"path": "."}},
+                    {"kind": "tool_result", "id": "c1", "result": "a.py"},
+                ],
+            )
+            await pilot.pause()
+            box = display.query_one(ToolBox)
+            assert box.collapsed
+            assert not list(box.query(Markdown))
+            # The title still carries the whole collapsed reading.
+            assert box.title == "✓ ls(path=.)"
+            assert box.has_result
+
+    async def test_expanding_builds_the_arguments_and_the_result(self):
+        async with _Harness().run_test() as pilot:
+            display = pilot.app.query_one(transcript.ChatDisplay)
+            await display.begin_exchange()
+            await pilot.pause()
+            await _send_burst(
+                display,
+                [
+                    {"kind": "turn_start", "turn_index": 0},
+                    {"kind": "tool_call", "id": "c1", "name": "ls", "arguments": {"path": "."}},
+                    {"kind": "tool_result", "id": "c1", "result": "a.py\nb.py"},
+                ],
+            )
+            await pilot.pause()
+            box = display.query_one(ToolBox)
+            box.collapsed = False
+            await pilot.pause()
+            assert '"path": "."' in _rendered_text(box._args_md)
+            assert "a.py\nb.py" in _rendered_text(box._result_md)
+
+    async def test_a_result_arriving_after_the_expand_still_lands(self):
+        """The other order: opened first, answered second."""
+        async with _Harness().run_test() as pilot:
+            display = pilot.app.query_one(transcript.ChatDisplay)
+            await display.begin_exchange()
+            await pilot.pause()
+            await _send_burst(
+                display,
+                [
+                    {"kind": "turn_start", "turn_index": 0},
+                    {"kind": "tool_call", "id": "c1", "name": "ls", "arguments": {}},
+                ],
+            )
+            await pilot.pause()
+            box = display.query_one(ToolBox)
+            box.collapsed = False
+            await pilot.pause()
+            assert box._result_md is not None and not box._result_md.display
+            await _send_burst(display, [{"kind": "tool_result", "id": "c1", "result": "late"}])
+            await pilot.pause()
+            assert box._result_md.display
+            assert "late" in _rendered_text(box._result_md)
+
+    async def test_the_body_is_built_once(self):
+        """Toggling must not mount a second copy of either markdown."""
+        async with _Harness().run_test() as pilot:
+            display = pilot.app.query_one(transcript.ChatDisplay)
+            await display.begin_exchange()
+            await pilot.pause()
+            await _send_burst(
+                display,
+                [
+                    {"kind": "turn_start", "turn_index": 0},
+                    {"kind": "tool_call", "id": "c1", "name": "ls", "arguments": {}},
+                    {"kind": "tool_result", "id": "c1", "result": "a.py"},
+                ],
+            )
+            await pilot.pause()
+            box = display.query_one(ToolBox)
+            for collapsed in (False, True, False):
+                box.collapsed = collapsed
+                await pilot.pause()
+            assert len(list(box.query(Markdown))) == 2
+
+    async def test_the_result_text_is_readable_without_opening_the_box(self):
+        """``result_markdown`` is what a caller that wants the text should read;
+        the widget only exists once someone has looked."""
+        async with _Harness().run_test() as pilot:
+            display = pilot.app.query_one(transcript.ChatDisplay)
+            await display.begin_exchange()
+            await pilot.pause()
+            await _send_burst(
+                display,
+                [
+                    {"kind": "turn_start", "turn_index": 0},
+                    {"kind": "tool_call", "id": "c1", "name": "ls", "arguments": {}},
+                    {"kind": "tool_result", "id": "c1", "result": "a.py"},
+                ],
+            )
+            await pilot.pause()
+            box = display.query_one(ToolBox)
+            assert "a.py" in box.result_markdown
+            assert box._result_md is None
 
 
 async def test_streamed_rendering_matches_full_parse_across_awkward_deltas():
@@ -468,7 +572,7 @@ async def test_streamed_rendering_matches_full_parse_across_awkward_deltas():
 
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
         for delta in reasoning_deltas:
@@ -478,25 +582,13 @@ async def test_streamed_rendering_matches_full_parse_across_awkward_deltas():
 
         step = display.active_step()
         assert step is not None and step.reasoning is not None
-        # The accumulators are correct either way (kept in sync on every
-        # delta) -- the real question is what the WIDGET actually rendered.
         assert step.reasoning.text == reasoning_full
         assert step.content_text == answer_full
 
         streamed_reasoning_blocks = [b._content.plain for b in step.reasoning.query(MarkdownBlock)]
-        # Scoped to the answer's OWN Markdown widget: step.query(MarkdownBlock)
-        # would also pick up the reasoning region's blocks (a child of the same
-        # box), which live under a *different* Markdown widget entirely.
         streamed_answer_blocks = [b._content.plain for b in step._md_widget.query(MarkdownBlock)]
-        # An assistant answer's source is "markdown", so _format passes it
-        # through and the widget must match a plain whole-text parse.
         assert streamed_reasoning_blocks == await _fresh_parse_blocks(pilot, reasoning_full)
         assert streamed_answer_blocks == await _fresh_parse_blocks(pilot, answer_full)
-        # Non-trivial: an awkward split that silently dropped/duplicated a
-        # paragraph break would still leave the accumulators right but collapse
-        # or duplicate a block here. Both bodies are read as markdown, so their
-        # single "\n"s are SOFT breaks (same paragraph) and only the "\n\n" run
-        # starts a new one: 2 blocks each.
         assert len(streamed_reasoning_blocks) == 2
         assert len(streamed_answer_blocks) == 2
 
@@ -508,7 +600,7 @@ async def test_empty_terminal_turn_leaves_nothing():
     """A turn that streams nothing renderable then ends leaves no placeholder."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
         await display.finalize_exchange(context=0, output=0, seconds=0)
@@ -522,7 +614,7 @@ async def test_tool_only_final_turn_keeps_collapsed_exchange():
     and collapsed rather than snapping a tool box out as a fake 'answer'."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
         await _send(
@@ -548,7 +640,7 @@ async def test_tool_result_error_marks_toolbox():
     separate error box."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
         await _send(
@@ -569,21 +661,6 @@ async def test_tool_result_error_marks_toolbox():
         assert tb.has_class("box-error")
 
 
-# ---------------------------------------------------------------------------
-# add_persisted_message: the per-message normalizer (flat boxes).
-#
-# Regression for the busy-loop/freeze on clicking a sidebar session: a saved
-# assistant/toolResult message stores content as a *list of block dicts*, and
-# handing that straight to the str-only MessageBox raised
-# `'list' object has no attribute 'replace'` inside compose() — which, fired
-# for every message during the mount/layout cycle, manifested as a freeze. This
-# normalizer is the building block reload_messages composes into exchanges.
-# ---------------------------------------------------------------------------
-
-
-# The persisted shape of a [text -> tool call -> result -> final text] turn, as
-# written to ~/.tau/chats/*.json (assistant content is a block list; toolResult
-# is its own role with tool_name/is_error at the message level).
 _PERSISTED_TURN = [
     {"role": "user", "content": "list the files"},
     {
@@ -608,7 +685,7 @@ async def test_reload_list_content_renders_in_arrival_order():
     """Reloading a saved chat renders the SAME boxes/order as live streaming."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         for msg in _PERSISTED_TURN:
             display.add_persisted_message(msg)
         await pilot.pause()
@@ -624,7 +701,7 @@ async def test_reload_does_not_raise_on_list_content():
     """The exact regression: list content must not raise (the old freeze)."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         # Tool-only assistant message (no preamble text) — pure block list.
         display.add_persisted_message(
             {
@@ -647,7 +724,7 @@ async def test_reload_plain_string_content():
     """Older chats store assistant content as a plain string; still renders."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         display.add_persisted_message({"role": "user", "content": "hi"})
         display.add_persisted_message({"role": "assistant", "content": "hello there"})
         await pilot.pause()
@@ -658,7 +735,7 @@ async def test_reload_plain_string_content():
 async def test_reload_toolresult_error_gets_error_class():
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         display.add_persisted_message(
             {
                 "role": "toolResult",
@@ -679,7 +756,7 @@ async def test_reload_unrenderable_content_raises():
 
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         with pytest.raises(TypeError):
             display.add_persisted_message({"role": "assistant", "content": {"unexpected": "dict"}})
 
@@ -717,7 +794,7 @@ async def test_headless_saved_session_round_trips(tmp_path, monkeypatch):
     assert loaded.model == "local-llm"  # resolvable config key -> resumable
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.reload_messages(loaded.messages)
         await pilot.pause()
         # Reconstructs the exchange: user box, collapsed exchange, final answer.
@@ -728,22 +805,12 @@ async def test_headless_saved_session_round_trips(tmp_path, monkeypatch):
         assert top[2].content_text == "It's Thursday."
 
 
-# ---------------------------------------------------------------------------
-# reload_messages: reconstruct exchanges from the persisted flat list (#5).
-#
-# Walks the flat transcript back into the SAME widget tree the live state
-# machine leaves behind — collapsed ExchangeBox per span, folded tool boxes, the
-# terminal answer promoted out. The only difference is the summary omits
-# wall-clock duration (not persisted; not fabricated — Fail-Early).
-# ---------------------------------------------------------------------------
-
-
 async def test_reload_reconstructs_exchange_like_live():
     """A persisted [text -> tool -> result -> answer] turn reloads into the same
     shape the live path produces: user box, collapsed exchange, promoted answer."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.reload_messages([{"role": "system", "content": "s"}] + _PERSISTED_TURN)
         await pilot.pause()
 
@@ -798,7 +865,7 @@ async def test_reload_sums_output_but_takes_context_from_the_last_completion():
     ]
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.reload_messages(messages)
         await pilot.pause()
         exchange = display.query_one(ExchangeBox)
@@ -818,7 +885,7 @@ async def test_reload_consolidates_legacy_bloated_blocks():
     }
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.reload_messages([{"role": "user", "content": "q"}, bloated])
         await pilot.pause()
         # No tools -> unwrapped to a single answer carrying the joined reasoning.
@@ -848,7 +915,7 @@ async def test_reload_tool_only_final_keeps_collapsed_exchange():
     ]
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.reload_messages(messages)
         await pilot.pause()
         exchanges = list(display.query(ExchangeBox))
@@ -865,18 +932,13 @@ async def test_reload_multiple_user_turns_make_separate_exchanges():
     ]
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.reload_messages(messages)
         await pilot.pause()
         users = [b for b in display.query(MessageBox) if b.role == "user"]
         assert len(users) == 2
         # First span has a tool -> one collapsed exchange; second is trivial.
         assert len(list(display.query(ExchangeBox))) == 1
-
-
-# ---------------------------------------------------------------------------
-# Focused unit test: TauBackend agent-event -> structured-event mapping.
-# ---------------------------------------------------------------------------
 
 
 class _FakeEvent:
@@ -892,10 +954,6 @@ class _FakeSession:
     def __init__(self, events):
         self._events = events
         self._handler = None
-        # A real AgentSession keeps a ledger of tokens spent OUTSIDE the loop
-        # (compaction, ctx.complete()); stream_chat folds the exchange's delta into
-        # usage_totals. This fake makes no such calls, so a constant zero is the
-        # honest reading, not a stub. See tau_agent_core.usage.
         self._side = dict.fromkeys(
             (
                 "input_tokens",
@@ -916,9 +974,6 @@ class _FakeSession:
         return lambda: None
 
     async def submit(self, submission, context=None):
-        # `submit`, not `prompt`: since B2-a the backend admits the caller's own
-        # Submission through the one door instead of routing via the prompt()
-        # compatibility wrapper (docs/SUBMISSION-LIFECYCLE.md phase 3).
         for ev in self._events:
             self._handler(ev)
         return SubmissionResult(
@@ -946,27 +1001,27 @@ async def test_backend_event_to_structured_mapping():
     # Scripted sequence mirroring agent_loop.py for [text -> tool call -> result -> final text]:
     events = [
         _FakeEvent(type="agent_start", timestamp=0),
-        _FakeEvent(type="turn_start", timestamp=0, turn_index=0),
+        _FakeEvent(type="turn_start", timestamp=_TS, turn_index=0),
         # streaming preamble text: _stream_response re-sends the full accumulated text
         _FakeEvent(
             type="message_start",
-            timestamp=0,
+            timestamp=_TS,
             message={"role": "assistant", "content": [{"type": "text", "text": "Hi"}]},
         ),
         _FakeEvent(
             type="message_update",
-            timestamp=0,
+            timestamp=_TS,
             message={"role": "assistant", "content": [{"type": "text", "text": "Hi"}]},
         ),
         _FakeEvent(
             type="message_update",
-            timestamp=0,
+            timestamp=_TS,
             message={"role": "assistant", "content": [{"type": "text", "text": "Hi there"}]},
         ),
         # DoneEvent message_end (in _stream_response)
         _FakeEvent(
             type="message_end",
-            timestamp=0,
+            timestamp=_TS,
             message={
                 "role": "assistant",
                 "content": [
@@ -978,7 +1033,7 @@ async def test_backend_event_to_structured_mapping():
         # DUPLICATE message_end (emitted again in run() because tool calls exist)
         _FakeEvent(
             type="message_end",
-            timestamp=0,
+            timestamp=_TS,
             message={
                 "role": "assistant",
                 "content": [
@@ -989,33 +1044,33 @@ async def test_backend_event_to_structured_mapping():
         ),
         _FakeEvent(
             type="tool_execution_start",
-            timestamp=0,
+            timestamp=_TS,
             tool_call_id="c1",
             tool_name="ls",
             args={"p": "."},
         ),
         _FakeEvent(
             type="tool_execution_end",
-            timestamp=0,
+            timestamp=_TS,
             tool_call_id="c1",
             tool_name="ls",
             result=[{"type": "text", "text": "a.py"}],
             is_error=False,
         ),
-        _FakeEvent(type="turn_end", timestamp=0, turn_index=0, tool_results=[]),
+        _FakeEvent(type="turn_end", timestamp=_TS, turn_index=0, tool_results=[]),
         # turn 1: final answer
-        _FakeEvent(type="turn_start", timestamp=0, turn_index=1),
+        _FakeEvent(type="turn_start", timestamp=_TS, turn_index=1),
         _FakeEvent(
             type="message_update",
-            timestamp=0,
+            timestamp=_TS,
             message={"role": "assistant", "content": [{"type": "text", "text": "Done"}]},
         ),
         _FakeEvent(
             type="message_end",
-            timestamp=0,
+            timestamp=_TS,
             message={"role": "assistant", "content": [{"type": "text", "text": "Done"}]},
         ),
-        _FakeEvent(type="turn_end", timestamp=0, turn_index=1, tool_results=[]),
+        _FakeEvent(type="turn_end", timestamp=_TS, turn_index=1, tool_results=[]),
         _FakeEvent(type="agent_end", timestamp=0),
     ]
     backend.agent_session = _FakeSession(events)  # type: ignore[assignment]
@@ -1030,14 +1085,10 @@ async def test_backend_event_to_structured_mapping():
     )
 
     kinds = [e["kind"] for e in structured]
-    # Exactly one tool_call + one tool_result (NOT two from the duplicate
-    # message_end), and they come from tool_execution_*.
     assert kinds.count("tool_call") == 1, kinds
     assert kinds.count("tool_result") == 1, kinds
     assert kinds.count("turn_start") == 2, kinds
 
-    # Text deltas are real fragments, not the full re-sent string each time.
-    # "Hi" then "Hi there" -> deltas "Hi", " there"; then turn 1 "Done".
     assert text_deltas == ["Hi", " there", "Done"], text_deltas
     assert full == "Hi there" + "Done"
 
@@ -1096,17 +1147,17 @@ async def test_stream_chat_usage_includes_tokens_spent_off_the_agent_loop():
     loop_usage = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
     events = [
         _FakeEvent(type="agent_start", timestamp=0),
-        _FakeEvent(type="turn_start", timestamp=0, turn_index=0),
+        _FakeEvent(type="turn_start", timestamp=_TS, turn_index=0),
         _FakeEvent(
             type="message_end",
-            timestamp=0,
+            timestamp=_TS,
             message={
                 "role": "assistant",
                 "content": [{"type": "text", "text": "ok"}],
                 "usage": loop_usage,
             },
         ),
-        _FakeEvent(type="turn_end", timestamp=0, turn_index=0, tool_results=[]),
+        _FakeEvent(type="turn_end", timestamp=_TS, turn_index=0, tool_results=[]),
         _FakeEvent(type="agent_end", timestamp=0),
     ]
     backend.agent_session = _CompactingFakeSession(events)  # type: ignore[assignment]
@@ -1124,22 +1175,6 @@ async def test_stream_chat_usage_includes_tokens_spent_off_the_agent_loop():
     assert usage["cost_usd"] == pytest.approx(6215.0)
 
 
-# ---------------------------------------------------------------------------
-# §1 + §2b: the render cap, and the batched reload.
-#
-# Both symptoms in docs/PLAN-0.9.4.md — "long conversations take a long time to
-# load" and "text accumulates but doesn't display" — are one defect: Textual
-# re-arranges the WHOLE widget tree on every layout pass, so cost is quadratic
-# in the mounted widget count. An 800-message reload took over four minutes and
-# throttled the next turn to a couple of tokens a second.
-#
-# Two levers, tested here structurally rather than by wall-clock: bound the
-# mounted widgets (the cap), and stop re-arranging between every mount (the
-# batch). A timing assertion would be flaky on a loaded machine; the widget
-# count and the layout-pass count are the things that actually cause the time.
-# ---------------------------------------------------------------------------
-
-
 def _transcript(turns: int, *, system: bool = True) -> list[dict]:
     """``turns`` user→assistant pairs, optionally behind a system message."""
     msgs: list[dict] = [{"role": "system", "content": "s"}] if system else []
@@ -1149,7 +1184,7 @@ def _transcript(turns: int, *, system: bool = True) -> list[dict]:
     return msgs
 
 
-def _fold_rows(display: ChatDisplay) -> list:
+def _fold_rows(display: transcript.ChatDisplay) -> list:
     return list(display.query(".chat-fold"))
 
 
@@ -1168,25 +1203,25 @@ def _count_layouts(app: App) -> "list[int]":
 
 def test_render_cap_stops_at_whichever_bound_comes_first():
     """Walking backwards, the bound that cuts MORE is the one reached first."""
-    display = ChatDisplay()
+    display = transcript.ChatDisplay()
     # 20 short turns: the 4-turn bound bites long before the 50-message one.
     msgs = _transcript(20)
     start = display.render_cap_start(msgs)
-    assert [m["role"] for m in msgs[start:]].count("user") == ChatDisplay.RENDER_CAP_TURNS
+    assert [m["role"] for m in msgs[start:]].count(
+        "user"
+    ) == transcript.ChatDisplay.RENDER_CAP_TURNS
 
-    # One turn per 20 messages: now the MESSAGE bound bites first, and the start
-    # is still a user message, so no user→answer span is cut in half.
     fat: list[dict] = []
     for i in range(10):
         fat.append({"role": "user", "content": f"q{i}"})
         fat += [{"role": "assistant", "content": []} for _ in range(19)]
     start = display.render_cap_start(fat)
     assert fat[start]["role"] == "user"
-    assert len(fat) - start <= ChatDisplay.RENDER_CAP_MESSAGES
+    assert len(fat) - start <= transcript.ChatDisplay.RENDER_CAP_MESSAGES
 
 
 def test_a_short_transcript_is_not_capped_at_all():
-    display = ChatDisplay()
+    display = transcript.ChatDisplay()
     assert display.render_cap_start(_transcript(3)) == 0
 
 
@@ -1197,31 +1232,31 @@ def test_one_span_longer_than_the_bound_is_mounted_whole():
     Snapping forward to the next user message would leave the display empty, so
     the span mounts whole and the bound is the thing that gives.
     """
-    display = ChatDisplay()
+    display = transcript.ChatDisplay()
     msgs: list[dict] = [{"role": "user", "content": "q"}]
     msgs += [{"role": "assistant", "content": []} for _ in range(80)]
     assert display.render_cap_start(msgs) == 0
 
 
 def test_a_transcript_with_no_user_message_is_mounted_whole():
-    display = ChatDisplay()
+    display = transcript.ChatDisplay()
     assert display.render_cap_start([{"role": "assistant", "content": []}] * 90) == 0
 
 
 async def test_a_capped_reload_mounts_the_tail_and_says_what_it_left_out():
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         msgs = _transcript(30)
         await display.reload_messages(msgs)
         await pilot.pause()
 
         # 4 turns => 8 boxes, whatever the transcript length is.
-        assert len(display.query(MessageBox)) == 2 * ChatDisplay.RENDER_CAP_TURNS
+        assert len(display.query(MessageBox)) == 2 * transcript.ChatDisplay.RENDER_CAP_TURNS
         assert _box_texts(display)[-1] == "a29", "the tail is the END of the transcript"
 
         # The system message never renders, so it is not counted as hidden.
-        assert display.elided_count == 60 - 2 * ChatDisplay.RENDER_CAP_TURNS
+        assert display.elided_count == 60 - 2 * transcript.ChatDisplay.RENDER_CAP_TURNS
         rows = _fold_rows(display)
         assert len(rows) == 1
         assert f"⋯ {display.elided_count} earlier" in str(rows[0].content)
@@ -1237,7 +1272,7 @@ async def test_the_cap_bounds_widgets_but_not_the_message_list():
     """
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         msgs = _transcript(30)
         before = list(msgs)
         await display.reload_messages(msgs)
@@ -1252,7 +1287,7 @@ async def test_the_mounted_widget_count_does_not_grow_with_the_transcript():
     for turns in (10, 40, 160):
         async with _Harness().run_test() as pilot:
             await pilot.pause()
-            display = pilot.app.query_one(ChatDisplay)
+            display = pilot.app.query_one(transcript.ChatDisplay)
             await display.reload_messages(_transcript(turns))
             await pilot.pause()
             counts.append(len(display.query("*")))
@@ -1262,7 +1297,7 @@ async def test_the_mounted_widget_count_does_not_grow_with_the_transcript():
 async def test_showing_everything_mounts_the_rest_and_drops_the_row():
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.reload_messages(_transcript(30))
         await pilot.pause()
         assert display.elided_count
@@ -1278,7 +1313,7 @@ async def test_showing_everything_mounts_the_rest_and_drops_the_row():
 async def test_showing_everything_is_a_no_op_when_nothing_was_left_out():
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.reload_messages(_transcript(2))
         await pilot.pause()
         await display.show_all_messages()
@@ -1290,7 +1325,7 @@ async def test_a_second_capped_reload_does_not_leave_the_old_row_behind():
     """A stale row would keep claiming a count for a transcript that is gone."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.reload_messages(_transcript(30))
         await pilot.pause()
         await display.reload_messages(_transcript(3))
@@ -1305,7 +1340,7 @@ async def test_a_reload_ends_scrolled_to_the_newest_message():
     top of a conversation they resumed to continue."""
     async with _Harness().run_test(size=(80, 24)) as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.reload_messages(_transcript(30), cap=False)
         await pilot.pause()
         assert display.max_scroll_y > 0, "the transcript is taller than the window"
@@ -1362,7 +1397,7 @@ async def test_a_reload_of_a_transcript_with_tool_calls_also_ends_at_the_newest_
     """
     async with _Harness().run_test(size=(80, 24)) as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.reload_messages(_tool_transcript(6))
         for _ in range(3):
             await pilot.pause()
@@ -1380,7 +1415,7 @@ async def test_content_growing_under_a_reader_who_scrolled_away_does_not_move_th
     """
     async with _Harness().run_test(size=(80, 24)) as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.reload_messages(_tool_transcript(6))
         for _ in range(3):
             await pilot.pause()
@@ -1407,7 +1442,7 @@ async def test_a_box_folding_itself_shut_does_not_move_a_reader_who_scrolled_bac
     """
     async with _Harness().run_test(size=(80, 24)) as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.reload_messages(_tool_transcript(8))
         for _ in range(3):
             await pilot.pause()
@@ -1439,7 +1474,7 @@ async def test_an_uncapped_reload_costs_a_handful_of_layout_passes_not_one_each(
     """
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         layouts = _count_layouts(pilot.app)
         await display.reload_messages(_transcript(50), cap=False)
         await pilot.pause()
@@ -1447,27 +1482,7 @@ async def test_an_uncapped_reload_costs_a_handful_of_layout_passes_not_one_each(
         assert layouts[0] < 20, f"{layouts[0]} layout passes for 100 messages"
 
 
-# ---------------------------------------------------------------------------
-# §2c: the live counter on a running exchange.
-#
-# Before this the exchange title said "Working…" and then nothing on screen
-# changed until answer text arrived. A turn spent reasoning, or waiting on a
-# slow tool, looked exactly like a turn that had died.
-#
-# The counter's whole design question is what it may claim. There is NO measured
-# token count during a completion: TextDeltaEvent.partial carries an
-# AssistantMessage whose usage is all zeros, and a server sends its usage block
-# on the final chunk. So the readout has one measured part (`N out`, the sum of
-# the per-completion usage this lane has been TOLD, which steps at each tool
-# boundary) and one labelled estimate (`~N chunks`, stream events for the
-# completion in flight, called chunks because one chunk is not guaranteed to be
-# one token). These tests assert that separation, not the wall-clock.
-# ---------------------------------------------------------------------------
-
-import time  # noqa: E402
-
-
-def _exchange_title(display: ChatDisplay) -> str:
+def _exchange_title(display: transcript.ChatDisplay) -> str:
     return display.query_one(ExchangeBox).title
 
 
@@ -1482,7 +1497,7 @@ async def test_a_running_exchange_claims_no_tokens_it_has_not_measured():
     the same rule that omits an unknown duration rather than printing 0:00.
     """
     async with _Harness().run_test() as pilot:
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         for _ in range(3):
             await _send(display, pilot, {"kind": "text_delta", "delta": "x"})
@@ -1495,7 +1510,7 @@ async def test_a_running_exchange_claims_no_tokens_it_has_not_measured():
 async def test_a_completion_boundary_turns_the_estimate_into_a_measurement():
     """`out` appears and the chunk count clears: the completion is over."""
     async with _Harness().run_test() as pilot:
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         for _ in range(5):
             await _send(display, pilot, {"kind": "text_delta", "delta": "x"})
@@ -1513,7 +1528,7 @@ async def test_the_estimate_restarts_for_the_next_completion():
     number during a long turn, because message_end fires once per completion.
     """
     async with _Harness().run_test() as pilot:
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         for _ in range(5):
             await _send(display, pilot, {"kind": "text_delta", "delta": "x"})
@@ -1530,7 +1545,7 @@ async def test_a_provider_that_reports_no_usage_makes_no_token_claim():
     """Fail-Early: the boundary is real, the measurement is zero, so `out` is
     omitted rather than printed as a 0 that reads like a working counter."""
     async with _Harness().run_test() as pilot:
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         await _send(display, pilot, {"kind": "text_delta", "delta": "x"})
         await _send(display, pilot, _completion_end(0))
@@ -1542,7 +1557,7 @@ async def test_reasoning_deltas_count_as_chunks_too():
     """A reasoning model that thinks for a minute before answering is exactly
     the silence this counter has to fill."""
     async with _Harness().run_test() as pilot:
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         for _ in range(4):
             await _send(display, pilot, {"kind": "reasoning_delta", "delta": "t"})
@@ -1558,7 +1573,7 @@ async def test_the_clock_moves_with_no_events_at_all():
     during the wait that matters most.
     """
     async with _Harness().run_test() as pilot:
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         state = display._lanes[DEFAULT_LANE]
         state.started = time.monotonic() - 12
@@ -1575,7 +1590,7 @@ async def test_the_counter_runs_only_while_a_lane_is_open():
     slow test that is flaky in exactly the case it is meant to catch.
     """
     async with _Harness().run_test() as pilot:
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         assert display._live_timer is not None
         assert display._live_timer._active.is_set() is False, "paused before any turn"
         await display.begin_exchange()
@@ -1588,7 +1603,7 @@ async def test_clearing_the_chat_mid_turn_stops_the_counter():
     """The exchanges it was drawing have been removed; leaving it running would
     tick over a lane dict pointing at detached widgets."""
     async with _Harness().run_test() as pilot:
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         await display.clear_messages()
         assert display._live_timer is not None
@@ -1600,7 +1615,7 @@ async def test_two_lanes_count_separately():
     header subtitle: two concurrent turns have two different answers and the
     subtitle's one line could only report one of them."""
     async with _Harness().run_test() as pilot:
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange("a")
         await display.begin_exchange("b", label="agent · fork:explore")
         for _ in range(3):
@@ -1616,7 +1631,7 @@ async def test_a_foreign_lane_keeps_its_badge_while_it_runs():
     """B3-b: whose turn this is has to be legible at every moment of it, not
     only in the finished summary."""
     async with _Harness().run_test() as pilot:
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange("b", label="bus · nats_bus")
         await _send(display, pilot, {"kind": "text_delta", "delta": "x", "lane": "b"})
         display._tick_live_counters()
@@ -1627,7 +1642,7 @@ async def test_the_summary_survives_the_counter():
     """finalize_exchange pops the lane BEFORE it stamps the summary, so a tick
     landing afterwards cannot repaint the finished title back to `Working…`."""
     async with _Harness().run_test() as pilot:
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         await _send(display, pilot, {"kind": "turn_start", "turn_index": 0})
         await _send(
@@ -1645,18 +1660,13 @@ async def test_the_summary_survives_the_counter():
         assert "Working" not in title, title
 
 
-# ---------------------------------------------------------------------------
-# §2c: the completion boundary on the wire (TurnStream -> render event).
-# ---------------------------------------------------------------------------
-
-
 def _message_end(usage: dict | None, stop_reason: str | None = None) -> _FakeEvent:
     message: dict = {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}
     if usage is not None:
         message["usage"] = usage
     if stop_reason is not None:
         message["stop_reason"] = stop_reason
-    return _FakeEvent(type="message_end", timestamp=0, message=message)
+    return _FakeEvent(type="message_end", timestamp=_TS, message=message)
 
 
 def test_a_completion_boundary_publishes_the_measured_total():
@@ -1673,6 +1683,7 @@ def test_a_completion_boundary_publishes_the_measured_total():
         "output": 30,
         "context": 100,
         "stop_reason": None,
+        "dropped_tool_calls": 0,
     }
     second = stream.feed(_message_end({"output_tokens": 12, "input_tokens": 140}))
     assert second[0]["output"] == 42, "summed across completions, like lane_end"
@@ -1695,7 +1706,7 @@ def test_a_message_end_with_no_message_publishes_nothing():
     """No message, no boundary — there is nothing to have ended."""
     from tau_coding_agent.backends import TurnStream
 
-    assert TurnStream().feed(_FakeEvent(type="message_end", timestamp=0, message=None)) == []
+    assert TurnStream().feed(_FakeEvent(type="message_end", timestamp=_TS, message=None)) == []
 
 
 def test_the_completion_boundary_carries_the_stop_reason():

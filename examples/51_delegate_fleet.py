@@ -95,10 +95,6 @@ from typing import Any
 
 from tau_llm import AbortSignal
 
-# ``ext_kit`` lives alongside the numbered examples, not inside an installed
-# package — bootstrap ``examples/`` onto the path before importing it, whether run
-# directly, imported, or loaded via ``-e`` (D-E6-3), the same as the other
-# ext_kit-using demos (20_delegate, 50_review_swarm).
 _EXAMPLES_DIR = str(Path(__file__).resolve().parent)
 if _EXAMPLES_DIR not in sys.path:
     sys.path.insert(0, _EXAMPLES_DIR)
@@ -117,26 +113,14 @@ MAX_FLEET_TASKS = 8
 #: Default bounded concurrency (pi ``subagent`` MAX_CONCURRENCY parity).
 DEFAULT_CONCURRENCY = 4
 
-#: Read-only tool allowlist every fleet child gets — an isolated child inspects, it
-#: never mutates (the same isolation ``20_delegate`` parallel children enforce).
 READONLY_TOOLS: tuple[str, ...] = ("read", "ls", "grep", "find")
 
-#: Default per-child TOKEN budget when the child model is unpriced (no ``cost`` block).
-#: A documented ceiling (generous — a real budget is configured), NOT a fabricated
-#: price: an unpriced fleet meters tokens, never dollars.
 DEFAULT_MAX_TOKENS = 200_000
 
-#: How many times a stuck/stalled child is re-dispatched to a fresh child before the
-#: fleet gives up on that task (the *re-route* half of the S72 steering dial).
 DEFAULT_MAX_REROUTES = 1
 
-#: Outcomes that trigger a re-route (a fresh child for the same task): a child that
-#: wedged in a tool loop or went silent is retried; an over-budget or user-aborted
-#: child is NOT (that was a deliberate stop, not a stall).
 _REROUTE_ON: frozenset[str] = frozenset({"stuck", "stalled"})
 
-#: Max characters of a task shown in the dashboard's ``task`` column (kept short so the
-#: table stays legible; the full task rides the ledger record).
 _TASK_DISPLAY_WIDTH = 32
 
 
@@ -453,8 +437,6 @@ async def _run_child_streamed(
             if outcome == "over_budget":
                 break
     finally:
-        # Stopping the supervised generator aclose()s the underlying stream_tau, which
-        # terminates and reaps the child — the *kill* half of "flag/kill".
         await gen.aclose()
 
     if signal.is_aborted():
@@ -691,6 +673,4 @@ def delegate_fleet_extension(api: Any) -> None:
     )
 
 
-#: The module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/51_delegate_fleet.py`` → ``getattr(module, "register")``).
 register = delegate_fleet_extension

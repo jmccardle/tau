@@ -90,9 +90,8 @@ from tau_llm.streaming import (
 )
 from tau_llm.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 
-# ══════════════════════════════════════════════════════════════════════════
-# One fake transport, parametrizable, shared by every HTTP-level test below.
-# ══════════════════════════════════════════════════════════════════════════
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
 
 
 class _StreamCM:
@@ -289,11 +288,6 @@ def _result(monkeypatch, response: _FakeResponse):
     return asyncio.run(go())
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# stream_simple: the entry point
-# ══════════════════════════════════════════════════════════════════════════
-
-
 @pytest.mark.parametrize(
     "response",
     [
@@ -317,11 +311,6 @@ def test_stream_simple_always_returns_an_event_stream(monkeypatch, response):
     assert isinstance(asyncio.run(go()), AssistantMessageEventStream)
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Text-only streams
-# ══════════════════════════════════════════════════════════════════════════
-
-
 def test_text_only_stream_yields_ordered_deltas_then_a_done_with_usage(monkeypatch):
     """One test standing in for what were six: ordering, delta content, partial
     shape, final text, and usage are all facets of one response, not six."""
@@ -342,17 +331,6 @@ def test_text_only_stream_yields_ordered_deltas_then_a_done_with_usage(monkeypat
     assert final_text == "Hello, world!"
     assert isinstance(done.usage, Usage)
     assert done.usage.total_tokens == 30
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# Tool-call streams: the accumulation regression
-#
-# docs/TOOL-CALL-PARSING-BUG.md: OpenAI-compatible servers stream tool-call
-# arguments as incremental FRAGMENTS that must be concatenated. A prior
-# implementation treated each chunk as the complete cumulative string,
-# corrupting every multi-chunk tool call while single-chunk unit tests kept
-# passing. This is the load-bearing test in this file.
-# ══════════════════════════════════════════════════════════════════════════
 
 
 @pytest.mark.parametrize("chunking", ["single", "fragmented", "char"])
@@ -409,11 +387,6 @@ def test_tool_call_stream_result_matches_the_done_events_final_message(monkeypat
     assert tcs[0].arguments == {"command": "ls"}
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Error events
-# ══════════════════════════════════════════════════════════════════════════
-
-
 @pytest.mark.parametrize(
     "status,error_msg,expect",
     [
@@ -434,11 +407,6 @@ def test_an_http_error_produces_exactly_one_error_event(monkeypatch, status, err
     assert error.type == "error"
     assert error.is_error is True
     assert expect in error.message
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# stream.result(): blocks until done, is idempotent, agrees with iteration
-# ══════════════════════════════════════════════════════════════════════════
 
 
 def test_result_blocks_until_done_without_ever_iterating(monkeypatch):
@@ -476,11 +444,6 @@ def test_result_raises_when_the_stream_ended_in_an_http_error(monkeypatch):
     response = _FakeResponse([], status_code=401, error_msg="Invalid API key")
     with pytest.raises(Exception, match="Invalid API key"):
         _result(monkeypatch, response)
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# abort(): what it actually does, and what it doesn't
-# ══════════════════════════════════════════════════════════════════════════
 
 
 def test_abort_after_the_stream_is_exhausted_preserves_partial_and_is_idempotent(monkeypatch):
@@ -541,16 +504,6 @@ def test_the_real_provider_stream_has_no_abort_method(monkeypatch):
     assert not hasattr(provider_stream, "abort")
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# AssistantMessageEventStream internals, driven directly.
-#
-# No real HTTP response can produce these cases — the real provider always
-# frames a well-formed terminal DoneEvent/ErrorEvent itself. A hand-built fake
-# provider stream is the only way to reach the wrapper's OWN fallback and
-# error-preservation logic.
-# ══════════════════════════════════════════════════════════════════════════
-
-
 class _FakeProviderStream:
     """A minimal stand-in for what ``provider.stream_chat()`` returns: an
     async-iterable of typed StreamEvents (or, for the rejection test, an
@@ -585,7 +538,7 @@ def _partial_message(text: str = "") -> AssistantMessage:
         model="gpt-4o",
         usage=Usage(),
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
     )
 
 

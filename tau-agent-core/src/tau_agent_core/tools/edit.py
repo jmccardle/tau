@@ -56,11 +56,6 @@ class EditTool:
         },
         "required": ["path", "old_string", "new_string"],
     }
-    # Annotated rather than left to inference (B1/tau-004): unannotated,
-    # `execution_mode = "sequential"` infers `str`, and `ToolDefinition`
-    # declares it `Literal["sequential", "parallel"]`. `sdk._resolve_tools`
-    # copies this value into a ToolDefinition, so without the annotation mypy
-    # cannot check that copy — which is the blindness B1 exists to remove.
     execution_mode: Literal["sequential", "parallel"] = "sequential"
 
     def __init__(self, cwd: str = ".") -> None:
@@ -122,8 +117,6 @@ class EditTool:
                 tool_call_id=tool_call_id,
             ).model_dump()
 
-        # Off the event loop (docs/PLAN-0.9.4.md §8) — the agent loop shares the
-        # TUI's loop, so blocking file I/O froze painting and input.
         try:
             original = await asyncio.to_thread(self._read_text, resolved_path)
         except Exception as e:

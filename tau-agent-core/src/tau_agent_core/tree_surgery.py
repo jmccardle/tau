@@ -4,10 +4,9 @@
 branch would look like before anything is written. It is side-effect-free and holds
 no ``SessionLog``: every function takes a ``ConversationTree`` and returns either a
 plan or the reason there is not one. The durable half — ``append_at``,
-``append_navigate``, ``append_elide`` — lives in the frontend's backend object
-(``TauBackend.commit_branch`` / ``paste_subtree``), for the same reason the elide's
-does: the modal accumulates an intent, the caller performs it
-(TREE-BROWSER-AS-EDITOR.md §11.1).
+``append_navigate``, ``append_elide`` — is ``tree_ops.commit_branch`` /
+``tree_ops.paste_subtree``, for the same reason the elide's is: the modal
+accumulates an intent, a capability performs it (TREE-BROWSER-AS-EDITOR.md §11.1).
 
 **Why a plan exists at all** (§6.1). Take ``m1 → m2 → m3 → m4 → m5`` and a wanted
 path ``m1, m4, m5``. The elide cannot express it: ``_active_path_entries`` emits the
@@ -51,13 +50,6 @@ from tau_agent_core.conversation_tree import (
     is_system_message,
 )
 
-#: Entry kinds a copy can be made of. A copy is minted with ``append_at`` under a
-#: new parent and must stand on its own there, which rules out the two splice
-#: anchors and ``navigate``: all three carry an id (``firstKeptId`` / ``targetId``)
-#: naming an entry the copy's new path does not contain, and ``_active_path_entries``
-#: reads an unreachable ``firstKeptId`` as "keep nothing", collapsing the context to
-#: the anchor alone. ``customEntry`` is backplane state, not conversation, and is
-#: excluded for the plainer reason that it contributes no message.
 COPYABLE_KINDS = ("message", "customMessage", "branch_summary")
 
 
@@ -229,9 +221,6 @@ def tool_group(tree: ConversationTree, entry_id: str) -> frozenset[str]:
                 and str(block.get("id")) == call_id
                 for block in declared.get("content", [])
             ):
-                # The whole group, from the assistant's side: marking a result must
-                # pull in its siblings too, or the assistant arrives with one of its
-                # two calls answered.
                 return tool_group(tree, str(ancestor["id"]))
         return frozenset({entry_id})
 
@@ -281,10 +270,6 @@ def plan_branch(tree: ConversationTree, ids: Iterable[str], *, drop_context: boo
     elide_from: str | None = None
     hidden = 0
     if drop_context:
-        # The same arithmetic ``TauBackend.elide_span`` performs, run here so the
-        # offer and the commit cannot disagree about whether the elide is a no-op.
-        # Measured at the ATTACH point, because that is where the elide's boundary
-        # has to be reachable from; the copies minted below it only extend the path.
         root_most = ordered[0]
         path_ids = [e["id"] for e in tree.path(attach)]
         kept_ids = set(path_ids[path_ids.index(root_most) :])
@@ -355,12 +340,6 @@ def branch_refusal_reason(
 
     plan = plan_branch(tree, ordered, drop_context=drop_context)
 
-    # A system message among the COPIES would be minted a second time, in the middle
-    # of a conversation, beside the one the fold carries across every splice
-    # (``is_system_message``). As a KEEP it is fine and useful — it is the branch's
-    # attach point, which is how "hang these messages straight off the system prompt"
-    # is said — so this refuses the one position that duplicates it rather than the
-    # mark itself.
     duplicated = [entry_id for entry_id in plan.copies if is_system_message(tree.entry(entry_id))]
     if duplicated:
         return (
@@ -391,8 +370,6 @@ def planned_messages(tree: ConversationTree, plan: BranchPlan) -> list[dict[str,
     """
     base = tree.context_entries(plan.attach)
     if plan.elide_from is not None:
-        # What the planned elide leaves: the carried system messages plus the run
-        # from the resume point onward.
         keeping = False
         kept: list[dict[str, Any]] = []
         for entry in base:
@@ -544,9 +521,6 @@ def plan_paste(tree: ConversationTree, source_id: str, target_id: str) -> PasteP
 
     mints: list[PasteMint] = []
     skipped: list[str] = []
-    # Nearest COPIED ancestor, by source id. A skipped entry maps to whatever its own
-    # parent mapped to, which is how its children re-parent onto the nearest copied
-    # ancestor instead of vanishing with it.
     attach_of: dict[str, str | None] = {source_id: None}
     for entry_id in [source_id, *subtree]:
         entry = tree.entry(entry_id)

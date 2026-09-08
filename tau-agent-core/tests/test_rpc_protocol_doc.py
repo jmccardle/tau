@@ -123,9 +123,6 @@ def test_the_error_table_covers_exactly_the_codes_dialect_exports():
     beside it: a new `-32xxx` constant is documented before it can be
     shipped, and a row for a constant that was deleted fails too.
     """
-    # JSON-RPC 2.0 reserves -32768..-32000 for the protocol: the five standard
-    # codes and the -32000..-32099 implementation-defined band both live there,
-    # so one range is the whole vocabulary.
     exported = {
         value
         for name, value in vars(dialect).items()

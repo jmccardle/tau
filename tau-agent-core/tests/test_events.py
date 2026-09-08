@@ -17,6 +17,9 @@ import pytest
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.submission import SubmissionSource
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 class TestAgentEventCreation:
     """Tests for AgentEvent instantiation."""
@@ -34,7 +37,7 @@ class TestAgentEventCreation:
         """AgentEvent has sensible defaults."""
         event = AgentEvent(
             type="agent_start",
-            timestamp=0,
+            timestamp=_TS,
         )
         assert event.is_error is False
         assert event.message is None
@@ -69,7 +72,7 @@ class TestAgentEventTypes:
         """All documented event types should be valid."""
         event = AgentEvent(
             type=event_type,
-            timestamp=0,
+            timestamp=_TS,
         )
         assert event.type == event_type
 
@@ -247,14 +250,14 @@ class TestAgentEventConditionalFields:
 
     def test_agent_start_has_no_turn_index(self):
         """agent_start should not carry turn_index."""
-        event = AgentEvent(type="agent_start", timestamp=0, turn_index=None)
+        event = AgentEvent(type="agent_start", timestamp=_TS, turn_index=None)
         assert event.turn_index is None
 
     def test_agent_start_carries_message(self):
         """agent_start can carry an initial message."""
         event = AgentEvent(
             type="agent_start",
-            timestamp=0,
+            timestamp=_TS,
             message={"role": "user", "content": "Hello"},
         )
         assert event.message is not None
@@ -263,7 +266,7 @@ class TestAgentEventConditionalFields:
         """agent_end should carry the list of produced messages."""
         event = AgentEvent(
             type="agent_end",
-            timestamp=0,
+            timestamp=_TS,
             messages=[
                 {"role": "assistant", "content": [{"type": "text", "text": "Hi"}]},
             ],
@@ -275,7 +278,7 @@ class TestAgentEventConditionalFields:
         """turn_start should carry turn_index."""
         event = AgentEvent(
             type="turn_start",
-            timestamp=0,
+            timestamp=_TS,
             turn_index=0,
         )
         assert event.turn_index == 0
@@ -284,7 +287,7 @@ class TestAgentEventConditionalFields:
         """turn_end should carry tool_results list."""
         event = AgentEvent(
             type="turn_end",
-            timestamp=0,
+            timestamp=_TS,
             turn_index=0,
             tool_results=[],
         )
@@ -294,7 +297,7 @@ class TestAgentEventConditionalFields:
         """Tool execution events should have tool_call_id and tool_name."""
         event = AgentEvent(
             type="tool_execution_start",
-            timestamp=0,
+            timestamp=_TS,
             tool_call_id="call_123",
             tool_name="ls",
             args={"path": "."},
@@ -307,7 +310,7 @@ class TestAgentEventConditionalFields:
         """Message events should carry message data."""
         event = AgentEvent(
             type="message_start",
-            timestamp=0,
+            timestamp=_TS,
             message={"role": "assistant", "content": []},
         )
         assert event.message is not None
@@ -316,7 +319,7 @@ class TestAgentEventConditionalFields:
         """tool_execution_end should carry the result."""
         event = AgentEvent(
             type="tool_execution_end",
-            timestamp=0,
+            timestamp=_TS,
             tool_call_id="call_123",
             tool_name="ls",
             result="output",
@@ -343,7 +346,7 @@ class TestAgentEventProvenance:
     def test_every_submission_source_is_a_valid_event_source(self, source):
         event = AgentEvent(
             type="agent_start",
-            timestamp=0,
+            timestamp=_TS,
             submission_id="11111111-1111-1111-1111-111111111111",
             source=source,
             submitter=f"probe-{source}",
@@ -379,9 +382,6 @@ class TestAgentEventRoundTrip:
         )
         rebuilt = self._round_trip(event)
         assert rebuilt == event
-        # A plain, independent structure — mutating the dump must not alias the
-        # live event (the same aliasing hazard test_submission.py pins for
-        # Submission.correlation).
         dumped = event.model_dump()
         dumped["correlation"]["binding_id"] = 999
         assert event.correlation is not None
@@ -390,6 +390,6 @@ class TestAgentEventRoundTrip:
     @pytest.mark.parametrize("source", get_args(SubmissionSource))
     def test_round_trip_every_submission_source(self, source):
         event = AgentEvent(
-            type="agent_start", timestamp=0, submission_id="sid", source=source, submitter="x"
+            type="agent_start", timestamp=_TS, submission_id="sid", source=source, submitter="x"
         )
         assert self._round_trip(event) == event

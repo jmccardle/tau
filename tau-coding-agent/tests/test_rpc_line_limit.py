@@ -58,13 +58,8 @@ import pytest
 
 from tau_agent_core.rpc import dialect
 
-# Port 1 is always connection-refused: a model entry that resolves without
-# anything ever answering it.
 UNREACHABLE_BASE_URL = "http://127.0.0.1:1/v1"
 
-#: Comfortably past the stdlib `StreamReader`'s 64 KiB default (which is what
-#: used to kill the child), comfortably under the shipped bound, and small
-#: enough to push through a pipe without the test noticing.
 _PAST_THE_OLD_DEFAULT_BYTES = 1024 * 1024
 
 
@@ -220,8 +215,6 @@ async def _shutdown(proc: asyncio.subprocess.Process) -> int:
 
     async def _drain() -> None:
         with contextlib.suppress(asyncio.CancelledError, ValueError):
-            # Chunks, not lines: a drain that can raise on a long response is
-            # a drain that silently stops (see `_read_line`).
             while await proc.stdout.read(64 * 1024):  # type: ignore[union-attr]
                 pass
 
@@ -355,9 +348,6 @@ async def test_a_hostile_endless_line_is_refused_once_and_the_child_survives(fak
         for _ in range(4):
             await _send_raw(proc, b"Z" * (limit // 4))
 
-        # The first LF ends the refused line; what follows it is a request
-        # like any other. If a second refusal had been queued for the same
-        # line, THIS read would find it instead of the response.
         request = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "get_state"}).encode()
         await _send_raw(proc, b"\n" + request + b"\n")
         answer = await _recv_response(proc, 2)

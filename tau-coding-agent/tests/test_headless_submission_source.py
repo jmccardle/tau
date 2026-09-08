@@ -40,7 +40,10 @@ from tau_agent_core.submission import Submission
 from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, TextContent, Usage
 from tau_coding_agent.cli import CLIArgs
-from tau_coding_agent.headless import build_print_submission, run_print
+from tau_coding_agent.headless import CLIError, build_print_submission, run_print
+
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
 
 # ── a scripted LLM boundary (same shape as test_json_mode / test_cost) ───────
 
@@ -52,7 +55,7 @@ def _assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="qwen",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=1000, output_tokens=500, total_tokens=1500, cache_read_tokens=0),
     )
 
@@ -148,27 +151,15 @@ def admitted(monkeypatch) -> list[Submission]:
 def test_print_submission_says_who_submitted_and_what_they_may_do():
     sub = build_print_submission("summarize the readme")
 
-    # A human at a frontend that happens not to draw. NOT "rpc": print mode cannot
-    # tell a person at a shell from a script, and τ has a real RPC transport that
-    # can. What it CAN state truthfully is who the text came from.
     assert sub.source == "interactive"
     assert sub.submitter == "human"
 
-    # Jupyter's allow_stdin, and the reason the source axis does not have to carry
-    # non-interactivity: nobody is at this process to answer a modal.
     assert sub.allow_user_input is False
 
-    # argv is the operator's own text — the same trust level as a keystroke in the
-    # TUI, and the boundary B2-b draws is against text that ARRIVES while τ runs.
     assert sub.expand_commands is True
 
-    # A fresh process has nothing in flight except a turn an extension's
-    # session_start may have started; refusing the user's own prompt over that race
-    # is the wrong answer, so wait for it.
     assert sub.multitask_strategy == "enqueue"
 
-    # Left alone: False would ALSO skip the end-of-prompt drain and user_turn_end,
-    # extension hooks a headless run fires today.
     assert sub.store_history is True
     assert sub.silent is False
 
@@ -256,10 +247,6 @@ async def test_json_mode_events_carry_the_print_submissions_provenance(fake_llm,
 
 # ── a blocking dialog under a print-mode turn ───────────────────────────────
 
-# An extension whose ``input`` hook — which fires INSIDE submit(), under the
-# submission's published capability — opens a blocking confirm and records what
-# happened. It also records the provenance the hook was handed, which is the same
-# stamp the events carry.
 _DIALOG_EXT = """
 import json
 from pathlib import Path
@@ -271,7 +258,9 @@ def register(api):
     async def _on_input(event, ctx):
         record = {"source": event["source"], "submitter": event["submitter"]}
         try:
-            record["answer"] = await ctx.ui.confirm("Proceed?", "may I")
+            record["answer"] = await ctx.ui.form(
+                {"title": "Proceed?", "fields": [{"name": "ok", "kind": "confirm", "default": True}]}
+            )
         except Exception as exc:
             record["error"] = type(exc).__name__
         MARKER.write_text(json.dumps(record))
@@ -287,9 +276,9 @@ class _RecordingDelegate:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    async def confirm(self, title, message):
-        self.calls.append(title)
-        return True
+    async def form(self, spec):
+        self.calls.append(spec.get("title", ""))
+        return {"ok": True}
 
     def notify(self, message, level="info"):
         pass
@@ -327,17 +316,27 @@ async def test_dialog_under_print_mode_raises_with_no_policy(fake_llm, tmp_path)
 
 
 async def test_dialog_under_print_mode_honours_ui_defaults(fake_llm, tmp_path):
-    """``--ui-defaults confirm=yes`` is the explicit opt-in, and it still applies."""
+    """``--ui-defaults form=defaults`` is the explicit opt-in, and it still applies."""
     ext, marker = _install_dialog_ext(tmp_path)
 
     rc = await asyncio.wait_for(
-        run_print(_dialog_args(ext, ui_defaults="confirm=yes"), _config()), timeout=10
+        run_print(_dialog_args(ext, ui_defaults="form=defaults"), _config()), timeout=10
     )
     assert rc == 0
 
     record = json.loads(marker.read_text())
-    assert record["answer"] is True
+    assert record["answer"] == {"ok": True}
     assert "error" not in record
+
+
+async def test_a_retired_ui_default_names_its_replacement(fake_llm, tmp_path):
+    """§8.3: an operator with ``confirm=yes`` in a script is told what to write."""
+    ext, _marker = _install_dialog_ext(tmp_path)
+
+    with pytest.raises(CLIError, match="no longer exists"):
+        await asyncio.wait_for(
+            run_print(_dialog_args(ext, ui_defaults="confirm=yes"), _config()), timeout=10
+        )
 
 
 async def test_dialog_cannot_reach_a_delegate_even_when_one_exists(fake_llm, tmp_path, monkeypatch):
@@ -425,12 +424,6 @@ async def test_frontend_command_print_mode_cannot_perform_raises(tmp_path):
 
 # ── a command that arrives AFTER print mode's peek (the `input` hook seam) ───
 
-# The 37_inline_bash shape: an `input` hook rewrites the typed text before the core
-# resolves it. Print mode's peek saw "cc" — ordinary prompt text — so it took the
-# turn path; submit() resolved the POST-hook text and dispatched a command instead.
-# The alias expands to an extension command (performer="core", the handler already
-# RAN inside submit and its output is on the result) or to a built-in
-# (performer="frontend", which print mode cannot perform).
 _ALIAS_EXT = """
 def register(api):
     def _todos(args, ctx):
@@ -476,9 +469,6 @@ async def test_late_arriving_core_command_is_performed_not_swallowed(tmp_path, c
     out = capsys.readouterr().out
     assert "TODOS:alpha" in out, "the command the hook expanded to must be reported"
 
-    # One admission, and the text submit() saw is still the pre-hook text: the
-    # rewrite happens inside submit(), which is exactly why print mode's own peek
-    # could not see it.
     assert [s.text for s in admitted] == ["cc"]
 
 

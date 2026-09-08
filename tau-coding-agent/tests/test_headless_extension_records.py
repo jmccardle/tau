@@ -26,12 +26,10 @@ from tau_coding_agent.cli import CLIArgs
 from tau_coding_agent.headless import run_print
 from tau_coding_agent.session_store import Session, list_sessions
 
-# An extension that notifies on session_start AND from a /ping command handler (which
-# also returns a report string, so the command_output channel fires too).
 _NOTIFY_EXT = """
 def register(api):
     def _on_start(event, ctx):
-        api.ui.notify("started", "info")
+        api.ui.notify("NOTIFYSIG-start", "info")
 
     def _ping(args, ctx):
         api.ui.notify("pong " + args, "warning")
@@ -78,16 +76,13 @@ async def test_json_mode_emits_extension_notify_records(monkeypatch, tmp_path, c
     lines = [json.loads(line) for line in captured.out.splitlines() if line.strip()]
     ext_records = [r for r in lines if r.get("type") == "extension"]
 
-    # Both notifies are on the stream, in order (session_start before the command),
-    # each a well-formed record of the parallel family; ``extension`` is null because
-    # the shared ExtensionUI carries no per-call attribution (honest, not fabricated).
     assert ext_records == [
         {
             "type": "extension",
             "kind": "notify",
             "extension": None,
             "level": "info",
-            "message": "started",
+            "message": "NOTIFYSIG-start",
         },
         {
             "type": "extension",
@@ -100,7 +95,7 @@ async def test_json_mode_emits_extension_notify_records(monkeypatch, tmp_path, c
     # The command still emits its own output record (S46) — the two families coexist.
     assert {"type": "command_output", "command": "ping", "output": "PONG:alpha"} in lines
     # Routed to stdout, NOT the stderr sink.
-    assert "started" not in captured.err
+    assert "NOTIFYSIG-start" not in captured.err
     assert "pong alpha" not in captured.err
 
 
@@ -113,7 +108,7 @@ async def test_text_mode_keeps_notify_on_stderr(monkeypatch, tmp_path, capsys):
 
     captured = capsys.readouterr()
     # The notifies surface on stderr (unchanged pre-S49 behaviour)...
-    assert "started" in captured.err
+    assert "NOTIFYSIG-start" in captured.err
     assert "pong alpha" in captured.err
     # ...and no JSON extension record leaks onto stdout.
     assert '"type": "extension"' not in captured.out
@@ -125,6 +120,11 @@ async def test_extension_records_are_display_only_not_persisted(monkeypatch, tmp
 
     The records are a display channel — like ``command_output`` — so a reloaded
     session must carry no message fabricated from the notify text.
+
+    The markers must be strings no prose would contain. This searches EVERY
+    persisted message, and the system prompt of a run in this repository carries
+    the project instructions — so the original ``"started"`` failed the day a
+    docs paragraph used the word.
     """
     monkeypatch.setattr(store, "TAU_DIR", tmp_path)
 
@@ -137,6 +137,6 @@ async def test_extension_records_are_display_only_not_persisted(monkeypatch, tmp
         session = Session.load(Path(info.ref))
         for msg in session.context:
             content = str(msg.get("content", ""))
-            assert "started" not in content
+            assert "NOTIFYSIG-start" not in content
             assert "pong" not in content
             assert "PONG" not in content

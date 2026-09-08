@@ -43,6 +43,16 @@ can fan out to the right stream. ``None`` alongside ``submission_id``
 (an EMPTY dict would claim "a submission with no correlation data";
 ``None`` says "no submission stamped this event" instead).
 
+### details
+
+`tau_agent_core.events.AgentEvent.details: dict[str, Any] | None`
+
+A tool's structured facts about its own execution on
+``tool_execution_end`` — the path it read, the line range, the match
+count, the diff. What ``result`` holds is what the MODEL reads; this
+is what a head can render beside it. ``None`` when the tool declared
+none, and on every other event type.
+
 ### end_reason
 
 `tau_agent_core.events.AgentEvent.end_reason: AgentEndReason | None`
@@ -212,6 +222,28 @@ Emit to all handlers on a specific channel.
 - `channel: str` — Channel name.
 - `*args: Any` — *(no description)*
 - `**kwargs: Any` — *(no description)*
+
+### has_listeners
+
+```python
+has_listeners(channel: str) -> bool
+```
+
+`tau_agent_core.events.EventBus.has_listeners`
+
+Whether anyone is subscribed to ``channel``.
+
+For a caller deciding whether an un-deliverable emit is a problem: a
+synchronous appender with no running loop cannot dispatch, and that is
+only a lost event if something was waiting for it.
+
+**Parameters**
+
+- `channel: str` — Channel name. ``"all"`` subscribers are not counted — they take :meth:`emit`'s ``AgentEvent`` stream, not a named channel.
+
+**Returns**
+
+True if at least one handler is registered on ``channel``.
 
 ### off
 

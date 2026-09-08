@@ -252,9 +252,6 @@ class InMemorySessionCatalog(SessionCatalog):
         system_prompt: str | None = None,
         name: str | None = None,
     ) -> ConversationSession:
-        # Mirrors FileSessionCatalog.create_ephemeral / Session.create_in_memory:
-        # same construction, just never registered — so it never appears in list()
-        # or via load() (there is no "disk" for it to persist to).
         return self._build(cwd, model, backend, system_prompt=system_prompt, name=name)
 
     @staticmethod
@@ -282,11 +279,6 @@ class InMemorySessionCatalog(SessionCatalog):
         forked = _InMemoryConversationSession(
             cwd, source.model, source.backend, source.name, parent=source.id
         )
-        # Self-contained copy of the message history (mirrors Session.fork); the
-        # source is never touched. Compaction/navigate/branch_summary entries
-        # reference entry ids from the SOURCE log, so replaying them verbatim isn't
-        # meaningful here — no test in this suite forks a compacted/branched
-        # session, so plain messages are all this minimal double needs to carry.
         for entry in source.entries():
             if entry.get("type") == "message":
                 forked.append_message(entry["message"])
@@ -336,8 +328,6 @@ class TestInMemorySessionCatalogContract(SessionCatalogContractTests):
     def make_catalog(self) -> SessionCatalog:
         return InMemorySessionCatalog()
 
-    #: RAM-only: there is no second instance that could see these sessions, so the
-    #: durability tests skip rather than pretending. ``reopen`` is inherited as-is.
     missing_ref_error = FileNotFoundError
 
 

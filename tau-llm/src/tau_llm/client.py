@@ -32,24 +32,6 @@ from tau_llm.providers import Provider, get_api_factory, get_provider_spec
 from tau_llm.types import AssistantMessage
 from tau_llm.docs import agent_facing
 
-# ──────────────────────────────────────────────────────────────────────────
-# Dispatch (docs/PLAN-0.9.3.md §4.4).
-#
-# Which provider CLASS serves a call is decided by ``model.api`` — the wire
-# protocol — through the api registry in ``tau_llm.providers``. It used to be
-# decided by nothing at all: this module constructed an
-# ``OpenAICompletionsProvider`` unconditionally and used ``model.provider``
-# only as a cache key, so a model declaring ``api="openai-responses"`` (a
-# protocol τ has never implemented) was served over the completions wire and
-# nothing said so.
-#
-# ``model.provider`` is the VENDOR, and stays free-form: a Model carries its
-# own base_url, so "local-llm" or an internal gateway name needs no
-# registration. Registering one (``tau_llm.providers.register_provider``) adds
-# defaults — endpoint, credential environment variables, display name — and
-# lets τ refuse to send one vendor's prompt with another vendor's key.
-# ──────────────────────────────────────────────────────────────────────────
-
 
 @dataclass(frozen=True)
 class _ProviderRequest:
@@ -88,9 +70,6 @@ def _resolve_request(model: Any, options: dict[str, Any]) -> _ProviderRequest:
             f"an api names the wire protocol to speak (e.g. 'openai-completions')."
         )
 
-    # Unknown wire protocol → raise. Checked before the vendor so that an
-    # unimplemented api reports itself as unimplemented rather than as a
-    # mismatch with whatever the vendor happens to speak.
     get_api_factory(api)
 
     spec = get_provider_spec(provider_id)
@@ -111,10 +90,6 @@ def _resolve_request(model: Any, options: dict[str, Any]) -> _ProviderRequest:
 
     api_key = options.get("api_key") or (spec.resolve_api_key() if spec else None)
     if not api_key and spec is not None and spec.api_key_env:
-        # The vendor told us where its credential lives and it is not there.
-        # Continuing would hand the request to the provider with no key, and
-        # OpenAICompletionsProvider then falls back to OPENAI_API_KEY — i.e.
-        # one vendor's secret sent to another vendor's endpoint.
         raise ValueError(
             f"No API key for provider {provider_id!r}. Set one of "
             f"{', '.join(spec.api_key_env)}, or pass api_key in the call options."
@@ -128,31 +103,6 @@ def _resolve_request(model: Any, options: dict[str, Any]) -> _ProviderRequest:
         api_key=api_key,
     )
 
-
-# ──────────────────────────────────────────────────────────────────────────
-# Provider pool (docs/PROVIDER-LIFETIME.md).
-#
-# A fresh provider (and therefore a fresh httpx.AsyncClient) on every call
-# means no HTTP keep-alive between completions — measured at +42 ms/call
-# (51% slower) on a LAN plaintext endpoint (§3). The naive fix — a
-# module-level cache keyed on provider_name alone — is a SILENT
-# CROSS-ROUTING BUG: the provider bakes base_url + api_key in at
-# construction, so a second model with a different endpoint would reuse the
-# first model's provider, sending model B's prompt AND api key to A's
-# server (§5). Keying on (provider_name, api, base_url, sha256(api_key))
-# makes that impossible: a distinct endpoint or key is always a distinct
-# cache entry. The key hashes the api_key so the cache dict never holds a raw
-# secret as a dict key (the provider object itself still holds it — that
-# part is unavoidable).
-#
-# The pool is ALSO keyed per event loop. An httpx.AsyncClient is bound to
-# the loop it was built on; a bare module-level dict would hand back a
-# client bound to a *closed* loop the moment one asyncio.run() ends and
-# another begins (exactly what the test suite does, once per test). A
-# WeakKeyDictionary keyed on the running loop means a loop's pool entry
-# disappears with the loop — no separate cleanup required for that part.
-# Providers still need an EXPLICIT aclose() (below) — GC does not run it.
-# ──────────────────────────────────────────────────────────────────────────
 
 _PoolKey = tuple[str, str, str, str]
 
@@ -273,10 +223,6 @@ async def stream_simple(
         options=options,
     )
 
-    # The provider yields typed streaming events (a bare async iterator). Wrap it
-    # once in AssistantMessageEventStream, which runs a background collector so
-    # ``result()`` and ``async for`` can be awaited independently — the single
-    # stream type τ-agent-core consumes.
     return AssistantMessageEventStream(
         provider_stream=provider_stream,
         model=model,

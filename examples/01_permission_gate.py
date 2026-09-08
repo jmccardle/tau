@@ -113,8 +113,4 @@ def permission_gate_extension(api: Any) -> None:
     api.on("tool_call", permission_gate_tool_call)
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/01_permission_gate.py`` → ``getattr(module, "register")``), so the
-#: demo is loadable through the public ``-e`` surface, not only by importing
-#: ``permission_gate_extension`` directly.
 register = permission_gate_extension

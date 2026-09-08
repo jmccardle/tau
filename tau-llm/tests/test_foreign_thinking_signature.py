@@ -24,9 +24,9 @@ from tau_llm.providers import openai as openai_mod
 from tau_llm.providers.openai import OpenAICompletionsProvider
 from tau_llm.types import AssistantMessage, Model, TextContent, ThinkingContent
 
-# An Anthropic-shaped payload: a cryptographic signature over the thinking text,
-# plus the redacted-vs-plain distinction that Anthropic carries on a separate
-# block type. S4 gives it a home here rather than adding a τ block type.
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 ANTHROPIC_SIGNATURE = {"anthropic": {"signature": "ErUBCkYIBRgCIkAx7", "redacted": False}}
 
 
@@ -64,7 +64,7 @@ def _assistant(*content) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
     )
 
 
@@ -111,8 +111,6 @@ class TestDictSignatureDegrades:
 
     def test_dict_signature_is_never_used_as_a_key(self):
         msg = _provider()._convert_messages_to_openai([_dict_message(ANTHROPIC_SIGNATURE)])[0]
-        # The blob must not appear as a field name, nor nested anywhere the
-        # request would carry it.
         assert "anthropic" not in msg
         assert all(isinstance(key, str) for key in msg)
         assert "ErUBCkYIBRgCIkAx7" not in repr(msg)

@@ -29,6 +29,9 @@ from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PATH = _REPO_ROOT / "examples" / "33_claude_rules.py"
 _spec = importlib.util.spec_from_file_location("claude_rules_33_example", _PATH)
@@ -45,7 +48,7 @@ def _text_assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -105,10 +108,6 @@ def _system_prompt_text(context: dict[str, Any]) -> str:
 
 
 def _session_with_rules() -> AgentSession:
-    # ExtensionContext.cwd defaults to "." (AgentSession does not thread a cwd
-    # param), so the run cwd IS the process cwd here — the same convention
-    # ``test_gatekeeper.py``'s ``project`` fixture uses (``monkeypatch.chdir``);
-    # callers of this helper chdir into a fixture directory first.
     session = AgentSession(
         session_log=InMemorySessionLog(),
         model=_model(),

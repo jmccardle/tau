@@ -346,3 +346,71 @@ most providers reject outright.
    `dict[str, str]` generically. What makes free-form safe is the round-trip parity test above,
    whose real content is "no live objects" — so enforce that at `__post_init__`, where the
    traceback names the culprit, rather than at the renderer that inherits the corpse.
+
+---
+
+## Revised 2026-09-04: the outcome is a union, and `performer` is gone
+
+Phase 3 shipped `CommandOutcome` carrying `performer: "core" | "frontend"`. The
+flag survived long enough to be measured, and what the measurement found is that
+it answered a **different question on each record it sat on** — *will* the core
+run this, on `CommandInvocation`; *did* it, on `CommandOutcome` — while
+`CommandCompletion.performer` had no reader in `src` at all.
+
+Worse, two of the four things a dispatched gesture can be had no representation.
+`next_step` has returned `FlowStep | Ready` since `abe6a7a`, so the INPUT side was
+a union already; what running a gesture PRODUCED had no record, and a view was a
+name with nothing behind it.
+
+**What replaced it.** `tau_agent_core.flows.Dispatched` — `FlowStep | Ready |
+Performed | View`. A head's whole rule is which arm came back:
+
+| Arm | What it means | The TUI | Print mode | The RPC wire |
+|---|---|---|---|---|
+| `Performed` | an extension command RAN; `data["output"]` is its text | a display-only system box | stdout, or one `command_output` record | rides the acceptance response |
+| `FlowStep` | an argument is unbound | the session picker, or a listing of the domain | refuses, naming the argument | refuses, naming `next_step` |
+| `Ready` | the mutation and its arguments | performs it, and reports the `Performed` | refuses | refuses, naming the verb to call instead |
+| `View` | a named surface | opens it | refuses | returns it as a SUCCESS, carrying `view` |
+
+**`/compact`'s re-render was never a dispatch fact.** It is `cursor is not None`,
+and `/model`, `/name` and `/fork` move the cursor too. The flag happened to be set
+on the four commands that needed a re-render; it never said why.
+
+**One gap this closed on the way.** `/extensions disable my_ext.py` was head-local
+sugar, and a `View` carries no argument string — so a head left holding that table
+would have had the verb resolved out from under it and `my_ext.py` silently
+dropped. `EXTENSION_VIEW_VERBS` and the rewrite now live in
+`commands.dispatch_builtin`, derived from `FLOWS`, and a verb that names no flow is
+refused rather than discarded. The wider stray-text gap
+(docs/SLASH-COMMANDS.md §4, `/tree extra words`) is NOT closed.
+
+**One arm does not converge, and the reason is not laziness.** `Ready` is performed
+by a screen for three mutations — `compact` re-renders the transcript, `fork` and
+`switch_session` move the app onto another session — so those keep the actions the
+keybinding and the palette already call. A terminal, a pipe and a socket differ in
+what they can open. The duplicated dispatch is reduced, not removed.
+
+**What survived the deletion, renamed to say what it is.** `CommandPerformer` is
+gone; `CommandOrigin` — `"builtin" | "extension"` — took its place on
+`CommandInvocation` and `CommandCompletion`, and on the wire's `get_commands`
+listing. It is a fact about the NAME, not about who runs it: built-ins resolve
+first so an extension cannot shadow `/compact`, and a palette groups by it. The
+`submit`/`prompt` acceptance payload drops the field outright — only an
+extension-registered command reaches that shape at all, so a flag saying so said
+nothing.
+
+**`/tree` over the wire stopped being an error.** It comes back as a success
+response carrying `view: {name, state, unavailable_because}`, exactly one of the
+last two non-null. `state` is null today — τ projects no view state
+(docs/VSCODE-HEAD.md §6) — so every one of them carries a written reason a host
+prints. The alternative was keeping the error until the tree payload exists and
+turning it into a success then, which is two breaks instead of one and leaves the
+payload with nowhere to land in the meantime. Reversing this touches the RPC
+dispatch only: the union and the heads do not change.
+
+**The core raises where it used to shrug.** A word a fixed-value domain does not
+declare (`/autocompact yes`) and an `/extensions` verb that names no flow both
+raise out of `submit()`. Each head catches that at its own door and reports one
+line — an error notice in the TUI, a `CLIError` in print mode — rather than a
+traceback, because reporting is what Fail-Early asks for and a stack trace is not
+a report.

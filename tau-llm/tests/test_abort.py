@@ -154,11 +154,6 @@ class TestAbortSignalThreadSafety:
         assert len(errors) == 0, f"Race condition errors: {errors}"
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Abort threaded into the LLM stream (cooperative mid-completion cancellation)
-# ──────────────────────────────────────────────────────────────────────────
-
-
 class _AbortStreamCM:
     """Async CM mimicking ``httpx.AsyncClient.stream(...)``."""
 
@@ -228,8 +223,6 @@ class TestAbortSignalStopsStream:
     def test_abort_midstream_stops_and_finalizes_aborted(self):
         signal = AbortSignal()
         lines = _content_chunks(["one", "two", "three", "four", "five"])
-        # Trip the signal just before the 3rd SSE line; the provider checks at the
-        # top of the loop, so "three" onward are never processed.
         resp = _AbortingResponse(lines, signal, abort_before=2)
 
         provider = OpenAICompletionsProvider(api_key="sk-test")

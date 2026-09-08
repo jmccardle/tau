@@ -26,23 +26,40 @@ plus the set of extension-registered command names — and it is called from exa
 :attr:`Submission.expand_commands`), and a frontend that needs to know *before* it renders a user
 bubble whether a turn is coming. Both get the same answer from the same function.
 
-:class:`CommandOutcome` is what ``submit()`` returns on
-:class:`~tau_agent_core.submission.SubmissionResult`. Two shapes:
+:data:`~tau_agent_core.flows.Dispatched` is what ``submit()`` returns on
+:class:`~tau_agent_core.submission.SubmissionResult`. Four arms, and which one came
+back is the whole of a head's rule:
 
-- ``performer="core"`` — the core already ran it (an extension-registered command, via
-  ``AgentSession.run_extension_command``) and ``output`` is the handler's returned text. Any
-  frontend can render a string.
-- ``performer="frontend"`` — the core decided *what* it is and stopped there. The frontend must
-  perform it, and a frontend that cannot must raise :class:`UnsupportedCommandError` rather than
-  return silently. That is the Fail-Early half of the seam: a ``/tree`` that quietly does nothing
-  under ``--mode json`` is the "works in the TUI, no-ops for the web frontend" failure class the
-  spec names, and it is indistinguishable from a bug until someone reads the source.
+- :class:`~tau_agent_core.flows.Performed` — the core already ran it (an
+  extension-registered command, via ``AgentSession.run_extension_command``) and
+  ``data["output"]`` is the handler's returned text. Any frontend can render a string.
+- :class:`~tau_agent_core.flows.FlowStep` — a required argument is unbound. The head
+  binds one, from a picker, a modal, a completion popup or argv, and asks again.
+- :class:`~tau_agent_core.flows.Ready` — the mutation and its arguments. The head
+  performs it and gets a ``Performed`` back.
+- :class:`~tau_agent_core.flows.View` — a named surface only a head can open. A head
+  that has one opens it; a head that has none prints ``unavailable_because`` or
+  raises :class:`UnsupportedCommandError`, rather than returning silently. That is
+  the Fail-Early half of the seam: a ``/tree`` that quietly does nothing under
+  ``--mode json`` is the "works in the TUI, no-ops for the web frontend" failure
+  class the spec names, and it is indistinguishable from a bug until someone reads
+  the source.
 
-Why the built-in names are hardcoded HERE rather than registered by the frontend: if the table
-were a registry the frontend populates, a frontend that cannot perform ``/tree`` would simply not
+This replaced a two-valued ``performer`` flag, whose trouble was that it answered a
+different question on each record it sat on — *will* the core run this, on the
+invocation; *did* it, on the outcome — and could say nothing at all about the two
+arms that are neither.
+
+Why the built-in names come from the CORE rather than from the frontend: if the table were a
+registry the frontend populates, a frontend that cannot perform ``/tree`` would simply not
 register it, ``resolve_command`` would return ``None``, and "/tree" would be sent to the model as
-prompt text — a silent fallback wearing a plausible face. These four names are τ's own built-in
+prompt text — a silent fallback wearing a plausible face. These names are τ's own built-in
 vocabulary; every frontend is answerable for them, and one that is not says so out loud.
+
+:data:`FRONTEND_COMMANDS` is now a projection of
+:mod:`tau_agent_core.capabilities` rather than a literal typed here, so the flow table and the
+slash vocabulary cannot drift. The list this module publishes is unchanged; where it comes from
+is not.
 """
 
 from __future__ import annotations
@@ -52,38 +69,66 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Literal
 
-#: Who runs a resolved command. ``"core"`` = ``AgentSession`` ran it and produced text;
-#: ``"frontend"`` = the core identified it and the caller must perform it (or raise).
-CommandPerformer = Literal["core", "frontend"]
+from tau_agent_core.capabilities import (
+    BUILTIN,
+    FLOWS,
+    Argument,
+    Domain,
+    Vocabulary,
+    slash_vocabulary,
+)
+from tau_agent_core.flows import (
+    Dispatched,
+    DomainValue,
+    View,
+    bind_command_args,
+    flow_arguments,
+    next_step,
+)
 
-#: τ's built-in commands, name → what performing one requires of a frontend. These are
-#: frontend-shaped by construction (a modal, a panel, a transcript re-render), so the core
-#: resolves them and hands the invocation back rather than running them.
-#:
-#: Deliberately a module constant and not a per-frontend registry — see the module docstring.
-#: The descriptions are not chrome: they are what an :class:`UnsupportedCommandError` quotes so
-#: the failure names what the frontend was asked to do and could not.
-FRONTEND_COMMANDS: dict[str, str] = {
-    "compact": "compact the conversation and re-render the transcript",
-    "tree": "open the session-tree browser",
-    "fork": "open the session-tree browser (pi's alias of /tree)",
-    "extensions": "list loaded extensions, or run `enable|disable|reload <name>`",
-    # docs/SESSION-UX-REDESIGN.md §7: ONE action, three surfaces. The CLI flag
-    # (--resume), the palette entry ("Resume session…") and this slash command
-    # are three bindings to the frontend's single resume handler, not three
-    # implementations — which is only possible because the DECISION that
-    # "/resume" is a command lives here, with the rest of τ's vocabulary. A
-    # frontend with no picker (--print, --mode json) says so through
-    # UnsupportedCommandError rather than opening nothing.
-    "resume": "open the session picker, or resume the session named by <ref>",
+CommandOrigin = Literal["builtin", "extension"]
+"""Where a command NAME came from: τ's own vocabulary, or a loaded extension.
+
+It replaced ``CommandPerformer``, which said ``"core"`` / ``"frontend"`` and meant
+"who runs this" — a question with four answers, now answered by which arm of
+:data:`~tau_agent_core.flows.Dispatched` came back. What is left is a genuine fact
+about the NAME, and the fact a head actually wants: a palette groups built-ins apart
+from what an extension registered, and ``resolve_command`` resolves built-ins first
+so an extension cannot shadow ``/compact``.
+"""
+
+EXTENSION_VIEW_VERBS: dict[str, str] = {
+    flow.name.removesuffix("_extension"): flow.name
+    for flow in FLOWS
+    if flow.mutation.endswith("_extension")
 }
+"""The verb a reader types inside ``/extensions``, mapped to the flow it names.
+
+``/extensions disable my_ext.py`` is sugar for ``/disable_extension my_ext.py``, kept
+because it is what readers already type. It lives in the CORE rather than in a head
+because ``/extensions`` resolves to a :class:`~tau_agent_core.flows.View`, and a view
+carries no argument string — so a head holding this table would have had the verb
+resolved out from under it and the target silently dropped.
+
+Derived from :data:`~tau_agent_core.capabilities.FLOWS`, so the sugar cannot offer a
+verb the registry does not declare.
+"""
+
+FRONTEND_COMMANDS: dict[str, str] = slash_vocabulary()
+"""τ's built-in slash vocabulary: command name to one-line description.
+
+Projected from :func:`tau_agent_core.capabilities.slash_vocabulary` — the flow table
+plus the two view commands — rather than typed here. Ordering is load-bearing: the
+completion popup and the RPC ``get_commands`` listing both render it in iteration
+order, and ``compact`` is first.
+"""
 
 
 class UnsupportedCommandError(RuntimeError):
     """A resolved command reached a caller that cannot perform it.
 
-    Raised by a frontend handed a ``performer="frontend"``
-    :class:`CommandOutcome` it has no implementation for, and by
+    Raised by a frontend handed a :class:`~tau_agent_core.flows.View` or a
+    :class:`~tau_agent_core.flows.Ready` it has no implementation for, and by
     :meth:`~tau_agent_core.agent_session.AgentSession.prompt`, whose ``list[dict]`` return type
     has no channel for a command outcome at all.
 
@@ -104,27 +149,7 @@ class CommandInvocation:
 
     name: str  # the command word, without the leading "/"
     args: str  # everything after the first space, verbatim (may be "")
-    performer: CommandPerformer
-
-
-@dataclass(frozen=True)
-class CommandOutcome:
-    """What ``submit()`` reports on :class:`~tau_agent_core.submission.SubmissionResult`.
-
-    Flat scalars only, so it round-trips through ``dataclasses.asdict()``/``json.dumps`` for the
-    same reason ``Submission.correlation`` is validated (spec decision 4): this rides out to
-    ``--mode json`` and to any embedded frontend, and a live object here would detonate several
-    hops downstream.
-    """
-
-    name: str
-    args: str
-    performer: CommandPerformer
-    output: str | None = None
-    # Only ever set when performer == "core" — the extension handler's returned text, already
-    # coerced to display text by ExtensionCommandResult.output_text(). ``None`` means the
-    # handler returned nothing, which is a command that ran and had nothing to say; it is NOT
-    # the same as a command that did not run (that is an exception, not a None).
+    origin: CommandOrigin
 
 
 def parse_command(text: str) -> tuple[str, str] | None:
@@ -168,15 +193,75 @@ def resolve_command(
         return None
     name, args = parsed
     if name in FRONTEND_COMMANDS:
-        return CommandInvocation(name=name, args=args, performer="frontend")
+        return CommandInvocation(name=name, args=args, origin="builtin")
     if name in extension_commands:
-        return CommandInvocation(name=name, args=args, performer="core")
+        return CommandInvocation(name=name, args=args, origin="extension")
     return None
 
 
-#: The empty extension-command table, as the default for :func:`complete_command`. A module
-#: constant rather than a literal in the signature because a mutable default is a shared
-#: object; ``MappingProxyType`` makes the sharing harmless by construction.
+def dispatch_builtin(
+    name: str,
+    args: str,
+    *,
+    cursor: str | None = None,
+    vocabulary: Vocabulary = BUILTIN,
+) -> Dispatched:
+    """Which arm a BUILT-IN command is, decided without running anything.
+
+    The pure half of :meth:`~tau_agent_core.agent_session.AgentSession._perform_command`
+    — pure for the reason :func:`resolve_command` is: a head peeking, a session
+    dispatching and a test with neither must all get the same answer from the same
+    function. The impure half is one case, an extension-registered command, which the
+    session runs and reports as a :class:`~tau_agent_core.flows.Performed`.
+
+    ``/extensions <verb> <target>`` is rewritten here into the flow that verb names
+    (:data:`EXTENSION_VIEW_VERBS`), because a :class:`~tau_agent_core.flows.View`
+    carries no argument string — a head left holding that sugar would have had the
+    target silently dropped.
+
+    Args:
+        name: The command word, without the leading ``/``.
+        args: Everything the reader typed after it.
+        cursor: The entry a scoped ``message_id`` argument would be relative to,
+            threaded through to the :class:`~tau_agent_core.flows.FlowStep`.
+        vocabulary: The registry to resolve ``name`` in. A session's own
+            (:attr:`~tau_agent_core.agent_session.AgentSession.vocabulary`) also
+            carries the flows its extensions declared.
+
+    Returns:
+        A :class:`~tau_agent_core.flows.View` for a view command, otherwise the
+        :class:`~tau_agent_core.flows.FlowStep` or
+        :class:`~tau_agent_core.flows.Ready` the flow is at.
+
+    Raises:
+        UnsupportedCommandError: ``/extensions`` was given a verb that names no flow.
+        UnknownFlowError: ``name`` is neither a view nor a declared flow.
+        ValueError: ``args`` is not a value of the flow argument's domain.
+    """
+    if name == "extensions" and args.strip():
+        verb, _, target = args.strip().partition(" ")
+        flow = EXTENSION_VIEW_VERBS.get(verb)
+        if flow is None:
+            legal = " | ".join(sorted(EXTENSION_VIEW_VERBS))
+            raise UnsupportedCommandError(
+                f"/extensions {verb!r} names no action (use: {legal}). Refusing rather "
+                "than opening the listing and discarding what was typed."
+            )
+        name, args = flow, target.strip()
+
+    if name in vocabulary.views:
+        return View(
+            name=name,
+            unavailable_because=(
+                f"τ projects no state for the {name!r} view yet, so a head opens it from "
+                "its own reads (docs/VSCODE-HEAD.md §6)"
+            ),
+        )
+    return next_step(
+        name, bind_command_args(name, args, vocabulary), cursor=cursor, vocabulary=vocabulary
+    )
+
+
 NO_EXTENSION_COMMANDS: Mapping[str, str] = MappingProxyType({})
 
 
@@ -184,13 +269,13 @@ NO_EXTENSION_COMMANDS: Mapping[str, str] = MappingProxyType({})
 class CommandCompletion:
     """One candidate in a completion list: a command, and what it does.
 
-    ``performer`` is carried because it is already known here and a frontend may want to
-    say so; nothing in τ's own UI renders it today.
+    ``origin`` is carried because it is already known here and a head may want to group
+    by it; nothing in τ's own UI renders it today.
     """
 
     name: str  # the command word, without the leading "/"
     description: str  # what it does, for the reader — may be "" for an extension command
-    performer: CommandPerformer
+    origin: CommandOrigin
 
 
 @dataclass(frozen=True)
@@ -249,12 +334,12 @@ def complete_command(
     token = body if space == -1 else body[:space]
 
     matches: list[CommandCompletion] = [
-        CommandCompletion(name=name, description=description, performer="frontend")
+        CommandCompletion(name=name, description=description, origin="builtin")
         for name, description in FRONTEND_COMMANDS.items()
         if name.startswith(token)
     ]
     matches.extend(
-        CommandCompletion(name=name, description=description, performer="core")
+        CommandCompletion(name=name, description=description, origin="extension")
         for name, description in extension_commands.items()
         if name.startswith(token) and name not in FRONTEND_COMMANDS
     )
@@ -264,15 +349,155 @@ def complete_command(
     return CommandCompletions(token=token, matches=tuple(matches))
 
 
-def unsupported_command_message(outcome: CommandOutcome, frontend: str) -> str:
+@dataclass(frozen=True)
+class ArgumentSlot:
+    """The VALUE a half-typed command line is asking for, and where it sits in the text.
+
+    The second half of slash completion, and the same split as the first: this says
+    *which argument, of what domain, over which span*, and it says it purely —
+    listing the values is :func:`~tau_agent_core.flows.enumerate_domain`, which needs
+    a live session or runtime and therefore cannot be answered here.
+
+    Attributes:
+        command: The FLOW the value belongs to, which is not always the word that
+            was typed: ``/extensions disable x`` resolves to ``disable_extension``,
+            the rewrite :func:`dispatch_builtin` performs.
+        argument: The flow argument being typed.
+        domain: ``argument``'s domain, resolved so a caller need not look it up.
+        query: What has been typed of the value, stripped the way
+            :func:`parse_command` strips, so the filter and the eventual binding
+            agree about what the word is.
+        start: Offset into the ORIGINAL text where the value begins. A caller
+            replacing ``text[start:end]`` with a chosen value gets a line
+            :func:`resolve_command` binds to that value.
+        end: Offset one past the value, always the end of the text — a flow takes
+            one typed line as one argument (:func:`bind_command_args`), so there is
+            never a token after it.
+    """
+
+    command: str
+    argument: Argument
+    domain: Domain
+    query: str
+    start: int
+    end: int
+
+
+def complete_command_argument(text: str, vocabulary: Vocabulary = BUILTIN) -> ArgumentSlot | None:
+    """Which argument ``text`` is asking for. ``None`` means "offer no values".
+
+    Pure, and the counterpart to :func:`complete_command`: that one completes the
+    command WORD, this one completes what follows it. They are disjoint by
+    construction — this returns ``None`` until a space follows a word that names a
+    command, which is exactly when the word is settled.
+
+    ``None`` covers every case with nothing to offer: the line is not a command; the
+    name is still being typed; the word names an extension command that did not
+    declare what it takes (``api.register_flow``, docs/EXTENSION-FLOWS.md — one that
+    DID is completed exactly like a built-in); the command is a view; the flow takes
+    no argument; or the argument's domain is ``free``, where any text is legal and a
+    candidate list would misstate what is accepted.
+
+    Args:
+        text: The editor's contents as typed.
+        vocabulary: The registry to resolve the command in. A session's own carries
+            the flows its extensions declared, so passing it is what makes an
+            extension gesture complete like a built-in.
+
+    Returns:
+        The :class:`ArgumentSlot` a head should enumerate and offer, or ``None``.
+    """
+    stripped = text.lstrip()  # only the LEAD: a trailing space is the reader asking for the list
+    lead = len(text) - len(stripped)
+    if not stripped.startswith("/"):
+        return None
+
+    body = stripped[1:]
+    space = body.find(" ")  # parse_command splits on the first SPACE, so a newline is not one
+    if space == -1:
+        return None
+    name = body[:space]
+    if name not in FRONTEND_COMMANDS and vocabulary.flow(name) is None:
+        return None
+
+    value_start = 1 + space
+    while value_start < len(stripped) and stripped[value_start] == " ":
+        value_start += 1
+
+    if name in vocabulary.views:
+        if name != "extensions":
+            return None
+        verb, sep, _ = stripped[value_start:].partition(" ")
+        if not sep:
+            return None
+        flow = EXTENSION_VIEW_VERBS.get(verb)
+        if flow is None:
+            return None
+        name = flow
+        value_start += len(verb) + len(sep)
+        while value_start < len(stripped) and stripped[value_start] == " ":
+            value_start += 1
+
+    arguments = flow_arguments(name, vocabulary)
+    if len(arguments) != 1:
+        return None
+    argument = arguments[0]
+    domain = vocabulary.domains[argument.domain]
+    if domain.free:
+        return None
+
+    return ArgumentSlot(
+        command=name,
+        argument=argument,
+        domain=domain,
+        query=stripped[value_start:].strip(),
+        start=lead + value_start,
+        end=lead + len(stripped),
+    )
+
+
+@dataclass(frozen=True)
+class ArgumentCompletions:
+    """An :class:`ArgumentSlot` joined to the values that are legal for it right now.
+
+    Built by a head, because filling it needs
+    :func:`~tau_agent_core.flows.enumerate_domain` and therefore a live session or
+    runtime. It is declared here so two heads describe the same thing the same way,
+    the way :class:`CommandCompletions` already does for the command word.
+
+    Attributes:
+        slot: What was being asked for.
+        matches: The legal values, in the order a head should offer them.
+        total: How many there were before the enumeration's limit.
+        error: Why there are no values, when the reason is that the domain could not
+            be enumerated at all. Carried rather than raised because this is redrawn
+            on every keystroke, and carried rather than dropped because an empty list
+            would say "there are none" for a question that failed — the same
+            distinction ``enumerate_domain`` refuses to blur.
+    """
+
+    slot: ArgumentSlot
+    matches: tuple[DomainValue, ...]
+    total: int
+    error: str | None = None
+
+
+def unsupported_command_message(name: str, frontend: str) -> str:
     """The message :class:`UnsupportedCommandError` carries — one wording, every frontend.
 
     Names the command, what performing it requires, and which frontend could not, so the
     traceback identifies the culprit instead of merely the symptom (Fail-Early).
+
+    Args:
+        name: The command word, without the leading ``/``.
+        frontend: What could not perform it, named so the traceback says which.
+
+    Returns:
+        The one sentence every head raises with.
     """
-    requirement = FRONTEND_COMMANDS.get(outcome.name, "be performed by the frontend")
+    requirement = FRONTEND_COMMANDS.get(name, "be performed by the frontend")
     return (
-        f"/{outcome.name} resolved to a frontend-performed command ({requirement}), "
+        f"/{name} resolved to a command this caller must perform ({requirement}), "
         f"but {frontend} cannot perform it. docs/SUBMISSION-LIFECYCLE.md phase 3: the core "
         "decides what a command IS and the frontend performs it; a frontend that cannot must "
         "say so rather than return having silently done nothing."

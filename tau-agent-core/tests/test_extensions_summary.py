@@ -36,8 +36,6 @@ def _make_session() -> AgentSession:
     return AgentSession(session_log=InMemorySessionLog(), model=model)
 
 
-# An extension that registers a tool, a command, and TWO hooks — every field the
-# /extensions listing shows for one extension, so the accessor can be proven whole.
 _FULL_EXT = """
 async def _exec(tool_call_id, params, signal, on_update, ctx):
     return {"content": [{"type": "text", "text": "ok"}]}
@@ -55,8 +53,6 @@ def register(api):
     api.on("tool_call", lambda event, ctx: None)
 """
 
-# A second, differently-shaped extension: proves attribution is per-extension (its
-# tool/command/hook must NOT leak into the first extension's summary).
 _HOOK_ONLY_EXT = """
 def register(api):
     api.on("before_agent_start", lambda event, ctx: None)

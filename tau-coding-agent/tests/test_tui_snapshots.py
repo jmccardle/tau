@@ -47,11 +47,6 @@ from textual.pilot import Pilot
 
 from tau_coding_agent.testing.scenes import arrange_scene, get_scene, stage_scene
 
-#: The one size every reference is captured at. 120x40 is ``devshot``'s default
-#: and the wide half of ``test_tui_appearance.SIZES``: the sidebar, the chat
-#: column, and an extension panel are all visible at once, which is the layout
-#: with the most to regress. The narrow 80x24 case stays with the appearance
-#: rules, which assert against it without storing a picture of it.
 SNAPSHOT_SIZE = (120, 40)
 
 
@@ -72,20 +67,10 @@ def snapshot_scene(snap_compare: Callable[..., bool], name: str) -> bool:
     scene = get_scene(name)
 
     async def arrange(pilot: Pilot[Any]) -> None:
-        # ``arrange_scene`` rather than a second copy of its three steps: it is
-        # what ``open_scene`` runs, so an assertion in ``test_tui_appearance``
-        # and a reference SVG here describe the same frame. It also stills the
-        # blinking input cursor, which is the difference between a stable
-        # snapshot and one that flips with the arrange step's wall time.
         await arrange_scene(scene, pilot.app, pilot)
 
     with stage_scene(scene) as app:
         return snap_compare(app, terminal_size=SNAPSHOT_SIZE, run_before=arrange)
-
-
-# ---------------------------------------------------------------------------
-# The captured scenes
-# ---------------------------------------------------------------------------
 
 
 def test_sidebar_snapshot(snap_compare) -> None:
@@ -100,8 +85,8 @@ def test_sidebar_snapshot(snap_compare) -> None:
     The chat column here is EMPTY, so this is also the reference for
     :class:`~tau_coding_agent.app.ChatPlaceholder`: the τ, the tagline, the five
     configuration rows, and the tree hint. The tagline is stable across runs
-    because ``Parley.__init__`` declares ``fun: bool = False`` as a literal and
-    every scene constructs a ``Parley`` without passing it — NOT because of
+    because ``TauApp.__init__`` declares ``fun: bool = False`` as a literal and
+    every scene constructs a ``TauApp`` without passing it — NOT because of
     ``tagline.FUN_DEFAULT``, which is ``True``. So this comparison holds in a
     packaged tree exactly as it does in a checkout.
     """

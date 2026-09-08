@@ -29,6 +29,9 @@ from tau_llm.types import Model
 
 from tau_coding_agent.session_store import Session
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PATH = _REPO_ROOT / "examples" / "42_session_autoname.py"
 _spec = importlib.util.spec_from_file_location("session_autoname_42_example", _PATH)
@@ -64,7 +67,7 @@ def _session_with_autoname(tmp_path: Path) -> tuple[AgentSession, Session]:
 
 
 async def _emit_message_end(agent: AgentSession, message: dict) -> None:
-    await agent._events.emit(AgentEvent(type="message_end", timestamp=0, message=message))
+    await agent._events.emit(AgentEvent(type="message_end", timestamp=_TS, message=message))
 
 
 # ── the ported manual command ────────────────────────────────────────────────
@@ -138,7 +141,7 @@ async def test_non_assistant_or_missing_message_events_are_ignored(tmp_path):
     agent, live = _session_with_autoname(tmp_path)
     live.append_message(_msg("user", "hello"))
 
-    await agent._events.emit(AgentEvent(type="message_end", timestamp=0, message=None))
+    await agent._events.emit(AgentEvent(type="message_end", timestamp=_TS, message=None))
     await _emit_message_end(agent, {"role": "user", "content": []})
 
     assert live.name is None

@@ -9,7 +9,7 @@ and clicking a row removes it.
 
 Code: `tau-agent-core/src/tau_agent_core/attachments.py` (the decisions),
 `tau-coding-agent/src/tau_coding_agent/app.py` (`AttachmentBar`, `AttachmentRow`,
-`ChatInput._complete_attachment`, `Parley._expand_attachments`).
+`ChatInput._complete_attachment`, `TauApp._expand_attachments`).
 
 ## 1. Why the decision is in the core
 
@@ -195,4 +195,4 @@ means changing what `-p` sends for an existing flag, which is a separate decisio
   text goes to the model as-is and that slash commands are not expanded there;
   `@file` is not either, for the same reason — that text does not pass through
   `on_input_submitted`, and the two expansion sites are the two `Submission`
-  constructions in `Parley`.
+  constructions in `TauApp`.

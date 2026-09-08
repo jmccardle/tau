@@ -6,7 +6,7 @@ stdout instead of Textual widgets. It deliberately does NOT touch
 ``run_agent_loop.py`` (that file is a meta-orchestrator that shells out to ``pi``
 to build τ; it is not a headless τ runner).
 
-Model resolution mirrors ``Parley.action_new_chat`` (``app.py``): a ``--model``
+Model resolution mirrors ``TauApp.action_new_chat`` (``app.py``): a ``--model``
 name is looked up in the ``models`` map of ``~/.tau/config.json``; the selected
 entry's ``backend``/``model``/``base_url``/``api_key`` are handed to
 ``create_backend`` unchanged. CLI flags override per-invocation.
@@ -29,44 +29,25 @@ import json
 import os
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
-# The submission lifecycle (docs/SUBMISSION-LIFECYCLE.md phase 3, part 3). Print
-# mode reached the model by its own route — ``backend.stream_chat(messages, …)``,
-# which derived a submission for it — and answered "is this a command" with its own
-# hand-rolled first-space split. Both now go through the one door: this module
-# builds the :class:`Submission` that says what ``tau -p "…"`` MEANS and hands it to
-# ``AgentSession.submit`` (via ``TauBackend.stream_submission`` /
-# ``TauBackend.submit_command``), and :func:`~tau_agent_core.commands.resolve_command`
-# is the same pure function ``submit()`` itself uses.
 from tau_agent_core.commands import (
-    CommandOutcome,
     UnsupportedCommandError,
     resolve_command,
     unsupported_command_message,
 )
 
-# Persistence goes through the storage-agnostic SessionCatalog seam (W10) rather
-# than the concrete file Session directly, so a headless run can write a
-# picker-visible, resumable session without hardcoding the file store.
-# ``store_factory.build_session_catalog`` resolves ``--store``/config
-# ``session_store.backend`` (W12, docs/JMFTS-INTEGRATION-PLAN.md §3.1) into
-# either the on-disk ``FileSessionCatalog`` (append-only JSONL files
-# partitioned by cwd, docs/SESSION-UX-REDESIGN.md — the default, and reads
-# TAU_DIR lazily via session_store's module-level helpers, so tests that
-# monkeypatch ``session_store.TAU_DIR`` redirect storage without a stale
-# module-level copy) or a JMFTS-backed ``JmftsSessionCatalog``.
+from tau_agent_core.flows import Dispatched, Performed, View
+from tau_agent_core.prompt_cache import PromptCacheObserver, completions_from_messages
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.submission import Submission
+from tau_agent_core.truncation import truncation_from_messages, truncation_notice
 from tau_coding_agent.config import ConfigError
 from tau_coding_agent.store_factory import build_session_catalog
 
-# Canonical thinking levels live in τ-llm (single source of truth); pi: the same
-# set in ``args.ts:57``. A ``model:level`` suffix or the ``--thinking`` flag is
-# carried into the model config as ``thinking`` and threaded to the provider as
-# ``reasoning_effort``.
 from tau_llm.models import is_valid_thinking_level
 
 if TYPE_CHECKING:  # avoid importing the dataclass module at runtime cost
@@ -142,8 +123,6 @@ def resolve_model_config(
         # Exact config-key match wins (so a key may legitimately contain a colon).
         model_config = dict(models[spec])
     else:
-        # Parse a ``model:level`` thinking suffix (split on the LAST colon, like
-        # pi resolveCliModel) before treating the remainder as an ad-hoc id.
         head, sep, tail = spec.rpartition(":")
         spec_id = spec
         if sep and is_valid_thinking_level(tail):
@@ -158,9 +137,6 @@ def resolve_model_config(
             raise CLIError(f"invalid --model value: {spec!r}")
         model_config = {"backend": prov, "model": mid}
 
-    # Requested thinking level: an explicit ``--thinking`` flag wins over a
-    # ``:level`` suffix (pi: ``cliThinking ?? fallbackThinking``). argparse has
-    # already validated ``args.thinking`` against the known levels.
     thinking = args.thinking or suffix_thinking
     if thinking is not None:
         model_config["thinking"] = thinking
@@ -168,15 +144,6 @@ def resolve_model_config(
     # Per-invocation overrides (CLI > config).
     if args.provider:
         model_config["backend"] = args.provider
-    # Tool selection. Both flags empty the BUILT-IN set, so both write
-    # ``tools=[]``; what separates them is carried by ``no_tools``, the single
-    # resolved policy (see :func:`resolve_no_tools`), which ``TauBackend`` hands
-    # to ``AgentSession`` and which alone decides whether extension-registered
-    # tools are also withheld (``AgentSession._build_turn_tools``).
-    #
-    # The two keys do not overlap: ``tools`` is the built-in allowlist, and
-    # ``no_tools`` is the run-level policy — nothing derives one from the other,
-    # so there is no second source of truth to drift.
     no_tools = resolve_no_tools(args)
     if no_tools is not None:
         model_config["no_tools"] = no_tools
@@ -187,50 +154,29 @@ def resolve_model_config(
             raise CLIError("--tools given but no tool names parsed")
         model_config["tools"] = names
 
-    # --exclude-tools denylist (pi excludeTools, args.ts:143-153). Carried on the run
-    # config; TauBackend applies it to the resolved built-ins at construction (S28).
     if args.exclude_tools is not None:
         excluded = [t.strip() for t in args.exclude_tools.split(",") if t.strip()]
         if not excluded:
             raise CLIError("--exclude-tools given but no tool names parsed")
         model_config["exclude_tools"] = excluded
 
-    # Extensions: explicit --extension paths + the discovery toggle (pi args.ts:150-153).
-    # ``run_print`` loads them into the live session after create_backend (E5 S27).
     if args.extensions:
         model_config["extensions"] = list(args.extensions)
     if args.no_extensions:
         model_config["no_extensions"] = True
 
-    # ``--bus`` (H8): the same capability grant the TUI threads through
-    # ``_apply_run_config``. Only ever set TRUE — the absence of the flag must not
-    # revoke a ``"bus_available": true`` the model entry granted deliberately.
     if args.bus:
         model_config["bus_available"] = True
 
-    # Appended system-prompt sections (pi appendSystemPrompt, system-prompt.ts:48).
-    # Carried on the entry for ``TauBackend`` to apply to the base text it
-    # resolves (S28), so they augment rather than replace it — and so every
-    # frontend gets that placement from one code path.
     if args.append_system_prompt:
         model_config["append_system_prompt"] = list(args.append_system_prompt)
 
-    # ``--no-context-files``/``-nc`` (pi args.ts:185). Only ever set TRUE, for
-    # the same reason ``--bus`` is: the absence of the flag must not revoke a
-    # ``"no_context_files": true`` a model entry set deliberately.
     if args.no_context_files:
         model_config["no_context_files"] = True
 
-    # Fold the top-level ``reasoning_replay`` default into the entry when it sets
-    # none of its own (per-model wins; else global; else build_model_from_config's
-    # "turn"), so headless and the TUI resolve the scope identically.
     if "reasoning_replay" not in model_config and config.get("reasoning_replay") is not None:
         model_config["reasoning_replay"] = config["reasoning_replay"]
 
-    # ``--max-turns``, then the entry's own key, then the top-level config default,
-    # then nothing — and nothing means no ceiling (``AgentLoopConfig.max_turns``).
-    # Same precedence the TUI's ``_apply_run_config`` applies, so `tau -p` and the
-    # TUI stop at the same turn.
     if args.max_turns is not None:
         model_config["max_turns"] = args.max_turns
     elif "max_turns" not in model_config and config.get("max_turns") is not None:
@@ -446,6 +392,75 @@ def _emit_command_output(mode: str, command: str, text: str | None) -> None:
         sys.stdout.flush()
 
 
+def report_cache_miss(messages: list[dict[str, Any]], model_name: str) -> str | None:
+    """Say on stderr that this run's prompt cache should have been read and was not.
+
+    Reference: docs/PROMPT-CACHING.md §7. The verdict is the TUI's, reached from
+    the same evidence by the same observer — only the delivery differs, because
+    print mode has no transcript to mount a box in.
+
+    **stderr, so a piped stdout stays exactly what it was.** ``--mode text`` is a
+    transcript and ``--mode json`` is JSONL; a diagnostic on either would be
+    corruption, and both modes are routinely redirected.
+
+    One process is one turn, so only the within-turn condition can fire here and
+    the once-per-model suppression the TUI needs has nothing to suppress.
+
+    Args:
+        messages: The turn's produced messages; the assistant ones carry usage.
+        model_name: Named in the hint, since the fix is a key under it.
+
+    Returns:
+        The sentence written, or None when nothing was written.
+    """
+    reason = PromptCacheObserver().observe_turn(completions_from_messages(messages))
+    if reason is None:
+        return None
+    print(f"[τ] {reason}", file=sys.stderr)
+    print(
+        f"[τ] If '{model_name}' reaches an Anthropic model through an OpenAI-compatible "
+        'gateway, set models.<name>.prompt_cache_dialect to "anthropic" in '
+        "~/.tau/config.json. See docs/PROMPT-CACHING.md.",
+        file=sys.stderr,
+    )
+    return reason
+
+
+def report_truncation(messages: list[dict[str, Any]], max_tokens: int | None) -> str | None:
+    """Say on stderr that this run's output was cut off at the cap, not finished.
+
+    Reference: docs/TRUNCATED-TOOL-CALLS.md §3. Until this, ``tau -p`` printed a
+    truncated answer and said nothing — the same silence the TUI had before its
+    notice, and worse in a pipeline, where the reader is a script that cannot
+    tell a prefix from an answer.
+
+    **stderr, for the reason :func:`report_cache_miss` gives**: stdout is the
+    transcript in one mode and JSONL in the other, and both are redirected.
+    ``--mode json`` also carries ``stop_reason`` on its ``message_end`` line, so
+    this is a second surface for that mode and the only one for ``--mode text``.
+
+    Args:
+        messages: The turn's produced messages; the assistant ones carry
+            ``stop_reason`` and the dropped-call count.
+        max_tokens: The cap this run actually sent, quoted so the reader knows
+            which number to raise; None reports it as unknown.
+
+    Returns:
+        The sentence written, or None when nothing was written.
+    """
+    notice = truncation_notice(truncation_from_messages(messages), max_tokens=max_tokens)
+    if notice is None:
+        return None
+    print(f"[τ] {notice}", file=sys.stderr)
+    print(
+        "[τ] Raise max_tokens for this model in ~/.tau/config.json, or lower the "
+        "reasoning budget so the answer fits under the cap. "
+        "See docs/TRUNCATED-TOOL-CALLS.md.",
+        file=sys.stderr,
+    )
+    return notice
+
+
 def build_print_submission(prompt_text: str) -> Submission:
     """The record that says what ``tau -p "…"`` means (SUBMISSION-LIFECYCLE phase 3).
 
@@ -525,7 +540,7 @@ def _extension_command_names(backend: Any) -> list[str]:
     """The names extensions registered as slash commands, for the pre-submission peek.
 
     ``getattr``-guarded exactly like the app's counterpart
-    (``Parley._extension_command_names``) and like every other backend-capability read
+    (``TauApp._extension_command_names``) and like every other backend-capability read
     on this path: a test double simply has none, which makes the peek resolve only τ's
     built-ins — those need no backend, being τ's own vocabulary hardcoded in
     :mod:`tau_agent_core.commands`.
@@ -539,10 +554,10 @@ def _extension_command_names(backend: Any) -> list[str]:
 async def _dispatch_command_submission(backend: Any, submission: Submission, mode: str) -> None:
     """Admit a command submission through the one door and perform its outcome.
 
-    The headless twin of ``Parley._dispatch_command_submission``. The submission goes
+    The headless twin of ``TauApp._dispatch_command_submission``. The submission goes
     through ``AgentSession.submit`` exactly as a prompt does — same admission, same
     ``input`` hook chain, same provenance stamp — and comes back carrying a typed
-    :class:`~tau_agent_core.commands.CommandOutcome` instead of messages.
+    :class:`~tau_agent_core.flows.Dispatched` instead of messages.
 
     Three things that are not "nothing happened", and are therefore not silent:
 
@@ -565,7 +580,10 @@ async def _dispatch_command_submission(backend: Any, submission: Submission, mod
             "that cannot reach it cannot run commands, and sending the text to the "
             "model instead would be the silent fallback this lifecycle removes."
         )
-    result = await submit_command(submission)
+    try:
+        result = await submit_command(submission)
+    except ValueError as exc:
+        raise CLIError(f"{submission.text!r} was refused: {exc}") from exc
     if not result.accepted:
         raise CLIError(
             f"{submission.text!r} was refused: {result.rejection_reason or 'no reason given'}"
@@ -581,40 +599,43 @@ async def _dispatch_command_submission(backend: Any, submission: Submission, mod
     _perform_command_outcome(result.command, mode)
 
 
-def _perform_command_outcome(outcome: CommandOutcome, mode: str) -> None:
+def _perform_command_outcome(dispatched: Dispatched, mode: str) -> None:
     """Do the half of a dispatched command only this frontend can do (B2-b).
 
-    ``performer="core"`` — the session already ran an extension-registered command and
-    all that is left is to show what it returned, on the S46 channel this module
-    already had: stdout text, or one ``command_output`` record under ``--mode json``.
+    A :class:`~tau_agent_core.flows.Performed` is the one arm print mode can report:
+    the session already ran an extension-registered command and all that is left is to
+    show what it returned, on the S46 channel this module already had — stdout text, or
+    one ``command_output`` record under ``--mode json``.
 
-    ``performer="frontend"`` — a built-in the core deliberately did not run because it
-    needs a frontend, and print mode has none of them:
+    The other three arms are things only a screen does, and print mode has none of
+    them:
 
-    - ``/tree`` and ``/fork`` open a modal browser; there is no screen to push it onto.
-    - ``/resume`` opens the session picker — same reason, and the flag that would open
-      it (``--resume``) is refused under ``--print`` in ``cli.main`` for that reason.
-      A print run names its session with ``--continue``/``--session REF`` instead.
-    - ``/extensions`` paints a panel (or manages extensions in a process that is about
-      to exit, which would be a runtime toggle nothing outlives).
-    - ``/compact`` is the one that looks performable and is not, for a specific
-      reason worth writing down: ``run_print`` does NOT bind its
-      ``ConversationSession`` as the AgentSession's log (unlike the TUI, E3-ctx / D3
-      — it owns persistence itself and appends produced messages by hand), so
-      ``compact_messages`` would summarize a working list this process discards
-      milliseconds later. That is an LLM call whose only result is thrown away —
-      strictly worse than saying it cannot be done.
+    - a :class:`~tau_agent_core.flows.View` — ``/tree`` opens a modal browser and
+      ``/extensions`` paints a panel; there is no screen to push either onto, and the
+      second would be a runtime toggle in a process about to exit.
+    - a :class:`~tau_agent_core.flows.FlowStep` — ``/resume`` with no reference wants
+      the session picker, and the flag that would open it (``--resume``) is refused
+      under ``--print`` in ``cli.main`` for the same reason. A print run names its
+      session with ``--continue``/``--session REF`` instead.
+    - a :class:`~tau_agent_core.flows.Ready` — including ``/compact``, the one that
+      looks performable and is not, for a specific reason worth writing down:
+      ``run_print`` does NOT bind its ``ConversationSession`` as the AgentSession's log
+      (unlike the TUI, E3-ctx / D3 — it owns persistence itself and appends produced
+      messages by hand), so ``compact_messages`` would summarize a working list this
+      process discards milliseconds later. That is an LLM call whose only result is
+      thrown away — strictly worse than saying it cannot be done.
 
     So this raises :class:`~tau_agent_core.commands.UnsupportedCommandError`, which is
     the seam's designed answer and not a gap: the core is allowed to resolve commands
     a given frontend cannot perform, and the contract is that such a frontend says so
-    out loud. The visible change is that ``tau -p "/compact"`` now raises instead of
+    out loud. The visible change is that ``tau -p "/compact"`` raises instead of
     sending the eight characters to a model that will be confused by them.
     """
-    if outcome.performer == "core":
-        _emit_command_output(mode, outcome.name, outcome.output)
+    if isinstance(dispatched, Performed):
+        _emit_command_output(mode, dispatched.mutation, dispatched.data.get("output"))
         return
-    raise UnsupportedCommandError(unsupported_command_message(outcome, "print mode (tau -p)"))
+    name = dispatched.name if isinstance(dispatched, View) else dispatched.flow
+    raise UnsupportedCommandError(unsupported_command_message(name, "print mode (tau -p)"))
 
 
 async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | None = None) -> int:
@@ -651,13 +672,6 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
     ``<tmp>/.tau-<uid>/sessions``, which is how ``tau -p -c`` continues a session an
     RPC host started.
     """
-    # `persist=not args.no_session`: an ephemeral run asks this catalog for
-    # `create_ephemeral` and nothing else — `--no-session` + `--continue`/
-    # `--session`/`--fork` is refused a few lines down, so `_select_session`
-    # cannot reach the store either — and `create_ephemeral` is in-memory under
-    # both stores. Reported by Tectum's prototyping: `tau -p --no-session`
-    # exited 2 at startup against an unreachable JMFTS server, refusing a run
-    # over a dependency it does not have. See `build_session_catalog`.
     catalog = (
         catalog
         if catalog is not None
@@ -672,10 +686,6 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
             'tau -p "summarize @README.md"'
         )
 
-    # --no-session runs ephemerally (no on-disk file), so resuming/forking a
-    # persisted session is contradictory — reject it rather than silently ignore
-    # either flag (Fail-Early). The continuation flags are mutually exclusive at
-    # the argparse layer, so at most one is set here.
     if args.no_session and (args.continue_session or args.session or args.fork):
         raise CLIError(
             "--no-session can't be combined with --continue/--session/--fork "
@@ -685,8 +695,6 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
     # Resolve a source session to continue/fork (None for a fresh run).
     prior = _select_session(args, catalog)
 
-    # The stored session already carries its system message; injecting another
-    # (or silently dropping an override) would both be wrong — reject the combo.
     if prior is not None and args.system_prompt is not None:
         raise CLIError(
             "--system-prompt can't be combined with --continue/--session/--fork; "
@@ -699,38 +707,17 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
     backend_name = model_config.get("backend", "")
     cwd = os.getcwd()
 
-    # The base text the prompt is BUILT from, folded onto the model entry so
-    # ``TauBackend`` receives it as ``custom_prompt`` and composes it with the
-    # project context files and the tool list. This used to be stored straight
-    # into the session's first message with the backend's own prompt left empty
-    # — a scheme that predates the backend having a real prompt to build. Once
-    # it did, the stored message won and the built one was discarded, so a
-    # config ``system_prompt`` silently cost the user their AGENTS.md context
-    # and the ``Available tools:`` list. The entry is now the single place the
-    # base text lives, matching rpc_mode.py and the TUI's ``_apply_run_config``.
-    # ``--append-system-prompt`` rides as its own key; ``TauBackend`` applies it
-    # to whichever base it resolves, so the sections augment the base text
-    # rather than the composed whole (pi appendSystemPrompt, E5 §2.3 / S28).
     cli_prompt = args.system_prompt if args.system_prompt is not None else None
     base_prompt = cli_prompt if cli_prompt is not None else config.get("system_prompt")
     if base_prompt:
         model_config["system_prompt"] = base_prompt
 
-    # Imported lazily: keeps `import tau_coding_agent.headless` free of the
-    # backend/agent-core import chain until a run actually happens. Hoisted
-    # ABOVE session creation because the session now stores the prompt the
-    # backend BUILT, so the backend has to exist first.
-    from tau_coding_agent.backends import create_backend, make_model_resolver
+    from tau_coding_agent.backends import DEFAULT_MAX_TOKENS, create_backend, make_model_resolver
 
     backend = create_backend(model_config)
 
     if prior is None:
-        # Fresh run: the session stores the COMPOSED prompt — base text, project
-        # context files and tool list — so the transcript records exactly what
-        # the model was told, and a resume replays it verbatim.
         system_prompt = getattr(backend, "system_prompt", "") or ""
-        # --no-session → ephemeral (no on-disk file, appends never touch disk); the
-        # create_ephemeral seam is the one-API alternative to create (§E0.2).
         create = catalog.create_ephemeral if args.no_session else catalog.create
         session = create(
             cwd, model_name, backend_name, system_prompt=system_prompt or None, name=args.name
@@ -742,19 +729,10 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
         session = prior
         _apply_resume_metadata(session, model_name, backend_name, prior, args.name)
 
-    # Bind the model-name resolver (S45) so an extension's ctx.set_model(name)
-    # resolves NAME through the same config "models" map --model uses. Guarded via
-    # getattr so a non-``TauBackend`` test double is a transparent no-op.
     agent_session = getattr(backend, "agent_session", None)
     if agent_session is not None and hasattr(agent_session, "set_model_resolver"):
         agent_session.set_model_resolver(make_model_resolver(config.get("models", {})))
 
-    # Headless dialog policy (E7 §3 / S48 — anchor G9, D-E6-2). With no policy a
-    # dialog opened by a loaded extension RAISES rather than silently auto-answering
-    # a gate; ``--ui-defaults confirm=yes,select=first`` (over config.json
-    # "ui_defaults", CLI wins) opts back into the explicit auto-answer. Applied
-    # BEFORE the load/lifecycle below so an extension's ``register`` / ``session_start``
-    # dialog is already governed. Validation errors surface as a clean CLI error.
     set_ui_defaults = getattr(backend, "set_headless_ui_defaults", None)
     if set_ui_defaults is not None:
         ui_defaults = resolve_ui_defaults(config, parse_ui_defaults(args.ui_defaults))
@@ -763,15 +741,6 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
         except ValueError as exc:
             raise CLIError(str(exc)) from exc
 
-    # Extension activity on the JSON stream (E7 §3 / S49 — anchor G10). In
-    # ``--mode json`` install a record sink so every loaded extension's
-    # ``api.ui.notify(...)`` (and the S44 error surface) emits a
-    # ``{"type": "extension", …}`` record — a parallel record family alongside the
-    # closed ``AgentEvent`` set, like the session header line — instead of the bare
-    # stderr line. Set BEFORE the load/lifecycle below so a ``register`` /
-    # ``session_start`` notify is already captured. ``--mode text`` leaves the sink
-    # unset (stderr, unchanged); a non-``TauBackend`` test double without the seam is
-    # a transparent no-op (same ``getattr`` guard as the other seams).
     if args.mode == "json":
         set_record_sink = getattr(backend, "set_extension_record_sink", None)
         if set_record_sink is not None:
@@ -782,13 +751,6 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
 
             set_record_sink(_emit_extension_record)
 
-    # Session-lifecycle hooks (E6 §2 / S41). ``session_start`` fires once
-    # extensions are loaded; ``session_shutdown`` fires on headless COMPLETION and
-    # on SIGINT/SIGTERM. Resolved via ``getattr`` so a non-``TauBackend`` test
-    # double without the seam is a transparent no-op (same guard as the TUI's
-    # ``set_ui_delegate``). Signal handlers are installed only when the backend
-    # exposes the shutdown seam, so the existing fake-backend tests keep the plain
-    # KeyboardInterrupt disposition unchanged.
     emit_session_start = getattr(backend, "emit_session_start", None)
     emit_session_shutdown = getattr(backend, "emit_session_shutdown", None)
     abort = getattr(backend, "abort", None)
@@ -797,10 +759,6 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
         loop = asyncio.get_running_loop()
 
         def _on_terminate() -> None:
-            # Trip the in-flight abort so the loop unwinds to the ``finally``
-            # below, which fires ``session_shutdown`` exactly once. Not fired from
-            # here directly: a signal callback is sync and cannot await the async
-            # dispatch. ``abort`` is safe to call when nothing is running.
             if abort is not None:
                 abort()
 
@@ -809,24 +767,11 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
                 loop.add_signal_handler(sig, _on_terminate)
                 installed_signals.append(sig)
             except NotImplementedError:
-                # Signal handlers are unavailable on this event loop / platform
-                # (e.g. Windows ProactorEventLoop). Nothing to fabricate — the
-                # completion path still fires ``session_shutdown``.
                 pass
 
     try:
-        # Load file-path extensions into the live session (E5 §2.2). Explicit
-        # ``-e`` paths come from ``--extension``; the ``~/.tau/extensions`` global
-        # dir is discovered unless ``-ne`` (``no_extensions``) was passed. A
-        # discovered load failure is collected and surfaced to stderr here; an
-        # explicit ``-e`` failure raises out of ``load_extensions`` (Fail-Early —
-        # the user named it), which ``main()`` renders as a clean CLI error.
         explicit_extensions = model_config.get("extensions") or None
         discover_extensions = not model_config.get("no_extensions", False)
-        # Per-extension config (E6 §2 / S40): config.json ``"extensions"`` slices +
-        # per-run ``--ext-config NAME.KEY=VALUE`` overrides (CLI > config.json).
-        # Sliced per extension by file stem inside the session, handed to
-        # ``api.config``.
         extensions_config = resolve_extensions_config(
             config, parse_ext_config_overrides(args.ext_config)
         )
@@ -841,59 +786,26 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
                 file=sys.stderr,
             )
 
-        # ``session_start`` after the load, so a handler's ``ctx.entries()``
-        # reconstruction / watcher setup runs with its registration in place (S41).
         if emit_session_start is not None:
             await emit_session_start("startup")
 
-        # THE one door (docs/SUBMISSION-LIFECYCLE.md phase 3, part 3). What this
-        # invocation MEANS is a record handed to ``AgentSession.submit`` — the same
-        # method the TUI and every extension go through — rather than a private
-        # route into the loop. See ``build_print_submission`` for every field's
-        # justification, in particular the three this work item turns on:
-        # source/submitter (a human at a frontend that does not draw),
-        # allow_user_input=False (nobody is here to answer a dialog), and
-        # expand_commands=True (argv is the operator's own text).
         submission = build_print_submission(prompt_text)
 
-        # Command output channel (E7 §3 / S46), now resolved by the CORE's vocabulary
-        # instead of this module's own first-space split: a prompt that is entirely a
-        # command (``/name args``) RUNS the command instead of a model turn. The
-        # handler's returned value is printed (text) / emitted as a ``command_output``
-        # record (json). No user turn is appended and the model is never called, so
-        # the report stays display-only chrome and never enters the persisted path
-        # (tree-as-truth, E5 §1). An unknown ``/…`` still resolves to None and falls
-        # through to the model path below (the text is a legitimate prompt).
-        #
-        # This peek is a rendering/persistence concern, not a second dispatch: it
-        # decides whether the session grows a user turn and whether ``--mode json``
-        # writes a session header, both of which must NOT happen for input that never
-        # becomes a turn. ``submit()`` remains the authority and resolves again on the
-        # post-``input``-hook text; the two can only disagree if a hook rewrites one
-        # into the other, which ``_dispatch_command_submission`` reports rather than
-        # absorbs.
         if resolve_command(prompt_text, _extension_command_names(backend)) is not None:
             await _dispatch_command_submission(backend, submission, args.mode)
             return 0
 
-        # This turn's user message, then hand the active-path CONTEXT to the backend
-        # (cursor + compaction/branch splices applied) — not the raw linear fold, so
-        # a resumed compacted/branched session gives the model the right history
-        # (§2.6). Appended here (after the command check) so a command run never
-        # persists a user turn.
-        session.append_message({"role": "user", "content": prompt_text})
+        # Stamped here because print mode appends the user turn itself (see :768).
+        session.append_message(
+            {
+                "role": "user",
+                "content": prompt_text,
+                "timestamp": int(time.time() * 1000),
+            }
+        )
         messages: list[dict] = session.context
 
         if args.mode == "json":
-            # pi-faithful ``--mode json`` (E-json / step S8, D-delegate). Emit the
-            # session HEADER line FIRST (pi ``print-mode.ts:113-116``), then every
-            # bus event serialized to its ``type``-discriminated pi
-            # ``AgentSessionEvent`` shape (NOT the legacy ``kind`` schema, and no
-            # synthetic ``done`` line): each ``message_end`` carries
-            # usage/model/stop_reason, which is the real per-child limit / failure
-            # signal the delegate (step S9) consumes. The delegate prices its own
-            # budget from those per-message tokens × config ``cost`` (E4.cost), so
-            # no ``cost_usd`` rides the json stream.
             sys.stdout.write(json.dumps(session.header) + "\n")
             sys.stdout.flush()
 
@@ -917,69 +829,34 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
                 submission, messages, emit
             )
 
-        # A refusal is a typed in-band RESULT (LSP ApplyWorkspaceEditResult), and the
-        # one thing print mode must not do with it is exit 0 having printed nothing.
-        # Unreachable under ``"enqueue"``, which waits rather than refusing — but the
-        # strategy is a field on the record, one line from changing, and an adapter
-        # that folded ``accepted=False`` into "an empty turn" is exactly the silent
-        # drop this lifecycle exists to prevent.
         if not result.accepted:
             raise CLIError(
                 f"the prompt was refused: {result.rejection_reason or 'no reason given'}"
             )
 
-        # An ``input`` hook rewrote this text into a command AFTER the peek above
-        # resolved it as ordinary prompt text, so ``submit()`` — the authority —
-        # dispatched instead of running a turn (``messages`` is empty by
-        # construction, not because the model said nothing). Perform the outcome on
-        # the same channel the peeked path uses: an extension command has ALREADY
-        # RUN inside ``submit()`` and its returned text is here to print, and a
-        # built-in raises ``UnsupportedCommandError`` exactly as the argv-supplied
-        # ``tau -p "/compact"`` does — which side of the hook the slash arrived from
-        # must not decide whether the command is reported or vanishes. Reading only
-        # ``result.accepted`` here (and then iterating an empty message list) exited
-        # 0 having written a bare newline: the silent no-op this lifecycle exists to
-        # remove, and the case the TUI's ``_get_assistant_response`` and both
-        # ``_dispatch_command_submission`` halves already handle.
-        #
-        # NOT undone: the user turn appended above is already on the persisted
-        # session, where a dispatched command writes nothing. The append is
-        # deliberately ahead of the model call (a crash mid-turn still records the
-        # question) and this module's ``ConversationSession`` is append-only, so the
-        # honest report is the command output plus a user turn that records what was
-        # actually submitted — not a rewritten history.
         if result.command is not None:
             _perform_command_outcome(result.command, args.mode)
             return 0
 
-        # Terminate the ``--mode text`` transcript. After the two checks above, so
-        # the newline marks the end of a turn that really ran rather than padding a
-        # refusal or a dispatched command's output.
         if args.mode != "json":
             sys.stdout.write("\n")
             sys.stdout.flush()
 
-        # Append the loop's non-user output (assistant + toolResult); the user turn
-        # was already appended above, so skip any echoed user message.
+        report_cache_miss(new_messages, model_name)
+        # create_backend already refused a bad max_tokens, so this read is the wire's.
+        report_truncation(new_messages, model_config.get("max_tokens", DEFAULT_MAX_TOKENS))
+
         for message in new_messages:
             if message.get("role") != "user":
                 session.append_message(message)
 
         return 0
     finally:
-        # Uninstall the lifecycle signal handlers (never leak them onto the loop a
-        # subsequent run — or the test harness — shares) and fire ``session_shutdown``
-        # exactly once, whether the run completed normally or a signal tripped abort.
         for sig in installed_signals:
             loop.remove_signal_handler(sig)
         if emit_session_shutdown is not None:
             await emit_session_shutdown("quit")
 
-        # Close the pooled τ-llm providers' HTTP clients for this loop
-        # (docs/PROVIDER-LIFETIME.md §6.3) — AFTER session_shutdown, since a
-        # handler may itself make a final LLM call. This runs inside the same
-        # asyncio.run() that drove the turn (cli.py), so it is the last point
-        # the loop is guaranteed still alive to close on.
         from tau_llm.client import aclose_providers
 
         await aclose_providers()

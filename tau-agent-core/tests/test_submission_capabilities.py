@@ -41,6 +41,7 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.extension_types import ExtensionAPI, HeadlessDialogError
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.submission import SUBMISSION_ALLOWS_USER_INPUT, Submission
+from tau_agent_core.flows import Performed, Ready
 
 
 def _model() -> Model:
@@ -100,8 +101,6 @@ class _Delegate:
         return {"filled": "by-a-human"}
 
     def notify(self, message: str, level: str = "info") -> None:
-        # Non-blocking, and deliberately recorded in its OWN list: a notification
-        # is not a question, so it must never count as "the human was asked".
         self.notifications.append((level, message))
 
 
@@ -118,30 +117,23 @@ def _tui_session() -> tuple[AgentSession, _Delegate]:
     return session, delegate
 
 
-def _dialog_hook(outcome: list, dialog: str = "confirm"):
-    """An ``input`` hook that opens ``dialog`` and records what happened.
+_FORM = {"title": "Deploy?", "fields": [{"name": "who", "kind": "text", "default": "nobody"}]}
+
+
+def _dialog_hook(outcome: list):
+    """An ``input`` hook that opens the one blocking dialog and records the outcome.
 
     Returns ``{"handled": True}`` so the submission is consumed without a model
     call — the hook runs INSIDE the admitted turn, which is exactly the code
-    ``allow_user_input`` governs.
+    ``allow_user_input`` governs. ``form`` is the only dialog left to gate since
+    docs/EXTENSION-LOCKS.md §8.2; an extension that wants to ask a human a
+    question that gates work declares a request, which blocks nothing and needs
+    no per-submission permission.
     """
 
     async def handler(event, ctx):
         try:
-            if dialog == "confirm":
-                outcome.append(await ctx.ui.confirm("Deploy?", "to production"))
-            elif dialog == "select":
-                outcome.append(await ctx.ui.select("Which?", ["a", "b"]))
-            elif dialog == "input":
-                outcome.append(await ctx.ui.input("Name?", "default-name"))
-            elif dialog == "form":
-                outcome.append(
-                    await ctx.ui.form(
-                        {"title": "Details", "fields": [{"name": "who", "kind": "text"}]}
-                    )
-                )
-            else:  # pragma: no cover — a typo in a test, not a branch
-                raise AssertionError(f"unknown dialog {dialog!r}")
+            outcome.append(await ctx.ui.form(_FORM))
         except HeadlessDialogError as err:
             outcome.append(err)
         return {"handled": True}
@@ -174,21 +166,21 @@ class TestAllowUserInputGatesBlockingDialogs:
 
         await session.submit(_sub("deploy please", "t-2", allow_user_input=True))
 
-        assert delegate.calls == [("confirm", "Deploy?")]
-        assert outcome == [True]
+        assert delegate.calls == [("form", "Deploy?")]
+        assert outcome == [{"filled": "by-a-human"}]
 
     async def test_false_with_a_ui_defaults_policy_answers_from_the_policy(self):
         """Enforcement is the HEADLESS-ANSWER path, not a hard block (the spec:
         "Enforcement stays HeadlessDialogError"). With an explicit policy the
         dialog resolves to the configured answer — still without asking a human."""
         session, delegate = _tui_session()
-        session._extension_api.context.set_headless_ui_defaults({"confirm": "no"})
+        session._extension_api.context.set_headless_ui_defaults({"form": "defaults"})
         outcome: list = []
         _bound(session, "/x/gate.py").on("input", _dialog_hook(outcome))
 
         await session.submit(_sub("nightly run", "t-3", allow_user_input=False))
 
-        assert outcome == [False], "the explicitly configured answer, not a fabricated True"
+        assert outcome == [{"who": "nobody"}], "the declared defaults, not a fabricated answer"
         assert delegate.calls == []
 
     async def test_the_error_names_allow_user_input_not_headless_mode(self):
@@ -201,22 +193,32 @@ class TestAllowUserInputGatesBlockingDialogs:
 
         message = str(outcome[0])
         assert "allow_user_input=False" in message
-        assert "--ui-defaults confirm=" in message
+        assert "--ui-defaults form=" in message
         assert "headless mode" not in message
 
-    @pytest.mark.parametrize("dialog", ["confirm", "select", "input", "form"])
-    async def test_every_blocking_dialog_is_gated_not_just_confirm(self, dialog: str):
-        """A half-gated surface is the same defect one level down: an extension
-        that cannot ``confirm`` under a cron turn but can ``form`` has not been
-        stopped from interrupting a human."""
+    async def test_the_request_surface_is_not_gated(self):
+        """A request is not a dialog: it blocks nothing, so nothing is interrupted.
+
+        docs/EXTENSION-LOCKS.md §8 — the surface that replaced ``confirm`` puts a
+        node on the tree and returns. A cron turn may leave one; whoever attaches
+        next reads it. ``allow_user_input`` governs opening a modal in front of a
+        human who did not ask for it, and this opens none.
+        """
         session, delegate = _tui_session()
-        outcome: list = []
-        _bound(session, "/x/gate.py").on("input", _dialog_hook(outcome, dialog))
+        api = _bound(session, "/x/gate.py")
+        left: list = []
 
-        await session.submit(_sub("nightly run", f"t-5-{dialog}", allow_user_input=False))
+        async def handler(event, ctx):
+            left.append(api.request_user_action("Deploy?", lock=True))
+            return {"handled": True}
 
-        assert isinstance(outcome[0], HeadlessDialogError)
+        api.on("input", handler)
+
+        await session.submit(_sub("nightly run", "t-5", allow_user_input=False))
+
+        assert len(left) == 1
         assert delegate.calls == []
+        assert session.pending_request is not None
 
     async def test_notify_is_not_gated(self):
         """``allow_user_input`` is about ASKING a human, not telling one; a
@@ -245,10 +247,10 @@ class TestAllowUserInputScope:
         ``continue_conversation()``) behaves exactly as it did."""
         session, delegate = _tui_session()
 
-        answer = await session._extension_api.context.ui.confirm("Quit?", "unsaved work")
+        answer = await session._extension_api.context.ui.form(_FORM)
 
-        assert answer is True
-        assert delegate.calls == [("confirm", "Quit?")]
+        assert answer == {"filled": "by-a-human"}
+        assert delegate.calls == [("form", "Deploy?")]
 
     async def test_the_restriction_is_lifted_when_the_turn_ends(self):
         session, delegate = _tui_session()
@@ -259,7 +261,7 @@ class TestAllowUserInputScope:
         assert isinstance(outcome[0], HeadlessDialogError)
 
         # Same session, same UI, no turn in flight: the human is reachable again.
-        assert await session._extension_api.context.ui.confirm("Quit?", "now") is True
+        assert await session._extension_api.context.ui.form(_FORM) == {"filled": "by-a-human"}
         assert SUBMISSION_ALLOWS_USER_INPUT.get() is None
 
     async def test_a_task_the_turn_spawns_inherits_the_restriction(self):
@@ -274,7 +276,7 @@ class TestAllowUserInputScope:
         async def late_dialog():
             await released.wait()
             try:
-                return await session._extension_api.context.ui.confirm("Deploy?", "late")
+                return await session._extension_api.context.ui.form(_FORM)
             except HeadlessDialogError as err:
                 return err
 
@@ -301,7 +303,7 @@ class TestAllowUserInputScope:
 
         async def pre_existing_loop():
             await started.wait()
-            return await session._extension_api.context.ui.confirm("Deploy?", "from the loop")
+            return await session._extension_api.context.ui.form(_FORM)
 
         watcher = asyncio.get_running_loop().create_task(pre_existing_loop())
         await asyncio.sleep(0)  # let it start, so it captured the ambient context
@@ -315,8 +317,8 @@ class TestAllowUserInputScope:
 
         await session.submit(_sub("nightly run", "t-9", allow_user_input=False))
 
-        assert await asyncio.wait_for(watcher, timeout=1.0) is True
-        assert delegate.calls == [("confirm", "Deploy?")]
+        assert await asyncio.wait_for(watcher, timeout=1.0) == {"filled": "by-a-human"}
+        assert delegate.calls == [("form", "Deploy?")]
 
 
 # ── expand_commands: live since B2-b, and False is still the security default ──
@@ -330,8 +332,8 @@ class TestExpandCommandsIsLive:
 
         assert result.accepted is True
         assert result.messages == []
-        assert result.command is not None
-        assert (result.command.name, result.command.performer) == ("compact", "frontend")
+        assert isinstance(result.command, Ready)
+        assert (result.command.flow, result.command.mutation) == ("compact", "compact")
 
     async def test_false_is_admitted_normally(self):
         """The default, and what every non-interactive call site passes."""
@@ -415,10 +417,6 @@ class TestPromptDeclaresExpandCommands:
         assert sub.source == "interactive"
         assert sub.submitter == "human"
         assert sub.multitask_strategy == "enqueue"
-        # True since B2-b: the spec's "Interactive frontends pass True" is a
-        # behaviour now, not an intent. prompt() itself refuses a command up front
-        # (test_submit_commands.py) because its list[dict] return has nowhere to
-        # put the outcome.
         assert sub.expand_commands is True
         # True: a human typed this, so a hook under this turn MAY ask them.
         assert sub.allow_user_input is True
@@ -432,5 +430,5 @@ class TestPromptDeclaresExpandCommands:
 
         await session.prompt("deploy it")
 
-        assert delegate.calls == [("confirm", "Deploy?")]
-        assert outcome == [True]
+        assert delegate.calls == [("form", "Deploy?")]
+        assert outcome == [{"filled": "by-a-human"}]

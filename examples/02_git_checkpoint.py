@@ -153,8 +153,4 @@ def git_checkpoint_extension(api: Any) -> None:
     api.on("user_turn_end", on_user_turn_end)
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/02_git_checkpoint.py`` → ``getattr(module, "register")``), so the demo
-#: is loadable through the public ``-e`` surface, not only by importing
-#: ``git_checkpoint_extension`` directly.
 register = git_checkpoint_extension

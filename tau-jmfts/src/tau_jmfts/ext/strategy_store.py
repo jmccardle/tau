@@ -28,16 +28,8 @@ from typing import Any
 
 from tau_jmfts.client import DocumentDict, JmftsClient
 
-# The root document's usetype. `StrategyStore` opens-or-creates exactly one root under
-# this usetype (per condition/seed the experiment uses a distinct root *title* so no
-# store bleeds into another — the M2 cache-separation hygiene, M3-DESIGN §6).
 ROOT_USETYPE = "memory:strategy"
 
-# Head and log documents carry distinct usetypes so `find` can narrow to heads
-# SERVER-SIDE (search's usetype glob) instead of over-fetching the whole subtree and
-# dropping non-heads client-side — which would silently lose heads that ranked below a
-# log child. The `structured_content.kind` discriminator (below) is the authoritative
-# classifier per §3; the usetypes mirror it for the search path.
 HEAD_USETYPE = "memory:strategy:head"
 LOG_USETYPE = "memory:strategy:log"
 
@@ -45,14 +37,8 @@ LOG_USETYPE = "memory:strategy:log"
 HEAD_KIND = "strategy_head"
 LOG_KIND = "strategy_log"
 
-# A generous single-page fetch for a family's log. §3's answer to an unbounded log is
-# RAPTOR digestion (cluster + summarize into digest nodes), which is out of this
-# module's scope; until then this matches the sibling enrich pass's convention.
 _LOG_PAGE_LIMIT = 1000
 
-# Reserved structured_content keys the store owns; a caller's `extra` metadata may not
-# shadow them (Fail-Early: a silent overwrite of `consolidated` would corrupt the footer
-# read and the consolidation invariant).
 _RESERVED_LOG_KEYS = frozenset({"kind", "consolidated"})
 
 
@@ -138,14 +124,6 @@ class StrategyStore:
             parent_id=None,
             structured_content={"kind": "strategy_root"},
             auto_embed=False,
-            # No `sequential` here, and nothing downstream wants one. CR-1 ordering is a
-            # relationship between SIBLINGS under a parent, so it is undefined for a root
-            # (`parent_id is None`) — the server has rejected `sequential=True` on a root
-            # since jmfts d70cc57. Nor was it doing any work: inheritance is
-            # `sequential = parent is not None and parent.position is not None`, and both
-            # levels below set it themselves — `family()` on each head, `append_log()` on
-            # each log entry — so the ordering the store depends on is asserted, not
-            # inherited.
         )
         return int(root["id"])
 
@@ -162,9 +140,6 @@ class StrategyStore:
         existing = self._client.get_children(
             self.root_id, usetype=HEAD_USETYPE, title=name, limit=_LOG_PAGE_LIMIT
         )
-        # `title` is a server-side exact-match filter, but re-check client-side: it is
-        # the load-bearing uniqueness key and a server that ever loosened it (to a
-        # prefix, say) must not silently return the wrong head.
         heads = [d for d in existing if d.get("title") == name]
         if len(heads) > 1:
             ids = sorted(d["id"] for d in heads)
@@ -181,10 +156,6 @@ class StrategyStore:
             usetype=HEAD_USETYPE,
             structured_content={"kind": HEAD_KIND},
             auto_embed=False,
-            # A CR-1 position among its sibling heads, in creation order. `append_log`
-            # asks for its children's positions itself rather than relying on this
-            # propagating, so the log's temporal order (the footer/history invariant)
-            # does not depend on the value here.
             sequential=True,
         )
         return Family(name=name, head_id=int(head["id"]))
@@ -263,9 +234,6 @@ class StrategyStore:
         pending = self.footer(family)
         self._client.update_document(family.head_id, content=new_head_content)
         for doc in pending:
-            # PATCH-with-structured_content REPLACES the whole field, so carry the
-            # existing content forward and change ONLY the flag — the sole mutation a
-            # log document is ever allowed. Content/title are untouched.
             updated = dict(doc["structured_content"])
             updated["consolidated"] = True
             self._client.update_document(doc["id"], structured_content=updated)

@@ -149,8 +149,6 @@ class TestTheStampIsUnforgeable:
         params = inspect.signature(ExtensionAPI.submit).parameters
         assert "source" not in params
         assert "submitter" not in params
-        # Nor is expand_commands: injected text must not be able to smuggle a
-        # "/compact" through a bus payload (pi's expandPromptTemplates: false).
         assert "expand_commands" not in params
 
     @pytest.mark.usefixtures("fake_llm")
@@ -273,7 +271,5 @@ class TestCtxPromptIsADeprecatedAlias:
 
         assert seen
         assert all(e.source == "extension" for e in seen)
-        # The shared context carries no per-extension identity, so it says so
-        # instead of guessing — see UNATTRIBUTED_EXTENSION.
         assert all(e.submitter == UNATTRIBUTED_EXTENSION for e in seen)
         assert "<" in UNATTRIBUTED_EXTENSION, "must be unmistakably not an extension stem"

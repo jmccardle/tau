@@ -50,12 +50,8 @@ from tau_llm.types import (
     UserMessage,
 )
 
-# ──────────────────────────────────────────────────────────────────────────
-# The capturing-client harness (test_reasoning_effort.py's _CapturingClient /
-# _patch_client pattern, extended to record EVERY request of a turn — not just
-# the last — and to serve a queue of canned SSE responses, one per request, so
-# a multi-step tool-calling turn can be driven end to end).
-# ──────────────────────────────────────────────────────────────────────────
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
 
 
 def _mock_response(chunks: list[dict]) -> MagicMock:
@@ -307,11 +303,6 @@ def _assert_byte_prefix(earlier: str, later: str) -> None:
     )
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# 1. Within-turn stability (§7.1 threat 2)
-# ──────────────────────────────────────────────────────────────────────────
-
-
 def test_within_turn_stability_across_tool_call_round_trips(monkeypatch):
     """A multi-step turn — assistant -> tool call -> tool result -> assistant,
     TWICE in a row — must only ever APPEND to the wire `messages` array.
@@ -345,7 +336,7 @@ def test_within_turn_stability_across_tool_call_round_trips(monkeypatch):
             tool_call_id="call_1",
             tool_name="search",
             content=[TextContent(text="alpha result")],
-            timestamp=0,
+            timestamp=_TS,
         ),
     ]
 
@@ -357,7 +348,7 @@ def test_within_turn_stability_across_tool_call_round_trips(monkeypatch):
             tool_call_id="call_2",
             tool_name="search",
             content=[TextContent(text="beta result")],
-            timestamp=0,
+            timestamp=_TS,
         ),
     ]
 
@@ -371,11 +362,6 @@ def test_within_turn_stability_across_tool_call_round_trips(monkeypatch):
     # The whole point: request N's bytes are a strict prefix of request N+1's.
     _assert_byte_prefix(json1, json2)
     _assert_byte_prefix(json2, json3)
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# 3. The reasoning_replay="turn" divergence (§7.1 threat 1) — KNOWN, DELIBERATE
-# ──────────────────────────────────────────────────────────────────────────
 
 
 def _drive_two_turn_tool_call_flow(provider: OpenAICompletionsProvider, model: Model) -> None:
@@ -403,7 +389,7 @@ def _drive_two_turn_tool_call_flow(provider: OpenAICompletionsProvider, model: M
             tool_call_id="call_1",
             tool_name="search",
             content=[TextContent(text="x result")],
-            timestamp=0,
+            timestamp=_TS,
         ),
     ]
 
@@ -452,8 +438,6 @@ def test_reasoning_replay_turn_breaks_prefix_at_the_dropped_thinking_block(monke
     assert "reasoning_content" not in j_after[1]
     assert j_after[1] != j_before[1]
 
-    # Pin it with the same whole-array predicate test (1) uses: turn 1's second
-    # request is NOT a byte-prefix of turn 2's first request.
     whole_before = _messages_json(_CapturingClient.payloads[1])
     whole_after = _messages_json(_CapturingClient.payloads[2])
     with pytest.raises(AssertionError):

@@ -37,6 +37,9 @@ from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.submission import Submission
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 def _model() -> Model:
     return Model(
@@ -68,7 +71,7 @@ def _assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="m",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
 
@@ -122,10 +125,6 @@ class TestSubmitRefusesAForeignCaller:
     async def test_submit_from_a_different_live_loop_raises_and_names_the_fix(self):
         """The E5560 case: another loop, running at the same time as ours."""
         session = AgentSession(session_log=InMemorySessionLog(), model=_model(), tools=[])
-        # Constructed inside this test's loop, so the session is already bound to
-        # it — and this loop stays running for the whole of the to_thread await
-        # below, which is what makes the other loop genuinely foreign rather than
-        # a successor.
         assert session._loop is asyncio.get_running_loop()
         before = list(session._session_log.entries())
 
@@ -197,8 +196,6 @@ class TestSubmitThreadsafeDelivers:
     async def test_a_foreign_thread_marshals_a_turn_that_actually_runs(self):
         session = AgentSession(session_log=InMemorySessionLog(), model=_model(), tools=[])
 
-        # The driver thread never touches this loop directly: it hands the
-        # submission over and gets a concurrent.futures.Future back.
         future = await asyncio.to_thread(
             lambda: session.submit_threadsafe(_sub("hello from the bus", "t-1"))
         )
@@ -284,8 +281,6 @@ class TestSubmitThreadsafeDelivers:
         session._surface_extension_error = lambda error: surfaced.append(error.extension_path)
 
         future = await asyncio.to_thread(
-            # ``silent=True`` is submit()'s own NotImplementedError — a real raise
-            # from inside submit(), with no LLM or transport involved.
             lambda: session.submit_threadsafe(_sub("boom", "e-1", silent=True))
         )
         with pytest.raises(NotImplementedError):

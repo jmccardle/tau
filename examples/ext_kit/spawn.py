@@ -51,15 +51,11 @@ from typing import Any, TypeVar, cast
 
 TauEvent = dict[str, Any]
 
-#: Default stuck window: this many consecutive assistant turns repeating the
-#: identical tool-call signature counts as a loop.
 DEFAULT_STUCK_LIMIT = 3
 
 #: Grace period a terminated child gets before it is SIGKILLed.
 _KILL_GRACE_SECONDS = 5.0
 
-#: stop_reason values this module *imposes* when it trips a limit (as opposed to
-#: the child-reported ones like ``"stop"`` / ``"end"`` that ride ``message_end``).
 _STOP_REASONS: frozenset[str] = frozenset(
     {"aborted", "timeout", "over_budget", "stuck", "max_turns", "error"}
 )
@@ -473,8 +469,6 @@ async def spawn_tau(
         )
 
     if limits.max_usd is not None and cost is None:
-        # Fail-Early: a budget is only enforceable against a known price. Refuse to
-        # accept a max_usd we would silently never check (the docstring's contract).
         raise ValueError(
             "spawn_tau: a budget (limits.max_usd) is enforceable only with a known "
             "price — pass `cost=` (per-model USD/1M-token map) or drop max_usd; "
@@ -558,8 +552,6 @@ async def spawn_tau(
                     result.error_message = result.stderr.strip() or f"child exited {exit_code}"
             return result
         finally:
-            # Safety net: guarantee the child is reaped and stderr drained even on
-            # an exception / cancellation between spawn and normal completion.
             await _kill(proc)
             if stderr_task is not None and not stderr_task.done():
                 stderr_task.cancel()

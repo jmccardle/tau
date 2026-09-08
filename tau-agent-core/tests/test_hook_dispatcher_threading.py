@@ -32,6 +32,9 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.extensions.runner import ExtensionRunner
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 HOOK_EVENTS = ("tool_call", "tool_result", "before_agent_start")
 
 
@@ -69,7 +72,7 @@ async def _fake_text(model, context, options=None) -> _Stream:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
     return _Stream(
@@ -134,9 +137,6 @@ async def test_dispatcher_reachable_from_loop_and_fast_path_no_extensions() -> N
 async def test_has_hook_handlers_flips_true_when_runner_has_handler() -> None:
     """A handler on the session's (shared) runner is visible through the loop."""
     session = _make_session()
-    # Register a mutating-hook handler directly on the session-owned runner (the
-    # api.on -> runner routing lands in a later step; S10 only threads the runner
-    # in). Because the runner is shared, the loop must observe it.
     session._extension_runner.register_extension("mem:probe").on(
         "tool_call", lambda event, ctx: None
     )

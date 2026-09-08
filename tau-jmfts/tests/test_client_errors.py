@@ -37,8 +37,6 @@ def test_delete_nonexistent_document_raises_404(client: JmftsClient) -> None:
 
 
 def test_bad_payload_type_raises_422(client: JmftsClient) -> None:
-    # parent_id must be an int|null; a non-numeric string fails FastAPI/pydantic
-    # validation server-side -> 422, with the ValidationError detail preserved.
     with pytest.raises(JmftsError) as excinfo:
         client.create_document(title="bad payload test", parent_id="not-an-int")  # type: ignore[arg-type]
     assert excinfo.value.status_code == 422

@@ -80,8 +80,6 @@ def test_elide_records_the_frame_in_force_at_the_anchor_not_the_newest_one() -> 
     keep = log.append_message(_um("turn 1"))
     anchor = log.append_message(_um("turn 2"))
 
-    # The session moved on afterwards: a set_model wrote a second spec, which is the
-    # most recent one in the log and governs nothing at `anchor`.
     log.append_custom_entry("agent_spec", {"model": {"id": "the new model"}})
     log.append_message(_um("turn 3"))
 

@@ -100,7 +100,7 @@ this repo refuses on both sides. Two surfaces now carry it:
 
 - **The truncation notice.** A `completion_end` carrying `stop_reason: "length"`
   mounts a system box saying so, quoting the cap actually in force, and a toast
-  alongside it. `Parley._report_truncation`. The box is durable because a toast
+  alongside it. `TauApp._report_truncation`. The box is durable because a toast
   that has faded cannot be scrolled back to.
 - **`dropped=N` in the exchange telemetry row**, beside `t/s` and `repairs`
   (`format_telemetry`). This also covers the abort case, whose drop count has
@@ -121,6 +121,66 @@ step S8; only `--mode json` was reading it.
 Set `max_tokens` on the model entry in `~/.tau/config.json`. There is no value τ
 can infer here — the right cap depends on the server's `n_ctx`, the model, and
 how much of the budget reasoning takes.
+
+### 3.1 Three deliveries, one verdict
+
+**Built 2026-09-07.** The heading above this one says "The TUI says", and that was
+the whole of it: `tau -p` printed a truncated answer and said nothing, and an RPC
+host could not see the stop reason at all because it rides inside `message`, which
+`WireEvent` excludes. τ is headless and the TUI is one head
+(`docs/HEADS-AND-MULTIPLEXER.md` §1), so a fact only one head can report is a fact
+τ does not really carry — the same shape `docs/PROMPT-CACHING.md` §7 closed for
+the prompt cache, and closed here the same way.
+
+`tau_agent_core/truncation.py` is the reading, and it is pure: no clock and no
+session state, because one completion's `stop_reason` is already the whole fact.
+`truncation_notice` produces the sentence all three heads say; the cap it quotes
+is the head's, because the head is what knows which config entry this run
+resolved.
+
+| Head | Where it lands | Unit | Carries the cap |
+|---|---|---|---|
+| TUI | a system box, plus a toast | one truncated completion | yes, from the config entry |
+| `tau -p` | two lines on **stderr** | the whole turn's messages | yes, from `model_config` |
+| `tau --mode rpc` | two fields on `message_end` | one completion | no — it ships the fact, not a sentence |
+
+stderr for the reason `report_cache_miss` gives: stdout is a transcript in
+`--mode text` and JSONL in `--mode json`, and both are routinely redirected, so a
+diagnostic on either is corruption.
+
+**The wire gets the FACT, not the sentence.** This is the one place the truncation
+report diverges from `cache_notice`, which ships a sentence. A cache verdict needs
+a clock, a latch and a threshold, and the evidence it reads is not on the wire
+either, so a host cannot recompute it. A stop reason is a closed five-value enum
+that a host should be able to branch on — `if stop_reason == "length"` — rather
+than match a string against. So `WireEvent` gains two bounded fields lifted out of
+the excluded `message`: `stop_reason`, redeclared as its own `Literal` with an
+anti-drift test against `AssistantMessage.stop_reason` exactly as `type` has
+against `AgentEvent.type`; and `dropped_tool_calls`, which is **null rather than
+0** when nothing was dropped, so "none lost" and "not reported" stay distinct on
+the wire the way §3 already keeps them distinct in `usage.extra`.
+
+Excluding a whole `message` is about size. A closed enum and a small integer are
+neither unbounded nor pullable in time to matter: a host that learns from
+`get_messages` that the answer it already rendered was a prefix learns it too
+late.
+
+**The box now counts what was lost.** `completion_end` carries
+`dropped_tool_calls` beside `stop_reason`, so the TUI says "2 tool calls were
+dropped rather than run on a truncated argument list" instead of the older
+hedge, "including a tool call, which is dropped". The count was already in
+`usage.extra`; only the telemetry row read it.
+
+**A turn reads as more than one completion.** `truncation_from_messages` SUMS
+where `prompt_tokens` must not: two truncated completions are two separate losses,
+not one conversation counted twice. Print mode holds finished messages and uses
+it; the TUI holds a live event and reports `Truncation(1, n)` per completion.
+
+**An abort's drops are not the cap's.** `completion_truncation` reports
+`Truncation(0, 0)` for a message whose `stop_reason` is `"aborted"` even when it
+dropped calls. The count is real and the telemetry row still shows it, but this
+notice tells an operator to raise a cap, and an Esc the user pressed is not a cap
+to raise.
 
 ## 4. A grammar would not have prevented this
 
@@ -173,7 +233,7 @@ line breaks *are* its stack frames. Textual 8.2.7's `MarkdownFence` is scrollabl
 CSS sets `scrollbar-size-horizontal: 0`, so a line wider than the box is clipped
 with nothing on screen saying so and nothing to drag.
 
-`parley.tcss` now gives a fence inside a chat message `overflow-x: auto` and a
+`tau.tcss` now gives a fence inside a chat message `overflow-x: auto` and a
 one-row horizontal scrollbar. `auto` rather than the widget's `scroll` so the row
 appears only for a fence that overflows, leaving short code blocks as they were.
 
@@ -201,6 +261,18 @@ shape this clips worst.
 
 - **No inferred cap.** τ does not read the server's `n_ctx` and pick a number.
 
+- **The cap is not on the wire** (added 2026-09-07). `message_end` says the
+  completion stopped at the cap and how many calls that cost; it does not say what
+  the cap was. A `max_tokens` field would be the model's configuration on an event
+  stream, which is a different question from what this turn did, and the two heads
+  that quote a number read it from the config entry they themselves resolved. I
+  did not check whether any existing verb hands a host its model's `max_tokens`.
+
+- **No per-session suppression.** The prompt-cache notice is said once per model
+  because its subject is a configuration that will not change mid-session. This
+  one is said every time, because every truncated completion is a separate answer
+  the reader did not get.
+
 ## 8. Where the pieces are
 
 | Piece | Where |
@@ -208,8 +280,11 @@ shape this clips worst.
 | the drop | `tau_llm/providers/openai.py` → `_build_final_message`, the `incomplete` branch |
 | the raise that names the call | same function, the `parse_json_with_repair_info` guard |
 | the operator hint, one wording | `tau_llm/providers/openai.py` → `_TRUNCATION_HINT` |
-| `stop_reason` on the render event | `tau_coding_agent/backends.py` → `TurnStream` |
-| the notice | `tau_coding_agent/app.py` → `Parley._report_truncation`, `_configured_max_tokens` |
+| the reading, head-agnostic | `tau_agent_core/truncation.py` |
+| `stop_reason` + the drop count on the render event | `tau_coding_agent/backends.py` → `TurnStream` |
+| the TUI notice | `tau_coding_agent/app.py` → `TauApp._report_truncation`, `_configured_max_tokens` |
+| the print-mode notice | `tau_coding_agent/headless.py` → `report_truncation` |
+| the wire fields | `tau_agent_core/rpc_event_schema.py` → `WireEvent`; `rpc/wire_events.py` → `_truncation_fields` |
 | `dropped=N` | `tau_coding_agent/chat_widgets.py` → `format_telemetry` |
-| the scrollable fence | `parley.tcss` → `.chat-message MarkdownFence` |
-| tests | `tau-llm/tests/test_abort_finalize.py`, `tau-coding-agent/tests/test_truncated_completion_notice.py` |
+| the scrollable fence | `tau.tcss` → `.chat-message MarkdownFence` |
+| tests | `tau-agent-core/tests/test_truncation.py`, `tau-coding-agent/tests/test_truncated_completion_notice.py`, `tau-coding-agent/tests/test_headless_truncation_notice.py`, `tau-llm/tests/test_abort_finalize.py` |

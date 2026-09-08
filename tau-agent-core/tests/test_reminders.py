@@ -47,6 +47,9 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 # ── load the example module (its filename is not a valid identifier) ─────────
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _REMINDERS_PATH = _REPO_ROOT / "examples" / "21_reminders.py"
@@ -67,7 +70,7 @@ def _tool_call_assistant(call_id: str, name: str, args: dict[str, Any]) -> Assis
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -79,7 +82,7 @@ def _text_assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -146,8 +149,6 @@ def _make_session() -> AgentSession:
         context_window=128000,
         max_tokens=4096,
     )
-    # No tools registered: `write` is unknown, so each call yields an *error*
-    # tool result — exactly the signal the root-cause rule counts.
     return AgentSession(session_log=InMemorySessionLog(), model=model, extensions=[])
 
 
@@ -196,9 +197,6 @@ async def test_rules_fire_once_then_cool_down_through_the_loop(tmp_path, monkeyp
         return _Stream([DoneEvent(final=final, usage=Usage())])
 
     session = _make_session()
-    # Load the demo through its PUBLIC register(api) surface (S24): the example's
-    # ``reminders_extension`` wires both handlers via ``api.on(…)`` on a
-    # bucket-bound api, so this drives the real api.on → ExtensionRunner bridge.
     reminders.reminders_extension(session._bind_extension_api("examples/21_reminders.py"))
 
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=fake):
@@ -214,8 +212,6 @@ async def test_rules_fire_once_then_cool_down_through_the_loop(tmp_path, monkeyp
     assert tests_ro not in blobs[0]
     # call 2: tests-readonly is now durable on call 1's result — appended once.
     assert blobs[1].count(tests_ro) == 1
-    # call 3: the reminder is DURABLE so it is still present (count stays 1); it was
-    # NOT re-appended to call 2's result (cooling down). root-cause now fires there.
     assert blobs[2].count(tests_ro) == 1
     assert root_cause in blobs[2]
     # and root-cause did not appear before the second failure.
@@ -484,8 +480,6 @@ def test_two_same_tool_errors_trip_root_cause() -> None:
     bank = reminders.ReminderBank()
     # One failure is not enough — nothing drains, so the result passes through.
     assert bank.on_tool_result(_err_result(), _Ctx()) is None
-    # The second consecutive failure trips root-cause, which drains on this same
-    # result: the returned patch appends the reminder to the result's content.
     patch = bank.on_tool_result(_err_result(), _Ctx())
     assert _reminder_text_in(patch, "root-cause-after-2-failures")
 
@@ -534,8 +528,6 @@ def test_tool_call_never_vetoes() -> None:
 
 
 def test_a_quiet_result_is_untouched() -> None:
-    # A fresh bank: a single error (streak 1) trips no rule and nothing is pending,
-    # so the tool_result passes through unpatched.
     bank = reminders.ReminderBank()
     assert bank.on_tool_result(_err_result(), _Ctx()) is None
 
@@ -558,19 +550,13 @@ def test_extension_registers_all_three_hooks() -> None:
 
 
 def test_reminder_bank_wraps_steer_reminder_bank() -> None:
-    # The threshold/cooldown/drain state machine is now an ext_kit.steer.ReminderBank
-    # holding the four rules as data (each with its COOLDOWNS cooldown + REMINDER_TEXT).
     bank = reminders.ReminderBank()
     assert isinstance(bank._bank, reminders.steer.ReminderBank)
     for rule in reminders.RULE_ORDER:
-        # is_pending resolves the rule (raising on an unknown one), so a clean
-        # False proves every demo rule is registered in the kit bank.
         assert bank._bank.is_pending(rule) is False
 
 
 def test_drain_and_patch_delegate_to_the_kit_bank() -> None:
-    # _drain delegates to the kit bank's drain, and on_tool_result to patch_result:
-    # a triggered rule drains in RULE_ORDER and its <system-reminder> is appended.
     bank = reminders.ReminderBank()
     bank.trigger("scope-guard")
     assert bank._drain() == ["scope-guard"]  # kit drain, registration order

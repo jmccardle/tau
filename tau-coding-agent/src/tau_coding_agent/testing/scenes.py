@@ -1,6 +1,6 @@
 """Named app states worth looking at, for screenshots and visual regression.
 
-A scene puts a sandboxed ``Parley`` into ONE known, settled state and nothing
+A scene puts a sandboxed ``TauApp`` into ONE known, settled state and nothing
 more. Rendering it is somebody else's job (:mod:`tau_coding_agent.testing.render`),
 and so is deciding what to do with the result (:mod:`tau_coding_agent.devshot`, a
 snapshot test).
@@ -8,7 +8,7 @@ snapshot test).
 Two rules the scenes follow, both learned the hard way:
 
 * **Host modals in the real app.** A modal composed inside a throwaway ``App``
-  loses ``CSS_PATH = "parley.tcss"`` and renders full-screen — a screenshot that
+  loses ``CSS_PATH = "tau.tcss"`` and renders full-screen — a screenshot that
   flatly contradicts what a user sees.
 * **No live data.** No clocks, no random ids, no absolute paths, no hostnames.
   Everything a scene shows is written here, so two runs produce the same pixels.
@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 from itertools import count
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterator
+from tau_coding_agent import modals, chat_widgets, extension_ui, transcript, tree_browser
 
 __all__ = [
     "SCENES",
@@ -38,10 +39,6 @@ __all__ = [
     "stage_scene",
 ]
 
-
-# ---------------------------------------------------------------------------
-# Fixture data (frozen — see the "no live data" rule above)
-# ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = "You are tau, a coding agent. Be concise."
 
@@ -194,8 +191,6 @@ def _seed_sessions(home: Path) -> None:
     import tau_coding_agent.session_store as store
     from tau_coding_agent.session_store import FileSessionCatalog
 
-    # One second per write, ending just before now — comfortably coarser than the
-    # millisecond the timestamps are truncated to, and comfortably inside today.
     ticks = count(-4 * len(_SESSION_NAMES))
     start = datetime.now(timezone.utc)
 
@@ -277,11 +272,6 @@ _PANEL_SPEC = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Scene definitions
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class Scene:
     """One named app state.
@@ -318,33 +308,30 @@ async def _open_sidebar(app: Any, pilot: Any) -> None:
     turn away. A fixed pause count would be a guess about how many; this waits
     for the rows and raises if they never come.
     """
-    from tau_coding_agent.app import ChatListItem
 
     app.action_toggle_sidebar()
     for _ in range(30):
         await pilot.pause()
-        if len(app.query(ChatListItem)) == len(_SESSION_NAMES):
+        if len(app.query(chat_widgets.ChatListItem)) == len(_SESSION_NAMES):
             # One more, so the mounted rows have been laid out and composited.
             await pilot.pause()
             return
     raise AssertionError(
         f"the sidebar never listed the {len(_SESSION_NAMES)} seeded sessions "
-        f"(showing {len(app.query(ChatListItem))})"
+        f"(showing {len(app.query(chat_widgets.ChatListItem))})"
     )
 
 
 async def _load_answer(app: Any, pilot: Any) -> None:
-    from tau_coding_agent.app import ChatDisplay
 
-    display = app.query_one(ChatDisplay)
+    display = app.query_one(transcript.ChatDisplay)
     await display.reload_messages(_messages_answer_only())
     await pilot.pause()
 
 
 async def _load_tools(app: Any, pilot: Any) -> None:
-    from tau_coding_agent.app import ChatDisplay
 
-    display = app.query_one(ChatDisplay)
+    display = app.query_one(transcript.ChatDisplay)
     await display.reload_messages(_messages_with_tools())
     await pilot.pause()
 
@@ -363,13 +350,9 @@ async def _load_tools_expanded(app: Any, pilot: Any) -> None:
 
 
 async def _open_tree_modal(app: Any, pilot: Any) -> None:
-    from tau_coding_agent.app import SessionTreeModal
 
     tree = _tree_session()
-    # The whole ``ConversationTree``, not ``roots`` plus a resolver
-    # (TREE-BROWSER-AS-EDITOR.md §5.3): the browser derives three of its four
-    # selection sets from the tree itself.
-    app.push_screen(SessionTreeModal(tree))
+    app.push_screen(tree_browser.SessionTreeModal(tree))
     await _settle_tree(app, pilot, "n4")
 
 
@@ -390,15 +373,9 @@ async def _settle_tree(app: Any, pilot: Any, node_id: str, ticks: int = 30) -> N
     """
     from textual.widgets import Tree
 
-    from tau_coding_agent.app import TreeDetailPane
-
-    # One pause before querying: `push_screen` is queued, so the modal's widgets
-    # do not exist until the pump has run at least once.
     await pilot.pause()
-    # `app.query_one` searches the DEFAULT screen, not the top of the stack, so a
-    # widget inside a pushed modal is only reachable through `app.screen`.
     tree = app.screen.query_one("#tree-browser-tree", Tree)
-    pane = app.screen.query_one(TreeDetailPane)
+    pane = app.screen.query_one(transcript.TreeDetailPane)
 
     def _settled() -> bool:
         cursor = tree.cursor_node
@@ -429,10 +406,6 @@ async def _open_tree_modal_at_branch(app: Any, pilot: Any) -> None:
 
     await _open_tree_modal(app, pilot)
     tree = app.screen.query_one("#tree-browser-tree", Tree)
-    # Search the whole widget tree rather than one fixed nesting level: the browser
-    # nests by FORK, not by ``parentId`` (TREE-BROWSER-AS-EDITOR.md §2), so where a
-    # given entry sits in the widget tree is a function of where the branches are.
-    # ``data`` is the entry id at every level and is the stable way to name a row.
     node = next(n for n in _widget_nodes(tree.root) if n.data == "n2")
     tree.move_cursor(node)
     await _settle_tree(app, pilot, "n2")
@@ -446,39 +419,94 @@ def _widget_nodes(root: Any) -> Iterator[Any]:
 
 
 async def _open_tree_mode_modal(app: Any, pilot: Any) -> None:
-    from tau_coding_agent.app import TreeModeModal
 
-    app.push_screen(TreeModeModal())
+    app.push_screen(tree_browser.TreeModeModal())
     await pilot.pause()
     await pilot.pause()
 
 
 async def _open_prompt_editor(app: Any, pilot: Any) -> None:
-    from tau_coding_agent.app import SystemPromptEditor
 
-    app.push_screen(SystemPromptEditor(_SYSTEM_PROMPT))
+    app.push_screen(modals.SystemPromptEditor(_SYSTEM_PROMPT))
+    await pilot.pause()
+    await pilot.pause()
+
+
+_LOCK_ASK: dict[str, Any] = {
+    "title": "Release gate",
+    "text": "This command touches a deployment. Say who approved it.",
+    "fields": [
+        {"name": "approver", "kind": "text", "label": "Approved by", "default": ""},
+        {
+            "name": "scope",
+            "kind": "select",
+            "label": "Scope",
+            "options": ["staging", "production"],
+            "default": "staging",
+        },
+    ],
+    "actions": [{"label": "Approve", "command": "gate-approve"}],
+}
+
+
+def _lock_request(with_ask: bool = True) -> Any:
+    """One reserved request entry, read back the way a head reads it off the tree."""
+    from tau_agent_core.extension_locks import REQUEST_ENTRY_TYPE, build_request_data, read_request
+    from tau_agent_core.extension_types import validate_ask_spec
+
+    return read_request(
+        {
+            "type": "customEntry",
+            "customType": REQUEST_ENTRY_TYPE,
+            "id": "req-1",
+            "data": build_request_data(
+                "~/.tau/extensions/release_gate.py",
+                'A deploy-shaped command ran: "bash -lc deploy.sh --prod"',
+                lock=True,
+                ask=validate_ask_spec(_LOCK_ASK) if with_ask else None,
+                release="gate-clear",
+            ),
+        }
+    )
+
+
+class _LockedBackend:
+    """The two seams a head reads a lock through, with no session behind them."""
+
+    def __init__(self, request: Any) -> None:
+        self.pending_request = request
+
+
+async def _open_ext_lock_row(app: Any, pilot: Any) -> None:
+    await _load_answer(app, pilot)
+    app.current_backend = _LockedBackend(_lock_request())
+    app.refresh_extension_request()
+    app.query_one("#chat-input").text = "carry on then"
+    await pilot.pause()
+    await pilot.pause()
+
+
+async def _open_ext_lock_ask(app: Any, pilot: Any) -> None:
+    await _open_ext_lock_row(app, pilot)
+    app.push_screen(extension_ui.ExtensionAskScreen(_lock_request()))
     await pilot.pause()
     await pilot.pause()
 
 
 async def _open_ext_surfaces(app: Any, pilot: Any) -> None:
     from tau_agent_core.extension_types import validate_panel_spec
-    from tau_coding_agent.app import ExtensionPanelHost, ExtensionStatusBar
 
     await _load_answer(app, pilot)
-    app.query_one(ExtensionPanelHost).set_panel("fleet", validate_panel_spec(_PANEL_SPEC))
-    status = app.query_one(ExtensionStatusBar)
+    app.query_one(extension_ui.ExtensionPanelHost).set_panel(
+        "fleet", validate_panel_spec(_PANEL_SPEC)
+    )
+    status = app.query_one(extension_ui.ExtensionStatusBar)
     status.set_slot("budget", "budget 38.4k / 200k")
     status.set_slot("gate", "permission gate: ask")
     await pilot.pause()
     await pilot.pause()
 
 
-#: A plausible model entry for the two scenes whose chat column is EMPTY, so the
-#: empty pane's ``model``/endpoint rows show something a reader recognizes.
-#: ``sandbox.DEFAULT_CONFIG``'s ``m`` / ``openai`` is right for a widget test and
-#: wrong for a published screenshot — it reads as a bug rather than as a local
-#: server. Still entirely fictional: no scene may name a reachable host.
 _EMPTY_PANE_CONFIG: dict[str, Any] = {
     "models": {
         "local-llm": {
@@ -525,6 +553,16 @@ SCENES: tuple[Scene, ...] = (
         "An extension panel plus two status-bar slots, over a loaded chat.",
         _open_ext_surfaces,
     ),
+    Scene(
+        "ext-lock-row",
+        "A locked extension request at the tail, with the bounced line still typed.",
+        _open_ext_lock_row,
+    ),
+    Scene(
+        "ext-lock-ask",
+        "The same lock with its ask open: label, sentence, body, fields, action.",
+        _open_ext_lock_ask,
+    ),
 )
 
 
@@ -552,27 +590,16 @@ def stage_scene(scene: Scene, theme: str | None = None) -> Iterator[Any]:
     screenshot captured in a theme other than the one asked for is a wrong picture
     that looks like a right one, and there is no user watching for a toast.
     """
-    from tau_coding_agent.testing.sandbox import build_parley, sandbox_tau_home
+    from tau_coding_agent.testing.sandbox import build_tau_app, sandbox_tau_home
 
     home = Path(tempfile.mkdtemp(prefix="tau-scene-"))
     try:
         with sandbox_tau_home(home):
             if scene.seed is not None:
                 scene.seed(home)
-            app = build_parley(home, config=scene.config or None)
+            app = build_tau_app(home, config=scene.config or None)
             if theme is not None:
                 app._apply_theme(theme)
-            # The "no live data" rule applies to motion too: a frame captured
-            # mid-animation differs from the same frame captured after it. The
-            # documented switch is TEXTUAL_ANIMATIONS=none, which `devshot` sets
-            # before it imports textual — but under pytest that lever is already
-            # gone. `pytest-textual-snapshot` is a setuptools-entrypoint plugin
-            # that imports `textual.app` at module scope, so `textual.constants`
-            # (which reads the variable exactly once) is imported before the
-            # first conftest.py line runs. `App.__init__` copying that constant
-            # into `self.animation_level` is the only thing the variable feeds,
-            # so setting the attribute here is the same switch, thrown late
-            # enough to still work.
             app.animation_level = "none"
             yield app
     finally:

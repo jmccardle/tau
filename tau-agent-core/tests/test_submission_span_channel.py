@@ -22,6 +22,7 @@ from tau_llm.types import Model
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.submission import Submission
+from tau_agent_core.flows import Performed, Ready
 
 
 def _model() -> Model:
@@ -103,8 +104,6 @@ class TestSubmissionSpan:
         session = _session()
         seen = _record_span(session)
 
-        # Bill something to the side ledger from inside the turn — the shape an
-        # auto-compaction takes — by reacting to the turn's own first event.
         def _spend(event):
             if event.type == "agent_start":
                 session.record_side_usage(
@@ -138,7 +137,7 @@ class TestSubmissionSpan:
             )
         )
 
-        assert result.command is not None and result.command.name == "compact"
+        assert isinstance(result.command, Ready) and result.command.mutation == "compact"
         assert seen == []
 
     async def test_the_span_closes_when_the_turn_raises(self):

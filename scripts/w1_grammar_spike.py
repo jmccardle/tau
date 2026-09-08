@@ -121,9 +121,6 @@ if r:
         ok = False
     check("json_schema constrains output", ok, "output must parse and match the schema")
 
-# --- 3. Baseline: tools alone DO fire. -----------------------------------------
-# Without this control, case 5's "no tool call" proves nothing — the model might
-# simply not want the tool. This is the control that makes case 5 a real finding.
 r = post("3. tools alone (the control)", {"messages": TOOL_MSGS, "tools": TOOLS})
 tools_fire_unconstrained = bool(r and r["tool_calls"])
 if r:
@@ -157,8 +154,6 @@ if r:
         "so a blanket 'constraints+tools -> raise' rule would be too strict",
     )
 
-# --- 6. json_schema + tools -> THE FINDING --------------------------------------
-# Undocumented, and the server has no equivalent check. Watch the tool call vanish.
 r = post(
     "6. json_schema + tools (tool_choice=auto)",
     {"messages": TOOL_MSGS, "tools": TOOLS, "response_format": VERDICT_SCHEMA},
@@ -187,9 +182,6 @@ if r:
         "server refuses both at once — the guard works on THIS field",
     )
 
-# --- 7b. grammar + response_format -> THE SECOND FINDING -------------------------
-# Same semantic collision, different field, and the guard does not see it: the grammar
-# is silently discarded and response_format wins. See UPSTREAM-LLAMACPP-SILENT-OVERRIDES.md.
 r = post(
     "7b. grammar + response_format",
     {"messages": MSGS, "grammar": VERDICT_GRAMMAR, "response_format": VERDICT_SCHEMA},

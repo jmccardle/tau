@@ -86,15 +86,11 @@ def test_jmfts_url_not_a_string_raises():
 
 def test_jmfts_url_from_env_var(monkeypatch):
     monkeypatch.setenv("JMFTS_API_URL", UNREACHABLE_URL)
-    # No "url" key in config -> falls back to $JMFTS_API_URL -> reaches the
-    # (failing) health check, proving the env var was actually read.
     with pytest.raises(StoreError, match="unreachable"):
         build_jmfts_client({"session_store": {}})
 
 
 def test_jmfts_unreachable_url_fails_loudly_at_construction_not_first_append():
-    # The §3.1 startup health check: a dead server must fail HERE, building the
-    # client/catalog, never deferred to the first append.
     with pytest.raises(StoreError, match="unreachable"):
         build_session_catalog({"session_store": {"backend": "jmfts", "url": UNREACHABLE_URL}}, None)
 
@@ -258,9 +254,6 @@ def test_the_persisted_default_is_unchanged_by_the_new_parameter():
 
 
 def test_jmfts_unreachable_url_closes_the_half_open_client():
-    # Regression guard for the "don't leak the httpx.Client" comment in
-    # build_jmfts_client: a second call against the same bad URL must behave
-    # identically (raise again), not hang or reuse a half-open connection.
     config = {"session_store": {"url": UNREACHABLE_URL}}
     with pytest.raises(StoreError):
         build_jmfts_client(config)
@@ -272,8 +265,6 @@ def test_jmfts_unreachable_url_closes_the_half_open_client():
 
 
 def test_build_jmfts_client_threads_config_token_into_bearer_header(monkeypatch):
-    # With health() stubbed to succeed, the returned client must carry the
-    # config token as an `Authorization: Bearer <token>` header.
     from tau_jmfts.client import JmftsClient
 
     monkeypatch.setattr(JmftsClient, "health", lambda self: {"status": "ok"})
@@ -311,9 +302,6 @@ def test_build_jmfts_client_config_token_wins_over_env(monkeypatch):
 
 
 def test_build_jmfts_client_no_token_sends_no_auth_header(monkeypatch):
-    # Fail-Early: no token configured/env means NO Authorization header is
-    # fabricated. Against an unauth'd server this is fine; against an auth'd one
-    # it 401s loudly (see the next test).
     from tau_jmfts.client import JmftsClient
 
     monkeypatch.delenv("JMFTS_API_TOKEN", raising=False)
@@ -331,8 +319,6 @@ def test_build_jmfts_client_token_not_a_string_raises(monkeypatch):
 
 
 def test_build_jmfts_client_401_raises_storeerror_asking_for_token(monkeypatch):
-    # An auth'd server rejecting the request must surface as an actionable
-    # StoreError telling the user to set a token -- NOT a silent None/allow.
     from tau_jmfts.client import JmftsClient, JmftsError
 
     def _raise_401(self):

@@ -10,11 +10,11 @@ in the tier, and per the unit brief the two questions that ARE the unit:
    "text"` content blocks, concatenated in order and trimmed; a message with
    no text block after that filter also reads back as `{"text": null}`,
    indistinguishable from "no assistant message at all" (documented, not
-   hidden — see `commands._last_assistant_text`'s docstring and this verb's
+   hidden — see `last_assistant_text`'s docstring and this verb's
    `notes`).
 
-This file owns two layers, per B6's own contract: `commands._last_assistant_
-text` is where the actual decision logic lives (block filtering, the
+This file owns two layers, per B6's own contract:
+`tau_agent_core.messages.last_assistant_text` is where the decision logic lives (block filtering, the
 aborted-with-empty-content skip, trim-to-None) and is tested exhaustively as
 a pure function; `_handle_get_last_assistant_text` is a one-line pass-
 through, tested at the wire level just enough to prove it is registered,
@@ -33,12 +33,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tau_agent_core.messages import last_assistant_text
 from tau_agent_core.rpc import RPCHandler, commands
 from tau_agent_core.session import SessionState
-
-# ─────────────────────────────────────────────────────────────────────────
-# Layer 1 — `commands._last_assistant_text`, the pure decision function.
-# ─────────────────────────────────────────────────────────────────────────
 
 
 def test_no_messages_at_all_returns_none():
@@ -47,7 +44,7 @@ def test_no_messages_at_all_returns_none():
     Mutation this kills: replacing the `for ... return None` fallthrough
     with a `raise` (treating "no assistant message" as malformed input,
     which the unit brief explicitly says it is not)."""
-    assert commands._last_assistant_text([]) is None
+    assert last_assistant_text([]) is None
 
 
 def test_only_user_messages_returns_none():
@@ -57,7 +54,7 @@ def test_only_user_messages_returns_none():
     would make a `role="user"` dict's absent `.get("content")` blow up or
     (worse) silently match."""
     messages = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
-    assert commands._last_assistant_text(messages) is None
+    assert last_assistant_text(messages) is None
 
 
 def test_plain_text_assistant_message_returns_its_text():
@@ -66,7 +63,7 @@ def test_plain_text_assistant_message_returns_its_text():
     Mutation this kills: returning the block dict instead of its `.text`,
     or forgetting to return anything on the matching branch."""
     messages = [{"role": "assistant", "content": [{"type": "text", "text": "hello there"}]}]
-    assert commands._last_assistant_text(messages) == "hello there"
+    assert last_assistant_text(messages) == "hello there"
 
 
 def test_multiple_text_blocks_concatenate_in_order_with_no_separator():
@@ -83,7 +80,7 @@ def test_multiple_text_blocks_concatenate_in_order_with_no_separator():
             ],
         }
     ]
-    assert commands._last_assistant_text(messages) == "part one, part two."
+    assert last_assistant_text(messages) == "part one, part two."
 
 
 def test_toolcall_blocks_contribute_nothing():
@@ -113,7 +110,7 @@ def test_toolcall_blocks_contribute_nothing():
             "content": [{"type": "toolCall", "id": "c1", "name": "read", "arguments": {}}],
         }
     ]
-    assert commands._last_assistant_text(messages) is None
+    assert last_assistant_text(messages) is None
 
 
 def test_unknown_block_type_with_a_text_key_is_still_excluded():
@@ -133,7 +130,7 @@ def test_unknown_block_type_with_a_text_key_is_still_excluded():
             "content": [{"type": "some_future_block_type", "text": "should not appear"}],
         }
     ]
-    assert commands._last_assistant_text(messages) is None
+    assert last_assistant_text(messages) is None
 
 
 def test_a_thinking_only_turn_stops_the_search_instead_of_falling_back():
@@ -157,7 +154,7 @@ def test_a_thinking_only_turn_stops_the_search_instead_of_falling_back():
     ── why this test exists in this shape (docs/RPC-TIER-B.md §6) ────────
     It replaces `test_thinking_blocks_contribute_nothing`, which named the
     mutation `block.get("text", block.get("thinking", ""))` and could not
-    kill it: applied verbatim to `_last_assistant_text`, the whole file
+    kill it: applied verbatim to `last_assistant_text`, the whole file
     stayed green (19 passed), because the sibling `type == "text"`
     whitelist gates every block before that `.get` is ever reached. Two
     independent mechanisms keep thinking content out of the answer — the
@@ -178,7 +175,7 @@ def test_a_thinking_only_turn_stops_the_search_instead_of_falling_back():
             "content": [{"type": "thinking", "thinking": "let me consider this"}],
         },
     ]
-    assert commands._last_assistant_text(messages) is None
+    assert last_assistant_text(messages) is None
 
 
 def test_text_survives_alongside_toolcall_and_thinking_blocks():
@@ -199,7 +196,7 @@ def test_text_survives_alongside_toolcall_and_thinking_blocks():
             ],
         }
     ]
-    assert commands._last_assistant_text(messages) == "the answer is 42"
+    assert last_assistant_text(messages) == "the answer is 42"
 
 
 def test_whitespace_only_text_trims_to_none():
@@ -209,7 +206,7 @@ def test_whitespace_only_text_trims_to_none():
     Mutation this kills: returning `text` (untrimmed / unfiltered) instead
     of `text.strip() or None`."""
     messages = [{"role": "assistant", "content": [{"type": "text", "text": "   \n  "}]}]
-    assert commands._last_assistant_text(messages) is None
+    assert last_assistant_text(messages) is None
 
 
 def test_leading_and_trailing_whitespace_is_stripped_but_interior_kept():
@@ -225,7 +222,7 @@ def test_leading_and_trailing_whitespace_is_stripped_but_interior_kept():
             ],
         }
     ]
-    assert commands._last_assistant_text(messages) == "hello  world"
+    assert last_assistant_text(messages) == "hello  world"
 
 
 def test_returns_the_last_assistant_message_not_the_first():
@@ -239,7 +236,7 @@ def test_returns_the_last_assistant_message_not_the_first():
         {"role": "user", "content": [{"type": "text", "text": "more please"}]},
         {"role": "assistant", "content": [{"type": "text", "text": "second"}]},
     ]
-    assert commands._last_assistant_text(messages) == "second"
+    assert last_assistant_text(messages) == "second"
 
 
 def test_toolresult_messages_between_assistant_turns_are_skipped_over():
@@ -258,7 +255,7 @@ def test_toolresult_messages_between_assistant_turns_are_skipped_over():
         {"role": "toolResult", "content": [{"type": "text", "text": "file contents"}]},
         {"role": "assistant", "content": [{"type": "text", "text": "based on that, X"}]},
     ]
-    assert commands._last_assistant_text(messages) == "based on that, X"
+    assert last_assistant_text(messages) == "based on that, X"
 
 
 def test_aborted_with_empty_content_is_skipped_in_favor_of_the_prior_real_answer():
@@ -275,7 +272,7 @@ def test_aborted_with_empty_content_is_skipped_in_favor_of_the_prior_real_answer
         {"role": "user", "content": [{"type": "text", "text": "try again"}]},
         {"role": "assistant", "content": [], "stop_reason": "aborted"},
     ]
-    assert commands._last_assistant_text(messages) == "the real answer"
+    assert last_assistant_text(messages) == "the real answer"
 
 
 def test_aborted_with_nonempty_content_is_not_skipped():
@@ -293,7 +290,7 @@ def test_aborted_with_nonempty_content_is_not_skipped():
             "stop_reason": "aborted",
         }
     ]
-    assert commands._last_assistant_text(messages) == "partial before abort"
+    assert last_assistant_text(messages) == "partial before abort"
 
 
 def test_all_assistant_messages_aborted_and_empty_returns_none():
@@ -304,12 +301,7 @@ def test_all_assistant_messages_aborted_and_empty_returns_none():
         {"role": "user", "content": [{"type": "text", "text": "hi"}]},
         {"role": "assistant", "content": [], "stop_reason": "aborted"},
     ]
-    assert commands._last_assistant_text(messages) is None
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Layer 2 — the wire verb: registration, schema, dispatch.
-# ─────────────────────────────────────────────────────────────────────────
+    assert last_assistant_text(messages) is None
 
 
 def _mock_session(**overrides: Any) -> MagicMock:
@@ -324,6 +316,7 @@ def _mock_session(**overrides: Any) -> MagicMock:
     session.is_aborted = False
     session.shutdown_requested = False
     session.messages = []
+    session.get_last_assistant_text.side_effect = lambda: last_assistant_text(session.messages)
     session.session_log = MagicMock()
     session.session_log.cursor = "leaf-1"
     session.subscribe.return_value = MagicMock()
@@ -387,12 +380,16 @@ async def test_dispatch_returns_null_text_on_a_fresh_session(handler: RPCHandler
 
 
 async def test_dispatch_returns_the_last_assistant_text(handler: RPCHandler, session: MagicMock):
-    """End-to-end through `_handle_request`: proves the handler actually
-    reads `session.messages` (not a cached/stale copy) and routes through
-    `_last_assistant_text` rather than reimplementing the filter inline.
+    """End-to-end through `_handle_request`: proves the handler reads the
+    session's LIVE answer (not a cached copy) and routes through
+    `AgentSession.get_last_assistant_text` rather than filtering inline.
+
+    The fixture wires that method to `last_assistant_text(session.messages)`,
+    which is what the real session does, so setting `messages` here still
+    drives the result.
 
     Mutation this kills: `_handle_get_last_assistant_text` hand-rolling its
-    own (buggy) block filter instead of calling `_last_assistant_text`."""
+    own (buggy) block filter instead of asking the session."""
     session.messages = [
         {"role": "user", "content": [{"type": "text", "text": "hi"}]},
         {
@@ -406,32 +403,3 @@ async def test_dispatch_returns_the_last_assistant_text(handler: RPCHandler, ses
     await handler._handle_request({"jsonrpc": "2.0", "id": 1, "method": "get_last_assistant_text"})
     (response,) = await _drain(handler)
     assert response["result"] == {"text": "hello!", "method": "get_last_assistant_text"}
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Mutate / red / restore / green log (the record this module's docstring
-# points at; docs/RPC-TIER-B.md §6 "every test must be able to fail").
-# Every mutation below was applied to a COPY of the four src trees, run
-# with PYTHONPATH shadowing the editable installs, and reverted.
-#
-# Phase-5 finding 8 round (all against `commands._last_assistant_text`):
-#   V  `block.get("text", "")` -> `block.get("text", block.get("thinking",
-#      ""))` — the mutation the replaced `test_thinking_blocks_contribute_
-#      nothing` named. STAYED GREEN, 19 passed: the `type == "text"`
-#      whitelist gates it, so it is an equivalent mutant, which is what
-#      made that test vacuous. No test was changed to "fix" this; the
-#      property was re-aimed instead (see
-#      `test_a_thinking_only_turn_stops_the_search_instead_of_falling_back`).
-#   M1 `return text or None` -> `if text: return text` (fall through to
-#      the next-older assistant turn when nothing filtered through). RED,
-#      and red ONLY in `test_a_thinking_only_turn_stops_the_search_
-#      instead_of_falling_back` (1 failed, 18 passed) — that test is the
-#      sole pin for "the walk stops at the last assistant message".
-#   M2 `return text or None` -> `return text` (leak `""` instead of
-#      `None`). RED in 4 tests, including `test_toolcall_blocks_
-#      contribute_nothing` — the mutation that docstring now names.
-#   M3 delete the `if isinstance(block, dict) and block.get("type") ==
-#      "text"` filter clause. RED in exactly one test,
-#      `test_unknown_block_type_with_a_text_key_is_still_excluded`; the
-#      `toolCall` and thinking shapes both stay green under it, because
-#      neither carries a `text` key for an unfiltered join to pick up.

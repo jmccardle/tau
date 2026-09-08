@@ -47,10 +47,8 @@ from tau_llm.providers import (
 from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage, UserMessage
 
-# ──────────────────────────────────────────────────────────────────────────
-# A recording HTTP transport, so "did vendor B's request carry vendor B's
-# base_url and key" is answerable.
-# ──────────────────────────────────────────────────────────────────────────
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
 
 
 def _sse(text: str) -> str:
@@ -165,11 +163,6 @@ def _drive(model: Model, options: dict[str, Any] | None = None) -> AssistantMess
     return asyncio.run(_go())
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# 1. A second vendor, end to end.
-# ──────────────────────────────────────────────────────────────────────────
-
-
 def test_a_second_vendor_is_reachable_end_to_end(acme, monkeypatch):
     """The headline: a model whose provider is NOT "openai" reaches that
     vendor's endpoint with that vendor's credential, and the answer says so."""
@@ -195,7 +188,7 @@ def test_an_assistant_message_can_name_a_vendor_that_is_not_openai():
         provider="acme",
         model="acme-1",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
     )
     assert (message.provider, message.api) == ("acme", "acme-chat")
 
@@ -253,7 +246,7 @@ def test_a_vendor_with_its_own_wire_protocol_gets_its_own_client():
                 provider=model.provider,
                 model=model.id,
                 stop_reason="stop",
-                timestamp=0,
+                timestamp=_TS,
             )
 
             async def _events() -> AsyncIterator[Any]:
@@ -296,19 +289,11 @@ def test_the_provider_instance_knows_which_vendor_it_serves(acme, monkeypatch):
             {},
         )
         await stream.result()
-        # Read from INSIDE the loop: the pool is weakly keyed on it, so after
-        # asyncio.run returns the entry is a race with the collector, not a
-        # fact (test_provider_lifetime.py makes the same point).
         (provider,) = _POOL[asyncio.get_running_loop()].values()
         assert provider.id == "acme"
         assert provider.name == "Acme Inference"
 
     asyncio.run(_go())
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# 2. Fail-Early: unknown dispatch raises, and builds nothing.
-# ──────────────────────────────────────────────────────────────────────────
 
 
 def test_an_api_tau_does_not_implement_raises_instead_of_using_openai():
@@ -398,11 +383,6 @@ def test_a_model_object_missing_provider_or_api_raises():
         _drive(_NoApi(), {"api_key": "k"})  # type: ignore[arg-type]
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# 3. Pooling still keys on everything that varies the construction.
-# ──────────────────────────────────────────────────────────────────────────
-
-
 def test_two_vendors_sharing_an_endpoint_and_key_are_still_two_providers(monkeypatch):
     """The pool key keeps ``provider`` even when nothing else differs: two
     vendor ids are two identities, and a shared instance would report the wrong
@@ -442,11 +422,6 @@ def test_the_same_vendor_twice_still_reuses_one_client(acme, monkeypatch):
     assert len(_RecordingClient.instances) == 1
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# 4. The registries themselves.
-# ──────────────────────────────────────────────────────────────────────────
-
-
 def test_tau_ships_three_apis_and_their_three_vendors():
     """What τ claims out of the box: one entry per wire protocol it implements,
     and the vendor that authored each.
@@ -483,8 +458,6 @@ def test_tau_ships_three_apis_and_their_three_vendors():
     assert spec.base_url == "https://api.anthropic.com"
     assert spec.api_key_env == ("ANTHROPIC_API_KEY",)
 
-    # Registered as "gemini", not "google": that is the `backend` value
-    # ~/.tau/config.json entries have carried since before this client existed.
     spec = get_provider_spec("gemini")
     assert spec is not None
     assert spec.api == "google-generative-ai"

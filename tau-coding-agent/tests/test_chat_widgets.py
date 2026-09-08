@@ -18,8 +18,8 @@ from tau_coding_agent.chat_widgets import (
     format_telemetry,
     format_tokens,
     format_tool_summary,
+    MessageBox,
 )
-from tau_coding_agent.app import MessageBox
 
 _STOCK_TIMINGS = {"predicted_n": 20, "predicted_per_second": 41.2}
 
@@ -141,7 +141,12 @@ async def test_tool_box_pairs_call_and_result():
         await pilot.pause()
         assert box.has_result is True
         assert box.title == "✓ read(path=main.py)"
-        assert box._result_md.display is True
+        assert "file contents here" in box.result_markdown
+
+        # The body is a widget only once someone opens the box.
+        box.collapsed = False
+        await pilot.pause()
+        assert box._result_md is not None and box._result_md.display is True
 
 
 async def test_tool_box_error_marks_title_and_class():

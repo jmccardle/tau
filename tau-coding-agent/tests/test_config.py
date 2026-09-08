@@ -2,7 +2,7 @@
 
 Covers the two defects W0 fixed:
 
-1. Two divergent readers — ``cli.load_config`` validated, ``Parley.load_config``
+1. Two divergent readers — ``cli.load_config`` validated, ``TauApp.load_config``
    did not and wrote a hardcoded default that disagreed with the packaged
    ``tau_default_config.json``.
 2. ``action_edit_system_prompt`` persisted the *runtime* config (CLI overrides
@@ -96,8 +96,6 @@ class TestBootstrap:
         created = bootstrap_config(path)
 
         assert path.exists()
-        # The file a first-run user gets is the file we maintain — not a second,
-        # hardcoded default living in the TUI.
         assert created == json.loads(DEFAULT_CONFIG_TEMPLATE.read_text())
 
     def test_existing_config_is_not_clobbered(self, tmp_path):

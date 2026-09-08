@@ -37,6 +37,9 @@ from tau_llm.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 # ── load the example module (its filename is not a valid identifier) ─────────
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GATEKEEPER_PATH = _REPO_ROOT / "examples" / "22_gatekeeper.py"
@@ -57,7 +60,7 @@ def _tool_call_assistant(call_id: str, name: str, args: dict[str, Any]) -> Assis
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -69,7 +72,7 @@ def _text_assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -185,10 +188,6 @@ def project(tmp_path, monkeypatch):
 
 
 def _session_with_gatekeeper() -> AgentSession:
-    # Load the demo through its PUBLIC register(api) surface (S24): the example's
-    # ``gatekeeper_extension`` calls ``api.on("tool_call", …)`` on a bucket-bound
-    # api, so this exercises the real api.on → ExtensionRunner bridge — the path a
-    # session actually uses — not the low-level runner.register_extension seam.
     session = _make_session()
     gatekeeper.gatekeeper_extension(session._bind_extension_api("examples/22_gatekeeper.py"))
     return session
@@ -232,9 +231,6 @@ async def test_in_scope_write_is_allowed(project) -> None:
     ):
         messages = await session.prompt("write inside the sandbox")
 
-    # Not vetoed: the write tool is not registered here, so the loop reaches
-    # execution and reports the unknown tool — an error whose text is NOT a
-    # gatekeeper denial (the veto let it through to execution).
     text = _tool_result_text(messages, "write")
     assert "outside the allowed scope" not in text
     assert "held-out test set" not in text
@@ -297,8 +293,6 @@ def test_missing_scope_file_denies_all_writes(tmp_path) -> None:
 
 
 def test_write_into_heldout_is_blocked_by_heldout_rule(project) -> None:
-    # A write INTO tests_heldout/ is caught by the held-out rule (checked first),
-    # even though the scope rule would also reject it.
     decision = gatekeeper.gatekeeper_decision(
         tool_name="write",
         tool_input={"path": "tests_heldout/injected.py", "content": "z"},

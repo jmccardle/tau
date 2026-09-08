@@ -30,8 +30,6 @@ class SpikeApp(App[None]):
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="log"):
-            # 2 exchanges, each ~43 rows of content -> far exceeds any window,
-            # forcing the outer scroll to absorb it (and exposing any inner clip).
             for e in range(2):
                 with Collapsible(title=f"Exchange {e}", collapsed=False, id=f"exchange-{e}"):
                     with Collapsible(title="Thinking", collapsed=False, id=f"reasoning-{e}"):
@@ -52,9 +50,6 @@ async def test_only_outer_message_area_scrolls():
         assert log.show_vertical_scrollbar is True, "outer log should scroll"
         assert log.max_scroll_y > 0, "outer log should have scrollable overflow"
 
-        # 2) Natural height propagated through every nested Collapsible — nothing
-        #    clipped. If any inner level had capped its height, the outer virtual
-        #    height would collapse toward the 20-row window.
         assert log.virtual_size.height >= 60, (
             f"content appears clipped: virtual height {log.virtual_size.height}"
         )

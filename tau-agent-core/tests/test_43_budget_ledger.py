@@ -39,6 +39,9 @@ from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 # ── load the example module (its filename is not a valid identifier) ─────────
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MOD_PATH = _REPO_ROOT / "examples" / "43_budget_ledger.py"
@@ -67,7 +70,7 @@ def _tool_call_assistant(call_id: str, usage: Usage) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=usage,
     )
 
@@ -130,11 +133,6 @@ def _make_session() -> AgentSession:
         context_window=128000,
         max_tokens=4096,
     )
-    # No tools registered: each `write` call yields an error tool result, so the
-    # loop keeps taking turns until the guard aborts (or max_turns, which a
-    # working abort must beat). Compaction disabled: the fake reports large
-    # per-completion usage on purpose, which would otherwise trip unrelated
-    # auto-compaction machinery this test isn't exercising.
     return AgentSession(
         session_log=InMemorySessionLog(),
         model=model,
@@ -193,8 +191,6 @@ async def test_token_mode_warns_then_stops_across_turns(tmp_path) -> None:
     assert len(wire_payloads) == 2
     # Turn 0's wire carried no warning yet (it fires after that turn's completion).
     assert "Budget warning" not in _message_text_blob(wire_payloads[0])
-    # Turn 1's wire DOES carry the warning — the durable turn_end append reached
-    # the very next LLM call, unlike a tool_result edit which never rides another wire.
     assert "Budget warning" in _message_text_blob(wire_payloads[1])
     assert "Budget exceeded" not in _message_text_blob(wire_payloads[1])
 
@@ -203,8 +199,6 @@ async def test_token_mode_warns_then_stops_across_turns(tmp_path) -> None:
     assert "Budget warning" in blob
     assert "Budget exceeded" in blob
 
-    # Survives a reload: rebuilt from the persisted entries alone (no in-memory
-    # session state), both nodes are still real customMessage nodes on the path.
     reloaded = _reloaded_transcript(session)
     reloaded_blob = _message_text_blob(reloaded)
     assert "Budget warning" in reloaded_blob
@@ -290,15 +284,13 @@ async def test_ledger_command_after_a_warn_shows_all_time_roll_up(tmp_path) -> N
         messages = context.get("messages", []) if isinstance(context, dict) else []
         wire_payloads.append(list(messages))
         if len(wire_payloads) >= 2:
-            # Stop the run after the warn has been recorded, without the demo's
-            # own hard-stop firing (limit is 1M, one turn is 200k).
             final = AssistantMessage(
                 content=[{"type": "text", "text": "done"}],
                 api="openai-completions",
                 provider="openai",
                 model="gpt-4o",
                 stop_reason="stop",
-                timestamp=0,
+                timestamp=_TS,
                 usage=Usage(),
             )
             return _Stream([DoneEvent(final=final, usage=Usage())])

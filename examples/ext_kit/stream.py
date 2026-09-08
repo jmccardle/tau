@@ -42,9 +42,6 @@ from typing import Any, Callable
 
 TauEvent = dict[str, Any]
 
-#: Default stuck window: this many identical consecutive tool calls → flagged.
-#: Kept equal to ``spawn.DEFAULT_STUCK_LIMIT`` so the live watcher and the
-#: batch enforcer agree on what "stuck" means.
 DEFAULT_STUCK_LIMIT = 3
 
 #: The flags this module can impose on a stream.
@@ -308,8 +305,6 @@ async def monitor_stream(
         stuck_limit=stuck_limit, progress_timeout=progress_timeout, time_fn=time_fn
     )
     if mon.watchdog is not None:
-        # Start the gap clock at "now" so a monitor built earlier than the stream
-        # does not spend part of its first-event budget before the stream opens.
         mon.watchdog.record()
 
     iterator = events.__aiter__()

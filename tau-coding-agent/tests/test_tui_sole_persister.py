@@ -25,6 +25,9 @@ import pytest
 from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, TextContent, Usage
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 def _assistant(text: str) -> AssistantMessage:
     return AssistantMessage(
@@ -33,7 +36,7 @@ def _assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="m",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=3, output_tokens=2, total_tokens=5),
     )
 
@@ -122,9 +125,6 @@ async def test_turn_persists_through_live_session_exactly_once(app, wait_for_wor
         session = app.current_session
         assert session is not None
 
-        # The turn's user + assistant were recorded through the live session ONCE.
-        # (The old code double-persisted; a second writer would show up as an extra
-        # user/assistant entry here.)
         roles = _roles(session.entries())
         assert roles.count("user") == 1
         assert roles.count("assistant") == 1
@@ -148,15 +148,7 @@ async def test_working_list_is_a_view_over_session_context(app, wait_for_workers
         session = app.current_session
         assert session is not None
 
-        # self.messages is rebuilt from the authoritative log at turn-end — it is a
-        # VIEW, byte-identical to session.context, not a separately accumulated list.
         assert app.messages == list(session.context)
-        # And it carries the full turn: system prompt, the user turn, the answer.
-        # The stored system message is the prompt the backend BUILT, so it opens
-        # with the configured base text and then composes the project context and
-        # the tool list onto it. This asserts the base text and the position; what
-        # gets composed around it is test_backend_context_files' subject, not this
-        # test's, and pinning the whole string here would break on any AGENTS.md.
         assert app.messages[0]["role"] == "system"
         assert app.messages[0]["content"].startswith("sys")
         assert any(m.get("role") == "user" for m in app.messages)

@@ -11,6 +11,12 @@ An assistant message from the LLM.
 
 Reference: SUBPHASE-0.0.md, "1. Messages" section.
 
+``timestamp`` is epoch milliseconds at the moment this message stopped being
+written — the completion's end, or the abort for a partial. ``None`` means no
+clock applies, which is the case for a synthetic message an extension built
+(docs/MESSAGE-TIMESTAMPS.md §2). It is never 0: τ did not run in 1970, so a 0
+is legacy data and the session stores map it to ``None`` on load.
+
 ### api
 
 `tau_llm.types.AssistantMessage.api: str`
@@ -75,7 +81,7 @@ List of ToolCall objects found in content blocks.
 
 ### timestamp
 
-`tau_llm.types.AssistantMessage.timestamp: int`
+`tau_llm.types.AssistantMessage.timestamp: int | None`
 
 *No description. This object is marked but undocumented.*
 
@@ -173,6 +179,13 @@ Reference: SUBPHASE-0.0.md, "1. Messages" section.
 Represents a model with its provider and connection details.
 Serializes to OpenAI-compatible dict format.
 
+Two fields carry prompt caching and they answer different questions.
+``prompt_cache`` asks for it, on every wire. ``prompt_cache_dialect`` says
+how an OpenAI-compatible endpoint has to be asked, and stays unset for a wire
+whose caching is native (``anthropic-messages``) or automatic (OpenAI's own),
+so a marker is only ever written into the request body where one is declared
+(docs/PROMPT-CACHING.md §5).
+
 ### api
 
 `tau_llm.types.Model.api: str`
@@ -226,6 +239,18 @@ Serializes to OpenAI-compatible dict format.
 `tau_llm.types.Model.name: str`
 
 *No description. This object is marked but undocumented.*
+
+### prompt_cache
+
+`tau_llm.types.Model.prompt_cache: bool`
+
+Whether to ask this endpoint to cache the prompt prefix.
+
+### prompt_cache_dialect
+
+`tau_llm.types.Model.prompt_cache_dialect: Literal['anthropic'] | None`
+
+How an OpenAI-compatible endpoint must be asked; unset for a native wire.
 
 ### provider
 
@@ -496,11 +521,25 @@ Reference: SUBPHASE-0.0.md, "1. Messages" section.
 
 Usage is immutable (frozen) — once created, its fields cannot be modified.
 
+``cache_reported`` says whether the SERVER accounted for a prompt cache on
+this completion at all, which a 0 in the two counters cannot: llama.cpp
+reports no cache fields, so its 0 means "no cache here" where a gateway's 0
+means "cached nothing". Only the second is a finding
+(docs/PROMPT-CACHING.md §7).
+
 ### cache_read_tokens
 
 `tau_llm.types.Usage.cache_read_tokens: int`
 
 *No description. This object is marked but undocumented.*
+
+### cache_reported
+
+`tau_llm.types.Usage.cache_reported: bool`
+
+Whether the server accounted for a prompt cache on this completion at all.
+
+False makes ``cache_read_tokens`` of 0 silence rather than a miss.
 
 ### cache_write_tokens
 

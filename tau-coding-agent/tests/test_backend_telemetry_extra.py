@@ -25,6 +25,9 @@ from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, TextContent, Usage
 from tau_coding_agent.backends import TauBackend
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 STOCK_TIMINGS = {
     "prompt_n": 12,
     "prompt_ms": 40.5,
@@ -41,7 +44,7 @@ def _assistant(text: str, usage: Usage) -> AssistantMessage:
         provider="openai",
         model="qwen",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=usage,
     )
 
@@ -124,8 +127,6 @@ def test_extra_from_the_completion_reaches_the_usage_dict():
 
 
 def test_extra_is_omitted_when_the_provider_reported_nothing():
-    # A stock/non-llama server: Usage.extra defaults to {}. The emit boundary must
-    # NOT carry an empty `extra: {}` — the key is absent (Fail-Early).
     usage = Usage(input_tokens=12, output_tokens=20, total_tokens=32)
     usage_out = _run_usage(usage)
     assert "extra" not in usage_out

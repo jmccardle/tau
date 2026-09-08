@@ -41,6 +41,9 @@ from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_coding_agent.session_store import Session
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 # ── load the example module (its filename is not a valid identifier) ─────────
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SURGEON_PATH = _REPO_ROOT / "examples" / "23_context_surgeon.py"
@@ -73,7 +76,7 @@ def _tool_call_assistant(call_id: str, name: str, args: dict[str, Any]) -> Assis
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -85,7 +88,7 @@ def _text_assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -148,7 +151,7 @@ def _summary_response(text: str):
             provider="openai",
             model="gpt-4o",
             stop_reason="stop",  # type: ignore[arg-type]
-            timestamp=0,
+            timestamp=_TS,
         )
 
     return _impl
@@ -189,8 +192,6 @@ async def test_compact_now_defers_and_applies_at_end_of_prompt(monkeypatch) -> N
         session_log=InMemorySessionLog(),
         model=_model(),
         extensions=[surgeon.context_surgeon_extension],
-        # keep_recent_tokens=1 makes the deferred compaction cut almost everything
-        # so it definitely appends; the large window keeps auto-compaction dormant.
         compaction_settings=CompactionSettings(enabled=True, keep_recent_tokens=1),
     )
     log = session.session_log
@@ -457,10 +458,6 @@ async def test_gatekeeper_veto_composes_with_surgeon_tools(tmp_path, monkeypatch
         compaction_settings=CompactionSettings(enabled=False),
     )
 
-    # Wire the demo-22 veto through the PUBLIC api.on surface (S24): a small
-    # extension factory calls ``api.on("tool_call", …)`` on a bucket-bound api, so
-    # the veto reaches the runner via the real api.on → ExtensionRunner bridge —
-    # the same path a session uses to load an extension.
     def _veto_extension(api: object) -> None:
         api.on("tool_call", surgeon.context_surgeon_gatekeeper)  # type: ignore[attr-defined]
 

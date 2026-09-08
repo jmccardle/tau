@@ -30,6 +30,40 @@ class TestGrammarDialect:
             build_model_from_config({"model": "m", "grammar": "llguidence"})
 
 
+class TestPromptCache:
+    """Two keys, two questions: whether to cache, and how this wire is asked."""
+
+    def test_absent_asks_for_caching_and_declares_no_dialect(self):
+        model = build_model_from_config({"model": "m"})
+        assert model.prompt_cache is True
+        assert model.prompt_cache_dialect is None
+
+    def test_the_dialect_is_carried(self):
+        model = build_model_from_config({"model": "m", "prompt_cache_dialect": "anthropic"})
+        assert model.prompt_cache_dialect == "anthropic"
+
+    def test_caching_is_turned_off_by_the_boolean(self):
+        assert build_model_from_config({"model": "m", "prompt_cache": False}).prompt_cache is False
+
+    @pytest.mark.parametrize("value", ["anthropic", "off", "true"])
+    def test_the_old_one_key_spelling_names_its_replacement(self, value):
+        """A config written against the first design must not degrade quietly:
+        ``"off"`` would coerce to False and ``"anthropic"`` to a truthy nothing,
+        and either reads as working while the dialect goes unsent."""
+        with pytest.raises(ValueError, match="prompt_cache_dialect"):
+            build_model_from_config({"model": "m", "prompt_cache": value})
+
+    def test_a_non_boolean_raises(self):
+        with pytest.raises(ValueError, match="must be a boolean"):
+            build_model_from_config({"model": "m", "prompt_cache": 1})
+
+    def test_an_unknown_dialect_raises(self):
+        """A typo must not degrade to 'no caching' — that reads as working while
+        billing full input on every request."""
+        with pytest.raises(ValueError, match="must be 'anthropic'"):
+            build_model_from_config({"model": "m", "prompt_cache_dialect": "ephemeral"})
+
+
 class TestExtraBody:
     def test_absent_is_empty(self):
         assert build_model_from_config({"model": "m"}).extra_body == {}

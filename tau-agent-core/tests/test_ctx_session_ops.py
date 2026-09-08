@@ -20,6 +20,9 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 def _model() -> Model:
     return Model(
@@ -45,7 +48,7 @@ def _summary_response(text: str = "SUMMARY"):
             provider="openai",
             model="test-model",
             stop_reason="stop",  # type: ignore[arg-type]
-            timestamp=0,
+            timestamp=_TS,
         )
 
     return _impl
@@ -80,9 +83,6 @@ class TestZeroLlmOps:
         # … and a COPY: mutating it must not touch the log.
         entries.append({"type": "message"})
         assert len(ctx.entries()) == len(session.session_log.entries())
-        # Construction wrote its own non-authoritative `agent_spec` provenance
-        # record first (W2, NODE-ADDRESSABLE-AGENTS.md); then four message
-        # entries: user+assistant per prompt.
         assert [e["type"] for e in ctx.entries()] == ["customEntry"] + ["message"] * 4
 
     async def test_navigate_moves_cursor_and_reshrinks_context(self):
@@ -90,8 +90,6 @@ class TestZeroLlmOps:
         ctx = _ctx(session)
         entries = session.session_log.entries()
         assert len(session.messages) == 4
-        # entries[0] is construction's own `agent_spec` provenance record (W2);
-        # the first real turn starts at index 1.
         target = entries[2]["id"]  # the first assistant reply
 
         rendered = await ctx.navigate(target)
@@ -185,14 +183,10 @@ class TestCompact:
         result = await _ctx(session).compact()
 
         assert result is not None
-        # The summarizer stub returns "COMPACTED"; a split-turn compaction may
-        # concatenate the history + turn-prefix summaries, so assert containment.
         assert "COMPACTED" in result.summary
         entries = log.entries()
         assert len(entries) == before + 1
         assert entries[-1]["type"] == "compaction"
-        # Re-rendered context carries the compaction summary and is shorter than
-        # the six raw messages.
         rendered = session.messages
         assert len(rendered) < 6
         assert any(

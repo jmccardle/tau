@@ -1,7 +1,7 @@
 """τ configuration: the single reader/writer for ``~/.tau/config.json``.
 
 Before this module there were **two** divergent readers — ``cli.load_config``
-(validating) and ``Parley.load_config`` (non-validating, and it wrote a *third*,
+(validating) and ``TauApp.load_config`` (non-validating, and it wrote a *third*,
 hardcoded default that disagreed with the packaged ``tau_default_config.json``
 template) — plus two definitions of ``TAU_DIR``. Any new config key had to be
 taught to both, and ``action_edit_system_prompt`` persisted the *runtime* config
@@ -26,9 +26,6 @@ TAU_DIR = Path.home() / ".tau"
 
 CONFIG_PATH = TAU_DIR / "config.json"
 
-# The packaged first-run template. Previously shipped but referenced by nothing,
-# while the TUI wrote its own divergent default — so the file users actually got
-# was not the file we maintained.
 DEFAULT_CONFIG_TEMPLATE = Path(__file__).parent / "tau_default_config.json"
 
 
@@ -69,12 +66,6 @@ def save_config(config: dict[str, Any], path: Path | None = None) -> None:
     config_path = path or CONFIG_PATH
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Atomic: write a sibling temp file, fsync, then os.replace (atomic on POSIX and
-    # Windows). A bare write_text truncates the target first, so a crash or ^C between
-    # truncate and flush leaves a HALF-WRITTEN config.json — which load_config then
-    # rejects as malformed, and τ refuses to start at all. Losing the config to a
-    # mistimed Ctrl-C while editing the system prompt is not an acceptable failure.
-    # The temp file is a sibling so os.replace never crosses a filesystem boundary.
     tmp = config_path.with_name(f".{config_path.name}.tmp{os.getpid()}")
     try:
         with tmp.open("w") as fh:

@@ -28,14 +28,9 @@ from textual.app import App
 from textual.widgets import Static, Tree
 
 from tau_agent_core.conversation_tree import ConversationTree
-from tau_coding_agent.app import (
-    BranchModeModal,
-    ChatDisplay,
-    Parley,
-    SessionTreeModal,
-    TreeIntent,
-)
+from tau_coding_agent.app import TauApp
 from tau_coding_agent.backends import TauBackend
+from tau_coding_agent import transcript, tree_browser
 
 
 def _backend() -> TauBackend:
@@ -92,7 +87,7 @@ async def _goto(harness, pilot, entry_id):
     return tree
 
 
-def _script(app: Parley, values: list[Any]) -> list[Any]:
+def _script(app: TauApp, values: list[Any]) -> list[Any]:
     """Answer the flow's modals from a script; return the screens it pushed."""
     pushed: list[Any] = []
     queue = list(values)
@@ -105,7 +100,7 @@ def _script(app: Parley, values: list[Any]) -> list[Any]:
     return pushed
 
 
-def _notifications(app: Parley) -> list[tuple[str, str]]:
+def _notifications(app: TauApp) -> list[tuple[str, str]]:
     seen: list[tuple[str, str]] = []
     original = app.notify
 
@@ -142,7 +137,7 @@ def _linear_log():
     return log, ids
 
 
-async def _seeded(app: Parley) -> tuple[Any, list[str]]:
+async def _seeded(app: TauApp) -> tuple[Any, list[str]]:
     """A fresh chat with three user/assistant pairs; returns the session + ids."""
     await app.action_new_chat()
     session = app.current_session
@@ -162,7 +157,7 @@ async def _seeded(app: Parley) -> tuple[Any, list[str]]:
 
 async def test_ctrl_b_answers_with_every_marked_id_in_row_order():
     log, ids = _linear_log()
-    modal = SessionTreeModal(ConversationTree(log.entries(), log.cursor))
+    modal = tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor))
     harness = _ModalHarness(modal)
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -172,12 +167,12 @@ async def test_ctrl_b_answers_with_every_marked_id_in_row_order():
             modal.action_toggle_mark()
         await pilot.press("ctrl+b")
         await pilot.pause()
-    assert harness.result == TreeIntent("branch", (ids[0], ids[3]))
+    assert harness.result == tree_browser.TreeIntent("branch", (ids[0], ids[3]))
 
 
 async def test_ctrl_b_with_nothing_marked_says_so_and_stays_open():
     log, _ids = _linear_log()
-    modal = SessionTreeModal(ConversationTree(log.entries(), log.cursor))
+    modal = tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor))
     harness = _ModalHarness(modal)
     said: list[str] = []
     async with harness.run_test() as pilot:
@@ -209,7 +204,7 @@ async def test_marking_an_assistant_marks_its_tool_result_too():
         {"role": "toolResult", "tool_call_id": "c1", "content": [{"type": "text", "text": "ok"}]}
     )
 
-    modal = SessionTreeModal(ConversationTree(log.entries(), log.cursor))
+    modal = tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor))
     harness = _ModalHarness(modal)
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -217,8 +212,6 @@ async def test_marking_an_assistant_marks_its_tool_result_too():
         await _goto(harness, pilot, call)
         modal.action_toggle_mark()
         assert modal._marked == {call, result}
-        # …and unmarking either end releases the whole group, or the reader would
-        # have to unmark twice to undo one keystroke.
         modal.action_toggle_mark()
         assert modal._marked == set()
 
@@ -232,7 +225,7 @@ async def test_c_paints_the_copied_subtree_and_v_offers_to_paste_it():
     a1 = log.append_message({"role": "assistant", "content": "a1"})
     u2 = log.append_message({"role": "user", "content": "u2"})
 
-    modal = SessionTreeModal(ConversationTree(log.entries(), log.cursor))
+    modal = tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor))
     harness = _ModalHarness(modal)
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -259,7 +252,7 @@ async def test_v_answers_with_the_copied_node_and_the_target():
     u1 = log.append_message({"role": "user", "content": "u1"})
     a1 = log.append_message({"role": "assistant", "content": "a1"})
 
-    modal = SessionTreeModal(ConversationTree(log.entries(), log.cursor))
+    modal = tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor))
     harness = _ModalHarness(modal)
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -269,12 +262,12 @@ async def test_v_answers_with_the_copied_node_and_the_target():
         await _goto(harness, pilot, u1)
         await pilot.press("v")
         await pilot.pause()
-    assert harness.result == TreeIntent("paste", (a1, u1))
+    assert harness.result == tree_browser.TreeIntent("paste", (a1, u1))
 
 
 async def test_v_with_nothing_copied_says_what_c_is_for():
     log, ids = _linear_log()
-    modal = SessionTreeModal(ConversationTree(log.entries(), log.cursor))
+    modal = tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor))
     harness = _ModalHarness(modal)
     said: list[str] = []
     async with harness.run_test() as pilot:
@@ -293,7 +286,7 @@ async def test_a_structural_row_cannot_be_copied():
     log.append_elide(ids[2], covered_entries=1, covered_tokens=4, agent_spec_id=None)
     elide_id = next(e["id"] for e in log.entries() if e["type"] == "elide")
 
-    modal = SessionTreeModal(ConversationTree(log.entries(), log.cursor))
+    modal = tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor))
     harness = _ModalHarness(modal)
     said: list[str] = []
     async with harness.run_test() as pilot:
@@ -311,7 +304,7 @@ async def test_the_clipboard_can_be_handed_back_when_the_browser_re_opens():
     """How one copy reaches two destinations: the CALLER carries the clipboard
     across the re-open, because the modal owns nothing durable (§11.1)."""
     log, ids = _linear_log()
-    modal = SessionTreeModal(ConversationTree(log.entries(), log.cursor), copied=ids[1])
+    modal = tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor), copied=ids[1])
     harness = _ModalHarness(modal)
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -324,7 +317,7 @@ async def test_a_clipboard_naming_a_vanished_entry_is_dropped():
     to, so a stale clipboard paints nothing rather than raising on the first
     repaint."""
     log, _ids = _linear_log()
-    modal = SessionTreeModal(ConversationTree(log.entries(), log.cursor), copied="gone")
+    modal = tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor), copied="gone")
     harness = _ModalHarness(modal)
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -371,8 +364,6 @@ def test_commit_branch_mints_nothing_for_a_contiguous_selection():
 
     assert _texts(messages) == ["SYS", "m2", "m3", "m4"]
     assert [e for e in log.entries() if e.get("copiedFrom")] == []
-    # The tip is the elide, appended straight onto the selection's last message —
-    # no navigate, because the attach point was already the cursor.
     tip = log.entries()[-1]
     assert tip["type"] == "elide" and tip["parentId"] == ids[4]
     assert log.cursor == tip["id"]
@@ -439,7 +430,7 @@ def test_paste_subtree_refuses_to_paste_into_itself():
     assert log.entries() == before
 
 
-# --- the flows (Parley.action_browse_tree) ----------------------------------
+# --- the flows (TauApp.action_browse_tree) ----------------------------------
 
 
 async def test_the_branch_flow_asks_for_a_mode_then_re_renders(app, wait_for_workers_settled):
@@ -450,16 +441,16 @@ async def test_the_branch_flow_asks_for_a_mode_then_re_renders(app, wait_for_wor
 
         pushed = _script(
             app,
-            [TreeIntent("branch", (ids[0], ids[4], ids[5])), "only"],
+            [tree_browser.TreeIntent("branch", (ids[0], ids[4], ids[5])), "only"],
         )
         app.action_browse_tree()
         await wait_for_workers_settled(app)
         await pilot.pause()
 
-        assert [type(screen) for screen in pushed] == [SessionTreeModal, BranchModeModal]
+        assert [type(screen) for screen in pushed] == [tree_browser.SessionTreeModal, tree_browser.BranchModeModal]
         assert _texts(app.messages)[-3:] == ["u1", "u3", "a3"]
         assert app.messages == ConversationTree(session.entries(), session.cursor).context_for()
-        assert app.query_one(ChatDisplay) is not None
+        assert app.query_one(transcript.ChatDisplay) is not None
         assert any("Branched from 3 marked messages" in m for m, _ in notes)
 
 
@@ -469,7 +460,7 @@ async def test_cancelling_the_mode_chooser_writes_nothing(app, wait_for_workers_
         session, ids = await _seeded(app)
         before = [dict(e) for e in session.entries()]
 
-        _script(app, [TreeIntent("branch", (ids[0], ids[4])), None])
+        _script(app, [tree_browser.TreeIntent("branch", (ids[0], ids[4])), None])
         app.action_browse_tree()
         await wait_for_workers_settled(app)
         await pilot.pause()
@@ -487,18 +478,15 @@ async def test_the_paste_flow_re_opens_the_browser_on_the_grown_tree(app, wait_f
         notes = _notifications(app)
         context_before = list(app.messages)
 
-        # u3 (ids[4]) and its answer, copied up under u1 — a target OUTSIDE the
-        # copied subtree, which is the only legal direction (a paste into its own
-        # subtree would put the copy and the original on one path).
         pushed = _script(
             app,
-            [TreeIntent("paste", (ids[4], ids[0])), None],  # paste, then cancel the re-open
+            [tree_browser.TreeIntent("paste", (ids[4], ids[0])), None],  # paste, then cancel the re-open
         )
         app.action_browse_tree()
         await wait_for_workers_settled(app)
         await pilot.pause()
 
-        assert [type(screen) for screen in pushed] == [SessionTreeModal, SessionTreeModal]
+        assert [type(screen) for screen in pushed] == [tree_browser.SessionTreeModal, tree_browser.SessionTreeModal]
         assert pushed[1]._copied == ids[4]
         assert [e.get("copiedFrom") for e in session.entries() if e.get("copiedFrom")] == [
             ids[4],

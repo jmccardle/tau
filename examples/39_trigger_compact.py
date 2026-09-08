@@ -48,9 +48,6 @@ COMPACT_THRESHOLD_TOKENS = 100_000
 
 def trigger_compact_extension(api: Any) -> None:
     """Extension entry point: a ``turn_end`` watcher + a ``/trigger-compact`` command."""
-    # Armed/tripped edge state (in-memory; resets on reload — acceptable, mirrors
-    # pi's closure-scoped ``previousTokens``: at worst a reload re-arms the watch,
-    # it never double-fires within one live process).
     state: dict[str, int | None] = {"previous_tokens": None}
 
     async def on_turn_end(event: dict[str, Any], ctx: Any) -> None:
@@ -102,6 +99,4 @@ def trigger_compact_extension(api: Any) -> None:
     )
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/39_trigger_compact.py`` → ``getattr(module, "register")``).
 register = trigger_compact_extension

@@ -39,14 +39,18 @@ audience marker on the line directly after the heading:
 <!-- agent: yes -->
 ```
 
-The site build (MkDocs Material, `../ffwfrobotics.github.io`) strips the marker
-lines and publishes everything. The shipped agent copy keeps only the sections
-marked `yes`. One source; the human render is exhaustive, and the agent render
-drops the prose, diagrams and rationale that cost context without changing what
-an agent does.
+The human render is exhaustive; the agent render keeps only the sections marked
+`yes`, dropping the prose, diagrams and rationale that cost context without
+changing what an agent does. One source, two filters.
 
 The generated reference emits the marker on every top-level section, so a single
 filter serves both halves of the library.
+
+`scripts/export_site_reference.py` (§9) does **not** strip the markers on its way
+to the site. They are HTML comments, so they render as nothing, and passing them
+through is what keeps an exported page's body byte-identical to its
+`docs/library/reference/` counterpart — which is a property a test can hold, and
+"looks the same once rendered" is not.
 
 ## 3. The marker
 
@@ -177,23 +181,28 @@ A fifth case fails too: **finding nothing at all**. An empty marked set means
 the marker was removed, the packages moved, or griffe stopped resolving the
 decorator — and a naive percentage would report 100% for all three.
 
-## 7. Status, measured 2026-08-26
+## 7. Status, measured 2026-09-04
 
-143 markers across 29 files cover the headless surface: `tau_llm` and
-`tau_agent_core`. `tau_coding_agent` is not marked — every topic in `TOPICS` is
-a headless one, and an extension author reaches the TUI through `ExtensionUI`
-rather than directly. Marking it means adding TUI topics first.
+220 markers cover the headless surface: `tau_llm` and `tau_agent_core`.
+`tau_coding_agent` is not marked — every topic in `TOPICS` is a headless one,
+and an extension author reaches the TUI through `ExtensionUI` rather than
+directly. Marking it means adding TUI topics first.
 
-Those 143 markers pull in 758 objects once class members are counted, and
-produce 9,655 lines of reference across 13 pages.
+Those markers pull in 924 objects once class members are counted.
 
-| | |
-|---|---|
-| Complete | **316 / 758 (41.7%)** |
-| No docstring | 245 — all class members; 228 are dataclass or pydantic fields |
-| Undocumented parameter | 177 |
-| Missing `Returns:` | 140 |
-| Docstring/signature drift | **0** |
+| | 2026-08-26 | 2026-09-04 |
+|---|---:|---:|
+| Complete | 316 / 758 (41.7%) | **481 / 924 (52.1%)** |
+| No docstring | 245 | 246 |
+| Undocumented parameter | 177 | 165 |
+| Missing `Returns:` | 140 | 124 |
+| Docstring/signature drift | **0** | **0** |
+
+The marked surface grew by 166 objects over the same period, so the percentage
+moved on completions outpacing additions rather than on a static denominator.
+`CLAUDE.md` quoted the 41.7% figure until 2026-09-04 and is now current; if the
+two disagree again, the gate's own output is the authority — run
+`venv/bin/python scripts/check_docs_coverage.py`.
 
 Drift started at 12 and is now zero. Those twelve were four real defects:
 `ApiFactory` documented `__call__`'s parameters on the class docstring, where
@@ -203,23 +212,28 @@ an `Exception: description` pair. All four are fixed.
 
 ### What remains
 
-1. **Write the missing prose.** 562 faults, concentrated in `session_log.py`
-   (72), `extension_types.py` (65), `types.py` (62), `agent_session.py` (46) and
-   `compaction.py` (46). Most of the 228 field faults are one line each. This is
-   the bulk of the work and has not been scoped.
+1. **Write the missing prose.** 535 faults. This is the bulk of the work and is
+   deliberately not scoped as a sweep: `CLAUDE.md` §"Code style" makes it
+   opportunistic instead — editing a function means leaving its docstring
+   shorter and more useful in the same commit, permission standing. Filling a
+   missing docstring is the fastest way to raise this number, and shortening a
+   long one cannot lower it, because the gate counts complete and never counts
+   length.
 2. **Wire the gate into `.githooks/pre-commit`.** Deliberately not done: a hook
    that fails on every commit is a hook people switch off. It goes in when the
    tree is clean. The debt is stated here rather than hidden behind a threshold.
 3. **Ship the pages inside the wheel.** `tau-coding-agent/pyproject.toml`
-   currently declares only `tau_default_config.json` and `parley.tcss` as
+   currently declares only `tau_default_config.json` and `tau.tcss` as
    package data. Shipping needs the reference copied into the package, an
    `importlib.resources` lookup with a `TAU_DOCS_DIR` override, and a
    `{{tau_docs}}` system-prompt placeholder holding the ~12-line index.
 4. **Write the prose pages.** The reference answers "what does this take". The
    twelve hand-written pages that answer "how do I add one" are the other half
    of the library and are not started.
-5. **Strip the markers in the site build.** A hook beside `hooks/docstate.py` in
-   `../ffwfrobotics.github.io`.
+5. ~~**Strip the markers in the site build.**~~ Declined 2026-09-05, when §9's
+   exporter was written. The markers are HTML comments and render as nothing, so
+   the hook would buy no visible difference and would cost the body-identity
+   property §9 rests on.
 
 ## 8. Files
 
@@ -229,5 +243,55 @@ an `Exception: description` pair. All four are fixed.
 | `tau-agent-core/src/tau_agent_core/docs_build.py` | Collection, coverage and rendering. Pure. Needs griffe. |
 | `scripts/build_agent_docs.py` | Writes `docs/library/reference/`. |
 | `scripts/check_docs_coverage.py` | The gate. |
+| `scripts/export_site_reference.py` | Writes the same pages into the MkDocs site. §9. |
 | `tau-agent-core/tests/test_agent_docs.py` | 17 contract tests; see its module docstring. |
+| `tau-agent-core/tests/test_site_export.py` | 8 contract tests on the export; see its module docstring. |
 | `docs/library/reference/*.md` | Generated. Checked in. Do not edit. |
+
+## 9. The site export
+
+`../ffwfrobotics.github.io` publishes τ's documentation to the web. Five prose
+pages under `docs/tau/reference/` say how the packages fit together and which
+distinctions are easy to get backwards; they are hand-written and stay that way.
+The generated reference goes beside them, not over them:
+
+```bash
+venv/bin/python scripts/export_site_reference.py --site ../ffwfrobotics.github.io
+venv/bin/python scripts/export_site_reference.py --site ../ffwfrobotics.github.io --check
+```
+
+Fourteen pages land in `docs/tau/reference/api/`, one per topic plus an index.
+
+**The body is byte-identical to `docs/library/reference/`.** The export renders
+through `render_topic` and then replaces only the title line, the banner and the
+frontmatter, so there is one renderer and two heads rather than two renderers
+that can disagree. `test_site_export.py` asserts it line by line.
+
+**The site path has no default.** This repository does not know where anyone
+else keeps a checkout, and a guessed relative path that happens to exist is how
+a script writes into the wrong tree. A `--site` that is not the documentation
+site — no `mkdocs.yml`, no `docs/tau/reference/index.md` — is refused before
+anything is written.
+
+**The nav is maintained, not hand-copied.** `mkdocs.yml` carries a marker comment
+pair inside the Tau `Reference:` node and the export replaces the lines between
+them, at the markers' own indentation. Everything else in that file survives byte
+for byte, which is why this is line surgery and not a YAML round-trip: the file
+has comments, and a round-trip loses them. A `mkdocs.yml` with no markers is an
+error naming the two lines to add — never a set of pages that appear in no menu.
+
+**Nothing is deleted that this script did not write.** The stale sweep only
+removes files under `api/` carrying the export's banner; anything else there
+stops the run.
+
+**`--check` writes nothing** and exits 1 listing every page that is missing,
+stale or orphaned, plus the nav if it moved. No test in this repository can hold
+the site current, because the site is another repository — `--check` is what does
+it, run in the checkout that has both.
+
+Two things this export does not do. It does not publish a version-pinned copy:
+the pages describe the working tree, and the τ version appears only on the index
+so that a version bump does not re-write all fourteen files. And it does not link
+an object to its source: the public repository squashes history per release
+(`docs/RELEASING.md`), so a line number is only addressable against a release
+tag, which the export does not know it is standing on.

@@ -93,11 +93,6 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-# ── import the kit (it lives alongside the demos in examples/) ───────────────
-# The file-path extension loader (``tau -e examples/20_delegate.py``) does not add
-# the extension's own directory to ``sys.path``, and the test harness loads this
-# file by path too — so bootstrap ``examples/`` onto the path before importing the
-# kit, whether run directly, imported, or loaded via ``-e`` (D-E6-3).
 _EXAMPLES_DIR = os.path.dirname(os.path.abspath(__file__))
 if _EXAMPLES_DIR not in sys.path:
     sys.path.insert(0, _EXAMPLES_DIR)
@@ -109,12 +104,7 @@ MAX_PARALLEL_TASKS = 8
 MAX_CONCURRENCY = 4
 PER_TASK_OUTPUT_CAP = 50 * 1024  # 50 KB per task in the rolled-up summary
 
-# ── HARD CODE-GUARD: write-tool classification (a small constant list) ───────
-# Any built-in tool that can mutate the filesystem. Conservative: ``bash`` is a
-# write tool because it can do anything. Parallel children are forbidden these.
 WRITE_TOOLS: frozenset[str] = frozenset({"write", "edit", "bash"})
-# The read-only allowlist a parallel child gets when it names no tools of its
-# own (the complement of WRITE_TOOLS over τ's built-ins: read/ls/grep/find).
 PARALLEL_READONLY_TOOLS: tuple[str, ...] = ("read", "ls", "grep", "find")
 
 
@@ -288,8 +278,6 @@ async def _delegate_execute(
     config = _load_config()
     default_cwd = getattr(ctx, "cwd", ".") or "."
 
-    # max_usd is enforceable only when the child's model has a price — Fail-Early:
-    # refuse the budget rather than silently not enforcing it.
     def _cost_for(model: str | None) -> dict[str, Any] | None:
         cost = _resolve_cost(config, model)
         if limits.max_usd is not None and cost is None:
@@ -326,8 +314,6 @@ async def _delegate_execute(
         for spec in specs:
             spec["tools"] = _guard_parallel_tools(spec["tools"])
 
-        # Bounded fan-out via the kit's WorkerPool (pi mapWithConcurrencyLimit);
-        # results come back in input order.
         pool = spawn.WorkerPool(MAX_CONCURRENCY)
 
         async def _run(spec: dict[str, Any], _index: int) -> spawn.ChildResult:
@@ -464,9 +450,4 @@ def delegate_extension(api: Any) -> None:
     api.register_tool(DELEGATE_TOOL)
 
 
-#: The module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/20_delegate.py`` → ``getattr(module, "register")``). It IS
-#: :func:`delegate_extension`; the alias makes the demo loadable through the public
-#: ``-e`` surface used by the live procedures (EXTENSIONS-LIVE-PROCEDURES.md;
-#: EXTENSIONS-E5-WIRING.md §6 / S37).
 register = delegate_extension

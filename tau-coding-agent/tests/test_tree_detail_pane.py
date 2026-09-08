@@ -21,20 +21,21 @@ import pytest
 from textual.widgets import Tree
 
 from tau_agent_core.conversation_tree import ConversationTree
-from tau_coding_agent.app import MessageBox, SessionTreeModal, TreeDetailPane
+from tau_coding_agent.tree_browser import SessionTreeModal
 from tau_coding_agent.testing.render import render_text
 from tau_coding_agent.testing.scenes import get_scene, open_scene
+from tau_coding_agent import chat_widgets, transcript, tree_browser
 
 #: Comfortably past ``SessionTreeModal.DETAIL_MIN_HEIGHT``, so the pane is drawn.
 WIDE = (120, 40)
 
 
-def _pane(app) -> TreeDetailPane:
-    return app.screen.query_one(TreeDetailPane)
+def _pane(app) -> transcript.TreeDetailPane:
+    return app.screen.query_one(transcript.TreeDetailPane)
 
 
-def _boxes(app) -> list[MessageBox]:
-    return list(_pane(app).query(MessageBox))
+def _boxes(app) -> list[chat_widgets.MessageBox]:
+    return list(_pane(app).query(chat_widgets.MessageBox))
 
 
 def _titles(app) -> list[str]:
@@ -65,11 +66,6 @@ def _walk(node):
         yield from _walk(child)
 
 
-# ---------------------------------------------------------------------------
-# The three-node window
-# ---------------------------------------------------------------------------
-
-
 async def test_the_pane_draws_the_selected_node_between_its_neighbours() -> None:
     """The scene opens on the leaf ``n4``, whose parent is the ``grep`` result."""
     async with open_scene(get_scene("tree-modal"), WIDE) as (app, _pilot):
@@ -79,8 +75,6 @@ async def test_the_pane_draws_the_selected_node_between_its_neighbours() -> None
 async def test_an_interior_node_is_drawn_with_a_neighbour_on_each_side() -> None:
     async with open_scene(get_scene("tree-modal"), WIDE) as (app, pilot):
         await _move_to(app, pilot, "n2")
-        # n1 above; n2 selected; n3 below, which is one assistant message whose
-        # two tool calls render as boxes of their own — all of it context.
         assert _titles(app) == [
             "System (dim)",
             "User",
@@ -121,11 +115,6 @@ async def test_a_repeat_highlight_does_not_rebuild_the_pane() -> None:
         assert _boxes(app) == drawn, "the same node was rebuilt into new widgets"
 
 
-# ---------------------------------------------------------------------------
-# What the ⋯ rows say
-# ---------------------------------------------------------------------------
-
-
 def _folds(app) -> list[str]:
     return [str(row.content) for row in _pane(app).query(".detail-fold")]
 
@@ -158,11 +147,6 @@ async def test_a_leaf_with_nothing_below_it_gets_no_trailer() -> None:
         assert _folds(app) == ["⋯ 1 earlier"]
 
 
-# ---------------------------------------------------------------------------
-# What a node's body is
-# ---------------------------------------------------------------------------
-
-
 async def test_a_branch_summary_shows_more_than_its_row_did() -> None:
     """The row is ``ConversationTree``'s first-line preview. The pane is the
     point at which the rest of the summary becomes readable."""
@@ -188,11 +172,6 @@ async def test_a_non_message_node_is_titled_by_its_kind() -> None:
     async with open_scene(get_scene("tree-modal"), WIDE) as (app, pilot):
         await _move_to(app, pilot, "n5")
         assert _pane(app).selected_boxes[0].border_title == "Branch summary"
-
-
-# ---------------------------------------------------------------------------
-# Where the selection sits
-# ---------------------------------------------------------------------------
 
 
 async def test_the_previous_message_stays_on_screen_above_the_selection() -> None:
@@ -224,11 +203,6 @@ async def test_a_long_previous_message_is_scrolled_past_but_not_out() -> None:
         assert pane.scroll_offset.y > 0, "nothing scrolled; this case proves nothing"
         lead = selected.virtual_region.y - pane.scroll_offset.y
         assert lead == pane.LEAD_ROWS
-
-
-# ---------------------------------------------------------------------------
-# The stacked split
-# ---------------------------------------------------------------------------
 
 
 async def test_the_pane_is_stacked_under_the_tree_at_the_full_width() -> None:
@@ -307,11 +281,6 @@ async def test_detail_pane_min_height_is_where_the_floor_is() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Movement
-# ---------------------------------------------------------------------------
-
-
 async def test_the_pane_settles_on_the_last_node_after_rapid_movement() -> None:
     """A held arrow key posts highlights faster than the pane rebuilds. The pane
     must end on the row the cursor ended on, not on one it passed through."""
@@ -373,11 +342,6 @@ async def test_the_help_line_says_how() -> None:
         assert "v paste" in rendered
 
 
-# ---------------------------------------------------------------------------
-# Folding the pane away (PLAN-0.9.4 §4a)
-# ---------------------------------------------------------------------------
-
-
 async def test_folding_the_pane_gives_its_rows_to_the_tree_and_leaves_a_way_back():
     """The pane takes half the body, and until now only a short terminal hid it.
 
@@ -422,7 +386,7 @@ async def test_a_fold_survives_a_resize_that_would_have_shown_the_pane():
         await pilot.pause()
         assert _pane(app).display is False
 
-        await pilot.resize_terminal(100, SessionTreeModal.DETAIL_MIN_HEIGHT - 1)
+        await pilot.resize_terminal(100, tree_browser.SessionTreeModal.DETAIL_MIN_HEIGHT - 1)
         await pilot.pause()
         await pilot.resize_terminal(*WIDE)
         await pilot.pause()
@@ -435,7 +399,7 @@ async def test_the_marker_is_not_drawn_on_a_terminal_too_short_for_the_pane():
     from textual.widgets import Static
 
     async with open_scene(
-        get_scene("tree-modal"), (120, SessionTreeModal.DETAIL_MIN_HEIGHT - 1)
+        get_scene("tree-modal"), (120, tree_browser.SessionTreeModal.DETAIL_MIN_HEIGHT - 1)
     ) as (app, pilot):
         await pilot.pause()
         assert _pane(app).display is False

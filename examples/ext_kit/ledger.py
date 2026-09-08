@@ -52,11 +52,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# ── priced token buckets (pi ``calculateCost`` / backends.compute_cost_usd) ──
-#: Usage buckets a ``cost`` block prices, mapped to their price key. ``input`` and
-#: ``output`` are always populated; ``cache_read`` is populated on a cache hit.
-#: ``cache_write_tokens`` is never populated by today's provider (a real 0), so it
-#: carries no price term — the same omission ``compute_cost_usd`` documents.
 _PRICED_BUCKETS: tuple[tuple[str, str], ...] = (
     ("input_tokens", "input"),
     ("output_tokens", "output"),
@@ -408,15 +403,10 @@ class CostLedger:
 
 # ── the bang-bang ceiling controller ───────────────────────────────────────────
 
-#: Ceiling states, low → high. ``OK`` below the warn line, ``WARN`` at/above warn
-#: but below ``limit``, ``STOPPED`` at/above ``limit`` (terminal, latching).
 CEILING_OK = "ok"
 CEILING_WARN = "warn"
 CEILING_STOPPED = "stopped"
 
-#: Default warn threshold as a fraction of ``limit`` when neither ``warn_at`` nor
-#: ``warn_ratio`` is given. A documented knob (the soft-alarm point), not a
-#: fallback — override with ``warn_ratio=`` or an absolute ``warn_at=``.
 DEFAULT_WARN_RATIO = 0.8
 
 

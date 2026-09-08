@@ -53,9 +53,6 @@ from typing import Any
 from tau_agent_core.compaction_policy import CompactionPolicy
 from tau_llm.docs import agent_facing
 
-#: The value of ``harness`` for a run driven by this package. §5.2 partitions every
-#: latency number by it; a pi-era number and a τ-era number are different
-#: populations and must never be pooled.
 HARNESS = "tau"
 
 

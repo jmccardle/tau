@@ -53,9 +53,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# ``ext_kit`` lives alongside the numbered examples, not inside an installed
-# package — add ``examples/`` to the path the same way the other ext_kit-using
-# demos (e.g. 38_todo, S56) do when run standalone.
 _EXAMPLES_DIR = str(Path(__file__).resolve().parent)
 if _EXAMPLES_DIR not in sys.path:
     sys.path.insert(0, _EXAMPLES_DIR)
@@ -83,10 +80,6 @@ async def _bookmark_command(args: str, ctx: Any, *, store: TreeStore[dict[str, A
         return "Usage: /bookmark <label>"
 
     entries = ctx.entries()
-    # A brand-new session already carries bookkeeping entries (model change,
-    # etc.) before a single word is exchanged (pi parity, see ``40_handoff``'s
-    # identical check) — "nothing to bookmark" means no actual conversation,
-    # not a literally-empty log.
     if not any(e.get("type") in ("message", "customMessage") for e in entries):
         return "Nothing to bookmark yet — start a conversation first."
     cursor = active_cursor(entries)
@@ -157,6 +150,4 @@ def bookmarks_extension(api: Any) -> None:
     )
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/41_bookmarks.py`` → ``getattr(module, "register")``).
 register = bookmarks_extension

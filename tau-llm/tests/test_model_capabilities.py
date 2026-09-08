@@ -60,11 +60,6 @@ class TestExtraBodyOnTheWire:
         payload = _run(_model(), None)
 
         assert "cache_prompt" not in payload
-        # The output cap is τ's own baseline field, not something extra_body
-        # added: every Model declares one and the provider now sends it (see
-        # tests/test_max_tokens.py — it used to be declared and never consulted).
-        # It arrives spelled ``max_completion_tokens`` because this fixture's
-        # base_url is ``api.openai.com``, which rejects the classic key.
         assert set(payload) == {
             "model",
             "messages",

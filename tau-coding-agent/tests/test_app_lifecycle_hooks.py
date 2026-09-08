@@ -20,8 +20,6 @@ from tau_coding_agent.backends import create_backend
 
 
 def _lifecycle_ext(out_path: str) -> str:
-    # Each hook appends "<tag>:<reason>" to ``out_path`` so the test can read the
-    # firing order back after the app has torn down.
     return (
         "def register(api):\n"
         f"    out = {out_path!r}\n"
@@ -37,7 +35,7 @@ def _lifecycle_ext(out_path: str) -> str:
 
 @pytest.fixture
 def app(make_app):
-    """A Parley wired to REAL TauBackends (TauBackend has no network in __init__)."""
+    """A TauApp wired to REAL TauBackends (TauBackend has no network in __init__)."""
     return make_app(create_backend=create_backend)
 
 

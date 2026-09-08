@@ -43,10 +43,24 @@ from typing import Any
 from tau_agent_core.event_projection import MessageDeltaProjector
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.rpc_event_schema import WireEvent
+from tau_agent_core.truncation import dropped_tool_calls
 
 
-def project_event(projector: MessageDeltaProjector, event: AgentEvent) -> list[dict[str, Any]]:
+def project_event(
+    projector: MessageDeltaProjector,
+    event: AgentEvent,
+    *,
+    cache_notice: str | None = None,
+) -> list[dict[str, Any]]:
     """Turn one ``AgentEvent`` into the wire payload(s) it produces.
+
+    ``cache_notice`` rides ``agent_end`` beside ``message_count``, and is the one
+    field here that is not a projection of ``event``: the caller's
+    :class:`~tau_agent_core.prompt_cache.PromptCacheObserver` computes it from
+    the whole turn, which no single event carries. Ignored on every other type.
+
+    ``message_end`` gains ``stop_reason`` and ``dropped_tool_calls``, which ARE
+    projections — of the excluded ``message``, see :func:`_truncation_fields`.
 
     Returns a LIST because ``message_update`` is not 1:1: a single incoming
     event may project into zero deltas (an unchanged block re-sent, or a
@@ -70,13 +84,10 @@ def project_event(projector: MessageDeltaProjector, event: AgentEvent) -> list[d
     if event.type != "message_update":
         extra: dict[str, Any] = {}
         if event.type == "agent_end":
-            # E2: agent_end carries a COUNT, never the message array itself
-            # (that is get_messages's job). event.messages is a list on every
-            # real agent_end (AgentLoop._emit_agent_end always passes one,
-            # possibly empty) — None only for a MagicMock/test double that
-            # never set it, which len()-ing would crash on, so this stays
-            # conditional rather than assuming the production invariant here.
             extra["message_count"] = len(event.messages) if event.messages is not None else None
+            extra["cache_notice"] = cache_notice
+        if event.type == "message_end":
+            extra.update(_truncation_fields(event.message or {}))
         return [_wire_event(event, **extra).model_dump(mode="json")]
 
     if event.message is None:
@@ -85,8 +96,6 @@ def project_event(projector: MessageDeltaProjector, event: AgentEvent) -> list[d
     payloads: list[dict[str, Any]] = []
     for block_delta in projector.project(event.message):
         if block_delta.delta is None:
-            # Non-diffable passthrough (today: toolCall) — deliberately
-            # dropped. See module docstring.
             continue
         payloads.append(
             _wire_event(
@@ -97,6 +106,24 @@ def project_event(projector: MessageDeltaProjector, event: AgentEvent) -> list[d
             ).model_dump(mode="json")
         )
     return payloads
+
+
+def _truncation_fields(message: dict[str, Any]) -> dict[str, Any]:
+    """``stop_reason``/``dropped_tool_calls`` lifted out of an excluded ``message``.
+
+    Reference: docs/TRUNCATED-TOOL-CALLS.md §3. Both are None on the content-only
+    duplicate ``message_end``, which carries neither — the same absence the TUI's
+    ``TurnStream`` reads to skip it.
+
+    ``dropped_tool_calls`` is None rather than 0 when nothing was dropped, because
+    the wire field distinguishes "none lost" from "not reported" and every
+    ``message_end`` would otherwise claim the first.
+    """
+    dropped = dropped_tool_calls(message.get("usage") or {})
+    return {
+        "stop_reason": message.get("stop_reason"),
+        "dropped_tool_calls": dropped or None,
+    }
 
 
 def _wire_event(event: AgentEvent, **extra: Any) -> WireEvent:
@@ -125,21 +152,10 @@ def _wire_event(event: AgentEvent, **extra: Any) -> WireEvent:
         tool_call_id=event.tool_call_id,
         tool_name=event.tool_name,
         is_error=event.is_error,
-        # B3: was silently dropped — neither projected nor declared EXCLUDED —
-        # so an agent_end with is_error=True gave a host no way to learn WHY
-        # (AgentEvent.error's own docstring: "the agent finished" and "the
-        # agent died mid-turn" were the same event on the wire).
         error=event.error,
-        # Same triage as `error` above, one field later: `error` says whether the
-        # loop RAISED, `end_reason` says how it stopped when it did not. Without
-        # it a host cannot tell a truncated run (max_turns, repeat_tool_calls)
-        # from a finished one, which is the silence PLAN-0.9.4 §8 recorded.
         end_reason=event.end_reason,
         blocked=event.blocked,
         blocked_by=event.blocked_by,
-        # E4/G6: copied straight through, never defaulted or fabricated —
-        # events.py:62-77 states the "no submission -> None, never a
-        # fabricated id" rule this wire must not weaken.
         submission_id=event.submission_id,
         source=event.source,
         submitter=event.submitter,

@@ -14,15 +14,15 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 
-from tau_coding_agent.app import ChatDisplay, MessageBox
-from tau_coding_agent.chat_widgets import ExchangeBox
+from tau_coding_agent.chat_widgets import ExchangeBox, MessageBox
+from tau_coding_agent import transcript
 
-CAP = ChatDisplay.RENDER_CAP_TURNS
+CAP = transcript.ChatDisplay.RENDER_CAP_TURNS
 
 
 class _Harness(App):
     def compose(self) -> ComposeResult:
-        yield ChatDisplay()
+        yield transcript.ChatDisplay()
 
 
 def _transcript(turns: int, *, system: bool = False) -> list[dict]:
@@ -36,12 +36,12 @@ def _transcript(turns: int, *, system: bool = False) -> list[dict]:
     return msgs
 
 
-def _users(display: ChatDisplay) -> list[str]:
+def _users(display: transcript.ChatDisplay) -> list[str]:
     """The user prompts currently mounted, top to bottom."""
     return [b.content_text for b in display.query(MessageBox) if b.role == "user"]
 
 
-def _content(display: ChatDisplay) -> list:
+def _content(display: transcript.ChatDisplay) -> list:
     return [c for c in display.children if isinstance(c, (MessageBox, ExchangeBox))]
 
 
@@ -50,23 +50,18 @@ async def loaded():
     """A display showing the tail of a 20-turn transcript."""
     messages = _transcript(20)
     async with _Harness().run_test(size=(80, 24)) as pilot:
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         display.set_transcript_source(lambda: messages)
         await display.reload_messages(messages)
         await pilot.pause()
         yield display, pilot, messages
 
 
-# ---------------------------------------------------------------------------
-# window_end: the forward twin of render_cap_start
-# ---------------------------------------------------------------------------
-
-
 def test_window_end_agrees_with_render_cap_start_at_the_tail():
     """The identity the whole design rests on. Without it, sliding forward to the
     end would leave a phantom ``⋯ 0 later`` row, and a reload and a
     scrolled-back-then-forward window would mount different things."""
-    display = ChatDisplay()
+    display = transcript.ChatDisplay()
     for turns in range(1, 30):
         for system in (False, True):
             messages = _transcript(turns, system=system)
@@ -75,7 +70,7 @@ def test_window_end_agrees_with_render_cap_start_at_the_tail():
 
 
 def test_a_window_holds_the_cap_in_turns_wherever_it_starts():
-    display = ChatDisplay()
+    display = transcript.ChatDisplay()
     messages = _transcript(20)
     for start in display.turn_starts(messages)[:-CAP]:
         end = display.window_end(messages, start)
@@ -86,18 +81,13 @@ def test_a_window_holds_the_cap_in_turns_wherever_it_starts():
 def test_a_leading_system_message_does_not_cost_a_turn():
     """Counting turns from ``start`` rather than from the window's first TURN
     would spend one of the four on a message that renders nothing."""
-    display = ChatDisplay()
+    display = transcript.ChatDisplay()
     messages = _transcript(20, system=True)
     end = display.window_end(messages, 0)
     assert sum(1 for m in messages[0:end] if m.get("role") == "user") == CAP
 
 
-# ---------------------------------------------------------------------------
-# Moving
-# ---------------------------------------------------------------------------
-
-
-def _turn_widgets(display: ChatDisplay) -> int:
+def _turn_widgets(display: transcript.ChatDisplay) -> int:
     """Widgets belonging to mounted TURNS — the number the render cost is
     proportional to. Excludes the ``⋯`` rows, which are chrome and which a move
     can legitimately add one of."""
@@ -113,8 +103,6 @@ async def test_moving_back_loads_older_turns_and_drops_newer_ones(loaded):
     await pilot.pause()
 
     assert _users(display) == ["q15", "q16", "q17", "q18"]
-    # The bound did not move, only the span it names. This is the whole claim of
-    # a sliding window over a growing one: reading history costs nothing.
     assert _turn_widgets(display) == mounted
 
 
@@ -181,18 +169,11 @@ async def test_the_reader_keeps_their_place_across_a_move(loaded):
     assert await display.move_window(-1)
     await pilot.pause()
 
-    # q15 is now loaded ABOVE q16, and the view sits on q16 — the turn that was
-    # at the top before the move — rather than back at the document's start.
     assert _users(display)[0] == "q15"
     assert display.scroll_offset.y > 0
     anchor = display._turn_anchors[32]
     assert anchor.content_text == "q16"
     assert display.scroll_offset.y == anchor.virtual_region.y
-
-
-# ---------------------------------------------------------------------------
-# Scrolling is the gesture
-# ---------------------------------------------------------------------------
 
 
 async def test_arriving_at_the_top_does_not_slide(loaded):
@@ -261,11 +242,6 @@ async def test_one_gesture_moves_one_turn(loaded):
     assert starts.index(display._window_start) == starts.index(before) - 1
 
 
-# ---------------------------------------------------------------------------
-# Live turns
-# ---------------------------------------------------------------------------
-
-
 async def test_a_starting_turn_snaps_the_window_back_to_the_tail(loaded):
     """The live state machine mounts into the END of the display, so a window
     showing turn 5 of 20 would grow a live exchange under turn 8."""
@@ -311,11 +287,6 @@ async def test_a_trim_never_runs_against_a_slid_window(loaded):
     assert _users(display) == users_before
 
 
-# ---------------------------------------------------------------------------
-# The escape hatch still works from either end
-# ---------------------------------------------------------------------------
-
-
 async def test_show_all_works_from_the_top_of_a_slid_window(loaded):
     """At the top there is nothing hidden ABOVE, so guarding on elided_count
     would report "nothing to do" on the one gesture that had plenty to do."""
@@ -352,7 +323,7 @@ async def test_a_reload_always_lands_on_the_tail(loaded):
 async def test_a_short_transcript_has_nowhere_to_slide():
     messages = _transcript(2)
     async with _Harness().run_test(size=(80, 24)) as pilot:
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
         display.set_transcript_source(lambda: messages)
         await display.reload_messages(messages)
         await pilot.pause()

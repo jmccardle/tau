@@ -1,7 +1,7 @@
 """
 Backend abstraction layer for tau-coding-agent.
 
-Wraps tau-agent-core's AgentSession to provide Parley-compatible
+Wraps tau-agent-core's AgentSession to provide TauApp-compatible
 Backend interfaces (chat, stream_chat).
 
 Reference: SESSION-TREE-IMPLEMENTATION.md §2.6 (throwaway SessionManager retired;
@@ -22,10 +22,20 @@ from tau_agent_core.agent_session import (
     ExtensionActionResult,
     ExtensionCommandResult,
 )
-from tau_agent_core.compaction import CompactionSettings, estimate_span_tokens
+from tau_agent_core import tree_ops
+from tau_agent_core.compaction import CompactionSettings
+from tau_agent_core.extension_locks import ExtensionRequest
 from tau_agent_core.event_projection import MessageDeltaProjector
+from tau_agent_core.flows import Performed
 from tau_agent_core.events import AgentEvent
-from tau_agent_core.session_log import InMemorySessionLog, SessionLog, agent_spec_in_force
+from tau_agent_core.prompt_cache import (
+    CONVERSATION_PREFIX,
+    CompletionCache,
+    PromptCacheObserver,
+    completion_cache,
+    prompt_tokens,
+)
+from tau_agent_core.session_log import InMemorySessionLog, SessionLog
 from tau_agent_core.sdk import (
     BASE_SYSTEM_PROMPT,
     LoadExtensionsResult,
@@ -34,28 +44,17 @@ from tau_agent_core.sdk import (
     append_system_prompt,
 )
 from tau_agent_core.submission import Submission, SubmissionResult
+from tau_agent_core.truncation import dropped_tool_calls
 
-#: The render lane a caller that names none renders into. Every pre-B3-a consumer
-#: had exactly one implicit lane; this is its name, so a single-stream caller
-#: (``stream_chat``, the reload path, a test replaying widget events) reads the
-#: same as it always did while a multi-lane renderer keys on real lane ids.
 DEFAULT_LANE = "main"
 
-#: The built-in tools a model entry that names none gets. Named rather than
-#: inlined at its one use because the empty chat pane prints this list back to
-#: the user before the first turn — two copies of it would drift, and the copy
-#: on screen would be the one that lied.
+#: What a sub-agent's lane key starts with, as opposed to a submission's.
+BRANCH_LANE_PREFIX = "branch:"
+
 DEFAULT_TOOL_NAMES: tuple[str, ...] = ("read", "write", "edit", "bash", "ls", "grep", "find")
 
-#: The output cap a model entry that states no ``max_tokens`` resolves to. Since
-#: τ started putting ``Model.max_tokens`` on the wire, this figure is what a local
-#: server receives as ``n_predict`` — so it is the number a truncated turn has to
-#: quote back at the user, and the TUI's truncation notice reads it from here
-#: rather than repeating the literal (docs/TRUNCATED-TOOL-CALLS.md §2).
 DEFAULT_MAX_TOKENS = 4096
 
-#: A render event handler. Sync or async — :class:`RenderRouter` awaits whatever
-#: it gets back, so a Textual app can mount widgets from it.
 RenderHandler = Callable[[dict[str, Any]], Awaitable[None] | None]
 
 
@@ -64,8 +63,8 @@ def resolve_tool_names(config: dict[str, Any]) -> list[str]:
 
     The single reader of ``config["tools"]`` / ``config["exclude_tools"]``:
     :class:`TauBackend` calls it to decide what to construct, and
-    ``Parley._session_facts`` calls it to decide what to *display*. Both take the
-    config AFTER ``Parley._apply_run_config``, so ``--exclude-tools`` and both
+    ``TauApp._session_facts`` calls it to decide what to *display*. Both take the
+    config AFTER ``TauApp._apply_run_config``, so ``--exclude-tools`` and both
     tool-suppression flags — ``--no-tools`` and ``--no-builtin-tools``, each of
     which sets ``tools=[]`` — are already folded in.
 
@@ -103,62 +102,15 @@ def tau_event_to_pi_event(event: AgentEvent) -> dict[str, Any] | None:
         message = event.message or {}
         if "usage" not in message:
             return None
-    # The kept ``message_end`` already carries ``message.usage.extra`` (llama.cpp
-    # ``timings`` + τ's JSON-repair count) verbatim through this plain-dict passthrough
-    # — the ``--mode json`` telemetry surface (G4/B). We deliberately do NOT stamp a
-    # ``constraints:{kind:none}`` onto every ``message_end``: the main agent loop applies
-    # no DecodeConstraints, so it would be a fabricated placeholder on every turn. The
-    # constraint echo surfaces only where a real constraint exists — the ``ctx.complete()``
-    # path, as a ``{"kind":"constraints",...}`` extension record (G4/C), not a lifecycle field.
     return event.model_dump(exclude_none=True)
-
-
-def prompt_tokens(usage: dict[str, Any]) -> int:
-    """One completion's prompt size — the conversation's context when it was sent.
-
-    Read as ``total_tokens - output_tokens``, because ``total_tokens`` is the
-    server's own figure for the whole call and every provider's ``output_tokens``
-    is the part of it the model generated. The remainder is the prompt, whatever
-    fields the provider split it across.
-
-    The alternative — summing ``input + cache_read + cache_write`` — is equal on
-    a transcript written by today's code but WRONG on one written before the
-    providers stopped double-counting the cached span inside ``input_tokens``. A
-    reloaded chat from last week would read ~2× its real size on a cache-heavy
-    provider. The subtraction gets both right with no version check and no guess.
-
-    Falls to the field sum only when the server reported no ``total_tokens`` at
-    all; ``Usage`` defaults it to 0, so 0 here means "nothing reported", not a
-    zero-token prompt. A ``total`` below ``output`` is a contradiction rather than
-    a small number, so it takes the same path instead of yielding a negative size.
-
-    This is a per-completion reading. Callers REPLACE it as completions arrive
-    rather than summing: prompt N contains prompt N-1 in full, so a sum reports
-    the same conversation once per turn. Shared by the live path
-    (:class:`TurnStream`) and the TUI's reload/header rollups, so both read the
-    context the same way.
-    """
-    total = int(usage.get("total_tokens", 0) or 0)
-    output = int(usage.get("output_tokens", 0) or 0)
-    if total >= output and total > 0:
-        return total - output
-    return (
-        int(usage.get("input_tokens", 0) or 0)
-        + int(usage.get("cache_read_tokens", 0) or 0)
-        + int(usage.get("cache_write_tokens", 0) or 0)
-    )
 
 
 class TurnStream:
     """One lane's worth of agent events, normalized into widget-lifecycle dicts.
 
-    Extracted verbatim from ``TauBackend.stream_submission``'s ``capture_event``
-    closure, which was the only thing that knew how to turn an
-    :class:`~tau_agent_core.events.AgentEvent` into something a renderer can draw
-    — and could only ever do it for the ONE turn its enclosing call was awaiting.
-    As a class it can be instantiated per lane, which is what lets two concurrent
-    turns (a ``fork``) and a turn the frontend never initiated (a bus/timer
-    submission) be rendered at all.
+    One instance per lane, which is what lets two concurrent turns (a ``fork``)
+    and a turn the frontend never initiated (a bus or timer submission) render at
+    all.
 
     :meth:`feed` returns the normalized events for one agent event, in order, each
     tagged with this stream's ``lane``. It also accumulates what a caller needs
@@ -173,22 +125,20 @@ class TurnStream:
         {"kind": "tool_call", "id": str, "name": str, "arguments": dict}
         {"kind": "tool_result", "id": str, "name": str, "result": str,
          "is_error": bool, "blocked": bool, "blocked_by": str | None}
-        {"kind": "completion_end", "output": int, "context": int}
+        {"kind": "completion_end", "output": int, "context": int,
+         "stop_reason": str | None, "dropped_tool_calls": int}
 
     Tool widgets are driven off ``tool_execution_start`` / ``tool_execution_end``
     (which carry name/args/result directly), NOT off ``message_end`` toolCall
     blocks — the agent loop emits ``message_end`` twice per tool-bearing turn, so
     consuming it for rendering would duplicate. ``message_end`` is used only to
     harvest ``tool_calls`` for chat persistence (deduplicated by id), the
-    per-completion usage, and the ``completion_end`` boundary below.
+    per-completion usage, and the ``completion_end`` boundary.
 
-    ``completion_end`` carries this lane's REAL token totals so far — the same
-    running sums ``lane_end`` reports, published at every completion boundary
-    instead of only at the end. A tool-bearing turn has one per tool call, so a
-    live counter can show a measured figure that steps mid-turn rather than an
-    approximation. It is emitted on both of the turn's ``message_end`` events;
-    the second adds no usage, so it restates the same totals, and both mark the
-    same real boundary — the completion is over and nothing is in flight.
+    ``completion_end`` carries this lane's running token totals at every
+    completion boundary rather than only at the end, so a live counter steps
+    mid-turn on measured figures. Both of a turn's ``message_end`` events emit
+    one; the second adds no usage and restates the same totals.
     """
 
     def __init__(self, lane: str = DEFAULT_LANE) -> None:
@@ -197,10 +147,6 @@ class TurnStream:
         self.text_chunks: list[str] = []
         #: Tool calls harvested for chat persistence, deduped by id.
         self.tool_calls: list[dict[str, Any]] = []
-        # Real token usage, summed across every completion in this lane. The agent
-        # loop attaches per-completion usage to the message_end it emits once per
-        # turn (agent_loop._stream_response), so summing is double-count-safe. We
-        # surface the REAL numbers (Fail-Early: never a len//4 approximation).
         self.usage_totals: dict[str, int] = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -208,30 +154,15 @@ class TurnStream:
             "cache_read_tokens": 0,
             "cache_write_tokens": 0,
         }
-        #: The LAST completion's prompt size (input + cache_read + cache_write) —
-        #: the conversation's context at the moment this lane finished. Kept as a
-        #: replace, never a sum: each completion's prompt already CONTAINS every
-        #: earlier one, so summing prompts across a tool-bearing turn reports the
-        #: same conversation once per completion. 0 until a completion reports.
         self.context_tokens: int = 0
-        # The LAST completion's ``usage.extra`` — server-reported per-completion
-        # telemetry (llama.cpp timings + τ's JSON-repair count). t/s and
-        # forced-share are per-COMPLETION, not summable like tokens, so only the
-        # final completion's dict is kept — never a merge or an average.
         self.last_extra: dict[str, Any] = {}
-        #: The LAST completion's ``stop_reason``, as reported on its ``message_end``
-        #: (agent_loop step S8). Carried because ``"length"`` is the one stop reason
-        #: an operator has to act on and the only place it was visible was the
-        #: ``--mode json`` stream — in the TUI a completion cut off at the output
-        #: cap looked exactly like one that finished (docs/TRUNCATED-TOOL-CALLS.md).
-        #: ``None`` until a completion reports one.
         self.last_stop_reason: str | None = None
-        # The cumulative-message -> delta projection (suffix-diffing "text" and
-        # "thinking" blocks, including the defensive replace-not-extend case)
-        # lives in tau_agent_core.event_projection — extracted so a non-TUI
-        # consumer (the RPC wire) reuses the SAME rules without depending on
-        # Textual (REMOTE-CONTROL.md E1, R-T6). It is stateful because the diff
-        # needs to remember what was already emitted; reset per turn below.
+        self.last_dropped_tool_calls: int = 0
+        #: One :class:`CompletionCache` per completion, in call order.
+        self.completions: list[CompletionCache] = []
+        #: Epoch ms of this lane's first and last agent event (the loop's clock).
+        self.first_event_ms: int | None = None
+        self.last_event_ms: int | None = None
         self._delta_projector = MessageDeltaProjector()
 
     @property
@@ -239,16 +170,34 @@ class TurnStream:
         """The assistant text this lane streamed, concatenated."""
         return "".join(self.text_chunks)
 
+    @property
+    def elapsed_seconds(self) -> float | None:
+        """Wall-clock span of this lane, or None when no event carried a clock.
+
+        None is "not measured", never 0.0 — an exchange that produced one event
+        has no span to report and says so (docs/MESSAGE-TIMESTAMPS.md §3).
+        """
+        if self.first_event_ms is None or self.last_event_ms is None:
+            return None
+        if self.last_event_ms <= self.first_event_ms:
+            return None
+        return (self.last_event_ms - self.first_event_ms) / 1000
+
+    def _note_clock(self, event: Any) -> None:
+        """Widen this lane's span by one event's timestamp (epoch ms)."""
+        stamp = getattr(event, "timestamp", None)
+        if not isinstance(stamp, int) or isinstance(stamp, bool):
+            return
+        if self.first_event_ms is None:
+            self.first_event_ms = stamp
+        self.last_event_ms = stamp
+
     def feed(self, event: Any) -> list[dict[str, Any]]:
         """Normalize one agent event into zero or more render events."""
         if not hasattr(event, "type"):
             return []
+        self._note_clock(event)
         if event.type == "turn_start":
-            # Clean per-turn boundary. Reset the text accumulators so the next
-            # turn's assistant text is a fresh delta stream (not concatenated onto
-            # the previous turn's), and tell the caller to open a new pending
-            # widget for this turn — which is what preserves true arrival order
-            # (assistant text after a tool call ends up after it, not pinned above).
             self._delta_projector.reset()
             return [self._tag({"kind": "turn_start", "turn_index": event.turn_index})]
         if event.type == "message_start":
@@ -258,8 +207,6 @@ class TurnStream:
         if event.type == "message_end":
             return self._harvest_message_end(event)
         if event.type == "tool_execution_start":
-            # Render the tool call as soon as it begins — this is the
-            # authoritative, ordered signal (carries name + args directly).
             return [
                 self._tag(
                     {
@@ -313,27 +260,11 @@ class TurnStream:
         out: list[dict[str, Any]] = []
         for block_delta in self._delta_projector.project(message):
             if block_delta.delta is None:
-                # A non-diffable block (today only toolCall). Tool activity is
-                # rendered off tool_execution_start/_end, which carry name/args
-                # directly and in true arrival order, so this lane drops it.
                 continue
-            # NOTE: block_delta.replace is deliberately IGNORED here, preserving
-            # this code's pre-extraction behaviour exactly. In the ordinary case
-            # `delta` is the incremental suffix and appending is correct. In the
-            # replace-not-extend case `delta` is the block's ENTIRE new value and
-            # the projector's contract asks the caller to RESET its accumulator;
-            # this call site appends instead, so ``text`` does not reproduce the
-            # final assistant text in that case. That defect predates the
-            # extraction and is preserved, not introduced — fixing it changes
-            # rendered output and belongs in its own change, not a merge.
             if block_delta.type == "text":
                 self.text_chunks.append(block_delta.delta)
                 out.append(self._tag({"kind": "text_delta", "delta": block_delta.delta}))
             elif block_delta.type == "thinking":
-                # Reasoning streams on its own channel using the same suffix-diff
-                # as text. Deliberately NOT part of the answer text (that contract
-                # is the visible answer only) — it surfaces as a structured
-                # ``reasoning_delta`` for the reasoning-region widget.
                 out.append(self._tag({"kind": "reasoning_delta", "delta": block_delta.delta}))
         return out
 
@@ -355,38 +286,25 @@ class TurnStream:
                             "arguments": block.get("arguments", {}),
                         }
                     )
-        # Sum the real usage carried on this completion's message_end. Only the
-        # per-completion message_end (_stream_response) carries it, so the
-        # duplicate run() emit adds nothing — no double count.
         usage = message.get("usage")
         if isinstance(usage, dict):
             for key in self.usage_totals:
                 self.usage_totals[key] += int(usage.get(key, 0) or 0)
             self.context_tokens = prompt_tokens(usage)
-            # Overwrite, don't merge: a real completion with no telemetry SHOULD
-            # clear the prior reading, so take whatever this completion carried.
+            self.completions.append(completion_cache(usage))
             extra = usage.get("extra")
             self.last_extra = extra if isinstance(extra, dict) else {}
-            # `stop_reason` rides the same per-completion message_end (step S8) and
-            # takes the same replace-don't-merge rule. Gated on `usage` for the same
-            # reason: the duplicate run() emit carries neither, so reading it
-            # unguarded would clear a real "length" with the duplicate's None.
             reason = message.get("stop_reason")
             self.last_stop_reason = reason if isinstance(reason, str) else None
-        # The boundary itself, with whatever is measured at it. A completion that
-        # reported no usage still ends here, and the totals it publishes are the
-        # ones that ARE measured — a provider that never reports usage publishes
-        # 0, which is the honest reading (nothing was measured), not a guess.
+            self.last_dropped_tool_calls = dropped_tool_calls(usage)
         return [
             self._tag(
                 {
                     "kind": "completion_end",
                     "output": self.usage_totals["output_tokens"],
                     "context": self.context_tokens,
-                    # Additive; existing consumers read "output"/"context" and
-                    # ignore this. `None` means the completion reported no
-                    # stop_reason, which is NOT the same as reporting "stop".
                     "stop_reason": self.last_stop_reason,
+                    "dropped_tool_calls": self.last_dropped_tool_calls,
                 }
             )
         ]
@@ -394,8 +312,6 @@ class TurnStream:
     def _feed_tool_execution_end(self, event: Any) -> dict[str, Any]:
         tool_call_id = getattr(event, "tool_call_id", "") or ""
         is_error = getattr(event, "is_error", False)
-        # A `tool_call` extension VETO (S50, anchor G11) renders distinctly from a
-        # generic error — carry the marker + attribution through.
         blocked = bool(getattr(event, "blocked", False))
         blocked_by = getattr(event, "blocked_by", None)
         result = getattr(event, "result", "")
@@ -447,7 +363,8 @@ class RenderRouter:
         {"kind": "lane_start", "lane": str, "source": str | None,
          "submitter": str | None, "correlation": dict, "text": str}
         {"kind": "lane_end", "lane": str, "source": str | None,
-         "submitter": str | None, "context": int, "output": int, "extra": dict}
+         "submitter": str | None, "context": int, "output": int,
+         "seconds": float | None, "cache_notice": str | None, "extra": dict}
 
     ``output`` is every token the lane GENERATED, summed across its completions
     and including the side-usage delta ``submission_end`` reports for work done
@@ -456,6 +373,11 @@ class RenderRouter:
     each completion's prompt contains every earlier one. Side usage is a different
     conversation's prompt, so it is not added to ``context``. ``extra`` is the last
     completion's telemetry, or ``{}`` when the provider reported none.
+
+    ``cache_notice`` is this router's :class:`PromptCacheObserver` verdict on the
+    closing lane. The observer is shared across lanes because its latch is a fact
+    about the server, but a branch lane names no prefix — a sub-agent's prompt is
+    not the conversation's, so it neither reads nor writes the cross-turn clock.
 
     An agent event whose ``submission_id`` names no open lane is NOT dropped in
     silence: it goes to ``on_orphan`` with a reason. Those exist — a
@@ -474,11 +396,8 @@ class RenderRouter:
         self._emit = emit
         self._on_orphan = on_orphan
         self._lanes: dict[str, TurnStream] = {}
-        # source/submitter per open lane, so lane_end can report them without the
-        # caller having to remember what lane_start said.
         self._identity: dict[str, tuple[str | None, str | None]] = {}
-        # Set by whatever wired this router onto a bus (TauBackend.subscribe_render).
-        # A router built by hand — a test replaying events — has nothing to detach.
+        self._prompt_cache = PromptCacheObserver()
         self._detach: Callable[[], None] | None = None
 
     def bind_detach(self, detach: Callable[[], None]) -> None:
@@ -525,6 +444,17 @@ class RenderRouter:
     ) -> None:
         """Close the lane for a finished submission (``submission_end`` channel)."""
         await self._close(submission.submission_id, side_usage=side_usage)
+
+    async def on_custom_message(self, *, entry_id: str, message: dict[str, Any]) -> None:
+        """Deliver an extension's durable message (``custom_message`` channel).
+
+        Named no lane, deliberately. ``api.send_message`` is reachable from a
+        command handler with no turn in flight as well as from inside one, and a
+        message that belongs to the conversation rather than to a completion is
+        the transcript's, not a lane's — the renderer mounts it at the tail
+        (docs/EXTENSION-LOCKS.md §9.1).
+        """
+        await self._deliver({"kind": "custom_message", "entry_id": entry_id, "message": message})
 
     async def on_agent_event(self, event: AgentEvent) -> None:
         """Route one ``AgentEvent`` from the primary bus into its submission's lane."""
@@ -573,7 +503,7 @@ class RenderRouter:
         driving itself, which is what :data:`SubmissionSource` reserves ``"agent"``
         for.
         """
-        key = f"branch:{lane}"
+        key = f"{BRANCH_LANE_PREFIX}{lane}"
         if key not in self._lanes:
             self._lanes[key] = TurnStream(key)
             self._identity[key] = ("agent", f"fork:{label}")
@@ -603,7 +533,7 @@ class RenderRouter:
         would be indistinguishable from one that had stopped working. ``error``
         rides the reason so the report names what ended the branch.
         """
-        key = f"branch:{lane}"
+        key = f"{BRANCH_LANE_PREFIX}{lane}"
         if key not in self._lanes:
             self._orphan(
                 f"branch lane {key!r} ({label!r}) ended without ever opening — the "
@@ -639,10 +569,12 @@ class RenderRouter:
             self._orphan(f"lane {lane!r} closed twice, or was never opened")
             return
         source, submitter = self._identity.pop(lane, (None, None))
-        # Two numbers, not one. ``output`` is summable — every completion generated
-        # its own tokens, and a side call (a tool's own summarizing model) generated
-        # more. ``context`` is NOT: it is the prompt this lane last sent, and a side
-        # call's prompt is a different conversation, so it never lands here.
+        cache_notice = self._prompt_cache.observe_turn(
+            stream.completions,
+            prefix=None if lane.startswith(BRANCH_LANE_PREFIX) else CONVERSATION_PREFIX,
+            first_event_ms=stream.first_event_ms,
+            last_event_ms=stream.last_event_ms,
+        )
         output = stream.usage_totals["output_tokens"] + int(
             (side_usage or {}).get("output_tokens", 0)
         )
@@ -654,6 +586,8 @@ class RenderRouter:
                 "submitter": submitter,
                 "context": stream.context_tokens,
                 "output": output,
+                "seconds": stream.elapsed_seconds,
+                "cache_notice": cache_notice,
                 "extra": dict(stream.last_extra),
             }
         )
@@ -697,16 +631,9 @@ def compute_cost_usd(
         float(cost.get("input", 0.0)) / 1_000_000 * input_tokens
         + float(cost.get("output", 0.0)) / 1_000_000 * output_tokens
         + float(cost.get("cache_read", 0.0)) / 1_000_000 * cache_read_tokens
-        # cache_write is inert against today's provider: cache_write_tokens is
-        # never populated (a real 0), so its price term is always 0. Left
-        # commented until a provider reports cache-write tokens.
-        # + float(cost.get("cache_write", 0.0)) / 1_000_000 * cache_write_tokens
     )
 
 
-#: Models already warned about an undeclared reasoning capability, so a resolver
-#: rebuilding the same Model on every ``set_model`` says it once and not once per
-#: call. Keyed by model id: two DIFFERENT misconfigured models are two findings.
 _WARNED_UNDECLARED_REASONING: set[str] = set()
 
 
@@ -731,13 +658,6 @@ def _warn_undeclared_reasoning(model_id: str) -> None:
     )
 
 
-#: A string of digits where a JSON number belongs. Rejected because it is the one
-#: malformed value measured to be accepted AND discarded in silence: against
-#: llama.cpp b1061-2da6686, `thinking_budget_tokens: "0"` returned HTTP 200 and a
-#: generation byte-identical to not sending the parameter at all — as did `null`,
-#: `-1`, and a misspelled key (docs/probe-results/). Only a JSON number is read.
-#: A config that means 256 and writes "256" would otherwise reach an endpoint that
-#: quietly does nothing, which is precisely the failure τ refuses to pass along.
 _NUMERIC_STRING = re.compile(r"^[+-]?\d+$")
 
 
@@ -782,7 +702,7 @@ def _validate_thinking_level_map(value: Any, model_id: str) -> None:
 
 
 def build_model_from_config(config: dict[str, Any]) -> Model:
-    """Build a tau-agent-core ``Model`` from a Parley/``~/.tau/config.json`` entry.
+    """Build a tau-agent-core ``Model`` from a TauApp/``~/.tau/config.json`` entry.
 
     The single seam that turns a config ``models`` entry (or a ``--model`` ad-hoc
     dict) into a ``Model`` — extracted from ``TauBackend.__init__`` so
@@ -794,20 +714,10 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     model_id = config.get("model", "gpt-4")
     backend_type = config.get("backend", "openai").lower()
 
-    # Map provider name (Parley's "backend" field) to tau-agent-core provider.
+    # Map provider name (TauApp's "backend" field) to tau-agent-core provider.
     provider_map = {"openai": "openai", "anthropic": "anthropic", "gemini": "gemini"}
     provider = provider_map.get(backend_type, backend_type)
 
-    # Which WIRE PROTOCOL this endpoint speaks. This used to be hardcoded to
-    # "openai-completions", which meant no config could name any other — the
-    # api registry existed and no `~/.tau/config.json` user could reach it.
-    #
-    # Resolution order, and the polarity rule from PLAN-0.9.3 §4.5: a stated
-    # value wins, then the registered vendor's own protocol, then the historical
-    # default. An UNRECOGNISED stated value raises against the registry rather
-    # than falling through to the OpenAI wire — a model silently served over the
-    # wrong protocol is the exact failure that got "openai-responses"
-    # unregistered, and it is worse here than a startup error.
     spec = get_provider_spec(provider)
     api = config.get("api") or (spec.api if spec else "openai-completions")
     if api not in registered_apis():
@@ -816,38 +726,16 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
             f"Registered wire protocols: {', '.join(sorted(registered_apis()))}."
         )
 
-    # A stated base_url wins; otherwise take the vendor's own default, and only
-    # then the historical OpenAI URL. Defaulting every model to OpenAI's endpoint
-    # would point an Anthropic client at the wrong server.
     base_url = config.get("base_url") or (spec.base_url if spec else None)
     if not base_url:
         base_url = "https://api.openai.com/v1"
 
-    # Reasoning capability is DECLARED, never inferred. This used to read
-    # ``bool(config.get("reasoning")) or <a level was requested>``, so asking for a
-    # level asserted the capability on the model's behalf — the opposite of what
-    # ``Model.reasoning``'s own docstring promises ("Default False (Fail-Early: opt
-    # in, don't guess capability)") and of the identical rule ``grammar_dialect``
-    # states two fields below ("We do NOT infer support from the base_url or
-    # provider"). pi does infer (model-resolver.ts:496); this is a deliberate
-    # divergence, in the same family as ``reasoning_replay``.
-    #
-    # It is not a tidiness fix. The inference is what made a dead parameter look
-    # alive: ``--thinking high`` against a config declaring no ``reasoning`` key
-    # sent ``reasoning_effort`` to an endpoint that ignores the field, and nothing
-    # anywhere said so. Declaring the capability is now the ONLY way to enable it,
-    # and asking for a level without declaring it warns rather than assuming.
     thinking_level = config.get("thinking")
     reasoning_arg = thinking_level if thinking_level and thinking_level != "off" else None
     model_reasoning = bool(config.get("reasoning"))
     if reasoning_arg is not None and not model_reasoning:
         _warn_undeclared_reasoning(model_id)
 
-    # Reasoning-replay scope (Model.reasoning_replay). The per-model entry wins;
-    # the frontends fold a top-level ``reasoning_replay`` default into the entry
-    # before this seam, so a missing key means "no default configured" → "turn"
-    # (the τ code default). Fail-Early on an unknown value rather than silently
-    # falling back to a scope the user didn't ask for.
     reasoning_replay = config.get("reasoning_replay") or "turn"
     if reasoning_replay not in ("all", "turn", "off"):
         raise ValueError(
@@ -855,11 +743,6 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
         )
     reasoning_replay = cast(Literal["all", "turn", "off"], reasoning_replay)
 
-    # Whether a reasoning-format quirk warns and degrades (default) or raises
-    # (Model.strict_reasoning_formats). Per-model only — there is no top-level
-    # default to fold in, because the flag is a statement about one endpoint's
-    # pipeline, not about the installation.
-    # Reference: docs/ANTHROPIC-GOOGLE-CLIENTS.md S3.
     strict_reasoning_formats = config.get("strict_reasoning_formats", False)
     if not isinstance(strict_reasoning_formats, bool):
         raise ValueError(
@@ -867,17 +750,28 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
             f"{strict_reasoning_formats!r}"
         )
 
-    # Constrained-decoding capability (Model.grammar_dialect). Absent = the endpoint
-    # declares no grammar support, and a constraint-carrying call will raise. We do
-    # NOT infer support from the base_url or provider: guessing wrong means either a
-    # hard 400 or — worse — a server that silently ignores the grammar and returns an
-    # unconstrained generation as if it were constrained (Fail-Early).
     grammar_dialect = config.get("grammar")
     if grammar_dialect is not None and grammar_dialect not in ("llguidance", "gbnf"):
         raise ValueError(
             f"models.<name>.grammar must be 'llguidance' or 'gbnf'; got {grammar_dialect!r}"
         )
     grammar_dialect = cast("Literal['llguidance', 'gbnf'] | None", grammar_dialect)
+
+    prompt_cache = config.get("prompt_cache", True)
+    if isinstance(prompt_cache, str):
+        raise ValueError(
+            f"models.<name>.prompt_cache is a boolean; got {prompt_cache!r}. The dialect "
+            "moved to prompt_cache_dialect: 'anthropic', and 'off' is prompt_cache: false"
+        )
+    if not isinstance(prompt_cache, bool):
+        raise ValueError(f"models.<name>.prompt_cache must be a boolean; got {prompt_cache!r}")
+
+    cache_dialect = config.get("prompt_cache_dialect")
+    if cache_dialect is not None and cache_dialect != "anthropic":
+        raise ValueError(
+            f"models.<name>.prompt_cache_dialect must be 'anthropic'; got {cache_dialect!r}"
+        )
+    cache_dialect = cast("Literal['anthropic'] | None", cache_dialect)
 
     _validate_thinking_level_map(config.get("thinking_level_map"), model_id)
 
@@ -891,29 +785,11 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
             f"models.<name>.server_features must be a list of strings; got {server_features!r}"
         )
 
-    # Endpoint wire quirks (Model.compat): which spelling of the output cap this
-    # server accepts, whether it tolerates `stream_options`, and which schema it
-    # returns tool calls in. Absent means τ infers the first two from
-    # provider/base_url and reads tool calls as OpenAI-shaped, which is what every
-    # existing config gets and what it got before this key existed.
-    # `tool_call_schema` is never inferred — see tau_llm/compat.py for why.
     compat_config = config.get("compat")
     if compat_config is not None and not isinstance(compat_config, dict):
         raise ValueError(f"models.<name>.compat must be a JSON object; got {compat_config!r}")
     compat = Compat(**compat_config) if compat_config else None
 
-    # The model's own limits. These were hardcoded here — 128000 and 4096 for
-    # every model in existence — and no config key reached them, so a 32k local
-    # model advertised a 128k window to the compactor and a model that can emit
-    # 128k tokens was capped at 4096. Both defaults are kept for a config that
-    # states neither, because changing what an existing config resolves to is a
-    # separate decision from making the key reachable.
-    #
-    # `python -m tau_llm.catalog config <provider>/<model>` emits both from
-    # models.dev, which is where the real numbers live.
-    # ``isinstance(True, int)`` is True in Python, so bools are excluded
-    # explicitly — ``"context_window": true`` would otherwise resolve to a
-    # one-token window and only show up as a model that can never say anything.
     context_window = config.get("context_window", 128000)
     if (
         isinstance(context_window, bool)
@@ -940,24 +816,12 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
         reasoning_replay=reasoning_replay,
         strict_reasoning_formats=strict_reasoning_formats,
         grammar_dialect=grammar_dialect,
+        prompt_cache=prompt_cache,
+        prompt_cache_dialect=cache_dialect,
         extra_body=dict(extra_body),
         server_features=list(server_features),
-        # Both of these were reachable on Model and dead through config: the
-        # field existed, the provider consumed it, and no user could set it
-        # because this seam never carried it. A knob that only a library caller
-        # can turn is not a knob a `~/.tau/config.json` user has.
-        #
-        # `stream: false` is for a gateway that does not implement SSE;
-        # `request_timeout` is seconds, and matters because a gateway that drops
-        # connections is exactly a timeout question. Both are typed on Model, so
-        # a bad value raises here at config load rather than mid-turn.
         stream=config.get("stream", True),
         request_timeout=config.get("request_timeout"),
-        # Same story as the two above, one step worse: `temperature` was read by
-        # `agent_session` through a `getattr` against a field `Model` did not
-        # have, so the config key was accepted, dropped, and replaced by a
-        # hardcoded 0.7 on every request. Absent means absent — τ sends no
-        # temperature and the endpoint applies its own.
         temperature=config.get("temperature"),
         compat=compat,
     )
@@ -986,8 +850,6 @@ class ConfigModelResolver:
     """
 
     def __init__(self, models: dict[str, Any]) -> None:
-        # A copy: a caller that later mutates its own config map must not silently
-        # change what a bound resolver resolves (or advertises) mid-run.
         self._models = dict(models)
 
     def model_names(self) -> list[str]:
@@ -1036,12 +898,6 @@ class Backend(ABC):
     def __init__(self, config: dict[str, Any]):
         self.config = config
         self.model = config.get("model", "")
-        #: The composed system prompt this backend will send. :class:`TauBackend`
-        #: BUILDS it — base text, project context files, tool list — and every
-        #: frontend stores THIS on a new session, because the session's first
-        #: message is what actually goes on the wire and takes precedence over
-        #: anything the AgentSession holds. A backend that composes no prompt
-        #: leaves it empty and the session gets no system message.
         self.system_prompt: str = ""
 
     @abstractmethod
@@ -1169,9 +1025,10 @@ class Backend(ABC):
         authority on dispatch and will simply run a turn if it does not.
 
         Returns the :class:`~tau_agent_core.submission.SubmissionResult` VERBATIM.
-        ``result.command`` is the typed outcome the caller must act on — perform it
-        if ``performer == "frontend"``, render ``output`` if ``performer ==
-        "core"`` — and ``result.command is None`` means no command was dispatched
+        ``result.command`` is the :data:`~tau_agent_core.flows.Dispatched` arm the
+        caller must act on — render a ``Performed``, ask for a ``FlowStep``'s
+        argument, perform a ``Ready``, open a ``View`` — and ``result.command is
+        None`` means no command was dispatched
         after all (an ``input`` hook transformed the text), which the caller must
         NOT treat as "nothing happened".
         """
@@ -1195,7 +1052,7 @@ class Backend(ABC):
     ) -> LoadExtensionsResult:
         """Load file-path extensions into this backend's live session (E5 §2.2).
 
-        Both run paths (headless ``run_print`` and the TUI ``Parley``) load
+        Both run paths (headless ``run_print`` and the TUI ``TauApp``) load
         extensions through this seam after building the backend, so a file
         extension's hooks fire in the same ``AgentSession`` the loop runs on.
         ``extensions_config`` (S40) is the per-extension config map handed to each
@@ -1207,61 +1064,26 @@ class Backend(ABC):
 class TauBackend(Backend):
     """tau-agent-core backend adapter.
 
-    Wraps tau-agent-core's AgentSession to provide Parley-compatible
+    Wraps tau-agent-core's AgentSession to provide TauApp-compatible
     chat/stream_chat interfaces.
     """
 
     def __init__(self, config: dict[str, Any]):
         super().__init__(config)
 
-        # Build a tau-agent-core model config from the Parley config. The Model
-        # construction is shared with make_model_resolver (S45) via
-        # build_model_from_config so ctx.set_model rebuilds a Model identically.
         model_id = config.get("model", "gpt-4")
-        # NO default. The provider raises "No API key for provider: …" on a
-        # falsy key (openai.py), and that raise is the documented behaviour —
-        # but it only ever fired if a missing key actually reached it. This line
-        # used to substitute the "not-needed" sentinel, which is truthy, so a
-        # config entry with no api_key sailed past the gate and sent that string
-        # to whatever base_url resolved to (default: api.openai.com), producing a
-        # 401 from a third party instead of a startup error naming the real
-        # problem. A local server still opts in by writing "not-needed"
-        # explicitly, exactly as the shipped template does.
         api_key = config.get("api_key")
 
         self.model_name = model_id
-        # Thinking/reasoning level. The CLI's --thinking flag (or a model:level
-        # suffix) lands here as config["thinking"]; a model config entry may also
-        # declare a default "thinking" level and a "thinking_level_map". A
-        # non-"off" level asserts the model is reasoning-capable (mirrors pi
-        # model-resolver.ts:496), so reasoning_effort is actually sent; an
-        # explicit config "reasoning": true also enables it. None/"off" → no
-        # reasoning requested.
         thinking_level = config.get("thinking")
         reasoning_arg = thinking_level if thinking_level and thinking_level != "off" else None
 
         model = build_model_from_config(config)
-        # Kept for the tree-browser's summarizer (navigate_tree, §3.3): the
-        # branch-summary ``complete_simple`` call needs the model + api key directly,
-        # not via the AgentSession loop.
         self._model = model
         self._api_key = api_key
 
-        # Discover tools from config. Defaults to all built-in tools, minus the
-        # --exclude-tools denylist (pi excludeTools; E5 §2.3 / S28) — see
-        # ``resolve_tool_names``, which the empty chat pane shares so the list the
-        # user reads is the list this constructs. Extension-registered tools merge
-        # in later (``AgentSession._build_turn_tools``) and are NOT subject to the
-        # denylist — pi's excludeTools targets the built-in registry.
         tool_names = resolve_tool_names(config)
         if tool_names:
-            # ``max_image_dimension`` is the first config key that reaches a
-            # built-in tool's constructor. It bounds an image ``read`` sends: an
-            # unbounded one took a vision server down twice (see
-            # tau_agent_core.tools.image_resize). Absent from the config means
-            # the tool's own default, 2000px, NOT "no cap" — a missing key is
-            # ambivalence, and the answer to ambivalence is the safe default.
-            # A literal ``null`` is the explicit opt-out, and says so.
             tools = _resolve_tools(
                 tool_names,
                 {"read": {"max_image_dimension": config["max_image_dimension"]}}
@@ -1271,31 +1093,6 @@ class TauBackend(Backend):
         else:
             tools = []
 
-        # The system prompt is BUILT, not copied out of the config (0.9.3 §1).
-        #
-        # This line used to be `config.get("system_prompt", "")`, and that one
-        # `.get` is why nothing a user wrote in an AGENTS.md ever reached a
-        # model: `_build_system_prompt` — τ's base prompt AND its context-file
-        # discovery — lives behind `create_agent_session`, which NOTHING in this
-        # package calls. TauBackend constructs `AgentSession` directly, so the
-        # TUI and every headless run sent whatever string the config held, and
-        # on a default install (no `system_prompt` key) that string was `""`.
-        # Dropping the key from tau_default_config.json was necessary but not
-        # sufficient; this is the other half.
-        #
-        # A configured `system_prompt` still wins over the base text — it is
-        # passed as `custom_prompt`, which replaces that text and nothing else,
-        # so project context files compose with it instead of being switched off
-        # by it (pi system-prompt.ts:46-62).
-        # ``cwd`` is left to default to ``os.getcwd()`` — the same directory the
-        # TUI stamps on a session and the same one the tools run in.
-        #
-        # ``--append-system-prompt`` sections augment the BASE TEXT, not the
-        # composed whole — they land ahead of the project context and the tool
-        # list, which is pi's placement (system-prompt.ts:48). Applied HERE, the
-        # one point every frontend's model config passes through, so the TUI,
-        # print mode and RPC mode compose identically instead of each folding
-        # the sections in on its own before the builder ever sees them.
         custom_prompt = config.get("system_prompt") or None
         append_sections = config.get("append_system_prompt")
         if append_sections:
@@ -1306,54 +1103,13 @@ class TauBackend(Backend):
             tools=tools,
             custom_prompt=custom_prompt,
             no_context_files=bool(config.get("no_context_files", False)),
-            # ``{{model}}``: the id that goes on the wire, not the config key it
-            # was reached by — a prompt saying which model it is should say the
-            # thing the server sees.
             model=config.get("model") or None,
         )
 
-        # The resolved tool-suppression policy (``--no-tools`` → "all",
-        # ``--no-builtin-tools`` → "builtin", absent → None), set by
-        # ``headless.resolve_no_tools`` at the argv boundary and carried on the
-        # model config next to ``exclude_tools``. Both flags already emptied
-        # ``tool_names`` above; forwarding this is what makes "all" ALSO withhold
-        # extension-registered tools, and it is the only difference between the
-        # two flags. An unrecognised value raises in AgentSession rather than
-        # degrading to "no suppression".
         no_tools = config.get("no_tools")
 
-        # The turn ceiling, resolved upstream (``--max-turns`` > the model entry >
-        # config.json's top-level ``max_turns``) by ``resolve_model_config`` for
-        # ``tau -p`` and by ``Parley._apply_run_config`` for the TUI. ``None`` here
-        # means nobody stated one, and ``AgentSession`` passes that through to
-        # ``AgentLoopConfig``, whose default is no ceiling. Nothing in this class
-        # invents a number: the 50 that used to bound every run lived in
-        # ``AgentLoopConfig`` and could not be reached from either frontend.
         max_turns = config.get("max_turns")
 
-        # Forward the configured API key to the session -> agent loop ->
-        # provider. The provider requires a truthy key (Fail-Early); local
-        # servers use the "not-needed" sentinel, which is passed through as-is.
-        # (Previously this was stashed in an unused self._api_key and dropped,
-        # so a real-OpenAI key from config never reached the provider.)
-        #
-        # SessionLog. The AgentSession is constructed against a scratch
-        # ``InMemorySessionLog``, but the TUI immediately rebinds it onto its LIVE
-        # ``session_store.Session`` via :meth:`bind_session_log` (E3-ctx / D3), so on
-        # the interactive path this session is the SOLE persister — the turn's user +
-        # assistant/tool messages append through the one on-disk log the TUI reads
-        # back, and the TUI no longer double-writes them itself. Callers that own a
-        # separate persistence-of-record and never rebind (headless ``run_print``,
-        # the cost/json backend tests, SDK-style use) keep the scratch log: for them
-        # ``prompt()`` persists to a log that is never flushed or read (context
-        # arrives via ``stream_chat``'s ``messages`` argument), and they append to
-        # their own ``Session`` themselves.
-        #
-        # Auto-compaction is disabled here: the caller's own message list — not this
-        # log — is the context sent to the model, so a post-turn auto-compaction
-        # would do useless work (and fire a slow summary LLM call every turn once it
-        # crossed the threshold). The TUI compacts explicitly via ``/compact`` →
-        # ``compact_messages``, which works with auto-compaction off.
         self.agent_session = AgentSession(
             session_log=InMemorySessionLog(),
             model=model,
@@ -1362,13 +1118,6 @@ class TauBackend(Backend):
             api_key=api_key,
             reasoning=reasoning_arg,
             compaction_settings=CompactionSettings(enabled=False),
-            # H8 capability declaration (``--bus``, or ``"bus_available": true``
-            # on the model entry). Until this was threaded, NOTHING in this
-            # package ever set it, so ``AgentSession``'s default of False stood
-            # for every TUI and print-mode run and the loader refused every
-            # extension declaring TOUCHES_BUS — ``nats_bus`` was loadable only
-            # from a hand-written script. Default stays False: reaching a bus is
-            # a capability the operator grants, never one a run assumes.
             bus_available=bool(config.get("bus_available", False)),
             no_tools=no_tools,
             max_turns=max_turns,
@@ -1481,30 +1230,94 @@ class TauBackend(Backend):
         """
         return self.agent_session.list_managed_extensions()
 
-    async def disable_extension(self, path: str) -> ExtensionActionResult:
+    def get_extension_state(self) -> LoadExtensionsResult:
+        """Every managed extension and every file that failed to load, read live.
+
+        Delegates to :meth:`AgentSession.get_extension_state`. The ``/extensions``
+        listing reads this rather than the value ``load_extensions`` returned, so a
+        reload is reflected instead of showing the load-time snapshot.
+        """
+        return self.agent_session.get_extension_state()
+
+    def _extension_action(self, outcome: ExtensionActionResult) -> Performed:
+        """One :class:`ExtensionActionResult` as the :class:`Performed` all three report.
+
+        The projection is written once because all three actions return the same
+        record and E5 applies to all three identically — the same reason the RPC
+        layer's ``_extension_action_result`` is one function and not three.
+        """
+        return self.agent_session.performed(
+            f"{outcome.action}_extension",
+            {
+                "action": outcome.action,
+                "path": outcome.path,
+                "ok": outcome.ok,
+                "message": outcome.message,
+            },
+        )
+
+    @property
+    def pending_request(self) -> ExtensionRequest | None:
+        """The extension request at the cursor, or ``None`` (EXTENSION-LOCKS §2).
+
+        A pass-through to :attr:`AgentSession.pending_request` so a head reads the
+        lock from the same place :meth:`AgentSession.submit` reads it, rather than
+        from a copy it kept.
+        """
+        return self.agent_session.pending_request
+
+    async def answer_request(
+        self, request_id: str, action: str, values: dict[str, Any]
+    ) -> ExtensionCommandResult:
+        """Answer an ask: append the response, then dispatch its action's command."""
+        return await self.agent_session.answer_request(request_id, action, values)
+
+    async def disable_extension(self, path: str) -> Performed:
         """Runtime-disable a loaded extension (E10 §6 / S70).
 
         Delegates to :meth:`AgentSession.disable_extension`, which fires the
         extension's ``session_shutdown`` teardown, then detaches its hooks + registry
-        entries. Returns the reportable :class:`ExtensionActionResult`.
-        """
-        return await self.agent_session.disable_extension(path)
+        entries.
 
-    async def enable_extension(self, path: str) -> ExtensionActionResult:
+        Args:
+            path: The managed extension's path, or a unique file stem.
+
+        Returns:
+            A :class:`~tau_agent_core.flows.Performed` whose ``data`` is
+            ``{action, path, ok, message, cursor}``, as ``disable_extension``'s
+            ``returns`` declares.
+        """
+        return self._extension_action(await self.agent_session.disable_extension(path))
+
+    async def enable_extension(self, path: str) -> Performed:
         """Runtime-enable a disabled extension (E10 §6 / S70).
 
         Delegates to :meth:`AgentSession.enable_extension` (re-invoke ``register`` +
         ``session_start``).
-        """
-        return await self.agent_session.enable_extension(path)
 
-    async def reload_extension(self, path: str) -> ExtensionActionResult:
+        Args:
+            path: The managed extension's path, or a unique file stem.
+
+        Returns:
+            A :class:`~tau_agent_core.flows.Performed`, shaped as
+            :meth:`disable_extension`'s.
+        """
+        return self._extension_action(await self.agent_session.enable_extension(path))
+
+    async def reload_extension(self, path: str) -> Performed:
         """Runtime-reload an extension from disk (E10 §6 / S70).
 
         Delegates to :meth:`AgentSession.reload_extension` (teardown → re-import →
         re-register → ``session_start``). A broken file raises, per Fail-Early.
+
+        Args:
+            path: The managed extension's path, or a unique file stem.
+
+        Returns:
+            A :class:`~tau_agent_core.flows.Performed`, shaped as
+            :meth:`disable_extension`'s.
         """
-        return await self.agent_session.reload_extension(path)
+        return self._extension_action(await self.agent_session.reload_extension(path))
 
     def get_extension_commands(self) -> list[tuple[str, str]]:
         """List extension-registered slash commands as ``(name, description)`` (S35).
@@ -1543,15 +1356,82 @@ class TauBackend(Backend):
         """
         return await self.agent_session.run_extension_command(name, args)
 
-    async def compact_messages(self, messages: list[dict]) -> list[dict] | None:
+    def set_model(self, name: str) -> Performed:
+        """Switch the active model by config NAME, effective on the next turn.
+
+        Delegates to :meth:`AgentSession.set_model`, which resolves the name through
+        the resolver ``TauApp._build_session_runtime`` bound at startup and raises on
+        a name that resolver does not know. A config key, not a model id — the same
+        name ``--model NAME`` accepts headlessly and the same one ``get_models``
+        publishes.
+
+        Args:
+            name: The config model name.
+
+        Returns:
+            A :class:`~tau_agent_core.flows.Performed` whose ``data`` is
+            ``{model, cursor}``, as ``set_model``'s ``returns`` declares.
+        """
+        return self.agent_session.performed(
+            "set_model", {"model": self.agent_session.set_model(name)}
+        )
+
+    def set_session_name(self, name: str) -> Performed:
+        """Give the live session a display name, persisted to its log.
+
+        Delegates to :meth:`AgentSession.set_session_name`. The name is what the
+        session picker shows, so this is the head's side of a session becoming
+        findable by something other than its id.
+
+        Args:
+            name: The name to persist. Must be non-empty.
+
+        Returns:
+            A :class:`~tau_agent_core.flows.Performed` whose ``data`` is
+            ``{name, cursor}``, as ``set_session_name``'s ``returns`` declares.
+        """
+        self.agent_session.set_session_name(name)
+        return self.agent_session.performed("set_session_name", {"name": name})
+
+    def set_auto_compaction(self, enabled: bool) -> Performed:
+        """Turn automatic compaction on or off for the live session.
+
+        Delegates to :meth:`AgentSession.set_auto_compaction`, which writes the one
+        in-memory field on ``CompactionSettings``. Nothing is appended, so this does
+        not survive a restart; the config file is where a durable answer lives.
+
+        Args:
+            enabled: The state to put it in.
+
+        Returns:
+            A :class:`~tau_agent_core.flows.Performed` whose ``data`` is
+            ``{enabled, cursor}``, as ``set_auto_compaction``'s ``returns`` declares.
+            The cursor is the unchanged tip: nothing is appended, and absence is
+            never this codebase's way of saying "nothing moved".
+        """
+        effective = self.agent_session.set_auto_compaction(enabled)
+        return self.agent_session.performed("set_auto_compaction", {"enabled": effective})
+
+    async def compact_messages(
+        self, messages: list[dict], custom_instructions: str | None = None
+    ) -> list[dict] | None:
         """Compact the conversation the TUI sends, returning the shortened list.
 
         Delegates to the AgentSession's compaction engine. Operates on the
         caller's ``messages`` (the TUI's authoritative ``current_chat.messages``,
         which ``stream_chat`` passes as the LLM context) — not the parallel
         session-manager path. Returns None when there is nothing to compact.
+
+        Args:
+            messages: The context to compact.
+            custom_instructions: Extra focus for the generated summary, threaded
+                unchanged into the summarizer's system prompt. This is the
+                ``compact`` capability's one declared argument
+                (:data:`tau_agent_core.capabilities.CAPABILITIES`), so a head
+                that reads the registry and a head that reads this signature
+                agree about what the command takes.
         """
-        return await self.agent_session.compact_messages(messages)
+        return await self.agent_session.compact_messages(messages, custom_instructions)
 
     async def navigate_tree(
         self,
@@ -1563,197 +1443,67 @@ class TauBackend(Backend):
     ) -> list[dict]:
         """Move the live session's cursor to ``target_id`` and return the new context.
 
-        Typed to the ``SessionLog`` Protocol, not the concrete file ``Session``: this
-        method only ever touches ``cursor`` / ``entries()`` / ``append_navigate`` /
-        ``append_branch_summary``, all four of which are on the Protocol. Any
-        conforming store — in-memory, file, or database-backed — works here unchanged.
+        The head's side of two core capabilities: :func:`tau_agent_core.tree_ops.navigate`
+        when there is no summary to make, :func:`~tau_agent_core.tree_ops
+        .summarize_and_navigate` when there is. The core split them because they differ
+        in cost — one is an append, the other spends tokens — and this method keeps the
+        one ``summarize`` flag the tree browser's three modes already speak.
 
-        Port of pi's ``AgentSession.navigateTree`` (agent-session.ts:2708). The live
-        coding-agent ``Session`` is passed in (the TUI owns it, §2.6): this method
-        operates on IT, not on the scratch ``InMemorySessionLog`` the AgentSession runs
-        against. Two modes (§3.1):
-
-        - ``summarize=False`` → append a ``navigate`` entry (zero LLM calls). The
-          abandoned branch drops out of context via the ``parentId`` walk but stays on
-          disk (append-only, still browsable).
-        - ``summarize=True`` → summarize the abandoned subtree (``ConversationTree
-          .subtree_text(target_id)`` → ``summarize_branch``, Fail-Early: raises on a
-          failed/empty summary) and append a ``branch_summary`` parented at the branch
-          point (Decision 5, fix 1). Mode-3 ``custom_instructions`` reach the summarizer
-          SYSTEM prompt.
+        The live coding-agent ``Session`` is passed in (the TUI owns it, §2.6), so the
+        mutation lands on IT, not on the scratch ``InMemorySessionLog`` the AgentSession
+        runs against. What this adds over calling the core directly is banking the
+        summarizer's tokens: ``summarize_and_navigate`` returns its usage because it
+        holds no session to bank it against, and this does hold one.
 
         Returns ``ConversationTree.context_for(cursor)`` — the flat message list the TUI
         swaps into ``self.messages`` and re-renders (reusing the compaction path, §3.4).
         """
-        from tau_agent_core.conversation_tree import ConversationTree
-        from tau_agent_core.session_manager import summarize_branch
-
-        old_leaf = session.cursor
-        if target_id == old_leaf:
-            # No-op (pi navigateTree:2716) — already at the target.
-            return ConversationTree(session.entries(), session.cursor).context_for()
-
-        if summarize:
-            branch_text = ConversationTree(session.entries(), old_leaf).subtree_text(target_id)
-            summary, summary_usage = await summarize_branch(
-                branch_text,
-                self._model,
-                api_key=self._api_key,
-                custom_instructions=custom_instructions,
-            )
-            # A real LLM call, outside the agent loop — bill it to the session rather
-            # than letting it vanish (tau_agent_core.usage).
-            self.agent_session.record_side_usage(summary_usage)
-            session.append_branch_summary(summary, target_id)
-        else:
-            session.append_navigate(target_id)
-
-        return ConversationTree(session.entries(), session.cursor).context_for()
+        if target_id == session.cursor or not summarize:
+            return tree_ops.navigate(session, target_id)
+        messages, summary_usage = await tree_ops.summarize_and_navigate(
+            session,
+            target_id,
+            self._model,
+            api_key=self._api_key,
+            custom_instructions=custom_instructions,
+        )
+        self.agent_session.record_side_usage(summary_usage)
+        return messages
 
     def elide_span(self, session: SessionLog, anchor_id: str, first_kept_id: str) -> list[dict]:
         """Fold a span out of the live session's context and return the new context.
 
-        The TUI half of W3 (NODE-ADDRESSABLE-AGENTS.md): ``elide`` is the
-        summary-less generalization of the compaction anchor, and until now nothing
-        outside the core could create one. Sibling of :meth:`navigate_tree` — same
-        seam (the app owns the modals and the re-render, the backend performs the
-        session-tree mutation and hands back ``context_for``), same ``SessionLog``
-        typing, so any conforming store works. **Synchronous**, unlike
-        ``navigate_tree``: there is no summary, therefore no model call and nothing
-        to await. An ``async def`` with no ``await`` would advertise an I/O boundary
-        this operation does not have.
+        Delegates to :func:`tau_agent_core.tree_ops.elide_span`, which holds the two
+        refusals that make a fold safe — a resume point the fold's scan cannot reach
+        would empty the context silently, and a fold that hides nothing is the
+        silent-no-op anti-pattern. The app owns the modals and the re-render; the
+        core owns the mutation and both refusals.
 
-        Two ids, because an elide is not a branch point. ``anchor_id`` is where the
-        fold jumps FROM — the elide entry is appended as its child, so the anchor
-        becomes the end of the kept region and the new tip. ``first_kept_id`` is
-        where it jumps TO: ``ConversationTree._active_path_entries`` emits the
-        anchor, then the anchor's ancestors from ``firstKeptId`` onward. Everything
-        on that path BEFORE ``firstKeptId`` is the elided span.
-
-        **``first_kept_id`` must therefore be the anchor itself or one of its
-        ancestors, never a descendant.** That direction is not a style choice, it is
-        what the fold's forward scan over ``path[:anchor_idx]`` can reach: a
-        boundary the scan never finds leaves ``found`` False forever, so the fold
-        emits the anchor and NOTHING else — an empty context, silently, with no
-        error. Hence the check here, before either append: ``append_elide``'s own
-        Fail-Early only proves the id names *an* entry, not that it names a
-        reachable one, and the unreachable case is the more damaging of the two.
-
-        Refusing a no-op elide is the other check. An elide whose span is empty
-        (``first_kept_id`` already the first entry the fold keeps) persists a node
-        that changes nothing about the context it was created to change — the
-        silent-no-op anti-pattern, indistinguishable to the user from a successful
-        fold. The core deliberately permits it (an anchor on a root-level entry is
-        a pinned contract case); this policy layer, where a human just asked for a
-        span to disappear, does not.
-
-        Nothing is erased: the navigate/elide pair are appends like any other, and
-        every entry the fold now skips is still in ``entries()`` (Decision 7 / T5).
+        **Synchronous**, unlike :meth:`navigate_tree`: there is no summary, therefore
+        no model call and nothing to await.
 
         Returns ``ConversationTree.context_for(cursor)`` — the flat message list the
-        TUI swaps into ``self.messages`` and re-renders, exactly as
-        :meth:`navigate_tree` does.
+        TUI swaps into ``self.messages`` and re-renders.
 
         Raises:
             ValueError: an unknown anchor or resume point, a resume point that is
                 not on the anchor's path, or a span that would hide nothing.
         """
-        from tau_agent_core.conversation_tree import ConversationTree, is_system_message
-
-        entries = session.entries()
-        known = {e["id"] for e in entries}
-        if anchor_id not in known:
-            raise ValueError(f"elide anchor {anchor_id!r} not found")
-        if first_kept_id not in known:
-            raise ValueError(f"elide resume point {first_kept_id!r} not found")
-
-        tree = ConversationTree(entries, session.cursor)
-        path_ids = [e["id"] for e in tree.path(anchor_id)]
-        if first_kept_id not in path_ids:
-            raise ValueError(
-                f"elide resume point {first_kept_id!r} is not on the path to anchor "
-                f"{anchor_id!r} — it must be the anchor itself or one of its ancestors. "
-                "The fold scans only the anchor's ancestors for the boundary, so a "
-                "resume point it cannot reach would drop the ENTIRE context, silently."
-            )
-
-        # What the fold would lose: the entries it keeps at the anchor today, minus
-        # the kept region (firstKeptId…anchor) it would keep afterwards. Computed
-        # against context_entries, not the raw path, so a span already hidden by an
-        # earlier anchor is not counted twice.
-        kept = set(path_ids[path_ids.index(first_kept_id) :])
-        hidden = [
-            e
-            for e in tree.context_entries(anchor_id)
-            if e["id"] not in kept and not is_system_message(e)
-        ]
-        if not hidden:
-            raise ValueError(
-                f"elide from anchor {anchor_id!r} resuming at {first_kept_id!r} would hide "
-                "nothing — the resume point is already the first entry the fold keeps"
-            )
-
-        if session.cursor != anchor_id:
-            # Put the leaf on the anchor so the elide parents there (append_elide
-            # appends at the current leaf). Same append the "no summary" tree mode
-            # makes; skipped entirely when the anchor already IS the tip, which is
-            # the common "fold my history and keep going" case.
-            session.append_navigate(anchor_id)
-        # TREE-BROWSER-AS-EDITOR.md §8.2/§8.3, required keywords per §11.3. ``hidden``
-        # is the span this elide removes — already computed above for the no-op
-        # refusal and, until now, thrown away immediately afterwards, which is §8.1's
-        # pattern exactly. ``coveredTokens`` is the figure §8.2 names as the one an
-        # elide records nowhere and no reader can recompute later; the count is
-        # passed alongside it so both halves describe the same list rather than one
-        # being re-derived from the tree on a different basis.
-        #
-        # The frame is looked up from ``anchor_id``, the entry this elide parents at,
-        # not from the backend's live AgentSession: the browser aims an elide at an
-        # arbitrary historical anchor, which may sit two ``set_model`` swaps behind
-        # the session's current spec, and the frame that governed the covered span is
-        # the one on that anchor's ancestor chain.
-        session.append_elide(
-            first_kept_id,
-            covered_entries=len(hidden),
-            covered_tokens=estimate_span_tokens(hidden),
-            agent_spec_id=agent_spec_in_force(entries, anchor_id),
-        )
-
-        return ConversationTree(session.entries(), session.cursor).context_for()
+        return tree_ops.elide_span(session, anchor_id, first_kept_id)
 
     def commit_branch(
         self, session: SessionLog, ids: Sequence[str], *, drop_context: bool
     ) -> list[dict]:
         """Build a branch out of the marked messages and continue on it.
 
-        The durable half of TREE-BROWSER-AS-EDITOR.md §6. ``tau_agent_core
-        .tree_surgery`` decides what the branch IS — which marks are kept in place,
-        which are minted as copies, whether an elide follows — and this performs it,
-        in the order §6.3 fixes:
-
-        1. move the leaf to the plan's attach point (the last kept mark);
-        2. mint each copy with ``append_at``, parented at the previous one;
-        3. move the leaf onto the last minted entry;
-        4. append the elide, when the reader asked to keep only the selection.
-
-        **Step 2 is invisible until step 3 lands.** ``append_at`` does not move the
-        leaf, so a mint that fails partway leaves orphan entries hanging off the
-        attach point and the cursor exactly where it was — the commit is atomic from
-        the cursor's point of view, which is the property §6.3 is built around and the
-        reason the copies are not appended one gesture at a time.
-
-        Nothing is re-parented and nothing is erased. I1 holds because every entry's
-        ``parentId`` is still written once, at append (§6.1's argument for why a plan
-        exists at all rather than a sequence of edits).
+        Delegates to :func:`tau_agent_core.tree_ops.commit_branch`, which plans the
+        branch (``tree_surgery``) and performs it in the order TREE-BROWSER-AS-EDITOR.md
+        §6.3 fixes. Nothing is re-parented and nothing is erased.
 
         Args:
             session: The live session log to write to.
-            ids: The marked entry ids, in any order — ``selection_order`` puts them
-                into the order the browser drew them.
-            drop_context: Whether the branch keeps only the selection. ``True``
-                appends an elide resuming at the root-most mark, so the context
-                becomes the system prompt plus the branch. ``False`` leaves
-                everything above the attach point in context.
+            ids: The marked entry ids, in any order.
+            drop_context: Whether the branch keeps only the selection.
 
         Returns:
             ``ConversationTree.context_for(cursor)`` — the new flat message list, the
@@ -1765,65 +1515,15 @@ class TauBackend(Backend):
                 turn-complete. Checked before the first append, so a refusal leaves
                 the log byte-identical.
         """
-        from tau_agent_core.conversation_tree import ConversationTree, is_system_message
-        from tau_agent_core.tree_surgery import (
-            branch_refusal_reason,
-            copy_of,
-            plan_branch,
-        )
-
-        entries = session.entries()
-        tree = ConversationTree(entries, session.cursor)
-        refusal = branch_refusal_reason(tree, ids, drop_context=drop_context)
-        if refusal is not None:
-            raise ValueError(f"cannot branch from this selection: {refusal}")
-        plan = plan_branch(tree, ids, drop_context=drop_context)
-
-        if session.cursor != plan.attach:
-            session.append_navigate(plan.attach)
-
-        parent = plan.attach
-        for source_id in plan.copies:
-            kind, payload = copy_of(tree.entry(source_id))
-            parent = session.append_at(parent, kind, payload)
-        if plan.copies:
-            session.append_navigate(parent)
-
-        if plan.elide_from is not None:
-            # Recomputed against the POST-MINT tree rather than carried over from the
-            # plan: the anchor is now the minted tip, and the covered span is the one
-            # figure ``append_elide`` records that nothing can recompute afterwards
-            # (§8.2). Same arithmetic as :meth:`elide_span`, on the same basis.
-            after = session.entries()
-            grown = ConversationTree(after, session.cursor)
-            path_ids = [e["id"] for e in grown.path(session.cursor)]
-            kept = set(path_ids[path_ids.index(plan.elide_from) :])
-            hidden = [
-                e
-                for e in grown.context_entries(session.cursor)
-                if e["id"] not in kept and not is_system_message(e)
-            ]
-            session.append_elide(
-                plan.elide_from,
-                covered_entries=len(hidden),
-                covered_tokens=estimate_span_tokens(hidden),
-                agent_spec_id=agent_spec_in_force(after, str(session.cursor)),
-            )
-
-        return ConversationTree(session.entries(), session.cursor).context_for()
+        return tree_ops.commit_branch(session, ids, drop_context=drop_context)
 
     def paste_subtree(self, session: SessionLog, source_id: str, target_id: str) -> list[str]:
         """Re-create the subtree at ``source_id`` under ``target_id``.
 
-        The durable half of TREE-BROWSER-AS-EDITOR.md §7. Every copied entry is a new
-        entry carrying ``copiedFrom``, minted with ``append_at`` so the paste never
-        moves the leaf: a paste edits the TREE, and what the model sees changes only
-        when the reader navigates onto the copy. That split is why this returns ids
-        rather than a message list — nothing about the current context changed.
-
-        Parents are minted before children (``plan_paste`` orders them that way), and
-        a source→new id map re-hangs each child under its copied parent, so the copy
-        keeps the original's shape including its forks.
+        Delegates to :func:`tau_agent_core.tree_ops.paste_subtree`. The paste never
+        moves the leaf, which is why this returns ids rather than a message list:
+        nothing about the current context changed, so there is nothing to re-render
+        until the reader navigates onto the copy.
 
         Args:
             session: The live session log to write to.
@@ -1837,23 +1537,9 @@ class TauBackend(Backend):
         Raises:
             ValueError: An unknown id, a source whose kind cannot be copied, a target
                 inside the source's own subtree, or a copied tool result whose call is
-                on neither the target's path nor the copied run. Checked before the
-                first append.
+                on neither the target's path nor the copied run.
         """
-        from tau_agent_core.conversation_tree import ConversationTree
-        from tau_agent_core.tree_surgery import paste_refusal_reason, plan_paste
-
-        tree = ConversationTree(session.entries(), session.cursor)
-        plan = plan_paste(tree, source_id, target_id)
-        refusal = paste_refusal_reason(tree, plan)
-        if refusal is not None:
-            raise ValueError(f"cannot paste here: {refusal}")
-
-        minted: dict[str, str] = {}
-        for mint in plan.mints:
-            parent = plan.target if mint.parent_source_id is None else minted[mint.parent_source_id]
-            minted[mint.source_id] = session.append_at(parent, mint.kind, mint.payload)
-        return [minted[mint.source_id] for mint in plan.mints]
+        return tree_ops.paste_subtree(session, source_id, target_id)
 
     async def rollback_turn(self, text: str) -> SubmissionResult:
         """Abort the in-flight turn, un-path what it produced, and run ``text`` instead.
@@ -1927,16 +1613,18 @@ class TauBackend(Backend):
         *,
         on_orphan: Callable[[str], None] | None = None,
     ) -> RenderRouter:
-        """Wire a :class:`RenderRouter` across all five of this session's channels.
+        """Wire a :class:`RenderRouter` across all six of this session's channels.
 
         The ``AgentEvent`` stream carries the turns; ``submission_start`` /
         ``submission_end`` carry the submission spans that bracket them (which
         ``agent_start``/``agent_end`` cannot — a followUp re-entry runs a second
         loop inside one submission); ``branch_event`` carries a forked sub-agent's
         events, which until now had no consumer anywhere, which is the concrete
-        sense in which "a fork today is unobservable"; and ``branch_end`` is that
+        sense in which "a fork today is unobservable"; ``branch_end`` is that
         sub-agent's own span close, emitted from a ``finally`` so a branch that
-        raised or was cancelled cannot leave its lane open forever.
+        raised or was cancelled cannot leave its lane open forever; and
+        ``custom_message`` carries an extension's durable message, which belongs
+        to none of the other five because it belongs to no completion.
 
         See :meth:`Backend.subscribe_render` for the contract.
         """
@@ -1947,6 +1635,7 @@ class TauBackend(Backend):
             self.agent_session.subscribe_channel("submission_end", router.on_submission_end),
             self.agent_session.subscribe_channel("branch_event", router.on_branch_event),
             self.agent_session.subscribe_channel("branch_end", router.on_branch_end),
+            self.agent_session.subscribe_channel("custom_message", router.on_custom_message),
         ]
 
         def detach() -> None:
@@ -1970,7 +1659,7 @@ class TauBackend(Backend):
         return await self.agent_session.submit(submission)
 
     async def _extract_last_user_message(self, messages: list[dict]) -> str:
-        """Extract the last user message text from a Parley messages list."""
+        """Extract the last user message text from a TauApp messages list."""
         for msg in reversed(messages):
             if msg.get("role") == "user":
                 content = msg.get("content", "")
@@ -2012,8 +1701,6 @@ class TauBackend(Backend):
         if not last_user_message:
             return "", {"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0}, []
 
-        # Send through the agent loop with full conversation context
-        # so the model sees prior tool calls and results
         result_messages = await self.agent_session.prompt(last_user_message, context=messages)
 
         # Extract the last assistant message text
@@ -2072,7 +1759,7 @@ class TauBackend(Backend):
         ``expand_commands=False``, which is where this DIVERGES from
         :meth:`AgentSession.prompt` since B2-b, deliberately: this method returns a
         4-tuple with no slot for a
-        :class:`~tau_agent_core.commands.CommandOutcome`, so a dispatched command
+        :class:`~tau_agent_core.flows.Dispatched`, so a dispatched command
         would be dropped on the floor — the silent no-op the lifecycle exists to
         remove. ``prompt()`` faces the same problem and answers it by raising; this
         one cannot raise instead, because a caller holding a message list has no way
@@ -2088,9 +1775,6 @@ class TauBackend(Backend):
         caller that needs to see a refusal owns its submission and calls
         :meth:`stream_submission`.
         """
-        # Extract the last user message text (same as chat()). Reuses the helper
-        # that already existed for exactly this and had lost its only caller,
-        # rather than keeping a third hand-inlined copy of the walk.
         last_user_message = await self._extract_last_user_message(messages)
         if not last_user_message:
             return "", {"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0}, [], []
@@ -2147,20 +1831,8 @@ class TauBackend(Backend):
         rendering would duplicate. ``message_end`` is used only to harvest
         ``tool_calls_info`` for chat persistence (deduplicated by id).
         """
-        # ONE normalizer for this lane, shared with the persistent multi-lane
-        # renderer (:class:`RenderRouter`) so both paths draw a turn from exactly
-        # the same rules — the suffix diff, the message_end dedup, the usage sum.
-        # Before B3-a this logic lived only in a closure here, which is why a turn
-        # this method was not awaiting could not be rendered at all.
         stream = TurnStream()
 
-        # message_end only fires for the LOOP's completions. An exchange can also
-        # trigger an AUTO-COMPACTION, whose summarizer reads the entire
-        # conversation, and any extension ctx.complete() calls. Those go through
-        # `complete_simple`, which emits no events — so summing message_end alone
-        # produced a cost that was confidently understated, most of all for the one
-        # call the user never asked for. The session's side ledger is cumulative, so
-        # this exchange's share of it is the before/after delta.
         side_usage_before = self.agent_session.side_usage
 
         def capture_event(event: AgentEvent) -> None:
@@ -2194,18 +1866,11 @@ class TauBackend(Backend):
             if pi_event is not None:
                 on_pi_event(pi_event)
 
-        # Subscribe to events before running the prompt
-        # This captures ALL events during the full agent loop (LLM calls + tool execution)
         unsubscribe = self.agent_session.subscribe(capture_event)
         unsubscribe_pi = (
             self.agent_session.subscribe(pi_capture) if on_pi_event is not None else None
         )
 
-        # THE one door (docs/SUBMISSION-LIFECYCLE.md "The one door"). The turn is
-        # admitted exactly once, here, with the caller's own submission record —
-        # not re-derived from ``context`` and not re-admitted by ``prompt()`` a
-        # layer down. The loop handles LLM calls, tool execution, and re-calls the
-        # LLM for tool results; all streaming flows through the event bus above.
         result = await self.agent_session.submit(submission, context=context)
         new_messages = result.messages
 
@@ -2220,17 +1885,10 @@ class TauBackend(Backend):
         usage_totals = stream.usage_totals
         last_extra = stream.last_extra
 
-        # Fold in whatever this exchange spent OFF the loop (auto-compaction, an
-        # extension's ctx.complete()). The delta is taken after the unsubscribe so a
-        # compaction in the end-of-prompt drain is inside the window.
         side_usage_after = self.agent_session.side_usage
         for _field, _before in side_usage_before.items():
             usage_totals[_field] += side_usage_after.get(_field, 0) - _before
 
-        # Real token usage, summed across the exchange's completions. The dict
-        # keeps the prompt/completion/total key names the TUI + headless paths
-        # already read, mapped from τ's input/output/total fields. No fabricated
-        # fallback — if a provider reports nothing, the count is a true 0.
         usage_out: dict[str, Any] = {
             "prompt_tokens": usage_totals["input_tokens"],
             "completion_tokens": usage_totals["output_tokens"],
@@ -2238,20 +1896,8 @@ class TauBackend(Backend):
             "cache_read_tokens": usage_totals["cache_read_tokens"],
             "cache_write_tokens": usage_totals["cache_write_tokens"],
         }
-        # The last completion's server-reported telemetry, for the G4 exchange-summary
-        # readout (t/s · repairs · forced-share). Attach the key ONLY when a provider
-        # actually reported something — Fail-Early: a non-llama provider or a stock
-        # server that sent no timings leaves ``extra`` off entirely, never ``extra: {}``,
-        # so the summary reads exactly as it does today.
         if last_extra:
             usage_out["extra"] = last_extra
-        # Cost at the emit boundary (E4.cost / step S7). ``self.config`` IS the
-        # resolved model_config, so its optional per-model ``cost`` block prices
-        # this exchange here — the one final total, on the same usage dict the TUI
-        # finalizer and headless ``done`` both read. Emit ``cost_usd`` ONLY when a
-        # cost block is configured: an absent block yields tokens-only (unknown
-        # price), never a fabricated ``$0`` — a real free model ``cost:{…:0}``
-        # yields ``0.0`` and reads differently. The frozen ``Usage`` is untouched.
         cost_usd = compute_cost_usd(
             self.config.get("cost"),
             input_tokens=usage_totals["input_tokens"],

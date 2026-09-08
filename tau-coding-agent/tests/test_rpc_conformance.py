@@ -61,31 +61,8 @@ class _State:
     def __init__(self) -> None:
         self.delay_s = 0.0
         self.reply_text = "ok"
-        # R-T3: when set, overrides `reply_text` with N separate SSE chunks
-        # (one `data:` block per string) sent in ONE HTTP write — a peer
-        # backpressure test needs many small `message_update` events, not
-        # one big reply, to exceed the (item-count) bound (see _sse_body).
         self.chunks: list[str] | None = None
-        # Finding 3 (phase-4 review): set the instant the handler thread's
-        # OWN `self.wfile.write(body)` call returns — i.e. the OS has
-        # accepted every byte of the response body. A blocking socket write
-        # against a peer that has stopped reading does not return until the
-        # peer resumes, so "still unset after N seconds of the child not
-        # reading" is server-side, black-box proof that τ genuinely stopped
-        # pulling bytes off this connection — not an inference from counting
-        # wire events, which a large-enough single write can satisfy even
-        # with an unbounded queue (see the test this backs).
         self.write_complete = threading.Event()
-        # Finding 3 (Tier B review): a PARENT-CONTROLLED release, instead of
-        # `delay_s`'s wall-clock guess, for the one test that needs a
-        # provider call to finish at a specific moment relative to the
-        # CHILD's shutdown. When `gate` is not None the handler thread sets
-        # `gate_reached` (server-side proof the child's request really did
-        # arrive — a test that released a gate nobody was waiting on would
-        # otherwise pass while measuring nothing) and then blocks until the
-        # parent sets `gate`. `delay_s` cannot express this: the child's
-        # teardown starts when the parent closes stdin, and only the parent
-        # knows when that happened.
         self.gate: threading.Event | None = None
         self.gate_reached = threading.Event()
 
@@ -112,8 +89,6 @@ def _make_fake_openai_handler(state: _State) -> type[BaseHTTPRequestHandler]:
             length = int(self.headers.get("Content-Length", 0))
             self.rfile.read(length)  # drain the request body
             if state.gate is not None:
-                # Finding 3 (Tier B review): hold this response until the
-                # parent says so — see `_State.gate`.
                 state.gate_reached.set()
                 state.gate.wait(timeout=60)
             if state.delay_s:
@@ -156,11 +131,6 @@ def _reset_fake_state(fake_state: _State):
 @pytest.fixture(scope="module")
 def fake_provider_url(fake_state: _State):
     server = ThreadingHTTPServer(("127.0.0.1", 0), _make_fake_openai_handler(fake_state))
-    # Finding 1's repro needs a request the child gives up on well before the
-    # fake server would ever respond (see delay_s below) — the CHILD process
-    # exits/gets killed long before that sleep ends, which would otherwise
-    # leave a non-daemon per-request handler thread alive and block THIS
-    # process's own exit at the end of the test session.
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -350,8 +320,6 @@ async def _recv(proc: asyncio.subprocess.Process, timeout: float = 10.0) -> dict
     assert proc.stdout is not None
     raw = await _read_line(proc, timeout=timeout)
     if not raw:
-        # stdout closed early -- surface whatever the child said on stderr
-        # (T4's channel) instead of a bare "readline returned nothing".
         assert proc.stderr is not None
         err = (await proc.stderr.read()).decode("utf-8", errors="replace")
         raise AssertionError(f"subprocess stdout closed before a response arrived; stderr:\n{err}")
@@ -465,8 +433,6 @@ async def test_protocol_conformance_capabilities_framing_errors_and_ordering(fak
     IS needed, because the assertion is about process-level behaviour)."""
     proc = await _spawn(fake_home)
     try:
-        # K2 -- get_capabilities answers correctly as the FIRST thing sent on
-        # a fresh connection, no priming/handshake required.
         await _send(proc, {"jsonrpc": "2.0", "id": 1, "method": "get_capabilities"})
         caps = await _recv(proc)
         assert caps["id"] == 1
@@ -487,18 +453,6 @@ async def test_protocol_conformance_capabilities_framing_errors_and_ordering(fak
         assert cr_resp["id"] == 2
         assert cr_resp["result"]["method"] == "get_state"
 
-        # T1 -- NOT splitlines(): a raw (unescaped) U+2028 LINE SEPARATOR
-        # embedded in a string value is legal JSON (RFC 8259 only requires
-        # escaping U+0000-U+001F) and must not split this one physical line
-        # into two unparseable fragments -- exactly the hazard pi's jsonl.ts
-        # refuses Node's `readline` over (docs/REMOTE-CONTROL.md §4[1]).
-        # Round-tripped through the request id (a JSON-RPC id may be any
-        # JSON value) so a wrong split is unambiguous: it would either time
-        # out (the reader choked on half a JSON object) or come back with a
-        # mangled id. `ensure_ascii=False` is load-bearing -- the default
-        # `json.dumps` would escape U+2028 to a 6-character ASCII sequence,
-        # which never puts the actual codepoint on the wire and would test
-        # nothing.
         marker_id = "marker end"
         line = (
             json.dumps(
@@ -526,9 +480,6 @@ async def test_protocol_conformance_capabilities_framing_errors_and_ordering(fak
         assert bad_params["error"]["code"] == -32602
         assert bad_params["error"]["data"]["method"] == "submit"
 
-        # T6 -- FIFO is the only ordering guarantee: pipeline N fast,
-        # turn-free requests without waiting for a response between sends,
-        # and confirm the responses come back in the SAME order they were
         # sent, over the real pipe (the regression transport.py's own
         # comment names: "twenty responses emerged 1,3,5,...,0,15,...").
         ids = list(range(100, 120))
@@ -576,18 +527,12 @@ async def test_prompt_dual_completion_concurrency_and_cursor(fake_home, fake_sta
         submission_id = accept["result"]["submission_id"]
         assert submission_id
 
-        # Concurrency -- while that turn is still waiting on the (delayed)
-        # fake provider, an unrelated get_state must still answer promptly
-        # and must observe is_streaming=True: proof the reader/dispatcher is
         # not blocked behind the in-flight turn, AND the precondition for
         # the abort below actually being "genuinely in flight".
         await _send(proc, {"jsonrpc": "2.0", "id": 2, "method": "get_state"})
         mid_turn, _skipped = await _recv_response(proc, 2, timeout=5.0)
         assert mid_turn["result"]["is_streaming"] is True
 
-        # B1 -- abort THIS in-flight turn. It is a SIGNAL, not a completion:
-        # the response must arrive fast (it does not wait for the gated
-        # provider call) and must NOT claim a cursor -- at signal time the
         # turn has not unwound or persisted anything yet, so any cursor
         # here would be the stale pre-abort tip E5/F3 rule out.
         await _send(proc, {"jsonrpc": "2.0", "id": 3, "method": "abort"})
@@ -595,8 +540,6 @@ async def test_prompt_dual_completion_concurrency_and_cursor(fake_home, fake_sta
         assert abort_resp["result"]["status"] == "aborted"
         assert "cursor" not in abort_resp["result"]
 
-        # Drain event notifications until the turn's SECOND completion
-        # (agent_end -- never on the response itself, C3) shows up. This is
         # the one point the mutation has genuinely happened, and E5/F3 are
         # satisfied HERE: agent_end carries the resulting cursor.
         agent_end = None
@@ -609,17 +552,12 @@ async def test_prompt_dual_completion_concurrency_and_cursor(fake_home, fake_sta
         assert agent_end is not None, "turn never reached agent_end"
         assert agent_end["params"].get("cursor")
 
-        # E5/F3 -- a separate get_state afterwards must report the SAME
-        # cursor agent_end already announced, never a different (later or
         # earlier) tip -- no host may cache "the tip" and no response may
         # invent one either.
         await _send(proc, {"jsonrpc": "2.0", "id": 4, "method": "get_state"})
         state_resp = await _recv(proc, timeout=5.0)
         assert state_resp["result"]["cursor"] == agent_end["params"]["cursor"]
 
-        # E2 -- the turn's text is PULLED via get_messages, never pushed
-        # wholesale; confirms the turn actually ran end to end despite the
-        # abort request landing mid-flight (the fake provider has no tool
         # calls to interrupt, so the single already-started LLM call still
         # completes -- exactly the reviewer's own trace).
         await _send(proc, {"jsonrpc": "2.0", "id": 5, "method": "get_messages"})
@@ -709,10 +647,6 @@ async def test_every_stdout_line_is_valid_json(fake_home, fake_state):
         await _shutdown(proc)
 
 
-# ── session lifecycle (H1, phase 3): new_session / fork / switch_session ────
-#
-# rpc_mode.py now builds a real SessionCatalog (defaulting to the file store
-# under the isolated $HOME these tests already sandbox — see fake_home) and
 # an AgentSessionRuntime over it, so these three verbs are exercised as a
 # real client would see them: over the wire, against a real subprocess.
 
@@ -741,8 +675,6 @@ async def test_new_session_resets_state_and_returns_the_addressable_tuple(fake_h
         result = resp["result"]
         assert result["method"] == "new_session"  # D2
         assert result["cancelled"] is False
-        # F2: the addressable tuple. cursor is NOT None here — a fresh
-        # session still carries its own model_change provenance entry
         # (Session._init_state), so "empty" means "no message entries", not
         # "no entries at all".
         assert result["session"]["store"] == "file"
@@ -895,9 +827,6 @@ async def test_new_session_does_not_wedge_the_channel_when_the_turn_wont_stop(
             raise AssertionError(f"WEDGED: only got responses for {sorted(responses)}")
 
         assert responses[3]["error"]["code"] == dialect.TURN_STILL_RUNNING
-        # get_state answering AT ALL is the point (a wedged reader would
-        # never have parsed this request in the first place); is_streaming
-        # is already False here because new_session's OWN abort() signal
         # (AgentSession.abort() flips it unconditionally, before waiting on
         # anything) landed first -- not evidence either way about the wedge.
         assert "is_streaming" in responses[4]["result"]
@@ -960,15 +889,6 @@ async def test_backpressure_bounds_the_backlog_and_abort_stays_reachable_behind_
     per R-T3's own wording ("drive it against a real process with a peer
     that stops reading").
     """
-    # Deliberately a large, black-box constant rather than a multiple of
-    # DEFAULT_OUTPUT_QUEUE_EVENT_BOUND (see docstring) -- ~50 MB total.
-    # Measured directly (phase-4 review fix): a ~6 MB body was NOT enough --
-    # this machine's `tcp_rmem`/`tcp_wmem` autotune up to 6 MB / 4 MB, so the
-    # kernel alone can absorb ~10 MB with the write() call returning
-    # (falsely) instantly, no matter how the credit gate behaves, because
-    # none of that capacity requires anything in USER SPACE to have read a
-    # byte. ~50 MB is comfortably past that ceiling on any plausible
-    # deployment target, so the fake provider's write() blocking is a robust
     # consequence of the child ceasing to read, not a coincidence of this
     # environment's buffer sizing.
     n_chunks = 25000
@@ -979,9 +899,6 @@ async def test_backpressure_bounds_the_backlog_and_abort_stays_reachable_behind_
         accept = await _recv(proc, timeout=5.0)
         assert accept["result"]["accepted"] is True
 
-        # The peer that "stops reading": genuinely do not read anything for
-        # a while. Local, no artificial provider delay -- an unbounded
-        # implementation would finish producing (and enqueueing, and the
         # fake provider would finish WRITING) the entire multi-megabyte
         # reply well within this window.
         await asyncio.sleep(2.0)
@@ -1116,41 +1033,6 @@ async def test_extension_requested_shutdown_from_a_turn_end_hook_ends_the_proces
             await proc.wait()
 
 
-# ── blockers 1/2 (phase-4 review): the shutdown matrix, non-reading peer ───
-#
-# The adversarial review's headline finding: "a τ process whose peer stops
-# reading cannot be killed" -- the exact opposite of what T3 backpressure set
-# out to deliver (G5: kill always works), reproduced against a real
-# subprocess for all three shutdown triggers. Two independent defects, fixed
-# together here:
-#
-#   Blocker 1 -- a credit-starved turn's own `agent_end` re-emission (inside
-#   `AgentLoop.run`'s `except BaseException` bracket) had no escape once the
-#   ONE cancellation that got it there was already spent; `RPCHandler
-#   ._background_tasks` was also never reaped by `run()`, so the stalled
-#   turn outlived it -- `asyncio.run()`'s OWN shutdown (`asyncio.runners
-#   ._cancel_all_tasks`) then joined that orphaned task forever.
-#
-#   Blocker 2 -- the stdout writer ran its blocking `write()`/`flush()` on
-#   a `ThreadPoolExecutor` thread (`loop.run_in_executor`); cancelling the
-#   *task* awaiting it detaches without stopping the *thread*, which stays
-#   parked in the `write()` syscall against a peer that never drains the
-#   pipe. Verbatim the hazard `_read_stdin`'s own docstring documents and
-#   fixed for the reader (`loop.connect_read_pipe`) -- the writer was
-#   simply left behind.
-#
-# A note on WHY these tests drain `proc.stdout` concurrently with
-# `proc.wait()` rather than never reading it again at all: `asyncio.subprocess
-# .Process.stdout` is a `StreamReader` with its own 64 KiB flow-control
-# high-water mark (`asyncio.streams._DEFAULT_LIMIT`), independent of
-# anything τ's protocol or either blocker's fix controls -- once that much
-# unconsumed data is buffered, the transport PAUSES reading from the
-# underlying OS pipe, which means the driver stops draining it regardless of
-# what τ does on its own side. A raw, non-Python host reading via `read(2)`
-# directly would not have this second, driver-side limit; simulating "the
-# peer stops reading" here means the TEST temporarily stops calling
-# `readline()` (proving the signal/EOF path itself is not wedged behind a
-# stalled turn), then resumes -- exactly `test_backpressure_bounds_the_
 # backlog_and_abort_stays_reachable_behind_it`'s own established pattern,
 # reused here for signals instead of `abort`.
 
@@ -1342,18 +1224,6 @@ async def test_stdin_eof_exits_when_the_peer_never_resumes_reading(fake_home, fa
             await proc.wait()
 
 
-# ── B7: Tier B — schema-matches-wire-bytes + set_model persists (RPC-TIER-B ─
-# .md §3 "B7 — integration") ──────────────────────────────────────────────
-#
-# No merged Tier B unit's own test drives either of these, because every one
-# of them constructs an ``RPCHandler`` and calls its handler function
-# in-process (docs/RPC-TIER-B.md §3's own per-unit scope): that pins the
-# Python return VALUE, never the JSON that actually reaches a peer, and none
-# of them writes a session to disk and reloads it the way a real host
-# restart would. Both gaps are exactly what let the phase review's finding
-# #2 through: ``SET_AUTO_COMPACTION_RESULT_SCHEMA`` claimed
-# ``additionalProperties: false`` while the dispatcher (handler.py:1009, D2)
-# grafts ``result.method`` onto every real response — a fact no in-process
 # handler-return-value test can see, because that value is what ``{**result,
 # "method": method}`` is built FROM, not what a peer receives.
 
@@ -1413,8 +1283,6 @@ async def test_tier_b_results_match_their_published_schemas_and_set_model_persis
                 f"result_schema: {violation}\nresult={result}"
             )
 
-        # A real, persisted (file-backed) session to run the seven verbs
-        # against -- a fork, kept deliberately distinct from the startup
         # session so this test's subject stays "the published result
         # schemas", not "does startup persist" (Blocker 2's own test).
         await _send(proc, {"jsonrpc": "2.0", "id": 2, "method": "fork"})
@@ -1473,12 +1341,6 @@ async def test_tier_b_results_match_their_published_schemas_and_set_model_persis
         _check("set_auto_compaction", auto_compact["result"])
         assert auto_compact["result"]["enabled"] is True
 
-        # C3 (Blocker 1, Tier B review): compact's RESPONSE is only an
-        # acknowledgement -- the outcome rides the compaction_end
-        # notification, whose payload is checked against
-        # COMPACTION_END_PARAMS_SCHEMA. That constant is imported from this
-        # process rather than pulled from the child's get_capabilities
-        # because the capability document has no slot for a notification's
         # schema (stated in the verb's own notes); the bytes are still the
         # child's.
         await _send(proc, {"jsonrpc": "2.0", "id": 9, "method": "compact"})
@@ -1509,8 +1371,6 @@ async def test_tier_b_results_match_their_published_schemas_and_set_model_persis
 
     assert session_id is not None
 
-    # Reload, for real: parse the on-disk session with the SAME code a
-    # resumed process uses (Session.load), not through the RPC wire at all
     # -- proving the model_change entry set_model appended is durable, not
     # merely reflected in the response this same call already returned.
     session_dir = session_dir_for_cwd(os.getcwd(), base_dir=rpc_session_base(fake_home_two_models))
@@ -1524,18 +1384,6 @@ async def test_tier_b_results_match_their_published_schemas_and_set_model_persis
     )
 
 
-# ── Blocker 2 (Tier B review): the STARTUP session must keep what it is told ──
-#
-# The test above forks first, and says why: until this fix the startup session
-# was `create_ephemeral`, so it had no file to reload and the only way to
-# check durability at all was to route around it. That routing-around is
-# exactly what let the defect through -- on the session every host actually
-# starts on, `set_model` and `set_session_name` appended into a list nobody
-# ever wrote, and returned a cursor implying otherwise. The verbs looked
-# right, the replay showed nothing, and `require_log_appender` passed because
-# an ephemeral `Session` has every appender.
-#
-# So this test forks nothing, switches nothing, and creates nothing: it drives
 # the two durability-promising verbs against the session the child chose for
 # itself at startup, then reads the disk after that child is gone.
 
@@ -1672,9 +1520,6 @@ async def test_an_unpersisted_session_refuses_the_durability_promising_verbs(fak
         assert switched["error"]["code"] == dialect.SESSION_NOT_PERSISTED
         assert "unpersisted" in switched["error"]["message"]
 
-        # D-7 rule 1's third member (finding 6): compact appends a
-        # `compaction` entry, so it refuses here too -- with an ERROR
-        # response, not an `accepted` acknowledgement followed by a
         # compaction_end carrying a cursor for an entry that dies with the
         # process, which is what it used to do.
         await _send(proc, {"jsonrpc": "2.0", "id": 4, "method": "compact"})
@@ -1745,16 +1590,6 @@ async def test_new_session_persists_by_default_and_is_addressable(fake_home):
         await _shutdown(proc)
 
 
-# ── findings 7 & 8 (Tier B review): the ids nothing produced, and the tuple ──
-#    that called itself addressable
-#
-# Finding 8: `switch_session` took a session id and NOTHING on the wire
-# enumerated them, so a host could only ever reach a session it had made in
-# this process. The three tests below drive `list_sessions` against a real
-# child, and the middle one is the finding itself: a session made by an
-# EARLIER child, unreachable before this verb existed.
-#
-# Finding 7: `new_session {"persist": false}` returned an "addressable tuple"
 # `switch_session` then answered -32602 for. The last test measures the
 # corrected shape end to end.
 
@@ -1925,20 +1760,9 @@ async def test_an_unpersisted_session_says_it_is_unaddressable_and_the_listing_a
         await _shutdown(proc)
 
 
-# ── Blocker 1 (Tier B review): a slow compaction must not wedge the reader ──
-#
-# The regression this file already had -- test_new_session_does_not_wedge_the_
-# channel_when_the_turn_wont_stop -- pipelines one BOUNDED verb behind
-# another, so it cannot see this: `compact` used to run the summarization LLM
-# call INLINE on the dispatch path, and `transport._read_stdin` awaits each
-# dispatched line to completion before parsing the next one. Measured before
-# the fix, with the provider gated at 20s: compact, get_state and abort were
 # all answered at t=20.01s -- the latter two not merely delayed but UNPARSED
 # for the whole call.
 
-#: How long the fake provider stalls the compaction's summary call. Long
-#: enough that "answered while the compaction runs" and "answered when the
-#: compaction ends" cannot be confused for one another under CI jitter, short
 #: enough that this test costs seconds rather than the 20s the original
 #: reproduction used.
 _SLOW_COMPACTION_S = 6.0
@@ -1948,20 +1772,6 @@ _SLOW_COMPACTION_S = 6.0
 #: << `_SLOW_COMPACTION_S`.
 _PIPELINE_BUDGET_S = 2.0
 
-#: The conversation the compaction below needs, expressed the only way this
-#: transport allows. The shipped `keep_recent_tokens` is 20000 (~4 chars/token),
-#: and a cut that keeps everything removes nothing: `prepare_compaction` reports
-#: that as "nothing to compact" (None), the provider is never called, and this
-#: test's `outcome_at > _SLOW_COMPACTION_S * 0.8` half -- which exists precisely
-#: to refuse "a compaction that did nothing at all" -- fails. So the turns must
-#: together clear 20000 tokens with the FIRST turn still on the far side of the
-#: cut: four turns of ~10000 tokens puts the cut on turn 3 with turns 1-2 as the
-#: summarised prefix. Four medium prompts rather than one big one is now only
-#: a convenience: this comment used to justify it with "a single request line
-#: past the stdlib's 64 KiB limit kills the child", which stopped being true
-#: at T7 (the bound is `transport.MAX_REQUEST_LINE_BYTES`, 8 MiB, and past it
-#: is a `REQUEST_TOO_LARGE` refusal rather than a death). The FOUR-turn shape
-#: is still required, for the reason above it — the cut must fall past turn 2.
 #: See tau-agent-core/tests/test_compaction_engine.py for the same property
 #: pinned at the unit layer.
 _TURNS_BEFORE_COMPACTION = 4
@@ -2004,9 +1814,6 @@ async def test_a_slow_compaction_does_not_wedge_the_channel(fake_home, fake_stat
     """
     proc = await _spawn(fake_home)
     try:
-        # Real turns first, and enough of them. A compaction that never calls
-        # the provider cannot be slow, and there are two separate ways to end up
-        # with no provider call: an active path holding no message entry at all
         # (agent_session.py's `not any(... type in ("message", ...))` check),
         # and -- the one `_TURN_TEXT` is about -- a cut that keeps everything.
         for msg_id in range(1, _TURNS_BEFORE_COMPACTION + 1):
@@ -2066,14 +1873,6 @@ async def test_a_slow_compaction_does_not_wedge_the_channel(fake_home, fake_stat
             f"provider was supposed to stall it for {_SLOW_COMPACTION_S}s, so "
             "this test is not measuring what it claims to"
         )
-        # Timing alone once said "slow compaction" about a compaction that
-        # removed nothing: the whole conversation sat under keep_recent_tokens,
-        # the summariser was handed an empty <conversation>, and the stall being
-        # measured was the fake provider answering THAT. State the premise
-        # directly instead of trusting the clock for it. (The `tokens_saved`
-        # arithmetic is not asserted here on purpose: `estimate_context_tokens`
-        # anchors on the last assistant Usage, and this fake provider reports
-        # single-digit token counts, so the wire numbers here are the fake's,
         # not the conversation's. That arithmetic is pinned where the estimate
         # is real -- tau-agent-core/tests/test_compaction_engine.py.)
         assert end["params"]["performed"] is True
@@ -2181,19 +1980,6 @@ async def test_abort_stops_a_slow_compaction_and_the_host_is_told(fake_home, fak
         await _shutdown(proc)
 
 
-#: Where inside `_BACKGROUND_TASK_GRACE_S` (1.0s) the compaction is released.
-#: Bounded on BOTH sides and deliberately centred between them:
-#:
-#: - it must be LATER than one `_write_stdout` poll interval (0.5s), because
-#:   before the fix that is when the writer had already drained, exited, and
-#:   left the queue unread — release any earlier and the pre-fix code would
-#:   deliver too, and this test would prove nothing;
-#: - it must be EARLIER than the 1.0s grace, or `_cancel_background_tasks`
-#:   reaches phase 2, cancels the compaction, and the run takes the (already
-#:   correct, separately pinned) cancellation path instead.
-#:
-#: 0.75s leaves 250ms of scheduling slack on each side. If a loaded machine
-#: overruns it anyway the run lands on the cancellation branch, which this
 #: test also asserts — so the failure mode is a weaker proof, never a false
 #: red.
 _RELEASE_INSIDE_THE_REAP_S = 0.75

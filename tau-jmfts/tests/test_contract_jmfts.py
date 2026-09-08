@@ -30,9 +30,6 @@ from tau_agent_core.testing.session_log_contract import SessionLogContractTests
 from tau_jmfts.client import JmftsClient, JmftsError
 from tau_jmfts.store import JmftsSessionLog
 
-# TREE-BROWSER-AS-EDITOR.md §8/§11.3: the splice appenders now require the anchor's
-# provenance as keyword-only arguments with no defaults. These tests are about
-# something else, so they name plausible values once here.
 _PROV = {
     "summarizer_model_id": "test-summarizer",
     "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
@@ -63,11 +60,6 @@ def _context_texts(log: JmftsSessionLog) -> list[str]:
         for block in (message.get("content") or [])
         if isinstance(block, dict) and "text" in block
     ]
-
-
-# ---------------------------------------------------------------------------
-# 1. The shared W5 contract suite.
-# ---------------------------------------------------------------------------
 
 
 class TestJmftsSessionLogContract(SessionLogContractTests):
@@ -102,11 +94,6 @@ class TestJmftsSessionLogContract(SessionLogContractTests):
         return JmftsSessionLog.load(self._client, log.root_doc_id)
 
 
-# ---------------------------------------------------------------------------
-# 2. JMFTS-specific properties the contract suite can't know about.
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def client(jmfts_url: str, jmfts_token: str | None):
     c = JmftsClient(jmfts_url, token=jmfts_token)
@@ -128,16 +115,11 @@ def test_root_document_shape_and_id_mapping(client: JmftsClient) -> None:
         assert log.id != str(log.root_doc_id)
         assert "/" not in log.id
 
-        # `create()` already seeded a model_change entry (cursor != None), so its
-        # own doc is the one that parents directly at the root document -- the
-        # crux mapping: parentId None <-> parent_id == the ROOT DOCUMENT's id.
         seeded_id = log.entries()[0]["id"]
         assert log.entries()[0]["parentId"] is None
         seeded_doc = client.get_document(int(seeded_id))
         assert seeded_doc["parent_id"] == log.root_doc_id
 
-        # navigate(None) + append is the general way to force a fresh root-level
-        # append and re-confirm the same mapping mid-conversation.
         log.append_navigate(None)
         second_id = log.append_message(_msg("user", "hello"))
         second_doc = client.get_document(int(second_id))
@@ -179,9 +161,6 @@ def test_entries_take_cr1_sibling_positions(client: JmftsClient) -> None:
         # The root is never position-ordered (store passes sequential=False).
         assert client.get_document(log.root_doc_id)["position"] is None
 
-        # create() seeded a model_change as the root's first child (position 0).
-        # Two navigate(None)+append pairs make it a real fork point: three siblings
-        # directly under the root.
         log.append_navigate(None)
         b = log.append_message(_msg("user", "b"))
         log.append_navigate(None)
@@ -193,8 +172,6 @@ def test_entries_take_cr1_sibling_positions(client: JmftsClient) -> None:
         ordered_ids = [str(ch["id"]) for ch in children]
         assert ordered_ids.index(b) < ordered_ids.index(c)  # deterministic fork order
 
-        # A linear step (single child) still takes a position — position 0 among the
-        # sole child of its parent — proving the append path always opts in.
         d = log.append_message(_msg("user", "d"))  # chains off c's leaf
         assert client.get_document(int(d))["position"] == 0
     finally:
@@ -325,8 +302,6 @@ def test_fork_remaps_cross_references_not_just_parent_ids(client: JmftsClient) -
         source.append_compaction("the summary", keep, tokens_before=10, **_PROV)
         tail = source.append_message(_msg("user", "after compaction"))
 
-        # a branch + branch_summary (exercises fromId), then a TRAILING navigate
-        # (exercises targetId via cursor resolution, which the old test never did).
         source.append_navigate(keep)
         source.append_message(_msg("assistant", "doomed branch"))
         source.append_branch_summary("abandoned", keep)

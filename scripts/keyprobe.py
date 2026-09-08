@@ -25,8 +25,6 @@ from textual import events
 from textual._xterm_parser import XTermParser
 
 KITTY_QUERY = "\x1b[?u"
-# 1 | 8 | 16 — disambiguate, report-all-keys, report-associated-text. Exactly the
-# flags textual/drivers/linux_driver.py writes on startup.
 KITTY_ENABLE = "\x1b[>25u"
 KITTY_DISABLE = "\x1b[<u"
 
@@ -90,8 +88,6 @@ def main() -> int:
         parser = XTermParser()
         pending = ""
         while True:
-            # Shorter than ESCAPE_DELAY, so an ESC-prefixed sequence gets its
-            # timeout driven on the next pass rather than waiting for a keypress.
             data = read_available(fd, 0.05)
             if not data:
                 late = flush_pending(parser)

@@ -112,8 +112,6 @@ def test_build_child_args_is_headless_ephemeral_and_extension_free():
         prompt="audit the repo", model=None, tools=None, system_prompt_path=None
     )
     assert args[:5] == ["-p", "--mode", "json", "--no-session", "--no-extensions"]
-    # The prompt is the single positional message, passed VERBATIM (no "Task:" prefix
-    # — that is a 20_delegate flavour the neutral kit deliberately drops).
     assert args[-1] == "audit the repo"
     assert "--model" not in args and "--tools" not in args
 
@@ -320,8 +318,6 @@ async def test_spawn_tau_rejects_double_timeout(fake_home):
 
 
 async def test_spawn_tau_rejects_budget_without_price(fake_home):
-    # Fail-Early: a max_usd we could never enforce (no price) is refused up front,
-    # not silently ignored (mirrors the double-timeout guard above).
     with pytest.raises(ValueError, match="refusing to silently not-enforce"):
         await spawn.spawn_tau("budgeted", cwd=str(fake_home), limits=spawn.SpawnLimits(max_usd=5.0))
 
@@ -330,8 +326,6 @@ async def test_spawn_tau_rejects_budget_without_price(fake_home):
 
 
 async def test_spawn_tau_trips_max_turns(fake_home):
-    # One child turn against the fake server; max_turns=1 trips after it, the child
-    # is killed, and the imposed stop_reason overrides the child-reported "stop".
     result = await spawn.spawn_tau(
         "one and done", cwd=str(fake_home), limits=spawn.SpawnLimits(max_turns=1)
     )
@@ -386,8 +380,6 @@ async def test_spawn_all_runs_every_prompt_in_order(fake_home):
 
 
 async def test_spawn_tau_aborts_from_signal(fake_home):
-    # A pre-aborted ctx.signal must propagate: the first child stdout line trips
-    # the abort check, the child is killed, and stop_reason is "aborted".
     signal = AbortSignal()
     signal.abort()
     result = await spawn.spawn_tau("never mind", cwd=str(fake_home), signal=signal)

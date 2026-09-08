@@ -183,6 +183,36 @@ Wire quirks are separate and are inferred from the endpoint URL at request time:
 which spelling of the output cap a server accepts, and whether it tolerates
 `stream_options`. State `models.<name>.compat` to override either.
 
+### Prompt caching
+
+Two keys, answering different questions. `models.<name>.prompt_cache` is a
+boolean asking for caching at all, and defaults to `true` on every backend.
+`models.<name>.prompt_cache_dialect` says how an OpenAI-compatible endpoint has
+to be asked.
+
+An Anthropic model reached over the `anthropic` backend needs neither: caching
+there is a native request parameter, so it is already on and `"prompt_cache":
+false` is the only thing to write.
+
+The same model reached over an **OpenAI-compatible gateway** (LiteLLM, or any
+proxy) needs the dialect, because nothing in that entry says the endpoint routes
+to Anthropic, and guessing it from the model id is the bug in
+[oh-my-pi#1845](https://github.com/can1357/oh-my-pi/issues/1845):
+
+```json
+"litellm-haiku": {
+  "backend": "openai",
+  "model": "claude-haiku-4-5-20251001",
+  "base_url": "http://localhost:4000/v1",
+  "prompt_cache_dialect": "anthropic"
+}
+```
+
+Leave the dialect unset for OpenAI models — their caching is automatic and a
+marker buys nothing. `docs/PROMPT-CACHING.md` has the measured matrix, including
+what an undeclared dialect costs on an Anthropic model (full input price on every
+request) and why the marker cannot simply be sent to everyone.
+
 ## Credits
 
 τ carries work from two MIT-licensed projects, and neither is a dependency —

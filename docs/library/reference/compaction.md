@@ -417,9 +417,8 @@ basis, and nothing would report the mismatch.
 
 Public because the value must be named at the CALL SITE: §11.3 makes the
 provenance a required keyword argument on the appenders precisely so a caller
-that cannot compute it fails there, and the two callers live in two packages
-(``AgentSession._perform_compaction`` here, ``TauBackend.elide_span`` in
-``tau-coding-agent``). Computing it inside the five ``SessionLog``
+that cannot compute it fails there (``AgentSession._perform_compaction`` and
+``tree_ops.elide_span`` / ``commit_branch``). Computing it inside the five ``SessionLog``
 implementations instead would put this arithmetic — and the entry→message
 flattening under it — in five places.
 

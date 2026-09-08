@@ -140,9 +140,6 @@ class TestMultiBlockMessage:
 
         assert [d.delta for d in thinking_deltas] == ["Hmm", ", ok."]
         assert all(d.replace is False for d in thinking_deltas)
-        # The text block's first appearance is ordinary growth from nothing,
-        # NOT a replace of the (differently-typed) thinking block that
-        # happened to occupy the same content-list position.
         assert [d.delta for d in text_deltas] == ["Answer"]
         assert text_deltas[0].replace is False
 
@@ -217,9 +214,6 @@ class TestNonDiffableBlockPassthrough:
         # No change -> nothing, as usual.
         assert projector.project(message) == []
 
-        # Mutate the SAME dict object in place (as opposed to the producer
-        # building a fresh dict, which is what agent_loop.py does today via
-        # model_dump() — this simulates a different, equally legal producer).
         block["arguments"] = {"p": "/etc"}
         second = projector.project(message)
         assert len(second) == 1, "a real change must still be reported, not swallowed"
@@ -302,9 +296,6 @@ class TestNonDiffableBlockPassthrough:
         assert second[0].block["id"] == "B"
         assert second[0].block["name"] == "cat"
 
-        # Re-sending A's original (unchanged) snapshot must still be
-        # recognized as unchanged -- A's identity was not overwritten by B
-        # having occupied the same index=0.
         third = projector.project(
             {
                 "role": "assistant",
@@ -321,8 +312,6 @@ class TestReset:
 
         projector.reset()
 
-        # Without reset, "Hi" would be flagged as a non-prefix replace of
-        # "Hello". After reset it is ordinary growth from nothing.
         fresh = projector.project(_text_message("Hi"))
         assert len(fresh) == 1
         assert fresh[0].delta == "Hi"
@@ -381,8 +370,6 @@ class TestRT6FullTurnByteExact:
         assert text_acc == final_text
         assert thinking_acc == "Let me check the directory."
         assert tool_blocks_seen == 2  # two DISTINCT arguments payloads only
-        # The two verbatim no-change repeats (one thinking-only, one text-only)
-        # must not have contributed any BlockDelta at all.
         assert emitted_total == (
             # thinking: "Let me check the " -> "...directory." = 2 changes
             2
@@ -400,8 +387,6 @@ class TestRT6FullTurnByteExact:
         p2 = MessageDeltaProjector()
 
         p1.project(_text_message("Turn one text"))
-        # A fresh projector for turn two sees "Answer" as ordinary growth,
-        # not a replace of turn one's unrelated text.
         deltas = p2.project(_text_message("Answer"))
         assert deltas[0].delta == "Answer"
         assert deltas[0].replace is False
@@ -426,8 +411,6 @@ class TestRealisticAgentLoopMessageShapes:
         projector = MessageDeltaProjector()
 
         def snapshot(thinking: str, tool_args: list[dict]) -> dict:
-            # Mirrors _build_partial_message: content_blocks =
-            # _consolidate_text_and_thinking(accum) + one ToolCall per call.
             blocks: list[dict] = []
             if thinking:
                 blocks.append(ThinkingContent(thinking=thinking).model_dump())
@@ -454,16 +437,11 @@ class TestRealisticAgentLoopMessageShapes:
             thinking_acc = _apply(thinking_acc, delta)
         assert thinking_acc == "Let me check the directory."
 
-        # ToolCallDeltaEvent stretch: content is now [thinking, toolCall],
-        # rebuilt from scratch (fresh model_dump() dicts) on every fragment —
-        # arguments grows as parse_streaming_json sees more of the raw JSON.
         tool_blocks: list[dict] = []
         arg_fragments = [{}, {"path": "."}, {"path": ".", "recursive": True}]
         for args in arg_fragments:
             for delta in projector.project(snapshot("Let me check the directory.", [args])):
                 if delta.type == "thinking":
-                    # Same thinking text re-sent alongside the new tool call
-                    # block -- no actual change, must emit nothing.
                     raise AssertionError("unchanged thinking block re-emitted")
                 assert delta.type == "toolCall"
                 assert isinstance(delta.block["arguments"], dict), (
@@ -478,13 +456,8 @@ class TestRealisticAgentLoopMessageShapes:
             "one call throughout -- must stay one identity"
         )
 
-        # Re-sending the exact same last snapshot again (e.g. a duplicate
-        # provider chunk) must suppress both blocks -- no actual change.
         assert projector.project(snapshot("Let me check the directory.", [arg_fragments[-1]])) == []
 
-        # A second, distinct call joins at index 2 -- must be its own
-        # identity, not conflated with c0 despite both being "the toolCall at
-        # some index in a content list built fresh from scratch this call".
         second_call_deltas = projector.project(
             snapshot("Let me check the directory.", [arg_fragments[-1], {}])
         )

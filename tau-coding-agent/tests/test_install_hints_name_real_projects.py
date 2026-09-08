@@ -35,9 +35,6 @@ SHIPPED = (
     "tau-jmfts/src",
 )
 
-#: ``pip install`` followed by its first argument, with optional quoting and
-#: an optional ``-e``. The extras suffix is captured separately so it can be
-#: dropped before the name is compared.
 HINT = re.compile(r"""pip install\s+(?:-e\s+)?["'`]?(?P<name>[^\s"'`\[]+)""")
 
 #: This file quotes the defect it forbids.
@@ -52,8 +49,6 @@ def _distribution_names() -> set[str]:
     return names
 
 
-#: Directory names that are build output rather than source. ``*.egg-info``
-#: lives INSIDE ``<package>/src`` after an editable install.
 NOT_SOURCE = {"__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
 
 

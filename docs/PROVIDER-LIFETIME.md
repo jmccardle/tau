@@ -165,7 +165,7 @@ anything; it calls `_get_or_create_provider(provider_name, base_url, api_key)`.
   dies with the loop.
 - **Explicit teardown.** `OpenAICompletionsProvider.aclose()` (idempotent) plus
   `tau_llm.client.aclose_providers()`, which closes and drops every provider for the current
-  loop. Wired into the two *pre-existing* shutdown paths — `Parley.on_unmount` (TUI) and
+  loop. Wired into the two *pre-existing* shutdown paths — `TauApp.on_unmount` (TUI) and
   `run_print`'s `finally` (headless) — in both cases **after** `emit_session_shutdown`, since a
   shutdown hook may itself make one last LLM call.
 - **`ProviderRegistry` is DELETED**, not repaired. Once the pool landed it had zero legitimate

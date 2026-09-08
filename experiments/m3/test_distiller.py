@@ -114,8 +114,6 @@ def test_prompt_carries_rules_outcome_swing_and_board() -> None:
     payload = captured["payload"]
     assert isinstance(payload, dict)
     content = payload["messages"][0]["content"]
-    # Variant rules (so the model does not distil standard-chess priors), the outcome, the
-    # swung move + its MISTAKE tag (negative swing), and a rendered board are all present.
     assert "Los Alamos" in content
     assert "White WON by checkmate" in content
     assert swung[0].move_uci in content

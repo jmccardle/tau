@@ -15,23 +15,15 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import tau_coding_agent
+import tau_coding_agent.chat_widgets
 from rich.style import Style
 from textual.app import App
 from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Collapsible, Static, Tree
 
-from tau_coding_agent.app import (
-    ChatDisplay,
-    ChatListItem,
-    ChatSidebar,
-    ExtensionPanel,
-    ExtensionPanelHost,
-    MessageBox,
-    Parley,
-    SessionTreeModal,
-)
+from tau_coding_agent.app import TauApp
+from tau_coding_agent.tree_browser import SessionTreeModal
 from tau_coding_agent.chat_widgets import (
     ExchangeBox,
     MarkdownLineFormatter,
@@ -41,29 +33,18 @@ from tau_coding_agent.chat_widgets import (
 from tau_coding_agent.testing.render import render_text
 from tau_coding_agent.testing.scenes import SCENES, get_scene, open_scene
 from tau_coding_agent.themes import install_themes
+from tau_coding_agent import extension_ui, transcript, tree_browser
 
 SIZES = [(120, 40), (80, 24)]
 
-#: The scenes that put a ``ModalScreen`` on the stack. Written down rather than
-#: discovered so the modal rules below cannot quietly become no-ops: a scene that
-#: stops opening its dialog, or a new modal scene nobody added here, fails
-#: :func:`_dialogs` instead of passing an empty loop.
-MODAL_SCENES = ("tree-modal", "tree-modal-branch", "tree-mode-modal", "prompt-editor")
+MODAL_SCENES = (
+    "tree-modal",
+    "tree-modal-branch",
+    "tree-mode-modal",
+    "prompt-editor",
+    "ext-lock-ask",
+)
 
-#: The chat column's floor, in columns of ChatDisplay content (its region less its
-#: own ``padding: 1 2``), held whatever else is on screen.
-#:
-#: 40 there is 36 columns of wrapped prose once a MessageBox has spent its border
-#: and its one column of padding per side. Below that a sentence breaks every five
-#: or six words and the transcript reads as a column of fragments rather than as
-#: text — and 36 is already the narrowest thing anyone should have to read a diff
-#: explanation in. It is also within ten columns of the 50 the chat gets at 80x24
-#: with nothing else open, which is the other half of the rule: a secondary surface
-#: opening beside the chat is allowed to cost the reader something, not everything.
-#:
-#: Before the responsive widths this was FOUR at 80x24 with a panel open — a fixed
-#: 30-column sidebar plus a fixed 40-column panel left the chat 8 columns, half of
-#: them ChatDisplay padding.
 CHAT_MIN_COLUMNS = 40
 
 
@@ -86,17 +67,14 @@ def _dialogs(app, scene) -> list[Widget]:
     return [dialog for modal in modals for dialog in modal.children]
 
 
-# ---------------------------------------------------------------------------
-# Content rules
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("scene", SCENES, ids=lambda s: s.name)
 async def test_no_scene_says_parley(scene) -> None:
-    """The fork's name is fine in the code; it is not the name of this program.
+    """The fork's name never reaches the screen.
 
-    Asserted over the rendered screen, not the source, because that is the only
-    place the distinction is real — ``app.Parley`` may keep its class name.
+    It used to be the class name too, and this test was the line between "fine in
+    the code" and "not the name of this program". Since 2026-09-04 the class is
+    ``app.TauApp`` and the code says it nowhere, so what is left to guard is the
+    other way in: a copied asset, a stray literal, a scene fixture carrying it.
     """
     async with open_scene(scene, (120, 40)) as (app, _pilot):
         assert "parley" not in render_text(app).lower()
@@ -121,11 +99,6 @@ async def test_no_scene_overflows_the_screen(scene, size) -> None:
     async with open_scene(scene, size) as (app, _pilot):
         for index, row in enumerate(_rows(app)):
             assert len(row) <= size[0], f"row {index} is {len(row)} cols on a {size[0]}-col screen"
-
-
-# ---------------------------------------------------------------------------
-# Modal dialogs
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
@@ -179,11 +152,6 @@ async def test_every_dialog_is_centred(scene, size) -> None:
             )
 
 
-# ---------------------------------------------------------------------------
-# The tree browser
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
 async def test_tree_browser_fills_the_screen(size) -> None:
     """The dialog was a fixed 90x30: dead space on a wide terminal, clipped off
@@ -202,11 +170,9 @@ async def test_tree_browser_elides_long_labels() -> None:
         labels = [str(node.label) for node in tree.root.children]
         assert labels, "the scene should have mounted at least one node"
         modal = app.screen
-        assert isinstance(modal, SessionTreeModal)
+        assert isinstance(modal, tree_browser.SessionTreeModal)
         for _widget_node, full, _depth, _has_children in modal._rows:
             assert len(full) > 0
-        # At least one preview in this scene is longer than an 80-column row, so
-        # at least one label must carry the marker.
         rendered = render_text(app)
         assert "…" in rendered
 
@@ -219,35 +185,30 @@ async def test_tree_browser_has_no_horizontal_scrollbar() -> None:
         assert tree.virtual_size.width <= tree.content_size.width
 
 
-# ---------------------------------------------------------------------------
-# The tree browser's indentation counts forks, not messages (§2)
-# ---------------------------------------------------------------------------
-
-
 class _ModalHarness(App):
-    """Host one modal, so a tree shape can be asserted without the whole Parley app.
+    """Host one modal, so a tree shape can be asserted without the whole TauApp app.
 
     The scene set gives the browser one real conversation; these tests need a
     conversation of a chosen SHAPE (40 unbranched entries, or exactly one fork), so
     they build the log and push the modal themselves. Same harness as
     ``test_session_tree_browser``.
 
-    It loads Parley's stylesheet. Component-class styling (§3's zone classes) has
-    no ``DEFAULT_CSS`` behind it — every colour lives in ``parley.tcss`` — so a
+    It loads TauApp's stylesheet. Component-class styling (§3's zone classes) has
+    no ``DEFAULT_CSS`` behind it — every colour lives in ``tau.tcss`` — so a
     harness without it resolves every zone to an empty ``Style`` and a test that
     asserts a row IS painted would pass against a renderer that paints nothing.
     Resolved from the installed package rather than a path relative to this file,
     so it keeps working from an installed wheel.
 
     Loading the sheet means loading a theme (docs/PLAN-0.9.4.md §6): every colour
-    in ``parley.tcss`` is a ``$tau-*`` variable a theme supplies, so a bare ``App``
+    in ``tau.tcss`` is a ``$tau-*`` variable a theme supplies, so a bare ``App``
     with the sheet and no palette does not render wrong — it fails to parse, with
     ``UnresolvedVariableError: $tau-bg``. ``install_themes`` is the same call
-    ``Parley.__init__`` makes, and passing no name gets the default, which is what
+    ``TauApp.__init__`` makes, and passing no name gets the default, which is what
     these tests have always been asserting against.
     """
 
-    CSS_PATH = str(Path(tau_coding_agent.__file__).with_name("parley.tcss"))
+    CSS_PATH = str(Path(tau_coding_agent.__file__).with_name("tau.tcss"))
 
     def __init__(self, modal) -> None:
         super().__init__()
@@ -304,8 +265,6 @@ async def test_a_long_unbranched_chain_does_not_indent() -> None:
         await pilot.pause()
         tree = harness.screen.query_one("#tree-browser-tree", Tree)
         assert [_widget_depth(tree, entry_id) for entry_id in ids] == [0] * len(ids)
-        # …and the rows are all still there, in order — this flattens nesting, not
-        # the walk.
         assert [n.data for n in _widget_rows(tree.root)] == ids
         # The depths `_relabel` sizes labels with are the WIDGET depths.
         assert {depth for _node, _label, depth, _kids in harness.screen._rows} == {0}
@@ -320,26 +279,18 @@ async def test_a_fork_is_what_creates_a_widget_level() -> None:
     log = InMemorySessionLog()
     root = log.append_message({"role": "user", "content": "root"})
     a = log.append_message({"role": "assistant", "content": "a"})
-    # A second child of `root`, so `root` is the one fork in the log. `append_at`
-    # rather than a navigate: it writes exactly one entry and does not move the leaf,
-    # so the shape under test is only the fork.
     b = log.append_at(root, "message", {"message": {"role": "assistant", "content": "b"}})
     a2 = log.append_message({"role": "user", "content": "a2"})
     view = ConversationTree(log.entries(), log.cursor)
 
-    harness = _ModalHarness(SessionTreeModal(view))
+    harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         await pilot.pause()
         tree = harness.screen.query_one("#tree-browser-tree", Tree)
         assert _widget_depth(tree, root) == 0
         assert _widget_depth(tree, a) == 1
         assert _widget_depth(tree, b) == 1
-        # `a2` continues `a` with no branch of its own, so it is a SIBLING of `a`,
-        # not a level deeper: the second level was bought by the fork, and one fork
-        # buys exactly one.
         assert _widget_depth(tree, a2) == 1
-        # The fork is the widget parent of everything below it, so collapsing it
-        # folds the branching subtree away — the unit §5.2 binds `left` to.
         fork = next(n for n in _widget_rows(tree.root) if n.data == root)
         assert {n.data for n in fork.children} == {a, a2, b}
 
@@ -348,20 +299,13 @@ async def test_a_long_chain_still_fills_the_row_at_80_columns() -> None:
     """What §1.1 was really about, measured on the composited screen: depth used to
     eat the label, so the deep rows overflowed and the tree grew a scrollbar."""
     view, ids = _linear_tree(40)
-    modal = SessionTreeModal(view)
+    modal = tree_browser.SessionTreeModal(view)
     harness = _ModalHarness(modal)
     async with harness.run_test(size=(80, 24)) as pilot:
         for _ in range(10):
             await pilot.pause()
         tree = harness.screen.query_one("#tree-browser-tree", Tree)
-        # ``scrollable_content_region``, not ``content_size``: the second does not
-        # subtract the vertical scrollbar, and comparing against it is how this
-        # test sat green over a tree that really was two cells too wide (§4 item
-        # 1). ``_linear_tree``'s previews are eight characters, so nothing here
-        # reaches the limit either way — the width bug has its own test below.
         assert tree.virtual_size.width <= tree.scrollable_content_region.size.width
-        # No row was reduced to the too-narrow marker: at 80 columns and zero
-        # indentation there is plenty of room for a preview.
         assert all(str(node.label) != "…" for node, _label, _depth, _kids in modal._rows)
 
 
@@ -391,7 +335,7 @@ async def test_the_rows_leave_room_for_the_vertical_scrollbar(size) -> None:
     there) rather than as the arithmetic, because the arithmetic is not what the
     reader sees and a later change to it would still have to keep this true.
     """
-    modal = SessionTreeModal(_wide_tree(40))
+    modal = tree_browser.SessionTreeModal(_wide_tree(40))
     harness = _ModalHarness(modal)
     async with harness.run_test(size=size) as pilot:
         for _ in range(10):
@@ -403,11 +347,6 @@ async def test_the_rows_leave_room_for_the_vertical_scrollbar(size) -> None:
         assert tree.virtual_size.width <= tree.scrollable_content_region.size.width
 
 
-# ---------------------------------------------------------------------------
-# _elide's floor
-# ---------------------------------------------------------------------------
-
-
 def test_elide_marks_a_column_too_narrow_to_shorten_into() -> None:
     """§2: below the minimum width ``_elide`` returns a marker, not the input.
 
@@ -416,28 +355,23 @@ def test_elide_marks_a_column_too_narrow_to_shorten_into() -> None:
     overflow. One cell of ``…`` is a visible bug; a 60-cell row in a 1-cell column
     is a horizontal scrollbar across the whole browser.
     """
-    from tau_coding_agent.app import _ELIDE_MIN_WIDTH, _ELIDE_TOO_NARROW, _elide
+    from tau_coding_agent.tree_browser import _ELIDE_MIN_WIDTH, _ELIDE_TOO_NARROW, _elide
 
-    for width in (-3, 0, _ELIDE_MIN_WIDTH - 1):
-        assert _elide("a very long preview line", width) == _ELIDE_TOO_NARROW
-    assert len(_ELIDE_TOO_NARROW) == 1
+    for width in (-3, 0, tree_browser._ELIDE_MIN_WIDTH - 1):
+        assert tree_browser._elide("a very long preview line", width) == tree_browser._ELIDE_TOO_NARROW
+    assert len(tree_browser._ELIDE_TOO_NARROW) == 1
 
 
 def test_elide_still_cuts_visibly_at_and_above_the_floor() -> None:
     """The floor is a floor, not a new behaviour: at the minimum width the marker
     plus one character is exactly what fits, and above it nothing changed."""
-    from tau_coding_agent.app import _ELIDE_MIN_WIDTH, _elide
+    from tau_coding_agent.tree_browser import _ELIDE_MIN_WIDTH, _elide
 
-    assert _elide("abcdef", _ELIDE_MIN_WIDTH) == "a…"
-    assert _elide("abcdef", 4) == "abc…"
+    assert tree_browser._elide("abcdef", tree_browser._ELIDE_MIN_WIDTH) == "a…"
+    assert tree_browser._elide("abcdef", 4) == "abc…"
     # Short enough to fit is returned whole, marker and all absent.
-    assert _elide("ab", 6) == "ab"
-    assert _elide("abcdef", 6) == "abcdef"
-
-
-# ---------------------------------------------------------------------------
-# The extension panel
-# ---------------------------------------------------------------------------
+    assert tree_browser._elide("ab", 6) == "ab"
+    assert tree_browser._elide("abcdef", 6) == "abcdef"
 
 
 @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
@@ -457,7 +391,7 @@ async def test_panel_body_table_fits_the_panel(size) -> None:
     altogether, by wrapping onto the next row or by being dropped.
     """
     async with open_scene(get_scene("ext-surfaces"), size) as (app, _pilot):
-        panel = app.query_one(ExtensionPanel)
+        panel = app.query_one(extension_ui.ExtensionPanel)
         table = panel._spec["body"]
         region = panel.query_one(".ext-panel-body").content_region
         assert region.width > 0, "the panel body should have been laid out"
@@ -466,15 +400,9 @@ async def test_panel_body_table_fits_the_panel(size) -> None:
             screen[y][region.x : region.x + region.width]
             for y in range(region.y, region.y + region.height)
         ]
-        # A header, a rule, one line per row. A grid too wide for the panel wraps,
-        # and needs nearly twice that.
         assert len(lines) == len(table["rows"]) + 2
         for index, line in enumerate(lines):
             assert len(line.rstrip()) <= region.width, f"body line {index} overflows"
-        # Every column reaches the header line — whole, or as a prefix carrying the
-        # ellipsis. A count short of the column list means one wrapped off the line
-        # or was dropped, which is the failure this catches; a name the reader can
-        # see is truncated is still a name the reader can see.
         shown = lines[0].split()
         assert len(shown) == len(table["columns"]), (
             f"header line {lines[0]!r} carries {len(shown)} of {len(table['columns'])} columns"
@@ -500,8 +428,8 @@ async def test_every_panel_action_button_fits_the_panel(size) -> None:
     present the whole time.
     """
     async with open_scene(get_scene("ext-surfaces"), size) as (app, _pilot):
-        panel = app.query_one(ExtensionPanel)
-        host = app.query_one(ExtensionPanelHost).region
+        panel = app.query_one(extension_ui.ExtensionPanel)
+        host = app.query_one(extension_ui.ExtensionPanelHost).region
         buttons = panel.query(".ext-panel-action")
         labels = [action["label"] for action in panel._spec["actions"]]
         assert len(buttons) == len(labels), "the panel dropped an action before layout"
@@ -516,16 +444,6 @@ async def test_every_panel_action_button_fits_the_panel(size) -> None:
                 f"{label!r} at {region} is outside the panel {host}"
             )
             assert label in row, f"{label!r} is not on the action row: {row!r}"
-
-
-# A cell too wide for its column is elided rather than dropped; that the marker is
-# actually drawn is asserted at the unit level, in test_extension_panel.py, where
-# the width is fixed by the test instead of by whatever the panel's CSS gives it.
-
-
-# ---------------------------------------------------------------------------
-# Density
-# ---------------------------------------------------------------------------
 
 
 async def test_a_collapsed_collapsible_is_one_row() -> None:
@@ -550,7 +468,7 @@ async def test_a_collapsed_collapsible_is_one_row() -> None:
 async def test_message_box_spends_no_row_on_vertical_padding() -> None:
     """The border already separates a message from its neighbours."""
     async with open_scene(get_scene("answer"), (120, 40)) as (app, _pilot):
-        boxes = list(app.query(MessageBox))
+        boxes = list(app.query(tau_coding_agent.chat_widgets.MessageBox))
         assert boxes
         for box in boxes:
             padding = box.styles.padding
@@ -561,7 +479,7 @@ async def test_chat_text_gets_most_of_the_column() -> None:
     """Chrome per side was six columns: display padding 2, box border 1, box
     padding 1, Markdown padding 2. Anything near that again is a regression."""
     async with open_scene(get_scene("answer"), (120, 40)) as (app, _pilot):
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         body = app.query_one(".message-content")
         lost = display.region.width - body.content_size.width
         assert lost <= 8, f"{lost} columns of chrome between the display and the text"
@@ -602,17 +520,6 @@ async def test_an_expanded_collapsibles_body_starts_one_column_in() -> None:
             assert contents.content_region.x == box.region.x + 1, box
 
 
-# ---------------------------------------------------------------------------
-# Markdown block spacing
-# ---------------------------------------------------------------------------
-
-#: Every Textual markdown block widget that ships a vertical margin or padding of
-#: its own (read off ``textual/widgets/_markdown.py``): the headers
-#: (``margin: 2 0 1 0``, or ``1 0`` from H3 down), ``MarkdownParagraph``
-#: (``0 0 1 0``), ``MarkdownFence`` (``1 0``, plus ``padding: 1 2`` on its inner
-#: Label), ``MarkdownBlockQuote`` (``1 0``), the two list widgets (``0 0 1 0``),
-#: ``MarkdownTable`` (``margin-bottom: 1``) and ``MarkdownHorizontalRule``
-#: (``padding-top: 1; margin-bottom: 1``).
 SPACED_MARKDOWN_BLOCKS = (
     "MarkdownH1",
     "MarkdownH2",
@@ -630,9 +537,6 @@ SPACED_MARKDOWN_BLOCKS = (
     "MarkdownHorizontalRule",
 )
 
-#: One assistant answer exercising every block type listed above, so the rule can
-#: be asserted over widgets that are actually mounted rather than over the
-#: stylesheet text.
 EVERY_BLOCK = """\
 # H1
 ## H2
@@ -670,7 +574,7 @@ The last paragraph.
 async def _mount_answer(app, pilot, text: str):
     """Reload the display with one user turn and one assistant answer, and return
     the answer's rendered body (the ``Markdown`` holding its blocks)."""
-    display = app.query_one(ChatDisplay)
+    display = app.query_one(transcript.ChatDisplay)
     await display.reload_messages(
         [
             {"role": "user", "content": "?"},
@@ -679,7 +583,7 @@ async def _mount_answer(app, pilot, text: str):
     )
     for _ in range(4):
         await pilot.pause()
-    answers = [b for b in app.query(MessageBox) if b.role == "assistant"]
+    answers = [b for b in app.query(tau_coding_agent.chat_widgets.MessageBox) if b.role == "assistant"]
     assert answers, "the answer should have mounted"
     return answers[-1].query_one(".message-content")
 
@@ -740,11 +644,6 @@ async def test_consecutive_paragraphs_are_no_longer_separated() -> None:
         assert tops[2] == tops[1] + heights[1]
 
 
-# ---------------------------------------------------------------------------
-# Responsive side columns
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
 @pytest.mark.parametrize("scene_name", ["answer", "ext-surfaces"])
 async def test_the_chat_column_holds_its_floor(scene_name, size) -> None:
@@ -756,7 +655,7 @@ async def test_the_chat_column_holds_its_floor(scene_name, size) -> None:
     usable columns.
     """
     async with open_scene(get_scene(scene_name), size) as (app, _pilot):
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         assert display.content_size.width >= CHAT_MIN_COLUMNS, (
             f"{scene_name} at {size[0]}x{size[1]} leaves the chat "
             f"{display.content_size.width} columns"
@@ -775,15 +674,13 @@ async def test_the_side_columns_are_a_share_of_the_width(size) -> None:
     zero-width region — which would satisfy an upper bound by not being there.
     """
     async with open_scene(get_scene("ext-surfaces"), size) as (app, pilot):
-        host = app.query_one(ExtensionPanelHost)
+        host = app.query_one(extension_ui.ExtensionPanelHost)
         assert host.display, "the ext-surfaces scene should have a panel open"
         assert 26 <= host.region.width <= 44
         await pilot.press("ctrl+b")
-        sidebar = app.query_one(ChatSidebar)
+        sidebar = app.query_one(tau_coding_agent.chat_widgets.ChatSidebar)
         assert sidebar.display
         assert 24 <= sidebar.region.width <= 32
-        # The two old fixed widths, in one assertion: they cannot both be right at
-        # two terminal sizes.
         assert (sidebar.region.width, host.region.width) != (30, 40)
 
 
@@ -801,18 +698,18 @@ async def test_no_scene_starts_with_the_sidebar_open(scene_name, size) -> None:
 
     Swept over every scene rather than asserted once on ``empty``, because the
     default is written in two places that have to agree — ``#sidebar``'s
-    ``display: none`` in parley.tcss and ``Parley._sidebar_open`` — and a scene
+    ``display: none`` in tau.tcss and ``TauApp._sidebar_open`` — and a scene
     that pushes a modal or opens a panel is exactly where a stray write to
     ``sidebar.display`` would come from.
     """
     async with open_scene(get_scene(scene_name), size) as (app, _pilot):
-        assert not app.query_one(ChatSidebar).display
+        assert not app.query_one(tau_coding_agent.chat_widgets.ChatSidebar).display
 
 
 async def test_a_panel_does_not_touch_the_sidebar_the_user_opened() -> None:
     """An extension panel opening or closing is not a vote on the sidebar.
 
-    It used to be: below :data:`Parley.SIDE_COLUMNS_MIN_WIDTH` the sidebar was
+    It used to be: below :data:`TauApp.SIDE_COLUMNS_MIN_WIDTH` the sidebar was
     hidden automatically to keep the chat readable beside a panel. That rule only
     ever decided the case where the user had expressed no preference — an
     explicit ctrl+b won over it by design — and §8 makes "no preference" mean
@@ -820,8 +717,8 @@ async def test_a_panel_does_not_touch_the_sidebar_the_user_opened() -> None:
     panel does not get to revoke it (nor to bring it back when it closes).
     """
     async with open_scene(get_scene("ext-surfaces"), (80, 24)) as (app, pilot):
-        sidebar = app.query_one(ChatSidebar)
-        host = app.query_one(ExtensionPanelHost)
+        sidebar = app.query_one(tau_coding_agent.chat_widgets.ChatSidebar)
+        host = app.query_one(extension_ui.ExtensionPanelHost)
         assert host.display, "the ext-surfaces scene should have a panel open"
         assert not sidebar.display
 
@@ -838,7 +735,7 @@ async def test_a_panel_does_not_touch_the_sidebar_the_user_opened() -> None:
 async def test_the_sidebar_stays_open_on_a_narrow_terminal() -> None:
     """Nothing shrinks the sidebar back out of existence once it is open."""
     async with open_scene(get_scene("sidebar"), (80, 24)) as (app, _pilot):
-        assert app.query_one(ChatSidebar).display
+        assert app.query_one(tau_coding_agent.chat_widgets.ChatSidebar).display
 
 
 async def test_ctrl_b_is_the_only_thing_that_opens_the_sidebar() -> None:
@@ -852,7 +749,7 @@ async def test_ctrl_b_is_the_only_thing_that_opens_the_sidebar() -> None:
     by one of them would otherwise be invisible to the other.
     """
     async with open_scene(get_scene("ext-surfaces"), (80, 24)) as (app, pilot):
-        sidebar = app.query_one(ChatSidebar)
+        sidebar = app.query_one(tau_coding_agent.chat_widgets.ChatSidebar)
         assert not sidebar.display  # closed by default (§8)
         await pilot.press("ctrl+b")
         assert sidebar.display
@@ -865,7 +762,7 @@ async def test_side_columns_min_width_is_where_the_floor_is() -> None:
     both side columns still leave the chat :data:`CHAT_MIN_COLUMNS`.
 
     Asserted from both sides, so the constant cannot drift away from the CSS it
-    was derived from. If a percentage in parley.tcss changes, one of these two
+    was derived from. If a percentage in tau.tcss changes, one of these two
     halves fails and names the direction.
 
     The app no longer *acts* on the number (§8 — the sidebar starts closed and
@@ -875,22 +772,17 @@ async def test_side_columns_min_width_is_where_the_floor_is() -> None:
     floor, which is a price worth keeping measured even though nobody is stopped
     from paying it.
     """
-    fits = Parley.SIDE_COLUMNS_MIN_WIDTH
+    fits = TauApp.SIDE_COLUMNS_MIN_WIDTH
     async with open_scene(get_scene("ext-surfaces"), (fits, 30)) as (app, pilot):
         await pilot.press("ctrl+b")
-        assert app.query_one(ChatSidebar).display
-        assert app.query_one(ChatDisplay).content_size.width >= CHAT_MIN_COLUMNS
+        assert app.query_one(tau_coding_agent.chat_widgets.ChatSidebar).display
+        assert app.query_one(transcript.ChatDisplay).content_size.width >= CHAT_MIN_COLUMNS
 
     # One column narrower, the same request drops the chat under the floor.
     async with open_scene(get_scene("ext-surfaces"), (fits - 1, 30)) as (app, pilot):
         await pilot.press("ctrl+b")
-        assert app.query_one(ChatSidebar).display
-        assert app.query_one(ChatDisplay).content_size.width < CHAT_MIN_COLUMNS
-
-
-# ---------------------------------------------------------------------------
-# The session list
-# ---------------------------------------------------------------------------
+        assert app.query_one(tau_coding_agent.chat_widgets.ChatSidebar).display
+        assert app.query_one(transcript.ChatDisplay).content_size.width < CHAT_MIN_COLUMNS
 
 
 @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
@@ -902,7 +794,7 @@ async def test_a_session_entry_is_one_row_plus_its_rule(size) -> None:
     stopped reading as a list at all.
     """
     async with open_scene(get_scene("sidebar"), size) as (app, _pilot):
-        items = list(app.query(ChatListItem))
+        items = list(app.query(tau_coding_agent.chat_widgets.ChatListItem))
         assert items, "the sidebar scene should have mounted session entries"
         for item in items:
             assert item.region.height == 2, f"{item} is {item.region.height} rows"
@@ -924,16 +816,11 @@ async def test_a_cut_session_name_says_so(size) -> None:
 async def test_session_entries_have_a_visible_boundary(size) -> None:
     """The rule under each entry is where one session ends and the next begins."""
     async with open_scene(get_scene("sidebar"), size) as (app, _pilot):
-        items = list(app.query(ChatListItem))
+        items = list(app.query(tau_coding_agent.chat_widgets.ChatListItem))
         assert items
         for item in items:
             bottom = item.styles.border[2]
             assert bottom and bottom[0], f"{item} has no bottom rule"
-
-
-# ---------------------------------------------------------------------------
-# MarkdownLineFormatter
-# ---------------------------------------------------------------------------
 
 
 FENCED = "intro\n```python\na = 1\nb = 2\n```\noutro\n"
@@ -996,24 +883,16 @@ def test_formatter_is_split_independent(split: int, source: str) -> None:
     assert piecewise == MarkdownLineFormatter(source).feed(FENCED)
 
 
-# ---------------------------------------------------------------------------
-# Which source each caller declares
-# ---------------------------------------------------------------------------
-
-
 async def test_an_assistant_answer_renders_as_markdown() -> None:
     """The defect this fixes, at scene level: the ``tools`` answer is markdown
     hard-wrapped at 80 columns, and the doubling split its first sentence into
     two paragraphs — '…assigned the incoming fragment over the stored' / 'one. It
     now appends…'. One sentence is one paragraph."""
     async with open_scene(get_scene("tools"), (120, 40)) as (app, _pilot):
-        answers = [b for b in app.query(MessageBox) if b.role == "assistant" and b.content_text]
+        answers = [b for b in app.query(tau_coding_agent.chat_widgets.MessageBox) if b.role == "assistant" and b.content_text]
         assert answers, "the tools scene should have mounted an assistant answer"
         body = answers[-1].query_one(".message-content")
         blocks = [type(child).__name__ for child in body.children]
-        # `_LONG_ANSWER` is: H2, paragraph, fence, paragraph, ordered list,
-        # paragraph. A FOURTH paragraph is the first one, split in half at the
-        # hard wrap: "…over the stored" / "one. It now appends…".
         assert blocks == [
             "MarkdownH2",
             "MarkdownParagraph",
@@ -1028,7 +907,7 @@ async def test_a_tool_result_keeps_its_line_breaks() -> None:
     """The rule the doubling exists for, and the reason it is split by source and
     never by a look at the text: a tool result's newlines ARE its structure."""
     async with open_scene(get_scene("empty"), (120, 40)) as (app, pilot):
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         display.add_persisted_message(
             {
                 "role": "toolResult",
@@ -1042,11 +921,6 @@ async def test_a_tool_result_keeps_its_line_breaks() -> None:
         rows = _rows(app)
         assert any("alpha.py:1: one" in row for row in rows)
         assert any("beta.py:2: two" in row for row in rows)
-
-
-# ---------------------------------------------------------------------------
-# Zones: per-row styling from the four selection sets (§3, §5.3)
-# ---------------------------------------------------------------------------
 
 
 def _forked_tree():
@@ -1063,8 +937,6 @@ def _forked_tree():
     m0 = log.append_message({"role": "user", "content": "m0"})
     m1 = log.append_message({"role": "assistant", "content": "m1"})
     m2 = log.append_message({"role": "user", "content": "m2"})
-    # `append_at` writes one entry and does NOT move the leaf, so the cursor stays
-    # on m2 and b1 is genuinely off the cursor's path.
     b1 = log.append_at(m0, "message", {"message": {"role": "assistant", "content": "b1"}})
     return ConversationTree(log.entries(), log.cursor), m0, m1, m2, b1
 
@@ -1114,14 +986,14 @@ async def test_a_row_on_the_cursors_path_is_painted_and_one_off_it_is_not() -> N
     Both halves, because either alone passes on a bug: a renderer that paints
     every row passes the first, and one that paints none passes the second.
     """
-    from tau_coding_agent.app import ZoneTree
+    from tau_coding_agent.tree_browser import ZoneTree
 
     view, m0, m1, m2, b1 = _forked_tree()
-    harness = _ModalHarness(SessionTreeModal(view))
+    harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         for _ in range(6):
             await pilot.pause()
-        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        tree = harness.screen.query_one("#tree-browser-tree", tree_browser.ZoneTree)
         assert tree.zones.cursor == m2, "the browser should open on the current leaf"
         assert {m0, m1, m2} == tree.zones.path
         assert b1 not in tree.zones.path
@@ -1131,8 +1003,6 @@ async def test_a_row_on_the_cursors_path_is_painted_and_one_off_it_is_not() -> N
         assert path_style in _row_span_styles(tree, m0)
         assert path_style in _row_span_styles(tree, m1)
         assert path_style not in _row_span_styles(tree, b1)
-        # The cursor row is deliberately left alone: its own style is resolved
-        # with `partial=False` and would lose its foreground to a zone colour.
         assert path_style not in _row_span_styles(tree, m2)
 
 
@@ -1144,14 +1014,14 @@ async def test_space_marks_a_row_and_two_marks_report_their_common_ancestor() ->
     free", and ``m0`` is what ``m2`` and ``b1`` — one on each side of the only
     fork — have in common.
     """
-    from tau_coding_agent.app import ZoneTree
+    from tau_coding_agent.tree_browser import ZoneTree
 
     view, m0, _m1, m2, b1 = _forked_tree()
-    harness = _ModalHarness(SessionTreeModal(view))
+    harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         for _ in range(6):
             await pilot.pause()
-        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        tree = harness.screen.query_one("#tree-browser-tree", tree_browser.ZoneTree)
         for target in (m2, b1):
             tree.move_cursor(next(n for n in _widget_rows(tree.root) if n.data == target))
             await pilot.pause()
@@ -1180,14 +1050,14 @@ async def test_a_selection_total_says_it_is_an_estimate() -> None:
     """
     import re
 
-    from tau_coding_agent.app import ZoneTree
+    from tau_coding_agent.tree_browser import ZoneTree
 
     view, _m0, _m1, m2, _b1 = _forked_tree()
-    harness = _ModalHarness(SessionTreeModal(view))
+    harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         for _ in range(6):
             await pilot.pause()
-        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        tree = harness.screen.query_one("#tree-browser-tree", tree_browser.ZoneTree)
         tree.move_cursor(next(n for n in _widget_rows(tree.root) if n.data == m2))
         await pilot.pause()
         await pilot.press("space")
@@ -1195,8 +1065,6 @@ async def test_a_selection_total_says_it_is_an_estimate() -> None:
 
         summary = str(harness.screen.query_one("#tree-browser-marks", Static).content)
         assert re.search(r"~\d+ tokens \(estimate\)", summary), summary
-        # …and there is no OTHER token figure on the line that a reader could take
-        # for a measurement.
         assert summary.count("tokens") == 1
 
 
@@ -1205,18 +1073,13 @@ async def test_nothing_marked_says_so_and_names_the_key() -> None:
     under the cursor produces (that row keeps its cursor styling), so it has to
     be legible before there is anything to report."""
     view, _m0, _m1, _m2, _b1 = _forked_tree()
-    harness = _ModalHarness(SessionTreeModal(view))
+    harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         for _ in range(6):
             await pilot.pause()
         summary = str(harness.screen.query_one("#tree-browser-marks", Static).content)
         assert "nothing marked" in summary
         assert "space" in summary
-
-
-# ---------------------------------------------------------------------------
-# The branch summary and the branch it looks back on (§4.3, step 4c)
-# ---------------------------------------------------------------------------
 
 
 def _abandoned_branch_tree():
@@ -1255,14 +1118,14 @@ async def test_a_branch_summary_and_the_branch_it_summarizes_read_as_a_pair() ->
     colours and a theme swap should be able to move them, but not to break the
     relation into two unrelated marks.
     """
-    from tau_coding_agent.app import ZoneTree
+    from tau_coding_agent.tree_browser import ZoneTree
 
     view, m0, b1, b2, s, _m1 = _abandoned_branch_tree()
-    harness = _ModalHarness(SessionTreeModal(view))
+    harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         for _ in range(6):
             await pilot.pause()
-        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        tree = harness.screen.query_one("#tree-browser-tree", tree_browser.ZoneTree)
         assert tree.zones.summary == frozenset({s})
         assert tree.zones.abandoned == frozenset({b1})
 
@@ -1276,14 +1139,9 @@ async def test_a_branch_summary_and_the_branch_it_summarizes_read_as_a_pair() ->
 
         assert summary_style in _row_span_styles(tree, s)
         assert abandoned_style in _row_span_styles(tree, b1)
-        # The summary is on the cursor's path, and the pair outranks `path` there:
-        # `tree--zone-path` is true of a whole chain and would swallow the relation.
         path_style = tree.get_component_rich_style("tree--zone-path", partial=True)
         assert path_style not in _row_span_styles(tree, s)
 
-        # Rows that are in neither half of the relation carry neither mark. `b2` is
-        # deeper in the same abandoned branch — being NEAR the pair is not being in
-        # it — and `m0` is the branch point both sides hang off.
         for unrelated in (b2, m0):
             assert summary_style not in _row_span_styles(tree, unrelated)
             assert abandoned_style not in _row_span_styles(tree, unrelated)
@@ -1300,7 +1158,7 @@ async def test_a_second_abandoned_branch_pairs_with_its_own_summary() -> None:
     from tau_agent_core.conversation_tree import ConversationTree
     from tau_agent_core.session_log import InMemorySessionLog
 
-    from tau_coding_agent.app import ZoneTree
+    from tau_coding_agent.tree_browser import ZoneTree
 
     log = InMemorySessionLog()
     m0 = log.append_message({"role": "user", "content": "m0"})
@@ -1311,19 +1169,14 @@ async def test_a_second_abandoned_branch_pairs_with_its_own_summary() -> None:
     s2 = log.append_branch_summary("second attempt", m0)
     view = ConversationTree(log.entries(), log.cursor)
 
-    harness = _ModalHarness(SessionTreeModal(view))
+    harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         for _ in range(6):
             await pilot.pause()
-        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        tree = harness.screen.query_one("#tree-browser-tree", tree_browser.ZoneTree)
         assert tree.zones.summary == frozenset({s1, s2})
         # b1 is s1's, c1 is s2's — and neither summary claims the other's branch.
         assert tree.zones.abandoned == frozenset({b1, c1})
-
-
-# ---------------------------------------------------------------------------
-# The hover divergence highlight (§3, step 5)
-# ---------------------------------------------------------------------------
 
 
 def _hover(tree, entry_id):
@@ -1352,21 +1205,19 @@ async def test_hovering_off_the_cursors_path_splits_shared_history_from_divergen
     that paints one style over the whole hovered chain passes either alone while
     saying nothing about the divergence.
     """
-    from tau_coding_agent.app import ZoneTree
+    from tau_coding_agent.tree_browser import ZoneTree
 
     view, m0, m1, m2, b1 = _forked_tree()
-    harness = _ModalHarness(SessionTreeModal(view))
+    harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         for _ in range(6):
             await pilot.pause()
-        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        tree = harness.screen.query_one("#tree-browser-tree", tree_browser.ZoneTree)
         assert tree.zones.cursor == m2
 
         _hover(tree, b1)
         await pilot.pause()
 
-        # m0 is the branch point: shared. b1 hangs off it: divergent. m1 is on the
-        # cursor's path but not on the hovered node's, so it is in neither.
         assert tree.zones.hover_common == frozenset({m0})
         assert tree.zones.hover_divergent == frozenset({b1})
 
@@ -1381,8 +1232,6 @@ async def test_hovering_off_the_cursors_path_splits_shared_history_from_divergen
         assert common not in _row_span_styles(tree, m1)
         assert divergent not in _row_span_styles(tree, m1)
 
-        # Layered, not substituted: m0 is still on the cursor's path and still
-        # says so. This is why the shared half sets no colour of its own.
         path_style = tree.get_component_rich_style("tree--zone-path", partial=True)
         assert path_style in _row_span_styles(tree, m0)
 
@@ -1395,18 +1244,16 @@ async def test_hovering_on_the_cursors_path_reports_no_divergence() -> None:
     only content is "you are already here" — which a reader coming from the case
     above would read as a divergence that is not there.
     """
-    from tau_coding_agent.app import ZoneTree
+    from tau_coding_agent.tree_browser import ZoneTree
 
     view, m0, m1, m2, b1 = _forked_tree()
-    harness = _ModalHarness(SessionTreeModal(view))
+    harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         for _ in range(6):
             await pilot.pause()
-        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        tree = harness.screen.query_one("#tree-browser-tree", tree_browser.ZoneTree)
         assert tree.zones.cursor == m2
 
-        # First establish that this tree CAN report a divergence, so the emptiness
-        # below is the rule doing its job and not the wiring being absent.
         _hover(tree, b1)
         await pilot.pause()
         assert tree.zones.hover_divergent == frozenset({b1})
@@ -1431,14 +1278,14 @@ async def test_moving_the_cursor_re_measures_the_divergence_from_where_it_now_is
     a renderer that only recomputes on hover would still be painting the old
     answer.
     """
-    from tau_coding_agent.app import ZoneTree
+    from tau_coding_agent.tree_browser import ZoneTree
 
     view, m0, _m1, _m2, b1 = _forked_tree()
-    harness = _ModalHarness(SessionTreeModal(view))
+    harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         for _ in range(6):
             await pilot.pause()
-        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        tree = harness.screen.query_one("#tree-browser-tree", tree_browser.ZoneTree)
         _hover(tree, b1)
         await pilot.pause()
         assert tree.zones.hover_common == frozenset({m0})
@@ -1458,31 +1305,20 @@ async def test_a_real_mouse_move_reaches_the_divergence() -> None:
     proves the highlight is reachable with a mouse rather than only with the
     reactive.
     """
-    from tau_coding_agent.app import ZoneTree
+    from tau_coding_agent.tree_browser import ZoneTree
 
     view, m0, _m1, _m2, b1 = _forked_tree()
-    harness = _ModalHarness(SessionTreeModal(view))
+    harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test(size=(80, 24)) as pilot:
         for _ in range(6):
             await pilot.pause()
-        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        tree = harness.screen.query_one("#tree-browser-tree", tree_browser.ZoneTree)
         row = next(n for n in _widget_rows(tree.root) if n.data == b1)
-        # +1 for the tree's own border; a few cells in, so the pointer lands on
-        # the row body rather than on the frame.
         await pilot.hover(tree, offset=(4, row.line + 1))
         await pilot.pause()
         assert tree.hover_line == row.line, "the pointer did not land on b1's row"
         assert tree.zones.hover_common == frozenset({m0})
         assert tree.zones.hover_divergent == frozenset({b1})
-
-
-# ---------------------------------------------------------------------------
-# PLAN-0.9.4 §4: turn groups, hidden `navigate` rows, and what Enter means.
-#
-# `plan_tree_rows` is pure, so the shape rules are tested against it directly
-# rather than through a Pilot. What the widget build does with those rows is
-# tested through the modal, once.
-# ---------------------------------------------------------------------------
 
 
 def _log_with_two_turns_forked_from_one_answer():
@@ -1510,9 +1346,9 @@ def _log_with_two_turns_forked_from_one_answer():
 
 
 def _plan(view):
-    from tau_coding_agent.app import plan_tree_rows
+    from tau_coding_agent.tree_browser import plan_tree_rows
 
-    return plan_tree_rows(view.tree())
+    return tree_browser.plan_tree_rows(view.tree())
 
 
 def _shape(view) -> list[tuple[int, str, str]]:
@@ -1572,8 +1408,6 @@ def test_a_turn_group_starts_collapsed_and_the_one_you_are_in_does_not() -> None
     rows = _plan(ConversationTree(log.entries(), log.cursor))
     users = [row for row in rows if row.node.role == "user"]
     assert [row.expanded for row in users] == [False, False, False, False, True]
-    # Nothing that is not a turn group was folded: a fork the reader has not
-    # touched still shows its branches.
     assert all(row.expanded for row in rows if row.node.role != "user")
 
 
@@ -1626,8 +1460,6 @@ def test_a_navigate_that_forks_keeps_its_row() -> None:
     root = log.append_message({"role": "user", "content": "q"})
     log.append_message({"role": "assistant", "content": "a"})
     nav = log.append_navigate(root)
-    # ``append_at`` twice rather than ``append_message``: the second would parent
-    # at the LEAF, which ``append_navigate`` just moved to the navigate's target.
     b1 = log.append_at(nav, "message", {"message": {"role": "user", "content": "b1"}})
     b2 = log.append_at(nav, "message", {"message": {"role": "user", "content": "b2"}})
     rows = _plan(ConversationTree(log.entries(), log.cursor))
@@ -1650,7 +1482,7 @@ async def test_the_widget_tree_matches_the_plan() -> None:
     """The build is a transcription of the plan — asserted once, here, so the
     rules above can be tested without a terminal."""
     view, ids = _log_with_two_turns_forked_from_one_answer()
-    modal = SessionTreeModal(view)
+    modal = tree_browser.SessionTreeModal(view)
     harness = _ModalHarness(modal)
     async with harness.run_test() as pilot:
         await pilot.pause()
@@ -1661,10 +1493,6 @@ async def test_the_widget_tree_matches_the_plan() -> None:
         assert [depth for _n, _l, depth, _k in modal._rows] == [row.depth for row in plan]
         folded = {n.data for n in _widget_rows(tree.root) if not n.is_expanded}
         assert folded == {ids["u1"]}, "the turn the cursor is not in"
-        # The cursor is on screen: every widget ancestor of its row is open. The
-        # walk stops one short of the widget root, which Textual builds collapsed
-        # and draws anyway under ``show_root = False`` — the same exclusion
-        # ``SessionTreeModal._hidden`` makes, for the same reason.
         walk = next(n for n in _widget_rows(tree.root) if n.data == ids["a2"]).parent
         while walk is not None and walk.parent is not None:
             assert walk.is_expanded
@@ -1693,7 +1521,7 @@ async def test_a_row_nothing_hangs_from_has_no_expand_arrow() -> None:
     # `a1` ends a turn and its only child is the hidden `navigate`.
     assert plan[ids["a1"]].has_children is False
 
-    modal = SessionTreeModal(view)
+    modal = tree_browser.SessionTreeModal(view)
     harness = _ModalHarness(modal)
     async with harness.run_test(size=(100, 30)) as pilot:
         for _ in range(8):
@@ -1701,8 +1529,6 @@ async def test_a_row_nothing_hangs_from_has_no_expand_arrow() -> None:
         tree = harness.screen.query_one("#tree-browser-tree", Tree)
         for node in _widget_rows(tree.root):
             assert node.allow_expand is plan[node.data].has_children, node.label
-        # …and on the screen the reader looks at: the drawn rows that carry an
-        # arrow are exactly the ones with something under them.
         drawn = [
             line
             for line in render_text(harness).splitlines()
@@ -1717,18 +1543,13 @@ async def test_a_row_with_no_arrow_gets_those_two_cells_for_its_preview() -> Non
     """The width arithmetic follows the toggle. ``_relabel`` charged every row for
     one, which on a row that has none is two characters of preview thrown away."""
     view = _wide_tree(6)
-    modal = SessionTreeModal(view)
+    modal = tree_browser.SessionTreeModal(view)
     harness = _ModalHarness(modal)
     async with harness.run_test(size=(80, 24)) as pilot:
         for _ in range(10):
             await pilot.pause()
         tree = harness.screen.query_one("#tree-browser-tree", Tree)
-        # The scrollbar's width is reserved whether or not the bar is showing —
-        # see ``_relabel``. ``styles.scrollbar_size_vertical``, not the widget
-        # property, which answers 0 when it is hidden.
         width = tree.content_size.width - tree.styles.scrollbar_size_vertical
-        # The fixture's previews are 200 characters, so every row is elided and
-        # its label length IS the budget it was given.
         seen = set()
         for node, _label, depth, has_children in modal._rows:
             toggle = tree.guide_depth if has_children else 0
@@ -1763,7 +1584,7 @@ async def test_opening_a_turn_does_not_bring_the_horizontal_scrollbar_back() -> 
     log.append_message({"role": "user", "content": "question 1 " + "x" * 200})
     log.append_message({"role": "assistant", "content": "answer 1 " + "y" * 200})
 
-    harness = _ModalHarness(SessionTreeModal(ConversationTree(log.entries(), log.cursor)))
+    harness = _ModalHarness(tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor)))
     async with harness.run_test(size=(80, 24)) as pilot:
         for _ in range(10):
             await pilot.pause()
@@ -1782,11 +1603,6 @@ async def test_opening_a_turn_does_not_bring_the_horizontal_scrollbar_back() -> 
         assert tree.max_scroll_x == 0
 
 
-# ---------------------------------------------------------------------------
-# The row's type tag, painted (PLAN-0.9.4 §4, "spans for style")
-# ---------------------------------------------------------------------------
-
-
 async def test_each_row_paints_its_type_tag_in_that_roles_colour() -> None:
     """`user:` is the user hue, `toolResult:` the tool hue, and they differ.
 
@@ -1798,7 +1614,7 @@ async def test_each_row_paints_its_type_tag_in_that_roles_colour() -> None:
 
     from tau_agent_core.conversation_tree import ConversationTree
     from tau_agent_core.session_log import InMemorySessionLog
-    from tau_coding_agent.app import ZoneTree
+    from tau_coding_agent.tree_browser import ZoneTree
 
     log = InMemorySessionLog()
     user = log.append_message({"role": "user", "content": "ask"})
@@ -1806,11 +1622,11 @@ async def test_each_row_paints_its_type_tag_in_that_roles_colour() -> None:
     tool = log.append_message({"role": "toolResult", "content": "42"})
     log.append_message({"role": "assistant", "content": "done"})
 
-    harness = _ModalHarness(SessionTreeModal(ConversationTree(log.entries(), log.cursor)))
+    harness = _ModalHarness(tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor)))
     async with harness.run_test() as pilot:
         for _ in range(6):
             await pilot.pause()
-        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        tree = harness.screen.query_one("#tree-browser-tree", tree_browser.ZoneTree)
         for node in list(_widget_rows(tree.root)):
             if node.allow_expand:
                 node.expand()
@@ -1840,20 +1656,18 @@ async def test_the_tag_is_painted_and_the_preview_after_it_is_not() -> None:
     """
     from tau_agent_core.conversation_tree import ConversationTree
     from tau_agent_core.session_log import InMemorySessionLog
-    from tau_coding_agent.app import ZoneTree
+    from tau_coding_agent.tree_browser import ZoneTree
 
     log = InMemorySessionLog()
     log.append_message({"role": "user", "content": "ask"})
     assistant = log.append_message({"role": "assistant", "content": "a much longer answer here"})
-    # Not the leaf: the cursor row is deliberately left unpainted (see
-    # ``ZoneTree.render_label``), so the row under test has to be an ordinary one.
     log.append_message({"role": "user", "content": "and again"})
 
-    harness = _ModalHarness(SessionTreeModal(ConversationTree(log.entries(), log.cursor)))
+    harness = _ModalHarness(tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor)))
     async with harness.run_test() as pilot:
         for _ in range(6):
             await pilot.pause()
-        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        tree = harness.screen.query_one("#tree-browser-tree", tree_browser.ZoneTree)
         for node in list(_widget_rows(tree.root)):
             if node.allow_expand:
                 node.expand()
@@ -1874,7 +1688,7 @@ async def test_a_bookkeeping_row_does_not_borrow_a_conversation_colour() -> None
 
     from tau_agent_core.conversation_tree import ConversationTree
     from tau_agent_core.session_log import InMemorySessionLog
-    from tau_coding_agent.app import ZoneTree
+    from tau_coding_agent.tree_browser import ZoneTree
 
     log = InMemorySessionLog()
     root = log.append_message({"role": "user", "content": "ask"})
@@ -1883,11 +1697,11 @@ async def test_a_bookkeeping_row_does_not_borrow_a_conversation_colour() -> None
     log.append_at(nav, "message", {"message": {"role": "assistant", "content": "one"}})
     log.append_at(nav, "message", {"message": {"role": "assistant", "content": "two"}})
 
-    harness = _ModalHarness(SessionTreeModal(ConversationTree(log.entries(), root)))
+    harness = _ModalHarness(tree_browser.SessionTreeModal(ConversationTree(log.entries(), root)))
     async with harness.run_test() as pilot:
         for _ in range(6):
             await pilot.pause()
-        tree = harness.screen.query_one("#tree-browser-tree", ZoneTree)
+        tree = harness.screen.query_one("#tree-browser-tree", tree_browser.ZoneTree)
         for node in list(_widget_rows(tree.root)):
             if node.allow_expand:
                 node.expand()

@@ -14,7 +14,7 @@ app), not a unit stub:
     process, not just in-test.
 
 (b) :func:`test_tui_floor_extensions_listing_and_veto` — the Textual ``Pilot``
-    (``run_test``) floor: a real ``Parley`` loads an ``-e`` extension, the user runs
+    (``run_test``) floor: a real ``TauApp`` loads an ``-e`` extension, the user runs
     ``/extensions`` and sees it listed (name/path/tool/command/hook), and a
     ``tool_call`` veto renders as a visibly-blocked ``ToolBox`` (E5 §4–§5).
 
@@ -48,16 +48,12 @@ from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.messages import convert_to_llm
 from tau_coding_agent.backends import create_backend
 from tau_coding_agent.session_store import Session
+from tau_coding_agent import chat_widgets, transcript
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# A recognizable marker only the extension can put on the path — its presence
-# proves the HOOK ran (a bare run without the extension has no such node).
 _MARKER = "DURABLE_MARKER_S36"
 
-# The demo extension: a before_agent_start hook injecting one durable custom node
-# per turn (E5 §3.1). Minimal on purpose — a stateful demo (21_reminders' cooldown)
-# would inject non-deterministically in a single subprocess turn.
 _INJECT_DEMO = (
     "def register(api):\n"
     "    def hook(event, ctx):\n"
@@ -65,8 +61,6 @@ _INJECT_DEMO = (
     '    api.on("before_agent_start", hook)\n'
 )
 
-# A single canned SSE completion the fake provider streams for every request — one
-# assistant turn, then stop (no tools → one round-trip, deterministic).
 _SSE_BODY = (
     'data: {"id":"cmpl-1","choices":[{"index":0,'
     '"delta":{"role":"assistant","content":"Ack from fake."},'
@@ -188,8 +182,6 @@ def test_headless_subprocess_injects_durable_node(demo_run):
     in the persisted transcript."""
     proc = demo_run["proc"]
     assert proc.returncode == 0, proc.stderr
-    # The run completed through the extension: the fake provider's reply reached
-    # stdout (the extension neither aborted nor corrupted the loop).
     assert "Ack from fake." in proc.stdout
 
     # Exactly one session was persisted; it carries the hook's durable node.
@@ -202,8 +194,6 @@ def test_headless_subprocess_injects_durable_node(demo_run):
     assert injected["customType"] == "reminder"
     assert _MARKER in _text_of(injected)
 
-    # The node sits ON the active path between the user turn and the assistant
-    # reply — a real tree node, not an out-of-band channel (E5 §1).
     roles = [
         e["message"]["role"]
         for e in entries
@@ -226,23 +216,15 @@ def test_reload_invariant_byte_identical_model_context(demo_run):
     first = Session.load(path)
     assert path.read_bytes() == raw
 
-    # Two independent reloads yield identical entries AND identical model context —
-    # the fold is deterministic, replaying the exact persisted path (no recompute).
     second = Session.load(path)
     assert first.entries() == second.entries()
     ctx_first = ConversationTree(first.entries(), first.cursor).context_for()
     ctx_second = ConversationTree(second.entries(), second.cursor).context_for()
     assert ctx_first == ctx_second
 
-    # The injected node is on the reconstructed model context, in path order, and it
-    # is the ONLY one — the fork this invariant forbids would surface as a duplicate
-    # (model-saw copy + disk copy) or a missing node.
     assert [m.get("role") for m in ctx_first] == ["system", "user", "custom", "assistant"]
     assert sum(1 for e in first.entries() if _custom_entries([e])) == 1
 
-    # The durable ``custom`` node remaps custom→user on the wire (pi messages.ts):
-    # the reloaded path serializes to roles the LLM accepts (never "custom"), and
-    # the injected marker survives as a user message the model reads.
     wire = convert_to_llm(ctx_first)
     assert "custom" not in [m.get("role") for m in wire]
     user_texts = [_text_of(m) for m in wire if m.get("role") == "user"]
@@ -251,8 +233,6 @@ def test_reload_invariant_byte_identical_model_context(demo_run):
 
 # ── (b) the Textual Pilot floor: load → /extensions listing → veto render ─────
 
-# A file extension registering a tool, a command, and a hook — everything the
-# /extensions listing surfaces for one loaded extension.
 _FULL_EXT = """
 async def _exec(tool_call_id, params, signal, on_update, ctx):
     return {"content": [{"type": "text", "text": "ok"}]}
@@ -271,14 +251,15 @@ def register(api):
 
 @pytest.fixture
 def app(make_app):
-    """A Parley wired to REAL TauBackends (TauBackend has no network in __init__)."""
+    """A TauApp wired to REAL TauBackends (TauBackend has no network in __init__)."""
     return make_app(create_backend=create_backend)
 
 
 async def test_tui_floor_extensions_listing_and_veto(app, tmp_path):
     """A live TUI loads an extension, lists it via ``/extensions``, and renders a
     veto as a blocked ToolBox — the whole visible-surface floor in one run."""
-    from tau_coding_agent.app import ChatDisplay, ChatInput, MessageBox
+    from tau_coding_agent.chat_widgets import ChatInput, MessageBox
+    from tau_coding_agent.transcript import ChatDisplay
     from tau_coding_agent.chat_widgets import ToolBox
 
     ext = tmp_path / "full_ext.py"
@@ -296,12 +277,12 @@ async def test_tui_floor_extensions_listing_and_veto(app, tmp_path):
         assert runner.has_handlers("tool_result") is True
 
         # ── /extensions listing — drive the real slash path (user types it) ──
-        input_widget = app.query_one("#chat-input", ChatInput)
+        input_widget = app.query_one("#chat-input", chat_widgets.ChatInput)
         input_widget.text = "/extensions"
         input_widget.action_submit()
         await pilot.pause()
 
-        system_boxes = [b for b in app.query(MessageBox) if b.role == "system"]
+        system_boxes = [b for b in app.query(chat_widgets.MessageBox) if b.role == "system"]
         assert system_boxes, "no system box rendered for /extensions"
         listing = system_boxes[-1]._content
         assert "full_ext" in listing  # name
@@ -309,13 +290,9 @@ async def test_tui_floor_extensions_listing_and_veto(app, tmp_path):
         assert "probe" in listing  # registered tool
         assert "hello" in listing  # registered command
         assert "tool_result" in listing  # registered hook
-        # Read-only chrome: the listing is NOT a conversation node the model is sent
-        # (the invariant — no ephemeral text smuggled onto the path, E5 §1).
         assert not any(m.get("content") == listing for m in app.messages)
 
-        # ── veto render — a tool_call + is_error tool_result (the veto shape),
-        # exactly the events TauBackend.stream_chat normalizes for a blocked call ──
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         display.add_message("user", "write outside scope", source="verbatim")
         await display.begin_exchange()
         await display.handle_stream_event({"kind": "turn_start", "turn_index": 0})
@@ -341,4 +318,4 @@ async def test_tui_floor_extensions_listing_and_veto(app, tmp_path):
         assert box.has_result is True
         assert box.has_class("box-error")  # rendered DISTINCTLY, not dropped
         assert box.title.startswith("✗")
-        assert "denied by policy" in box._result_md._markdown
+        assert "denied by policy" in box.result_markdown

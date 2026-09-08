@@ -234,6 +234,47 @@ Register a slash command (forwards to the registry).
 - `name: str` — *(no description)*
 - `command: dict` — *(no description)*
 
+### register_flow
+
+```python
+register_flow(name: str, description: str, handler: Any, *, argument: Argument | None = None, domain: Domain | None = None, values: Any = None) -> None
+```
+
+`tau_agent_core.extension_types.ExtensionAPI.register_flow`
+
+Register a slash command AND say what it takes (docs/EXTENSION-FLOWS.md).
+
+:meth:`register_command` gives a command a name and a handler, and nothing
+else: every head then shows the name and hands the handler whatever was typed,
+because nothing anywhere says what it should have been. This adds that
+statement, in the vocabulary τ's own gestures already use — so a command
+registered here gets tab completion, a rendered form, and a palette entry that
+asks for its argument, in the TUI and over the RPC wire alike, with no head
+code written for it.
+
+The handler contract does not change: it is still called with
+``(args, ctx)``, where ``args`` is the argument's bound value as text. A
+command that later declares a flow keeps working for callers that never
+learned about the declaration.
+
+**One argument at most**, refused rather than truncated. An extension flow
+ends in a handler taking one typed line, and splitting one line across two
+arguments has no rule — the same refusal ``bind_command_args`` makes for
+built-ins. A gesture needing several fields drives ``ui.form`` itself.
+
+**Parameters**
+
+- `name: str` — The slash command. A name τ already declares is refused, because ``resolve_command`` gives a collision to the built-in and the flow would be unreachable.
+- `description: str` — One line, shown in completion, the palette and ``/help``.
+- `handler: Any` — The callable ``(args, ctx)``, sync or async, as :meth:`register_command` takes.
+- `argument: Argument | None = None` — What the command takes, or ``None`` for one that takes nothing.
+- `domain: Domain | None = None` — The argument's domain, when it is not one τ already declares. Its ``name`` must be what ``argument.domain`` says.
+- `values: Any = None` — How ``domain``'s values are found, when it names an enumerator: a callable ``(query, limit) -> [(value, label)]``. Not needed for a domain that is ``free`` or has fixed ``values``.
+
+**Raises**
+
+- `ValueError` — ``name`` or ``description`` is empty, ``handler`` is not callable, ``domain`` does not match what ``argument`` names, or a domain with an enumerator was declared with no ``values`` callable. The last one is Fail-Early: the flow would reach a step that offers nothing and read as an empty set rather than a missing registration.
+
 ### register_shortcut
 
 ```python
@@ -311,6 +352,40 @@ guess; the resolved tool is merged into the loop's tools next turn.
 
 - `ValueError` — if a required key is missing.
 - `TypeError` — if ``parameters`` is not a dict or ``execute`` is not callable.
+
+### request_user_action
+
+```python
+request_user_action(sentence: str, *, lock: bool = False, ask: dict[str, Any] | None = None, release: str | None = None) -> str
+```
+
+`tau_agent_core.extension_types.ExtensionAPI.request_user_action`
+
+Stop the session, put a request in front of whoever is attached, or both.
+
+Reference: docs/EXTENSION-LOCKS.md. Appends the one reserved
+``customEntry`` (:data:`~tau_agent_core.extension_locks.REQUEST_ENTRY_TYPE`)
+carrying this extension's identity. Two independent keys, so four states
+(§3): ``lock`` refuses the next submission at this cursor; ``ask`` is a
+spec every head can render. Neither blocks a coroutine and neither
+survives on anything but the tree, which is why both survive a restart
+and why a user can branch around either.
+
+**Parameters**
+
+- `sentence: str` — The one line a head shows under τ's own framing label.
+- `lock: bool = False` — Refuse submissions while the cursor is this entry.
+- `ask: dict[str, Any] | None = None` — A spec for :func:`validate_ask_spec` — body, optional fields, and the actions naming the commands that answer it.
+- `release: str | None = None` — The command name that clears the lock, shown as the way out. Advisory: commands are exempt from a lock by WHERE the check sits (§5), not by matching this name.
+
+**Returns**
+
+The appended entry's id — the request id an action is dispatched with, and what :meth:`~tau_agent_core.agent_session.AgentSession.answer_request` takes.
+
+**Raises**
+
+- `RuntimeError` — this api is bound to no runner bucket, so it has no extension identity to append under (Fail-Early: the identity is stored in the entry, and the case this exists for is a reload where nobody can be asked for it).
+- `ValueError` — from :func:`validate_ask_spec` on a malformed ask, or from :func:`~tau_agent_core.extension_locks.build_request_data` on an entry that neither locks nor asks.
 
 ### send_message
 
@@ -552,6 +627,9 @@ and one at the checking end:
   (``bus_available=False``) — a declared capability the session cannot
   back, refused rather than loaded and left to fail silently the first
   time a handler reaches for a bus it does not have.
+- the module declares ``CONFIG_SCHEMA`` and it is not a valid form spec.
+  Same discipline: a schema nobody can render is a load error, not a
+  settings screen that comes up empty.
 
 ## ExtensionContext
 <!-- agent: yes -->
@@ -829,12 +907,12 @@ navigate(target_id: str | None, summarize: bool = False, custom_instructions: st
 
 Move the bound session's cursor to ``target_id`` and return the new context.
 
-Ports ``TauBackend.navigate_tree`` (backends.py:246) onto the bound
-session's own log. ``summarize=False`` APPENDs a ``navigate`` entry (zero
-LLM calls); the abandoned branch drops out of context via the ``parentId``
-walk but stays on disk. ``summarize=True`` delegates to
-:meth:`summarize_branch` (append a ``branch_summary`` at the branch point).
-A ``target_id`` already at the cursor is a no-op (pi ``navigateTree:2716``).
+Binds :func:`tau_agent_core.tree_ops.navigate` to the extension's own session.
+``summarize=False`` APPENDs a ``navigate`` entry (zero LLM calls); the abandoned
+branch drops out of context via the ``parentId`` walk but stays on disk.
+``summarize=True`` delegates to :meth:`summarize_branch` (append a
+``branch_summary`` at the branch point). A ``target_id`` already at the cursor is
+a no-op.
 
 Returns the re-rendered active-path messages (``ConversationTree.context_for``).
 
@@ -1003,14 +1081,16 @@ set_ui_delegate(delegate: Any) -> None
 
 `tau_agent_core.extension_types.ExtensionContext.set_ui_delegate`
 
-Set the TUI delegate for UI methods.
+Bind the head's delegate, which is what makes ``ui.interactive`` true.
 
-This enables TUI mode on the internal ExtensionUI,
-setting the delegate for all UI interactions.
+There is no second flag: a bound delegate IS the live surface, since
+docs/EXTENSION-LOCKS.md §8.2 removed ``ExtensionUI._mode`` — with every
+surface emitting a record, "which mode is this" and "is a delegate
+bound" were the same question asked twice.
 
 **Parameters**
 
-- `delegate: Any` — TUI delegate object implementing confirm/select/input/notify.
+- `delegate: Any` — An object with ``notify``, ``set_status``, ``panel`` and ``form``.
 
 ### shutdown
 
@@ -1119,13 +1199,12 @@ summarize_branch(from_entry: str, custom_instructions: str | None = None) -> lis
 
 Summarize the subtree at ``from_entry`` and splice it onto the active path.
 
-Ports the summarize arm of ``TauBackend.navigate_tree`` (backends.py:246)
-onto the bound session's own log: extract the branch text
-(``ConversationTree.subtree_text(from_entry)``), summarize it via the module
-``summarize_branch`` (session_manager.py:705 — already raise-based on a
-failed/empty summary, Fail-Early), then APPEND a ``branch_summary`` entry
-parented at ``from_entry`` (``SessionLog.append_branch_summary``). The
-abandoned children drop out of context via the ``parentId`` walk.
+Binds :func:`tau_agent_core.tree_ops.summarize_and_navigate` to the extension's
+own session: the capability extracts the branch text, summarizes it (raise-based
+on a failed or empty summary, Fail-Early) and APPENDs a ``branch_summary`` entry
+parented at ``from_entry``, and this supplies the session's model and key and
+banks the tokens the summarizer spent. The abandoned children drop out of context
+via the ``parentId`` walk.
 
 Returns the re-rendered active-path messages (``ConversationTree.context_for``).
 
@@ -1207,72 +1286,47 @@ A discovered extension that failed to load (pi types.ts:1590 errors[]).
 <!-- agent: yes -->
 
 ```python
-class ExtensionUI(mode: Literal['tui', 'headless'] = 'headless', headless_policy: dict[str, str] | None = None)
+class ExtensionUI(headless_policy: dict[str, str] | None = None)
 ```
 
 `tau_agent_core.extension_types.ExtensionUI`
 
-User interaction methods (TUI delegate, or a headless policy).
+User interaction surfaces: notify, status, panel, form.
 
-Reference: SUBPHASE-0.0.md, "8. Extension API Surface"; E7 §3 / S48.
+Reference: SUBPHASE-0.0.md, "8. Extension API Surface"; docs/EXTENSION-LOCKS.md §8.
 
-In TUI mode the blocking dialogs (``confirm``/``select``/``input``) delegate
-to a TUI delegate that asks a real human. In headless mode there is no human,
-so each blocking dialog obeys the headless-answer POLICY set via
-:meth:`set_headless_defaults` (from ``--ui-defaults`` / config.json):
+Every surface here DESCRIBES itself on the headless record stream and, where
+it can act, acts through a named command. ``confirm``/``select``/``input``
+were the exception — they emitted nothing and answered only through a bound
+TUI delegate — and are gone: an extension that wants an answer declares an
+ASK (``api.request_user_action``), which every head renders and which does
+not hold the turn lock while a human thinks.
 
-- a method WITH a policy entry returns the explicitly-configured answer
-  (``confirm`` → ``True``/``False``; ``select`` → first item; ``input`` →
-  default);
-- a method WITHOUT one RAISES :class:`HeadlessDialogError` (S48 / D-E6-2).
+:meth:`form` is the one blocking dialog left, and it is not the way to ask a
+human a question that gates work; it is the way a FLOW collects a missing
+argument from whoever typed the command. Headless it obeys the
+:meth:`set_headless_defaults` policy — ``form=defaults`` returns each field's
+declared default, no policy RAISES :class:`HeadlessDialogError` — because
+silently auto-filling a form nobody filled would fabricate consent.
 
-The pre-S48 behaviour auto-answered every headless dialog (``confirm→True``,
-``select→first``, ``input→default``) with no way to opt out — a silent
-auto-approve of whatever the dialog was gating. Raising by default makes the
-auto-answer an EXPLICIT choice instead of a hidden fallback.
+**A bound delegate is not enough on its own** (docs/SUBMISSION-LIFECYCLE.md,
+``Submission.allow_user_input`` — Jupyter's ``allow_stdin``). A form reaches
+the delegate only if the submission driving the calling code permits it:
+:func:`~tau_agent_core.submission.user_input_permitted` is ``False`` for the
+whole of a turn admitted with ``allow_user_input=False``, and the form then
+takes the headless-answer route even though a delegate and a live human
+exist. That is what makes the capability per-SUBMISSION rather than
+per-process: one embedded τ can serve an interactive session and a
+cron-triggered submission at the same time, and only the latter is barred
+from opening a dialog.
 
-**TUI mode is not enough on its own** (docs/SUBMISSION-LIFECYCLE.md,
-``Submission.allow_user_input`` — Jupyter's ``allow_stdin``). A blocking
-dialog reaches the delegate only if the submission driving the calling code
-permits it: :func:`~tau_agent_core.submission.user_input_permitted` is
-``False`` for the whole of a turn admitted with ``allow_user_input=False``,
-and each blocking dialog then takes the headless-answer route above even
-though a delegate and a live human exist. That is what makes the capability
-per-SUBMISSION rather than per-process: one embedded τ can serve an
-interactive session and a cron-triggered submission at the same time, and
-only the latter is barred from opening dialogs. Outside any submission-driven
-turn (a slash-command handler, ``session_start``, ``continue_conversation()``)
-nothing is published and behaviour is exactly as before.
-
-``notify`` is non-blocking (no answer to fabricate): it prints to stderr
-headless and paints on the delegate in TUI mode — unchanged, and NOT gated by
-``allow_user_input``, which is about asking a human, not telling one.
+``notify``, ``set_status`` and ``panel`` are non-blocking (no answer to
+fabricate), so they are NOT gated by ``allow_user_input``, which is about
+asking a human rather than telling one.
 
 **Constructor parameters**
 
-- `mode: Literal['tui', 'headless'] = 'headless'` — Either 'tui' or 'headless'. Defaults to 'headless'.
-- `headless_policy: dict[str, str] | None = None` — Optional ``{method: token}`` headless-answer map (validated via :meth:`set_headless_defaults`). Defaults to no policy → headless dialogs raise (S48).
-
-### confirm
-
-```python
-confirm(title: str, message: str) -> bool
-```
-
-`tau_agent_core.extension_types.ExtensionUI.confirm`
-
-Show a confirmation dialog. Returns user's choice.
-
-Delegates to the TUI delegate when a human is reachable
-(:meth:`_human_delegate` — TUI mode AND the driving submission's
-``allow_user_input``). Otherwise returns the policy answer
-(``confirm=yes/true`` → ``True``, ``confirm=no/false`` → ``False``) or
-raises :class:`HeadlessDialogError` when no policy is set.
-
-**Parameters**
-
-- `title: str` — *(no description)*
-- `message: str` — *(no description)*
+- `headless_policy: dict[str, str] | None = None` — Optional ``{method: token}`` headless-answer map (validated via :meth:`set_headless_defaults`). Defaults to no policy → a headless form raises (S48).
 
 ### emit_constraints
 
@@ -1374,25 +1428,6 @@ Routing (mirrors the other blocking dialogs, S48):
 **Returns**
 
 ``dict[str, Any]`` mapping each field name to its answer, or ``None`` when a TUI user cancels. The headless ``defaults`` answer is always a dict (the user opted in — there is nothing to cancel).
-
-### input
-
-```python
-input(title: str, default: str = '') -> str
-```
-
-`tau_agent_core.extension_types.ExtensionUI.input`
-
-Show an input dialog. Returns user input or default.
-
-Delegates to the TUI delegate when a human is reachable
-(:meth:`_human_delegate`). Otherwise ``input=default`` returns the default
-value; no policy raises :class:`HeadlessDialogError`.
-
-**Parameters**
-
-- `title: str` — *(no description)*
-- `default: str = ''` — *(no description)*
 
 ### interactive
 
@@ -1499,25 +1534,6 @@ the session's ONE :class:`ExtensionUI`), so the record then carries
 
 - `ValueError` — if ``key`` is not a non-empty string (Fail-Early: a panel with no key has nothing to update or clear); or (via :func:`validate_panel_spec`) if ``spec`` is malformed.
 
-### select
-
-```python
-select(title: str, items: list[str]) -> str | None
-```
-
-`tau_agent_core.extension_types.ExtensionUI.select`
-
-Show a selection dialog. Returns selected item or None.
-
-Delegates to the TUI delegate when a human is reachable
-(:meth:`_human_delegate`). Otherwise ``select=first`` returns the first
-item (or None if empty); no policy raises :class:`HeadlessDialogError`.
-
-**Parameters**
-
-- `title: str` — *(no description)*
-- `items: list[str]` — *(no description)*
-
 ### set_headless_defaults
 
 ```python
@@ -1610,11 +1626,10 @@ shares the session's ONE :class:`ExtensionUI`), so the record then carries
 
 A UI dialog was opened with no human reachable and no explicit ``--ui-defaults`` policy.
 
-Raised by :meth:`ExtensionUI.confirm` / :meth:`ExtensionUI.select` /
-:meth:`ExtensionUI.input` / :meth:`ExtensionUI.form` when the corresponding
-method has no headless-answer policy (E7 §3 / S48) and no human can be asked.
-"No human can be asked" has TWO causes, and this one exception covers both
-because the consequence is identical:
+Raised by :meth:`ExtensionUI.form` — the one blocking dialog left after
+docs/EXTENSION-LOCKS.md §8.2 — when it has no headless-answer policy (E7 §3 /
+S48) and no human can be asked. "No human can be asked" has TWO causes, and
+this one exception covers both because the consequence is identical:
 
 - **headless mode** — there is no TUI delegate at all;
 - **``allow_user_input=False``** — a delegate may well exist, but the
@@ -1651,7 +1666,7 @@ omitted until the API is bound to the live session (E1/S3).
 <!-- agent: yes -->
 
 ```python
-class LoadedExtension(path: str, register: Callable[..., Any], api: ExtensionAPI, content_hash: str = '', subjects: tuple[str, ...] = (), touches_bus: bool = False)
+class LoadedExtension(path: str, register: Callable[..., Any], api: ExtensionAPI, content_hash: str = '', subjects: tuple[str, ...] = (), touches_bus: bool = False, config_schema: dict[str, Any] | None = None)
 ```
 
 `tau_agent_core.sdk.LoadedExtension`
@@ -1661,6 +1676,12 @@ A successfully loaded extension.
 Narrowed port of pi's ``Extension`` record (coding-agent types.ts:1577) to
 what S1 needs: the source ``path``, the module-level ``register`` factory
 that was invoked, and the ``ExtensionAPI`` it registered against.
+
+``config_schema`` is the extension's own ``CONFIG_SCHEMA`` module attribute,
+normalized by :func:`~tau_agent_core.extension_types.validate_form_spec` at
+load — the declaration that lets a head render a settings screen for keys
+only the extension knows. ``None`` means the module declared none, which is
+every extension written before the attribute existed.
 
 ``content_hash``, ``subjects`` and ``touches_bus`` are H7/H8's addition
 (SIM_SPEC_v2 §16.6/§16.10): the file's identity at load time, and its
@@ -1680,6 +1701,7 @@ partition key).
 - `content_hash: str = ''` — *(no description)*
 - `subjects: tuple[str, ...] = ()` — *(no description)*
 - `touches_bus: bool = False` — *(no description)*
+- `config_schema: dict[str, Any] | None = None` — *(no description)*
 
 ## apply_session_name
 <!-- agent: yes -->
@@ -1814,6 +1836,34 @@ listing (Fail-Early).
 
 - `result: LoadExtensionsResult` — *(no description)*
 
+## validate_ask_spec
+<!-- agent: yes -->
+
+```python
+validate_ask_spec(spec: Any) -> dict[str, Any]
+```
+
+`tau_agent_core.extension_types.validate_ask_spec`
+
+Validate + normalize an ASK spec into ``{title, body, fields, actions}``.
+
+Reference: docs/EXTENSION-LOCKS.md §8. The panel shape with fields added —
+:func:`validate_panel_spec`'s body and actions, :func:`validate_form_spec`'s
+fields — so a head that renders a panel and a form already renders this and
+no new field vocabulary enters the tree.
+
+**Parameters**
+
+- `spec: Any` — ``{title?, text|list|table?, fields?, actions}``. The body is optional here where a panel requires one, because a bare question-and-buttons ask has nothing to put in it. ``fields`` and ``actions`` are :func:`validate_form_spec`'s and :func:`validate_panel_spec`'s, unchanged.
+
+**Returns**
+
+``{"title": str, "body": dict | None, "fields": list, "actions": list}``.
+
+**Raises**
+
+- `ValueError` — everything the two validators raise, plus: no ``actions`` (an ask with no action is a notification, and ``ui.notify`` is how you send one); an action carrying ``args`` (an ask action's one argument is the request id — §8 — so a declared one is a conflict, refused rather than overridden); more than one body key.
+
 ## validate_form_spec
 <!-- agent: yes -->
 
@@ -1845,6 +1895,31 @@ rather than silently dropping the field.
 **Parameters**
 
 - `spec: Any` — *(no description)*
+
+## validate_form_values
+<!-- agent: yes -->
+
+```python
+validate_form_values(fields: list[dict[str, Any]], values: dict[str, Any]) -> None
+```
+
+`tau_agent_core.extension_types.validate_form_values`
+
+Check answered values against the fields :func:`validate_form_spec` returned.
+
+The reverse direction of the form contract: ``validate_form_spec`` says what
+may be asked, this says whether an answer is admissible. Used where a form's
+answers become durable state — an extension's config slice — rather than a
+one-shot return value.
+
+**Parameters**
+
+- `fields: list[dict[str, Any]]` — The normalized field list, as returned by :func:`validate_form_spec`.
+- `values: dict[str, Any]` — The answers, keyed by field name. Every declared field must be present; missing is not the same as empty and is not filled in here.
+
+**Raises**
+
+- `ValueError` — an undeclared key, a missing declared field, a value whose type does not match its kind, or a ``select``/``multiselect`` value outside its declared options. Fail-Early: nothing is coerced and nothing is dropped.
 
 ## validate_panel_spec
 <!-- agent: yes -->

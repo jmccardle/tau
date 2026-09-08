@@ -8,37 +8,41 @@ DIFFERENT demo, not a fix of it). Pi original:
 
 ## What this shows
 
-A ``tool_call`` veto that, on a *dangerous* ``bash`` command, does not auto-deny
-— it ASKS a human via ``ctx.ui.confirm`` (E7 §3 / S47) and blocks only on "no".
-This is the pi ``permission-gate.ts`` pattern faithfully ported: dangerous-pattern
-match → confirm dialog → block unless approved.
+A ``tool_call`` veto that, on a *dangerous* ``bash`` command, does not auto-deny.
+It blocks the call and, when the turn is over, STOPS the session on a locked
+request (docs/EXTENSION-LOCKS.md §3, row 3) whose ask offers "allow this
+command" and "deny". Answering "allow" records the command in an allowlist, so
+the model's next attempt at the same command goes through; answering "deny"
+leaves it blocked. Either way the lock releases, because answering appends and
+appending moves the cursor.
 
-## Porting the ``ctx.hasUI`` branch (the one deliberate divergence)
+## Why the request is raised at ``user_turn_end`` and not in the veto
 
-pi's original explicitly branches on ``ctx.hasUI``:
+A lock is read at the CURSOR (docs/EXTENSION-LOCKS.md §2), and a turn keeps
+appending after a ``tool_call`` hook returns — the tool result, the next
+completion, the answer. A request appended from inside the veto would be four
+entries behind the leaf by the time the turn ended, and inert. ``user_turn_end``
+is the last hook of a prompt, so a request raised there IS the leaf.
 
-```ts
-if (!ctx.hasUI) {
-    return { block: true, reason: "Dangerous command blocked (no UI for confirmation)" };
-}
-const choice = await ctx.ui.select(...);
-```
+Blocking and asking are therefore two steps here, which is also the honest
+sequence: the model is told the call was refused and gets to finish its turn,
+and only then does the session stop for a human.
 
-τ has no ``ctx.hasUI`` — and does not need one. Under the S48 headless-dialog
-policy, ``ctx.ui.confirm(...)`` called with no TUI delegate and no
-``--ui-defaults`` policy RAISES ``HeadlessDialogError`` rather than silently
-resolving. The ``tool_call`` hook call-site is already Fail-CLOSED on ANY
-handler exception (``agent_loop.py`` ``_prepare_tool_call``: "a throwing
-handler blocks execution rather than letting the tool run unguarded" — the
-τ/pi-parity home of pi's own ``agent-session.ts:419-424`` fail-closed rule).
-So simply AWAITING ``ctx.ui.confirm`` reproduces pi's "no UI → block" behavior
-for free, through the general mechanism, instead of a demo-local
-``hasUI`` special case — and a run WITH an explicit
-``--ui-defaults confirm=yes`` (or ``=no``) policy resolves for real, honoring
-the S48 policy exactly where pi has no non-interactive story at all. This is
-the one hook that can actually stop the call: a ``tool_execution_start`` notify
-subscriber cannot block, and there is no ``api.notify`` (only ``api.ui.notify``,
-which is non-blocking) — the mistake the original ``01`` demo made.
+## Why this is not ``ctx.ui.confirm`` any more
+
+It used to be, and the deliberate divergence from pi documented here was about
+``ctx.hasUI``. That whole discussion is gone with the method: a blocking dialog
+holds ``AgentSession._turn_lock`` for as long as a human takes, dies with the
+process, and describes itself to no head but the Textual one
+(docs/EXTENSION-LOCKS.md §1). The lock has none of those properties — it is a
+tree node, so it survives a restart, every head renders it, and nothing is
+parked on a lock while nobody answers.
+
+The veto itself is unchanged and still Fail-CLOSED: the hook returns
+``{"block": True}``, and the ``tool_call`` call-site blocks on any handler
+exception too (``agent_loop.py`` ``_prepare_tool_call``). What the lock adds is
+the half a veto cannot do — "deny and tell the model" is not "stop and ask a
+human", and the loop would otherwise carry straight on with an error result.
 
 ## Field contract
 
@@ -47,36 +51,16 @@ from ``event["input"]["command"]`` (no pi ``args ?? input`` dual-read).
 
 ## Usage
 
-```python
-import importlib.util
-import sys
-
-from tau_agent_core.sdk import create_agent_session
-
-# examples/ is not an importable package: there is no __init__.py and every
-# filename starts with a digit. Load the file by path, as `tau -e` does.
-_spec = importlib.util.spec_from_file_location("ext", "examples/30_permission_gate.py")
-ext = importlib.util.module_from_spec(_spec)
-# Register BEFORE exec_module: a module using `from __future__ import
-# annotations` resolves its own dataclass annotations through sys.modules.
-sys.modules[_spec.name] = ext
-_spec.loader.exec_module(ext)
-
-session = create_agent_session(
-    model="gpt-4o",
-    tools=["bash"],
-    extensions=[ext.register],
-)
-```
-
-Headless, with an explicit auto-answer policy (S48 — Fail-Early otherwise)::
-
-    tau -p "clean up the repo" -e examples/30_permission_gate.py \\
-        --ui-defaults confirm=no
-
-Or interactively through the TUI, where a real confirm dialog (S47) pops up::
-
     tau -e examples/30_permission_gate.py
+    > delete the build directory with rm -rf
+
+The call is blocked and the session stops with "Extension 30_permission_gate
+requires a response". Answer the ask, run ``/gate-allowed`` to see what is
+allowed, or branch to the parent node in the tree browser to get out from under
+it entirely.
+
+Headless, the refusal is the ``SubmissionResult``: ``tau -p`` prints the reason
+and exits non-zero rather than silently continuing.
 """
 
 from __future__ import annotations
@@ -84,8 +68,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
-# Dangerous bash patterns (pi ``permission-gate.ts`` parity): rm -rf/--recursive,
-# any sudo, chmod/chown ... 777.
+from tau_agent_core.extension_locks import request_at_cursor
+from tau_agent_core.session_log import resolve_cursor
+
 DANGEROUS_PATTERNS = [
     re.compile(r"\brm\s+(-rf?|--recursive)", re.IGNORECASE),
     re.compile(r"\bsudo\b", re.IGNORECASE),
@@ -98,36 +83,84 @@ def is_dangerous(command: str) -> bool:
     return any(pattern.search(command) for pattern in DANGEROUS_PATTERNS)
 
 
-async def permission_gate_tool_call(event: dict[str, Any], ctx: Any) -> dict[str, Any] | None:
-    """The ``tool_call`` hook handler: confirm dangerous ``bash`` commands.
-
-    Non-``bash`` calls and non-dangerous ``bash`` commands pass through
-    untouched (``None``). A dangerous command awaits a real confirm dialog; "no"
-    (or a headless run resolving the confirm policy to ``False``) blocks. A
-    headless run with NO policy raises ``HeadlessDialogError``, which the
-    ``tool_call`` call-site converts into a block automatically (see module
-    docstring) — the demo does not need to catch it itself.
-    """
-    if event["tool_name"] != "bash":
-        return None
-    command = str((event.get("input") or {}).get("command") or "")
-    if not is_dangerous(command):
-        return None
-
-    allowed = await ctx.ui.confirm(
-        "⚠️ Dangerous command",
-        f"The agent wants to run:\n\n  {command}\n\nAllow it?",
-    )
-    if not allowed:
-        return {"block": True, "reason": "Blocked by user"}
-    return None
-
-
 def permission_gate_extension(api: Any) -> None:
-    """Extension entry point: register the confirm-gated ``tool_call`` veto."""
-    api.on("tool_call", permission_gate_tool_call)
+    """Extension entry point: the veto, the lock it raises, and its two actions."""
+    #: Commands a human approved this session, and the request each answer belongs to.
+    allowed: set[str] = set()
+    asked: dict[str, str] = {}
+    #: What this turn's veto blocked, held until the turn edge can ask about it.
+    blocked: list[str] = []
+
+    async def on_tool_call(event: dict[str, Any], ctx: Any) -> dict[str, Any] | None:
+        """Block a dangerous ``bash`` command and remember it for the turn edge."""
+        if event["tool_name"] != "bash":
+            return None
+        command = str((event.get("input") or {}).get("command") or "")
+        if not is_dangerous(command) or command in allowed:
+            return None
+        blocked.append(command)
+        return {"block": True, "reason": "Blocked pending human approval"}
+
+    async def on_user_turn_end(event: dict[str, Any], ctx: Any) -> None:
+        """Raise ONE locked request for whatever this turn blocked (see the docstring)."""
+        if not blocked:
+            return
+        command = blocked.pop()
+        blocked.clear()
+        asked[
+            api.request_user_action(
+                f"Blocked a dangerous command: {command}",
+                lock=True,
+                release="gate-deny",
+                ask={
+                    "title": "⚠️ Dangerous command",
+                    "text": f"The agent wants to run:\n\n  {command}",
+                    "actions": [
+                        {"label": "Allow this command", "command": "gate-allow"},
+                        {"label": "Deny", "command": "gate-deny"},
+                    ],
+                },
+            )
+        ] = command
+
+    async def gate_allow(args: str, ctx: Any) -> str:
+        """The ask's first action; its one argument is the request id (§8)."""
+        command = asked.pop(args.strip(), None)
+        if command is None:
+            return f"No blocked command for request {args.strip()!r}"
+        allowed.add(command)
+        return f"Allowed: {command}. Ask the agent to run it again."
+
+    async def gate_deny(args: str, ctx: Any) -> str:
+        """The ask's second action, and the declared release.
+
+        Two callers, and the difference is who moved the cursor. Dispatched as an
+        ACTION, ``answer_request`` has already appended the response and released
+        the lock, so there is nothing at the cursor and this only records the
+        decision. Typed as ``/gate-deny``, nothing has moved — and being exempt
+        from the lock is what lets the command RUN, not what releases it
+        (docs/EXTENSION-LOCKS.md §5, §6) — so it navigates off the request itself.
+        """
+        asked.pop(args.strip(), None)
+        entries = ctx.entries()
+        request = request_at_cursor(entries, resolve_cursor(entries))
+        if request is not None:
+            parent = next(e["parentId"] for e in entries if str(e["id"]) == request.entry_id)
+            await ctx.navigate(str(parent) if parent is not None else None)
+        return "Denied. The command stays blocked."
+
+    async def gate_allowed(args: str, ctx: Any) -> str:
+        return "\n".join(sorted(allowed)) or "Nothing has been allowed this session."
+
+    api.on("tool_call", on_tool_call)
+    api.on("user_turn_end", on_user_turn_end)
+    api.register_command(
+        "gate-allow", {"description": "allow the blocked command", "handler": gate_allow}
+    )
+    api.register_command("gate-deny", {"description": "keep it blocked", "handler": gate_deny})
+    api.register_command(
+        "gate-allowed", {"description": "list what is allowed", "handler": gate_allowed}
+    )
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/30_permission_gate.py`` → ``getattr(module, "register")``).
 register = permission_gate_extension

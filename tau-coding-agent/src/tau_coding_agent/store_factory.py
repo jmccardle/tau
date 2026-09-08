@@ -2,7 +2,7 @@
 into a :class:`~tau_agent_core.session_catalog.SessionCatalog`.
 
 The two injection points that build a catalog today (``headless.run_print`` and
-``app.Parley.__init__``) both call :func:`build_session_catalog` instead of
+``app.TauApp.__init__``) both call :func:`build_session_catalog` instead of
 hardcoding ``FileSessionCatalog()``. Everything else in ``tau-coding-agent``
 stays exactly as ignorant of ``tau_jmfts`` as it was before this module existed:
 ``tau_jmfts`` is imported **lazily, inside a function body**, only when the
@@ -157,10 +157,6 @@ def build_jmfts_client(config: dict[str, Any], *, health_check: bool = True) -> 
     if not isinstance(url, str):
         raise StoreError('~/.tau/config.json "session_store.url" must be a string')
 
-    # CR-4: shared-bearer token. Read from config first, then the environment.
-    # Fail-Early: we never default this to a value -- a missing token means the
-    # request goes out unauthenticated and (against an auth'd server) 401s
-    # loudly below, which is the correct signal, not something to paper over.
     token = store_config.get("token") or os.environ.get("JMFTS_API_TOKEN")
     if token is not None and not isinstance(token, str):
         raise StoreError('~/.tau/config.json "session_store.token" must be a string')
@@ -171,9 +167,6 @@ def build_jmfts_client(config: dict[str, Any], *, health_check: bool = True) -> 
     try:
         client.health()
     except JmftsError as exc:
-        # Never leave the store configured-but-unreachable half-open: close the
-        # httpx.Client this JmftsClient just opened before raising, rather than
-        # leaking it into a caller that is about to give up on this catalog.
         client.close()
         if exc.status_code == 401:
             raise StoreError(
@@ -254,10 +247,6 @@ def build_session_catalog(
                 f"(a document server, which has no directory): {str(base_dir)!r} "
                 "would be ignored. Drop --session-dir, or add --store file."
             )
-        # build_jmfts_client() first: it is the one place the "tau-jmfts not
-        # installed" ImportError is caught and converted to a clean StoreError.
-        # Importing tau_jmfts.catalog before that would raise a bare, uncaught
-        # ImportError on the same missing-package case.
         client = build_jmfts_client(config, health_check=persist)
         from tau_jmfts.catalog import JmftsSessionCatalog
 

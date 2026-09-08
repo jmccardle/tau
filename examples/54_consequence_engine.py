@@ -85,9 +85,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# ``ext_kit`` lives alongside the numbered examples, not inside an installed package —
-# bootstrap ``examples/`` onto the path before importing it, whether run directly,
-# imported, or loaded via ``-e`` (D-E6-3), the same as the other ext_kit-using demos.
 _EXAMPLES_DIR = str(Path(__file__).resolve().parent)
 if _EXAMPLES_DIR not in sys.path:
     sys.path.insert(0, _EXAMPLES_DIR)
@@ -98,16 +95,10 @@ from ext_kit.state import TreeStore  # noqa: E402
 #: This extension's own file stem — the ``api.config`` slice key (S40).
 EXTENSION_STEM = "54_consequence_engine"
 
-#: The ``customEntry`` type each ``/what-if`` run is recorded under (S39/S56). One
-#: durable node per run; ``/consequences`` lists them along the active path.
 REPORT_CUSTOM_TYPE = "consequence_report"
 
-#: Read-only tools the composer child gets — it inspects the repo to derive the
-#: consequences, it never mutates it (the same isolation ``50``'s lenses enforce).
 COMPOSER_TOOLS: tuple[str, ...] = ("read", "ls", "grep", "find")
 
-#: Tools the carrier child gets — it carries the change *in its own worktree*, so it
-#: needs to write; the isolation is the throwaway worktree, not a read-only guard.
 CARRY_TOOLS: tuple[str, ...] = ("read", "write", "edit", "ls", "grep", "find")
 
 #: Default cap on composed consequences (the "bounded" in bounded composer-lite).
@@ -563,8 +554,6 @@ async def _what_if_command(
         signal=getattr(ctx, "signal", None),
         max_n=max_n,
     )
-    # One durable customEntry per run — the consequence ledger (backplane state,
-    # excluded from convert_to_llm; persisted == rendered, reload-invariant).
     store.append({"change": outcome["change"], "results": outcome["results"]})
     return consequence_report(outcome)
 
@@ -607,6 +596,4 @@ def consequence_engine_extension(api: Any) -> None:
     )
 
 
-#: The module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/54_consequence_engine.py`` → ``getattr(module, "register")``).
 register = consequence_engine_extension

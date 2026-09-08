@@ -62,10 +62,6 @@ from typing import Any
 
 from tau_jmfts.client import CHUNK_USETYPE, JmftsClient, JmftsTextTooLongError
 
-# Only these τ entry kinds carry text worth embedding. `navigate` / `model_change` /
-# `session_info` project to an empty `content` (store._content_for), and the server
-# 404s on embedding a document with no content — correctly, since there is nothing to
-# search. Chunk documents are embedded by the chunker itself (auto_embed=True).
 EMBEDDABLE_USETYPES = ("tau:message", "tau:compaction", "tau:branch_summary", "tau:customMessage")
 
 
@@ -120,17 +116,10 @@ def enrich_conversation(
             doc_id = doc["id"]
             content = doc.get("content") or ""
             if len(content.strip()) <= 10:
-                # The server refuses to embed content this short (`len(content) > 10`),
-                # and it is right to: there is nothing to match on. This IS a character
-                # test, and legitimately so — it is not standing in for a token count,
-                # it mirrors the server's own char-counted floor.
                 report.skipped_empty.append(doc_id)
             elif client.is_embedded(doc_id):
                 report.already_done.append(doc_id)
             else:
-                # Ask, don't estimate. Whether this fits is a fact about TOKENS that only
-                # the server can compute; its `text_too_long` refusal is that computation
-                # and the branch condition at once. Any other error still propagates.
                 try:
                     client.embed_document(doc_id)
                 except JmftsTextTooLongError:
@@ -140,13 +129,6 @@ def enrich_conversation(
 
     if index is not None:
         _ensure_index(client, index)
-        # index_document is idempotent server-side (the D3 fix), so indexing each of the
-        # conversation's own entry documents is safe to replay: a re-run re-indexes the
-        # same set at O(new docs) and leaves the BM25 collection statistics unchanged.
-        # (This replaced root-registration + a full refresh, which was O(corpus) but the
-        # only replay-safe option before the fix — see the module docstring.) The parent
-        # entries carry the full text, so indexing them covers all lexical content; the
-        # chunk children exist for vector search and need no separate BM25 posting.
         entry_docs = _entry_documents(client, root_doc_id)
         for doc in entry_docs:
             client.index_document_into(index, doc["id"])
@@ -179,10 +161,6 @@ def _enrich_long_document(client: JmftsClient, doc_id: int, report: EnrichmentRe
 
     for chunk in chunks:
         chunk_id = chunk["id"]
-        # Chunks minted just above arrive already embedded, so this loop is normally a
-        # confirmation. It earns its cost on the resume path: chunks left behind by a
-        # pass that died mid-flight are finished here. A chunk that somehow still does
-        # not fit raises JmftsTextTooLongError rather than storing a truncated prefix.
         if client.is_embedded(chunk_id):
             report.already_done.append(chunk_id)
         else:
@@ -227,10 +205,6 @@ def register(api: Any) -> None:
 
     async def on_session_shutdown(event: dict[str, Any], ctx: Any) -> None:
         log = ctx._require_session().session_log
-        # Fail-Early: this extension's whole job is to enrich documents in JMFTS. On a
-        # file-backed session there are none. Silently doing nothing would be the worst
-        # outcome — the user would believe their conversations were being made
-        # searchable, and only discover otherwise when a search came back empty.
         if not hasattr(log, "root_doc_id"):
             raise RuntimeError(
                 "enrich: the active session is not JMFTS-backed "

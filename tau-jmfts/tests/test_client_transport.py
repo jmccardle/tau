@@ -11,8 +11,6 @@ from tau_jmfts.client import JmftsClient, JmftsError
 
 
 def test_unreachable_server_raises_jmfts_error_not_httpx_error() -> None:
-    # Port 1 is a reserved/unassigned TCP port -- connection refused immediately,
-    # no risk of accidentally hitting a real service.
     client = JmftsClient("http://127.0.0.1:1", timeout=2.0)
     try:
         with pytest.raises(JmftsError) as excinfo:

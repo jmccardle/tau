@@ -68,11 +68,6 @@ def _self_sub(text: str, submission_id: str) -> Submission:
     )
 
 
-# =============================================================================
-# next_submission_depth: the derivation itself
-# =============================================================================
-
-
 class TestNextSubmissionDepth:
     def test_outside_any_turn_the_declared_depth_stands(self):
         assert DRIVING_SUBMISSION_DEPTH.get() is None
@@ -95,11 +90,6 @@ class TestNextSubmissionDepth:
             assert next_submission_depth(7) == 7
         finally:
             DRIVING_SUBMISSION_DEPTH.reset(token)
-
-
-# =============================================================================
-# Propagation through a real submission chain
-# =============================================================================
 
 
 @pytest.mark.usefixtures("fake_llm")
@@ -137,14 +127,9 @@ class TestDepthPropagation:
 
         await asyncio.wait_for(session.prompt("outer"), timeout=10.0)
 
-        # Drain the chain: awaiting link i runs its turn, whose own hook appends
-        # link i+1. The loop ends when a link refuses to spawn — i.e. when the
-        # cap fires.
         errors: list[BaseException] = []
         i = 0
         while i < len(spawned):
-            # A regression here (depth not propagating) makes the chain endless;
-            # fail loudly rather than hanging the suite on a self-feeding loop.
             assert i < 3 * MAX_SUBMISSION_DEPTH, (
                 "the chain never terminated — the depth cap is not bounding self-submission"
             )
@@ -154,8 +139,6 @@ class TestDepthPropagation:
                 errors.append(err)
             i += 1
 
-        # Inherited (+1) at every link, never reset: the interactive prompt is
-        # depth 0 and each self-submission is exactly one deeper.
         assert depths == list(range(MAX_SUBMISSION_DEPTH + 1))
 
         assert len(errors) == 1, "exactly one link should be refused — the one past the cap"
@@ -219,9 +202,6 @@ class TestDepthPropagation:
                 assert session._current_submission is not None
                 depths.append(session._current_submission.depth)
                 ready.set()
-                # Yield enough for the pre-existing task below to actually reach
-                # submit() and block on the in-flight turn's lock, so this is
-                # genuine mid-turn concurrency and not a sequential replay.
                 for _ in range(5):
                     await asyncio.sleep(0)
 
@@ -270,11 +250,6 @@ class TestDepthPropagation:
             assert DRIVING_SUBMISSION_DEPTH.get() is None
 
         assert depths == [0, 0, 0]
-
-
-# =============================================================================
-# fork: the one strategy with no lock to guard it
-# =============================================================================
 
 
 class TestForkInheritsDepth:

@@ -683,11 +683,12 @@ the drift test decide.
 
 ## 5. Working in a worktree
 
-The editable installs write **absolute paths into the main tree**:
+The editable installs write **absolute paths into the main tree**. `<MAIN>` below
+is the main checkout and `<WT>` the worktree:
 
 ```
 venv/lib/python3.11/site-packages/__editable__.tau_agent_core-0.0.0.pth
-  → /home/john/Development/agent-harness-py/tau-agent-core/src
+  → <MAIN>/tau-agent-core/src
 ```
 
 A worktree that runs `pytest` without correcting for this tests **its own tests
@@ -696,7 +697,7 @@ takes precedence over `.pth`-injected paths (verified: index 1 vs index 6 in
 `sys.path`), so every command in a worktree runs as:
 
 ```bash
-ln -s /home/john/Development/agent-harness-py/venv <WT>/venv   # .githooks/pre-commit needs its tools
+ln -s <MAIN>/venv <WT>/venv                       # .githooks/pre-commit needs its tools
 export PYTHONPATH=<WT>/tau-llm/src:<WT>/tau-agent-core/src:<WT>/tau-coding-agent/src:<WT>/tau-jmfts/src
 cd <WT>
 ./venv/bin/python -m pytest ... ; ./venv/bin/ruff check ... ; ./venv/bin/mypy ...

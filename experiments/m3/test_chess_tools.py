@@ -89,8 +89,6 @@ def test_check_status_detects_and_names_the_checker() -> None:
 
 
 def test_piece_info_pinned_rook_splits_legal_from_self_check() -> None:
-    # White rook e2 is pinned to the king (e1) by the black rook (e6). It may
-    # only move ALONG the pin; every off-file target is reachable-but-illegal.
     b = Board.from_piece_map({"e1": "K", "e2": "R", "e6": "r", "a6": "k"}, side=WHITE)
     info = piece_info(b, "e2")
     assert info["piece"] == "R" and info["color"] == WHITE

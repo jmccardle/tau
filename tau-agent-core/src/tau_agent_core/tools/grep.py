@@ -57,11 +57,6 @@ class GrepTool:
         },
         "required": ["pattern"],
     }
-    # Annotated rather than left to inference (B1/tau-004): unannotated,
-    # `execution_mode = "parallel"` infers `str`, and `ToolDefinition`
-    # declares it `Literal["sequential", "parallel"]`. `sdk._resolve_tools`
-    # copies this value into a ToolDefinition, so without the annotation mypy
-    # cannot check that copy — which is the blindness B1 exists to remove.
     execution_mode: Literal["sequential", "parallel"] = "parallel"
 
     def __init__(self, cwd: str = ".") -> None:
@@ -111,10 +106,6 @@ class GrepTool:
                 target_path = os.path.join(self.cwd, target_path)
             target_path = os.path.abspath(target_path)
 
-        # The whole search runs in a worker thread. It is `os.walk` plus blocking
-        # reads with no await anywhere inside it, so on the TUI's event loop —
-        # which is also the loop painting the screen (docs/PLAN-0.9.4.md §8) — a
-        # grep over a large tree froze painting and input for its whole duration.
         try:
             matches, files_searched = await asyncio.to_thread(
                 self._collect, compiled, target_path, files_list, signal
@@ -184,10 +175,6 @@ class GrepTool:
                 if not os.path.isfile(file_path):
                     continue
 
-                # An explicitly-named file counts as searched even if it turns out
-                # to be unreadable — the caller named it, so reporting "0 files
-                # searched" for a list of files would be the misleading answer.
-                # That was the old behaviour here and it is kept.
                 files_searched += 1
                 matches.extend(self._search_file(file_path, compiled, target_path) or [])
         elif os.path.isfile(target_path):
@@ -205,14 +192,6 @@ class GrepTool:
                         continue
                     file_path = os.path.join(root, fname)
 
-                    # Binary files are skipped by _search_file's own decode
-                    # failure. This used to be a separate pre-pass that opened the
-                    # file, read it whole into memory, and threw the result away
-                    # (`_ = f.read()`) purely to see whether it decoded — so every
-                    # file in the tree was read TWICE, and every text file was
-                    # held in memory once at full size for no result. The decode
-                    # error that pre-pass was watching for is the same one
-                    # _search_file already catches.
                     match_lines = self._search_file(file_path, compiled, search_dir)
                     if match_lines is None:
                         continue

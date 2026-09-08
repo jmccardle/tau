@@ -2,10 +2,15 @@
 #
 # τ pre-commit quality gate — Tier-5 rules enforcement.
 #
-# Runs the same three checks as CI-by-hand on the five src/ trees:
-#   1. ruff check          (lint)
-#   2. ruff format --check  (formatting)
-#   3. mypy                 (types)
+# Runs the same four checks as CI-by-hand on the five src/ trees:
+#   1. ruff check                       (lint)
+#   2. ruff format --check              (formatting)
+#   3. mypy                             (types)
+#   4. strip_comment_blocks.py --check  (no multi-line comment blocks)
+#
+# Check 4 is a hard gate where the docs-coverage gate deliberately is not: the
+# src trees hold zero blocks, so it passes on a clean tree and only ever fails
+# on something the commit just added.
 #
 # Scope mirrors the [tool.ruff] / [tool.mypy] config in pyproject.toml:
 # the five package src trees only (tests are not gated).
@@ -24,8 +29,9 @@ cd "$REPO_ROOT"
 
 RUFF="venv/bin/ruff"
 MYPY="venv/bin/mypy"
+PY="venv/bin/python"
 
-for tool in "$RUFF" "$MYPY"; do
+for tool in "$RUFF" "$MYPY" "$PY"; do
     if [ ! -x "$tool" ]; then
         echo "[pre-commit] ERROR: '$tool' not found or not executable." >&2
         echo "[pre-commit] Create/activate the in-repo venv first (see CLAUDE.md):" >&2
@@ -45,5 +51,8 @@ echo "[pre-commit] ruff format --check…"
 
 echo "[pre-commit] mypy…"
 "$MYPY" "${SRC[@]}"
+
+echo "[pre-commit] comment blocks…"
+"$PY" scripts/strip_comment_blocks.py "${SRC[@]}" --check
 
 echo "[pre-commit] all checks passed ✓"

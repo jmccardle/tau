@@ -27,8 +27,9 @@ from typing import Any
 import pytest
 
 from tau_agent_core.submission import SubmissionResult
-from tau_coding_agent.app import Parley, RollbackPromptModal, TreeModeModal
+from tau_coding_agent.app import TauApp
 from tau_coding_agent.backends import TauBackend
+from tau_coding_agent import modals, tree_browser
 
 # --- doubles ----------------------------------------------------------------
 
@@ -70,8 +71,6 @@ class _RollbackBackend:
     async def rollback_turn(self, text: str) -> SubmissionResult:
         self.rollback_calls.append(text)
         if self._result.accepted:
-            # What submit() does, as the app sees it: the aborted turn unwinds and
-            # the replacement turn's messages are on the log by the time it returns.
             self.aborted = True
             self._released.set()
             await asyncio.sleep(0)
@@ -94,7 +93,7 @@ def app_and_backend(make_app):
     return make_app(create_backend=lambda cfg: backend), backend
 
 
-def _notifications(app: Parley) -> list[tuple[str, str]]:
+def _notifications(app: TauApp) -> list[tuple[str, str]]:
     """Record ``notify`` calls as ``(message, severity)`` (test_tree_elide idiom)."""
     seen: list[tuple[str, str]] = []
     original = app.notify
@@ -107,7 +106,7 @@ def _notifications(app: Parley) -> list[tuple[str, str]]:
     return seen
 
 
-def _script(app: Parley, values: list[Any]) -> list[Any]:
+def _script(app: TauApp, values: list[Any]) -> list[Any]:
     """Answer the modal from a script; return the screens the action pushed."""
     pushed: list[Any] = []
     queue = list(values)
@@ -154,8 +153,6 @@ async def test_backend_rollback_turn_submits_the_rollback_strategy():
     assert sub.allow_user_input is True
     # …but command dispatch still lives in the TUI (submit() raises on True).
     assert sub.expand_commands is False
-    # No `context=` override: the TUI's working list still holds the messages the
-    # rollback just un-pathed, so the session must fold its own log instead.
     assert kwargs == {}
 
 
@@ -206,12 +203,8 @@ async def test_ctrl_z_during_generation_rolls_the_turn_back(
         await wait_for_workers_settled(app)
         await pilot.pause()
 
-        # The binding fired, the modal was the rollback prompt, prefilled with the
-        # doomed turn's own text, and the edited text is what was submitted.
-        assert isinstance(pushed[0], RollbackPromptModal)
+        assert isinstance(pushed[0], modals.RollbackPromptModal)
         assert backend.rollback_calls == ["read the tests first"]
-        # Re-rendered from the live session (the same seam /compact and the tree
-        # browser use), so the replacement turn is what the transcript shows.
         assert app.messages[-1]["content"] == "replacement"
         assert ("Rolled back and re-ran from before the aborted turn", "information") in notes
 
@@ -315,9 +308,6 @@ async def test_rollback_refuses_a_turn_that_finished_while_the_modal_was_open(ap
         await pilot.pause()
 
         async def finish_then_answer(screen):
-            # The turn completes while the modal is up. (Yielding rather than
-            # ``workers.wait_for_complete()``: this code runs INSIDE the rollback
-            # worker, and a worker may not wait on the worker manager from within.)
             app.action_cancel_generation()
             for _ in range(100):
                 if not app.is_generating:
@@ -395,7 +385,7 @@ async def test_a_modal_takes_escape_back_from_the_app(app_and_backend):
     async with app.run_test() as pilot:
         await pilot.pause()
         dismissed: list[Any] = []
-        app.push_screen(TreeModeModal(), lambda value: dismissed.append(value))
+        app.push_screen(tree_browser.TreeModeModal(), lambda value: dismissed.append(value))
         await pilot.pause()
 
         assert app.check_action("escape", ()) is False

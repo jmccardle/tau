@@ -23,6 +23,13 @@ from tau_coding_agent.headless import (
     run_print,
 )
 
+
+def _no_ts(message: dict) -> dict:
+    """A message without its ``timestamp`` — these assertions are about role and
+    content, and the clock is asserted in test_session_store.py."""
+    return {k: v for k, v in message.items() if k != "timestamp"}
+
+
 # ── a config like ~/.tau/config.json ───────────────────────────────────────
 
 
@@ -172,8 +179,6 @@ def test_resolve_uses_default_model():
 def test_resolve_no_tools_empties_tools():
     _name, mc = resolve_model_config(_config(), CLIArgs(model="gpt-4o", no_tools=True))
     assert mc["tools"] == []
-    # ...and says WHICH flag did it, which is the only thing that separates
-    # --no-tools from --no-builtin-tools downstream.
     assert mc["no_tools"] == "all"
 
 
@@ -207,9 +212,6 @@ def test_resolve_tools_allowlist():
 
 
 def test_resolve_no_builtin_tools_empties_builtins():
-    # --no-builtin-tools drops the built-in set (tools=[]); extension tools survive
-    # the later _build_turn_tools merge. resolve_model_config stages the built-in
-    # side AND the "builtin" policy that tells AgentSession to leave the merge alone.
     _name, mc = resolve_model_config(_config(), CLIArgs(model="gpt-4o", no_builtin_tools=True))
     assert mc["tools"] == []
     assert mc["no_tools"] == "builtin"
@@ -322,8 +324,6 @@ def test_resolve_extensions_reach_run_config():
 
 
 def test_resolve_no_extensions_keeps_explicit_extension_in_run_config():
-    # -ne suppresses discovery (no_extensions flag reaches the config) while an
-    # explicit -e path still lands in the run config for the loader to honor.
     _name, mc = resolve_model_config(
         _config(), CLIArgs(model="gpt-4o", extensions=["keep.py"], no_extensions=True)
     )
@@ -383,8 +383,6 @@ def test_resolve_bare_id_uses_provider_default():
 
 
 def test_resolve_thinking_suffix_sets_level():
-    # gpt-4o:high is not a config key, so the :high suffix is parsed off the
-    # ad-hoc id and lands on model_config["thinking"].
     name, mc = resolve_model_config(_config(), CLIArgs(model="gpt-4o:high"))
     assert mc["thinking"] == "high"
     assert mc["model"] == "gpt-4o"
@@ -475,7 +473,7 @@ def test_resume_help_and_behaviour_tell_the_same_story():
 
 
 def test_resume_reaches_the_tui(monkeypatch):
-    """The wiring Phase B left for Phase C: ``args.resume`` → ``Parley(resume=…)``.
+    """The wiring Phase B left for Phase C: ``args.resume`` → ``TauApp(resume=…)``.
 
     Without this line the flag parses, passes validation, launches the TUI and
     does nothing — the accepted-and-ignored shape ``test_cli_flag_inventory.py``
@@ -490,7 +488,7 @@ def test_resume_reaches_the_tui(monkeypatch):
         def run(self):
             pass
 
-    monkeypatch.setattr("tau_coding_agent.app.Parley", FakeParley)
+    monkeypatch.setattr("tau_coding_agent.app.TauApp", FakeParley)
     assert cli._launch_tui(parse_cli_args(["--resume"]), {}) == 0
     assert seen["resume"] is True
     # And a plain start does not open the picker.
@@ -508,15 +506,6 @@ def test_main_continue_without_print_errors(capsys):
 def test_resolve_no_model_no_default_raises():
     with pytest.raises(CLIError, match="no model"):
         resolve_model_config({"models": {}}, CLIArgs(model=None))
-
-
-# ── --mode rpc validation (unit 2D) ─────────────────────────────────────────
-#
-# Only the REJECTION paths are unit-testable here: a valid `--mode rpc`
-# invocation reaches asyncio.run(run_rpc(...)), which claims stdout and reads
-# real stdin forever — exactly what tau-coding-agent/tests/test_rpc_conformance.py
-# drives over a real subprocess instead. Every check below fires BEFORE
-# load_config(), so none of it touches a real ~/.tau/config.json either.
 
 
 def test_mode_rpc_is_a_valid_choice():
@@ -551,10 +540,6 @@ def test_main_rpc_rejects_session_continuation(flag, capsys):
 def test_main_rpc_rejects_name_and_store(flag, capsys):
     rc = cli.main(["--mode", "rpc", *flag])
     assert rc == 2
-    # The rejection is unchanged (D-6: "the startup CLI restrictions are
-    # untouched"); its stated reason is not. The old wording ("does not persist
-    # one yet") stopped being true when Blocker 2 moved the startup session onto
-    # catalog.create, and unit S moved where that session lives.
     assert "--name/--store" in capsys.readouterr().err
 
 
@@ -582,13 +567,6 @@ def test_assemble_missing_file_raises():
 class _FakeBackend:
     def __init__(self, config):
         self.config = config
-        # Mirrors TauBackend's contract: the backend BUILDS the system prompt and
-        # run_print stores what it built. A double that left this unset would
-        # assert that no system message reaches the model, which is the defect
-        # this seam exists to prevent. Composed with the SAME helper the real
-        # backend uses, so the placement of --append-system-prompt cannot drift
-        # between the double and the thing it stands in for; only the project
-        # context and tool list are omitted, which this double has no tools for.
         from tau_agent_core.sdk import BASE_SYSTEM_PROMPT, append_system_prompt
 
         base = config.get("system_prompt") or None
@@ -609,9 +587,6 @@ class _FakeBackend:
     async def stream_submission(
         self, submission, context, callback, on_event=None, on_pi_event=None
     ):
-        # B2-c: print mode owns its Submission and hands it to the one door, so the
-        # seam a backend double must implement is ``stream_submission`` — the caller's
-        # record admitted verbatim, and the 4-tuple plus the SubmissionResult back.
         self.submission = submission
         self.messages = context
         deltas = ["Hello ", "world"]
@@ -621,11 +596,6 @@ class _FakeBackend:
             callback(d)
             if on_event is not None:
                 on_event({"kind": "text_delta", "delta": d})
-        # pi-faithful ``--mode json`` sink (step S8): the real TauBackend feeds
-        # this from the AgentEvent bus; here a minimal but shaped stand-in proves
-        # headless writes the header FIRST and forwards these ``type``-discriminated
-        # events (no ``kind``/``done``). The message_end carries usage/model/
-        # stop_reason, the per-child limit signal the delegate reads.
         if on_pi_event is not None:
             on_pi_event({"type": "turn_start", "turn_index": 0})
             on_pi_event(
@@ -648,8 +618,6 @@ class _FakeBackend:
                     ],
                 }
             )
-        # A realistic (if minimal) agent-loop transcript so the persistence
-        # test sees an assistant message land in the saved session.
         new_messages = [
             {"role": "assistant", "content": [{"type": "text", "text": "Hello world"}]},
         ]
@@ -674,9 +642,6 @@ def fake_backend(monkeypatch, tmp_path):
         return be
 
     monkeypatch.setattr("tau_coding_agent.backends.create_backend", factory)
-    # Sandbox session persistence: run_print() appends to a JSONL Session under
-    # ~/.tau/sessions, and tests must not write into the user's real dir. The
-    # store reads session_store.TAU_DIR at call time, so redirecting it suffices.
     import tau_coding_agent.session_store as store
 
     monkeypatch.setattr(store, "TAU_DIR", tmp_path)
@@ -697,13 +662,10 @@ async def test_run_print_text_mode(fake_backend, capsys):
     # system prompt + user message were passed to the backend
     msgs = fake_backend["backend"].messages
     assert msgs[0] == {"role": "system", "content": "You are helpful."}
-    assert msgs[-1] == {"role": "user", "content": "hi"}
+    assert _no_ts(msgs[-1]) == {"role": "user", "content": "hi"}
 
 
 async def test_run_print_json_mode(fake_backend, capsys):
-    # pi-faithful --mode json (step S8): the session HEADER line first, then
-    # ``type``-discriminated AgentSessionEvents. No legacy ``kind`` key, no
-    # synthetic ``done`` line.
     rc = await run_print(CLIArgs(messages=["hi"], print_mode=True, mode="json"), _config())
     assert rc == 0
     lines = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
@@ -716,8 +678,6 @@ async def test_run_print_json_mode(fake_backend, capsys):
     types = [e["type"] for e in lines]
     assert types == ["session", "turn_start", "message_end", "agent_end"]
 
-    # The message_end carries the per-message usage/model/stop_reason the delegate
-    # (step S9) reads for per-child limits + the stop_reason taxonomy.
     (message_end,) = [e for e in lines if e["type"] == "message_end"]
     assert message_end["message"]["usage"] == {"total_tokens": 3}
     assert message_end["message"]["model"] == "qwen3-32b-kv4b"
@@ -781,14 +741,12 @@ async def test_run_print_persists_resumable_session(fake_backend, capsys):
     assert len(files) == 1
     saved = Session.load(files[0])
 
-    # Resumable from the TUI: `model` is a configured key (on_chat_selected looks
-    # it up in config["models"]), and the transcript is [system, user, *loop].
     assert saved.model == "local-llm"
     assert saved.backend == "openai"
     roles = [m["role"] for m in saved.messages]
     assert roles == ["system", "user", "assistant"]
     # The user message is preserved verbatim as the resume anchor / title source.
-    assert saved.messages[1] == {"role": "user", "content": "hi"}
+    assert _no_ts(saved.messages[1]) == {"role": "user", "content": "hi"}
 
 
 async def test_run_print_persists_in_json_mode_too(fake_backend, capsys):
@@ -799,8 +757,6 @@ async def test_run_print_persists_in_json_mode_too(fake_backend, capsys):
 
 
 async def test_run_print_no_session_is_ephemeral(fake_backend, capsys):
-    # --no-session runs against an in-memory session (path=None): the turn still
-    # streams, but nothing is written to the sandboxed sessions dir.
     rc = await run_print(CLIArgs(messages=["hi"], print_mode=True, no_session=True), _config())
     assert rc == 0
     assert capsys.readouterr().out == "Hello world\n"
@@ -834,8 +790,6 @@ async def test_run_print_no_session_rejects_continue(fake_backend):
 
 
 async def test_run_print_save_failure_propagates(fake_backend, monkeypatch):
-    # Fail-Early: if persistence fails, surface it — don't swallow it so the run
-    # silently "succeeds" without a resumable session.
     import tau_coding_agent.session_store as store
 
     def boom(self, entry):
@@ -887,7 +841,7 @@ def test_main_launches_tui_with_overrides(monkeypatch):
         def run(self):
             captured["ran"] = True
 
-    monkeypatch.setattr("tau_coding_agent.app.Parley", FakeParley)
+    monkeypatch.setattr("tau_coding_agent.app.TauApp", FakeParley)
     monkeypatch.setattr(cli, "load_config", lambda: _config())
     rc = cli.main(
         [
@@ -904,18 +858,12 @@ def test_main_launches_tui_with_overrides(monkeypatch):
     assert rc == 0 and captured["ran"] is True
     assert captured["overrides"]["default_model"] == "gpt-4o"
     assert "gpt-4o" in captured["overrides"]["models"]
-    # Run-level flags reach the app separately from the model overrides (S28):
-    # extensions, the parsed exclude-tools denylist, and the appended prompt.
     rcfg = captured["run_config"]
     assert rcfg["extensions"] == ["demo.py"]
     assert rcfg["no_extensions"] is False
     assert rcfg["exclude_tools"] == ["bash", "write"]
     assert rcfg["no_tools"] is None
     assert rcfg["append_system_prompt"] == ["RULE"]
-    # --fun rides as its OWN argument, never inside run_config: run_config is
-    # threaded into every backend the app builds, and a tagline flag has no
-    # business being reachable from there. Unflagged, it arrives as the packaged
-    # default, which is ON everywhere (tau_coding_agent.tagline.FUN_DEFAULT).
     assert captured["fun"] is True
     assert "fun" not in rcfg
 
@@ -923,7 +871,7 @@ def test_main_launches_tui_with_overrides(monkeypatch):
 def test_theme_flag_rides_the_in_memory_overrides(monkeypatch):
     """``--theme`` reaches the app as a config override, which is what makes it one-run.
 
-    ``Parley._apply_cli_overrides`` writes it into ``self.config``, and
+    ``TauApp._apply_cli_overrides`` writes it into ``self.config``, and
     ``action_set_theme``'s ``update_config`` re-reads the FILE rather than writing
     ``self.config`` back — so a session started with ``--theme latte`` that then
     picks gruvbox from the palette saves gruvbox, and never latte.
@@ -941,16 +889,13 @@ def test_theme_flag_rides_the_in_memory_overrides(monkeypatch):
         def run(self):
             captured["ran"] = True
 
-    monkeypatch.setattr("tau_coding_agent.app.Parley", FakeParley)
+    monkeypatch.setattr("tau_coding_agent.app.TauApp", FakeParley)
     monkeypatch.setattr(cli, "load_config", lambda: _config())
 
     assert cli.main(["--theme", "gruvbox"]) == 0
     assert captured["overrides"]["theme"] == "gruvbox"
     assert "theme" not in captured["run_config"], "a colour scheme is not backend policy"
 
-    # Absent, it must not appear at all: an override key present with a None value
-    # would make _configured_theme_name read None from the config it was told to
-    # override, which is a different question from "the user said nothing".
     assert cli.main([]) == 0
     assert not captured["overrides"] or "theme" not in captured["overrides"]
 
@@ -971,12 +916,10 @@ def test_tui_tools_allowlist_is_run_level_not_a_model_override(monkeypatch):
         def run(self):
             captured["ran"] = True
 
-    monkeypatch.setattr("tau_coding_agent.app.Parley", FakeParley)
+    monkeypatch.setattr("tau_coding_agent.app.TauApp", FakeParley)
     monkeypatch.setattr(cli, "load_config", lambda: _config())
     assert cli.main(["-t", "read,write"]) == 0
     assert captured["run_config"]["tools"] == ["read", "write"]
-    # No --model was given, so there is no model entry to override (cli passes
-    # ``overrides or None``, so an empty dict arrives as None).
     assert not captured["overrides"]
 
 
@@ -992,7 +935,7 @@ def test_tui_without_the_tools_flag_carries_no_allowlist(monkeypatch):
         def run(self):
             pass
 
-    monkeypatch.setattr("tau_coding_agent.app.Parley", FakeParley)
+    monkeypatch.setattr("tau_coding_agent.app.TauApp", FakeParley)
     monkeypatch.setattr(cli, "load_config", lambda: _config())
     assert cli.main([]) == 0
     assert captured["run_config"]["tools"] is None
@@ -1018,12 +961,10 @@ def test_tui_no_tools_is_run_level_not_a_model_override(monkeypatch):
         def run(self):
             captured["ran"] = True
 
-    monkeypatch.setattr("tau_coding_agent.app.Parley", FakeParley)
+    monkeypatch.setattr("tau_coding_agent.app.TauApp", FakeParley)
     monkeypatch.setattr(cli, "load_config", lambda: _config())
     assert cli.main(["-nt"]) == 0
     assert captured["run_config"]["no_tools"] == "all"
-    # No model/provider/tools/thinking flag was given, so nothing pins a model:
-    # there is no per-entry override for a ``/model`` switch to walk away from.
     assert not captured["overrides"]
 
 
@@ -1038,7 +979,7 @@ def test_tui_no_builtin_tools_reaches_run_config_as_the_resolved_policy(monkeypa
         def run(self):
             pass
 
-    monkeypatch.setattr("tau_coding_agent.app.Parley", FakeParley)
+    monkeypatch.setattr("tau_coding_agent.app.TauApp", FakeParley)
     monkeypatch.setattr(cli, "load_config", lambda: _config())
     assert cli.main(["-nbt"]) == 0
     assert captured["run_config"]["no_tools"] == "builtin"
@@ -1058,7 +999,7 @@ def test_tui_no_context_files_reaches_run_config(monkeypatch):
         def run(self):
             pass
 
-    monkeypatch.setattr("tau_coding_agent.app.Parley", FakeParley)
+    monkeypatch.setattr("tau_coding_agent.app.TauApp", FakeParley)
     monkeypatch.setattr(cli, "load_config", lambda: _config())
     assert cli.main(["-nc"]) == 0
     assert captured["run_config"]["no_context_files"] is True
@@ -1076,9 +1017,6 @@ def test_parse_store_flag():
 
 
 def test_parse_store_flag_rejects_unknown_backend():
-    # Argparse ``choices`` reject a bogus backend at parse time — only "file"/
-    # "jmfts" are valid CLI values (an unknown *config-provided* backend is
-    # instead a StoreError from store_factory.build_session_catalog).
     with pytest.raises(SystemExit):
         parse_cli_args(["-p", "--store", "sqlite", "go"])
 
@@ -1106,7 +1044,7 @@ def test_store_flag_reaches_tui_run_config(monkeypatch):
         def run(self):
             pass
 
-    monkeypatch.setattr("tau_coding_agent.app.Parley", FakeParley)
+    monkeypatch.setattr("tau_coding_agent.app.TauApp", FakeParley)
     monkeypatch.setattr(cli, "load_config", lambda: _config())
     cli.main(["--store", "jmfts"])
     assert captured["run_config"]["store"] == "jmfts"

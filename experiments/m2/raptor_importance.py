@@ -70,10 +70,6 @@ def entropy(scores):
     return -sum((c / n) * math.log2(c / n) for c in dist.values())
 
 
-# A summary is far longer than a turn, so its reasoning is longer too. The server runs
-# -c 16384 across -np 2 = 8192 tokens per slot, so prompt + budget must fit under that;
-# 6000 leaves comfortable room for a ~1-2k-token summary prompt. 3000 was not enough and
-# the guard below caught it rather than letting a truncated call become a fake score.
 THINKING_BUDGET = 6000
 
 
@@ -92,9 +88,6 @@ def score_one(client, prompt, thinking):
     msg = payload["choices"][0]["message"]
     content = (msg["content"] or "").strip()
     if not content:
-        # Never coerce this into a rating. An empty content means the reasoning never
-        # reached the grammar-bound answer, and a fabricated default would poison the very
-        # term under test.
         raise RuntimeError(
             "empty content — reasoning truncated before the grammar-bound answer "
             f"(finish_reason={payload['choices'][0].get('finish_reason')}, "
@@ -180,9 +173,6 @@ def main() -> int:
         print(f"  {r:>2}: {dist[r]:>4}  {'#' * int(50 * dist[r] / max(dist.values()))}")
     print("\n(turn-level GA/nothink baseline was ~0.29 bits, 96.1% at 1)")
 
-    # Propagate: each member turn inherits its summary's importance. Where RAPTOR nests
-    # summaries, a turn can sit under several; take the MAX — an observation being important
-    # at any level is a claim about the turn, and averaging would wash it out.
     sc_by_id = {row[0]: (row[2] or {}) for row in summaries}
     propagated: dict[int, int] = {}
     for sid, score in scored.items():
@@ -196,11 +186,6 @@ def main() -> int:
             r[0]
             for r in db.execute(select(Document.id).where(Document.usetype == "locomo_turn")).all()
         ]
-        # CLEAR FIRST. The turns still hold the previous turn-level GA/nothink scores
-        # (96% at 1). Writing propagated values over the top would leave every turn RAPTOR
-        # did not reach carrying a stale rating from a different experiment — the ablation
-        # would silently be measuring a mixture of the two. Absent importance is neutral by
-        # definition, which is the honest state for a turn no observation covers.
         for doc_id in turn_ids:
             doc = db.get(Document, doc_id)
             sc = dict(doc.structured_content or {})

@@ -120,10 +120,6 @@ def main() -> int:
                     "old_doc_id": session_ids[old_idx],
                     "new_doc_id": session_ids[new_idx],
                     "probing_queries": instance["probing_queries"],
-                    # The agent asks its question at the end of the timeline; decay is
-                    # measured from there, not from today. Real "now" is years past the
-                    # corpus, which would flatten every session to recency ~0 and make
-                    # the term measure nothing.
                     "now": instance["timestamps"][-1],
                 }
             )

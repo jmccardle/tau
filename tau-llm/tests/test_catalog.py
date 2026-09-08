@@ -30,8 +30,6 @@ from tau_llm.catalog import (
     thinking_level_map_from_record,
 )
 
-# A models.dev-shaped catalog. Field names and nesting follow the real api.json:
-# providers carry id/name/env/doc, models carry limit/cost/reasoning_options.
 CATALOG = {
     "openai": {
         "id": "openai",
@@ -69,8 +67,6 @@ CATALOG = {
         "id": "hpc-ai",
         "name": "HPC-AI",
         "env": ["HPC_AI_API_KEY"],
-        # Model ids contain slashes here. That is real, and it is why _split_ref
-        # partitions on the FIRST slash.
         "models": {
             "moonshotai/kimi-k2.5": {
                 "id": "moonshotai/kimi-k2.5",

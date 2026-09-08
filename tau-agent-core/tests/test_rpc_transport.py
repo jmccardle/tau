@@ -40,10 +40,6 @@ import pytest
 from tau_agent_core import rpc
 from tau_agent_core.rpc import RPCHandler, capabilities, dialect, transport
 
-# =============================================================================
-# Helpers
-# =============================================================================
-
 
 class _FakeStdin:
     """Stand-in for `sys.stdin` exposing only the `.buffer` attribute that
@@ -121,11 +117,6 @@ def _reset_stdout_takeover():
         rpc._release_stdout()
 
 
-# =============================================================================
-# T1 — framing
-# =============================================================================
-
-
 class TestFraming:
     async def test_lf_only_tolerates_trailing_cr(self, monkeypatch):
         handler = RPCHandler(_mock_session())
@@ -157,9 +148,6 @@ class TestFraming:
             "method": "send_prompt",
             "params": {"text": "line one\u2028line two\u2029line three"},
         }
-        # ensure_ascii=False so the LINE/PARAGRAPH SEPARATOR is emitted as a
-        # literal UTF-8 character, not escaped as the six-char "\u2028" --
-        # the raw-byte case that would actually break str.splitlines().
         line = json.dumps(payload, ensure_ascii=False)
         assert "\u2028" in line and "\u2029" in line
         handler = RPCHandler(_mock_session())
@@ -205,33 +193,6 @@ def _record(sink: list[str]):
         sink.append(line)
 
     return _handler
-
-
-# =============================================================================
-# T7 — the inbound request-line bound (review finding 9)
-# =============================================================================
-#
-# The defect these pin, reproduced against a real child before the fix:
-#
-#     get_state ok    -> {'jsonrpc': '2.0', 'id': 1, 'result': {...}}
-#     100KB prompt    -> NO RESPONSE: stdout closed
-#     rc: 1
-#
-# `_read_stdin` built a bare `asyncio.StreamReader()`, inherited the stdlib's
-# 64 KiB limit, and `readline()`'s `ValueError` went uncaught out of
-# `handler.run()`. One oversized `prompt` -- a pasted file, a stack trace, a
-# diff -- and the process was gone, with no JSON-RPC error and no T4 stderr
-# line to explain it.
-#
-# The bound is exercised at TWO sizes on purpose. Most tests here shrink
-# `MAX_REQUEST_LINE_BYTES` to a few hundred bytes (`small_bound`) so the
-# MECHANISM -- the boundary, the resync, the error shape, one error per line
-# -- is driven exhaustively without pushing megabytes through a pipe.
-# `test_a_100_kib_line_the_stdlib_default_would_have_killed_is_dispatched`
-# then runs at the REAL shipped bound, so a change that quietly reverted the
-# number to the stdlib's own is caught by something no monkeypatched test
-# could see. `test_rpc_line_limit.py` (tau-coding-agent) drives the shipped
-# number end to end against a real child.
 
 
 _SMALL_BOUND = 512
@@ -396,17 +357,12 @@ class TestRequestLineBound:
             assert refusal["error"]["code"] == dialect.REQUEST_TOO_LARGE
             assert refusal["error"]["data"]["line_complete"] is False
 
-            # ...and the peer keeps going, for a good while longer than the
-            # bound, without earning a second error or a second byte of
-            # retained buffer.
             for _ in range(10):
                 writer.write(b"C" * small_bound)
                 writer.flush()
                 await asyncio.sleep(0)
             assert handler._output_queue.empty(), "a refused line must be refused once"
 
-            # Finally an LF: the connection resynchronizes on it and the very
-            # next line is served as though nothing had happened.
             good = _request_line_of(120)
             writer.write(b"\n" + good.encode() + b"\n")
             writer.flush()
@@ -518,10 +474,6 @@ class TestRequestLineBound:
         rendered = protocol_doc.render()
         assert "max_request_line_bytes" in rendered
         assert str(transport.MAX_REQUEST_LINE_BYTES) in rendered
-        # The error TABLE's own row, not merely the name somewhere in the
-        # page: the Limits section names `REQUEST_TOO_LARGE` in prose too, so
-        # a bare substring check passes even when the error table has lost
-        # the code entirely (demonstrated -- it survived that mutation).
         assert f"| `{dialect.REQUEST_TOO_LARGE}` | `REQUEST_TOO_LARGE` |" in rendered
 
     def test_the_error_code_is_its_own_and_not_an_overloaded_one(self):
@@ -544,24 +496,6 @@ class TestRequestLineBound:
             "JSON-RPC 2.0 reserves -32000..-32099 for implementation-defined "
             "server errors; a code outside it is not ours to define"
         )
-
-
-# =============================================================================
-# T7's sibling — a request line that is not UTF-8 (finding 9, blockers #4)
-# =============================================================================
-#
-# Found while fixing the line bound, verified against a real child, and NOT
-# fixed by that unit (a different input class, mid-round, in a shared tree):
-#
-#     printf '\xff\xfe\n{"jsonrpc":"2.0","id":1,"method":"get_state"}\n' | tau --mode rpc
-#     rc: 1 ; stdout: b'' ; UnicodeDecodeError: 'utf-8' codec can't decode
-#     byte 0xff in position 0: invalid start byte
-#
-# Two hostile bytes: no JSON-RPC error, no T4 stderr line, and the well-formed
-# request BEHIND them lost with the process. Structurally the same availability
-# defect T7 fixed one framing rule over, so it gets the same answer -- refuse
-# the line, keep the connection -- with `PARSE_ERROR` rather than a new code
-# (see `_refuse_undecodable_request` for why the two cases differ on that).
 
 
 _UNDECODABLE = b"\xff\xfe"
@@ -672,8 +606,6 @@ class TestUndecodableRequestLine:
 
 
 # =============================================================================
-# P3 — extension-requested shutdown, checked after each command
-# =============================================================================
 
 
 class TestExtensionRequestedShutdown:
@@ -720,8 +652,6 @@ class TestExtensionRequestedShutdown:
         assert received == ['{"a":1}', '{"a":2}']
 
 
-# =============================================================================
-# T2 / R-T5 — stdout takeover
 # =============================================================================
 
 
@@ -837,8 +767,6 @@ class TestStdoutTakeover:
 
 
 # =============================================================================
-# T5 / T6 — FIFO ordering and write-failure propagation
-# =============================================================================
 
 
 class TestWriterContract:
@@ -869,10 +797,6 @@ class TestWriterContract:
 
     async def test_write_failure_propagates_and_is_not_swallowed(self):
         handler = RPCHandler(_mock_session())
-        # A real fd is required now (`_connect_stdout_writer` needs one to
-        # set up the pipe transport at all — see TestWriterContract's own
-        # docstring precedent below); the injected failure happens one
-        # layer up, at `_write_line`, before this fd is ever actually
         # written to.
         read_fd, write_fd = os.pipe()
         handler._real_stdout = os.fdopen(write_fd, "w")  # type: ignore[assignment]
@@ -943,8 +867,6 @@ class TestWriterCancellationLeavesNoThreadBehind:
         handler = RPCHandler(_mock_session())
         read_fd, write_fd = os.pipe()
         handler._real_stdout = os.fdopen(write_fd, "w")  # type: ignore[assignment]
-        # Nobody ever reads read_fd. One oversized item guarantees `drain()`
-        # (or, under the reverted code, the executor-thread `write()`)
         # genuinely blocks — comfortably more than a 64 KiB pipe buffer.
         handler._output_queue.put_nowait({"seq": 0, "pad": "x" * 500_000})
         handler._running = True
@@ -959,12 +881,6 @@ class TestWriterCancellationLeavesNoThreadBehind:
                 await asyncio.wait_for(task, timeout=8.0)
             assert task.done(), "cancelling the stalled write task did not complete"
 
-            # The primary assertion: the fixed writer never touches
-            # `loop.run_in_executor` at all, so the loop's default
-            # executor is never even CREATED (it is created lazily, on
-            # first use) -- a direct, structural proof no thread pool was
-            # involved. Under the reverted (`run_in_executor`-based)
-            # writer this is non-None, because writing the FIRST item
             # (before the oversized one ever stalls) already created it.
             loop = asyncio.get_event_loop()
             executor = loop._default_executor  # type: ignore[attr-defined]
@@ -974,14 +890,6 @@ class TestWriterCancellationLeavesNoThreadBehind:
                 "thread hazard"
             )
 
-            # Secondary, behavioural check for when a REVERTED writer DOES
-            # create one: `asyncio.run()`'s own teardown makes exactly this
-            # call (`Runner.close()` -> `shutdown_default_executor()` ->
-            # `executor.shutdown(wait=True)`) -- if a thread is still
-            # parked in a blocking write(), it hangs. Run on a throwaway
-            # helper thread (not the executor's own pool -- shutdown()
-            # joining its own calling thread would deadlock trivially and
-            # prove nothing) so the bound below can actually observe a
             # timeout rather than being blocked by the same hang itself.
             if executor is not None:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as helper:
@@ -992,8 +900,6 @@ class TestWriterCancellationLeavesNoThreadBehind:
             os.close(read_fd)
 
 
-# =============================================================================
-# P1 / P4 — signals and shutdown
 # =============================================================================
 
 
@@ -1059,8 +965,6 @@ class TestSignalsAndShutdown:
         run_task = asyncio.create_task(handler.run())
         try:
             await asyncio.sleep(0.05)  # let run() install its signal handlers
-            # If registration silently failed, os.kill below would hard-kill
-            # the pytest process itself instead of failing this test -- see
             # test_signal_registration_failure_propagates_not_swallowed.
             assert handler._registered_signals, "signal registration did not happen"
             os.kill(os.getpid(), signal.SIGTERM)
@@ -1115,15 +1019,6 @@ class TestSignalsAndShutdown:
         assert any(json.loads(line).get("id") == 1 for line in lines)
 
 
-# =============================================================================
-# P1 / P4 — the SIGTERM-skips-flush vs SIGHUP-drains distinction itself
-# =============================================================================
-#
-# The tests above prove exit codes and that *something* gets written on
-# SIGHUP. Neither proves the actual substance of P1/P4: that SIGTERM
-# specifically abandons whatever is still queued while SIGHUP specifically
-# waits for it. These pin the queued-vs-written outcome directly, using a
-# deterministic gate (not timing) so a future refactor that collapses the
 # two branches together fails here rather than staying green.
 
 
@@ -1193,10 +1088,6 @@ class TestSignalFlushBehavior:
             assert call_count[0] == 1, "writer proceeded past item 0 with nobody reading"
             handler._on_signal(signal_name)
             if release_gate:
-                # SIGHUP drains: something has to actually read the pipe
-                # NOW for the blocked first write — and everything queued
-                # behind it — to ever complete. Started only after the
-                # stall above is established, same as the old gate's
                 # `Event.set()` timing.
                 reader_thread = threading.Thread(target=_drain_reader, daemon=True)
                 reader_thread.start()
@@ -1235,8 +1126,6 @@ class TestSignalFlushBehavior:
 
 
 # =============================================================================
-# T6 — a broken pipe stops run() entirely, not just the writer
-# =============================================================================
 
 
 class TestBrokenPipeStopsRun:
@@ -1260,16 +1149,6 @@ class TestBrokenPipeStopsRun:
             stdin_writer.write(request.encode("utf-8"))
             stdin_writer.flush()
 
-            # Poll for run_task to finish *on its own* -- do NOT cancel it
-            # ourselves (e.g. via asyncio.wait_for's timeout-driven cancel).
-            # That distinction matters: run()'s CancelledError handling
-            # cannot tell "the reader was cancelled internally" apart from
-            # "something external cancelled run()'s own task" (that's a
-            # separate defect, see TestExternalCancellation), so an
-            # externally injected cancellation from a test timeout would
-            # unwind run() and produce a result *regardless* of whether the
-            # T6 fix under test is present -- silently passing this test
-            # even with the fix reverted. Polling without cancelling makes
             # "run() just kept running" observable as its own failure.
             for _ in range(20):
                 if run_task.done():
@@ -1281,14 +1160,6 @@ class TestBrokenPipeStopsRun:
                 "kept the reader running (in production: kept parsing, "
                 "executing, and queueing requests) behind a dead peer"
             )
-            # `ConnectionResetError`, not `BrokenPipeError`, since the writer
-            # swap (T6 blocker 2, phase-4 review): `loop.connect_write_pipe`
-            # detects the read end being ALREADY closed via the selector
-            # (POLLHUP) at connect time, before any `os.write()` EPIPE is
-            # ever attempted, and asyncio's pipe transport reports that as
-            # `ConnectionResetError` (verified directly against a real
-            # closed-read-end pipe; both are `OSError`/`ConnectionError`
-            # subclasses — T5's actual contract is "a write failure
             # propagates", not a specific errno).
             with pytest.raises(ConnectionResetError):
                 run_task.result()
@@ -1308,8 +1179,6 @@ class TestBrokenPipeStopsRun:
         assert rpc.is_stdout_taken_over() is False
 
 
-# =============================================================================
-# Fail Early: signal-registration failures and outer cancellation
 # =============================================================================
 
 
@@ -1334,11 +1203,6 @@ class TestFailEarlyOnRegistrationFailure:
 
         handler = RPCHandler(_mock_session())
         try:
-            # Bounded so that if the fix under test regresses (registration
-            # failure silently swallowed again), this fails cleanly via
-            # TimeoutError instead of hanging forever reading a stdin that
-            # nothing will ever close or signal -- a hang here previously
-            # took the whole verification run down with it rather than
             # reporting one failing test.
             with pytest.raises(RuntimeError, match="simulated registration failure"):
                 await asyncio.wait_for(handler.run(), timeout=5)

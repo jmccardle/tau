@@ -40,6 +40,9 @@ from tau_agent_core.conversation_tree import ConversationTree
 
 from tau_coding_agent.session_store import Session
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 def _model() -> Model:
     return Model(
@@ -77,7 +80,7 @@ def _summary_response(text: str):
             provider="openai",
             model="gpt-4o",
             stop_reason="stop",  # type: ignore[arg-type]
-            timestamp=0,
+            timestamp=_TS,
         )
 
     return _impl
@@ -173,8 +176,6 @@ async def test_handoff_new_session_survives_reload(monkeypatch, isolate_tau_dir)
     result = await agent.run_extension_command("handoff", "")
     new_path = _reported_new_path(result.output)
 
-    # Fresh load — a new Session/ConversationTree, no shared in-memory state
-    # with the object the command mutated.
     reloaded_session = Session.load(Path(new_path))
     reloaded_tree = ConversationTree(reloaded_session.entries(), reloaded_session.cursor)
     reloaded_active = reloaded_tree.context_for()

@@ -17,9 +17,6 @@ from typing import Any
 
 from tau_jmfts.store import JmftsSessionLog, _content_for
 
-# TREE-BROWSER-AS-EDITOR.md §8/§11.3: the splice appenders now require the anchor's
-# provenance as keyword-only arguments with no defaults. These tests are about
-# something else, so they name plausible values once here.
 _ELIDE_PROV = {"covered_entries": 1, "covered_tokens": 50, "agent_spec_id": None}
 
 

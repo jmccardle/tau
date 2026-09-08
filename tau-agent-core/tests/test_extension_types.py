@@ -34,10 +34,6 @@ from tau_agent_core.extension_types import (
 from tau_agent_core.extensions.registry import ExtensionRegistry
 from tau_agent_core.events import EventBus
 
-# ──────────────────────────────────────────────────────────────────────────────
-# ExtensionAPI — method existence and basic properties
-# ──────────────────────────────────────────────────────────────────────────────
-
 
 class TestExtensionAPIInit:
     """Tests for ExtensionAPI initialization (backward compatible)."""
@@ -69,11 +65,6 @@ class TestExtensionAPIInit:
         """ExtensionAPI stores its context."""
         api = ExtensionAPI()
         assert hasattr(api, "_context")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# ExtensionAPI.on() — event subscription
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 class TestExtensionAPIEvents:
@@ -115,11 +106,6 @@ class TestExtensionAPIEvents:
         unsub = api.on("agent_start", lambda e: None)
         assert callable(unsub)
         unsub()  # should not raise
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# ExtensionAPI.tool methods
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 async def _noop_exec(tool_call_id, params, signal, on_update, ctx):
@@ -222,11 +208,6 @@ class TestExtensionAPITools:
         assert len(api.get_all_tools()) == 5
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# ExtensionAPI command methods
-# ──────────────────────────────────────────────────────────────────────────────
-
-
 class TestExtensionAPICommands:
     """Tests for ExtensionAPI command registration via registry."""
 
@@ -323,11 +304,6 @@ class TestExtensionAPIShortcuts:
             api.register_shortcut("g", "cmd", description=1)  # type: ignore[arg-type]
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# register_flag / get_flag deleted (E6 §2 / S38)
-# ──────────────────────────────────────────────────────────────────────────────
-
-
 class TestFlagsRemoved:
     """The dead ``register_flag`` / ``get_flag`` API was deleted in S38 (G6).
 
@@ -344,11 +320,6 @@ class TestFlagsRemoved:
 
     def test_extension_api_has_no_flags_store(self):
         assert not hasattr(ExtensionAPI(), "_flags")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# ExtensionAPI.append_entry
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 class TestExtensionAPIAppendEntry:
@@ -385,11 +356,6 @@ class TestExtensionAPIAppendEntry:
         api.append_entry("counter", {"value": 1})
         api.append_entry("counter", {"value": 2})
         assert mock_session._append_custom_entry.call_count == 2
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# ExtensionAPI session methods
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 class TestExtensionAPISession:
@@ -517,11 +483,6 @@ class TestExtensionAPISession:
         )
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# ExtensionAPI.ui property
-# ──────────────────────────────────────────────────────────────────────────────
-
-
 class TestExtensionAPIProperty:
     """Tests for ExtensionAPI.ui property."""
 
@@ -533,29 +494,20 @@ class TestExtensionAPIProperty:
 
     @pytest.mark.asyncio
     async def test_ui_raises_in_headless_without_policy(self):
-        """ExtensionAPI.ui dialogs RAISE headless with no policy (S48, Fail-Early)."""
+        """ExtensionAPI.ui's one blocking dialog RAISES headless with no policy (S48)."""
         from tau_agent_core.extension_types import HeadlessDialogError
 
         api = ExtensionAPI()
-        ui = api.ui
         with pytest.raises(HeadlessDialogError):
-            await ui.confirm("title", "msg")
-        with pytest.raises(HeadlessDialogError):
-            await ui.select("title", ["a"])
-        with pytest.raises(HeadlessDialogError):
-            await ui.input("title", default="default")
+            await api.ui.form({"fields": [{"name": "x", "kind": "text"}]})
 
     @pytest.mark.asyncio
     async def test_ui_honors_headless_policy(self):
-        """ExtensionAPI.ui dialogs auto-answer once a headless policy is set (S48)."""
+        """ExtensionAPI.ui's form auto-answers once a headless policy is set (S48)."""
         api = ExtensionAPI()
-        api.context.set_headless_ui_defaults(
-            {"confirm": "yes", "select": "first", "input": "default"}
-        )
-        ui = api.ui
-        assert await ui.confirm("title", "msg") is True
-        assert await ui.select("title", ["a", "b"]) == "a"
-        assert await ui.input("title", default="default") == "default"
+        api.context.set_headless_ui_defaults({"form": "defaults"})
+        answers = await api.ui.form({"fields": [{"name": "x", "kind": "text", "default": "d"}]})
+        assert answers == {"x": "d"}
 
     def test_ui_returns_same_instance(self):
         """ExtensionAPI.ui returns the context's ui (cached per context)."""
@@ -569,11 +521,6 @@ class TestExtensionAPIProperty:
         api = ExtensionAPI()
         ctx = api.context
         assert isinstance(ctx, ExtensionContext)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# ui.form — declarative form spec (E10 §6 / S66)
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 _FULL_FORM_SPEC = {
@@ -682,13 +629,13 @@ class TestExtensionUIForm:
     @pytest.mark.asyncio
     async def test_form_raises_headless_without_policy(self):
         # Fail-Early: no form policy → raise, NEVER silently auto-fill.
-        ui = ExtensionUI(mode="headless")
+        ui = ExtensionUI()
         with pytest.raises(HeadlessDialogError):
             await ui.form(_FULL_FORM_SPEC)
 
     @pytest.mark.asyncio
     async def test_form_defaults_policy_returns_declared_defaults(self):
-        ui = ExtensionUI(mode="headless")
+        ui = ExtensionUI()
         ui.set_headless_defaults({"form": "defaults"})
         answers = await ui.form(_FULL_FORM_SPEC)
         assert answers == {
@@ -702,14 +649,14 @@ class TestExtensionUIForm:
     @pytest.mark.asyncio
     async def test_form_validates_before_policy(self):
         # A malformed spec fails up front regardless of policy (no UI shown).
-        ui = ExtensionUI(mode="headless")
+        ui = ExtensionUI()
         ui.set_headless_defaults({"form": "defaults"})
         with pytest.raises(ValueError, match="unknown kind"):
             await ui.form({"fields": [{"name": "x", "kind": "nope"}]})
 
     @pytest.mark.asyncio
     async def test_form_emits_json_record_then_resolves(self):
-        ui = ExtensionUI(mode="headless")
+        ui = ExtensionUI()
         ui.set_headless_defaults({"form": "defaults"})
         records: list[dict] = []
         ui.set_record_sink(records.append)
@@ -726,7 +673,7 @@ class TestExtensionUIForm:
     @pytest.mark.asyncio
     async def test_form_emits_record_even_when_it_will_raise(self):
         # The request is visible on the stream before the Fail-Early raise.
-        ui = ExtensionUI(mode="headless")
+        ui = ExtensionUI()
         records: list[dict] = []
         ui.set_record_sink(records.append)
         with pytest.raises(HeadlessDialogError):
@@ -737,14 +684,14 @@ class TestExtensionUIForm:
     @pytest.mark.asyncio
     async def test_form_ui_defaults_rejects_bad_form_token(self):
         # Only "defaults" is a valid form answer (validated like every method).
-        ui = ExtensionUI(mode="headless")
+        ui = ExtensionUI()
         with pytest.raises(ValueError, match="form="):
             ui.set_headless_defaults({"form": "yes"})
 
     @pytest.mark.asyncio
     async def test_form_delegates_in_tui_mode(self):
         # TUI mode routes to the delegate (a human fills it); no policy needed.
-        ui = ExtensionUI(mode="tui")
+        ui = ExtensionUI()
 
         class _Delegate:
             async def form(self, spec):
@@ -760,7 +707,7 @@ class TestExtensionUISetStatus:
 
     def test_delegates_in_tui_mode(self):
         # TUI mode routes to the delegate's status strip (key + text passed through).
-        ui = ExtensionUI(mode="tui")
+        ui = ExtensionUI()
         calls: list[tuple[str, str | None]] = []
 
         class _Delegate:
@@ -774,7 +721,7 @@ class TestExtensionUISetStatus:
 
     def test_emits_json_record(self):
         # Headless --mode json: a set + a re-call + a clear each emit a status record.
-        ui = ExtensionUI(mode="headless")
+        ui = ExtensionUI()
         records: list[dict] = []
         ui.set_record_sink(records.append)
         ui.set_status("budget", "$1.42/2.00")
@@ -790,7 +737,7 @@ class TestExtensionUISetStatus:
         ]
 
     def test_record_carries_source_when_known(self):
-        ui = ExtensionUI(mode="headless")
+        ui = ExtensionUI()
         records: list[dict] = []
         ui.set_record_sink(records.append)
         ui.set_status("m", "gpt", source="model-status.py")
@@ -798,29 +745,24 @@ class TestExtensionUISetStatus:
 
     def test_prints_to_stderr_without_sink(self):
         # --mode text / SDK: no delegate, no record sink → honest stderr line.
-        ui = ExtensionUI(mode="headless")
+        ui = ExtensionUI()
         with patch("sys.stderr", new=io.StringIO()) as mock_stderr:
             ui.set_status("turn", "Turn 3...")
             assert "[τ] status turn: Turn 3..." in mock_stderr.getvalue()
 
     def test_clear_stderr_shows_cleared(self):
-        ui = ExtensionUI(mode="headless")
+        ui = ExtensionUI()
         with patch("sys.stderr", new=io.StringIO()) as mock_stderr:
             ui.set_status("turn", None)
             assert "[τ] status turn: (cleared)" in mock_stderr.getvalue()
 
     def test_empty_key_raises(self):
         # Fail-Early: a slot with no key has nothing to update or clear.
-        ui = ExtensionUI(mode="headless")
+        ui = ExtensionUI()
         with pytest.raises(ValueError, match="non-empty string"):
             ui.set_status("", "x")
         with pytest.raises(ValueError, match="non-empty string"):
             ui.set_status(None, "x")  # type: ignore[arg-type]
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# ui.panel — declarative panel spec (E10 §6 / S68)
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 _TABLE_PANEL_SPEC = {
@@ -929,7 +871,7 @@ class TestExtensionUIPanel:
 
     def test_delegates_in_tui_mode(self):
         # TUI mode routes the NORMALIZED spec (not the raw one) to the delegate.
-        ui = ExtensionUI(mode="tui")
+        ui = ExtensionUI()
         calls: list[tuple[str, dict | None]] = []
 
         class _Delegate:
@@ -945,10 +887,7 @@ class TestExtensionUIPanel:
         assert calls[1] == ("fleet", None)
 
     def test_emits_json_record_with_normalized_spec(self):
-        # Headless --mode json: a set + a clear each emit a panel record; the set
-        # carries the normalized spec (with its declared actions visible on the
-        # stream), the clear rides spec=None.
-        ui = ExtensionUI(mode="headless")
+        ui = ExtensionUI()
         records: list[dict] = []
         ui.set_record_sink(records.append)
         ui.panel("fleet", _TABLE_PANEL_SPEC)
@@ -965,7 +904,7 @@ class TestExtensionUIPanel:
         assert records[1]["spec"] is None
 
     def test_record_carries_source_when_known(self):
-        ui = ExtensionUI(mode="headless")
+        ui = ExtensionUI()
         records: list[dict] = []
         ui.set_record_sink(records.append)
         ui.panel("fleet", {"text": "hi"}, source="delegate_fleet.py")
@@ -973,7 +912,7 @@ class TestExtensionUIPanel:
 
     def test_validates_before_routing(self):
         # A malformed spec fails up front regardless of mode (no record, no delegate).
-        ui = ExtensionUI(mode="headless")
+        ui = ExtensionUI()
         records: list[dict] = []
         ui.set_record_sink(records.append)
         with pytest.raises(ValueError, match="EXACTLY ONE body"):
@@ -982,29 +921,24 @@ class TestExtensionUIPanel:
 
     def test_prints_to_stderr_without_sink(self):
         # --mode text / SDK: no delegate, no record sink → honest stderr line.
-        ui = ExtensionUI(mode="headless")
+        ui = ExtensionUI()
         with patch("sys.stderr", new=io.StringIO()) as mock_stderr:
             ui.panel("fleet", {"title": "Fleet", "text": "2 running"})
             assert "[τ] panel fleet: Fleet" in mock_stderr.getvalue()
 
     def test_clear_stderr_shows_cleared(self):
-        ui = ExtensionUI(mode="headless")
+        ui = ExtensionUI()
         with patch("sys.stderr", new=io.StringIO()) as mock_stderr:
             ui.panel("fleet", None)
             assert "[τ] panel fleet: (cleared)" in mock_stderr.getvalue()
 
     def test_empty_key_raises(self):
         # Fail-Early: a panel with no key has nothing to update or clear.
-        ui = ExtensionUI(mode="headless")
+        ui = ExtensionUI()
         with pytest.raises(ValueError, match="non-empty string"):
             ui.panel("", {"text": "x"})
         with pytest.raises(ValueError, match="non-empty string"):
             ui.panel(None, {"text": "x"})  # type: ignore[arg-type]
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# ExtensionContext — constructor and properties
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 class TestExtensionContext:
@@ -1097,258 +1031,104 @@ class TestExtensionContext:
         mock_delegate = MagicMock()
         ctx = ExtensionContext()
         ctx.set_ui_delegate(mock_delegate)
-        assert ctx._ui._mode == "tui"
+        assert ctx._ui.interactive is True
         assert ctx._ui._tui_delegate is mock_delegate
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# ExtensionUI — headless mode (no-op behavior)
-# ──────────────────────────────────────────────────────────────────────────────
-
-
 class TestExtensionUI:
-    """Tests for ExtensionUI (headless dialog policy).
+    """ExtensionUI's headless behaviour, after docs/EXTENSION-LOCKS.md §8.2.
 
-    Reference: SUBPHASE-0.0.md, "8. Extension API Surface"; E7 §3 / S48. In
-    headless mode a blocking dialog raises by default (no human to ask) and
-    auto-answers only under an explicit ``--ui-defaults`` policy.
+    ``confirm``/``select``/``input`` are gone: they emitted nothing on the record
+    stream and answered only through a bound delegate. ``form`` is the one
+    blocking dialog left, and it raises headless without an explicit policy
+    rather than fabricating an answer (S48).
     """
 
     @pytest.mark.asyncio
-    async def test_confirm_raises_without_policy(self):
-        """ExtensionUI.confirm() raises headless with no policy (S48)."""
+    async def test_form_raises_without_policy(self):
         ui = ExtensionUI()
         with pytest.raises(HeadlessDialogError):
-            await ui.confirm("Title", "Message")
+            await ui.form(_FULL_FORM_SPEC)
 
     @pytest.mark.asyncio
-    async def test_confirm_yes_and_no(self):
-        """ExtensionUI.confirm() maps yes/true→True, no/false→False (S48)."""
-        assert await ExtensionUI(headless_policy={"confirm": "yes"}).confirm("t", "m") is True
-        assert await ExtensionUI(headless_policy={"confirm": "true"}).confirm("t", "m") is True
-        assert await ExtensionUI(headless_policy={"confirm": "no"}).confirm("t", "m") is False
-        assert await ExtensionUI(headless_policy={"confirm": "false"}).confirm("t", "m") is False
-
-    @pytest.mark.asyncio
-    async def test_select_raises_without_policy(self):
-        """ExtensionUI.select() raises headless with no policy (S48)."""
-        ui = ExtensionUI()
-        with pytest.raises(HeadlessDialogError):
-            await ui.select("Title", ["Option 1", "Option 2"])
-
-    @pytest.mark.asyncio
-    async def test_select_returns_first_item_with_policy(self):
-        """ExtensionUI.select() returns first item under select=first (S48)."""
-        ui = ExtensionUI(headless_policy={"select": "first"})
-        result = await ui.select("Title", ["Option 1", "Option 2"])
-        assert result == "Option 1"
-
-    @pytest.mark.asyncio
-    async def test_select_returns_none_for_empty_list_with_policy(self):
-        """ExtensionUI.select() returns None for empty list under select=first (S48)."""
-        ui = ExtensionUI(headless_policy={"select": "first"})
-        result = await ui.select("Title", [])
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_input_raises_without_policy(self):
-        """ExtensionUI.input() raises headless with no policy (S48)."""
-        ui = ExtensionUI()
-        with pytest.raises(HeadlessDialogError):
-            await ui.input("Title", default="default_value")
-
-    @pytest.mark.asyncio
-    async def test_input_returns_default_with_policy(self):
-        """ExtensionUI.input() returns default value under input=default (S48)."""
-        ui = ExtensionUI(headless_policy={"input": "default"})
-        result = await ui.input("Title", default="default_value")
-        assert result == "default_value"
-
-    @pytest.mark.asyncio
-    async def test_input_returns_empty_string_without_default(self):
-        """ExtensionUI.input() returns empty string when no default (input=default)."""
-        ui = ExtensionUI(headless_policy={"input": "default"})
-        result = await ui.input("Title")
-        assert result == ""
+    async def test_form_returns_declared_defaults_with_policy(self):
+        ui = ExtensionUI(headless_policy={"form": "defaults"})
+        answers = await ui.form(_FULL_FORM_SPEC)
+        assert answers["desc"] == "draft"
+        assert answers["prio"] == "high"
 
     def test_set_headless_defaults_rejects_unknown_method(self):
-        """set_headless_defaults raises on an unknown dialog method (Fail-Early)."""
-        ui = ExtensionUI()
-        with pytest.raises(ValueError):
-            ui.set_headless_defaults({"bogus": "yes"})
+        """Fail-Early on a method that never existed."""
+        with pytest.raises(ValueError, match="unknown dialog"):
+            ExtensionUI().set_headless_defaults({"bogus": "yes"})
+
+    @pytest.mark.parametrize("method", ["confirm", "select", "input"])
+    def test_a_retired_token_names_its_replacement(self, method):
+        """§8.3: refuse the old token and say what replaced it, never map it silently."""
+        with pytest.raises(ValueError, match="no longer exists"):
+            ExtensionUI().set_headless_defaults({method: "yes"})
 
     def test_set_headless_defaults_rejects_unknown_token(self):
-        """set_headless_defaults raises on an invalid answer token (Fail-Early)."""
-        ui = ExtensionUI()
         with pytest.raises(ValueError):
-            ui.set_headless_defaults({"confirm": "maybe"})
-        with pytest.raises(ValueError):
-            ui.set_headless_defaults({"select": "last"})
+            ExtensionUI().set_headless_defaults({"form": "whatever"})
 
-    def test_notify_noop(self):
-        """ExtensionUI.notify() is a no-op in headless mode (prints to stderr)."""
+    def test_notify_accepts_every_level(self):
         ui = ExtensionUI()
-        # Should not raise
-        ui.notify("Test message")
-        ui.notify("Test message", level="info")
-        ui.notify("Test message", level="warning")
-        ui.notify("Test message", level="error")
-
-    def test_notify_accepts_level(self):
-        """ExtensionUI.notify() accepts level parameter."""
-        ui = ExtensionUI()
-        ui.notify("Test", level="info")
-        ui.notify("Test", level="warning")
-        ui.notify("Test", level="error")
+        for level in ("info", "warning", "error"):
+            ui.notify("Test message", level=level)
 
     def test_notify_prints_to_stderr(self):
-        """ExtensionUI.notify() in headless mode prints to stderr."""
         ui = ExtensionUI()
         with patch("sys.stderr", new=io.StringIO()) as mock_stderr:
             ui.notify("Hello from extension", "info")
-            output = mock_stderr.getvalue()
-            assert "[τ] info: Hello from extension" in output
+            assert "[τ] info: Hello from extension" in mock_stderr.getvalue()
 
     def test_notify_default_level(self):
-        """ExtensionUI.notify() defaults to 'info' level."""
         ui = ExtensionUI()
         with patch("sys.stderr", new=io.StringIO()) as mock_stderr:
             ui.notify("Test message")
-            output = mock_stderr.getvalue()
-            assert "info:" in output
+            assert "info:" in mock_stderr.getvalue()
 
-    @pytest.mark.asyncio
-    async def test_confirm_returns_async_bool(self):
-        """ExtensionUI.confirm() is async and returns bool (under a policy)."""
-        ui = ExtensionUI(headless_policy={"confirm": "yes"})
-        result = await ui.confirm("Title", "Message")
-        assert isinstance(result, bool)
-        assert result is True
 
-    @pytest.mark.asyncio
-    async def test_select_returns_async_str_or_none(self):
-        """ExtensionUI.select() is async and returns str or None (under a policy)."""
-        ui = ExtensionUI(headless_policy={"select": "first"})
-        result = await ui.select("Title", ["a", "b"])
-        assert isinstance(result, str)
-        assert result == "a"
+class TestExtensionUIDelegate:
+    """A bound delegate IS the live surface — there is no second mode flag (§8.2)."""
 
-    @pytest.mark.asyncio
-    async def test_input_returns_async_str(self):
-        """ExtensionUI.input() is async and returns str (under a policy)."""
-        ui = ExtensionUI(headless_policy={"input": "default"})
-        result = await ui.input("Title", default="def")
-        assert isinstance(result, str)
-        assert result == "def"
+    def test_no_delegate_is_not_interactive(self):
+        assert ExtensionUI().interactive is False
 
-    def test_init_with_tui_mode(self):
-        """ExtensionUI can be initialized with mode='tui'."""
-        ui = ExtensionUI(mode="tui")
-        assert ui._mode == "tui"
-
-    def test_init_with_headless_mode(self):
-        """ExtensionUI can be initialized with mode='headless'."""
-        ui = ExtensionUI(mode="headless")
-        assert ui._mode == "headless"
-
-    def test_init_mode_defaults_to_headless(self):
-        """ExtensionUI mode defaults to 'headless'."""
+    def test_a_bound_delegate_is_interactive(self):
         ui = ExtensionUI()
-        assert ui._mode == "headless"
+        ui._tui_delegate = MagicMock()
+        assert ui.interactive is True
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# ExtensionUI — TUI delegation
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-class TestExtensionUITUI:
-    """Tests for ExtensionUI TUI delegation mode."""
-
-    @pytest.mark.asyncio
-    async def test_tui_confirm_delegates(self):
-        """ExtensionUI.confirm() delegates to TUI delegate in TUI mode."""
-
-        class MockDelegate:
-            async def confirm(self, title, message):
-                return False
-
-        ui = ExtensionUI(mode="headless")
-        ui._mode = "tui"
-        ui._tui_delegate = MockDelegate()
-        result = await ui.confirm("Title", "Message")
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_tui_select_delegates(self):
-        """ExtensionUI.select() delegates to TUI delegate in TUI mode."""
-
-        class MockDelegate:
-            async def select(self, title, items):
-                return items[1]  # return second item
-
-        ui = ExtensionUI(mode="headless")
-        ui._mode = "tui"
-        ui._tui_delegate = MockDelegate()
-        result = await ui.select("Title", ["a", "b", "c"])
-        assert result == "b"
-
-    @pytest.mark.asyncio
-    async def test_tui_input_delegates(self):
-        """ExtensionUI.input() delegates to TUI delegate in TUI mode."""
-
-        class MockDelegate:
-            async def input(self, title, default):
-                return "user_typed"
-
-        ui = ExtensionUI(mode="headless")
-        ui._mode = "tui"
-        ui._tui_delegate = MockDelegate()
-        result = await ui.input("Title", default="default")
-        assert result == "user_typed"
-
-    def test_tui_notify_delegates(self):
-        """ExtensionUI.notify() delegates to TUI delegate in TUI mode."""
-
+    def test_notify_delegates(self):
         class MockDelegate:
             def notify(self, message, level):
                 self.last_notify = (message, level)
 
         delegate = MockDelegate()
-        ui = ExtensionUI(mode="headless")
-        ui._mode = "tui"
+        ui = ExtensionUI()
         ui._tui_delegate = delegate
         ui.notify("Hello", "warning")
         assert delegate.last_notify == ("Hello", "warning")
 
     @pytest.mark.asyncio
-    async def test_tui_mode_without_delegate_uses_headless_policy(self):
-        """TUI mode without a delegate falls through to the headless policy (S48)."""
-        ui = ExtensionUI(mode="tui")
-        # No delegate set — falls through to headless behavior.
-        assert ui._mode == "tui"
-        assert ui._tui_delegate is None
-        # With no policy the fall-through raises (Fail-Early, no silent auto-answer).
+    async def test_form_delegates(self):
+        class MockDelegate:
+            async def form(self, spec):
+                return {"desc": "typed"}
+
+        ui = ExtensionUI()
+        ui._tui_delegate = MockDelegate()
+        assert await ui.form(_FULL_FORM_SPEC) == {"desc": "typed"}
+
+    @pytest.mark.asyncio
+    async def test_without_a_delegate_the_headless_policy_answers(self):
+        ui = ExtensionUI()
         with pytest.raises(HeadlessDialogError):
-            await ui.confirm("T", "M")
-        # With a policy it honors it.
-        ui.set_headless_defaults({"confirm": "yes"})
-        assert await ui.confirm("T", "M") is True
-
-    def test_set_ui_delegate_enables_tui_mode(self):
-        """ExtensionUI.set_ui_delegate() sets mode to TUI and delegate."""
-        ui = ExtensionUI(mode="headless")
-        assert ui._mode == "headless"
-        mock_delegate = MagicMock()
-        ui._tui_delegate = mock_delegate
-        ui._mode = "tui"  # Simulate set_ui_delegate()
-        assert ui._mode == "tui"
-        assert ui._tui_delegate is mock_delegate
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# ExtensionAPI — integration tests
-# ──────────────────────────────────────────────────────────────────────────────
+            await ui.form(_FULL_FORM_SPEC)
+        ui.set_headless_defaults({"form": "defaults"})
+        assert (await ui.form(_FULL_FORM_SPEC))["desc"] == "draft"
 
 
 class TestExtensionAPIIntegration:
@@ -1392,8 +1172,6 @@ class TestExtensionAPIIntegration:
         assert len(tools) == 1
         assert tools[0].source == "extension"
 
-        # Append entry — now DURABLE (S39): delegates to the bound session, not a
-        # RAM registry store (removed with G4).
         mock_session = MagicMock()
         session_api = ExtensionAPI(session=mock_session)
         session_api.append_entry("counter", {"value": 42})
@@ -1405,26 +1183,17 @@ class TestExtensionAPIIntegration:
         ctx.set_ui_delegate(MagicMock())
         api = ExtensionAPI(context=ctx)
         # The API's ui should reflect the context's TUI-enabled ui
-        assert api.ui._mode == "tui"
+        assert api.ui.interactive is True
 
-    def test_extension_works_in_both_modes(self):
-        """The same ExtensionAPI setup works in both TUI and headless modes."""
-        # Headless
+    def test_extension_works_with_and_without_a_delegate(self):
+        """One ExtensionAPI setup, two surfaces: a bound delegate is the only difference."""
         api_headless = ExtensionAPI()
-        ui_h = api_headless.ui
-        assert ui_h._mode == "headless"
+        assert api_headless.ui.interactive is False
         assert api_headless.ui._tui_delegate is None
 
-        # TUI (simulated)
         class MockTUI:
-            async def confirm(self, title, message):
-                return True
-
-            async def select(self, title, items):
-                return items[0] if items else None
-
-            async def input(self, title, default):
-                return default
+            async def form(self, spec):
+                return {}
 
             def notify(self, message, level):
                 pass
@@ -1432,13 +1201,8 @@ class TestExtensionAPIIntegration:
         ctx = ExtensionContext()
         api_tui = ExtensionAPI(context=ctx)
         ctx.set_ui_delegate(MockTUI())
-        assert ctx._ui._mode == "tui"
+        assert ctx._ui.interactive is True
         assert ctx._ui._tui_delegate is not None
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Import tests
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 class TestExtensionTypesImport:

@@ -1,0 +1,439 @@
+/* τ's structural stylesheet: no colour literal, no prose — docs/TUI-STYLE-GUIDE.md §1. */
+Screen { background: $tau-bg; }
+ModalScreen { align: center middle; }
+
+/* === The dialog shell (tau_coding_agent/dialogs.py, docs/TUI-STYLE-GUIDE.md §1) === */
+
+.tau-dialog {
+    height: auto;
+    max-width: 100%;
+    max-height: 100%;
+    background: $tau-bg-alt;
+    border: thick $tau-border;
+    padding: 1;
+}
+
+.tau-dialog-title {
+    text-align: center;
+    text-style: bold;
+    color: $tau-accent;
+    margin-bottom: 1;
+}
+
+.tau-dialog-help { height: auto; margin-bottom: 1; color: $tau-text-dim; }
+
+/* One line of key hints under a body. Centred, because it is one line. */
+.tau-dialog-hint { text-align: center; margin-top: 1; color: $tau-text-muted; }
+.tau-dialog-buttons { height: auto; align: center middle; }
+
+.tau-dialog-buttons Button {
+    margin: 0 1;
+    background: $tau-surface;
+    border: solid $tau-border;
+    color: $tau-text;
+}
+
+Vertical.tau-dialog-buttons Button { width: 100%; margin: 0; }
+
+.tau-dialog-input {
+    margin-bottom: 1;
+    background: $tau-bg;
+    border: solid $tau-border;
+    color: $tau-text;
+}
+
+.tau-dialog-input:focus { border: solid $tau-accent; }
+
+/* === Sidebar === */
+
+/* Slightly darker than main */
+#sidebar {
+    display: none;
+    width: 25%;
+    min-width: 24;
+    max-width: 32;
+    background: $tau-bg-alt;
+    border-right: solid $tau-border;
+}
+
+.sidebar-title {
+    text-align: center;
+    text-style: bold;
+    color: $tau-text;
+    padding: 0 1;
+    background: $tau-bg-deep;
+}
+
+#new-chat-button {
+    margin: 1;
+    width: 100%;
+    background: $tau-surface;
+    color: $tau-text;
+    border: solid $tau-border;
+}
+
+#new-chat-button:hover { background: $tau-surface-hover; }
+
+/* Muted for group headers */
+.chat-group-header {
+    margin-top: 1;
+    padding: 0 1;
+    color: $tau-text-muted;
+    text-style: italic;
+}
+
+.chat-list-item {
+    padding: 0 1;
+    margin: 0;
+    color: $tau-text-soft;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+    border-bottom: solid $tau-border-subtle;
+}
+
+.chat-list-item:hover { background: $tau-surface; color: $tau-text; }
+.chat-list-empty { padding: 1; color: $tau-text-muted; text-style: italic; }
+#chat-list { height: 1fr; padding: 1 0; }
+#chat-list-content { padding: 0 1; }
+
+/* === Chat Display === */
+
+#chat-display { height: 1fr; padding: 1 2; background: $tau-bg; }
+#chat-placeholder { height: auto; color: $tau-text; }
+
+#chat-display .chat-fold {
+    height: auto;
+    color: $tau-text-muted;
+    text-align: center;
+    text-style: italic;
+    padding: 1 0;
+}
+
+/* === Message Styling === */
+
+/* default; per-role rules below recolor */
+.chat-message {
+    margin: 1 0;
+    height: auto;
+    padding: 0 1;
+    border: solid $tau-border;
+}
+
+.message-reasoning, .message-tools { height: auto; }
+.message-content { color: $tau-text; padding: 0; }
+
+.chat-message MarkdownH1, .chat-message MarkdownH2, .chat-message MarkdownH3, .chat-message MarkdownH4, .chat-message MarkdownH5, .chat-message MarkdownH6, .chat-message MarkdownParagraph, .chat-message MarkdownBlockQuote, .chat-message MarkdownBulletList, .chat-message MarkdownOrderedList, .chat-message MarkdownList, .chat-message MarkdownListItem, .chat-message MarkdownTable, .chat-message MarkdownFence {
+    margin-top: 0;
+    margin-bottom: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+}
+
+.chat-message MarkdownFence > Label { padding: 0 2; }
+.chat-message MarkdownFence { overflow-x: auto; scrollbar-size-horizontal: 1; }
+.chat-message MarkdownBlockQuote > BlockQuote { margin-top: 0; }
+.chat-message MarkdownHorizontalRule { padding-top: 0; margin-bottom: 0; }
+
+/* Pending placeholder — muted, until it resolves into a real role */
+.box-pending { border: solid $tau-role-pending; color: $tau-role-pending; }
+.box-user { border: solid $tau-role-user; }
+.box-assistant { border: solid $tau-role-assistant; }
+.box-system { border: solid $tau-role-system; }
+.box-toolCall { border: solid $tau-role-tool; }
+
+/* legacy standalone tool box */
+.box-toolResult { border: solid $tau-role-result; margin: 1 0 1 2; }
+
+/* indented */
+.box-error { border: solid $tau-role-error; }
+.box-blocked { border: solid $tau-role-blocked; }
+
+/* an extension veto (S50), not a tool failure */
+/* === Foreign lanes (B3-b) === */
+
+.chat-message.lane-foreign { border: dashed $tau-role-foreign; margin: 1 0 1 2; }
+.chat-message.lane-foreign > .message-content { color: $tau-text-soft; }
+.reasoning-region, .tool-box, .exchange-box { padding: 0; border: none; }
+.reasoning-region > Contents, .tool-box > Contents, .exchange-box > Contents { padding: 0 0 0 1; }
+
+/* === Reasoning / thinking regions (collapsible, dim+italic like pi) === */
+
+.reasoning-region { margin: 0; }
+.reasoning-region > CollapsibleTitle { color: $tau-text-quiet; text-style: italic; }
+.reasoning-region Markdown { color: $tau-text-quiet; text-style: italic; }
+
+/* === Tool call + result boxes (one collapsible per call) === */
+
+.tool-box { margin: 0; }
+
+/* the same hue the tool box's own border carries */
+.tool-box > CollapsibleTitle { color: $tau-role-tool; }
+
+/* on error */
+.tool-box.box-error > CollapsibleTitle { color: $tau-role-error; }
+
+/* a `tool_call` extension veto (S50), read as a policy block */
+.tool-box.box-blocked > CollapsibleTitle { color: $tau-role-blocked; }
+
+/* === Exchange grouping (one user→answer span; summary line title) === */
+
+.exchange-box { margin: 1 0; }
+.exchange-box > CollapsibleTitle { color: $tau-text; text-style: bold; }
+.exchange-box.exchange-foreign > CollapsibleTitle { color: $tau-role-foreign; }
+
+/* === Pending steering input (docs/TUI-STEERING.md §3) === */
+
+#pending-input {
+    margin: 0 1;
+    padding: 0 1;
+    height: auto;
+    max-height: 6;
+    overflow-y: auto;
+    background: $tau-bg-alt;
+    color: $tau-text-dim;
+}
+
+/* === Attached files (docs/FILE-ATTACHMENTS.md §4) === */
+
+#attachment-bar {
+    margin: 0 1;
+    padding: 0 1;
+    height: auto;
+    max-height: 5;
+    overflow-y: auto;
+    background: $tau-bg-alt;
+    color: $tau-text-dim;
+}
+
+.attachment-row { height: 1; width: 100%; }
+.attachment-row:hover { background: $tau-bg; color: $tau-text; }
+
+/* === Input Styling === */
+
+#chat-input {
+    margin: 0 1 1 1;
+    border: solid $tau-border;
+    height: auto;
+    max-height: 10;
+    background: $tau-bg-alt;
+    color: $tau-text;
+}
+
+/* Matches user message color */
+#chat-input:focus { border: solid $tau-role-user; background: $tau-bg; }
+
+/* === Slash-command completion (docs/SLASH-COMMANDS.md) === */
+
+#command-popup {
+    margin: 0 1 1 1;
+    padding: 0 1;
+    height: auto;
+    background: $tau-bg-alt;
+    color: $tau-text-dim;
+}
+
+#command-popup.command-popup-unknown { color: $tau-role-blocked; }
+
+/* === System Prompt Editor Modal === */
+
+#prompt-editor-dialog { width: 80; height: 25; }
+
+/* The editor takes whatever the frame's clamp leaves. */
+#prompt-editor-textarea { height: 1fr; }
+
+/* === Session Picker Modal (docs/SESSION-UX-REDESIGN.md §6) === */
+
+#session-picker-dialog {
+    width: 80%;
+    max-width: 100;
+    height: 80%;
+    padding: 0 1;
+}
+
+#session-picker-filter { background: $tau-bg; border: solid $tau-border; color: $tau-text; }
+#session-picker-filter:focus { border: solid $tau-accent; }
+
+#session-picker-table {
+    width: 100%;
+    height: 1fr;
+    background: $tau-bg;
+    color: $tau-text;
+}
+
+#session-picker-status {
+    height: 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+    color: $tau-text-muted;
+}
+
+/* === Session Tree Browser Modal === */
+
+#tree-browser-dialog { width: 100%; height: 100%; padding: 0 1; }
+#tree-browser-body { height: 1fr; }
+
+#tree-browser-tree {
+    width: 100%;
+    height: 1fr;
+    background: $tau-bg;
+    border: solid $tau-border;
+    color: $tau-text;
+}
+
+#tree-browser-tree:focus { border: solid $tau-accent; }
+
+/* === Tree browser zones (TREE-BROWSER-AS-EDITOR.md §3) === */
+
+ZoneTree > .tree--zone-path { color: $tau-zone-path; }
+ZoneTree > .tree--zone-folded { color: $tau-text-muted; text-style: strike; }
+ZoneTree > .tree--zone-covered { color: $tau-role-tool; text-style: strike; }
+ZoneTree > .tree--zone-marked { color: $tau-role-result; text-style: bold; }
+ZoneTree > .tree--zone-hidden { color: $tau-text-faint; text-style: italic; }
+ZoneTree > .tree--zone-copied { color: $tau-accent; text-style: italic; }
+
+/* === The branch summary and the branch it looks back on (§4.3) === */
+
+/* The summary row: the entry that was written when the branch was abandoned. */
+ZoneTree > .tree--zone-summary { color: $tau-role-user; }
+ZoneTree > .tree--zone-abandoned { color: $tau-role-user; text-style: dim; }
+ZoneTree > .tree--zone-ineligible { color: $tau-text-faint; }
+
+/* === The hover divergence (§3, step 5) === */
+
+/* Shared with the cursor's ancestry: the history both nodes stand on. */
+ZoneTree > .tree--zone-hover-common { text-style: underline; }
+ZoneTree > .tree--zone-hover-divergent { color: $tau-role-assistant; text-style: underline; }
+
+/* === The row's type tag (`user:`, `toolResult:`, …) === */
+
+ZoneTree > .tree--kind-user { color: $tau-role-user; }
+ZoneTree > .tree--kind-assistant { color: $tau-role-assistant; }
+ZoneTree > .tree--kind-tool { color: $tau-role-tool; }
+ZoneTree > .tree--kind-system { color: $tau-role-system; }
+ZoneTree > .tree--kind-structural { color: $tau-text-quiet; text-style: italic; }
+
+#tree-detail {
+    width: 100%;
+    height: 1fr;
+    background: $tau-bg;
+    border: solid $tau-border;
+    padding: 0 1;
+}
+
+#tree-detail:focus { border: solid $tau-accent; }
+
+#tree-detail-folded {
+    width: 100%;
+    height: 1;
+    color: $tau-text-muted;
+    text-align: center;
+    text-style: italic;
+}
+
+#tree-detail .detail-fold { color: $tau-text-muted; text-align: center; text-style: italic; }
+
+/* === Detail-pane context messages === */
+
+.chat-message.detail-context { opacity: 55%; }
+#tree-browser-marks { text-align: center; color: $tau-text-quiet; height: 1; }
+#tree-browser-help { text-align: center; color: $tau-text-muted; }
+
+/* === Tree three-mode chooser Modal === */
+
+#tree-mode-dialog { width: 60; overflow-y: auto; }
+
+/* === Extension dialogs (input / chord / form / ask) === */
+
+#ext-input-dialog, #ext-chord-dialog, #ext-form-dialog { width: 70; }
+
+#ext-chord-dialog, #ext-form-dialog { max-height: 90%; }
+.ext-chord-entry { color: $tau-text; }
+#ext-form-fields { height: auto; max-height: 24; }
+.ext-form-label { color: $tau-text-dim; margin-top: 1; }
+#ext-form-buttons { margin-top: 1; }
+
+/* === Extension ask + its transcript row (docs/EXTENSION-LOCKS.md §8, §9) === */
+
+#ext-ask-dialog { width: 76; max-height: 90%; }
+#ext-ask-body { height: auto; max-height: 24; }
+.ext-ask-panel { color: $tau-text; margin-bottom: 1; }
+#ext-ask-buttons { margin-top: 1; }
+
+/* Margin and padding match .chat-message; only the border colour says it is not a message. */
+.ext-request-row {
+    width: 100%;
+    height: auto;
+    margin: 1 0;
+    padding: 0 1;
+    color: $tau-text;
+    border: round $tau-border;
+}
+
+/* A lock stops the session, so it is the one row that borrows the error hue. */
+.ext-request-locked { border: round $tau-role-error; }
+.ext-request-open { border: round $tau-accent; }
+
+/* === Foreign-lane strip (B3-b) === */
+
+#lane-strip {
+    height: 1;
+    width: 100%;
+    padding: 0 1;
+    background: $tau-bg-alt;
+    color: $tau-role-foreign;
+}
+
+/* === Extension status strip (E10 §6 / S67) === */
+
+#ext-status-bar {
+    height: 1;
+    width: 100%;
+    padding: 0 1;
+    background: $tau-bg-alt;
+    color: $tau-text-dim;
+    text-style: dim;
+}
+
+/* === Extension panel host (E10 §6 / S68) === */
+
+#ext-panel-host {
+    width: 30%;
+    min-width: 26;
+    max-width: 44;
+    height: 100%;
+    padding: 0 1;
+    background: $tau-bg-alt;
+    border-left: solid $tau-border-subtle;
+}
+
+.ext-panel {
+    height: auto;
+    margin-bottom: 1;
+    padding: 0 1;
+    border: round $tau-border;
+}
+
+.ext-panel-title { text-style: bold; color: $tau-accent; }
+.ext-panel-body { color: $tau-text; margin-top: 1; }
+.ext-panel-actions { height: auto; margin-top: 1; }
+
+.ext-panel-action {
+    width: 1fr;
+    min-width: 0;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+    margin: 0 1 0 0;
+    background: $tau-surface;
+    border: none;
+    color: $tau-text;
+}
+
+.ext-panel-action:hover { background: $tau-surface-hover; }
+
+/* === Code blocks in markdown === */
+
+Markdown CodeBlock {
+    background: $tau-bg-deep;
+    border: solid $tau-border-subtle;
+    color: $tau-code-fg;
+}

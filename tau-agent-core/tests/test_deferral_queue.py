@@ -26,6 +26,9 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 # ── fakes ────────────────────────────────────────────────────────────────────
 
 
@@ -48,7 +51,7 @@ def _text_assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -60,7 +63,7 @@ def _tool_call_assistant(call_id: str, name: str, args: dict[str, Any]) -> Assis
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -131,7 +134,7 @@ def _summary_response(text: str):
             provider="openai",
             model="gpt-4o",
             stop_reason="stop",  # type: ignore[arg-type]
-            timestamp=0,
+            timestamp=_TS,
         )
 
     return _impl
@@ -194,8 +197,6 @@ async def test_deferred_compact_applies_once_at_end_of_prompt(monkeypatch) -> No
             }
         )
 
-    # Large window keeps auto-compaction dormant; keep_recent_tokens=1 makes the
-    # DEFERRED compact cut almost everything so it definitely appends.
     session = _make_session(ext, settings=CompactionSettings(enabled=True, keep_recent_tokens=1))
     # Seed prior turns so the compaction has an ample prefix to summarize.
     log = session.session_log
@@ -214,8 +215,6 @@ async def test_deferred_compact_applies_once_at_end_of_prompt(monkeypatch) -> No
     ):
         await session.prompt("please compact when you're done")
 
-    # Mid-turn there was no compaction; the deferred call returned None and added
-    # no entry; exactly one compaction exists after the prompt.
     assert observed["mid_turn"] == 0
     assert observed["after_defer"] == 0
     assert observed["deferred_result_is_none"] == 1
@@ -253,8 +252,6 @@ async def test_follow_up_reenters_within_same_prompt() -> None:
     ):
         returned = await session.prompt("go")
 
-    # The single prompt() call ran BOTH turns: the original "go" and the
-    # re-entered "the follow up question".
     returned_users = _user_texts([m for m in returned if isinstance(m, dict)])
     assert "go" in returned_users
     assert "the follow up question" in returned_users
@@ -300,8 +297,6 @@ async def test_next_turn_lands_on_the_next_prompt() -> None:
     assert "saved for later" not in _user_texts(session.messages)
     assert session._pending_next_turn_messages == ["saved for later"]
 
-    # Prompt 2 (plain text, no new queuing): the pending nextTurn message is
-    # injected alongside the "second" user turn and drained.
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_fake_stream_text):
         returned = await session.prompt("second")
 

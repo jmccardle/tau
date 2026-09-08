@@ -47,10 +47,6 @@ def _session() -> AgentSession:
     return AgentSession(session_log=InMemorySessionLog(), model=_model())
 
 
-# A file extension that: registers a ``probe`` tool + a ``pcmd`` command, edits every
-# tool_result (appends _MARK), and records the reason it was torn down / brought up.
-# The three tokens are substituted per test (no str.format — the body is full of
-# dict braces) so reload can point the SAME path at a different _MARK.
 _EXT_TEMPLATE = """
 import pathlib
 

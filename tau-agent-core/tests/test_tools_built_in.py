@@ -44,10 +44,6 @@ from tau_agent_core.tools import (
 )
 from tau_llm.abort import AbortSignal
 
-# ============================================================================
-# Test 1: Tool creation
-# ============================================================================
-
 
 class TestToolCreation:
     """Test 1: Tool creation via factory functions."""
@@ -88,11 +84,6 @@ class TestToolCreation:
         tools = create_all_tools("/tmp")
         for tool in tools:
             assert inspect.iscoroutinefunction(tool.execute), tool.name
-
-
-# ============================================================================
-# Test 2: Read tool — text file
-# ============================================================================
 
 
 class TestReadToolText:
@@ -211,11 +202,6 @@ class TestReadToolText:
         reached the model. The failure is silent and reads as hallucination, so
         the assertion is on the byte count, not on the shape.
         """
-        # A REAL PNG, not a header plus filler. ``read`` now decodes an image to
-        # bound it (tools/image_resize.py), so undecodable bytes are a tool error
-        # rather than a passthrough -- which is the point of that change and
-        # would make this test pass for the wrong reason. 900x900 is comfortably
-        # under the 2000px cap, so the bytes must survive untouched.
         import io as _io
 
         from PIL import Image
@@ -255,11 +241,6 @@ class TestReadToolText:
         assert "🌍" in result["content"][0]["text"]
 
 
-# ============================================================================
-# Test 3: Read tool — large file truncation
-# ============================================================================
-
-
 class TestReadToolTruncation:
     """Test 3: Read tool — large file truncation."""
 
@@ -292,11 +273,6 @@ class TestReadToolTruncation:
         result = await tool.execute("tc1", {"path": "small.txt"}, None, None)
         assert result["details"]["truncated"] is False
         assert result["details"]["lines_read"] == 100
-
-
-# ============================================================================
-# Test 4: Write tool
-# ============================================================================
 
 
 class TestWriteTool:
@@ -391,11 +367,6 @@ class TestWriteTool:
         )
         # File should exist and have correct content
         assert (tmp_path / "atomic.txt").read_text() == "test content"
-
-
-# ============================================================================
-# Test 5: Edit tool
-# ============================================================================
 
 
 class TestEditTool:
@@ -561,11 +532,6 @@ class TestEditTool:
         assert result["details"]["replacements"] == 1
 
 
-# ============================================================================
-# Test 6: Bash tool
-# ============================================================================
-
-
 class TestBashTool:
     """Test 6: Bash tool."""
 
@@ -643,11 +609,6 @@ class TestBashTool:
         assert result["details"]["truncated"] is True
 
 
-# ============================================================================
-# Test 7: Bash tool — abort
-# ============================================================================
-
-
 class TestBashToolAbort:
     """Test 7: Bash tool — abort."""
 
@@ -684,15 +645,6 @@ class TestBashToolAbort:
         assert "aborted" in result["content"][0]["text"].lower()
 
 
-# ============================================================================
-# Test 7b: Bash tool — process-group kill leaves no orphans (R-T4)
-# ============================================================================
-
-
-#: Whether this kernel publishes process state under ``/proc``. Read once, at
-#: import, so the choice of reader below is a fact about the platform rather
-#: than about one pid — a per-pid ``/proc/<pid>/stat`` that is missing means the
-#: process is gone, which is a different answer and must not pick a reader.
 _HAS_PROC = os.path.exists("/proc/self/stat")
 
 
@@ -710,9 +662,6 @@ def _process_state(pid: int) -> str:
                 text = handle.read()
         except OSError:
             return ""
-        # Field 2 is the executable name, parenthesised, and it may itself
-        # contain spaces and a ')'. So the state is the first field after the
-        # LAST ')', not the third whitespace-separated token.
         _, _, rest = text.rpartition(") ")
         return rest.split(maxsplit=1)[0] if rest else ""
 
@@ -751,8 +700,6 @@ def _process_is_alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        # Exists (owned by someone else) — still alive from our perspective,
-        # and not ours to inspect further.
         return True
     return _process_state(pid) not in ("", "Z")
 
@@ -836,8 +783,6 @@ class TestBashToolProcessGroupKill:
             else:
                 pytest.fail("the child never became a zombie, so this proves nothing")
 
-            # The pid slot is still held, which is exactly why os.kill(pid, 0)
-            # is not enough on its own.
             os.kill(child.pid, 0)
             assert _process_is_alive(child.pid) is False
         finally:
@@ -852,13 +797,6 @@ class TestBashToolProcessGroupKill:
         pid = None
         shell_pid = None
 
-        # Run execute() as a task and capture both pids *before* any
-        # assertion runs: the shell writes them almost immediately (well
-        # before its 200ms timeout fires), so this costs nothing, and it
-        # means a failure anywhere below — including a failure of the tool
-        # call itself — still leaves the `finally` block able to reap the
-        # grandchild instead of leaking it. See the abort test for the same
-        # shape.
         task = asyncio.create_task(
             tool.execute("tc1", {"command": command, "timeout": 200}, None, None)
         )
@@ -906,12 +844,6 @@ class TestBashToolProcessGroupKill:
 
             abort_signal.abort()
             try:
-                # Whether the tool completes via its "aborted" branch or
-                # observes the shell's own kill-induced exit is a
-                # pre-existing race in how check_abort() and read_stream()
-                # interleave (unrelated to P2) and not what this test is
-                # about — R-T4 only cares that the call returns at all and
-                # that the grandchild does not survive.
                 await asyncio.wait_for(task, timeout=10)
             except asyncio.TimeoutError:
                 raise AssertionError(
@@ -931,11 +863,6 @@ class TestBashToolProcessGroupKill:
                     os.kill(pid, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError):
                     pass
-
-
-# ============================================================================
-# Test 8: Grep tool
-# ============================================================================
 
 
 class TestGrepTool:
@@ -1019,11 +946,6 @@ class TestGrepTool:
         assert result["details"]["matches"] == 2
 
 
-# ============================================================================
-# Test 9: Find tool
-# ============================================================================
-
-
 class TestFindTool:
     """Test 9: Find tool."""
 
@@ -1103,11 +1025,6 @@ class TestFindTool:
         assert result["details"]["count"] == 2
 
 
-# ============================================================================
-# Test 10: Ls tool
-# ============================================================================
-
-
 class TestLsTool:
     """Test 10: Ls tool."""
 
@@ -1183,11 +1100,6 @@ class TestLsTool:
         assert "count" in result["details"]
 
 
-# ============================================================================
-# Test 11: Read-only tools
-# ============================================================================
-
-
 class TestReadOnlyTools:
     """Test 11: Read-only tools factory."""
 
@@ -1214,11 +1126,6 @@ class TestReadOnlyTools:
         for tool in tools:
             assert hasattr(tool, "parameters")
             assert isinstance(tool.parameters, dict)
-
-
-# ============================================================================
-# Test 12: Invalid arguments
-# ============================================================================
 
 
 class TestInvalidArguments:
@@ -1317,11 +1224,6 @@ class TestInvalidArguments:
             assert "content" in result
             assert isinstance(result["content"], list)
             assert len(result["content"]) > 0, f"Tool {tool.name} has empty content list"
-
-
-# ============================================================================
-# Test 13: Tool attributes
-# ============================================================================
 
 
 class TestToolAttributes:

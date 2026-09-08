@@ -55,9 +55,8 @@ from tau_llm.types import (
     UserMessage,
 )
 
-# ---------------------------------------------------------------------------
-# Scaffolding
-# ---------------------------------------------------------------------------
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
 
 
 def _model() -> Model:
@@ -83,7 +82,7 @@ def _assistant_text(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
 
@@ -98,7 +97,7 @@ def _assistant_tool_calls(*calls: tuple[str, str, dict]) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
 
@@ -145,11 +144,6 @@ def _entries_of_role(log: InMemorySessionLog, role: str) -> list[dict]:
         for e in log.entries()
         if e.get("type") == "message" and e["message"]["role"] == role
     ]
-
-
-# ---------------------------------------------------------------------------
-# Acceptance 1 — the completed messages reach disk
-# ---------------------------------------------------------------------------
 
 
 def test_a_turn_that_dies_mid_flight_still_persists_the_users_prompt():
@@ -238,10 +232,6 @@ def test_a_silent_submission_still_writes_nothing_when_it_fails():
         with pytest.raises(RuntimeError):
             asyncio.run(session._run_one_turn("quiet", None, None, persist=False))
 
-    # Messages only. The ``agent_spec`` entry is written when the session records
-    # what model/prompt the turn ran under, and it does not consult ``persist`` —
-    # pre-existing behaviour, unrelated to this path, and not what the flag is
-    # about.
     assert _roles(session._session_log) == []
 
 
@@ -280,11 +270,6 @@ def test_the_completed_messages_ride_the_exception():
 def test_completed_messages_is_empty_for_an_unrelated_exception():
     """The reader asks unconditionally, so it must answer for any exception."""
     assert completed_messages(ValueError("nothing to do with the loop")) == []
-
-
-# ---------------------------------------------------------------------------
-# Acceptance 2 — every tool_call_id is answered
-# ---------------------------------------------------------------------------
 
 
 def test_an_abort_before_the_batch_answers_every_call():
@@ -328,8 +313,6 @@ def test_an_abort_mid_batch_keeps_the_results_it_already_had():
     "answer everything outstanding" would overwrite work the user did get.
     """
     ran: list[str] = []
-    # A one-slot holder because the tool has to abort the session that is running
-    # it, and the session cannot be constructed until its tools exist.
     holder: dict[str, AgentSession] = {}
 
     def _abort_after_first() -> None:
@@ -454,11 +437,6 @@ class _TrippableSignal:
 
     def is_aborted(self) -> bool:
         return self._aborted
-
-
-# ---------------------------------------------------------------------------
-# The clean path is untouched
-# ---------------------------------------------------------------------------
 
 
 def test_an_ordinary_turn_persists_exactly_what_it_always_did():

@@ -38,7 +38,8 @@ import pytest
 from tau_llm.streaming import TextDeltaEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 from tau_agent_core.agent_session import AgentSession
-from tau_agent_core.commands import FRONTEND_COMMANDS, CommandOutcome
+from tau_agent_core.commands import FRONTEND_COMMANDS
+from tau_agent_core.flows import Performed, Ready, View
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.rpc import (
     RPCEvent,
@@ -53,6 +54,9 @@ from tau_agent_core.rpc import (
 from tau_agent_core.session import SessionState
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.submission import SubmissionResult
+
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
 
 
 class _FakeStdin:
@@ -88,10 +92,6 @@ def _session(**overrides: Any) -> MagicMock:
     session = MagicMock()
     session.state = SessionState(session_id="sess-1", status="idle")
     session.is_streaming = False
-    # Explicit, not left to MagicMock's default (truthy!) auto-attribute --
-    # `_acquire_event_credit` treats a truthy `is_aborted` as "stop waiting,
-    # do not charge a credit", which would silently change every other
-    # test's `_forward_event` behavior if this were left implicit.
     session.is_aborted = False
     session.shutdown_requested = False
     session.get_model.return_value = {"id": "gpt-4o", "provider": "openai", "context_window": 8192}
@@ -99,12 +99,10 @@ def _session(**overrides: Any) -> MagicMock:
     session.messages = []
     session.session_log = MagicMock()
     session.session_log.cursor = "leaf-1"
-    session._tools = []
+    session.is_addressable = True
+    session.tools = []
     session.subscribe.return_value = MagicMock()
     session.abort = MagicMock()
-    # A submit() that never calls on_admitted — the "completed synchronously"
-    # path _submit_and_acknowledge falls back to. Individual tests override
-    # this to exercise the on_admitted path or a rejection.
     session.submit = AsyncMock(
         return_value=SubmissionResult(accepted=True, submission_id="s-1", messages=[])
     )
@@ -131,16 +129,6 @@ async def _drain(handler: RPCHandler) -> list[dict]:
     return out
 
 
-# ── real-session fixtures for the submit/prompt integration tests ──────────
-#
-# The table-completeness / error-taxonomy tests below use the MagicMock
-# session above (it exercises the dispatch logic, not AgentSession.submit()
-# itself). The dual-completion and rejection tests need the real admission
-# machinery (agent_session.py `submit()`'s on_admitted call site), so they
-# build a real `AgentSession` with a gated fake provider — the same pattern
-# test_submit_admission.py uses.
-
-
 def _model() -> Model:
     return Model(
         id="m",
@@ -160,7 +148,7 @@ def _assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="m",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
 
@@ -201,11 +189,6 @@ async def _drain_until(handler: RPCHandler, predicate, limit: int = 50, timeout:
         if predicate(item):
             return item
     raise AssertionError("predicate never matched within the item limit")
-
-
-# ── the wire format ─────────────────────────────────────────────────────────
-#
-# Envelope round-tripping — unaffected by which verbs exist.
 
 
 @pytest.mark.parametrize(
@@ -336,9 +319,6 @@ async def test_run_reads_a_request_writes_a_response_and_stops_at_eof(handler, m
                 "usage": None,
                 "message_count": 0,
                 "cursor": "leaf-1",
-                # See test_get_state_aggregates_the_session for why the
-                # MagicMock session reads as addressable. This test is about
-                # the loop, not the field.
                 "addressable": True,
                 "method": "get_state",
             },
@@ -395,10 +375,6 @@ async def test_a_failed_write_takes_run_down_instead_of_being_swallowed(handler,
         for still_running in pending:
             still_running.cancel()
         assert task in done, "run() ignored a dead stdout and kept waiting on stdin"
-        # ConnectionResetError, not BrokenPipeError -- see
-        # test_rpc_transport.py::TestBrokenPipeStopsRun for why the writer
-        # swap (T6 blocker 2, phase-4 review) changed which OSError
-        # subclass a peer-gone pipe actually surfaces as.
         with pytest.raises(ConnectionResetError):
             await task
     finally:
@@ -435,8 +411,6 @@ async def test_invalid_json_is_reported_and_the_stream_keeps_going(handler, monk
     assert first["error"]["code"] == dialect.PARSE_ERROR
     assert first["error"]["message"].startswith("Parse error")
     assert first["id"] is None  # the id is unknowable on an unparseable line
-    # `compaction_id: null` — finding 5: abort now reports which compaction
-    # its signal reached, and null is the answer when none was running.
     assert second["result"] == {"status": "aborted", "compaction_id": None, "method": "abort"}
 
 
@@ -486,8 +460,18 @@ def test_the_table_has_exactly_the_2a_2c_phase3_and_tier_b_verbs():
     review, which found `set_model`'s config-NAME param undiscoverable from
     the wire; and `list_sessions` by finding 8, which found the same of
     `switch_session`'s session-id param) — plus protocol 1.4's
-    `complete_path`, which makes it ten — no more, no less."""
+    `complete_path`, which makes it ten — plus the flow loop's two Tier C
+    reads, `next_step` and `enumerate_domain`, which are what let a host
+    drive a gesture it has no table for (the capability/flow model,
+    2026-09-03) — plus 0.9.8's eleven, which put the SESSION TREE (five
+    mutations) and the EXTENSION SYSTEM (three mutations) on the wire along
+    with the three reads that make their arguments discoverable — plus the
+    extension-config pair, `get_extension_config` and `set_extension_config`,
+    which put the `CONFIG_SCHEMA` declaration and the slice it describes on the
+    wire — no more, no less."""
     assert set(commands.COMMAND_TABLE) == {
+        "get_extension_config",
+        "set_extension_config",
         "submit",
         "prompt",
         "abort",
@@ -516,6 +500,19 @@ def test_the_table_has_exactly_the_2a_2c_phase3_and_tier_b_verbs():
         "set_auto_compaction",
         "set_model",
         "set_session_name",
+        "next_step",
+        "enumerate_domain",
+        "navigate",
+        "summarize_and_navigate",
+        "elide_span",
+        "commit_branch",
+        "paste_subtree",
+        "enable_extension",
+        "disable_extension",
+        "reload_extension",
+        "complete_message_id",
+        "list_managed_extensions",
+        "get_extension_state",
     }
 
 
@@ -623,16 +620,6 @@ def test_validate_params_enforces_minimum():
     assert violation is not None and "depth" in violation
 
 
-# ── the validator refuses what it cannot check (Fail Early) ──────────────────
-#
-# `validate_params` implements a deliberately small slice of JSON Schema. The
-# hazard is not the missing vocabulary, it is the SILENCE: a schema written
-# with `items` or `pattern` would be walked, matched against nothing, and pass
-# every payload — and its author would never find out. Every case below asserts
-# a loud failure at CommandEntry construction time (i.e. at import, where
-# `@command(...)` runs) rather than a permissive call-time result.
-
-
 def _entry(schema: dict) -> commands.CommandEntry:
     async def _noop(handler, msg_id, params):  # pragma: no cover - never called
         return {}
@@ -654,7 +641,7 @@ def _entry(schema: dict) -> commands.CommandEntry:
         ({"type": "string"}, "must be 'object'"),
         ({"type": "object", "oneOf": []}, "unsupported schema keyword"),
         (
-            {"type": "object", "properties": {"a": {"type": "array", "items": {}}}},
+            {"type": "object", "properties": {"a": {"type": "array", "pattern": "x"}}},
             "unsupported keyword",
         ),
         (
@@ -665,6 +652,21 @@ def _entry(schema: dict) -> commands.CommandEntry:
             {"type": "object", "properties": {}, "required": ["ghost"]},
             "absent from `properties`",
         ),
+        (
+            {"type": "object", "properties": {"a": {"type": "object", "items": {}}}},
+            "without type 'array'",
+        ),
+        (
+            {"type": "object", "properties": {"a": {"type": "array", "items": {}}}},
+            "not an object schema",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"a": {"type": "array", "items": {"type": "object", "oneOf": []}}},
+            },
+            "unsupported schema keyword",
+        ),
     ],
     ids=[
         "non-object-root",
@@ -672,6 +674,9 @@ def _entry(schema: dict) -> commands.CommandEntry:
         "unknown-prop-keyword",
         "typo-type",
         "required-not-declared",
+        "items-on-a-non-array",
+        "items-that-is-not-an-object-schema",
+        "items-whose-own-schema-is-unsupported",
     ],
 )
 def test_unsupported_schema_vocabulary_is_rejected_at_construction(schema, expected):
@@ -680,15 +685,11 @@ def test_unsupported_schema_vocabulary_is_rejected_at_construction(schema, expec
 
 
 def test_every_shipped_schema_survives_its_own_guard():
-    # The guard runs on every table row at import; this states the property the
-    # table relies on rather than leaving it implied by "the module imported".
     for name, entry in commands.COMMAND_TABLE.items():
         commands._assert_supported_schema(entry.params_schema, name)
 
 
 def test_matches_type_raises_on_a_type_it_does_not_implement():
-    # The old code returned True here, which made an unchecked type indistinguishable
-    # from a passing one. Unreachable through the table now — kept as a raise so it stays so.
     with pytest.raises(ValueError, match="unsupported JSON Schema type"):
         commands._matches_type("x", "objekt")
 
@@ -869,22 +870,9 @@ async def test_abort_delegates_and_is_idempotent(handler, session):
 
     responses = await _drain(handler)
     assert [r["result"]["status"] for r in responses] == ["aborted", "aborted"]
-    # B1 (phase-2 review): abort is a SIGNAL, not a completion — it must NOT
-    # carry a cursor, because at signal time the in-flight turn (if any) has
-    # not unwound or persisted anything yet. A cursor here would be the
-    # stale, pre-abort tip E5/F3 exist to rule out. See
-    # test_agent_end_carries_the_post_persistence_cursor for where E5 is
-    # actually satisfied for abort/submit/prompt alike.
     assert all("cursor" not in r["result"] for r in responses)
     assert session.abort.call_count == 2
 
-    # Finding 5: the response also names which compaction the signal
-    # reached (null here — none was running). Both directions of the
-    # PUBLISHED contract, not just this response's shape: a real response
-    # validates, and one WITHOUT `compaction_id` does not. The second half
-    # is what pins `required` — a host may rely on the key being there, and
-    # dropping it from ABORT_RESULT_SCHEMA's `required` would silently make
-    # its absence legal while every real response still carried it.
     assert all(r["result"]["compaction_id"] is None for r in responses)
     assert commands.validate_params(commands.ABORT_RESULT_SCHEMA, responses[0]["result"]) is None
     assert commands.validate_params(commands.ABORT_RESULT_SCHEMA, {"status": "aborted"}) is not None
@@ -949,15 +937,6 @@ async def test_get_state_aggregates_the_session(handler, session):
         "usage": {"input_tokens": 3},
         "message_count": 2,
         "cursor": "leaf-1",
-        # True here for a reason worth naming rather than accepting: `session`
-        # is a MagicMock, so `session_log.path` auto-vivifies to a Mock — which
-        # `session_log_is_addressable` correctly reads as "declares a location,
-        # and it is not None". That is the same auto-vivification hazard
-        # `require_log_appender`'s docstring records, so the REAL coverage of
-        # this field is `test_addressable_*` below (built on actual session
-        # logs) and the end-to-end pair in
-        # tau-coding-agent/tests/test_rpc_session_dir_isolation.py. This line
-        # only pins that the key is present and in the payload.
         "addressable": True,
         "method": "get_state",
     }
@@ -1027,16 +1006,13 @@ async def test_get_commands_enumerates_builtins_and_extension_commands(handler, 
     (response,) = await _drain(handler)
     listed = {c["name"]: c for c in response["result"]["commands"]}
     assert set(listed) == set(FRONTEND_COMMANDS) | {"notes"}
-    assert listed["compact"]["performer"] == "frontend"
-    assert listed["notes"]["performer"] == "core"
+    assert listed["compact"]["origin"] == "builtin"
+    assert listed["notes"]["origin"] == "extension"
     assert listed["notes"]["description"] == "jot something down"
     assert all(c["description"] for c in listed.values())
 
 
 async def test_get_commands_does_not_advertise_a_shadowed_extension_command(handler, session):
-    # resolve_command gives τ's built-ins precedence, so an extension that
-    # registers "compact" can never be dispatched to. Listing it would promise
-    # a host something this session will not do.
     session.get_extension_commands.return_value = [("compact", "the extension's own compact")]
 
     await handler._handle_request({"jsonrpc": "2.0", "id": 1, "method": "get_commands"})
@@ -1044,14 +1020,14 @@ async def test_get_commands_does_not_advertise_a_shadowed_extension_command(hand
     (response,) = await _drain(handler)
     listed = [c for c in response["result"]["commands"] if c["name"] == "compact"]
     assert len(listed) == 1
-    assert listed[0]["performer"] == "frontend"
+    assert listed[0]["origin"] == "builtin"
     assert listed[0]["description"] == FRONTEND_COMMANDS["compact"]
 
 
 async def test_get_tools_reports_name_description_and_schema(handler, session):
     from tau_agent_core.tools.base import AgentTool, ToolDefinition
 
-    session._tools = [
+    session.tools = [
         AgentTool(
             definition=ToolDefinition(
                 name="bash",
@@ -1092,31 +1068,16 @@ async def test_get_tools_over_a_real_session_with_builtin_tools():
         assert isinstance(tool["parameters"], dict) and tool["parameters"]
 
 
-# ── B2: a dispatched command's SubmissionResult reaches the host ────────────
-#
-# Before the fix, `on_admitted` fired for a resolved command too (agent_
-# session.py), so `_submit_and_acknowledge`'s `_on_admitted` callback had
-# already sent `{"accepted": true}` and resolved the admitted Future to
-# `None` by the time `submit()` returned its real `SubmissionResult`
-# (carrying `.command`) — `_drive`'s `if not admitted.done(): ...` guard was
-# already False, so that result, and the command outcome inside it, was
-# simply discarded. These tests dispatch at the RPC layer with a MOCK
-# `session.submit` that (correctly, matching the fixed agent_session.py)
-# never calls `on_admitted` for a resolved command — proving the WIRE side
-# of B2 independent of the agent_session.py timing fix, which
-# test_submit_admission.py::TestOnAdmittedTiming covers on its own.
-
-
 async def test_a_core_performed_commands_output_rides_the_acceptance_response(handler, session):
-    """`performer="core"` already ran (an extension-registered command) and
-    produced text — any host can render a string, so it rides the ONE
-    response this submission will ever get (no turn ran, so there is no
-    `agent_end` to carry it instead)."""
+    """A `Performed` already ran (an extension-registered command) and produced
+    text — any host can render a string, so it rides the ONE response this
+    submission will ever get (no turn ran, so there is no `agent_end` to carry it
+    instead)."""
     session.submit = AsyncMock(
         return_value=SubmissionResult(
             accepted=True,
             submission_id="s-1",
-            command=CommandOutcome(name="ledger", args="week", performer="core", output="42"),
+            command=Performed(flow=None, mutation="ledger", data={"output": "42"}),
         )
     )
 
@@ -1128,24 +1089,23 @@ async def test_a_core_performed_commands_output_rides_the_acceptance_response(ha
     assert response["result"]["accepted"] is True
     assert response["result"]["command"] == {
         "name": "ledger",
-        "args": "week",
-        "performer": "core",
         "output": "42",
     }
 
 
-async def test_a_frontend_performed_command_errors_never_no_ops(handler, session):
-    """`performer="frontend"` is a built-in (`/tree`, `/fork`, `/extensions`,
-    `/compact`) the core decided WHAT it is and did not run because it needs
-    a screen. `tau_agent_core.commands`'s own module docstring is explicit
-    that such a frontend "must raise UnsupportedCommandError rather than
-    return silently" — the RPC wire has no screen either, so it raises
-    (COMMAND_NOT_SUPPORTED) instead of the old silent-forever-hang."""
+async def test_a_view_comes_back_as_a_success_carrying_its_reason(handler, session):
+    """A `View` is a surface the core decided WHAT it is and did not open.
+
+    It used to be COMMAND_NOT_SUPPORTED. It is a SUCCESS response now, because the
+    tree payload has to land somewhere: putting it in an error and moving it later
+    is two breaks instead of one. Not a silent no-op — `unavailable_because` is a
+    sentence a host prints, the idiom the table's seven `declined_because` entries
+    already use."""
     session.submit = AsyncMock(
         return_value=SubmissionResult(
             accepted=True,
             submission_id="s-1",
-            command=CommandOutcome(name="tree", args="", performer="frontend"),
+            command=View(name="tree", unavailable_because="τ projects no tree state yet"),
         )
     )
 
@@ -1154,11 +1114,39 @@ async def test_a_frontend_performed_command_errors_never_no_ops(handler, session
     )
 
     (response,) = await _drain(handler)
+    assert "error" not in response
+    assert response["result"]["accepted"] is True
+    assert response["result"]["view"] == {
+        "name": "tree",
+        "state": None,
+        "unavailable_because": "τ projects no tree state yet",
+    }
+
+
+async def test_a_ready_flow_errors_and_names_the_verb_to_call_instead(handler, session):
+    """The two arms only a head performs still refuse, each with its own reason.
+
+    `tau_agent_core.commands`'s own module docstring is explicit that a frontend
+    which cannot perform an arm "must raise UnsupportedCommandError rather than
+    return silently" — the wire's version is COMMAND_NOT_SUPPORTED, and it now says
+    which verb does the same job."""
+    session.submit = AsyncMock(
+        return_value=SubmissionResult(
+            accepted=True,
+            submission_id="s-1",
+            command=Ready(flow="compact", mutation="compact", arguments={}),
+        )
+    )
+
+    await handler._handle_request(
+        {"jsonrpc": "2.0", "id": 1, "method": "prompt", "params": {"text": "/compact"}}
+    )
+
+    (response,) = await _drain(handler)
     assert "result" not in response
     assert response["error"]["code"] == dialect.COMMAND_NOT_SUPPORTED
-    assert "/tree" in response["error"]["message"]
-    assert "the τ RPC wire" in response["error"]["message"]
-    assert response["error"]["data"]["command"] == "tree"
+    assert "'compact'" in response["error"]["message"]
+    assert response["error"]["data"]["command"] == "compact"
 
 
 async def test_get_capabilities_matches_the_capabilities_module(handler):
@@ -1220,11 +1208,6 @@ async def test_forward_event_resets_the_projector_on_turn_start(handler):
         items.append(handler._output_queue.get_nowait())
 
     deltas = [i["params"]["delta"] for i in items if i["params"]["type"] == "message_update"]
-    # Without the reset, the second message_update's "Hi" does not start with
-    # "Hello" and would be flagged replace=True with delta="Hi" anyway (the
-    # projector's own defensive case) — so the REAL signal that reset ran is
-    # that the second message's delta is the whole fresh string, not a
-    # suffix computed against "Hello".
     assert deltas == ["Hello", "Hi"]
 
 
@@ -1284,6 +1267,132 @@ async def test_forward_event_agent_end_carries_a_count_not_the_messages(handler)
     (item,) = [handler._output_queue.get_nowait() for _ in range(handler._output_queue.qsize())]
     assert item["params"]["message_count"] == 2
     assert "messages" not in item["params"]
+
+
+def _cache_less_completion(timestamp: int, submission_id: str | None = "s1") -> AgentEvent:
+    return AgentEvent(
+        type="message_end",
+        timestamp=timestamp,
+        submission_id=submission_id,
+        message={
+            "role": "assistant",
+            "content": [],
+            "usage": {
+                "cache_read_tokens": 0,
+                "cache_reported": True,
+                "output_tokens": 10,
+                "total_tokens": 30_010,
+            },
+        },
+    )
+
+
+async def _drain(handler) -> list[dict]:
+    return [handler._output_queue.get_nowait() for _ in range(handler._output_queue.qsize())]
+
+
+async def test_agent_end_carries_the_prompt_cache_notice(handler):
+    """The one head-agnostic delivery: an RPC host reads the notice off a field
+    rather than needing τ's own renderer (docs/PROMPT-CACHING.md §7)."""
+    await handler._forward_event(AgentEvent(type="agent_start", timestamp=1, submission_id="s1"))
+    await handler._forward_event(_cache_less_completion(2))
+    await handler._forward_event(_cache_less_completion(3))
+    await handler._forward_event(
+        AgentEvent(type="agent_end", timestamp=4, submission_id="s1", messages=[])
+    )
+
+    items = await _drain(handler)
+    agent_end = [i for i in items if i["params"]["type"] == "agent_end"][-1]
+    assert "2 calls" in agent_end["params"]["cache_notice"]
+
+
+async def test_a_healthy_turn_leaves_the_notice_null(handler):
+    warm = _cache_less_completion(3)
+    warm.message["usage"]["cache_read_tokens"] = 29_000
+
+    await handler._forward_event(AgentEvent(type="agent_start", timestamp=1, submission_id="s1"))
+    await handler._forward_event(_cache_less_completion(2))
+    await handler._forward_event(warm)
+    await handler._forward_event(
+        AgentEvent(type="agent_end", timestamp=4, submission_id="s1", messages=[])
+    )
+
+    items = await _drain(handler)
+    agent_end = [i for i in items if i["params"]["type"] == "agent_end"][-1]
+    assert agent_end["params"]["cache_notice"] is None
+
+
+async def test_every_other_event_type_leaves_the_notice_null(handler):
+    await handler._forward_event(AgentEvent(type="agent_start", timestamp=1, submission_id="s1"))
+    await handler._forward_event(_cache_less_completion(2))
+    items = await _drain(handler)
+    assert [i["params"]["cache_notice"] for i in items] == [None] * len(items)
+
+
+def _truncated_completion(dropped: int | None = None) -> AgentEvent:
+    usage: dict = {"total_tokens": 4100, "output_tokens": 4096}
+    if dropped is not None:
+        usage["extra"] = {"dropped_partial_tool_calls": dropped}
+    return AgentEvent(
+        type="message_end",
+        timestamp=2,
+        submission_id="s1",
+        message={
+            "role": "assistant",
+            "content": [],
+            "usage": usage,
+            "stop_reason": "length",
+        },
+    )
+
+
+async def test_message_end_carries_the_completions_stop_reason(handler):
+    """Without this a host renders a truncated prefix as a finished answer: the
+    stop reason rode inside ``message``, which the wire excludes
+    (docs/TRUNCATED-TOOL-CALLS.md §3)."""
+    await handler._forward_event(_truncated_completion())
+    (item,) = await _drain(handler)
+    assert item["params"]["stop_reason"] == "length"
+
+
+async def test_message_end_carries_the_calls_the_cut_lost(handler):
+    await handler._forward_event(_truncated_completion(dropped=2))
+    (item,) = await _drain(handler)
+    assert item["params"]["dropped_tool_calls"] == 2
+
+
+async def test_dropping_nothing_leaves_the_count_null_not_zero(handler):
+    """0 and "not reported" are different statements, and the provider writes the
+    key only when something was lost."""
+    await handler._forward_event(_truncated_completion())
+    (item,) = await _drain(handler)
+    assert item["params"]["dropped_tool_calls"] is None
+
+
+async def test_the_content_only_duplicate_message_end_carries_neither(handler):
+    """The agent loop emits a second ``message_end`` per tool-bearing turn with
+    role and content only. It is not a second completion and must not read as
+    one that stopped for an unknown reason."""
+    await handler._forward_event(
+        AgentEvent(
+            type="message_end",
+            timestamp=3,
+            submission_id="s1",
+            message={"role": "assistant", "content": []},
+        )
+    )
+    (item,) = await _drain(handler)
+    assert item["params"]["stop_reason"] is None
+    assert item["params"]["dropped_tool_calls"] is None
+
+
+async def test_every_other_event_type_leaves_the_stop_reason_null(handler):
+    await handler._forward_event(AgentEvent(type="agent_start", timestamp=1, submission_id="s1"))
+    await handler._forward_event(
+        AgentEvent(type="agent_end", timestamp=4, submission_id="s1", messages=[])
+    )
+    items = await _drain(handler)
+    assert [i["params"]["stop_reason"] for i in items] == [None] * len(items)
 
 
 # ── background task tracking ─────────────────────────────────────────────────
@@ -1406,8 +1515,6 @@ async def test_agent_end_wire_event_carries_the_post_persistence_cursor(real_han
         if line.get("method") == "event" and line["params"].get("type") == "agent_end"
     ]
     post_turn_cursor = real_session.session_log.cursor
-    # Sanity: the turn actually persisted something, so this is a real
-    # assertion about staleness and not two equal strings by coincidence.
     assert post_turn_cursor != pre_turn_cursor
     assert agent_end["params"]["cursor"] == post_turn_cursor
 
@@ -1447,8 +1554,6 @@ async def test_agent_end_cursor_survives_a_session_log_swap_before_dequeue(
     old_cursor = old_log.cursor
     assert old_cursor is not None  # sanity: the turn really persisted something
 
-    # Simulate a swap landing while this item was still queued (new_session/
-    # fork/switch_session all do exactly this to `session.session_log`).
     real_session.session_log = InMemorySessionLog()
     assert real_session.session_log.cursor is None
 
@@ -1578,12 +1683,8 @@ async def test_a_resolved_extension_command_reaches_the_host_end_to_end():
     assert response["result"]["accepted"] is True
     assert response["result"]["command"] == {
         "name": "ledger",
-        "args": "",
-        "performer": "core",
         "output": "42",
     }
-    # No turn ran, so there is no OUTSTANDING agent_end this test would need
-    # to drain to avoid a hang — the queue is empty.
     assert real_handler._output_queue.empty()
 
 
@@ -1616,14 +1717,6 @@ def test_rpc_error_carries_code_message_and_data():
     assert err.message == "nope"
     assert err.data == {"submission_id": "x"}
     assert str(err) == "nope"
-
-
-# ── event projection (E1/E2/E4) ──────────────────────────────────────────────
-#
-# rpc/wire_events.py replaces the pre-2B `_serialize_event`/`_serialize_message`
-# (which pushed `event.message` wholesale — the quadratic wire E1 exists to
-# kill). See test_rpc_event_schema.py for the schema-level (WireEvent) tests;
-# these exercise the actual projection function against real AgentEvents.
 
 
 def test_project_event_non_message_types_are_1to1(real_handler):
@@ -1759,16 +1852,6 @@ def test_project_event_returns_one_wireevent_per_changed_diffable_block(real_han
     assert by_kind == {"thinking": "pondering", "text": "Hi"}
 
 
-# ── R-T6: delta correctness against the RPC path end-to-end ─────────────────
-#
-# docs/REMOTE-CONTROL.md §9: "concatenating every message_update delta over a
-# turn reproduces the final assistant text exactly." test_event_projection.py
-# already proves this for MessageDeltaProjector in isolation; this drives it
-# through the actual RPC path this unit wires up — RPCHandler._forward_event
-# -> wire_events.project_event -> the queued wire payloads a real client
-# would read off stdout.
-
-
 def _apply_wire_delta(acc: str, payload: dict) -> str:
     """The consumer-side reconstruction rule WireEvent's contract demands —
     the wire analogue of test_event_projection.py's `_apply`."""
@@ -1786,7 +1869,7 @@ async def test_rt6_concatenated_wire_deltas_reproduce_final_text_many_chunks(han
     ).split(" ")
     assert len(words) >= 30
 
-    await handler._forward_event(AgentEvent(type="turn_start", timestamp=0, turn_index=0))
+    await handler._forward_event(AgentEvent(type="turn_start", timestamp=_TS, turn_index=0))
 
     acc_text = ""
     running = ""
@@ -1818,7 +1901,7 @@ async def test_rt6_concatenated_wire_deltas_reproduce_final_text_with_a_replace(
     chunk partway through (the defensive case) — the RPC path must apply
     `replace` correctly, unlike backends.py's TurnStream (see that module's
     own comment, deliberately not fixed by this unit)."""
-    await handler._forward_event(AgentEvent(type="turn_start", timestamp=0, turn_index=0))
+    await handler._forward_event(AgentEvent(type="turn_start", timestamp=_TS, turn_index=0))
 
     snapshots = ["I think", "I think the", "Actually, scratch that", "Actually, scratch that."]
     for i, snap in enumerate(snapshots):

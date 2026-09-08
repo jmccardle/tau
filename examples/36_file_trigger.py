@@ -77,12 +77,8 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-#: Default trigger-file path (pi parity: ``/tmp/agent-trigger.txt``, renamed to
-#: avoid colliding with a real pi install watching the same path on one box).
 DEFAULT_TRIGGER_FILE = "/tmp/tau-agent-trigger.txt"
 
-#: Polling interval, in seconds, for the mtime-based watcher (see the module
-#: docstring's scope-adaptation note — τ has no ``fs.watch`` equivalent).
 DEFAULT_POLL_INTERVAL = 0.5
 
 
@@ -166,6 +162,4 @@ def file_trigger_extension(
     api.on("session_shutdown", on_session_shutdown)
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/36_file_trigger.py`` → ``getattr(module, "register")``).
 register = file_trigger_extension

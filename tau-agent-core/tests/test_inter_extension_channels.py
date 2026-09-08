@@ -32,6 +32,9 @@ from tau_agent_core.extension_types import ExtensionAPI, ext_channel
 from tau_agent_core.extensions.runner import ExtensionRunner
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 # ── unit level: two apis sharing ONE bus, each with its own bucket ────────────
 
 
@@ -184,7 +187,7 @@ def _text_assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -196,7 +199,7 @@ def _tool_call_assistant(call_id: str, name: str, args: dict[str, Any]) -> Assis
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -265,11 +268,6 @@ def _make_session() -> AgentSession:
     return AgentSession(session_log=InMemorySessionLog(), model=model)
 
 
-# The publisher registers a tool whose execute BROADCASTS on its custom channel,
-# then returns a bland tool result (whose text is deliberately DISJOINT from the
-# broadcast payload, so the integration test can prove the payload never entered
-# the tree). ``_PAYLOAD_MARKER`` is the string that must appear on the wire-side
-# channel but NOWHERE on the model-visible path.
 _PAYLOAD_MARKER = "hello-from-tool-CHANNEL-ONLY"
 
 _PUBLISHER_EXT = f"""
@@ -287,10 +285,6 @@ def register(api):
     }})
 """
 
-# The subscriber listens on the publisher's channel and writes each received
-# payload as a JSON line to a sink path baked into its source (the established
-# capture idiom, cf. test_extension_config.py). If the cross-extension delivery
-# works, the sink file gains a line; the file is the test's observation port.
 _SUBSCRIBER_EXT = """
 import json
 
@@ -331,8 +325,6 @@ class TestTwoLoadedExtensions:
         lines = [json.loads(line) for line in sink.read_text().splitlines() if line.strip()]
         assert lines == [{"msg": _PAYLOAD_MARKER}]
 
-        # …and the model-visible path is untouched: the tool DID run (bland result
-        # persisted), but the broadcast payload appears NOWHERE on the tree.
         assert _has_tool_result(messages, "ping_tool")
         self._assert_payload_absent_from_context(session, messages)
 

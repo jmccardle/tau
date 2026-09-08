@@ -14,8 +14,6 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-# Tool-result text longer than this is truncated in the summarization transcript
-# so a single huge tool output cannot dominate the prompt (pi: utils.ts:74).
 TOOL_RESULT_MAX_CHARS = 2000
 
 

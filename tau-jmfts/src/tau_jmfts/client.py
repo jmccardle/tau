@@ -19,39 +19,10 @@ import httpx
 
 DEFAULT_TIMEOUT = 10.0
 
-# Requests that make the server run the EMBEDDER get their own, far longer bound.
-#
-# This is a liveness check, not a performance budget: it answers "is the server still
-# there?", and nothing else should be read into it. DEFAULT_TIMEOUT is right for
-# metadata calls, which are a database round-trip; embedding is a GPU forward pass per
-# piece, and `chunk_document(auto_embed=True)` runs one for every chunk it mints --
-# measured at 8.9s for a 5.3KB base64 blob (13 chunks) against a warm local server, and
-# the first call after a restart also pays several GB of model load.
-#
-# A 10s bound there does not fail early, it fails WRONG: the server completes the work
-# and stores the chunks, while the client reports a transport failure for an operation
-# that succeeded. Fail-Early is about not hiding a problem, not about manufacturing one.
 EMBED_TIMEOUT = 300.0
 
-# The usetype τ writes chunk documents under. Deliberately NOT `tau:*` -- chunks live
-# as children INSIDE the conversation subtree, and τ's loader treats a `tau:` usetype
-# as a promise that `structured_content.tau` is a real entry payload. Chunks have no
-# such payload, so a `tau:` usetype here would corrupt the load path (store._is_tau_doc).
 CHUNK_USETYPE = "jmfts:chunk"
 
-# Words per chunk -- a TARGET for the common case, never a guarantee.
-#
-# The server's `max_tokens` counts WHITESPACE-SPLIT WORDS, not the subword tokens the
-# embedder budgets (chunking.py: "word count as a fast proxy"). 300 words was the first
-# guess and it overshot: technical prose ran ~6.4 chars/word, so chunks came back at
-# ~1925 chars. At 220 words even long-worded text (identifiers, paths, stack traces)
-# lands comfortably inside the window for prose-like token ratios.
-#
-# Nothing about correctness rests on this number. Text with no word boundaries (a base64
-# blob is one enormous "word") cannot be bounded by a word count at all. The guarantee
-# comes from `chunk_document(auto_embed=True)`, which makes the server apply its own
-# tokenizer (`fits_token_window`) to every piece it returns -- a measurement in the unit
-# that actually constrains the embedder. See :meth:`JmftsClient.chunk_document`.
 CHUNK_MAX_WORDS = 220
 
 _SEARCH_METHODS = frozenset({"hybrid", "vector", "bm25", "fulltext", "maxsim"})
@@ -177,9 +148,6 @@ class JmftsClient:
     # -- transport ------------------------------------------------------
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
-        # `timeout=None` means "no override" here, NOT httpx's "wait forever" -- drop it
-        # so the client's configured timeout applies. Callers that need a longer bound
-        # pass EMBED_TIMEOUT explicitly.
         if kwargs.get("timeout") is None:
             kwargs.pop("timeout", None)
         try:
@@ -192,9 +160,6 @@ class JmftsClient:
                 detail = body.get("detail", body) if isinstance(body, dict) else body
             except ValueError:
                 detail = response.text
-            # One 400 is not a failure but an ANSWER: "I measured this text and it does
-            # not fit the embedder's window." Give it a type so callers can act on it
-            # without string-matching a message. Everything else stays a plain JmftsError.
             cls = (
                 JmftsTextTooLongError
                 if JmftsTextTooLongError.matches(response.status_code, detail)
@@ -255,8 +220,6 @@ class JmftsClient:
             "POST",
             "/documents",
             json=payload,
-            # Only when the request actually runs the embedder; a plain write stays on
-            # the short transport bound.
             timeout=EMBED_TIMEOUT if auto_embed else None,
         )
         return result
@@ -515,8 +478,6 @@ class JmftsClient:
                 "child_usetype": child_usetype,
                 "auto_embed": auto_embed,
             },
-            # With auto_embed the server runs one forward pass per chunk it mints, and
-            # halves pieces until each fits -- minutes of work for a large document.
             timeout=EMBED_TIMEOUT if auto_embed else None,
         )
         return self.get_children(doc_id, usetype=child_usetype, limit=1000)

@@ -89,8 +89,6 @@ def test_every_bound_extension_shares_the_one_sink() -> None:
     records: list[dict[str, Any]] = []
     session.set_extension_record_sink(records.append)
 
-    # Both bound apis expose the ONE shared ExtensionUI (a test-enforced invariant),
-    # so a single sink covers every extension.
     assert apis[0].ui is apis[1].ui
     apis[0].ui.notify("from a")
     apis[1].ui.notify("from b", "error")

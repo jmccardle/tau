@@ -20,14 +20,6 @@ from dataclasses import dataclass
 from typing import Any, Literal
 from tau_llm.docs import agent_facing
 
-# ---------------------------------------------------------------------------
-# Message types used by the exporters (from tau_llm.types)
-# ---------------------------------------------------------------------------
-
-# The exporters work with plain dicts representing messages, matching the
-# tau_llm types.  This avoids a circular dependency between tau-agent-core
-# and tau-llm at import time.
-
 
 @agent_facing(topic="export")
 @dataclass
@@ -97,11 +89,6 @@ class ExportConfig:
         )
 
 
-# ---------------------------------------------------------------------------
-# Export helpers
-# ---------------------------------------------------------------------------
-
-
 def _extract_text(content: list[dict]) -> str:
     """Extract text from a content list.
 
@@ -130,11 +117,6 @@ def _format_timestamp(timestamp: int | None) -> str:
         return time.strftime("%Y-%m-%d %H:%M:%S", dt)
     except (OSError, OverflowError, ValueError):
         return str(timestamp)
-
-
-# ---------------------------------------------------------------------------
-# Markdown exporter
-# ---------------------------------------------------------------------------
 
 
 @agent_facing(topic="export")
@@ -222,11 +204,6 @@ class MarkdownExporter:
             return "\n".join([header, "", "```", text, "```"])
 
         return ""
-
-
-# ---------------------------------------------------------------------------
-# HTML exporter
-# ---------------------------------------------------------------------------
 
 
 _HTML_STYLES = """\
@@ -341,11 +318,6 @@ class HTMLExporter:
                     f"</blockquote>"
                 )
             elif block_type == "toolCall" and config.include_tool_calls:
-                # Parity with MarkdownExporter, which has always gated this block.
-                # Without the gate, include_tool_calls=False still emitted the tool
-                # NAME and its full arguments JSON (paths, commands, whatever was
-                # passed) — it only suppressed the toolResult message, so the
-                # invocation leaked into an export the user asked to exclude it from.
                 name = block.get("name", "")
                 arguments = block.get("arguments", {})
                 args_str = json.dumps(arguments, indent=2)
@@ -373,11 +345,6 @@ def _html_escape(text: str) -> str:
         .replace('"', "&quot;")
         .replace("'", "&#x27;")
     )
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 
 @agent_facing(topic="export")

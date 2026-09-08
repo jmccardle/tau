@@ -14,18 +14,913 @@ Design (from the reasoning/TUI discussion):
 - ``ExchangeBox`` — groups one user→answer exchange's steps under a summary line
   ("N tools · X tok · M:SS"); the final answer streams inside it.
 
-These have NO dependency on the Parley app module, so they import cleanly.
+These have NO dependency on the TauApp app module, so they import cleanly.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Callable
 
 from textual.widget import Widget
-from textual.widgets import Collapsible, Markdown
+from textual.widgets import Collapsible, Markdown, Input, TextArea, Static, Button
 from textual.widgets.markdown import MarkdownStream
+from textual import events, work
+from textual.binding import Binding
+from tau_agent_core.attachments import AttachmentCompletions
+from tau_agent_core.commands import ArgumentCompletions, CommandCompletions
+import os
+from datetime import datetime, timedelta
+from textual.app import ComposeResult
+from textual.containers import Container, VerticalScroll, Vertical
+from textual.worker import get_current_worker
+from tau_agent_core.session_catalog import SessionCatalog, SessionInfo
+from textual.message import Message
+
+
+ROLE_LABELS: dict[str, str] = {
+    "pending": "…",
+    "user": "User",
+    "assistant": "Assistant",
+    "system": "System",
+    "toolCall": "Tool call",
+    "toolResult": "Tool result",
+    "custom": "Extension",
+    "interactive": "User",  # a human, but not the one at THIS frontend
+    "rpc": "RPC",
+    "extension": "Extension",
+    "bus": "Bus",
+    "timer": "Timer",
+    "webhook": "Webhook",
+    "voice": "Voice",
+    "agent": "Sub-agent",
+    "compaction": "Compaction",
+    "branch_summary": "Branch summary",
+    "navigate": "Navigate",
+    "elide": "Elide",
+    "customEntry": "Entry",
+}
+
+
+ENTER_KEY_CONFIG_KEY = "enter_key"
+
+
+ENTER_KEY_MODES = ("newline", "submit")
+
+
+DEFAULT_ENTER_KEY_MODE = "newline"
+
+
+NEWLINE_KEYS_IN_SUBMIT_MODE = ("shift+enter", "ctrl+j")
+
+
+def format_tool_call_body(name: str, arguments: object) -> str:
+    """Render a tool call's Markdown body. Shared by the live streaming path and
+    the saved-chat reload path so the two can never drift apart."""
+    args_text = json.dumps(arguments, indent=2, default=str)
+    return f"`{name}`\n\n```json\n{args_text}\n```"
+
+
+def format_tool_result_body(name: str, result_text: str, is_error: bool) -> str:
+    """Render a tool result's Markdown body (live + reload). Truncated for
+    display, matching the live ``tool_execution_end`` rendering."""
+    status = "Error" if is_error else "Success"
+    return f"`{name}` — {status}\n\n```\n{result_text[:500]}\n```"
+
+
+def _join_text_blocks(blocks: object) -> str:
+    """Concatenate the ``text`` blocks of a τ message content list (or pass a
+    plain string through). Used to flatten persisted assistant/toolResult bodies."""
+    if isinstance(blocks, str):
+        return blocks
+    if isinstance(blocks, list):
+        return "".join(
+            b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return ""
+
+
+def _split_assistant_blocks(content: object) -> tuple[str, str, list[dict]]:
+    """Split a persisted assistant message's content into ``(thinking, text,
+    tool_calls)`` for exchange reconstruction.
+
+    Mirrors how a completion is composed live: one reasoning region, one answer
+    body, and N tool calls. Fragments are joined — both the fixed single-block
+    shape and the legacy bloated shape (hundreds of one-fragment blocks, written
+    before the provider consolidated them) collapse to one reasoning + one answer
+    string here. A plain-string body is treated as answer text."""
+    thinking_parts: list[str] = []
+    text_parts: list[str] = []
+    calls: list[dict] = []
+    if isinstance(content, str):
+        text_parts.append(content)
+    elif isinstance(content, list):
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            btype = b.get("type")
+            if btype == "thinking":
+                thinking_parts.append(b.get("thinking", ""))
+            elif btype == "text":
+                text_parts.append(b.get("text", ""))
+            elif btype == "toolCall":
+                calls.append(b)
+    return "".join(thinking_parts), "".join(text_parts), calls
+
+
+class MessageBox(Static):
+    """The ONE universal widget per message — the messages-list 1:1 mapping.
+
+    Every ``{"role": ...}`` dict in the transcript renders as exactly one
+    MessageBox, so the widget tree mirrors the data model (which is what makes
+    reload trivial and freeze-proof). A box renders, top to bottom:
+
+      - an optional :class:`ReasoningRegion` (assistant reasoning — streamed and
+        collapsible), mounted lazily the instant reasoning arrives,
+      - the message text (a Markdown body),
+      - zero or more :class:`ToolBox` children (one per tool call; the matching
+        tool *result* folds into its box by ``tool_call_id``).
+
+    user/system messages use only the text body; an assistant turn may add
+    reasoning and tool boxes — reasoning + answer + the turn's tools are one
+    completion, so they live in one bordered box (per the design discussion).
+    The role selects the border label + color (``box-<role>``); the border is
+    on the box itself so the whole completion reads as a single box.
+
+    A box may start as ``role="pending"`` and be *resolved* in place via
+    :meth:`set_role` without re-mounting, preserving true arrival order.
+
+    ``source`` says what the body text IS — an assistant's markdown, or verbatim
+    line-oriented output (a tool result, a traceback, what a user typed). It is
+    required, because only the caller knows, and the two are rendered differently
+    (see :class:`MarkdownLineFormatter`). It is deliberately NOT derived from
+    ``role``: ``set_role`` retypes a box in place, and a box's text does not
+    change kind when its label does.
+    """
+
+    def __init__(
+        self,
+        role: str,
+        content: str = "",
+        subtitle: str = "",
+        *,
+        source: ContentSource,
+    ):
+        super().__init__(classes=f"chat-message box-{role}")
+        self.role = role
+        self._content = content
+        self._subtitle = subtitle
+        self._source = source
+        self._reasoning: ReasoningRegion | None = None
+        self._tool_boxes: dict[str, ToolBox] = {}
+        self._deferred_children: list[tuple[str, Widget]] = []
+        self._stream: MarkdownStream | None = None
+        self._formatter = MarkdownLineFormatter(self._source)
+
+    def _format(self, content: str) -> str:
+        """Format a WHOLE body, and re-seat the streaming formatter to match.
+
+        Every caller of this method replaces the entire document (``on_mount``
+        catching up a pre-mount buffer, ``update_content`` swapping the body), so
+        the incremental state has to restart from the same text — otherwise a
+        delta appended afterwards would continue from a fence state belonging to
+        text that is no longer there.
+        """
+        self._formatter = MarkdownLineFormatter(self._source)
+        return self._formatter.feed(content)
+
+    def compose(self) -> ComposeResult:
+        self._reasoning_slot = Vertical(classes="message-reasoning")
+        yield self._reasoning_slot
+        md = Markdown("", classes="message-content")
+        self._md_widget = md
+        yield md
+        self._tools_slot = Vertical(classes="message-tools")
+        yield self._tools_slot
+
+    def on_mount(self) -> None:
+        self.border_title = ROLE_LABELS.get(self.role, self.role.capitalize())
+        if self._content:
+            self._md_widget.append(self._format(self._content))
+        if self._subtitle:
+            self.border_subtitle = self._subtitle
+        for slot, widget in self._deferred_children:
+            getattr(self, slot).mount(widget)
+        self._deferred_children.clear()
+
+    def _mount_lazy(self, slot: str, widget: Widget) -> None:
+        """Mount a lazily-created child into one of ``compose()``'s slots.
+
+        Buffers the child when ``compose()`` has not run yet; :meth:`on_mount`
+        flushes the buffer. Before this existed, both callers raised
+        ``AttributeError: 'MessageBox' object has no attribute '_reasoning_slot'``
+        on the first delta of a turn — and because ``ensure_reasoning`` had
+        already assigned ``self._reasoning``, every later call took the
+        already-created branch and handed back a region that was never mounted,
+        so the whole turn's reasoning accumulated into a widget nobody could see.
+        """
+        container = getattr(self, slot, None)
+        if container is None:
+            self._deferred_children.append((slot, widget))
+            return
+        container.mount(widget)
+
+    # -- text body -----------------------------------------------------------
+
+    def set_role(self, role: str) -> None:
+        """Resolve/retype this box in place (e.g. pending → assistant)."""
+        self.remove_class(f"box-{self.role}")
+        self.role = role
+        self.add_class(f"box-{role}")
+        self.border_title = ROLE_LABELS.get(role, role.capitalize())
+
+    def update_content(self, content: str) -> None:
+        """Replace the text body in place (used for streaming text)."""
+        if content == self._content:
+            return
+        self._content = content
+        if hasattr(self, "_md_widget"):
+            self._md_widget.update(self._format(content))
+
+    async def append_content_delta(self, delta: str) -> None:
+        """Stream one delta into the text body without a full document rebuild.
+
+        Uses ``Markdown.get_stream``/``MarkdownStream.write`` (Textual 8.2.7),
+        appending instead of the reparse+remount-everything ``update_content``/
+        ``Markdown.update()`` does. Each delta is formatted by the box's
+        :class:`MarkdownLineFormatter`, which carries fenced-code-block state
+        forward across calls; feeding it one delta at a time therefore produces
+        the identical document a whole-text ``update_content(self._content)``
+        would, even when a delta splits mid newline or mid fence marker.
+
+        ``self._content`` is kept in sync on every call (not just a throttled
+        tick) so ``content_text``/``update_content``'s equality guard stay
+        correct whether or not this delta was actually streamed yet. Mirrors
+        ``update_content``'s existing ``hasattr`` gate: a delta that arrives
+        before ``compose()`` has run is accumulated into ``self._content``
+        only -- ``on_mount`` catches the full buffered text up via ``append()``
+        once the widget mounts (not ``update()`` -- see its comment), and
+        streaming resumes from there.
+        """
+        if not delta:
+            return
+        self._content += delta
+        if not hasattr(self, "_md_widget"):
+            return
+        if self._stream is None:
+            self._stream = Markdown.get_stream(self._md_widget)
+        await self._stream.write(self._formatter.feed(delta))
+
+    async def finish_stream(self) -> None:
+        """Stop this box's open content stream, if any.
+
+        Called at every point the active step stops being the streaming target
+        (``_flush``, ``finalize_exchange``) so no ``MarkdownStream`` background
+        task is left running once the box may be collapsed, promoted from, or
+        removed. Safe to call when nothing was ever streamed (idempotent no-op).
+        """
+        if self._stream is not None:
+            stream, self._stream = self._stream, None
+            await stream.stop()
+
+    @property
+    def content_text(self) -> str:
+        return self._content
+
+    def set_subtitle(self, subtitle: str) -> None:
+        self._subtitle = subtitle
+        self.border_subtitle = subtitle
+
+    # -- reasoning + tools: the unified host API (used by the task-4 wiring) --
+
+    def ensure_reasoning(self) -> ReasoningRegion:
+        """Lazily mount (once) and return this message's reasoning region.
+
+        The region buffers its own streamed text until it mounts, so callers may
+        ``set_text``/``append`` on the returned region immediately -- including
+        before this box has composed, in which case :meth:`_mount_lazy` holds the
+        region until ``on_mount``.
+        """
+        if self._reasoning is None:
+            self._reasoning = ReasoningRegion()
+            self._mount_lazy("_reasoning_slot", self._reasoning)
+        return self._reasoning
+
+    def add_tool_call(self, name: str, arguments: object, tool_call_id: str = "") -> ToolBox:
+        """Append a tool call as a child ToolBox, tracked by id for its result.
+
+        ``ToolBox`` holds a result written before it is opened, so a call and its
+        result arriving in the same synchronous burst are both rendered even when
+        this box has not composed yet.
+        """
+        box = ToolBox(name, arguments, tool_call_id)
+        if tool_call_id:
+            self._tool_boxes[tool_call_id] = box
+        self._mount_lazy("_tools_slot", box)
+        return box
+
+    async def add_tool_call_async(
+        self, name: str, arguments: object, tool_call_id: str = ""
+    ) -> ToolBox:
+        """Like :meth:`add_tool_call` but awaits the ToolBox mount.
+
+        The reload path folds a tool *result* into this box immediately after the
+        next persisted message; awaiting the mount here keeps that write on the
+        direct path rather than through ``ToolBox``'s pre-mount buffer. Every
+        reload caller has already awaited the step's own mount, so the slot
+        exists and this really does await. The live path is network-paced and
+        uses the fire-and-forget variant."""
+        box = ToolBox(name, arguments, tool_call_id)
+        if tool_call_id:
+            self._tool_boxes[tool_call_id] = box
+        slot = getattr(self, "_tools_slot", None)
+        if slot is None:
+            self._deferred_children.append(("_tools_slot", box))
+            return box
+        await slot.mount(box)
+        return box
+
+    def set_tool_result(
+        self,
+        tool_call_id: str,
+        result_text: str,
+        is_error: bool = False,
+        *,
+        blocked: bool = False,
+        blocked_by: str | None = None,
+    ) -> bool:
+        """Fold a tool result into its matching ToolBox. Returns ``False`` if no
+        box matches the id — the caller decides what to do, nothing is fabricated.
+
+        ``blocked``/``blocked_by`` mark an extension VETO (S50) so the ToolBox
+        renders "⛔ blocked by <ext>" instead of a generic error."""
+        box = self._tool_boxes.get(tool_call_id)
+        if box is None:
+            return False
+        box.set_result(result_text, is_error, blocked=blocked, blocked_by=blocked_by)
+        return True
+
+    @property
+    def reasoning(self) -> ReasoningRegion | None:
+        return self._reasoning
+
+    @property
+    def tool_boxes(self) -> dict[str, ToolBox]:
+        return self._tool_boxes
+
+
+# Backwards-compatible alias: older code/tests referenced `ChatMessage`.
+ChatMessage = MessageBox
+
+
+class ChatListItem(Static):
+    """A clickable session list item."""
+
+    def __init__(self, info: SessionInfo):
+        super().__init__(f"• {info.display_title()}", classes="chat-list-item")
+        self.chat_ref = info.ref
+        self.info = info
+
+    def on_click(self):
+        """Handle click to load this session."""
+        self.post_message(ChatSelected(self.chat_ref))
+
+
+class ChatSelected(Message):
+    """Message sent when a session is selected from the sidebar."""
+
+    def __init__(self, chat_ref: str):
+        super().__init__()
+        self.chat_ref = chat_ref
+
+
+class ReclaimPending(Message):
+    """alt+up: put the pending steering buffer back in the editor.
+
+    Reference: docs/TUI-STEERING.md §4. A message rather than a direct call
+    because this variant of the gesture works with a draft in the box, and
+    combining the two texts is the app's job — the editor knows what it holds,
+    the app knows what is pending, and only one of them can be told to do it.
+    """
+
+
+class ChatSidebar(Container):
+    """Sidebar showing this directory's recent sessions, grouped by date."""
+
+    _GROUP_LIMIT = 10
+
+    def __init__(self, catalog: SessionCatalog):
+        super().__init__(id="sidebar")
+        self.catalog = catalog
+        self.sessions: list[SessionInfo] = []
+        self._render_pending = False
+
+    def compose(self) -> ComposeResult:
+        """Compose sidebar contents."""
+        yield Static("τ", classes="sidebar-title")
+        yield Button("+ New Chat", id="new-chat-button", variant="primary")
+
+        with VerticalScroll(id="chat-list"):
+            # Will be populated dynamically
+            pass
+
+    def refresh_chats(self) -> None:
+        """Refresh the session list (cwd-scoped — §8 of the redesign).
+
+        ``catalog.list()`` is a synchronous call that can be a genuine blocking
+        network round trip: the JMFTS-backed catalog pages over EVERY
+        ``tau:conversation`` root in the whole instance and filters by cwd
+        client-side (measured live: 1,762 roots, 18 sequential HTTP requests,
+        ~154ms — and it only grows). Calling it directly here, on the event
+        loop, used to freeze the entire TUI for that long. It is dispatched to
+        a thread worker instead (Textual's own rule: "if the await might take
+        more than ~50ms, use a worker").
+
+        This method itself stays synchronous and returns immediately — it only
+        *starts* the worker. Callers that must observe the refreshed list
+        before proceeding (chiefly tests) should await it settling — see
+        ``tests/conftest.py``'s ``wait_for_workers_settled``, not the bare
+        ``app.workers.wait_for_complete()``: because this worker is
+        ``exclusive``, a still-running previous refresh gets cancelled rather
+        than awaited to completion, and ``Worker.wait()`` raises
+        ``WorkerCancelled`` for that — a benign, expected outcome of this
+        method's own staleness guard, not a failure a caller should have to
+        handle case-by-case.
+        """
+        self._refresh_chats_worker()
+
+    @work(thread=True, exclusive=True, group="sidebar-refresh")
+    def _refresh_chats_worker(self) -> None:
+        """The blocking fetch, off the event loop.
+
+        ``exclusive=True`` cancels any still-running refresh from this same
+        widget when a newer one starts (turns can end back-to-back faster than
+        one listing round trip). That cancellation only flips
+        ``worker.is_cancelled`` — a thread already blocked inside
+        ``catalog.list()`` keeps running to completion regardless — so the
+        result is checked for staleness before it is applied. Without that
+        check, a slow superseded fetch could land after a faster newer one and
+        overwrite the sidebar with stale data: a freeze traded for a lie.
+        """
+        worker = get_current_worker()
+        sessions = self.catalog.list(os.getcwd())
+        if worker.is_cancelled:
+            return
+        self.app.call_from_thread(self._apply_sessions, sessions)
+
+    def _apply_sessions(self, sessions: list[SessionInfo]) -> None:
+        """Runs on the UI thread via ``call_from_thread`` — the only place
+        ``self.sessions`` is written and the chat list re-rendered, so widget
+        mutation never happens off the main thread.
+
+        While the sidebar is collapsed (``display: none``, toggled by
+        ``action_toggle_sidebar``), ``_render_chat_list`` is skipped rather
+        than run into a DOM nobody can see: a catalog fetch started before
+        collapsing (mount-time, or a stale one still in flight) can land at
+        an arbitrary later moment, and its render cost does not go away just
+        because the widget is hidden — Textual still pays it in full,
+        synchronously, on the main thread (confirmed live via py-spy: an
+        unbatched mount loop over a few hundred sessions pinned the event
+        loop — and with it every keystroke — for 8+ seconds). The data is
+        still recorded so ``ensure_rendered`` can catch up on expand.
+        """
+        self.sessions = sessions
+        if self.styles.display == "none":
+            self._render_pending = True
+            return
+        self._render_chat_list()
+
+    def ensure_rendered(self) -> None:
+        """Catch up a render that ``_apply_sessions`` deferred while collapsed.
+
+        Called by ``action_toggle_sidebar`` when the sidebar becomes visible
+        again — the counterpart to the skip in ``_apply_sessions``.
+        """
+        if self._render_pending:
+            self._render_pending = False
+            self._render_chat_list()
+
+    def _render_chat_list(self):
+        """Render the session list grouped by recency."""
+        chat_list = self.query_one("#chat-list", VerticalScroll)
+
+        # Clear existing items
+        chat_list.query("ChatListItem, Static").remove()
+
+        if not self.sessions:
+            chat_list.mount(Static("No sessions yet", classes="chat-list-empty"))
+            return
+
+        # Group by date (SessionInfo.modified is UTC; compare in local time).
+        now = datetime.now()
+        today: list[SessionInfo] = []
+        yesterday: list[SessionInfo] = []
+        older: list[SessionInfo] = []
+
+        for info in self.sessions:
+            when = info.modified.astimezone()
+            if when.date() == now.date():
+                today.append(info)
+            elif when.date() == (now - timedelta(days=1)).date():
+                yesterday.append(info)
+            else:
+                older.append(info)
+
+        widgets: list[Widget] = []
+        if today:
+            widgets.append(Static("[bold]Today[/bold]", classes="chat-group-header"))
+            widgets.extend(ChatListItem(info) for info in today[: self._GROUP_LIMIT])
+
+        if yesterday:
+            widgets.append(Static("[bold]Yesterday[/bold]", classes="chat-group-header"))
+            widgets.extend(ChatListItem(info) for info in yesterday[: self._GROUP_LIMIT])
+
+        if older:
+            widgets.append(Static("[bold]Older[/bold]", classes="chat-group-header"))
+            widgets.extend(ChatListItem(info) for info in older[: self._GROUP_LIMIT])
+
+        chat_list.mount(*widgets)
+
+    def on_mount(self):
+        """Refresh sessions when mounted."""
+        self.refresh_chats()
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button presses."""
+        if event.button.id == "new-chat-button":
+            await self.app.run_action("new_chat")
+
+
+class ChatInput(TextArea):
+    """Custom input with multiline support and history navigation.
+
+    Enter and Ctrl+J trade places according to :data:`ENTER_KEY_CONFIG_KEY`; see
+    :meth:`on_key` for why the swap lives in a key handler rather than in
+    ``BINDINGS``, and ``docs/ENTER-KEY.md`` for what the terminal can and cannot
+    tell us about a modifier on Enter.
+    """
+
+    BINDINGS = [
+        Binding("ctrl+j", "submit", "Send", show=False),
+    ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.command_history: list[str] = []
+        self.command_history_index = -1
+        self.current_draft = ""
+        self.reclaim_pending: Callable[[], str | None] | None = None
+        self.enter_key_mode: Callable[[], str] | None = None
+        self.command_completions: Callable[[str], CommandCompletions | None] | None = None
+        self.argument_completions: Callable[[str], ArgumentCompletions | None] | None = None
+        self.attachment_completions: Callable[[str, int], AttachmentCompletions | None] | None = (
+            None
+        )
+        self._completion_prefix = ""
+        self._completion_index: int | None = None
+        self._completion_inserted: str | None = None
+        self._completion_cursor: int = 0
+
+    @property
+    def completion_index(self) -> int | None:
+        """Which candidate the running Tab cycle has inserted, or ``None``.
+
+        Read by the app to mark the row in :class:`CommandPopup`. It is set BEFORE
+        the text is replaced, so the ``TextArea.Changed`` the replacement posts
+        already sees the new value.
+
+        Guarded by the same test :meth:`_complete` uses to decide whether a cycle
+        is still running, rather than by the raw field: the marker must vanish the
+        moment the user types a character, and typing does not run any code of
+        ours that could clear the field.
+        """
+        if self._completion_inserted is not None and self.text == self._completion_inserted:
+            return self._completion_index
+        return None
+
+    @property
+    def cursor_offset(self) -> int:
+        """The cursor's character offset into :attr:`text`.
+
+        ``TextArea`` counts in ``(row, column)``; the attachment vocabulary is
+        defined on the flat string, because a file reference is a word and words
+        do not know about rows. This is the translation between the two.
+
+        Computed from ``document.lines`` and ``document.newline`` rather than from
+        ``Document.get_index_from_location``, which is not on the ``DocumentBase``
+        the ``document`` property is typed as.
+        """
+        row, column = self.cursor_location
+        separator = len(self.document.newline)
+        lines = self.document.lines
+        return sum(len(line) + separator for line in lines[:row]) + column
+
+    def _location_of_offset(self, offset: int) -> tuple[int, int]:
+        """The ``(row, column)`` for a character offset into :attr:`text`.
+
+        The inverse of :attr:`cursor_offset`. An offset past the end of the text
+        clamps to the end, which is where a caller that computed it from a string
+        it just built would want the cursor anyway.
+        """
+        separator = len(self.document.newline)
+        remaining = offset
+        lines = self.document.lines
+        for row, line in enumerate(lines):
+            if remaining <= len(line):
+                return row, remaining
+            remaining -= len(line) + separator
+        last = max(len(lines) - 1, 0)
+        return last, len(lines[last]) if lines else 0
+
+    def _complete(self) -> bool:
+        """Insert the next candidate — a path, an argument value, or a command. True
+        if it did.
+
+        A press with a cycle already running advances to the next candidate and
+        wraps at the end; a press without one starts a cycle at the first. The
+        cycle is identified by the editor still holding exactly what the previous
+        press wrote — a user who typed a character since then gets a fresh cycle
+        from the new prefix, which is what they meant by typing it.
+
+        Three vocabularies, asked in the order the text decides, and at most one can
+        apply. A ``@…`` the cursor is inside goes first (docs/FILE-ATTACHMENTS.md
+        §3), which is what makes ``/fork @notes.txt`` complete the path rather than
+        re-completing the command. Then the argument value, which exists only once a
+        space follows a word that names a command. Then the command word itself,
+        which is what is left.
+        """
+        cycling = self._completion_inserted is not None and self.text == self._completion_inserted
+        source = self._completion_prefix if cycling else self.text
+        cursor = self._completion_cursor if cycling else self.cursor_offset
+
+        if self._complete_attachment(source, cursor, cycling):
+            return True
+        if self._complete_argument(source, cycling):
+            return True
+        return self._complete_command(source, cycling)
+
+    def _complete_argument(self, source: str, cycling: bool) -> bool:
+        """Replace a command's argument with the next legal value. True if it did.
+
+        Replaces the SPAN the core named
+        (:class:`~tau_agent_core.commands.ArgumentSlot`) rather than the whole line,
+        so the command word survives — which is the difference from
+        :meth:`_complete_command`, and the reason a Tab on ``/model loc`` no longer
+        throws ``loc`` away.
+
+        Args:
+            source: The text the cycle started from.
+            cycling: Whether a Tab cycle is already running.
+
+        Returns:
+            True when a value was inserted.
+        """
+        if self.argument_completions is None:
+            return False
+        completions = self.argument_completions(source)
+        if completions is None or not completions.matches:
+            return False
+
+        if cycling and self._completion_index is not None:
+            index = (self._completion_index + 1) % len(completions.matches)
+        else:
+            index = 0
+
+        slot = completions.slot
+        text = source[: slot.start] + completions.matches[index].value + " " + source[slot.end :]
+        self._completion_prefix = source
+        self._completion_index = index
+        self._completion_inserted = text
+        self.text = text
+        self.move_cursor(self.document.end)
+
+        if len(completions.matches) == 1:
+            self._reset_completion()
+        return True
+
+    def _complete_attachment(self, source: str, cursor: int, cycling: bool) -> bool:
+        """Replace the ``@…`` the cursor is inside with the next candidate path.
+
+        Unlike a command, a reference can sit anywhere in the line, so this
+        replaces a SPAN rather than the whole text and leaves the cursor just
+        after what it inserted — the human is usually mid-sentence.
+
+        A directory is inserted without a trailing space, because the next thing
+        they want is to keep completing into it; a file gets one, like a command.
+
+        Args:
+            source: The text the cycle started from (the editor's current text
+                when no cycle is running).
+            cursor: The cursor offset within ``source``.
+            cycling: Whether a Tab cycle is already running.
+
+        Returns:
+            True when a candidate was inserted.
+        """
+        if self.attachment_completions is None:
+            return False
+        completions = self.attachment_completions(source, cursor)
+        if completions is None or not completions.matches:
+            return False
+
+        if cycling and self._completion_index is not None:
+            index = (self._completion_index + 1) % len(completions.matches)
+        else:
+            index = 0
+
+        match = completions.matches[index]
+        insert = f"@{match.name}" if match.is_dir else f"@{match.name} "
+        text = source[: completions.start] + insert + source[completions.end :]
+
+        self._completion_prefix = source
+        self._completion_cursor = cursor
+        self._completion_index = index
+        self._completion_inserted = text
+        self.text = text
+        self.move_cursor(self._location_of_offset(completions.start + len(insert)))
+
+        if len(completions.matches) == 1:
+            self._reset_completion()
+        return True
+
+    def _complete_command(self, source: str, cycling: bool) -> bool:
+        """Insert the next candidate command. True if it did.
+
+        The inserted text keeps its trailing space (pi's ``applyCompletion``, at
+        ``tui/src/autocomplete.ts:393``): a command taking arguments is then ready
+        for them, and one taking none resolves identically, because
+        :func:`~tau_agent_core.commands.parse_command` strips.
+
+        Only the command WORD is replaced. Anything already typed after it is kept
+        verbatim, because a half-typed command with arguments after it
+        (``/nam my session``) is a line whose word needs fixing and whose argument
+        does not — and rewriting the whole editor would silently discard the second.
+
+        Args:
+            source: The text the cycle started from.
+            cycling: Whether a Tab cycle is already running.
+
+        Returns:
+            True when a candidate was inserted.
+        """
+        if self.command_completions is None:
+            return False
+
+        completions = self.command_completions(source)
+        if completions is None or not completions.matches:
+            self._reset_completion()
+            return False
+
+        if cycling and self._completion_index is not None:
+            index = (self._completion_index + 1) % len(completions.matches)
+        else:
+            index = 0
+
+        lead = len(source) - len(source.lstrip())
+        rest = source.lstrip()[1 + len(completions.token) :].lstrip(" ")
+        inserted = source[:lead] + f"/{completions.matches[index].name} " + rest
+        self._completion_prefix = source
+        self._completion_index = index
+        self._completion_inserted = inserted
+        self.text = inserted
+        self.move_cursor(self._location_of_offset(len(inserted) - len(rest)))
+        return True
+
+    def _reset_completion(self) -> None:
+        """Forget the running Tab cycle, so the next Tab starts a new one."""
+        self._completion_prefix = ""
+        self._completion_index = None
+        self._completion_inserted = None
+        self._completion_cursor = 0
+
+    def _enter_sends(self) -> bool:
+        """True when Enter submits and Ctrl+J inserts a line break.
+
+        Unconfigured — a ``ChatInput`` built without the app, which is how its
+        own unit tests build it — is τ's documented default rather than an error:
+        this reports a *setting*, and :data:`DEFAULT_ENTER_KEY_MODE` is what the
+        setting is when nobody set it. The Fail-Early check on a misspelled value
+        is one layer up, in :meth:`TauApp._configured_enter_key_mode`, where there
+        is a config to be wrong about.
+        """
+        if self.enter_key_mode is None:
+            return DEFAULT_ENTER_KEY_MODE == "submit"
+        return self.enter_key_mode() == "submit"
+
+    def action_submit(self):
+        """Submit the current message."""
+        text = self.text.strip()
+        if text:
+            self.post_message(Input.Submitted(self, text))
+
+    def _insert_newline(self) -> None:
+        """Insert a line break at the cursor, as Enter does in ``"newline"`` mode.
+
+        ``TextArea._on_key`` is what normally does this, and in ``"submit"`` mode
+        it is exactly what we have suppressed, so the two newline keys have to do
+        it themselves. ``_replace_via_keyboard`` rather than ``insert`` because it
+        is the method TextArea's own Enter uses: it respects a selection and the
+        read-only flag, and it records a single undo step.
+        """
+        start, end = self.selection
+        self._replace_via_keyboard("\n", start, end)
+
+    def _try_reclaim(self) -> bool:
+        """Pull pending steering text back into the editor. True if it did.
+
+        The gesture is Up on an EMPTY editor: pending input is the newest thing
+        the user wrote, so it sits one step in front of the history that Up
+        otherwise walks. Requiring the editor to be empty is what keeps the two
+        apart without a mode — with a draft in the box, Up still means history,
+        and reclaiming would have overwritten the draft.
+        """
+        if self.text or self.reclaim_pending is None:
+            return False
+        text = self.reclaim_pending()
+        if not text:
+            return False
+        self.text = text
+        self.move_cursor(self.document.end)
+        return True
+
+    def on_key(self, event: events.Key) -> None:
+        """Handle history navigation, and the Enter/Ctrl+J swap.
+
+        The swap is here and not in ``BINDINGS`` because a ``Binding("enter", …)``
+        on a ``TextArea`` never fires. ``TextArea._on_key`` claims Enter, inserts
+        ``"\\n"``, and calls ``event.stop()``; Textual checks non-priority bindings
+        only once the key has bubbled up to the App, which a stopped key does not
+        do. ``priority=True`` would fire, but it is checked before the event is
+        forwarded to *any* widget, so it would take Enter away from every other
+        editor on the screen too.
+
+        A handler is the right seam instead of a workaround. Textual walks the MRO
+        for handlers and takes ``_on_key`` over ``on_key`` per class, so the order
+        is ``ChatInput.on_key`` then ``TextArea._on_key``, and ``prevent_default``
+        ends the walk. This method therefore gets Enter first and decides.
+        """
+
+        if event.key == "tab":
+            if self._complete():
+                event.prevent_default()
+                event.stop()
+            return
+
+        if event.key == "enter" and self._enter_sends():
+            # Before ``TextArea._on_key`` can insert the line break.
+            event.prevent_default()
+            event.stop()
+            self.action_submit()
+            return
+
+        if event.key in NEWLINE_KEYS_IN_SUBMIT_MODE and self._enter_sends():
+            event.prevent_default()
+            event.stop()
+            self._insert_newline()
+            return
+
+        if event.key == "alt+up":
+            self.post_message(ReclaimPending())
+            event.prevent_default()
+            return
+
+        # Up/Down for history (only when on first/last line)
+        if event.key == "up":
+            if self._try_reclaim():
+                event.prevent_default()
+                return
+            cursor_row, _ = self.cursor_location
+            if (
+                cursor_row == 0
+                and self.command_history
+                and self.command_history_index < len(self.command_history) - 1
+            ):
+                if self.command_history_index == -1:
+                    self.current_draft = self.text
+                self.command_history_index += 1
+                self.text = self.command_history[-(self.command_history_index + 1)]
+                event.prevent_default()
+        elif event.key == "down":
+            cursor_row, _ = self.cursor_location
+            if cursor_row == self.document.line_count - 1 and self.command_history_index > -1:
+                self.command_history_index -= 1
+                if self.command_history_index == -1:
+                    self.text = self.current_draft
+                else:
+                    self.text = self.command_history[-(self.command_history_index + 1)]
+                event.prevent_default()
+
+    def add_to_history(self, text: str):
+        """Add text to command history."""
+        if text.strip():
+            self.command_history.append(text)
+            self.command_history_index = -1
+            self.current_draft = ""
+
+    def clear_input(self):
+        """Clear the input area."""
+        self.text = ""
 
 
 def _extension_display_name(blocked_by: str | None) -> str:
@@ -43,20 +938,6 @@ def _extension_display_name(blocked_by: str | None) -> str:
     return blocked_by
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Formatting helpers (shared by the live and reload paths)
-# ──────────────────────────────────────────────────────────────────────────
-
-
-#: What a message body's text actually IS, chosen by the widget that renders it.
-#:
-#: ``"markdown"`` — the author wrote markdown and meant it: an assistant answer,
-#: a τ-authored listing. Its blank lines are its paragraph breaks and its single
-#: newlines are soft wraps, exactly as CommonMark says.
-#:
-#: ``"verbatim"`` — line-oriented output that is not markdown at all: a tool
-#: result, shell/command output, a traceback, the text a user typed. Its line
-#: breaks carry meaning, and markdown would collapse each one into a space.
 ContentSource = Literal["markdown", "verbatim"]
 
 
@@ -94,8 +975,6 @@ class MarkdownLineFormatter:
     __slots__ = ("_in_fence", "_line", "_source")
 
     def __init__(self, source: ContentSource) -> None:
-        # Required, with no default: "which kind of text is this" has no safe
-        # guess, and a caller that has not decided is the bug (Fail-Early).
         self._source = source
         self._in_fence = False
         self._line = ""
@@ -119,9 +998,6 @@ class MarkdownLineFormatter:
                 out.append(char)
                 self._line += char
                 continue
-            # The line just ended, so we can finally classify it. A fence
-            # DELIMITER keeps its single newline too: doubling it would open the
-            # code block with a blank line, or close it with one.
             is_delimiter = self._line.lstrip().startswith("```")
             out.append("\n" if (not double or self._in_fence or is_delimiter) else "\n\n")
             if is_delimiter:
@@ -200,20 +1076,10 @@ def format_telemetry(extra: dict[str, Any]) -> str | None:
     if isinstance(repairs, int):
         parts.append(f"repairs={repairs}")
 
-    # Tool calls the provider refused to finish building because the stream was
-    # incomplete — cancelled, or cut off at the output cap. The key is present ONLY
-    # when something was actually dropped (``_build_final_message``), so this row
-    # never reads "dropped=0"; its absence is what says nothing was lost. Without
-    # it the drop is silent, which is the half of the Fail-Early contract the
-    # provider cannot fulfil on its own: it declines to fabricate the call, and
-    # this is the only place a user finds out one went missing.
     dropped = extra.get("dropped_partial_tool_calls")
     if isinstance(dropped, int):
         parts.append(f"dropped={dropped}")
 
-    # n_ff_total is the fork-only forced-token count. Absent on stock builds —
-    # omit the figure entirely rather than default it to 0 (Fail-Early: a 0%
-    # forced share would claim the grammar forced nothing, which is not known).
     n_ff_total = timings.get("n_ff_total")
     predicted_n = timings.get("predicted_n")
     if isinstance(n_ff_total, (int, float)) and isinstance(predicted_n, (int, float)):
@@ -221,11 +1087,6 @@ def format_telemetry(extra: dict[str, Any]) -> str | None:
             parts.append(f"forced={n_ff_total / predicted_n:.0%}")
 
     return " · ".join(parts) if parts else None
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# Widgets
-# ──────────────────────────────────────────────────────────────────────────
 
 
 class QuietCollapsible(Collapsible):
@@ -278,24 +1139,10 @@ class ReasoningRegion(QuietCollapsible):
         super().__init__(self._md, title="Thinking…", collapsed=collapsed)
         self.add_class("reasoning-region")
         self._text = ""
-        # Lazily created by append_delta on the first streamed delta once the
-        # inner Markdown has mounted; see append_delta/finish_stream.
         self._stream: MarkdownStream | None = None
-        # Whether self._text has actually been parsed into self._md yet (D1).
-        # A region that mounts (or is set_text'd) while COLLAPSED — e.g.
-        # Parley._promote_answer's copy of a finished completion's reasoning,
-        # which sets collapsed=True in the same beat it's created — has no
-        # audience: the Contents container is `display: none`, so a full
-        # Markdown parse there produces a DOM nobody sees (measured 104ms at
-        # 2.2k reasoning tokens). Rendering is deferred until the region is
-        # actually expanded; see on_mount/_on_collapsible_expanded/_render_now.
         self._rendered = False
 
     def on_mount(self) -> None:
-        # A region that mounts already-collapsed has no audience yet -- defer
-        # the parse to first expand (see _rendered's docstring above). One that
-        # mounts expanded (the normal live-streaming default) renders right
-        # away, exactly as before D1.
         if self.collapsed:
             return
         self._render_now()
@@ -328,21 +1175,9 @@ class ReasoningRegion(QuietCollapsible):
             self._md.append(self._text)
 
     def set_text(self, text: str) -> None:
-        # finalize_exchange flushes and then collapses in the same beat, both
-        # calling set_text with the identical final string (plus append_delta,
-        # via finish_stream, having already streamed it in) -- Markdown.update()
-        # re-parses and remounts every block, so an unchanged string must be a
-        # no-op (measured: 791ms -> 455ms per end-of-message at 4k reasoning
-        # tokens). A no-op here means self._text was already this value, so the
-        # pre-mount buffer (on_mount's flush) still sees it.
         if text == self._text:
             return
         self._text = text
-        # Only touch the widget once this region has actually committed to
-        # rendering (D1): before that -- not yet mounted, or mounted but still
-        # collapsed and never opened -- stay buffered in self._text alone.
-        # _render_now reads self._text fresh on first expand, so the latest
-        # value wins even if set_text is called more than once before then.
         if self._rendered:
             self._md.update(text)
 
@@ -404,39 +1239,72 @@ class ToolBox(QuietCollapsible):
     just the call signature; expanded shows the arguments and, once it arrives,
     the result. The collapsed title gains a ✓/✗ status mark when the result
     lands, so the one-liner reads as call + outcome.
+
+    **The two bodies are mounted on first expand**, the way
+    :class:`ReasoningRegion` renders its buffered text on first expand. A box
+    that builds them in ``__init__`` costs 9 widgets collapsed where 3 would do,
+    and Textual arranges hidden widgets too (``_arrange_root(...,
+    visible_only=False)``, 8.2.7) — so one turn of 60 tool calls was 552 mounted
+    widgets that no reader had asked to see. docs/TRANSCRIPT-WINDOW.md §10 has
+    the measurements and why the transcript window could not reach this case.
+
+    :attr:`result_markdown` is the body whether or not it has ever been mounted,
+    which is what a caller that wants the text rather than the widget should read.
     """
 
     def __init__(self, name: str, arguments: object, tool_call_id: str = "") -> None:
         self.tool_name = name
         self.tool_call_id = tool_call_id
         self._summary = format_tool_summary(name, arguments)
-        self._args_md = Markdown(self._args_block(arguments))
-        self._result_md = Markdown("")
-        self._result_md.display = False  # hidden until a result arrives
-        super().__init__(self._args_md, self._result_md, title=self._summary, collapsed=True)
+        self._arguments = arguments
+        self._result_markdown = ""
+        self._built = False
+        self._args_md: Markdown | None = None
+        self._result_md: Markdown | None = None
+        super().__init__(title=self._summary, collapsed=True)
         self.add_class("tool-box")
         self.has_result = False
-        # Result body written before this box composed; flushed by on_mount.
-        # ``Markdown.update()`` on an unmounted widget removes the old blocks and
-        # mounts the new ones into nothing -- the title and the display flag
-        # survive, the text does NOT (verified: 0 blocks after the box mounts).
-        # A call and its result can arrive in the same synchronous burst off the
-        # agent loop's queue, so this is reachable, and losing the body silently
-        # is the failure this buffer exists to prevent.
-        self._pending_result: str | None = None
 
     def on_mount(self) -> None:
-        if self._pending_result is not None:
-            self._result_md.update(self._pending_result)
-            self._pending_result = None
+        if not self.collapsed:
+            self._build_body()
+
+    def _on_collapsible_expanded(self, event: Collapsible.Expanded) -> None:
+        """Build the body the first time this box is opened.
+
+        Checks the CURRENT state rather than trusting the message, for the reason
+        :meth:`ReasoningRegion._on_collapsible_expanded` records: an ``Expanded``
+        posted before a synchronous re-collapse arrives after it.
+        """
+        if self.collapsed:
+            return
+        self._build_body()
+
+    def _build_body(self) -> None:
+        """Mount the argument and result bodies into the contents slot, once.
+
+        A no-op until this box is mounted, because the slot does not exist before
+        then; :meth:`on_mount` is the second entry point that covers that case.
+        """
+        if self._built or not self.is_mounted:
+            return
+        self._built = True
+        self._args_md = Markdown(self._args_block(self._arguments))
+        self._result_md = Markdown(self._result_markdown)
+        self._result_md.display = self.has_result
+        self.query_one(Collapsible.Contents).mount(self._args_md, self._result_md)
+
+    @property
+    def result_markdown(self) -> str:
+        """The result body as markdown, ``""`` until a result lands."""
+        return self._result_markdown
 
     def _write_result_body(self, markdown: str) -> None:
-        """Show ``markdown`` in the result body, buffering until this box mounts."""
-        self._result_md.display = True
-        if self._result_md.is_mounted:
+        """Hold ``markdown`` as the result body, and show it if the body is built."""
+        self._result_markdown = markdown
+        if self._result_md is not None:
+            self._result_md.display = True
             self._result_md.update(markdown)
-        else:
-            self._pending_result = markdown
 
     @staticmethod
     def _args_block(arguments: object) -> str:
@@ -450,9 +1318,6 @@ class ToolBox(QuietCollapsible):
         blocked: bool = False,
         blocked_by: str | None = None,
     ) -> None:
-        # A `tool_call` extension VETO (S50, anchor G11) is a DISTINCT presentation
-        # from a generic errored result: a ⛔ mark and a "blocked by <ext>: <reason>"
-        # body, so the user reads it as a policy block, not a tool failure.
         if blocked:
             who = _extension_display_name(blocked_by)
             self.title = f"⛔ {self._summary}"

@@ -20,7 +20,7 @@ Three τ surfaces, wired end to end — no new harness code, all on the public A
   the live active model via ``ctx.get_model()`` and *reassigns* it via
   ``ctx.set_model(name)`` (effective next turn — never mid-stream).
 * **S47 confirm** — the reassignment is a HUMAN-RATIFIED action: ``/route`` only calls
-  ``ctx.set_model`` after ``ctx.ui.confirm`` returns ``True``. The ledger *recommends*;
+  ``ctx.set_model`` after the user answers the ask. The ledger *recommends*;
   the person *ratifies*. Headless, this obeys the S48 ``--ui-defaults confirm=…``
   policy (no policy → the confirm RAISES rather than silently auto-routing).
 
@@ -77,23 +77,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-# ``ext_kit`` lives alongside the numbered examples, not inside an installed
-# package — add ``examples/`` to the path the same way the other ext_kit-using
-# demos do when run standalone or via ``-e``.
 _EXAMPLES_DIR = os.path.dirname(os.path.abspath(__file__))
 if _EXAMPLES_DIR not in sys.path:
     sys.path.insert(0, _EXAMPLES_DIR)
 
 from ext_kit import ledger  # noqa: E402  (path insertion must precede the import)
 
-#: This extension's own file stem — the ``api.config`` slice key (S40) and the
-#: default ``CostLedger`` file stem (S57), matched so an unconfigured run still
-#: gets a stable, discoverable ledger file.
 EXTENSION_STEM = "53_router_ledger"
 
-#: The task tag every completion is recorded under when config names none. A
-#: documented default (the "unlabelled work" bucket), not a fabricated value —
-#: override with ``--ext-config 53_router_ledger.task=<tag>``.
 DEFAULT_TASK = "general"
 
 
@@ -368,13 +359,20 @@ def router_ledger_extension(api: Any) -> None:
 
     Reads its ``models`` price map, ``task`` tag, and ``ledger_name`` from
     ``api.config`` (S40, sliced by this file's stem). ``/route`` reports the
-    per-model cost for the current task, and — only after ``ctx.ui.confirm`` (S47) —
-    applies the cheapest-model recommendation via ``ctx.set_model`` (S45).
+    per-model cost for the current task and, when a cheaper model has a track
+    record, ASKS whether to switch (docs/EXTENSION-LOCKS.md §3, row 1: a request
+    with no lock — ignoring it is allowed, and the next prompt just runs). The
+    ask's one action dispatches ``/route-apply``, which reads the answer off the
+    tree and calls ``ctx.set_model`` (S45).
     """
     cfg = api.config
     model_prices = _validate_model_prices(cfg.get("models", {}))
     task = cfg.get("task", DEFAULT_TASK)
     ledger_name = cfg.get("ledger_name", EXTENSION_STEM)
+
+    #: request id -> the model that request recommends. Process-local: the ask is
+    #: durable, this is only the convenience of not re-deriving the recommendation.
+    pending: dict[str, str] = {}
 
     cost_ledger = ledger.CostLedger(ledger_name)
     router = RouterLedger(cost_ledger=cost_ledger, model_prices=model_prices, task=task)
@@ -395,29 +393,50 @@ def router_ledger_extension(api: Any) -> None:
             return "\n".join(lines)
 
         lines.append(recommendation_line(rec))
-        confirmed = await ctx.ui.confirm(
-            "Reassign model?",
-            f"Ledger recommends {rec.from_model!r} → {rec.to_model!r} for task "
-            f"{rec.task!r} (~{rec.savings_pct:.1f}% cheaper). Apply it (effective "
-            "next turn)?",
-        )
-        if confirmed:
-            ctx.set_model(rec.to_model)
-            lines.append(f"Reassigned: active model is now {rec.to_model!r} (effective next turn).")
-        else:
-            lines.append(f"Kept {rec.from_model!r} — no change.")
+        pending[
+            api.request_user_action(
+                f"Ledger recommends {rec.from_model!r} → {rec.to_model!r} for task "
+                f"{rec.task!r} (~{rec.savings_pct:.1f}% cheaper), effective next turn.",
+                ask={
+                    "title": "Reassign model?",
+                    "text": recommendation_line(rec),
+                    "actions": [
+                        {"label": f"Switch to {rec.to_model}", "command": "route-apply"},
+                        {"label": f"Keep {rec.from_model}", "command": "route-keep"},
+                    ],
+                },
+            )
+        ] = rec.to_model
+        lines.append("Asked. Answer it, or ignore it and carry on.")
         return "\n".join(lines)
+
+    async def route_apply(args: str, ctx: Any) -> str:
+        """The ask's first action. Its one argument is the request id (§8)."""
+        target = pending.pop(args.strip(), None)
+        if target is None:
+            return f"No outstanding recommendation for request {args.strip()!r}"
+        ctx.set_model(target)
+        return f"Reassigned: active model is now {target!r} (effective next turn)."
+
+    async def route_keep(args: str, ctx: Any) -> str:
+        """The ask's second action. Declining is a real answer, and it says so."""
+        target = pending.pop(args.strip(), None)
+        return "Kept the current model — no change." if target else "Nothing to keep."
 
     api.on("message_end", router.on_message_end)
     api.register_command(
         "route",
         {
-            "description": "Report per-(task, model) cost and reassign the model on confirm",
+            "description": "Report per-(task, model) cost and ask whether to reassign",
             "handler": route_command,
         },
     )
+    api.register_command(
+        "route-apply", {"description": "apply a recommendation", "handler": route_apply}
+    )
+    api.register_command(
+        "route-keep", {"description": "decline a recommendation", "handler": route_keep}
+    )
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/53_router_ledger.py`` → ``getattr(module, "register")``).
 register = router_ledger_extension

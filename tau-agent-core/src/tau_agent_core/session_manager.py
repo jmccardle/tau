@@ -298,9 +298,6 @@ class SessionManager:
 
         # If in in-memory mode, return in-memory sessions
         if self._memory_store is not None:
-            # Find all ROOT session entries (parent_id is None or missing).
-            # These are created by new_session(). Child session entries
-            # (from fork/clone) have a parent_id and are NOT new sessions.
             session_ranges: list[tuple[int, int, dict]] = []
             for idx, entry in enumerate(self._memory_store):
                 if entry.get("type") == "session" and not entry.get("parent_id"):
@@ -413,8 +410,6 @@ class SessionManager:
             "cwd": self.cwd,
         }
 
-        # Skip session entries in the forked entries
-        # (we're creating a new session entry)
         non_session_entries = [e for e in new_entries if e.get("type") != "session"]
 
         # Rewrite all entries with updated parent_id chain
@@ -442,12 +437,6 @@ class SessionManager:
             raise RuntimeError("No active session")
 
         entries = self._get_entries()
-        # The path is walked back from entry_id, NOT from the manager's current tip.
-        # This argument was accepted and then ignored: clone() called
-        # _build_active_path(entries), which starts at self._active_entry_id, so
-        # cloning an earlier entry silently produced a copy of the WHOLE session —
-        # clone("early") and clone("tip") returned byte-identical files. Nothing in
-        # the tree calls clone() yet, which is why it went unnoticed.
         if not any(e["id"] == entry_id for e in entries):
             raise ValueError(f"No entry {entry_id!r} in the active session")
         active_path = self._build_active_path(entries, tip_id=entry_id)
@@ -561,15 +550,6 @@ class SessionManager:
         # Reverse to get root-to-leaf order
         path.reverse()
 
-        # Splice compaction — port of pi's buildSessionContext (session-manager.ts:400-423).
-        # Anchor on the LAST (most recent) compaction in the path: with iterative
-        # compaction each new summary is generated with the previous one as input
-        # (compaction.generate_summary's previous_summary), so the most recent
-        # supersedes all earlier ones — anchoring on it drops the stale summaries and
-        # their kept regions. Then emit: the summary node, the kept entries BEFORE it
-        # starting at first_kept_id, and every entry AFTER it. This reads a compaction
-        # appended at the tip (append-only — first_kept is an ancestor) as well as one
-        # whose kept region trails it.
         compaction_idx = None
         for idx, entry in enumerate(path):
             if entry.get("type") == "compaction":
@@ -724,12 +704,11 @@ async def summarize_branch(
 ) -> tuple[str, dict[str, int]]:
     """Summarize an abandoned branch's text into a concise summary.
 
-    The summarizer engine behind the tree-browser's "Summarize" modes (pi
-    ``generateBranchSummary`` / ``navigateTree``, agent-session.ts:2794). ``branch_text``
+    The summarizer engine behind the tree-browser's "Summarize" modes. ``branch_text``
     is produced by ``ConversationTree.subtree_text`` (§2.1) and passed in; the caller
-    (``TauBackend.navigate_tree``, §3.3) then persists the result as a ``branch_summary``
-    entry. Mode 3's ``custom_instructions`` are threaded into the summarizer's SYSTEM
-    prompt.
+    (``tree_ops.summarize_and_navigate``, §3.3) then persists the result as a
+    ``branch_summary`` entry. Mode 3's ``custom_instructions`` are threaded into the
+    summarizer's SYSTEM prompt.
 
     Fail-Early (§3.1): the previous truncated-raw-text fallback is GONE — a failed,
     aborted, or empty LLM response RAISES rather than fabricating a summary from raw
@@ -767,9 +746,6 @@ async def summarize_branch(
     }
     options: dict[str, Any] | None = {"api_key": api_key} if api_key is not None else None
 
-    # The shared completion door (C1). Its error/aborted check raises CompletionFailed;
-    # translate to this path's taxonomy (RuntimeError). Billing stays caller-side: we
-    # return (summary, usage) on success and the caller records it.
     try:
         response = await resolved_complete(model, context, options=options)
     except CompletionFailed as exc:

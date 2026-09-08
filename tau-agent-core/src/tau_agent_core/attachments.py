@@ -53,33 +53,12 @@ from tau_agent_core.tools.image_resize import (
     resize_image,
 )
 
-#: A file reference: ``@`` at the start of the text or after whitespace, followed
-#: by at least one non-space character. The same rule the CLI has always used for
-#: a positional ``@file`` argument (``headless.assemble_prompt``), extended to
-#: find references inside a line rather than only as a whole argument.
-#:
-#: An e-mail address in prose (``ask bob@example.com``) does not match, because
-#: the ``@`` there is not preceded by whitespace.
 ATTACHMENT_PATTERN = re.compile(r"(?:(?<=\s)|\A)@(\S+)")
 
-#: Trailing characters that are punctuation of the sentence rather than part of
-#: the path. Stripped ONLY when the literal token names nothing and the stripped
-#: one names a real file, so ``@notes.txt,`` in prose attaches ``notes.txt`` and a
-#: file genuinely called ``odd,`` still resolves to itself. This is the "suggest
-#: the corrected value" half of Fail-Early, not a fallback: nothing is fabricated,
-#: and a miss stays a miss.
 TRAILING_PUNCTUATION = ",.;:!?)]}'\"`"
 
-#: The inline budget. A text file larger than this becomes a ``<reference>``
-#: instead of being pasted into the prompt. 10 KB is roughly 2500 tokens — big
-#: enough for a config file, a stack trace or a short module, small enough that
-#: attaching three of them does not rewrite the turn's context.
 DEFAULT_INLINE_LIMIT = 10 * 1024
 
-#: Extension → mime type for the formats a vision model is sent. The same set
-#: ``read`` supports (``tools/read.py``, ``IMAGE_EXTENSIONS``), spelled as the
-#: mapping this module needs; a divergence between the two would mean ``@shot.png``
-#: and ``read("shot.png")`` disagreeing about what an image is.
 IMAGE_MIME_TYPES: dict[str, str] = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -88,25 +67,10 @@ IMAGE_MIME_TYPES: dict[str, str] = {
     ".webp": "image/webp",
 }
 
-#: What :func:`scan_attachments` decided one reference is.
-#:
-#: - ``"inline"`` — a UTF-8 text file within the inline budget; its content is
-#:   pasted into an ``<attachment>`` block.
-#: - ``"image"`` — a supported image format; it becomes an ``ImageContent`` block
-#:   plus an empty ``<attachment>`` naming it.
-#: - ``"reference"`` — it exists but its content is not being sent: too large,
-#:   not UTF-8, or unreadable. It becomes a ``<reference>`` block.
-#: - ``"unresolved"`` — the word names no file (or names a directory). It is
-#:   prose; nothing is attached and nothing is reported.
 AttachmentKind = Literal["inline", "image", "reference", "unresolved"]
 
-#: The kinds that produce a block and therefore belong in a frontend's
-#: attachment list. ``"unresolved"`` is prose and is deliberately absent.
 SENDABLE_KINDS: tuple[AttachmentKind, ...] = ("inline", "image", "reference")
 
-# Rows a completion list returns at most. The popup shows fewer at a time; this
-# bounds the LISTING, so ``@`` in a directory of 40000 files costs one bounded
-# scandir rather than 40000 rows nobody will read.
 _COMPLETION_LIMIT = 200
 
 
@@ -249,8 +213,6 @@ def _resolve(token: str, base: Path) -> tuple[str, Path | None]:
             if path.exists():
                 return candidate, path
         except OSError:
-            # A path too long for the filesystem, or a broken mount. It names no
-            # readable file, which is the same answer as "does not exist".
             continue
     return token, None
 
@@ -453,9 +415,6 @@ def render_attachments(
                     "mime_type": bounded.mime_type,
                 }
             )
-            # An empty body, because the body is the image block above. The
-            # filename is what makes two attached screenshots distinguishable to
-            # the model, which the image blocks alone cannot be.
             detail = f'type="{_escape_attribute(bounded.mime_type)}"'
             if bounded.resized:
                 w, h = bounded.size
@@ -526,9 +485,6 @@ def _completion_span(text: str, cursor: int) -> tuple[int, int] | None:
     for match in ATTACHMENT_PATTERN.finditer(text):
         if match.start() <= cursor <= match.end():
             return match.start(), match.end()
-    # A bare "@" matches no token (the pattern needs one non-space character), so
-    # it is handled here: it is a reference with an empty prefix, which lists the
-    # working directory.
     if cursor > 0 and text[cursor - 1] == "@" and (cursor == 1 or text[cursor - 2].isspace()):
         return cursor - 1, cursor
     return None
@@ -578,8 +534,6 @@ def complete_attachment(
     try:
         entries = sorted(search.iterdir(), key=lambda p: p.name)
     except OSError:
-        # The directory half of the token names nothing yet — the human is still
-        # typing it. No candidates, which the caller renders as the warning.
         return AttachmentCompletions(start=start, end=end, token=token, matches=(), total=0)
 
     prefix = f"{directory}/" if directory else ""
@@ -611,10 +565,6 @@ def complete_attachment(
     )
 
 
-#: Matches one whole ``<attachment …>…</attachment>`` block, capturing the header
-#: attributes and the body. Non-greedy so two blocks in a row stay two blocks, and
-#: the header may not END in ``/`` so a self-closing image block is not mistaken
-#: for the opening tag of the next inlined file.
 _ATTACHMENT_BLOCK = re.compile(
     r"<attachment ([^>]*[^/>])>\n(.*?)</attachment>\n",
     re.DOTALL,

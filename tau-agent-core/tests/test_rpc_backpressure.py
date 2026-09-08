@@ -29,6 +29,9 @@ from tau_agent_core.events import AgentEvent
 from tau_agent_core.rpc import DEFAULT_OUTPUT_QUEUE_EVENT_BOUND, RPCHandler
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 def _model() -> Model:
     return Model(
@@ -49,7 +52,7 @@ def _assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="m",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
 
@@ -256,10 +259,6 @@ async def test_admission_ack_wins_the_race_against_agent_start_for_the_one_free_
     bound = DEFAULT_OUTPUT_QUEUE_EVENT_BOUND
     for _ in range(bound - 1):
         real_handler._event_credits.try_acquire()
-    # Exactly one credit remains -- enough that agent_start is NOT
-    # structurally blocked out (unlike the credit-exhausted setup this
-    # replaced), so the ack's ordering guarantee is actually exercised
-    # rather than trivially true because the competitor can't run yet.
 
     gate = asyncio.Event()
 
@@ -280,8 +279,6 @@ async def test_admission_ack_wins_the_race_against_agent_start_for_the_one_free_
         second = await asyncio.wait_for(real_handler._output_queue.get(), timeout=5.0)
         assert second["params"]["type"] == "agent_start"
 
-        # Hand every outstanding credit back, as the writer normally would
-        # on dequeue, and let the turn actually finish.
         for _ in range(bound):
             real_handler._event_credits.release()
         gate.set()
@@ -505,8 +502,6 @@ async def test_cancel_background_tasks_completes_a_turn_re_stalled_in_agent_end(
             "_emit_agent_end this test targets never happened"
         )
 
-        # run()'s own finally: flip the flag, THEN reap — see both
-        # docstrings for why that order is load-bearing.
         handler._shutting_down = True
         await asyncio.wait_for(handler._cancel_background_tasks(), timeout=5.0)
 

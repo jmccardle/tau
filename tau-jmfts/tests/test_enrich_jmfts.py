@@ -147,9 +147,6 @@ def test_a_long_message_is_chunked_so_its_TAIL_is_searchable_too(
 
         chunks = client.get_children(report.chunked[0], usetype=CHUNK_USETYPE, limit=100)
         assert len(chunks) > 1
-        # "It fits" is a token fact, so assert the token fact: an embedded chunk is one
-        # the server measured and accepted. A character bound would only assert τ's old
-        # guess about the exchange rate.
         assert all(client.is_embedded(c["id"]) for c in chunks), (
             "a chunk was not embedded — it did not fit the embedder's window, which is "
             "the bug chunking exists to prevent"
@@ -255,9 +252,6 @@ def test_enrichment_is_idempotent(
         )
         assert len(chunks_after_second) == len(chunks_after_first), "chunks were duplicated"
 
-        # index-document is idempotent (the D3 fix), so re-indexing the same entry docs
-        # reports the same count rather than creeping upward the way the pre-fix
-        # double-counting endpoint would have.
         assert second.indexed_docs == first.indexed_docs
     finally:
         catalog.delete(str(session.root_doc_id))
@@ -278,9 +272,6 @@ def test_a_pass_that_died_before_embedding_is_completed_by_re_running(
         )
         doc_id = max(messages, key=lambda d: len(d.get("content") or ""))["id"]
 
-        # Simulate the interrupted pass: chunk, but die before embedding any chunk.
-        # `auto_embed=False` is what makes the crash state reachable — the real path
-        # embeds inside the chunk call, so nothing else can leave chunks unembedded.
         chunks = client.chunk_document(doc_id, auto_embed=False)
         assert not any(client.is_embedded(c["id"]) for c in chunks)
 

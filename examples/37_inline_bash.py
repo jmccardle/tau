@@ -170,6 +170,4 @@ def inline_bash_extension(api: Any) -> None:
     api.on("input", on_input)
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/37_inline_bash.py`` → ``getattr(module, "register")``).
 register = inline_bash_extension

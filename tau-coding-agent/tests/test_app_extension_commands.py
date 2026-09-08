@@ -4,11 +4,11 @@
 stored a command that nobody read, so it was invisible in the palette and could
 never run (E5 §0, the second orphan). This surfaces them on BOTH ends:
 
-- :meth:`Parley.get_system_commands` yields a palette entry per registered command
+- :meth:`TauApp.get_system_commands` yields a palette entry per registered command
   (listed), and
-- :meth:`Parley.on_input_submitted` dispatches a matching ``/name args`` to the
+- :meth:`TauApp.on_input_submitted` dispatches a matching ``/name args`` to the
   command's handler before the text reaches the model (runnable), mirrored by the
-  palette callback :meth:`Parley._dispatch_extension_command`.
+  palette callback :meth:`TauApp._dispatch_extension_command`.
 
 Driven through the real app via ``App.run_test()`` / Pilot with a REAL
 ``TauBackend`` (its ``__init__`` does no network), so the command is asserted on an
@@ -26,12 +26,9 @@ import pytest
 
 from textual.widgets import Input
 
-from tau_coding_agent.app import ChatDisplay, ChatInput, MessageBox
 from tau_coding_agent.backends import create_backend
+from tau_coding_agent import chat_widgets, transcript
 
-# A file extension registering a slash command whose handler writes a marker file
-# capturing the args it received — the file's existence + contents prove the
-# handler actually ran through the real dispatch (not a stored-but-inert name).
 _COMMAND_EXT = """
 import pathlib
 
@@ -46,9 +43,6 @@ def register(api):
 """
 
 
-# A command whose handler RETURNS a report string (the S46 output channel). The
-# returned value must render as a display-only system box and never enter the
-# model-input working list.
 _OUTPUT_EXT = """
 def register(api):
     def _todos(args, ctx):
@@ -60,7 +54,7 @@ def register(api):
 
 @pytest.fixture
 def app(make_app):
-    """A Parley wired to REAL TauBackends (TauBackend has no network in __init__)."""
+    """A TauApp wired to REAL TauBackends (TauBackend has no network in __init__)."""
     return make_app(create_backend=create_backend)
 
 
@@ -85,9 +79,7 @@ async def test_extension_command_listed_and_runnable(app, tmp_path):
         assert "/greet" in titles
         assert titles["/greet"].help == "greet the user"
 
-        # (2) RUNNABLE via slash input — dispatch parses `/greet <args>` and runs
-        # the handler before any model call. The marker proves it executed with args.
-        chat_input = app.query_one("#chat-input", ChatInput)
+        chat_input = app.query_one("#chat-input", chat_widgets.ChatInput)
         await app.on_input_submitted(Input.Submitted(chat_input, "/greet hello world"))
         await pilot.pause()
         assert marker.read_text() == "ran:hello world"
@@ -119,14 +111,14 @@ async def test_command_output_renders_display_only_system_box(app, tmp_path):
 
         messages_before = list(app.messages)
 
-        chat_input = app.query_one("#chat-input", ChatInput)
+        chat_input = app.query_one("#chat-input", chat_widgets.ChatInput)
         await app.on_input_submitted(Input.Submitted(chat_input, "/todos"))
         await pilot.pause()
 
         # (1) The returned report is shown as a display-only system MessageBox.
         system_boxes = [
             box
-            for box in app.query(MessageBox)
+            for box in app.query(chat_widgets.MessageBox)
             if box.role == "system" and box._content == "# Todos\n- one\n- two"
         ]
         assert len(system_boxes) == 1, "command output not rendered as a system box"
@@ -151,7 +143,7 @@ async def test_command_via_palette_renders_output(app, tmp_path):
         await app._dispatch_extension_command("todos")
         await pilot.pause()
 
-        boxes = app.query(ChatDisplay).first().query(MessageBox)
+        boxes = app.query(transcript.ChatDisplay).first().query(chat_widgets.MessageBox)
         assert any(b.role == "system" and b._content == "# Todos\n- one\n- two" for b in boxes)
 
 
@@ -174,14 +166,11 @@ async def test_unknown_slash_command_falls_through(app, tmp_path):
         await app.action_new_chat()
         await pilot.pause()
 
-        # Replace the streaming worker so the fall-through doesn't call a provider.
-        # It now takes the Submission the app built for the fall-through text
-        # (B2-a, docs/SUBMISSION-LIFECYCLE.md phase 3), so capture that too.
         app._generate_response = lambda submission: generated.append(  # type: ignore[method-assign]
             (app.messages[-1]["content"], submission)
         )
 
-        chat_input = app.query_one("#chat-input", ChatInput)
+        chat_input = app.query_one("#chat-input", chat_widgets.ChatInput)
         await app.on_input_submitted(Input.Submitted(chat_input, "/nope not-a-command"))
         await pilot.pause()
 
@@ -189,10 +178,6 @@ async def test_unknown_slash_command_falls_through(app, tmp_path):
         assert len(generated) == 1
         content, submission = generated[0]
         assert content == "/nope not-a-command"
-        # …as an ordinary interactive submission. ``expand_commands`` is True since
-        # B2-b, and that is exactly what makes the fall-through worth pinning:
-        # dispatch is ON and the text STILL reaches the model, because an
-        # unregistered "/…" resolves to no command at all.
         assert submission.text == "/nope not-a-command"
         assert (submission.source, submission.submitter) == ("interactive", "human")
         assert submission.expand_commands is True
@@ -212,8 +197,6 @@ async def test_command_without_handler_raises(app, tmp_path):
         await app.action_new_chat()
         await pilot.pause()
 
-        # Listed (best-effort chrome) but NOT runnable — invoking raises rather
-        # than silently no-op'ing on a registered-but-inert command.
         assert ("inert", "no handler") in app.current_backend.get_extension_commands()
         with pytest.raises(RuntimeError, match="no callable 'handler'"):
             await app.current_backend.run_extension_command("inert")

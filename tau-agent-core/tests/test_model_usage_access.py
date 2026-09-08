@@ -24,6 +24,9 @@ from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.extension_types import ExtensionAPI, ExtensionContext
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 def _model(model_id: str = "model-a", context_window: int = 128000) -> Model:
     return Model(
@@ -61,7 +64,7 @@ class _RecordingStream:
             provider="openai",
             model=model_id,
             stop_reason="stop",
-            timestamp=0,
+            timestamp=_TS,
             usage=Usage(input_tokens=3, output_tokens=5, total_tokens=8),
         )
         self._events = [
@@ -196,9 +199,6 @@ class TestGetUsage:
         session = _session()
         observed: list[dict | None] = []
 
-        # api.on("message_end", …) is a NOTIFY subscription (goes to the event bus);
-        # the session's usage recorder was subscribed at construction, BEFORE this,
-        # so it runs first for each message_end.
         session._extension_api.on(
             "message_end",
             lambda event: observed.append(session._extension_api.context.get_usage()),
@@ -209,8 +209,6 @@ class TestGetUsage:
         ):
             await session.prompt("hello")
 
-        # The handler saw a populated, correct usage at the moment message_end fired
-        # (not None, and this completion's numbers).
         assert any(u is not None and u["total_tokens"] == 8 for u in observed)
 
 

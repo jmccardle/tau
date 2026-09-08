@@ -65,8 +65,6 @@ from __future__ import annotations
 
 from typing import Any
 
-#: The shipped default protected-path fragments (pi ``protected-paths.ts`` parity).
-#: A path is protected if any of these substrings appears in it.
 DEFAULT_PROTECTED_PATHS: tuple[str, ...] = (".env", ".git/", "node_modules/")
 
 #: Tools this gate governs — both carry a ``path`` argument to fence.
@@ -116,6 +114,4 @@ def protected_paths_extension(api: Any) -> None:
     api.on("tool_call", protected_paths_tool_call)
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/31_protected_paths.py`` → ``getattr(module, "register")``).
 register = protected_paths_extension

@@ -98,15 +98,8 @@ import httpx
 
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
-# No default key. Unset means "no endpoint", reported as Unreachable and a skip
-# upstream — never a silent run against nothing.
 API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
 
-#: Checked when neither environment variable is set. A file, because an
-#: environment variable only reaches processes that inherit it: a non-interactive,
-#: non-login shell reads neither ~/.bashrc nor ~/.profile, so `export` in a shell
-#: profile does not reach a tool that spawns `bash -c`. Reading the key from a
-#: file also keeps it out of process arguments, where `ps` would show it.
 DEFAULT_KEY_FILE = os.path.expanduser("~/.tau/gemini-key")
 
 
@@ -134,11 +127,6 @@ def resolve_api_key(explicit_file: str | None = None) -> str:
     return read_key_file(explicit_file or DEFAULT_KEY_FILE)
 
 
-# One tool, two cities, and a response payload that does NOT name the city. The
-# omission is the experiment: if the payload said "Paris: 11", the model could
-# recover the mapping from content no matter how the API paired the responses,
-# and the check would pass while measuring nothing. With a bare number, only
-# POSITION can disambiguate two identically-named functionResponses.
 WEATHER_TOOL: dict[str, Any] = {
     "name": "get_temperature",
     "description": "Get the current temperature in a city, in Celsius.",
@@ -184,9 +172,6 @@ def _solid_png(width: int, height: int, rgb: tuple[int, int, int]) -> str:
     return base64.b64encode(png).decode("ascii")
 
 
-#: The image the multimodal check sends. Its content is irrelevant to the
-#: question; only that Google will decode it, which the check proves per run
-#: before drawing any conclusion from a rejection.
 PROBE_PNG = _solid_png(64, 64, (32, 96, 160))
 
 
@@ -215,11 +200,6 @@ class ProbeError(RuntimeError):
     """
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Transport
-# ──────────────────────────────────────────────────────────────────────────
-
-
 def _retry_delay_seconds(payload: dict[str, Any]) -> float | None:
     """The server's own `retryDelay` from a 429 body, in seconds, if it gives one.
 
@@ -239,34 +219,15 @@ def _retry_delay_seconds(payload: dict[str, Any]) -> float | None:
 #: Longest single server-requested pause the probe will sit through.
 MAX_RETRY_WAIT = 65.0
 
-#: Retries per request. MEASURED 2026-08-22: one was not enough — the first 429
-#: named a 37s delay, and the request after that wait was refused again with a
-#: retryDelay of "0s". A server that says 0 is not asking for no wait; it is
-#: declining to name one, so the probe uses its own interval for that case.
 MAX_RETRIES = 3
 UNSPECIFIED_BACKOFF = 20.0
 
-#: Total time this run will spend waiting on rate limits before giving up. A cap
-#: because an unattended probe that sleeps indefinitely against a spent key looks
-#: exactly like one that is working.
 MAX_TOTAL_WAIT = 240.0
 
-#: Requests per minute the probe will not exceed. MEASURED 2026-08-22 from the
-#: free tier's own rate-limit table: most text-out Gemini models allow 5 RPM
-#: (2.5 Flash Lite allows 10). An earlier 5-SECOND interval sent 12 per minute —
-#: over double the limit — which is what produced a 429 storm and spent a model's
-#: whole daily allowance without completing one measurement.
-#:
-#: Also from that table: RPD is 20 per model per day. At 7 requests per model
-#: this probe fits, but only just, which is why nothing here retries loosely.
 DEFAULT_RPM = 5
 
-#: Derived at startup from --rpm. One extra second because the server's window is
-#: not aligned to the probe's.
 MIN_REQUEST_INTERVAL = 60.0 / DEFAULT_RPM + 1.0
 
-#: Mutable run state. Lists rather than globals so the retry accounting is
-#: readable in the report and testable without reimporting the module.
 RETRY_COUNT = [0]
 TOTAL_WAITED = [0.0]
 LAST_REQUEST_AT = [0.0]
@@ -288,8 +249,6 @@ def _request(
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
 
     for attempt in range(MAX_RETRIES + 1):
-        # Pace every request, not just retries. The limit is per minute, so
-        # arriving under it is what avoids the 429; reacting to one is recovery.
         since = time.monotonic() - LAST_REQUEST_AT[0]
         if LAST_REQUEST_AT[0] and since < MIN_REQUEST_INTERVAL:
             time.sleep(MIN_REQUEST_INTERVAL - since)
@@ -314,9 +273,6 @@ def _request(
             except ValueError:
                 body_429 = {}
             named = _retry_delay_seconds(body_429)
-            # "0s" means the server declined to name an interval, not that it
-            # wants an immediate retry — retrying at once just spends another
-            # request against the same exhausted minute.
             delay = named if named else UNSPECIFIED_BACKOFF
             budget_left = MAX_TOTAL_WAIT - TOTAL_WAITED[0]
             if attempt < MAX_RETRIES and delay <= MAX_RETRY_WAIT and delay <= budget_left:
@@ -375,11 +331,6 @@ def _suggested_model(message: str) -> str | None:
     return match.group(1) if match else None
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Response readers
-# ──────────────────────────────────────────────────────────────────────────
-
-
 def _parts(payload: dict[str, Any]) -> list[dict[str, Any]]:
     candidates = payload.get("candidates") or []
     if not candidates:
@@ -411,11 +362,6 @@ def _model_turn(payload: dict[str, Any]) -> dict[str, Any]:
     return content
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Model selection
-# ──────────────────────────────────────────────────────────────────────────
-
-
 def list_models(api_key: str) -> list[str]:
     """Every model this key can call generateContent on, newest naming first."""
     _, payload = _request(api_key, "/models")
@@ -441,24 +387,11 @@ def _gemini_major(model: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-#: How many listed models to try per major version before giving that version up.
-#: Bounded because each attempt costs a request, and because a version whose top
-#: three candidates are all uncallable is retired, not unlucky.
 CANDIDATES_PER_MAJOR = 3
 
 #: Consecutive 429s that mean the KEY is spent rather than one model's quota.
 RATE_LIMIT_GIVE_UP = 3
 
-#: Task-specific variants that are the wrong instrument for this measurement.
-#: MEASURED 2026-08-22: `gemini-2.5-flash-image` was picked as a candidate purely
-#: because "flash" is in its name, and spent quota on a 429 before anything was
-#: learned. This probe measures TOOL CALLING; an image, audio or embedding
-#: endpoint cannot answer the question however well it ranks.
-#:
-#: A denylist ages, which is the exact objection O2 raises against pi's model
-#: matching. It is acceptable HERE and nowhere else in this work: it only orders
-#: a convenience default, `--model` overrides it entirely, and the run reports
-#: what it filtered. It must not become the shape of τ's capability handling.
 TASK_SPECIFIC_TOKENS = ("image", "tts", "audio", "embedding", "aqa", "imagen", "veo", "vision")
 
 
@@ -498,11 +431,6 @@ def select_candidates(available: list[str]) -> dict[int, list[str]]:
     }
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# The checks
-# ──────────────────────────────────────────────────────────────────────────
-
-
 def check_tool_call_shape(api_key: str, model: str) -> dict[str, Any]:
     """C1 — does this model emit a functionCall, and does that call carry an `id`?
 
@@ -515,21 +443,8 @@ def check_tool_call_shape(api_key: str, model: str) -> dict[str, Any]:
             api_key, model, [{"role": "user", "parts": [{"text": ONE_CITY_PROMPT}]}]
         )
     except RateLimited as exc:
-        # Free-tier quota is per model, so this candidate being spent says nothing
-        # about the next one. Recorded and skipped here; probe() stops the run if
-        # enough of them come back in a row to mean the whole key is spent.
         return {"available": False, "rate_limited": True, "reason": str(exc)}
 
-    # MEASURED 2026-08-22: ListModels advertises models generateContent then
-    # refuses. `gemini-2.5-flash` came back from /models with generateContent in
-    # supportedGenerationMethods and 404'd here with "no longer available to new
-    # users". So the list endpoint describes the catalogue, not this key's access
-    # to it, and selection built on it cannot be trusted.
-    #
-    # This is data about the endpoint, not a probe bug, so it is recorded and the
-    # model is skipped — while every OTHER non-200 still raises. The distinction
-    # matters: "this key cannot call that model" must never look like "the model
-    # rejected the field under test".
     if status == 404:
         message = _error_message(payload)
         return {
@@ -545,17 +460,9 @@ def check_tool_call_shape(api_key: str, model: str) -> dict[str, Any]:
     calls = _function_calls(payload)
     return {
         "available": True,
-        # The setup turn, kept so the later checks REUSE it. They each used to
-        # re-send this identical request, costing three of every model's ~9
-        # requests to obtain the same assistant turn three times. On a free tier
-        # that is the difference between finishing a model and not. Stripped
-        # before the report is written; it is plumbing, not a finding.
         "_setup_payload": payload,
         "called_the_tool": bool(calls),
         "call_count": len(calls),
-        # The answer to "does Google hand us an id to send back". pi only sends
-        # one when it decides the model requires it; whether one ARRIVES is a
-        # different question, and τ's converter needs both answers.
         "call_carries_id": bool(calls and "id" in calls[0]),
         "observed_id": calls[0].get("id") if calls else None,
         "first_call_name": calls[0].get("name") if calls else None,
@@ -586,10 +493,6 @@ def check_tool_result_id(api_key: str, model: str, setup: dict[str, Any]) -> dic
             "response": {"output": "11"},
         }
         if include_id:
-            # An id Google itself did not supply is still what τ would send on a
-            # model whose table entry says to: pi synthesises and sanitises ids
-            # (google-shared.ts:133). Using the observed id when there is one
-            # keeps the arm honest for models that do carry them.
             response_part["id"] = call.get("id") or "probe_call_0"
         return _generate(
             api_key,
@@ -611,9 +514,6 @@ def check_tool_result_id(api_key: str, model: str, setup: dict[str, Any]) -> dic
         "google_supplied_an_id": "id" in call,
         "without_id_status": control_status,
         "with_id_status": id_status,
-        # The verdict O2 is waiting on. "accepted" means an id is harmless, so the
-        # safe branch for an unknown model is to SEND one. "rejected" means the
-        # table is load-bearing and the safe branch is to omit it.
         "id_verdict": "accepted" if id_status == 200 else "rejected",
         "id_error": None if id_status == 200 else _error_message(id_body),
         "pi_would_send_id": (_gemini_major(model) or 0) >= 3,
@@ -639,8 +539,6 @@ def check_duplicate_name_pairing(api_key: str, model: str, setup: dict[str, Any]
 
     calls = _function_calls(first)
     if len(calls) < 2:
-        # Not a failure of the model and not a verdict. Some models split the two
-        # calls across turns, which sidesteps the ambiguity entirely.
         return {
             "exercised": False,
             "reason": f"model emitted {len(calls)} call(s) in one turn, not 2",
@@ -650,9 +548,6 @@ def check_duplicate_name_pairing(api_key: str, model: str, setup: dict[str, Any]
     cities = [str(c.get("args", {}).get("city", "")).lower() for c in calls[:2]]
     temperatures = ["11", "29"]
 
-    # Both functionResponses go in ONE user turn, matching pi's merge
-    # (google-shared.ts:261) and τ's Anthropic client. Splitting them would
-    # measure a message layout τ does not send.
     result_parts = [
         {"functionResponse": {"name": call["name"], "response": {"output": temp}}}
         for call, temp in zip(calls[:2], temperatures)
@@ -679,8 +574,6 @@ def check_duplicate_name_pairing(api_key: str, model: str, setup: dict[str, Any]
     answer = _text(second)
     lowered = answer.lower()
 
-    # Read the mapping the model reports back. Positional pairing is correct when
-    # each city sits with the temperature its OWN call was answered with.
     expected = dict(zip(cities, temperatures))
     correct = None
     if all(city in lowered for city in expected):
@@ -694,8 +587,6 @@ def check_duplicate_name_pairing(api_key: str, model: str, setup: dict[str, Any]
         "call_order": cities,
         "sent": dict(zip(cities, temperatures)),
         "answer": answer.strip()[:300],
-        # None = the answer did not name both cities, so pairing is unreadable
-        # from it. Recorded as unreadable, never guessed at.
         "paired_positionally": correct,
     }
 
@@ -750,13 +641,6 @@ def check_multimodal_function_response(
             f"verdict is trustworthy: {_error_message(control_body)}"
         )
 
-    # SECOND control, and the one that makes the verdict attributable. MEASURED
-    # 2026-08-22: gemini-3-flash-preview rejected the nested image with HTTP 400
-    # "Request contains an invalid argument" — a message that fits BOTH "images
-    # may not be nested here" and "your PNG is malformed". Sending the identical
-    # inlineData as an ordinary user part separates them: if Google accepts the
-    # image there, the rejection is about nesting; if it refuses it there too,
-    # the probe's own image is at fault and there is no verdict to report.
     plain_status, plain_body = _generate(
         api_key,
         model,
@@ -794,12 +678,6 @@ def check_multimodal_function_response(
     }
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Driver
-# ──────────────────────────────────────────────────────────────────────────
-
-# check_tool_call_shape is the preflight and runs separately, so a model it
-# reports unavailable skips the rest instead of raising through them.
 CHECKS = (
     ("tool_result_id", check_tool_result_id),
     ("duplicate_name_pairing", check_duplicate_name_pairing),
@@ -816,9 +694,6 @@ def probe(api_key: str | None = None, models: list[str] | None = None) -> dict[s
 
     available = list_models(api_key)
 
-    # An explicit --model list is taken literally: the operator named it, so an
-    # unavailable one is reported rather than quietly replaced. Automatic
-    # selection walks each version's candidates until one answers.
     if models:
         candidates: dict[int, list[str]] = {}
         for model in models:
@@ -836,17 +711,9 @@ def probe(api_key: str | None = None, models: list[str] | None = None) -> dict[s
         "candidates": candidates,
         "skipped_as_uncallable": {},
         "results": {},
-        # Set when quota ran out partway. The run then STOPS but keeps whatever
-        # completed: losing a finished major-2 measurement because major 3 ran
-        # dry is the wrong failure, and it is the one this probe hit on its
-        # first real run.
         "incomplete": None,
     }
 
-    # A 429 per candidate means "not this model right now"; enough of them in a
-    # row means the key itself is spent, and every further request would burn
-    # quota to learn nothing. Counted ACROSS versions, and reset by any candidate
-    # that answers.
     consecutive_rate_limits = 0
 
     for major, ranked in sorted(candidates.items()):
@@ -865,9 +732,6 @@ def probe(api_key: str | None = None, models: list[str] | None = None) -> dict[s
                             "the key's free-tier quota is spent, not one model's."
                         )
                         break
-                # Recorded, not discarded: which models the catalogue offers but
-                # refuses is a finding about the API, and it is the reason a
-                # version can end up unmeasured.
                 report["skipped_as_uncallable"][model] = shape["reason"]
                 if not models:
                     continue  # try this version's next candidate
@@ -875,12 +739,6 @@ def probe(api_key: str | None = None, models: list[str] | None = None) -> dict[s
                 continue
             consecutive_rate_limits = 0
 
-            # A 429 PAST the preflight leaves this model half-measured. What
-            # completed is KEPT: the usage graph for the first real run showed 8
-            # successful requests against gemini-3.5-flash whose results were all
-            # discarded because the model had not finished. Every check that ran
-            # is a real measurement; the ones that did not run render as "not
-            # reached" and are never mistaken for a verdict.
             try:
                 for name, check in CHECKS:
                     model_report[name] = check(api_key, model, shape)
@@ -905,10 +763,6 @@ def probe(api_key: str | None = None, models: list[str] | None = None) -> dict[s
     report["models_probed"] = list(report["results"])
     report["rate_limit_waits"] = RETRY_COUNT[0]
 
-    # Whether the run straddled pi's `>= 3` boundary, stated rather than left for
-    # a reader to work out from the model names. A run that only saw one side
-    # cannot tell "Google ignores the id" from "this model happens to accept it",
-    # and O2 must not be decided from one.
     measured = [
         _gemini_major(m)
         for m, r in report["results"].items()
@@ -921,8 +775,6 @@ def probe(api_key: str | None = None, models: list[str] | None = None) -> dict[s
     return report
 
 
-#: Stands in for a check the run never got to. Distinct from a check that ran and
-#: reported "not exercised": one is missing data, the other IS data.
 NOT_REACHED: dict[str, Any] = {"exercised": False, "reason": "run stopped before this check"}
 
 
@@ -973,9 +825,6 @@ def _render(report: dict[str, Any]) -> str:
             f"   (tool called: {shape['called_the_tool']})"
         )
 
-        # A missing check key means the run stopped before that check. Rendered
-        # as "not reached" rather than crashing, so a partial report is still
-        # readable — and never mistaken for a check that returned nothing.
         ids = result.get("tool_result_id", NOT_REACHED)
         if ids.get("exercised"):
             lines.append(

@@ -66,8 +66,6 @@ def test_pricing_from_config_reads_cost_block() -> None:
 
 
 def test_pricing_from_config_model_without_cost_is_unpriced() -> None:
-    # A present model with no ``cost`` key resolves to unpriced (tokens-only), not
-    # an error — the honest local/free-model case.
     config = {"models": {"local-llm": {"backend": "openai"}}}
     pricing = ledger.Pricing.from_config(config, "local-llm")
     assert pricing.priced is False
@@ -262,8 +260,6 @@ def test_cost_ledger_name_traversal_rejected(tmp_path: Path) -> None:
 
 
 def test_cost_ledger_reload_invariance(tmp_path: Path) -> None:
-    # Persist through one CostLedger, then reconstruct through a FRESH one over the
-    # same file (the cross-session reopen): records + roll-ups survive (S56/S29).
     cl = _ledger(tmp_path, "spend")
     cl.append(outcome="success", usd=0.25, tokens=1000, ts="t1")
     cl.append(outcome="failure", usd=0.05, tokens=200, ts="t2")
@@ -360,8 +356,6 @@ def test_ceiling_rejects_bad_construction() -> None:
 
 
 def test_ceiling_metered_dollars_integration() -> None:
-    # The realistic wiring: fold usage through a meter, feed running usd to the
-    # ceiling. 24_budget's trip, generalized with a warn line.
     pricing = ledger.Pricing(model="m", cost={"input": 3.0, "output": 15.0})
     meter = ledger.UsageMeter(pricing)
     stopped: list[float] = []

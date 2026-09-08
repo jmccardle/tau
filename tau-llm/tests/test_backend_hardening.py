@@ -37,13 +37,6 @@ from tau_llm.providers.openai import (
 from tau_llm.streaming import DoneEvent, ErrorEvent
 from tau_llm.types import Model, TextContent, ToolCall, UserMessage
 
-# ──────────────────────────────────────────────────────────────────────────
-# SSE test harness (feeds aiter_lines, the way real httpx does). Deliberately a
-# copy of test_tool_call_streaming_fix.py's, minus the parts these tests do not
-# need and plus a record of the kwargs `stream()` was called with — importing
-# across test modules would couple two files that fail for unrelated reasons.
-# ──────────────────────────────────────────────────────────────────────────
-
 
 class _StreamCM:
     def __init__(self, response, raises=None):
@@ -137,16 +130,8 @@ def _run_stream(
 
 
 def _provider(**kwargs) -> OpenAICompletionsProvider:
-    # base_url matches ``_model()``'s: client.py builds the provider FROM the
-    # model's base_url, so a provider pointed somewhere else is not a shape
-    # production can produce.
     kwargs.setdefault("base_url", "http://localhost/v1")
     return OpenAICompletionsProvider(api_key="sk-test", **kwargs)
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# (1) A tool call with no function name
-# ──────────────────────────────────────────────────────────────────────────
 
 
 def _nameless_tool_call_chunks() -> list[dict]:
@@ -264,11 +249,6 @@ def test_a_whitespace_only_tool_call_name_is_refused_too():
     assert "no function name" in errors[0].message
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# (2) A content-free error message
-# ──────────────────────────────────────────────────────────────────────────
-
-
 def test_httpx_transport_errors_really_do_stringify_to_nothing():
     """The premise of the whole section, asserted rather than assumed."""
     assert str(httpx.ReadTimeout("")) == ""
@@ -344,11 +324,6 @@ def test_a_string_valued_error_field_does_not_become_an_opaque_streaming_error()
     assert "Streaming error" not in errors[0].message
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# (3) A non-object SSE frame
-# ──────────────────────────────────────────────────────────────────────────
-
-
 @pytest.mark.parametrize("keepalive", ["[]", "42", '"ping"', "null"])
 def test_a_non_object_sse_frame_is_skipped_not_fatal(keepalive):
     """A keepalive is not an error. pi skips the same shape
@@ -384,11 +359,6 @@ def test_skipped_frames_are_reported_at_debug_level(caplog):
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert "non-object SSE frame" in logged
     assert "undecodable SSE frame" in logged
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# (4) A configurable timeout
-# ──────────────────────────────────────────────────────────────────────────
 
 
 def test_the_default_timeout_is_unchanged():
@@ -452,14 +422,6 @@ def test_the_timeout_really_bounds_a_hanging_server_and_says_so():
     """
 
     async def go():
-        # The handler must stall for the whole request and then be releasable,
-        # which is not the same thing as stalling forever. From CPython 3.12,
-        # ``Server.wait_closed()`` waits for open connections' handlers to
-        # finish; a handler awaiting an Event nobody sets therefore hangs the
-        # TEARDOWN, not the code under test, and the outer wait_for below turns
-        # that into a TimeoutError that reads like the timeout knob failing.
-        # Measured directly: wait_closed() returns on 3.11 and hangs on 3.13.
-        # This cost the 0.9.3 tag a red matrix.
         release = asyncio.Event()
 
         async def _accept_and_stall(reader, writer):
@@ -501,13 +463,6 @@ def test_an_unusable_timeout_raises_instead_of_reverting_to_the_default(bad):
         _provider(request_timeout=bad)
 
 
-# ── The two cross-agent stitches ─────────────────────────────────────────
-#
-# Backend hardening and multi-vendor dispatch were built in parallel, each
-# owning different files, so each reported a change it needed from the other
-# rather than reaching across. These are those two changes.
-
-
 def test_a_model_can_set_its_own_timeout_without_touching_the_pool() -> None:
     """``Model.request_timeout`` sits between the per-call option and the
     provider default. It is the tier that makes the knob usable: a slow local
@@ -527,8 +482,6 @@ def test_a_model_can_set_its_own_timeout_without_touching_the_pool() -> None:
     )
     assert m.request_timeout == 12.5
 
-    # Fail Early: a non-positive timeout is unusable, so it is refused at the
-    # model rather than silently becoming "no timeout" at the socket.
     with pytest.raises(ValidationError):
         m.model_copy(update={"request_timeout": 0}).model_validate(
             {**m.model_dump(), "request_timeout": 0}
@@ -547,24 +500,8 @@ def test_the_answer_is_labelled_with_the_vendor_that_gave_it() -> None:
         / "providers"
         / "openai.py"
     ).read_text()
-    # Every construction site reads the model. There used to be one exception —
-    # a hardcoded pair inside _convert_openai_choice_to_message, which had no
-    # Model in scope and which nothing but tests called. That method has been
-    # deleted, so the exception is gone and this asserts zero rather than one.
     assert src.count('api="openai-completions",\n            provider="openai",') == 0
     assert "api=model.api," in src and "provider=model.provider," in src
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# (5) Present-and-null keys in a streamed frame
-# ──────────────────────────────────────────────────────────────────────────
-#
-# `.get(key, default)` applies its default only when the key is ABSENT. Gateways
-# send these keys present and null, and the reader treated null as a value: an
-# Azure-fronted deployment opens every stream with a content-filter preamble
-# frame whose scalars are all null, and a delta carrying `"tool_calls": null`
-# then reached `enumerate(None)` — `TypeError: 'NoneType' object is not
-# iterable`, for every model on that gateway, tool call or not.
 
 
 def test_a_null_tool_calls_key_is_not_a_tool_call():
@@ -635,22 +572,6 @@ def test_a_non_object_tool_call_delta_is_named_not_an_attributeerror():
     assert "non-object tool-call delta" in errors[0].message
     assert "AttributeError" not in errors[0].message
 
-
-# ──────────────────────────────────────────────────────────────────────────
-# (6) A gateway that returns tool calls in the Anthropic schema
-# ──────────────────────────────────────────────────────────────────────────
-#
-# The other half of the AskSage report. Its `gpt-5*` / `gpt-o3*` deployments
-# return BUFFERED tool calls as `{"type":"tool_use","name":…,"input":{…}}` — the
-# Anthropic tool_use schema, from an endpoint that advertises OpenAI's. The name
-# is on the wire; it is under keys the OpenAI reader does not look at.
-#
-# Unlike the streamed defect in (1) this one IS recoverable, so the question is
-# who decides to recover it. τ's answer: the operator, per model, in writing.
-# Reading it on sight would make the gateway's bug invisible to the person who
-# has to get it fixed, and would apply a vendor guess to every endpoint τ talks
-# to. `compat.tool_call_schema` is that decision, and it TRANSLATES — it does not
-# repair a call whose name or arguments never arrived.
 
 _ABSENT = object()
 

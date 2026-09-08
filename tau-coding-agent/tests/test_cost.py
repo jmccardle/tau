@@ -25,6 +25,9 @@ from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, TextContent, Usage
 from tau_coding_agent.backends import TauBackend, compute_cost_usd
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 # --- the pure port of pi calculateCost, collapsed --------------------------
 
 
@@ -34,8 +37,6 @@ def test_absent_cost_block_is_unknown_not_zero():
 
 
 def test_present_cost_block_sums_priced_buckets():
-    # input 2.5 $/M · 1000 = 0.0025 ; output 10 $/M · 500 = 0.005 ;
-    # cache_read 1.25 $/M · 200 = 0.00025  → 0.00775.
     cost = {"input": 2.5, "output": 10.0, "cache_read": 1.25, "cache_write": 99.0}
     total = compute_cost_usd(cost, input_tokens=1000, output_tokens=500, cache_read_tokens=200)
     assert total == pytest.approx(0.00775)
@@ -54,8 +55,6 @@ def test_free_model_reads_zero_not_absent():
 
 
 def test_cache_write_is_inert_not_priced():
-    # cache_write is commented out of the sum (provider never populates it); a
-    # cache_write price must not change the total even with cache_write_tokens set.
     with_price = compute_cost_usd(
         {"input": 1.0, "output": 0.0, "cache_read": 0.0, "cache_write": 1000.0},
         input_tokens=1000,
@@ -75,7 +74,7 @@ def _assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="qwen",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=1000, output_tokens=500, total_tokens=1500, cache_read_tokens=0),
     )
 

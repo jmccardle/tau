@@ -1,12 +1,20 @@
 """The RPC command table: block [3], per docs/REMOTE-CONTROL.md §6 "Recommendation:
 audit, do not generate".
 
-One explicit, hand-written entry per verb (`CommandEntry`), registered with the
-`@command(...)` decorator (§6 point 4 — a registry INSIDE the RPC layer is fine;
-what is forbidden is decorating `AgentSession` itself, §6 A1-A6). `params_schema`
-is a JSON Schema dict written by hand, never derived from a Python signature via
-`inspect` (§6 A3) — the wire schema is a deliberate, reviewed artifact, and a
-renamed kwarg must not silently break every host.
+One explicit entry per verb (`CommandEntry`), registered with the `@command(...)`
+decorator (§6 point 4 — a registry INSIDE the RPC layer is fine; what is forbidden
+is decorating `AgentSession` itself, §6 A1-A6).
+
+`params_schema` is derived where the verb performs a declared capability, and
+hand-written where it does not: `rpc.schema.params_schema_for` reads the argument
+names, domains and requiredness out of `capabilities.CAPABILITIES`, and the verb
+supplies the wire prose and any keyword a domain has no field for. Nothing is ever
+derived from a Python signature via `inspect` (§6 A3) — the objection A3 raises is
+to the wire tracking a kwarg rename nobody meant as a wire change, and an
+`Argument.name` is the wire name, declared for that purpose. Structure is what
+drifted between the two tables; prose never did, so prose stays reviewed. The four
+verbs with no capability behind them — `prompt`, `get_capabilities`, `next_step`,
+`enumerate_domain` — keep their literals outright, which is §6 A2 holding.
 
 **Tier A** (required of any host): `prompt`, `abort`, `get_state`, `get_messages`,
 `get_commands`, `get_tools`, `get_capabilities` (unit 2C), plus phase 3's
@@ -22,7 +30,26 @@ nothing in this table describes a Tier B verb as pending. (`get_models` and
 findings 7 and 8 of that tier's review, which found `set_model`'s `name` param
 and `switch_session`'s `session_id` param unusable from the wire alone.)
 **Tier C** (τ-justified, no pi equivalent): `submit`, the provenance
-differentiator `prompt` is defined in terms of (§10 decision 10).
+differentiator `prompt` is defined in terms of (§10 decision 10), plus the flow
+loop's two reads, `next_step` and `enumerate_domain`. Those two are what let a
+host drive a gesture it has no table for: τ's extensions are unknown to the
+executing system, so it cannot enumerate valid actions from anything it ships
+with. Both are READS and therefore carry no `cursor` (the E5 rule below).
+
+Tier C also carries the eleven verbs that put the SESSION TREE and the
+EXTENSION SYSTEM on the wire (`since="0.9.8"`). Five tree mutations —
+`navigate`, `summarize_and_navigate`, `elide_span`, `commit_branch`,
+`paste_subtree` — project `tau_agent_core.tree_ops`; three extension mutations —
+`enable_extension`, `disable_extension`, `reload_extension` — project the
+`AgentSession` methods of the same names; and three reads — `complete_message_id`,
+`list_managed_extensions`, `get_extension_state` — are what make the mutations
+callable by a host that was not handed an id or a path by something else. They
+close the gap docs/VSCODE-HEAD.md §6 measured: 20 live verbs, none of which read
+or wrote tree structure, so τ's differentiating feature was reachable only from
+inside the Textual head. E5 and D-7 are answered for them the same way Tier B
+answers them, and by the same two mechanisms rather than by a second rule — see
+`tree_mutation_guard` for the five, and each extension verb's own notes for the
+three that append nothing.
 **Declined**: `send_tool_result` (2A) and, as of 2C, the six Tier D verbs §4[3]
 names — `cycle_model`, `cycle_thinking_level`, `set_steering_mode`,
 `set_follow_up_mode`, `export_html`, `bash` — see each entry for its reason
@@ -35,10 +62,136 @@ addition, not an edit, to any existing row.
 
 Every non-declined row also carries a `result_schema` (phase 3, a phase-2
 review finding): `params_schema` alone meant `docs/RPC-PROTOCOL.md` never
-said what a verb RETURNS. Same discipline — hand-written, reviewed, never
-derived via `inspect` (§6 A3).
+said what a verb RETURNS. Derived, since 2026-09-04, from
+`capabilities.Capability.returns` by `rpc.schema.result_schema_for` — the same
+move the params half made a day earlier, and it reverses the line this block
+used to carry ("hand-written, always: nothing in the core declares what a
+capability gives BACK"). Something does now, for all thirty. The four verbs
+with no capability behind them keep their literals on this half too.
 
 Reference: docs/REMOTE-CONTROL.md §3 "The command table", §4[3], §4[8], §6, §10.
+
+E5 in Tier B — ONE answer, applied to every `since="tier-b"` verb.
+
+No verb COUNT is stated anywhere in this block on purpose: `get_models`
+landed after this rule was written (finding 7 of the same review) and
+falsified every hand-written tally in the tier at a stroke. The
+enumerations below are pinned instead — see the bottom of this block.
+
+E5 (docs/REMOTE-CONTROL.md §4[4], line 267) is stated unconditionally:
+"Every response to a mutating command returns the resulting cursor." The
+tier first shipped TWO readings of it — `compact` returned the tip even
+when it changed nothing ("the unchanged current tip"), while
+`set_auto_compaction`, equally mutating and equally guarded by D-1,
+returned no `cursor` key at all and neither its schema nor its notes said
+why (finding 5 of the Tier B review). This is the settled rule, written
+here rather than re-derived per verb:
+
+  1. A MUTATING verb's COMPLETION always carries `cursor`, `required` in
+     the schema that describes it and present on every success — INCLUDING
+     when the call advanced nothing: a set that changed no value, a
+     compaction that found nothing to compact, a verb that appends no log
+     entry at all. "Completion" is the response itself for the
+     synchronous mutators (`set_model`, `set_auto_compaction`,
+     `set_session_name`) and the `compaction_end` notification for
+     `compact`, whose response is only an acknowledgement (C3/D-5).
+  2. A READ never carries one. `get_last_assistant_text`, `get_models`,
+     `get_session_name`, `get_session_stats` and `list_sessions` have no
+     `cursor` field; a host that wants the tip without mutating calls
+     `get_state`.
+  3. Absence is never a signal. Omitting `cursor` to mean "nothing moved"
+     would make a host infer the tip from a missing key, which is exactly
+     the inference F3 (§7.2, "no host may cache 'the tip'") exists to
+     forbid — and it costs that host a round trip to learn what the
+     response in its hand could have told it.
+
+`abort` (and `submit`/`prompt`) are NOT counterexamples, and the exception
+they carve is about TIME, not about no-ops: those verbs return before the
+mutation they ask for has happened, so any cursor taken at signal time
+would be the PRE-mutation tip — see `abort`'s own notes, which record the
+phase-2 trace that measured the difference. Rule 1 applies wherever the
+mutation is already complete when the completion is built, which is every
+Tier B mutator.
+
+Pinned by `test_rpc_tier_b_scaffolding.py`'s
+`test_e5_is_answered_one_way_across_tier_b`, which also fails when a NEW
+`since="tier-b"` verb is added without classifying it as a read or a
+mutator — and by `test_the_prose_enumerations_of_tier_b_name_every_verb`,
+which fails when a new verb is classified there but left out of rule 1's
+or rule 2's list above (or out of `turn_safety_guard`'s docstring).
+
+DURABILITY in Tier B (D-7) — ONE answer, applied to every `since="tier-b"`
+verb. Written here so a host reads it once instead of deriving it from
+whichever verb it happened to try first.
+
+Finding 6 of the Tier B review measured three different answers on ONE
+`new_session {"persist": false}` session: `set_model` and
+`set_session_name` refused (-32603 "this session is unpersisted"),
+`set_auto_compaction` returned a cursor, and `compact` ran to completion
+and reported a cursor for a `compaction` entry that dies with the process.
+No verb's notes said which of those was the rule.
+
+The rule, and it is mechanical — a host can apply it without knowing any
+verb's intent:
+
+  1. A verb that APPENDS a session-log entry calls
+     `require_durable_session` FIRST and refuses an unpersisted session
+     outright: `set_model` (D-2's model_change), `set_session_name`
+     (session_info), `compact` (compaction). Nothing is mutated before the
+     refusal, so it is total.
+  2. A verb that appends NOTHING never asks the question:
+     `get_last_assistant_text`, `get_models`, `get_session_name`,
+     `get_session_stats`, `list_sessions`, and `set_auto_compaction` — the
+     last of which is why this rule is worth writing down, being a MUTATOR
+     (D-1-guarded, E5-cursor-carrying) whose whole product is an in-memory
+     field on `CompactionSettings`. Its `cursor` is the live tip reported
+     as a READ (E5 rule 1 still requires it on a mutator's completion), not
+     a claim that this call wrote anything.
+     No verb COUNT appears above, for the reason the "E5 in Tier B" block
+     states about its own lists: `get_models` landed after that rule was
+     written and falsified every hand-written tally in the tier at a
+     stroke. The enumerations are pinned instead.
+  3. It is the SESSION's durability that is in question, never the
+     directory it lives in. Unit S moved `--mode rpc`'s default session
+     base to `<tmp>/.tau-<uid>/sessions` (D-6); that changes how LONG a persisted
+     session lasts — stated on the wire in `set_model`'s and
+     `set_session_name`'s notes — and changes nothing here. This rule keys
+     on `path is None`, which is what `require_durable_session` asks.
+
+Rule 1 is not new for `compact`; it is Blocker 2's answer, applied to the
+one verb that had not been given it. `set_model` mutates live state AND
+appends, and Blocker 2 settled that it refuses — so "it also does
+something in memory" is already known not to buy an exemption, and giving
+`compact` the opposite answer would be the fourth derivation, not a
+principle.
+
+TWO COSTS, both stated rather than hidden:
+
+  - `compact` is now REFUSED on an unpersisted session, where it used to
+    work. A host that wants both is asking for two contradictory things
+    (nothing survives this process / rewrite the log I am keeping), and the
+    honest fix is the one `require_durable_session`'s message already
+    names: move onto a persisted session. Auto-compaction remains available
+    there — see the next bullet, which is the same fact seen as a gap.
+  - `set_auto_compaction(enabled=true)` on an unpersisted session ARMS a
+    mechanism that then appends `compaction` entries to that same
+    non-durable log, from inside `AgentSession._maybe_auto_compact` — a
+    code path with no RPC verb on it and therefore nothing for rule 1 to
+    guard. Same class as the gap `compact`'s notes already record about
+    `AgentSession.compact()` not taking `turn_lock` itself: this tier
+    guards the wire, not `AgentSession`'s internals, and widening
+    `AgentSession` is out of its scope.
+
+Out of scope, deliberately: `new_session`/`fork`/`switch_session` (Tier A).
+They do not append to the bound log, they REPLACE it, and `persist` is
+`new_session`'s own published parameter — a host states durability there
+rather than discovering it.
+
+Pinned by `test_rpc_tier_b_scaffolding.py`'s
+`test_d7_is_answered_one_way_across_tier_b`, which reads the shipped
+handler sources: a guarded verb that loses its `require_durable_session`
+call, an unguarded verb that grows one, or a NEW `since="tier-b"` verb
+classified in neither list, all fail there.
 """
 
 from __future__ import annotations
@@ -52,8 +205,15 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Liter
 from uuid import uuid4
 
 from tau_agent_core.agent_session_runtime import DEFAULT_SWAP_TIMEOUT_S
-from tau_agent_core.commands import FRONTEND_COMMANDS, CommandOutcome, unsupported_command_message
+from tau_agent_core.commands import FRONTEND_COMMANDS
+from tau_agent_core.flows import Dispatched, FlowStep, Performed, Ready, View
 from tau_agent_core.rpc import capabilities
+from tau_agent_core.rpc.schema import params_schema_for, result_schema_for
+from tau_agent_core.session_log import (
+    DURABLE_LOCATION_ATTRS,
+    declared_durable_locations,
+    session_log_is_addressable,
+)
 from tau_agent_core.rpc.dialect import (
     COMMAND_NOT_SUPPORTED,
     INVALID_PARAMS,
@@ -64,31 +224,13 @@ from tau_agent_core.rpc.dialect import (
 from tau_agent_core.submission import Submission, SubmissionResult
 
 if TYPE_CHECKING:
-    from tau_agent_core.agent_session import AgentSession
+    from tau_agent_core.agent_session import AgentSession, ExtensionActionResult
     from tau_agent_core.compaction import CompactionResult
     from tau_agent_core.rpc.handler import RPCHandler
     from tau_agent_core.session_catalog import SessionCatalog, SessionInfo
 
 Tier = Literal["A", "B", "C", "D"]
 
-#: A table handler: awaited with the owning `RPCHandler` (so it can drive a
-#: background task, reach `.session`, etc. — §6 A2, "the interesting verbs are
-#: the non-1:1 ones"), the original request's `id` (`msg_id`), and the
-#: already-validated `params` dict. `msg_id` is threaded to every handler
-#: uniformly — not just `submit`/`prompt`, which are the only ones that need
-#: it today — so the table stays one homogeneous callable type rather than
-#: two shapes.
-#:
-#: Returns the dict that becomes `result` on the wire, with `RPCHandler
-#: ._handle_request` adding `method` (D2) after the call — OR `None`, which
-#: means the handler already sent its own response(s) via `handler
-#: ._output_queue`/`_send_response` and `_handle_request` must not send a
-#: second one. `submit`/`prompt` are the only handlers that return `None`
-#: today (C3's dual completion: the acceptance response must be enqueued
-#: synchronously, from inside `Submission`'s `on_admitted` callback, to beat
-#: the turn's own first event onto the wire — see the `_submit_and_acknowledge`
-#: docstring for why `_handle_request`'s normal "await, then send" shape
-#: cannot do that).
 CommandHandlerFn = Callable[
     ["RPCHandler", "int | None", dict[str, Any]], Awaitable["dict[str, Any] | None"]
 ]
@@ -121,8 +263,9 @@ class CommandEntry:
     `result_schema` (phase 3, a phase-2 review finding): the params-only half
     of this table meant `docs/RPC-PROTOCOL.md` never said what any verb
     RETURNS (§2 G1: "a second implementation should be possible from this
-    document"). Same discipline as `params_schema` — hand-written, reviewed,
-    never derived via `inspect` (§6 A3) — and describes exactly what the
+    document"). Same discipline as `params_schema` — derived from the
+    capability's own `returns` where there is one, hand-written where there is
+    not, never derived via `inspect` (§6 A3) — and describes exactly what the
     handler's own return dict contains, NOT the `method` field
     `RPCHandler._handle_request` (D2) or `commands._submit_and_acknowledge`
     (C3) adds on top of every result uniformly; see `docs/RPC-PROTOCOL.md`'s
@@ -155,19 +298,11 @@ class CommandEntry:
                 "is the exact gap this field exists to close, and a declined verb "
                 "has no result to document (it never runs)."
             )
-        # Import-time, not call-time: a schema using vocabulary `validate_params`
-        # does not implement checks NOTHING, and a verb that silently accepts any
-        # params is worse than one that refuses to load. See
-        # `_assert_supported_schema`.
         _assert_supported_schema(self.params_schema, self.name)
         if self.result_schema is not None:
             _assert_supported_schema(self.result_schema, f"{self.name} (result)")
 
 
-#: The table itself. Populated by `@command(...)`/`decline(...)` below, at
-#: import time, in this one module — never by scanning `AgentSession` (§6 A6:
-#: an import-time registry populated by decoration on a dynamically-loaded
-#: module is a load-order Heisenbug; this table has exactly one definer).
 COMMAND_TABLE: dict[str, CommandEntry] = {}
 
 
@@ -229,30 +364,12 @@ def decline(
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# A minimal, hand-rolled JSON Schema validator.
-#
-# `jsonschema` is not a dependency of any package in this repo (checked: not in
-# any pyproject.toml, not installed in the project venv), and adding one for a
-# handful of `object`/`string`/`boolean`/`integer`/`array`/`enum` checks this
-# module fully controls both ends of is not worth the new dependency. This
-# supports exactly the vocabulary the schemas below use — no `$ref`, no
-# `oneOf`, no nested `items` schema — and raises loudly (ValueError, at import
-# time via CommandEntry / at call time via the caller) rather than silently
-# accepting what it cannot check.
-# ─────────────────────────────────────────────────────────────────────────
-
-
 def validate_params(schema: dict[str, Any], params: dict[str, Any]) -> str | None:
     """Validate `params` against `schema`. Returns `None` if valid, else a
     human-readable description of the FIRST violation found (C2: `-32602`
     carries this message).
     """
     if schema.get("type") != "object":
-        # Unreachable via the table (`_assert_supported_schema` rejects it at
-        # import), and a raise rather than a `return None` so it stays that way:
-        # falling through to "valid" would mean an unwalked schema silently
-        # accepting every params dict a host sends.
         raise ValueError(
             f"validate_params only walks object schemas, got type={schema.get('type')!r}"
         )
@@ -288,6 +405,39 @@ def _validate_value(schema: dict[str, Any], value: Any, path: str) -> str | None
     minimum = schema.get("minimum")
     if minimum is not None and isinstance(value, (int, float)) and value < minimum:
         return f"{path!r} must be >= {minimum}, got {value!r}"
+    items = schema.get("items")
+    if items is not None and isinstance(value, list):
+        for index, element in enumerate(value):
+            violation = _validate_object(items, element, f"{path}[{index}]")
+            if violation is not None:
+                return violation
+    return None
+
+
+def _validate_object(schema: dict[str, Any], value: Any, path: str) -> str | None:
+    """Validate one nested object — an array element under `items`.
+
+    Separate from `validate_params` because that function's violation strings are
+    the wire's `-32602` message and say "param"; a key inside a returned array is
+    not a param and saying so would misdirect whoever reads the error.
+    """
+    if not isinstance(value, dict):
+        return f"{path!r} must be an object, got {type(value).__name__}"
+    properties: dict[str, Any] = schema.get("properties", {})
+    for required_name in schema.get("required", []):
+        if required_name not in value:
+            return f"{path!r} is missing required key {required_name!r}"
+    if schema.get("additionalProperties") is False:
+        unknown = sorted(set(value) - set(properties))
+        if unknown:
+            return f"{path!r} has unexpected key(s): {', '.join(unknown)}"
+    for key, element in value.items():
+        prop_schema = properties.get(key)
+        if prop_schema is None:
+            continue
+        violation = _validate_value(prop_schema, element, f"{path}.{key}")
+        if violation is not None:
+            return violation
     return None
 
 
@@ -315,20 +465,11 @@ def _matches_type(value: Any, type_name: str) -> bool:
     )
 
 
-#: The exact vocabulary `validate_params` implements. Anything outside these
-#: sets is REJECTED at import time rather than ignored at call time: a schema
-#: keyword this module does not understand (`items`, `pattern`, `maxLength`,
-#: `oneOf`, `$ref`, …) would otherwise validate nothing at all, silently, and
-#: the author would have no way to find out. That is the failure mode the
-#: repo's Fail-Early rule exists to prevent, and it is the one a hand-rolled
-#: validator is most likely to grow — the next person to write a schema is not
-#: reading this module first. Widening the validator means widening these sets
-#: in the same commit.
 _SUPPORTED_TYPES = frozenset({"string", "boolean", "integer", "number", "array", "object", "null"})
 _SUPPORTED_OBJECT_KEYWORDS = frozenset(
     {"type", "properties", "required", "additionalProperties", "description"}
 )
-_SUPPORTED_VALUE_KEYWORDS = frozenset({"type", "enum", "minimum", "description"})
+_SUPPORTED_VALUE_KEYWORDS = frozenset({"type", "enum", "minimum", "description", "items"})
 
 
 def _assert_supported_schema(schema: dict[str, Any], where: str) -> None:
@@ -370,6 +511,13 @@ def _assert_supported_schema(schema: dict[str, Any], where: str) -> None:
         unknown = sorted(set(prop_schema) - _SUPPORTED_VALUE_KEYWORDS)
         if unknown:
             fail(f"property {prop_name!r} uses unsupported keyword(s) {unknown}")
+        items = prop_schema.get("items")
+        if items is not None:
+            if prop_schema.get("type") != "array":
+                fail(f"property {prop_name!r} declares `items` without type 'array'")
+            if not isinstance(items, dict) or items.get("type") != "object":
+                fail(f"property {prop_name!r} declares `items` that is not an object schema")
+            _assert_supported_schema(items, f"{where}.{prop_name}[]")
         declared = prop_schema.get("type")
         if declared is None:
             continue
@@ -379,21 +527,12 @@ def _assert_supported_schema(schema: dict[str, Any], where: str) -> None:
             fail(f"property {prop_name!r} declares unsupported type(s) {bad}")
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# Params schemas — hand-written, reviewed, diffable (§6 A3).
-# ─────────────────────────────────────────────────────────────────────────
-
 NO_PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {},
     "additionalProperties": False,
 }
 
-#: Mirrors `tau_agent_core.submission.SubmissionSource` / `MultitaskStrategy`
-#: BY HAND, not via `typing.get_args()` — the wire enum is a reviewed
-#: commitment to a vocabulary, not a derived reflection of whatever the
-#: dataclass happens to allow today (§6 A3's objection applies just as much to
-#: an automatic enum as to an automatic params list).
 _SUBMISSION_SOURCE_ENUM = [
     "interactive",
     "rpc",
@@ -406,23 +545,6 @@ _SUBMISSION_SOURCE_ENUM = [
 ]
 _MULTITASK_STRATEGY_ENUM = ["reject", "enqueue", "steer", "rollback", "fork"]
 
-#: Phase-2 review S3: "fork" stays IN the enum above — it is a real
-#: `Submission.multitask_strategy` value, not a typo, and a client should be
-#: able to name it and get an informative refusal — but it is rejected at
-#: submission time (see `_reject_unsupported_multitask_strategy`) rather than
-#: silently accepted. `_spawn_fork` (agent_session.py) runs the forked agent
-#: on the `branch_event` channel, which `RPCHandler` does not subscribe to
-#: (only the primary `"all"` AgentEvent stream is forwarded — see
-#: `RPCHandler.__init__`'s comment on `_delta_projector`) — so a host that
-#: asked for "fork" today would get `{"accepted": true}` and permanent
-#: silence while it burns tokens and runs bash in the background, which is
-#: exactly the G7/C1 violation ("declared, not silently no-op'd") this
-#: module exists to prevent for every OTHER unsupported verb. Tier C's
-#: `open_lane`/`list_lanes` (REMOTE-CONTROL.md §3) is the future route: it
-#: forwards `branch_event` deliberately, as its own verb, instead of asking
-#: a host to guess that "fork" needs a channel `submit`'s response never
-#: mentions. "steer" is NOT rejected — it lands in the in-flight turn's own
-#: observable stream, so a host watching that submission's events sees it.
 _UNSUPPORTED_MULTITASK_STRATEGIES: dict[str, str] = {
     "fork": (
         "multitask_strategy='fork' is not supported over RPC yet: a fork's "
@@ -435,9 +557,6 @@ _UNSUPPORTED_MULTITASK_STRATEGIES: dict[str, str] = {
     ),
 }
 
-#: The full set of `Submission` fields the wire may set, shared between
-#: `submit` and `prompt` — they differ only in which of these are `required`
-#: (§10 decision 10: "one implementation, two names").
 _SUBMISSION_PROPERTIES: dict[str, Any] = {
     "text": {"type": "string", "description": "The prompt text."},
     "images": {
@@ -526,170 +645,17 @@ PROMPT_PARAMS_SCHEMA: dict[str, Any] = {
 }
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# Result schemas — hand-written, reviewed, diffable (§6 A3), same discipline
-# as the params schemas above. Document exactly what a handler's own return
-# dict contains — never the `method` field every response also carries (D2)
-# or `submit`/`prompt`'s dual-completion shape (C3); see the generated doc's
-# "Response envelope" section for those, stated once instead of per verb.
-# ─────────────────────────────────────────────────────────────────────────
+SUBMIT_RESULT_SCHEMA: dict[str, Any] = result_schema_for("submit")
 
-#: submit/prompt's ONE possible result shape (C3's "acceptance" response —
-#: whichever of the two paths in `_submit_and_acknowledge` sends it).
-#: `rejection_reason` is always `null` here: an actual rejection raises
-#: `RPCError(SUBMISSION_REJECTED, ...)` instead of returning this shape at
-#: all (see the field's own description) — it is present so a host's static
-#: type for "the submit result" does not have to special-case its absence.
-SUBMIT_RESULT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "accepted": {
-            "type": "boolean",
-            "description": "Always true here — a rejected submission is an RPCError, not this shape.",
-        },
-        "submission_id": {
-            "type": "string",
-            "description": "Echoes the request's submission_id (caller-supplied, or a minted uuid4 for prompt).",
-        },
-        "rejection_reason": {
-            "type": "null",
-            "description": "Always null on this success shape; a real rejection is SUBMISSION_REJECTED instead.",
-        },
-        "command": {
-            "type": "object",
-            "description": (
-                "Present ONLY when this acceptance is also the submission's only "
-                "completion: a core (extension-registered) slash command resolved "
-                "synchronously with no turn started, so there is no later agent_end "
-                "to carry it. {name, args, performer, output}. Absent for an "
-                "ordinary turn — poll get_messages / watch for agent_end instead."
-            ),
-        },
-        "attachments": {
-            "type": "object",
-            "description": (
-                "Present exactly when the request set expand_attachments: true — "
-                "absent is 'expansion did not run', which is a different "
-                "statement from 'expansion found nothing'. "
-                "{expanded: int, images: int, unresolved: [str], failures: [str]}. "
-                "`unresolved` names the @words that matched no file and were "
-                "therefore left in the text as prose. `failures` names the ones "
-                "that resolved but could not be sent, each with the reason; the "
-                'model is told the same thing through a <reference error="…"> '
-                "block, so neither side is left believing an attachment landed "
-                "when it did not. A host that shows neither list turns a visible "
-                "failure back into a silent one."
-            ),
-        },
-    },
-    "required": ["accepted", "submission_id", "rejection_reason"],
-}
+ABORT_RESULT_SCHEMA: dict[str, Any] = result_schema_for("abort")
 
-ABORT_RESULT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "status": {"type": "string", "enum": ["aborted"], "description": "Always 'aborted'."},
-        "compaction_id": {
-            "type": ["string", "null"],
-            "description": (
-                "The compaction this abort's signal was delivered to, or null "
-                "when none was in flight (finding 5, Tier B review). Present "
-                "so a host knows to expect a compaction_end carrying "
-                "cancelled: true for that id. Whether the compaction actually "
-                "stopped is reported THERE and not here — same signal-vs-"
-                "outcome split that keeps `cursor` off this response."
-            ),
-        },
-    },
-    "required": ["status", "compaction_id"],
-}
+GET_STATE_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_state")
 
-GET_STATE_RESULT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "session_id": {"type": "string", "description": "AgentSession.state.session_id."},
-        "status": {
-            "type": "string",
-            "enum": ["idle", "running"],
-            "description": "AgentSession.state.status.",
-        },
-        "is_streaming": {"type": "boolean", "description": "AgentSession.is_streaming."},
-        "model": {
-            "type": "object",
-            "description": "AgentSession.get_model(): {id, provider, context_window}.",
-        },
-        "usage": {
-            "type": ["object", "null"],
-            "description": "AgentSession.get_usage() — null before the first completion.",
-        },
-        "message_count": {"type": "integer", "description": "len(AgentSession.messages)."},
-        "cursor": {
-            "type": ["string", "null"],
-            "description": "session_log.cursor (F3: no host may cache 'the tip').",
-        },
-        "addressable": {
-            "type": "boolean",
-            "description": (
-                "Whether the CURRENT session is persisted: true if list_sessions "
-                "returns it and switch_session can reach it later. The same "
-                "predicate new_session/fork/switch_session publish on their "
-                "session tuple, asked about the session this connection is on "
-                "right now. False means the appending verbs (set_model, "
-                "set_session_name, compact — D-7) will refuse with -32004 "
-                "SESSION_NOT_PERSISTED, and nothing this connection does is "
-                "written to the store. Reachable without a respawn: "
-                'new_session {"persist": true} moves onto a persisted session.'
-            ),
-        },
-    },
-    "required": [
-        "session_id",
-        "status",
-        "is_streaming",
-        "model",
-        "usage",
-        "message_count",
-        "cursor",
-        "addressable",
-    ],
-}
+GET_MESSAGES_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_messages")
 
-GET_MESSAGES_RESULT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "messages": {
-            "type": "array",
-            "description": "AgentSession.messages — the terminal, flat message array (E2's pull side).",
-        },
-    },
-    "required": ["messages"],
-}
+GET_COMMANDS_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_commands")
 
-GET_COMMANDS_RESULT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "commands": {
-            "type": "array",
-            "description": (
-                "Array of {name, description, performer}. name has no leading "
-                "'/' — submit it as ordinary text with expand_commands=true, "
-                "not as an RPC method."
-            ),
-        },
-    },
-    "required": ["commands"],
-}
-
-GET_TOOLS_RESULT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "tools": {
-            "type": "array",
-            "description": "Array of {name, description, parameters} — this session's bound AgentTool set.",
-        },
-    },
-    "required": ["tools"],
-}
+GET_TOOLS_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_tools")
 
 GET_CAPABILITIES_RESULT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -739,72 +705,7 @@ GET_CAPABILITIES_RESULT_SCHEMA: dict[str, Any] = {
     ],
 }
 
-#: `new_session` / `fork` / `switch_session` share this shape (phase 3, H1-H4):
-#: F2's session tuple, plus a top-level `cursor` duplicate for the same
-#: reason `get_state`'s carries one (F3: no host may cache "the tip").
-#:
-#: `session.addressable` and the wording around it are finding 7 of the Tier
-#: B review: this description read "F2's addressable tuple" unconditionally,
-#: while `new_session {"persist": false}` was measured returning
-#: `{"store": "file", "session_id": "5543562f…", …}` for a session
-#: `switch_session` answered `-32602 no session matches '5543562f…'` for and
-#: no file ever held. The shape predates that verb's `persist` param; what
-#: made the unqualified claim wrong NOW is that the previous round turned
-#: `persist` into a documented, selectable mode. H2:
-#: `cancelled: true` means an extension vetoed via `session_before_switch` —
-#: `session`/`cursor` are ABSENT in that case (nothing was touched, there is
-#: no new tuple to report), never present-but-null. A THIRD outcome — the
-#: in-flight turn did not stop in time (Finding 1) — never reaches this
-#: shape at all: it is `RPCError(TURN_STILL_RUNNING, ...)` instead, the same
-#: "an expected refusal is its own error code, not a result field" choice
-#: `SUBMIT_RESULT_SCHEMA`'s `rejection_reason` documents for SUBMISSION_REJECTED.
-SESSION_LIFECYCLE_RESULT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "cancelled": {
-            "type": "boolean",
-            "description": (
-                "True if a session_before_switch extension hook vetoed (H2). When "
-                "true, `session`/`cursor` are absent — nothing was touched. An "
-                "in-flight turn that did not stop in time is a DIFFERENT outcome "
-                "and never reaches this shape — see TURN_STILL_RUNNING."
-            ),
-        },
-        "session": {
-            "type": "object",
-            "description": (
-                "F2's session tuple: {store, session_id, lane, cursor, "
-                "addressable}. `lane` is always 'primary' in v1 (lanes are "
-                "Tier C, not this phase). Present only when cancelled is "
-                "false. `addressable` (finding 7 of the Tier B review) is "
-                "the field that says whether `session_id` is a value "
-                "ANOTHER call can use: true means list_sessions returns this "
-                "id and switch_session resolves it; false means this session "
-                'exists in memory only — it is `new_session {"persist": '
-                "false}`'s product, switch_session answers -32602 for it, "
-                "list_sessions never shows it, and the verbs D-7 rule 1 "
-                "governs (set_model/set_session_name/compact) refuse on it. "
-                "`store` names the store THIS CONNECTION's catalog is on, "
-                "which is not a claim that this session is in it: when "
-                "addressable is false, nothing was written to that store."
-            ),
-        },
-        "cursor": {
-            "type": ["string", "null"],
-            "description": (
-                "The resulting session_log.cursor, duplicated at top level "
-                "(E5/F3 — every mutating response returns the resulting cursor). "
-                "Present only when cancelled is false."
-            ),
-        },
-    },
-    "required": ["cancelled"],
-}
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# submit / prompt — one implementation (§10 decision 10), C3's dual completion.
-# ─────────────────────────────────────────────────────────────────────────
+SESSION_LIFECYCLE_RESULT_SCHEMA: dict[str, Any] = result_schema_for("new_session")
 
 
 def _reject_unsupported_multitask_strategy(params: dict[str, Any]) -> None:
@@ -819,10 +720,6 @@ def _reject_unsupported_multitask_strategy(params: dict[str, Any]) -> None:
     """
     strategy = params.get("multitask_strategy")
     if not isinstance(strategy, str):
-        # Not a string at all (or absent) — validate_params's schema check
-        # (INVALID_PARAMS, run before this function is ever reached) already
-        # owns rejecting that; nothing in _UNSUPPORTED_MULTITASK_STRATEGIES
-        # keys on a non-string, so there is nothing more to reject here.
         return
     reason = _UNSUPPORTED_MULTITASK_STRATEGIES.get(strategy)
     if reason is not None:
@@ -834,7 +731,7 @@ def _expanded_text_and_images(
 ) -> tuple[str, list[dict[str, Any]] | None, dict[str, Any]]:
     """Resolve `@file` references in `params["text"]`, the way the TUI's editor does.
 
-    The RPC counterpart of `Parley._expand_attachments` (app.py), and
+    The RPC counterpart of `TauApp._expand_attachments` (app.py), and
     deliberately the same two calls in the same order: `scan_attachments` to
     decide what each `@word` IS, then `render_attachments` to read the files
     at THIS moment. docs/FILE-ATTACHMENTS.md §2 puts expansion in the frontend
@@ -853,30 +750,17 @@ def _expanded_text_and_images(
     )
 
     text: str = params["text"]
-    # The process working directory, which is what --mode rpc's own `--cwd`
-    # already set and what every path-taking tool in this session resolves
-    # against. Reading it here rather than taking it as a param keeps ONE
-    # answer to "relative to what?" for the agent's tools, `complete_path`'s
-    # listing and this expansion — three places that must not disagree about
-    # which file `@notes.txt` names.
     attachments = scan_attachments(text, cwd=Path.cwd())
     unresolved = [a.token for a in attachments if a.kind == "unresolved"]
     sendable = [a for a in attachments if a.kind in SENDABLE_KINDS]
 
     if not sendable:
-        # No blocks to build, so nothing is prepended and the host's text goes
-        # out as typed. The report still goes back: `unresolved` non-empty is
-        # exactly the "you asked for expansion and got prose" case a host has
-        # to be able to see.
         return text, None, {"expanded": 0, "images": 0, "unresolved": unresolved, "failures": []}
 
     rendered = render_attachments(attachments)
     images = list(rendered.images) or None
     incoming = params.get("images")
     if incoming:
-        # The host's own images come FIRST: it composed them, and an attachment
-        # this call resolved is the later addition. Concatenating rather than
-        # letting either win is the only reading that loses neither.
         images = list(incoming) + list(rendered.images)
     return (
         rendered.prefix + text,
@@ -917,10 +801,6 @@ def _submission_from_params(params: dict[str, Any]) -> tuple[Submission, dict[st
         "submission_id": params.get("submission_id") or str(uuid4()),
     }
     if report is not None:
-        # Expansion already decided both, including the case where it merged
-        # the host's own images with the attached ones; letting the loop below
-        # copy `params["images"]` over the merged list would silently drop
-        # every attached image.
         kwargs["images"] = images
     for optional_field in (
         "images",
@@ -934,16 +814,70 @@ def _submission_from_params(params: dict[str, Any]) -> tuple[Submission, dict[st
     ):
         if optional_field in params and optional_field not in kwargs:
             kwargs[optional_field] = params[optional_field]
-    # `expand_attachments` is deliberately NOT in that loop: it is a wire-level
-    # instruction to this function, not a Submission field, and passing it
-    # through would raise on a model that has never heard of it.
     return Submission(**kwargs), report
+
+
+def _dispatched_result(
+    sub: "Submission", dispatched: Dispatched, attachments: dict[str, Any] | None
+) -> dict[str, Any]:
+    """One arm of `Dispatched` as this verb's acceptance, or a refusal naming the arm.
+
+    A `Performed` is the whole completion — the core ran an extension-registered
+    command, no turn started, and there is no `agent_end` to carry it instead. The
+    other three arms are things only a head does, and each refusal says which:
+
+    - a `FlowStep` needs an argument bound, and the wire has `next_step` +
+      `enumerate_domain` for exactly that loop.
+    - a `Ready` names a mutation this table already publishes as its own verb, so
+      the message says to call it.
+    A `View` is neither: it comes back as a SUCCESS response carrying the view's
+    name and, today, the reason no state rides with it. A host with its own browser
+    opens it; a host without one prints the reason. It used to raise, and the reason
+    it no longer does is that the tree payload has to land somewhere — putting it in
+    an error response and moving it later is two breaks instead of one.
+
+    The two refusals are `COMMAND_NOT_SUPPORTED` rather than a silent success, which
+    is the same answer the old `performer="frontend"` check gave, said with the
+    reason attached.
+    """
+    if isinstance(dispatched, Performed):
+        return _accept_result(
+            sub.submission_id,
+            command=dispatched,
+            command_name=dispatched.mutation,
+            attachments=attachments,
+        )
+    if isinstance(dispatched, View):
+        return _accept_result(sub.submission_id, view=dispatched, attachments=attachments)
+    if isinstance(dispatched, FlowStep):
+        detail = (
+            f"/{dispatched.flow} still needs {dispatched.argument.name!r}. Bind it with "
+            f"next_step + enumerate_domain (domain {dispatched.domain.name!r}), then call "
+            f"the verb the flow ends in."
+        )
+        name = dispatched.flow
+    elif isinstance(dispatched, Ready):
+        detail = (
+            f"/{dispatched.flow} is ready to perform {dispatched.mutation!r}, which this "
+            f"table publishes as its own verb — call {dispatched.mutation!r} directly "
+            "rather than submitting the slash line."
+        )
+        name = dispatched.flow
+    else:
+        raise AssertionError(f"unreachable Dispatched arm: {type(dispatched).__name__}")
+    raise RPCError(
+        COMMAND_NOT_SUPPORTED,
+        detail,
+        data={"submission_id": sub.submission_id, "command": name},
+    )
 
 
 def _accept_result(
     submission_id: str,
     *,
-    command: CommandOutcome | None = None,
+    command: Performed | None = None,
+    command_name: str | None = None,
+    view: View | None = None,
     attachments: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The C3 acceptance payload. Never carries the turn's messages (C3:
@@ -951,15 +885,15 @@ def _accept_result(
     `get_messages` (E2).
 
     `command` is set exactly when this acceptance is ALSO the only completion
-    the host will ever get for this submission — a resolved
-    `performer="core"` command (phase-2 review B2): no turn ran, so there is
+    the host will ever get for this submission — a `Performed` from an
+    extension-registered command (phase-2 review B2): no turn ran, so there is
     no `agent_end` to follow this response, and `SubmissionResult.command`
     would otherwise reach `_submit_and_acknowledge` and go no further. `None`
     (the default) covers every ordinary turn, where the real completion is
     the `agent_end` event on the subscription this handler already forwards.
-    A `performer="frontend"` outcome never reaches here — see
-    `_submit_and_acknowledge`'s tail, which raises `RPCError` for that case
-    instead of calling this function.
+    The other three arms of `Dispatched` never reach here — see
+    `_dispatched_result`, which raises `RPCError` for each with the reason
+    that arm carries.
 
     `attachments` is `_submission_from_params`'s report, set exactly when the
     request asked for expansion. It rides the ACCEPTANCE and not a later event
@@ -973,14 +907,18 @@ def _accept_result(
         "submission_id": submission_id,
         "rejection_reason": None,
     }
+    if view is not None:
+        result["view"] = {
+            "name": view.name,
+            "state": view.state,
+            "unavailable_because": view.unavailable_because,
+        }
     if attachments is not None:
         result["attachments"] = attachments
     if command is not None:
         result["command"] = {
-            "name": command.name,
-            "args": command.args,
-            "performer": command.performer,
-            "output": command.output,
+            "name": command_name,
+            "output": command.data.get("output"),
         }
     return result
 
@@ -1047,24 +985,11 @@ async def _submit_and_acknowledge(
     the wire.
     """
     loop = asyncio.get_running_loop()
-    #: `True` once `_on_admitted` has already sent the response itself, so the
-    #: post-await branch below knows not to send a second one.
     admitted: asyncio.Future[SubmissionResult | None] = loop.create_future()
 
     def _on_admitted() -> None:
         if admitted.done():
             return
-        # T3 (docs/REMOTE-CONTROL.md §4[1]): this `put_nowait` stays safe
-        # under the bounded outbound queue WITHOUT changing anything here.
-        # `handler._output_queue` itself carries no capacity limit — T3's
-        # bound applies only to AgentEvent-derived items, gated one layer up
-        # by `RPCHandler._event_credits` (`_forward_event`/
-        # `_acquire_event_credit`) — precisely so a synchronous, non-
-        # suspending enqueue like this one (required by the ordering
-        # argument above: `on_admitted` cannot `await` without reintroducing
-        # the reordering the docstring above measures) can never raise
-        # `QueueFull` and never has to choose between reordering C3 and
-        # dropping this response.
         handler._output_queue.put_nowait(
             {
                 "jsonrpc": "2.0",
@@ -1082,30 +1007,14 @@ async def _submit_and_acknowledge(
             result = await handler.session.submit(sub, on_admitted=_on_admitted)
         except Exception as exc:  # noqa: BLE001 - see the two branches below
             if not admitted.done():
-                # Failed before admission (e.g. silent=True's NotImplementedError,
-                # or a reentrancy/depth-cap RuntimeError) — this call's own
-                # response is the only place this can surface, and it has not
-                # been sent yet.
                 admitted.set_exception(exc)
             else:
-                # Admission already happened and the acceptance response is
-                # already on the wire. The ordinary AgentEvent stream already
-                # carries this failure (AgentLoop.run emits agent_end with
-                # is_error=True/error=... BEFORE re-raising — agent_loop.py's
-                # `except BaseException` bracket), so this is not a silent
-                # drop; it is surfaced here too, deliberately, rather than left
-                # for asyncio's own "Task exception was never retrieved"
-                # warning — T4 promises stderr is a real log channel, not
-                # incidental noise.
                 print(
                     f"[τ-rpc] submission {sub.submission_id!r} failed after admission: {exc!r}",
                     file=sys.stderr,
                 )
             return
         if not admitted.done():
-            # The strategy returned its own SubmissionResult without ever
-            # calling on_admitted (see this function's docstring) — that
-            # result IS the outcome, decided synchronously.
             admitted.set_result(result)
 
     task = asyncio.create_task(_drive())
@@ -1117,36 +1026,24 @@ async def _submit_and_acknowledge(
         return None
 
     if not outcome.accepted:
+        data: dict[str, Any] = {"submission_id": sub.submission_id}
+        if outcome.lock is not None:
+            # The one refusal a host can act on rather than only report (EXTENSION-LOCKS §10).
+            data["lock"] = {
+                "entry_id": outcome.lock.entry_id,
+                "extension": outcome.lock.extension,
+                "sentence": outcome.lock.sentence,
+                "label": outcome.lock.label,
+                "release": outcome.lock.release,
+                "ask": outcome.lock.ask,
+            }
         raise RPCError(
             SUBMISSION_REJECTED,
             outcome.rejection_reason or "submission rejected",
-            data={"submission_id": sub.submission_id},
+            data=data,
         )
-    # Accepted, and `on_admitted` never fired for this call (fork's success,
-    # steer delivered into an in-flight turn, an `input` hook consuming the
-    # submission, or a resolved command) — nothing else was enqueued ahead of
-    # it, so the ordinary return-a-dict path is fine here.
     if outcome.command is not None:
-        # B2: a resolved command is the one shape where THIS response is the
-        # ONLY completion the host will ever get — no turn ran, so there is no
-        # `agent_end` to follow it. `performer="core"` already ran (an
-        # extension-registered command) and produced text any host can
-        # render, so it rides the acceptance response. `performer="frontend"`
-        # is a built-in (`/tree`, `/fork`, `/extensions`, `/compact`) the core
-        # deliberately did not run because it needs a screen — the RPC wire
-        # has none, so it is exactly the frontend
-        # `tau_agent_core.commands`'s module docstring describes as unable to
-        # perform one, and that docstring is explicit about what such a
-        # frontend must do: raise `UnsupportedCommandError`, "rather than
-        # return silently" — never the "works in the TUI, no-ops for the web
-        # frontend" failure class the whole lifecycle exists to remove.
-        if outcome.command.performer == "frontend":
-            raise RPCError(
-                COMMAND_NOT_SUPPORTED,
-                unsupported_command_message(outcome.command, "the τ RPC wire"),
-                data={"submission_id": sub.submission_id, "command": outcome.command.name},
-            )
-        return _accept_result(sub.submission_id, command=outcome.command, attachments=attachments)
+        return _dispatched_result(sub, outcome.command, attachments)
     return _accept_result(sub.submission_id, attachments=attachments)
 
 
@@ -1191,11 +1088,6 @@ async def _handle_prompt(
     return await _submit_and_acknowledge(handler, msg_id, "prompt", sub, attachments)
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# The rest of Tier A.
-# ─────────────────────────────────────────────────────────────────────────
-
-
 @command(
     "abort",
     tier="A",
@@ -1234,16 +1126,12 @@ async def _handle_prompt(
         "task to cancel — see set_auto_compaction's notes, which state the "
         "same boundary from the other side."
     ),
-    params_schema=NO_PARAMS_SCHEMA,
+    params_schema=params_schema_for("abort"),
     result_schema=ABORT_RESULT_SCHEMA,
 )
 async def _handle_abort(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    # Both are signals, and both return before the thing they signalled has
-    # unwound (see this verb's notes). `abort_compaction` reports WHICH
-    # compaction it reached rather than whether that compaction stopped —
-    # the latter is `compaction_end`'s to say.
     handler.session.abort()
     return {"status": "aborted", "compaction_id": handler.abort_compaction()}
 
@@ -1280,7 +1168,7 @@ async def _handle_abort(
         "connection's feet (a switch_session onto an ephemeral session) "
         "exactly as `model` and `cursor` can."
     ),
-    params_schema=NO_PARAMS_SCHEMA,
+    params_schema=params_schema_for("get_state"),
     result_schema=GET_STATE_RESULT_SCHEMA,
 )
 async def _handle_get_state(
@@ -1296,11 +1184,7 @@ async def _handle_get_state(
         "usage": session.get_usage(),
         "message_count": len(session.messages),
         "cursor": session.session_log.cursor,
-        # Defined further down, next to require_durable_session, so the
-        # predicate and the refusal that shares it stay adjacent — see its
-        # docstring for why "addressable" is D-7's question and not a second
-        # one.
-        "addressable": session_log_is_addressable(session.session_log),
+        "addressable": session.is_addressable,
     }
 
 
@@ -1309,7 +1193,7 @@ async def _handle_get_state(
     tier="A",
     since="2A",
     notes="E2's PULL side — the terminal message array, fetched, never pushed.",
-    params_schema=NO_PARAMS_SCHEMA,
+    params_schema=params_schema_for("get_messages"),
     result_schema=GET_MESSAGES_RESULT_SCHEMA,
 )
 async def _handle_get_messages(
@@ -1327,33 +1211,43 @@ async def _handle_get_messages(
         "commands contributed by extensions are genuinely runtime-variable, and pi "
         "builds this list by enumeration too. That dynamism is specific to THIS verb "
         "and is not an argument for a dynamic protocol-verb table (§6 A6). Returns "
-        "τ's built-ins (commands.FRONTEND_COMMANDS, performer='frontend') plus "
-        "whatever extensions registered via api.register_command (performer='core'), "
+        "τ's built-ins (commands.FRONTEND_COMMANDS, origin='builtin') plus "
+        "whatever extensions registered via api.register_command (origin='extension'), "
         "in `resolve_command`'s own precedence order so the listing cannot advertise "
-        "a name that dispatch would resolve differently."
+        "a name that dispatch would resolve differently. "
+        "`flow` says whether the command declares what it TAKES: true means `next_step` "
+        "steps it and `enumerate_domain` lists its argument's values, so a host builds a "
+        "form or a completion list rather than asking for one opaque line. An extension "
+        "command is a flow only if it used api.register_flow "
+        "(docs/EXTENSION-FLOWS.md)."
     ),
-    params_schema=NO_PARAMS_SCHEMA,
+    params_schema=params_schema_for("get_commands"),
     result_schema=GET_COMMANDS_RESULT_SCHEMA,
 )
 async def _handle_get_commands(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    # `name` is the DISPATCH key, without the leading "/" — the form
-    # `commands.parse_command` produces and `resolve_command` matches. A host
-    # submits it as ordinary text (`"/compact"`) through `submit`/`prompt` with
-    # `expand_commands: true`; it is not an RPC method.
-    listed: list[dict[str, str]] = [
-        {"name": name, "description": description, "performer": "frontend"}
+    vocabulary = handler.session.vocabulary
+    listed: list[dict[str, Any]] = [
+        {
+            "name": name,
+            "description": description,
+            "origin": "builtin",
+            "flow": name not in vocabulary.views,
+        }
         for name, description in FRONTEND_COMMANDS.items()
     ]
-    # Built-ins win over an extension that registered the same name — exactly
-    # what `resolve_command` does ("an extension cannot shadow /compact"). A
-    # listing that showed the shadowed extension command would be advertising a
-    # verb this session will never dispatch to it.
     for name, description in handler.session.get_extension_commands():
         if name in FRONTEND_COMMANDS:
             continue
-        listed.append({"name": name, "description": description, "performer": "core"})
+        listed.append(
+            {
+                "name": name,
+                "description": description,
+                "origin": "extension",
+                "flow": name in vocabulary.extension_flows,
+            }
+        )
     return {"commands": listed}
 
 
@@ -1362,13 +1256,13 @@ async def _handle_get_commands(
     tier="A",
     since="2A",
     notes="Already implemented pre-2A; ported onto the table verbatim, no behaviour change.",
-    params_schema=NO_PARAMS_SCHEMA,
+    params_schema=params_schema_for("get_tools"),
     result_schema=GET_TOOLS_RESULT_SCHEMA,
 )
 async def _handle_get_tools(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    tools = handler.session._tools
+    tools = handler.session.tools
     return {
         "tools": [
             {
@@ -1379,15 +1273,6 @@ async def _handle_get_tools(
             for t in tools
         ]
     }
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# get_capabilities — K1/K2/K3 (unit 2C). The handler itself is a one-line
-# call into `capabilities.build_capabilities()`; all of K1's substance
-# (walking COMMAND_TABLE, the events[]/event_schema projection, ui_methods
-# always [], the declined[] reasons) lives in `rpc/capabilities.py` — see
-# that module's docstring for why the table lookup is deferred to call time.
-# ─────────────────────────────────────────────────────────────────────────
 
 
 @command(
@@ -1412,21 +1297,6 @@ async def _handle_get_capabilities(
     return capabilities.build_capabilities()
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# new_session / fork / switch_session — the runtime-host verbs (phase 3, H1).
-# `AgentSessionRuntime` (agent_session_runtime.py) owns the H2 veto / H3
-# reset / H4 atomicity; this module's job is only the wire shape — turn the
-# runtime's `{cancelled, session, session_id, cursor, store}` into F2's
-# session tuple (E5: every mutating response returns the resulting cursor).
-# Whether that tuple is ADDRESSABLE is a field on it, not an assumption in
-# the name (finding 7) — see `session_log_is_addressable`, and
-# `list_sessions` (finding 8) for the enumeration that gives the word its
-# meaning.
-# ─────────────────────────────────────────────────────────────────────────
-
-#: v1 has exactly one lane per session (F2 — lanes are Tier C, not this
-#: phase). A named constant rather than a literal repeated three times below,
-#: so the day lanes ship, the one place claiming "primary" is obvious.
 _PRIMARY_LANE = "primary"
 
 
@@ -1487,80 +1357,50 @@ def _lifecycle_result(outcome: dict[str, Any]) -> dict[str, Any]:
             "session_id": outcome["session_id"],
             "lane": _PRIMARY_LANE,
             "cursor": outcome["cursor"],
-            # Finding 7: the one field that keeps this tuple from lying about
-            # itself. `session_log_is_addressable` is defined further down,
-            # beside the `_DURABLE_LOCATION_ATTRS` list it reads (that is the
-            # thing it is about) and resolved at call time; see its docstring
-            # for why "addressable" is the same question D-7 asks and not a
-            # second one.
             "addressable": session_log_is_addressable(outcome["session"]),
         },
         "cursor": outcome["cursor"],
     }
 
 
-SWITCH_SESSION_PARAMS_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
+SWITCH_SESSION_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
+    "switch_session",
+    overrides={
         "session_id": {
-            "type": "string",
             "description": (
                 "An exact session id, or a unique id prefix, scoped to this "
-                "process's cwd — the same resolution --session REF uses "
-                "headlessly (SessionCatalog.resolve_ref). Every acceptable "
-                "value is a `session_id` list_sessions returned (finding 8): "
-                "resolve_ref is built on the same list(cwd) that verb "
-                "publishes, so the two cannot disagree."
+                "process's cwd — the same resolution --session REF uses headlessly "
+                "(SessionCatalog.resolve_ref). Every acceptable value is a "
+                "`session_id` list_sessions returned (finding 8): resolve_ref is "
+                "built on the same list(cwd) that verb publishes, so the two cannot "
+                "disagree."
             ),
         },
     },
-    "required": ["session_id"],
-    "additionalProperties": False,
-}
+)
 
 
-#: `new_session` params (Blocker 2 of the Tier B review). `persist` was a
-#: hardcoded `False` in the handler until then — the same defect the startup
-#: session had, one hop over the wire: a host got back an addressable-looking
-#: `{store, session_id, cursor}` tuple for a session no `switch_session`
-#: could ever resolve and no durability-promising verb could honestly serve.
-#:
-#: The DEFAULT lives here rather than on `AgentSessionRuntime.new_session`,
-#: whose `persist` is deliberately required-not-defaulted ("Fail-Early: the
-#: caller states what it wants rather than inheriting a guess" — that layer
-#: also serves the TUI, where the answer differs). At the wire, a default is
-#: not a guess: it is a published part of the contract, stated here and in
-#: the verb's notes, and this handler still passes an explicit value down.
-#:
-#: `validate_params` implements no `default` keyword (`_SUPPORTED_VALUE_
-#: KEYWORDS`, and it never rewrites the params dict anyway), so the default
-#: is documented in this description and applied by the handler — not
-#: declared in a keyword the validator would reject at import time.
-NEW_SESSION_PARAMS_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
+NEW_SESSION_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
+    "new_session",
+    overrides={
         "persist": {
-            "type": "boolean",
             "description": (
                 "Whether the new session is written to the configured store. "
-                "Omitted defaults to TRUE: addressable by switch_session, "
-                "listed by list_sessions, and able to keep what set_model/"
-                "set_session_name/"
-                "compact append to it. false gives an in-memory conversation "
-                "that outlives nothing — the result then reports "
-                "`session.addressable: false` (finding 7), no list_sessions "
-                "row exists for its id, switch_session refuses it, and those "
-                "three verbs "
-                "REFUSE (SESSION_NOT_PERSISTED) rather than return "
-                "a cursor for a write that never landed. Which verbs those "
-                "are is not a list to memorise: D-7 (commands.py 'DURABILITY "
-                "in Tier B') is 'the verb that appends refuses', and the "
-                "rest — including set_auto_compaction — answer normally."
+                "Omitted defaults to TRUE: addressable by switch_session, listed "
+                "by list_sessions, and able to keep what set_model/"
+                "set_session_name/compact append to it. false gives an in-memory "
+                "conversation that outlives nothing — the result then reports "
+                "`session.addressable: false` (finding 7), no list_sessions row "
+                "exists for its id, switch_session refuses it, and those three "
+                "verbs REFUSE (SESSION_NOT_PERSISTED) rather than return a cursor "
+                "for a write that never landed. Which verbs those are is not a "
+                "list to memorise: D-7 (commands.py 'DURABILITY in Tier B') is "
+                "'the verb that appends refuses', and the rest — including "
+                "set_auto_compaction — answer normally."
             ),
         },
     },
-    "additionalProperties": False,
-}
+)
 
 
 @command(
@@ -1589,14 +1429,12 @@ NEW_SESSION_PARAMS_SCHEMA: dict[str, Any] = {
         "or wait for agent_end first."
     ),
     params_schema=NEW_SESSION_PARAMS_SCHEMA,
-    result_schema=SESSION_LIFECYCLE_RESULT_SCHEMA,
+    result_schema=result_schema_for("new_session"),
 )
 async def _handle_new_session(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     runtime = _require_runtime(handler)
-    # The wire's documented default, applied HERE and passed down explicitly —
-    # the runtime below has no default of its own to inherit, on purpose.
     outcome = await runtime.new_session(persist=params.get("persist", True))
     return _lifecycle_result(outcome)
 
@@ -1618,8 +1456,8 @@ async def _handle_new_session(
         "accepts; the field is reported rather than assumed, because a host "
         "reads ONE contract across all three of these verbs (finding 7)."
     ),
-    params_schema=NO_PARAMS_SCHEMA,
-    result_schema=SESSION_LIFECYCLE_RESULT_SCHEMA,
+    params_schema=params_schema_for("fork"),
+    result_schema=result_schema_for("fork"),
 )
 async def _handle_fork(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
@@ -1647,7 +1485,7 @@ async def _handle_fork(
         "even with an in-flight turn."
     ),
     params_schema=SWITCH_SESSION_PARAMS_SCHEMA,
-    result_schema=SESSION_LIFECYCLE_RESULT_SCHEMA,
+    result_schema=result_schema_for("switch_session"),
 )
 async def _handle_switch_session(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
@@ -1658,21 +1496,6 @@ async def _handle_switch_session(
     except LookupError as exc:
         raise RPCError(INVALID_PARAMS, str(exc), data={"session_id": params["session_id"]}) from exc
     return _lifecycle_result(outcome)
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Tier B shared helpers (B0, docs/RPC-TIER-B.md §3 "B0 — scaffolding").
-#
-# Two helpers every Tier B unit builds on, so none of B1/B2/B4/B5 hand-rolls
-# its own copy of either pattern:
-#   - turn_safety_guard   — D-1's bounded turn_lock acquire + TURN_STILL_RUNNING.
-#   - require_log_appender — §1.1's "the bound log must have this appender,
-#     else raise".
-# Both live here, in the table-definition area, rather than inside any one
-# verb's marker region below — B0 lands first and commits this section
-# before any of the six worktrees branch, so there is nothing here for a
-# parallel unit to conflict on.
-# ─────────────────────────────────────────────────────────────────────────
 
 
 @asynccontextmanager
@@ -1719,7 +1542,11 @@ async def turn_safety_guard(
 
     Callers (docs/RPC-TIER-B.md D-1 — the MUTATING Tier B verbs):
     ``set_model`` (B1), ``compact`` (B2), ``set_auto_compaction`` (B4),
-    ``set_session_name`` (B5). The tier's reads take no guard:
+    ``set_session_name`` (B5). Tier C's mutating verbs take it too, through
+    :func:`tree_mutation_guard` for ``navigate``, ``summarize_and_navigate``,
+    ``elide_span``, ``commit_branch`` and ``paste_subtree``, and directly for
+    ``enable_extension``, ``disable_extension`` and ``reload_extension``. The
+    tier's reads take no guard:
     ``get_session_stats`` (B3), ``get_last_assistant_text`` (B6),
     ``get_session_name`` (B5's second verb), ``get_models`` (no B row —
     finding 7 of the Tier B review) and ``list_sessions`` (no B row either —
@@ -1791,86 +1618,12 @@ def require_log_appender(session: "AgentSession", appender_name: str, *, verb: s
         )
 
 
-#: How a ``ConversationSession`` declares WHERE it durably lives — one
-#: attribute name per store τ ships (Blocker 2 of the Tier B review).
-#:
-#: ``path`` — ``tau_coding_agent.session_store.Session``: a ``Path``, or
-#: ``None`` on the ``create_in_memory``/``create_ephemeral`` product, whose
-#: ``_persist_header``/``_persist_entry`` are then ``return``-on-``None``
-#: no-ops (``session_store.py:585,593``).
-#: ``root_doc_id`` — ``tau_jmfts.store.JmftsSessionLog``: the JMFTS document
-#: id of the conversation root, which its own docstring names as "the
-#: storage-agnostic ``ref`` a future catalog resolves ``load()`` against".
-#: That store's ephemeral product (``tau_jmfts.catalog
-#: ._EphemeralConversationSession``) has neither name — deliberately, since
-#: its docstring rejects "silently returning a file-backed Session" as a
-#: dishonest out.
-#:
-#: A NAME LIST rather than a Protocol member because the durability question
-#: is asked HERE, at the wire, and answering it in the ``ConversationSession``
-#: Protocol would force every store — and every test double — to grow a
-#: member nothing else calls, which is the exact cost ``SessionLog``'s own
-#: docstring exists to refuse. The coupling is real and is priced: a store
-#: that renames its location attribute makes the RPC layer REFUSE every
-#: appending verb (D-7 rule 1) — loud, and caught by the class-level pins in
-#: ``test_rpc_tier_b_scaffolding.py``), never silently promise them. That
-#: asymmetry is the whole point — unknown means no, not yes.
-_DURABLE_LOCATION_ATTRS: tuple[str, ...] = ("path", "root_doc_id")
-
-
-def _declared_durable_locations(log: object) -> dict[str, Any]:
-    """Which of :data:`_DURABLE_LOCATION_ATTRS` this log declares, and to
-    what. One implementation, two callers with different jobs:
-    :func:`require_durable_session` (D-7 rule 1 — which of "declares nothing"
-    and "declares None" happened decides which refusal message the host
-    gets) and :func:`session_log_is_addressable` (finding 8 — which only
-    needs the yes/no).
-    """
-    return {name: getattr(log, name) for name in _DURABLE_LOCATION_ATTRS if hasattr(log, name)}
-
-
-def session_log_is_addressable(log: object) -> bool:
-    """Whether this session is one a later ``switch_session`` could reach —
-    the predicate ``new_session``/``fork``/``switch_session`` publish as
-    ``session.addressable`` (finding 7 of the Tier B review).
-
-    Finding 7 measured ``new_session {"persist": false}`` handing back
-    ``{"store": "file", "session_id": "5543562f…", "lane": "primary",
-    "cursor": "614c4017"}`` under a schema whose description read "F2's
-    addressable tuple" — while ``switch_session`` on that very id answered
-    ``-32602 no session matches '5543562f…'``, and ``store: "file"`` named a
-    file that was never created. Unconditional prose about a value that has
-    become conditional (the previous round turned ``persist`` into a
-    documented, selectable mode) is the defect; this is the field that makes
-    the result say which it is.
-
-    **Deliberately the SAME question D-7 asks**, not a second one: a session
-    is addressable exactly when it declares a durable location and that
-    location is set, because that is also what puts it in the store's
-    listing — ``list_sessions`` returns ``SessionCatalog.list(cwd)``, and
-    ``switch_session`` resolves through ``resolve_ref``, which is built on
-    that same listing. So "addressable" is not an opinion this function
-    forms: it is "``list_sessions`` will return this id", stated at the
-    moment the id is minted. An ephemeral session (``create_ephemeral`` —
-    the file store's ``path``-less ``Session``, the JMFTS store's
-    ``_EphemeralConversationSession``, which declares neither name) is
-    therefore ``false``, and the verbs D-7 rule 1 governs refuse on it for
-    the same underlying reason.
-
-    A predicate rather than a raise, because the caller is not promising
-    anything here: ``new_session`` was ASKED for an unpersisted session and
-    correctly made one. What it must not do is describe it as addressable.
-    """
-    declared = _declared_durable_locations(log)
-    return bool(declared) and any(value is not None for value in declared.values())
-
-
 def require_durable_session(session: "AgentSession", *, verb: str) -> None:
     """The precondition a verb takes before promising a durable write — the
     corrected §1.1 guard (Blocker 2 of the Tier B review).
 
     Raises ``RPCError(SESSION_NOT_PERSISTED)`` unless the bound ``session_log``
-    declares a durable location (:data:`_DURABLE_LOCATION_ATTRS`) and that
+    declares a durable location (:data:`DURABLE_LOCATION_ATTRS`) and that
     location is actually set.
 
     Callers, and the rule that decides who calls it — D-7, stated once in
@@ -1932,12 +1685,12 @@ def require_durable_session(session: "AgentSession", *, verb: str) -> None:
     to.)
     """
     log = session.session_log
-    declared = _declared_durable_locations(log)
+    declared = declared_durable_locations(log)
     if not declared:
         raise RPCError(
             SESSION_NOT_PERSISTED,
             f"{verb}: the bound session log ({type(log).__name__}) declares no durable "
-            f"location (none of {', '.join(_DURABLE_LOCATION_ATTRS)}) — this verb will "
+            f"location (none of {', '.join(DURABLE_LOCATION_ATTRS)}) — this verb will "
             "not return a cursor for a write it cannot promise survives the process",
         )
     if all(value is None for value in declared.values()):
@@ -1950,238 +1703,24 @@ def require_durable_session(session: "AgentSession", *, verb: str) -> None:
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# E5 in Tier B — ONE answer, applied to every `since="tier-b"` verb.
-#
-# No verb COUNT is stated anywhere in this block on purpose: `get_models`
-# landed after this rule was written (finding 7 of the same review) and
-# falsified every hand-written tally in the tier at a stroke. The
-# enumerations below are pinned instead — see the bottom of this block.
-#
-# E5 (docs/REMOTE-CONTROL.md §4[4], line 267) is stated unconditionally:
-# "Every response to a mutating command returns the resulting cursor." The
-# tier first shipped TWO readings of it — `compact` returned the tip even
-# when it changed nothing ("the unchanged current tip"), while
-# `set_auto_compaction`, equally mutating and equally guarded by D-1,
-# returned no `cursor` key at all and neither its schema nor its notes said
-# why (finding 5 of the Tier B review). This is the settled rule, written
-# here rather than re-derived per verb:
-#
-#   1. A MUTATING verb's COMPLETION always carries `cursor`, `required` in
-#      the schema that describes it and present on every success — INCLUDING
-#      when the call advanced nothing: a set that changed no value, a
-#      compaction that found nothing to compact, a verb that appends no log
-#      entry at all. "Completion" is the response itself for the
-#      synchronous mutators (`set_model`, `set_auto_compaction`,
-#      `set_session_name`) and the `compaction_end` notification for
-#      `compact`, whose response is only an acknowledgement (C3/D-5).
-#   2. A READ never carries one. `get_last_assistant_text`, `get_models`,
-#      `get_session_name`, `get_session_stats` and `list_sessions` have no
-#      `cursor` field; a host that wants the tip without mutating calls
-#      `get_state`.
-#   3. Absence is never a signal. Omitting `cursor` to mean "nothing moved"
-#      would make a host infer the tip from a missing key, which is exactly
-#      the inference F3 (§7.2, "no host may cache 'the tip'") exists to
-#      forbid — and it costs that host a round trip to learn what the
-#      response in its hand could have told it.
-#
-# `abort` (and `submit`/`prompt`) are NOT counterexamples, and the exception
-# they carve is about TIME, not about no-ops: those verbs return before the
-# mutation they ask for has happened, so any cursor taken at signal time
-# would be the PRE-mutation tip — see `abort`'s own notes, which record the
-# phase-2 trace that measured the difference. Rule 1 applies wherever the
-# mutation is already complete when the completion is built, which is every
-# Tier B mutator.
-#
-# Pinned by `test_rpc_tier_b_scaffolding.py`'s
-# `test_e5_is_answered_one_way_across_tier_b`, which also fails when a NEW
-# `since="tier-b"` verb is added without classifying it as a read or a
-# mutator — and by `test_the_prose_enumerations_of_tier_b_name_every_verb`,
-# which fails when a new verb is classified there but left out of rule 1's
-# or rule 2's list above (or out of `turn_safety_guard`'s docstring).
-# ─────────────────────────────────────────────────────────────────────────
-
-# ─────────────────────────────────────────────────────────────────────────
-# DURABILITY in Tier B (D-7) — ONE answer, applied to every `since="tier-b"`
-# verb. Written here so a host reads it once instead of deriving it from
-# whichever verb it happened to try first.
-#
-# Finding 6 of the Tier B review measured three different answers on ONE
-# `new_session {"persist": false}` session: `set_model` and
-# `set_session_name` refused (-32603 "this session is unpersisted"),
-# `set_auto_compaction` returned a cursor, and `compact` ran to completion
-# and reported a cursor for a `compaction` entry that dies with the process.
-# No verb's notes said which of those was the rule.
-#
-# The rule, and it is mechanical — a host can apply it without knowing any
-# verb's intent:
-#
-#   1. A verb that APPENDS a session-log entry calls
-#      `require_durable_session` FIRST and refuses an unpersisted session
-#      outright: `set_model` (D-2's model_change), `set_session_name`
-#      (session_info), `compact` (compaction). Nothing is mutated before the
-#      refusal, so it is total.
-#   2. A verb that appends NOTHING never asks the question:
-#      `get_last_assistant_text`, `get_models`, `get_session_name`,
-#      `get_session_stats`, `list_sessions`, and `set_auto_compaction` — the
-#      last of which is why this rule is worth writing down, being a MUTATOR
-#      (D-1-guarded, E5-cursor-carrying) whose whole product is an in-memory
-#      field on `CompactionSettings`. Its `cursor` is the live tip reported
-#      as a READ (E5 rule 1 still requires it on a mutator's completion), not
-#      a claim that this call wrote anything.
-#      No verb COUNT appears above, for the reason the "E5 in Tier B" block
-#      states about its own lists: `get_models` landed after that rule was
-#      written and falsified every hand-written tally in the tier at a
-#      stroke. The enumerations are pinned instead.
-#   3. It is the SESSION's durability that is in question, never the
-#      directory it lives in. Unit S moved `--mode rpc`'s default session
-#      base to `<tmp>/.tau-<uid>/sessions` (D-6); that changes how LONG a persisted
-#      session lasts — stated on the wire in `set_model`'s and
-#      `set_session_name`'s notes — and changes nothing here. This rule keys
-#      on `path is None`, which is what `require_durable_session` asks.
-#
-# Rule 1 is not new for `compact`; it is Blocker 2's answer, applied to the
-# one verb that had not been given it. `set_model` mutates live state AND
-# appends, and Blocker 2 settled that it refuses — so "it also does
-# something in memory" is already known not to buy an exemption, and giving
-# `compact` the opposite answer would be the fourth derivation, not a
-# principle.
-#
-# TWO COSTS, both stated rather than hidden:
-#
-#   - `compact` is now REFUSED on an unpersisted session, where it used to
-#     work. A host that wants both is asking for two contradictory things
-#     (nothing survives this process / rewrite the log I am keeping), and the
-#     honest fix is the one `require_durable_session`'s message already
-#     names: move onto a persisted session. Auto-compaction remains available
-#     there — see the next bullet, which is the same fact seen as a gap.
-#   - `set_auto_compaction(enabled=true)` on an unpersisted session ARMS a
-#     mechanism that then appends `compaction` entries to that same
-#     non-durable log, from inside `AgentSession._maybe_auto_compact` — a
-#     code path with no RPC verb on it and therefore nothing for rule 1 to
-#     guard. Same class as the gap `compact`'s notes already record about
-#     `AgentSession.compact()` not taking `turn_lock` itself: this tier
-#     guards the wire, not `AgentSession`'s internals, and widening
-#     `AgentSession` is out of its scope.
-#
-# Out of scope, deliberately: `new_session`/`fork`/`switch_session` (Tier A).
-# They do not append to the bound log, they REPLACE it, and `persist` is
-# `new_session`'s own published parameter — a host states durability there
-# rather than discovering it.
-#
-# Pinned by `test_rpc_tier_b_scaffolding.py`'s
-# `test_d7_is_answered_one_way_across_tier_b`, which reads the shipped
-# handler sources: a guarded verb that loses its `require_durable_session`
-# call, an unguarded verb that grows one, or a NEW `since="tier-b"` verb
-# classified in neither list, all fail there.
-# ─────────────────────────────────────────────────────────────────────────
-
-# ─────────────────────────────────────────────────────────────────────────
-# Tier B verb regions (docs/RPC-TIER-B.md). Six came from B0's scaffolding;
-# `get_models` and `list_sessions` were added by the finding-7 and finding-8
-# units of the Tier B review in the same alphabetical scheme. One per WRITING
-# UNIT rather than per verb — B5 owns both `set_session_name` and
-# `get_session_name` and holds them in the one region, which is the property
-# that matters here (a region is a claim on the file, not an index of the
-# table). Alphabetically ordered and CONTIGUOUS. Parallel agents each write
-# ONLY inside their own region, in separate worktrees (docs/RPC-TIER-B.md §3
-# "B0 — scaffolding" point 1) — that is the whole reason these exist EMPTY
-# ahead of any verb's implementation, and why an empty pair must not be
-# deleted as clutter: it is a reservation, not dead code. A verb's schema
-# constants and its `@command(...)`-decorated handler both go inside its own
-# region.
-# ─────────────────────────────────────────────────────────────────────────
-
 ### begin tier-b:compact
 
-COMPACT_PARAMS_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
+COMPACT_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
+    "compact",
+    overrides={
         "custom_instructions": {
-            "type": "string",
             "description": (
                 "Optional extra focus for the generated summary, threaded "
                 "unchanged to AgentSession.compact(custom_instructions=...)."
             ),
         },
     },
-    "additionalProperties": False,
-}
+)
 
-#: Blocker 1 (Tier B review): `compact`'s RESPONSE is now an
-#: acknowledgement, not the outcome — the summarization LLM call it starts is
-#: bounded by nothing but the provider (measured: 20s on a gated fake, during
-#: which `get_state` and `abort` were not merely slow but UNPARSED, because
-#: `transport._read_stdin` awaits each dispatched line to completion before
-#: reading the next). So this verb takes C3's dual completion, exactly as
-#: `submit`/`prompt` do (`_submit_and_acknowledge`): this response says only
-#: that the compaction was admitted and is running; the outcome arrives
-#: later, on the `compaction_end` notification below.
-#:
-#: `accepted` is always `true` when this shape is returned at all — a refusal
-#: is an error response (TURN_STILL_RUNNING), never `accepted: false` — and
-#: is present for symmetry with `_accept_result`'s C3 shape rather than as a
-#: field a host must branch on.
-COMPACT_RESULT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "accepted": {
-            "type": "boolean",
-            "description": (
-                "Always true — the compaction was admitted and is now running "
-                "in the background. A refusal is an error response instead "
-                "(TURN_STILL_RUNNING), never accepted: false."
-            ),
-        },
-        "compaction_id": {
-            "type": "string",
-            "description": (
-                "Correlates this acknowledgement to the compaction_end "
-                "notification that reports the outcome. Server-generated; a "
-                "host does not supply it."
-            ),
-        },
-    },
-    "required": ["accepted", "compaction_id"],
-}
+COMPACT_RESULT_SCHEMA: dict[str, Any] = result_schema_for("compact")
 
-#: The JSON-RPC notification method `compact`'s SECOND completion arrives on.
-#: A distinct method rather than the ordinary `event` channel: every `event`
-#: notification carries a `WireEvent` (`rpc_event_schema.py`), whose `type`
-#: is a closed Literal copy of `AgentEvent.type` — a compaction outcome is
-#: not an `AgentEvent` and has nowhere to live in that model without
-#: widening two modules this unit does not own. See the verb's `notes` for
-#: the discoverability consequence, stated rather than hidden.
 COMPACTION_END_METHOD = "compaction_end"
 
-#: The payload of that notification — the shape this verb's RESULT used to
-#: have, plus the two correlation fields (`compaction_id`, `request_id`) a
-#: host needs now that it no longer rides the response, plus `is_error`/
-#: `error` (the `agent_end` spelling) for a compaction that raised.
-#:
-#: `AgentSession.compact()` returns `CompactionResult | None` (§1 ground
-#: truth) — `None` is a REAL outcome (an empty conversation; one already
-#: ending in a compaction summary; or a cut that would remove no message
-#: from the context, which under the shipped `keep_recent_tokens` is every
-#: conversation smaller than 20000 tokens and therefore this verb's ORDINARY
-#: default-settings answer), not an error, so `performed` carries that
-#: outcome on the wire rather than a raised/absent distinction a client
-#: would have to infer.
-#: `performed=true` mirrors `CompactionResult`'s own fields one-for-one
-#: (`compaction.py`): `summary`, `first_kept_entry_id`, `tokens_before`,
-#: `tokens_saved`, `compacted_entry_ids`, `usage`, plus `read_files`/
-#: `modified_files` flattened out of `CompactionDetails` (never `null` when
-#: `details` itself is `None` — that case reports empty lists, the same
-#: "nothing observed" `CompactionDetails`'s own default factory reports,
-#: not a fabricated value). `performed` is ABSENT (not `false`) when
-#: `is_error` is true: a compaction that raised did not "not perform because
-#: there was nothing to compact", and reporting the two the same way would
-#: fabricate an outcome nobody observed (Fail Early). `cursor` is always
-#: present (E5) — the post-compaction tip when `performed`, otherwise the
-#: unchanged tip the call left in place — because by the time this
-#: notification is built the mutation (or non-mutation, or failure) has
-#: already fully happened, unlike `abort`'s signal-only shape (see
-#: `ABORT_RESULT_SCHEMA`'s notes on why THAT verb omits cursor).
 COMPACTION_END_PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -2291,11 +1830,6 @@ COMPACTION_END_PARAMS_SCHEMA: dict[str, Any] = {
     "required": ["compaction_id", "request_id", "is_error", "cancelled", "cursor"],
 }
 
-# Not a `CommandEntry` (a notification has no row in the command table), so
-# `CommandEntry.__post_init__`'s import-time vocabulary check never sees it —
-# run it here explicitly instead. Without this, a keyword `validate_params`
-# does not implement could sit in the schema above validating nothing, which
-# is precisely the failure `_assert_supported_schema` exists to make loud.
 _assert_supported_schema(COMPACTION_END_PARAMS_SCHEMA, f"{COMPACTION_END_METHOD} (notification)")
 
 
@@ -2468,10 +2002,6 @@ async def _handle_compact(
     session = handler.session
     custom_instructions = params.get("custom_instructions")
 
-    # D-7 rule 1, BEFORE the single-flight slot is taken and before the
-    # provider is paid: this verb appends a `compaction` entry, so it refuses
-    # a session that cannot keep one. See the "DURABILITY in Tier B" block
-    # above for why the in-memory half of the work buys no exemption.
     require_durable_session(session, verb="compact")
 
     in_flight = handler.compaction_in_flight
@@ -2486,23 +2016,10 @@ async def _handle_compact(
     handler.compaction_in_flight = compaction_id
 
     loop = asyncio.get_running_loop()
-    #: Resolved when the guard is held and the acknowledgement is already
-    #: enqueued; carries the guard's `RPCError` instead when it refuses, so
-    #: THIS call's own response is the refusal (unchanged D-1 contract).
     acknowledged: asyncio.Future[None] = loop.create_future()
-    #: Finding 5: which of the two cancellation sources reached this task.
-    #: `abort` (host asked, host is still there to be told) reports
-    #: `cancelled: true` on `compaction_end`; a shutdown reap reports on
-    #: stderr and emits nothing (D-5). `asyncio.CancelledError` alone cannot
-    #: tell them apart, so the aborter records it.
     cancelled_by_abort = False
 
     def _acknowledge() -> None:
-        # Enqueued synchronously, exactly like `_submit_and_acknowledge`'s
-        # `_on_admitted` and for exactly that function's stated reason (T3:
-        # `_output_queue` carries no capacity limit, so a control-plane
-        # `put_nowait` cannot raise QueueFull and never has to choose
-        # between reordering C3 and dropping the response).
         handler._output_queue.put_nowait(
             {
                 "jsonrpc": "2.0",
@@ -2514,19 +2031,12 @@ async def _handle_compact(
                 },
             }
         )
-        # Finding 5: `abort` can reach this compaction from exactly here on —
-        # the instant the host learns `compaction_id` exists, and the instant
-        # after which cancelling the task can no longer wedge the `await
-        # acknowledged` below. See `RPCHandler.bind_compaction_aborter`.
         handler.bind_compaction_aborter(_cancel_for_abort)
         acknowledged.set_result(None)
 
     def _cancel_for_abort() -> None:
         nonlocal cancelled_by_abort
         cancelled_by_abort = True
-        # `task` is bound before `_drive` ever runs (`create_task` schedules,
-        # it does not call), and this closure only ever runs from
-        # `_handle_abort` — i.e. from a later dispatch, on the same loop.
         task.cancel()
 
     def _complete(payload: dict[str, Any]) -> None:
@@ -2536,20 +2046,6 @@ async def _handle_compact(
             **payload,
         }
         if not handler.output_is_deliverable:
-            # Finding 3 (Tier B review), T4. `run()`'s writer is already
-            # gone, so this `put_nowait` would enqueue onto a queue nobody
-            # will ever dequeue — the measured hole in D-5's completion
-            # contract, where a compaction ran, was durably written to the
-            # session log, and reported nothing at all (rc 0, empty stderr).
-            # `run()` now reaps background tasks BEFORE draining the writer,
-            # which is what makes the ordinary shutdown DELIVER this
-            # notification; this branch covers the paths where delivery is
-            # genuinely impossible rather than merely late — a broken pipe
-            # (T6), or SIGTERM cancelling the writer outright (P1) — and
-            # reports the outcome on stderr for exactly the reason the
-            # cancellation arm below already does. The whole payload, not a
-            # summary: a truncated report of a mutation that landed is the
-            # same defect wearing a smaller hat.
             print(
                 f"[τ-rpc] compaction {compaction_id!r} finished after the RPC "
                 "writer had already exited — no compaction_end could be "
@@ -2572,20 +2068,7 @@ async def _handle_compact(
                     _acknowledge()
                     result = await session.compact(custom_instructions=custom_instructions)
             except asyncio.CancelledError:
-                # Two sources, and they get opposite answers (finding 5).
-                #
-                # Either way nothing was written: `AgentSession.compact()`
-                # generates the summary BEFORE appending the `compaction`
-                # entry, so a cancellation inside the provider call leaves the
-                # log exactly as it was (Fail-Early — no partial summary is
-                # ever appended).
                 if cancelled_by_abort:
-                    # A HOST asked for this, by name, and is still connected
-                    # holding the `compaction_id` this call acknowledged. It
-                    # gets told on the wire, with `cancelled: true` and no
-                    # `performed`: a compaction stopped part-way neither
-                    # performed nor found nothing to do. `abort`'s own
-                    # response already named this id, so the pair correlates.
                     _complete(
                         {
                             "is_error": False,
@@ -2595,23 +2078,6 @@ async def _handle_compact(
                         }
                     )
                     raise
-                # `run()`'s teardown reaping this task (`_cancel_background_
-                # tasks`), i.e. phase 2 — the compaction outlived the grace
-                # period and was cancelled inside `AgentSession.compact()`.
-                # D-5 settles what that reports: stderr (T4), and NO
-                # `compaction_end`. The reason it is not the branch above:
-                # nobody asked for this cancellation, so an unsolicited
-                # outcome would be the process announcing its own death to a
-                # host that is, in the case this arm exists for, already gone.
-                #
-                # This arm's ORIGINAL reason ("the writer is already gone by
-                # then") lapsed with finding 3's fix: the reap now runs while
-                # the writer is still alive, so a notification built here
-                # WOULD reach the host. The decision above is what keeps it
-                # from being built, not the wire's availability. Behaviour
-                # unchanged; only the stated reason is, because a comment
-                # that argues from a premise that stopped being true is how
-                # the next edit gets it wrong.
                 print(
                     f"[τ-rpc] compaction {compaction_id!r} was cancelled before it "
                     "finished (RPC shutdown) — no compaction_end will follow",
@@ -2620,16 +2086,8 @@ async def _handle_compact(
                 raise
             except Exception as exc:  # noqa: BLE001 - see the two branches
                 if not acknowledged.done():
-                    # Failed before the acknowledgement — the guard's
-                    # TURN_STILL_RUNNING refusal (D-1), or anything else that
-                    # went wrong before compact() started. This call's own
-                    # response is the only place it can surface.
                     acknowledged.set_exception(exc)
                     return
-                # Already acknowledged: the outcome channel is the
-                # notification, and a compaction that raised is reported as
-                # is_error rather than dropped (CompactionError is the
-                # expected shape here — Fail-Early, no summary was written).
                 _complete(
                     {
                         "is_error": True,
@@ -2647,15 +2105,8 @@ async def _handle_compact(
                 }
             )
         finally:
-            # Frees the single-flight slot AND drops `abort`'s handle on this
-            # task in one step, so a later `abort` cannot report having
-            # signalled a compaction that has already finished (finding 5).
             handler.release_compaction()
             if not acknowledged.done():
-                # Unreachable on every path above (each either acknowledges,
-                # sets the exception, or re-raises after `_acknowledge` ran) —
-                # kept so a future edit that adds an exit path cannot wedge
-                # the awaiting dispatch coroutine forever instead of failing.
                 acknowledged.cancel()
 
     task = asyncio.create_task(_drive())
@@ -2667,15 +2118,11 @@ async def _handle_compact(
 ### end tier-b:compact
 
 ### begin tier-b:complete_path
-COMPLETE_PATH_PARAMS_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "text": {
-            "type": "string",
-            "description": "The editor's contents as typed, NOT just the @word.",
-        },
+COMPLETE_PATH_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
+    "complete_path",
+    overrides={
+        "text": {"description": "The editor's contents as typed, NOT just the @word."},
         "cursor": {
-            "type": "integer",
             "minimum": 0,
             "description": (
                 "The cursor's character offset into `text`. Which @reference is "
@@ -2685,32 +2132,9 @@ COMPLETE_PATH_PARAMS_SCHEMA: dict[str, Any] = {
             ),
         },
     },
-    "required": ["text", "cursor"],
-    "additionalProperties": False,
-}
+)
 
-COMPLETE_PATH_RESULT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "completion": {
-            "type": ["object", "null"],
-            "description": (
-                "`null` when the cursor is not inside an @reference at all — "
-                "the host shows no popup. Otherwise "
-                "{start, end, token, matches, total}: `start`/`end` are the "
-                "character span of the whole @word, so a host replaces that "
-                "span rather than guessing where the token began; `matches` is "
-                "a list of {name, detail, is_dir}, `name` being the text that "
-                "goes AFTER the @ (directories end in '/'); `total` is how many "
-                "entries matched before the list was bounded, so a host can say "
-                "'12 of 340' instead of implying it showed everything. "
-                "An EMPTY `matches` with a non-null completion is the "
-                "'this names no file' warning, not an absence of information."
-            ),
-        },
-    },
-    "required": ["completion"],
-}
+COMPLETE_PATH_RESULT_SCHEMA: dict[str, Any] = result_schema_for("complete_path")
 
 
 @command(
@@ -2772,90 +2196,7 @@ async def _handle_complete_path(
 
 ### end tier-b:complete_path
 
-### begin tier-b:get_last_assistant_text
-#: B6 (docs/RPC-TIER-B.md §3 table): read-only, no D-1 guard — `session
-#: .messages` (already `EXPOSED["messages"] = "get_messages"`;
-#: `test_rpc_capability_audit.py`'s Tier B region for this verb is left
-#: EMPTY on purpose, per that file's own comment: no NEW AgentSession/
-#: AgentSessionRuntime method is reached here) is the only surface this
-#: handler touches — there is no `AgentSession.get_last_assistant_text`
-#: to call (§1 ground-truth table: "No method").
-GET_LAST_ASSISTANT_TEXT_RESULT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "text": {
-            "type": ["string", "null"],
-            "description": (
-                "The last assistant message's concatenated 'text' content "
-                "blocks, trimmed. null if no qualifying assistant message "
-                "exists YET, or if one exists but it has no text (e.g. a "
-                "pure tool-call turn) — the two cases are DELIBERATELY "
-                "indistinguishable on the wire, matching pi's own "
-                "`getLastAssistantText(): string | undefined` (pi "
-                "agent-session.ts:3092) and its RPC verb "
-                '(rpc-mode.ts:609-612, docs/rpc.md: \'Returns {"text": '
-                "null} if no assistant messages exist' — silent on the "
-                "second null-producing case, because on the wire there is "
-                "only one representable 'nothing' and pi does not either)."
-            ),
-        },
-    },
-    "required": ["text"],
-}
-
-
-def _last_assistant_text(messages: list[dict[str, Any]]) -> str | None:
-    """B6's whole contract, ported field-for-field from pi's
-    `AgentSession.getLastAssistantText()` (agent-session.ts:3092-3113) onto
-    τ's dict-shaped `session.messages` (`role`/`content`/`stop_reason` keys —
-    snake_case, per every other Tier A dict already on this table; pi's
-    `stopReason` is the only spelling that differs).
-
-    Two decisions this function is the answer to (unit brief): what a
-    caller with no assistant message yet sees, and what "text" means when
-    the last assistant message carries tool calls or thinking blocks
-    alongside — or instead of — text.
-
-    1. **Search order and the one message that is skipped.** Walk
-       `messages` from the END, and return on the first `role == "assistant"`
-       entry — EXCEPT one still-aborted-with-nothing-said turn: `stop_reason
-       == "aborted"` AND an empty `content` list. That combination is a
-       turn that was cut off before the model produced a single block (a
-       `stop_reason == "aborted"` message WITH content — e.g. abort mid
-       -stream after some text landed — is not skipped; its text still
-       counts, exactly as pi's own `msg.content.length === 0` check reads).
-       Skipping it means abort-and-retry does not erase visibility into
-       the last REAL answer.
-    2. **What counts as "text".** Only `type == "text"` content blocks,
-       concatenated in order with no separator (pi: `text += content.text`
-       inside the same `for` loop that silently passes over `"thinking"`
-       and `"toolCall"` blocks by never matching their type) — a
-       thinking block is not this session's ANSWER, and a bare tool-call
-       block has no `text` field to contribute. `.strip()` at the end (pi:
-       `.trim()`), and an empty result after stripping returns `None`, not
-       `""` — pi's `text.trim() || undefined`, so a pure-tool-call
-       assistant turn (real message, zero text) reads identically to "no
-       assistant message at all." Documented here, not hidden: a host
-       that needs to tell those two apart cannot do it from this verb
-       alone and must additionally consult `get_messages`.
-
-    Never raises: an empty or assistant-less `messages` list is the
-    ordinary "fresh session" case, not a Fail-Early violation — there is
-    nothing malformed about a session with no assistant turn yet.
-    """
-    for message in reversed(messages):
-        if message.get("role") != "assistant":
-            continue
-        if message.get("stop_reason") == "aborted" and not message.get("content"):
-            continue
-        text = "".join(
-            block.get("text", "")
-            for block in message.get("content", [])
-            if isinstance(block, dict) and block.get("type") == "text"
-        )
-        text = text.strip()
-        return text or None
-    return None
+GET_LAST_ASSISTANT_TEXT_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_last_assistant_text")
 
 
 @command(
@@ -2863,12 +2204,13 @@ def _last_assistant_text(messages: list[dict[str, Any]]) -> str | None:
     tier="B",
     since="tier-b",
     notes=(
-        "Derived from AgentSession.messages (already the get_messages verb's "
-        "surface) — there is no AgentSession.get_last_assistant_text to call "
-        "(docs/RPC-TIER-B.md §1: 'No method. Trivially derived'). Read-only, "
+        "AgentSession.get_last_assistant_text(), projected. The derivation used "
+        "to live HERE, in the wire layer (docs/RPC-TIER-B.md §1: 'No method. "
+        "Trivially derived') — which meant a head that was not this one had to "
+        "re-derive it and could reach a different answer; it is now one core call "
+        "and this verb is its projection. Read-only, "
         "no D-1 turn_safety_guard (nothing here mutates session state). "
-        "Ports pi's AgentSession.getLastAssistantText() (agent-session.ts:3092) "
-        "verb-for-verb: 'text' is the last qualifying assistant message's "
+        "'text' is the last qualifying assistant message's "
         "'text'-type content blocks concatenated and trimmed — thinking and "
         "toolCall blocks are skipped, never concatenated in; an assistant "
         "message that is itself stop_reason='aborted' with empty content is "
@@ -2884,64 +2226,19 @@ def _last_assistant_text(messages: list[dict[str, Any]]) -> str | None:
         "so no require_durable_session — this answers the same on a "
         "persisted and an unpersisted session."
     ),
-    params_schema=NO_PARAMS_SCHEMA,
+    params_schema=params_schema_for("get_last_assistant_text"),
     result_schema=GET_LAST_ASSISTANT_TEXT_RESULT_SCHEMA,
 )
 async def _handle_get_last_assistant_text(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    return {"text": _last_assistant_text(handler.session.messages)}
+    return {"text": handler.session.get_last_assistant_text()}
 
 
 ### end tier-b:get_last_assistant_text
 
-### begin tier-b:get_models
-#: Finding 7 of the Tier B review: `set_model` takes a config model NAME and
-#: NOTHING on this table enumerated them — `get_state` and
-#: `get_session_stats` publish only the ACTIVE model's `{id, provider,
-#: context_window}` — so a host's only route to a name `set_model` would
-#: accept was reading the child's `~/.tau/config.json` out of band. That
-#: defeats G1 (docs/REMOTE-CONTROL.md: "a second implementation should be
-#: possible from this document plus the generated reference"), and it is
-#: doubly awkward because `cycle_model`'s own `decline()` reason justifies
-#: refusing that verb on the grounds that NAMING a model is the supported
-#: path. This verb is that path's missing half.
-#:
-#: One level of `properties`, prose for the rest — `_assert_supported_schema`
-#: walks exactly one level and has no `items` vocabulary, so the element
-#: shape is DESCRIBED rather than declared, the same choice
-#: `GET_TOOLS_RESULT_SCHEMA`/`GET_COMMANDS_RESULT_SCHEMA` already make for
-#: their own arrays (pretending to check a second level would check nothing,
-#: silently).
-GET_MODELS_RESULT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "models": {
-            "type": "array",
-            "description": (
-                "Every config model NAME this child can switch to, sorted, as "
-                "[{name, model}]: `name` is the exact string set_model's "
-                "`name` param takes, and `model` is the SAME projection "
-                "get_state publishes for the active model — {id, provider, "
-                "context_window} — obtained by resolving `name` through the "
-                "session's bound model resolver, i.e. by asking the one "
-                "component set_model itself would ask. Empty only when the "
-                "child's config declares no models; a resolver that cannot "
-                "be enumerated is an INTERNAL_ERROR, never an empty list."
-            ),
-        },
-    },
-    "required": ["models"],
-}
+GET_MODELS_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_models")
 
-#: What the bound model resolver must expose for this verb to answer, and the
-#: whole of the coupling between it and `tau_coding_agent.backends`
-#: (`ConfigModelResolver.model_names`). Probed by name — `AgentSession
-#: ._model_resolver` is typed `Callable[[str], Model] | None`, so the method
-#: is invisible statically — exactly as `set_model` probes
-#: `append_model_change`, a method deliberately off the `SessionLog`
-#: Protocol (§1.1). Same asymmetry `_DURABLE_LOCATION_ATTRS` documents:
-#: unknown means REFUSE, never "assume there are no models".
 _MODEL_CATALOG_ATTR = "model_names"
 
 
@@ -2998,19 +2295,14 @@ _MODEL_CATALOG_ATTR = "model_names"
         "that a cross-provider switch surfaces a provider auth error on the "
         "next turn."
     ),
-    params_schema=NO_PARAMS_SCHEMA,
+    params_schema=params_schema_for("get_models"),
     result_schema=GET_MODELS_RESULT_SCHEMA,
 )
 async def _handle_get_models(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     session = handler.session
-    # `_model_resolver` (private) rather than a new public AgentSession
-    # accessor, the same idiom `get_tools` uses for `session._tools` and
-    # `get_session_stats` for `session._compaction_settings` — and the reason
-    # this verb's EXPOSED/NOT_EXPOSED regions in test_rpc_capability_audit.py
-    # are empty: no public AgentSession member becomes newly reachable.
-    resolver = session._model_resolver
+    resolver = session.model_resolver
     if resolver is None:
         raise RuntimeError(
             "get_models: no model resolver is bound to this AgentSession, so there is "
@@ -3032,20 +2324,12 @@ async def _handle_get_models(
         try:
             model = resolver(name)
         except (KeyError, ValueError) as exc:
-            # The resolver's own prose, verbatim (see _resolver_error_message —
-            # set_model's region — for why KeyError needs unwrapping). Not
-            # skipped: a config entry this child cannot build is a fact the
-            # host asking "what may I switch to?" most needs, and a list that
-            # quietly omitted it would be trusted as complete.
             raise RuntimeError(
                 f"get_models: config model {name!r} does not build: {_resolver_error_message(exc)}"
             ) from exc
         listed.append(
             {
                 "name": name,
-                # AgentSession.get_model()'s projection, field for field
-                # (agent_session.py) — the shape get_state already publishes,
-                # so a host compares the two directly.
                 "model": {
                     "id": model.id,
                     "provider": model.provider,
@@ -3058,108 +2342,7 @@ async def _handle_get_models(
 
 ### end tier-b:get_models
 
-### begin tier-b:get_session_stats
-#: D-3: hand-written, reviewed (§6 A3) — same discipline as every other
-#: result schema in this module. Nested objects (`context`,
-#: `compaction_settings`, `last_compaction`) are typed `"object"` with a
-#: prose description rather than their own `properties`, matching
-#: `GET_STATE_RESULT_SCHEMA`'s `model`/`usage` fields above — this
-#: module's hand-rolled validator (`_assert_supported_schema`) only walks
-#: one level of `properties`, so a second level would validate nothing
-#: silently; the house answer is to describe it in prose instead of
-#: pretending to check it.
-GET_SESSION_STATS_RESULT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "context": {
-            "type": "object",
-            "description": (
-                "estimate_context_tokens(session.messages) (compaction.py) "
-                "projected as {tokens, usage_tokens, trailing_tokens, "
-                "last_usage_index}: tokens is the total estimate the "
-                "compaction threshold is checked against; usage_tokens is "
-                "the anchored provider-reported count up to the last "
-                "assistant Usage, trailing_tokens the heuristic estimate "
-                "for messages after it, last_usage_index that message's "
-                "index (null if no assistant Usage exists yet, in which "
-                "case tokens==trailing_tokens and the whole list was "
-                "heuristically estimated)."
-            ),
-        },
-        "context_window": {
-            "type": "integer",
-            "description": "The active model's context_window (get_model()).",
-        },
-        "context_headroom": {
-            "type": "integer",
-            "description": (
-                "context_window - context.tokens. Can be negative: an "
-                "honest over-budget number, never clamped to zero."
-            ),
-        },
-        "compaction_settings": {
-            "type": "object",
-            "description": (
-                "The session's EFFECTIVE CompactionSettings — {enabled, "
-                "reserve_tokens, keep_recent_tokens}. No AgentSession "
-                "accessor exists for this (§1.1's ground truth), so this "
-                "reads session._compaction_settings directly, the same "
-                "precedent get_tools already sets for _tools. An RPC "
-                "session is CONSTRUCTED with enabled=False (backends.py:885) "
-                "— that is how a host discovers auto-compaction is off "
-                "(§1.1) — and set_auto_compaction (D-4, shipped in this same "
-                "tier) is the one thing that changes it, so this reports the "
-                "session's LIVE effective setting at call time, never a "
-                "constant."
-            ),
-        },
-        "last_compaction": {
-            "type": ["object", "null"],
-            "description": (
-                "{id, timestamp, summary, first_kept_id, tokens_before} for "
-                "the most recent type=='compaction' entry in "
-                "session_log.entries(), or null if this session has never "
-                "compacted — an honest absence, never a fabricated entry."
-            ),
-        },
-        "usage": {
-            "type": ["object", "null"],
-            "description": "AgentSession.get_usage() — null before the first completion.",
-        },
-    },
-    "required": [
-        "context",
-        "context_window",
-        "context_headroom",
-        "compaction_settings",
-        "last_compaction",
-        "usage",
-    ],
-}
-
-
-def _last_compaction_state(session: "AgentSession") -> dict[str, Any] | None:
-    """The newest `type=="compaction"` entry in `session.session_log.entries()`,
-    projected to the wire shape, or `None` if the session has never compacted.
-
-    Scans the log's own append order (`entries()` is "in load order" —
-    `session_log.py`), NOT the `ConversationTree` active path — cheaper, and
-    today's RPC surface never opens a second lane (Tier C's `open_lane` is
-    unbuilt), so there is no branch whose own compaction this could
-    misattribute to the primary session. Stated as a scope note, not hidden:
-    a future lane-aware caller would need `ConversationTree.context_entries()`
-    instead of this reversed linear scan.
-    """
-    for entry in reversed(session.session_log.entries()):
-        if entry.get("type") == "compaction":
-            return {
-                "id": entry.get("id"),
-                "timestamp": entry.get("timestamp"),
-                "summary": entry.get("summary"),
-                "first_kept_id": entry.get("firstKeptId"),
-                "tokens_before": entry.get("tokensBefore"),
-            }
-    return None
+GET_SESSION_STATS_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_session_stats")
 
 
 @command(
@@ -3173,8 +2356,8 @@ def _last_compaction_state(session: "AgentSession") -> dict[str, Any] | None:
         "session.messages) (compaction.py) as `context`; the model's "
         "context_window and the resulting context_headroom; the EFFECTIVE "
         "CompactionSettings as `compaction_settings` (enabled/reserve_tokens/"
-        "keep_recent_tokens — read from session._compaction_settings, since "
-        "no AgentSession accessor exists, §1.1's ground truth); the newest "
+        "keep_recent_tokens — read from AgentSession.compaction_settings, "
+        "which returns a copy); the newest "
         "compaction log entry as `last_compaction` (null if none — an "
         "honest absence); and get_usage() as `usage`, for cost. An RPC "
         "session is CONSTRUCTED with compaction_settings=CompactionSettings"
@@ -3193,119 +2376,52 @@ def _last_compaction_state(session: "AgentSession") -> dict[str, Any] | None:
         "commands.py 'DURABILITY in Tier B', rule 2: it appends nothing). "
         "That matters here specifically: this is the verb a host reads to "
         "decide whether to compact, and on an unpersisted session it still "
-        "answers while `compact` itself refuses (D-7 rule 1). Known gap: "
+        "answers while `compact` itself refuses (D-7 rule 1). The composition "
+        "is AgentSession.get_session_stats(), one core call, and this verb is "
+        "its projection: it used to be assembled here, in the wire layer, which "
+        "left every other head to assemble its own. Known gap: "
         "`last_compaction` is a scan of the "
         "log's own append order, not the ConversationTree active path — see "
-        "_last_compaction_state's docstring."
+        "AgentSession.get_last_compaction's docstring."
     ),
-    params_schema=NO_PARAMS_SCHEMA,
+    params_schema=params_schema_for("get_session_stats"),
     result_schema=GET_SESSION_STATS_RESULT_SCHEMA,
 )
 async def _handle_get_session_stats(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    # Local import, not module-level (§4 contention map): this file's top
-    # import block is shared by all six Tier B worktrees, and a new
-    # module-level import line there is exactly the kind of one-line
-    # addition that conflicts across parallel edits. This region is the
-    # only place B3 writes.
-    from tau_agent_core.compaction import estimate_context_tokens
-
-    session = handler.session
-    estimate = estimate_context_tokens(session.messages)
-    context_window = session.get_model()["context_window"]
-    settings = session._compaction_settings
+    stats = handler.session.get_session_stats()
+    last = stats.last_compaction
     return {
         "context": {
-            "tokens": estimate.tokens,
-            "usage_tokens": estimate.usage_tokens,
-            "trailing_tokens": estimate.trailing_tokens,
-            "last_usage_index": estimate.last_usage_index,
+            "tokens": stats.context.tokens,
+            "usage_tokens": stats.context.usage_tokens,
+            "trailing_tokens": stats.context.trailing_tokens,
+            "last_usage_index": stats.context.last_usage_index,
         },
-        "context_window": context_window,
-        "context_headroom": context_window - estimate.tokens,
+        "context_window": stats.context_window,
+        "context_headroom": stats.context_headroom,
         "compaction_settings": {
-            "enabled": settings.enabled,
-            "reserve_tokens": settings.reserve_tokens,
-            "keep_recent_tokens": settings.keep_recent_tokens,
+            "enabled": stats.compaction_settings.enabled,
+            "reserve_tokens": stats.compaction_settings.reserve_tokens,
+            "keep_recent_tokens": stats.compaction_settings.keep_recent_tokens,
         },
-        "last_compaction": _last_compaction_state(session),
-        "usage": session.get_usage(),
+        "last_compaction": None
+        if last is None
+        else {
+            "id": last.id,
+            "timestamp": last.timestamp,
+            "summary": last.summary,
+            "first_kept_id": last.first_kept_id,
+            "tokens_before": last.tokens_before,
+        },
+        "usage": stats.usage,
     }
 
 
 ### end tier-b:get_session_stats
 
-### begin tier-b:list_sessions
-#: Finding 8 of the Tier B review: `switch_session` takes "an exact session
-#: id, or a unique id prefix" and NOTHING on this table produced one. A host
-#: could only ever switch to a session it had created in this process
-#: (`new_session`/`fork`) or whose id it had recorded from a previous run's
-#: `get_state`; a session made by the TUI, by `tau -p`, or by an earlier RPC
-#: child was unreachable. Same defect `get_models` closed one round earlier
-#: for `set_model`'s config NAME, in the same shape and for the same reason —
-#: G1 (docs/REMOTE-CONTROL.md: "a second implementation should be possible
-#: from this document plus the generated reference"), which an out-of-band
-#: read of `~/.tau/sessions/<dashed-cwd>/*.jsonl` defeats. It was also absent
-#: from the `declined` table, which made it a C1 violation ("every verb τ
-#: deliberately does not implement is declined here, with a reason — never
-#: silently absent") rather than a deferral.
-#:
-#: One level of `properties`, prose for the rest — `_assert_supported_schema`
-#: walks exactly one level and has no `items` vocabulary, so the element
-#: shape is DESCRIBED rather than declared, the same choice
-#: `GET_MODELS_RESULT_SCHEMA` and `GET_TOOLS_RESULT_SCHEMA` already make for
-#: their own arrays (pretending to check a second level would check nothing,
-#: silently).
-LIST_SESSIONS_RESULT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "sessions": {
-            "type": "array",
-            "description": (
-                "Every session `switch_session` can resolve from this "
-                "connection, newest-modified first, as [{session_id, ref, "
-                "name, title, message_count, created, modified, parent, "
-                "error}]. `session_id` is the exact string switch_session's "
-                "`session_id` param takes. `ref` is the STORE's own handle "
-                "for that session (SessionCatalog's listing ref — the file "
-                "store's absolute .jsonl path, a JMFTS catalog's document "
-                "id): it is what names WHICH universe this listing is, since "
-                "--mode rpc's default session base is <tmp>/.tau-<uid>/sessions "
-                "and the TUI's is ~/.tau/sessions (D-6/H1b). `name` is what "
-                "set_session_name set, null if never named; `title` is the "
-                "picker's bounded display label (SessionInfo.display_title) "
-                "and is the only place message TEXT appears here — "
-                "first_message/last_message are deliberately not published, "
-                "being unbounded (a 40kB prompt would ride every listing). "
-                "`created`/`modified` are ISO-8601; `parent` is the id this "
-                "session was forked from, else null; `error` is why this "
-                "row's entries could not be read, else null — an unreadable "
-                "session stays LISTED and says so (SessionInfo.error) rather "
-                "than vanishing from a host's view."
-            ),
-        },
-        "scope": {
-            "type": "object",
-            "description": (
-                "What universe the list above is, as {store, cwd}: `store` "
-                "is the same backend label the session tuple of new_session/"
-                "fork/switch_session carries, and `cwd` is the working "
-                "directory the listing is scoped to — this process's own, "
-                "the identical scope switch_session resolves against "
-                "(SessionCatalog.resolve_ref is built on list(cwd)), so the "
-                "ids here are exactly the ids that verb accepts. Sessions in "
-                "OTHER directories are not listed because switch_session "
-                "could not reach them either. The BASE DIRECTORY is not a "
-                "field: no SessionCatalog declares one (the file store's is "
-                "private and `None` means the default), and each entry's "
-                "`ref` names it exactly — stated as a limit, not hidden: an "
-                "EMPTY list therefore names no location at all."
-            ),
-        },
-    },
-    "required": ["sessions", "scope"],
-}
+LIST_SESSIONS_RESULT_SCHEMA: dict[str, Any] = result_schema_for("list_sessions")
 
 
 def _listed_session(info: "SessionInfo") -> dict[str, Any]:
@@ -3381,78 +2497,39 @@ def _listed_session(info: "SessionInfo") -> dict[str, Any]:
         "that id will raise the store's real reason rather than silently "
         "loading an empty conversation."
     ),
-    params_schema=NO_PARAMS_SCHEMA,
+    params_schema=params_schema_for("list_sessions"),
     result_schema=LIST_SESSIONS_RESULT_SCHEMA,
 )
 async def _handle_list_sessions(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    # The runtime's catalog and cwd, read the same private-attribute way
-    # `get_models` reads `session._model_resolver` and `get_tools` reads
-    # `session._tools` — and the reason this verb's EXPOSED/NOT_EXPOSED
-    # regions in test_rpc_capability_audit.py are empty: no PUBLIC
-    # AgentSession/AgentSessionRuntime member becomes newly reachable.
-    #
-    # No presence probe here, unlike `get_models`' `_MODEL_CATALOG_ATTR`:
-    # `list` is one of the five abstract methods of the `SessionCatalog` ABC,
-    # so a catalog without it cannot be instantiated at all. There is nothing
-    # for a probe to discover that construction has not already refused.
     runtime = _require_runtime(handler)
-    catalog: SessionCatalog = runtime._catalog
-    cwd: str = runtime._cwd
+    catalog: SessionCatalog = runtime.catalog
+    cwd: str = runtime.cwd
     return {
         "sessions": [_listed_session(info) for info in catalog.list(cwd)],
-        "scope": {"store": runtime._store, "cwd": cwd},
+        "scope": {"store": runtime.store, "cwd": cwd},
     }
 
 
 ### end tier-b:list_sessions
 
 ### begin tier-b:set_auto_compaction
-SET_AUTO_COMPACTION_PARAMS_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
+SET_AUTO_COMPACTION_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
+    "set_auto_compaction",
+    overrides={
         "enabled": {
-            "type": "boolean",
             "description": (
                 "Desired auto-compaction state. RPC sessions are constructed "
                 "with CompactionSettings(enabled=False) (backends.py:885, "
-                "RPC-TIER-B.md §1.1) — this verb is the only route to turning "
-                "it on for a session reached over the wire."
+                "RPC-TIER-B.md §1.1), so a host that wants it on says so here; "
+                "AgentSession.set_auto_compaction is the same setter in process."
             ),
         },
     },
-    "required": ["enabled"],
-    "additionalProperties": False,
-}
+)
 
-SET_AUTO_COMPACTION_RESULT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "enabled": {
-            "type": "boolean",
-            "description": (
-                "The effective state after this call (D-4: 'a plain, "
-                "idempotent setter ... returns the effective state') — read "
-                "back off session._compaction_settings.enabled, never an "
-                "echo of the request."
-            ),
-        },
-        "cursor": {
-            "type": ["string", "null"],
-            "description": (
-                "session_log.cursor after this call (E5, rule 1 of 'E5 in "
-                "Tier B' above). ALWAYS the unchanged tip: this verb mutates "
-                "an in-memory CompactionSettings and appends no log entry, so "
-                "there is nothing here that could move it. Returned rather "
-                "than omitted because absence is not a signal (rule 3) — a "
-                "host reads the same field from every mutator and never has "
-                "to infer the tip from a missing key (F3)."
-            ),
-        },
-    },
-    "required": ["enabled", "cursor"],
-}
+SET_AUTO_COMPACTION_RESULT_SCHEMA: dict[str, Any] = result_schema_for("set_auto_compaction")
 
 
 @command(
@@ -3460,16 +2537,13 @@ SET_AUTO_COMPACTION_RESULT_SCHEMA: dict[str, Any] = {
     tier="B",
     since="tier-b",
     notes=(
-        "D-4: a plain, idempotent setter over "
-        "`AgentSession._compaction_settings.enabled` — a direct field "
-        "mutation, not a method call, because none exists (§1 ground truth: "
-        "'No accessor. AgentSession._compaction_settings is a mutable "
-        "CompactionSettings(enabled, reserve_tokens, keep_recent_tokens)'). "
-        "Same private-attribute-from-commands.py idiom `get_tools` already "
-        "uses for `session._tools` — reached directly rather than adding a "
-        "new AgentSession method for one caller (no EXPOSED/NOT_EXPOSED move: "
-        "`_compaction_settings` is not a public member, so R-T2's audit never "
-        "sees it either way). "
+        "D-4: a plain, idempotent setter — `AgentSession.set_auto_compaction`, "
+        "which this verb calls rather than writing the field itself. It used to "
+        "write `session._compaction_settings.enabled` directly, on the ground "
+        "that no accessor existed (§1's ground truth) and that `get_tools` set "
+        "the precedent with `session._tools`. Both reaches are gone: the method "
+        "exists, the TUI and the CLI can call it too, and this verb is no longer "
+        "the only door onto it. "
         "D-1: takes turn_safety_guard before mutating, so this never races a "
         "turn's own read of the same settings object; TURN_STILL_RUNNING on "
         "a bounded timeout, same as set_model/compact/set_session_name. "
@@ -3490,10 +2564,10 @@ SET_AUTO_COMPACTION_RESULT_SCHEMA: dict[str, Any] = {
         "No policy guard (§1.2): CompactionPolicy is constructed in exactly "
         "one place, sdk.py:865, which rpc_mode.py never goes through — no "
         "RPC session ever carries one for this verb to protect. "
-        "This is the ONLY route to a capability RPC mode otherwise cannot "
-        "reach at all: rpc_mode.py -> backends.create_backend -> TauBackend "
-        "constructs its session with CompactionSettings(enabled=False) "
-        "(backends.py:885, §1.1) and nothing else in RPC mode flips it. "
+        "Why a host has to ask at all: rpc_mode.py -> backends.create_backend "
+        "-> TauBackend constructs its session with CompactionSettings("
+        "enabled=False) (backends.py:885, §1.1) and nothing else in RPC mode "
+        "flips it. "
         "KNOWN GAP, stated not hidden (D-4): enabling this can cause "
         "`_maybe_auto_compact` (agent_session.py:3286-3291) to fire on the "
         "NEXT turn, and that method emits its own `agent_start`/`agent_end` "
@@ -3525,17 +2599,7 @@ async def _handle_set_auto_compaction(
 ) -> dict[str, Any]:
     session = handler.session
     async with turn_safety_guard(session):
-        session._compaction_settings.enabled = bool(params["enabled"])
-        effective = session._compaction_settings.enabled
-        # Read while the guard is STILL HELD, so the tip reported is the tip
-        # as of the moment the setting took effect rather than one re-read
-        # after the lock was handed to a turn that may have appended since.
-        # E5 (rule 1) governs PRESENCE, not this; where a mutator reads is
-        # still per-verb across the tier — `set_model` reads under its guard
-        # too, while `set_session_name` and `compact` build their completions
-        # after releasing it (`compact` necessarily: its payload is assembled
-        # in the background task once compact() has returned). Nothing here
-        # forces this verb to take the looser reading, so it does not.
+        effective = session.set_auto_compaction(bool(params["enabled"]))
         cursor = session.session_log.cursor
     return {"enabled": effective, "cursor": cursor}
 
@@ -3544,17 +2608,10 @@ async def _handle_set_auto_compaction(
 
 ### begin tier-b:set_model
 
-#: docs/RPC-TIER-B.md §3 "B1 | set_model": switch the active model by NAME
-#: (`AgentSession.set_model`) and, unlike that bare session method, PERSIST
-#: the change (D-2). `name` is a config model NAME — a key in
-#: `~/.tau/config.json`'s `models` map, resolved through the session's bound
-#: `set_model_resolver` — the same string `--model NAME` accepts headlessly.
-#: Not a model id: a config key may alias one (`backends.resolve_model_config`).
-SET_MODEL_PARAMS_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
+SET_MODEL_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
+    "set_model",
+    overrides={
         "name": {
-            "type": "string",
             "description": (
                 "A config model NAME (a key in ~/.tau/config.json's 'models' "
                 "map), resolved through AgentSession's bound model resolver "
@@ -3563,28 +2620,9 @@ SET_MODEL_PARAMS_SCHEMA: dict[str, Any] = {
             ),
         },
     },
-    "required": ["name"],
-    "additionalProperties": False,
-}
+)
 
-SET_MODEL_RESULT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "model": {
-            "type": "object",
-            "description": "AgentSession.get_model() after the switch: {id, provider, context_window}.",
-        },
-        "cursor": {
-            "type": ["string", "null"],
-            "description": (
-                "session_log.cursor immediately after the model_change entry "
-                "this call appended (E5) — that entry's own id, since the "
-                "append is the last write this handler makes."
-            ),
-        },
-    },
-    "required": ["model", "cursor"],
-}
+SET_MODEL_RESULT_SCHEMA: dict[str, Any] = result_schema_for("set_model")
 
 
 def _resolver_error_message(exc: KeyError | ValueError) -> str:
@@ -3681,93 +2719,30 @@ async def _handle_set_model(
     session = handler.session
     name = params["name"]
     async with turn_safety_guard(session):
-        # Both persistence preconditions run FIRST, while nothing has been
-        # mutated (Blocker 2, Tier B review). D-2 fixes the order of the
-        # APPEND (after the switch succeeds), not of the checks — and
-        # checking first is what makes this verb's refusals total: a host
-        # that gets an error knows the model did not change, instead of
-        # having to re-read get_state to find out.
         require_durable_session(session, verb="set_model")
         require_log_appender(session, "append_model_change", verb="set_model")
         try:
             model = session.set_model(name)
         except (KeyError, ValueError) as exc:
-            # AgentSession.set_model's own docstring names both as the
-            # resolver's documented shapes for "no such name" — never
-            # swallowed, converted to the wire's caller-error code instead
-            # (same move switch_session makes for LookupError on a bad
-            # session_id).
             raise RPCError(
                 INVALID_PARAMS, _resolver_error_message(exc), data={"name": name}
             ) from exc
-        # `append_model_change` is deliberately off the `SessionLog` Protocol
-        # (§1.1) — `session.session_log` is typed as `SessionLog`, which has
-        # no such attribute statically. `getattr` rather than a bespoke
-        # `# type: ignore[attr-defined]`, matching
-        # `ExtensionContext.set_session_name`'s own `log.append_session_info`
-        # call site (extension_types.py:2237) for exactly the same reason.
         getattr(session.session_log, "append_model_change")(name, model["provider"])
         return {"model": model, "cursor": session.session_log.cursor}
 
 
 ### end tier-b:set_model
 
-### begin tier-b:set_session_name
-#: `set_session_name` params (docs/RPC-TIER-B.md B5). `name` has no
-#: `minLength` check here — this module's hand-rolled `validate_params`
-#: implements only `_SUPPORTED_VALUE_KEYWORDS` (no `minLength`), so an empty
-#: string reaches the handler and is caught there as INVALID_PARAMS instead
-#: (mirrors `switch_session`'s "a bad id is a caller mistake the schema
-#: cannot catch syntactically" — same shape, different field).
-SET_SESSION_NAME_PARAMS_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "name": {
-            "type": "string",
-            "description": "The session's new durable display name. Must be non-empty.",
-        },
+SET_SESSION_NAME_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
+    "set_session_name",
+    overrides={
+        "name": {"description": "The session's new durable display name. Must be non-empty."},
     },
-    "required": ["name"],
-    "additionalProperties": False,
-}
+)
 
-#: E5: every mutating response returns the resulting cursor, alongside the
-#: `name` that was just persisted (an echo, not a re-read — the write and the
-#: read the wire result reports are the SAME call, so there is no staleness
-#: window between them to close).
-SET_SESSION_NAME_RESULT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "name": {
-            "type": "string",
-            "description": "The name just persisted (echoes params.name).",
-        },
-        "cursor": {
-            "type": ["string", "null"],
-            "description": (
-                "The resulting session_log.cursor (E5/F3 — every mutating "
-                "response returns the resulting cursor)."
-            ),
-        },
-    },
-    "required": ["name", "cursor"],
-}
+SET_SESSION_NAME_RESULT_SCHEMA: dict[str, Any] = result_schema_for("set_session_name")
 
-#: `get_session_name` is a READ (docs/RPC-TIER-B.md B5: "the read does not"
-#: carry a cursor) — no `cursor` field, unlike the write's result above.
-GET_SESSION_NAME_RESULT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "name": {
-            "type": ["string", "null"],
-            "description": (
-                "The session's durable display name, or null if never set "
-                "(extension_types.read_session_name)."
-            ),
-        },
-    },
-    "required": ["name"],
-}
+GET_SESSION_NAME_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_session_name")
 
 
 @command(
@@ -3775,9 +2750,10 @@ GET_SESSION_NAME_RESULT_SCHEMA: dict[str, Any] = {
     tier="B",
     since="tier-b",
     notes=(
-        "D-1 (mutating): takes turn_safety_guard before writing. Reuses "
-        "extension_types.apply_session_name — the SAME body "
-        "ExtensionAPI.set_session_name calls (docs/RPC-TIER-B.md B5: 'do "
+        "D-1 (mutating): takes turn_safety_guard before writing. Calls "
+        "AgentSession.set_session_name, which is extension_types."
+        "apply_session_name — the SAME body ExtensionAPI.set_session_name "
+        "calls (docs/RPC-TIER-B.md B5: 'do "
         "not reinvent it and do not copy-paste it'), which itself performs "
         "§1.1's raise ('the bound log must have append_session_info, else "
         "raise') — so this handler does NOT also call "
@@ -3807,11 +2783,10 @@ GET_SESSION_NAME_RESULT_SCHEMA: dict[str, Any] = {
         "log MISSING append_session_info altogether still surfaces as "
         "INTERNAL_ERROR (require_log_appender): a store wired wrong is not a "
         "session the host can move off. "
-        "Nothing is mutated before either check. Known gap: unlike "
-        "set_model (D-2), there is no TUI "
-        "path this duplicates or diverges from — pi's setSessionName has no "
-        "τ TUI verb yet either, so this is RPC's only door onto "
-        "append_session_info today. WHERE the rename lands, and for how long "
+        "Nothing is mutated before either check. This verb was RPC's only "
+        "door onto append_session_info until AgentSession.set_session_name "
+        "existed; a head now reaches the same body without a wire. WHERE the "
+        "rename lands, and for how long "
         "(unit S): a --mode rpc process defaults to storing its sessions "
         "under a private <tmp>/.tau-<uid>/sessions, NOT the user's "
         "~/.tau/sessions — so a name set here does not show up in that "
@@ -3827,17 +2802,12 @@ GET_SESSION_NAME_RESULT_SCHEMA: dict[str, Any] = {
 async def _handle_set_session_name(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    from tau_agent_core.extension_types import apply_session_name
-
     session = handler.session
     name = params["name"]
     try:
         async with turn_safety_guard(session):
-            # Blocker 2 (Tier B review): the durability question
-            # apply_session_name's own §1.1 raise does NOT answer — it checks
-            # the appender exists, which an unpersisted session's does.
             require_durable_session(session, verb="set_session_name")
-            apply_session_name(session, name)
+            session.set_session_name(name)
     except ValueError as exc:
         raise RPCError(INVALID_PARAMS, str(exc), data={"name": name}) from exc
     return {"name": name, "cursor": session.session_log.cursor}
@@ -3849,8 +2819,9 @@ async def _handle_set_session_name(
     since="tier-b",
     notes=(
         "Read-only (docs/RPC-TIER-B.md B5: 'the read does not' take D-1's "
-        "guard or carry a cursor). Reuses extension_types.read_session_name "
-        "— the SAME body ExtensionAPI.get_session_name calls. A session "
+        "guard or carry a cursor). Calls AgentSession.get_session_name, "
+        "which is extension_types.read_session_name — the SAME body "
+        "ExtensionAPI.get_session_name calls. A session "
         "log with no durable name to read (e.g. the SDK's "
         "InMemorySessionLog) raises RuntimeError, uncaught here, surfacing "
         "as INTERNAL_ERROR: this is a READ, so it never takes D-7's guard "
@@ -3864,23 +2835,270 @@ async def _handle_set_session_name(
         "unpersisted session even though set_session_name refuses to write "
         "one there."
     ),
-    params_schema=NO_PARAMS_SCHEMA,
+    params_schema=params_schema_for("get_session_name"),
     result_schema=GET_SESSION_NAME_RESULT_SCHEMA,
 )
 async def _handle_get_session_name(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    from tau_agent_core.extension_types import read_session_name
-
-    return {"name": read_session_name(handler.session)}
+    return {"name": handler.session.get_session_name()}
 
 
 ### end tier-b:set_session_name
 
+### begin tier-c:next_step
+NEXT_STEP_PARAMS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "flow": {
+            "type": "string",
+            "description": (
+                "The flow's name — one of the `name`s `get_commands` lists. An "
+                "unknown name is an error, not an empty answer: a host that "
+                "believes a flow exists must be told it does not."
+            ),
+        },
+        "bound": {
+            "type": "object",
+            "description": (
+                "The arguments bound so far, keyed by argument name. Omit it, or "
+                "send {}, for the flow's first step. Only REQUIRED arguments "
+                "block, so a flow whose arguments are all optional is `ready` on "
+                "the first call."
+            ),
+        },
+        "cursor": {
+            "type": ["string", "null"],
+            "description": (
+                "The entry a scoped `message_id` argument is relative to. A "
+                "parameter rather than the live tip, so a host stepping a "
+                "sub-agent's flow scopes to THAT agent's cursor. It is echoed "
+                "back on the step so the host hands it straight to "
+                "`enumerate_domain`."
+            ),
+        },
+    },
+    "required": ["flow"],
+    "additionalProperties": False,
+}
 
-# ─────────────────────────────────────────────────────────────────────────
-# Declined.
-# ─────────────────────────────────────────────────────────────────────────
+NEXT_STEP_RESULT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "status": {
+            "type": "string",
+            "enum": ["step", "ready"],
+            "description": (
+                "`step` — one required argument is still unbound and `step` "
+                "describes it. `ready` — every required argument is bound and "
+                "`ready` names the mutation to perform and what to perform it "
+                "with. The two are mutually exclusive and exactly one is present."
+            ),
+        },
+        "step": {
+            "type": ["object", "null"],
+            "description": (
+                "{flow, argument, domain, cursor, bound}. `argument` is "
+                "{name, domain, description, cardinality, required, scope}; "
+                "`domain` is the resolved domain record "
+                "{name, description, free, values, enumerator}, included so a "
+                "host can render the field without a second call — `values` is "
+                "non-null for a small fixed set, and `enumerator` non-null means "
+                "call `enumerate_domain` for the live set."
+            ),
+        },
+        "ready": {
+            "type": ["object", "null"],
+            "description": (
+                "{flow, mutation, arguments}. `mutation` is the capability to "
+                "perform — the named flow's, always, so a host that already knows "
+                "which flow it stepped can dispatch before this returns. "
+                "`arguments` is what to perform it with, keyed by the mutation's "
+                "own parameter names. This is a commitment: τ does not ask a "
+                "second time, and a host that wants a confirmation renders one "
+                "from this."
+            ),
+        },
+    },
+    "required": ["status"],
+}
+
+
+@command(
+    "next_step",
+    tier="C",
+    since="0.9.8",
+    notes=(
+        "Half of the flow loop, and the reason a host can offer a gesture it has "
+        "never heard of. A flow is an ordered argument list ending in one "
+        "mutation; this returns either the next argument or the mutation, and a "
+        "host renders whatever it gets. The same call drives a modal wizard, a "
+        "tab-completion popup and a shell — the difference between them is the "
+        "presenter, not the protocol. "
+        "It has to be on the wire rather than computed host-side because τ's "
+        "extensions are unknown to the host: a host cannot enumerate valid "
+        "actions it has no table for. "
+        "PURE and a READ: it performs nothing, reads no session, and therefore "
+        "carries no `cursor` (E5 rule 2). No D-1 turn_safety_guard — it mutates "
+        "nothing, so it answers mid-turn — and no require_durable_session, since "
+        "it appends nothing and answers the same under --no-session. "
+        "Partial arguments ARE the dry run: a flow invoked with nothing bound "
+        "reports its first step and changes nothing, which is why there is no "
+        "`-y` and no confirmation verb."
+    ),
+    params_schema=NEXT_STEP_PARAMS_SCHEMA,
+    result_schema=NEXT_STEP_RESULT_SCHEMA,
+)
+async def _handle_next_step(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    from dataclasses import asdict
+
+    from tau_agent_core.flows import Ready, UnknownFlowError, next_step
+
+    try:
+        outcome = next_step(
+            params["flow"],
+            params.get("bound"),
+            params.get("cursor"),
+            vocabulary=handler.session.vocabulary,
+        )
+    except UnknownFlowError as exc:
+        raise RuntimeError(str(exc)) from exc
+    if isinstance(outcome, Ready):
+        return {"status": "ready", "ready": asdict(outcome), "step": None}
+    return {"status": "step", "step": asdict(outcome), "ready": None}
+
+
+### end tier-c:next_step
+
+### begin tier-c:enumerate_domain
+ENUMERATE_DOMAIN_PARAMS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "domain": {
+            "type": "string",
+            "description": (
+                "The domain's name, as a `next_step` step reported it. A domain "
+                "that is `free` returns no values and total 0 — that is the "
+                "answer, not a failure."
+            ),
+        },
+        "scope": {
+            "type": ["string", "null"],
+            "enum": ["in_session", "ancestors_of_cursor", "descendants_of_cursor", None],
+            "description": (
+                "For `message_id` only: which entries are candidates. Defaults to `in_session`."
+            ),
+        },
+        "cursor": {
+            "type": ["string", "null"],
+            "description": (
+                "For a scoped `message_id`: the entry the scope is relative to. "
+                "Null uses the live tip. An id that names no entry is an error, "
+                "not an empty listing."
+            ),
+        },
+        "query": {
+            "type": "string",
+            "description": (
+                "Filter text. A value matches on a case-sensitive PREFIX of the "
+                "value itself, or a case-insensitive SUBSTRING of its label — "
+                "completion and search, because an id and its text are looked for "
+                "differently. Empty matches everything in scope."
+            ),
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "How many values to return at most. Defaults to 50.",
+        },
+    },
+    "required": ["domain"],
+    "additionalProperties": False,
+}
+
+ENUMERATE_DOMAIN_RESULT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "domain": {"type": "string", "description": "The domain that was enumerated."},
+        "values": {
+            "type": "array",
+            "description": (
+                "A list of {value, label}. `value` is what a host binds into "
+                "`next_step`'s `bound`; `label` is what it shows. They are equal "
+                "for a domain whose values already read as text."
+            ),
+        },
+        "total": {
+            "type": "integer",
+            "description": (
+                "How many values matched before `limit` was applied, so a host "
+                "says '12 of 340' instead of implying it showed everything (G3). "
+                "An empty `values` with a non-zero `total` cannot happen; an "
+                "empty one with total 0 means the domain genuinely has none."
+            ),
+        },
+    },
+    "required": ["domain", "values", "total"],
+}
+
+
+@command(
+    "enumerate_domain",
+    tier="C",
+    since="0.9.8",
+    notes=(
+        "The other half of the flow loop. A flow argument carries a DOMAIN — a "
+        "named type in τ's object model — rather than a list of strings, and this "
+        "is what turns one into the values that are legal right now, each with a "
+        "label a person can read. "
+        "The rule it states once was previously rediscovered twice by hand: "
+        "`get_models` was added because `set_model`'s config NAME was "
+        "unconstructible from the wire (finding 7), and `list_sessions` because "
+        "`switch_session`'s id was (finding 8). A mutation with a bounded "
+        "parameter is uncallable without an enumerating read. "
+        "It dispatches to those same readers rather than reimplementing them, so "
+        "a listing here and the corresponding verb cannot disagree about what "
+        "exists. `model_name` -> the bound model resolver's catalogue (the same "
+        "one `get_models` reads); `session_id` -> the runtime's SessionCatalog "
+        "(the same `list_sessions` publishes); `path` -> "
+        "attachments.complete_attachment (the same `complete_path` wraps); "
+        "`message_id` -> ConversationTree.complete_message_id; `extension_name` "
+        "-> AgentSession.list_managed_extensions. "
+        "A READ: no `cursor` (E5 rule 2), no D-1 turn_safety_guard, no "
+        "require_durable_session. "
+        "Fail-Early on a missing dependency: a domain whose reader needs a "
+        "runtime this process does not have RAISES rather than answering with an "
+        "empty list, which a host would read as 'there are none'."
+    ),
+    params_schema=ENUMERATE_DOMAIN_PARAMS_SCHEMA,
+    result_schema=ENUMERATE_DOMAIN_RESULT_SCHEMA,
+)
+async def _handle_enumerate_domain(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    from tau_agent_core.flows import enumerate_domain
+
+    found = enumerate_domain(
+        params["domain"],
+        session=handler.session,
+        runtime=handler._runtime,
+        scope=params.get("scope"),
+        cursor=params.get("cursor"),
+        query=params.get("query", ""),
+        limit=params.get("limit", 50),
+        vocabulary=handler.session.vocabulary,
+    )
+    return {
+        "domain": found.domain,
+        "values": [{"value": v.value, "label": v.label} for v in found.values],
+        "total": found.total,
+    }
+
+
+### end tier-c:enumerate_domain
+
 
 decline(
     "send_tool_result",
@@ -3981,3 +3199,786 @@ decline(
         "path into the same executor is a second thing to secure.'"
     ),
 )
+
+
+COMPLETE_MESSAGE_ID_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
+    "complete_message_id",
+    overrides={
+        "scope": {
+            "description": (
+                "Which entries are candidates. 'in_session' is every entry in the "
+                "log; 'ancestors_of_cursor' is the parent chain from the root to "
+                "`cursor` inclusive; 'descendants_of_cursor' is the subtree below "
+                "it, excluding `cursor` itself. Omitted means 'in_session'."
+            ),
+        },
+        "cursor": {
+            "description": (
+                "The entry the two scoped variants are relative to. Omitted uses "
+                "the session's own cursor (get_state's `cursor`). An id that names "
+                "no entry is INVALID_PARAMS, never an empty match list."
+            ),
+        },
+        "query": {
+            "description": (
+                "Filter text. Matches a case-sensitive PREFIX of an entry id, or a "
+                "case-insensitive SUBSTRING of its preview — completion and search "
+                "in one field. Omitted or empty matches everything in scope."
+            ),
+        },
+        "limit": {
+            "description": "How many matches to return at most. Omitted means 50.",
+            "minimum": 1,
+        },
+    },
+)
+
+COMPLETE_MESSAGE_ID_RESULT_SCHEMA: dict[str, Any] = result_schema_for("complete_message_id")
+
+
+@command(
+    "complete_message_id",
+    tier="C",
+    since="0.9.8",
+    notes=(
+        "The message_id domain's enumerator, addressed by its own capability name. "
+        "ConversationTree.complete_message_id over the session's live entries and "
+        "cursor. Until this verb, every capability taking an entry id was callable "
+        "over the wire only by a host that had been handed an id by something "
+        "else — the hole get_models closed for set_model and list_sessions for "
+        'switch_session. Overlaps enumerate_domain {"domain": "message_id"} '
+        "deliberately and returns the same data under its own field names "
+        "(entry_id/preview rather than value/label): a host walking a FLOW's "
+        "argument list reaches it through enumerate_domain without knowing which "
+        "capability enumerates that domain, and a host calling the capability by "
+        "name calls this. Read-only: no D-1 turn_safety_guard, no `cursor` in the "
+        "result (E5 rule 2 — a host that wants the tip calls get_state), and no "
+        "require_durable_session (D-7 rule 2: it appends nothing). Refuses: a "
+        "`cursor` naming no entry, under a scope that needs one, is a CALLER error "
+        "and comes back as INVALID_PARAMS — the same classification set_model "
+        "gives an unknown model name. Fail-Early, because the alternative is an "
+        "empty match list that reads as 'the scope held nothing'."
+    ),
+    params_schema=COMPLETE_MESSAGE_ID_PARAMS_SCHEMA,
+    result_schema=COMPLETE_MESSAGE_ID_RESULT_SCHEMA,
+)
+async def _handle_complete_message_id(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    from tau_agent_core.conversation_tree import ConversationTree
+
+    log = handler.session.session_log
+    tree = ConversationTree(log.entries(), log.cursor)
+    try:
+        found = tree.complete_message_id(
+            scope=params.get("scope", "in_session"),
+            cursor=params.get("cursor"),
+            query=params.get("query", ""),
+            limit=params.get("limit", 50),
+        )
+    except KeyError as exc:
+        raise RPCError(
+            INVALID_PARAMS, str(exc.args[0]) if exc.args else str(exc), data=dict(params)
+        ) from exc
+    return {
+        "matches": [{"entry_id": m.entry_id, "preview": m.preview} for m in found.matches],
+        "total": found.total,
+    }
+
+
+### end tier-c:complete_message_id
+
+LIST_MANAGED_EXTENSIONS_RESULT_SCHEMA: dict[str, Any] = result_schema_for("list_managed_extensions")
+
+
+@command(
+    "list_managed_extensions",
+    tier="C",
+    since="0.9.8",
+    notes=(
+        "The extension_name domain's enumerator, addressed by its own capability "
+        "name: AgentSession.list_managed_extensions(), projected. Overlaps "
+        'enumerate_domain {"domain": "extension_name"} the way '
+        "complete_message_id overlaps its own domain — with one difference worth a "
+        "host's attention: enumerate_domain has only value/label to work with, so "
+        "it renders enabled-ness INTO the label ('path (disabled)'), and this verb "
+        "hands back the boolean. A host deciding whether to offer enable or "
+        "disable wants this one. Read-only: no turn_safety_guard, no `cursor` (E5 "
+        "rule 2), no require_durable_session (D-7 rule 2). Answers only about "
+        "MANAGED file extensions — a file that failed to import is not here, "
+        "because it can never be a legal extension_name; get_extension_state is "
+        "the read that shows it."
+    ),
+    params_schema=params_schema_for("list_managed_extensions"),
+    result_schema=LIST_MANAGED_EXTENSIONS_RESULT_SCHEMA,
+)
+async def _handle_list_managed_extensions(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "extensions": [
+            {"path": path, "enabled": enabled}
+            for path, enabled in handler.session.list_managed_extensions()
+        ]
+    }
+
+
+### end tier-c:list_managed_extensions
+
+GET_EXTENSION_STATE_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_extension_state")
+
+
+@command(
+    "get_extension_state",
+    tier="C",
+    since="0.9.8",
+    notes=(
+        "AgentSession.get_extension_state(), projected through "
+        "sdk.summarize_extensions — the read the /extensions listing is built "
+        "from, and the read a head needs before it can offer enable/disable/reload "
+        "as anything but a blind form. Whether each extension is currently ENABLED "
+        "is the separate read list_managed_extensions; a host that wants both "
+        "composes them, which is the division AgentSession.get_extension_state's "
+        "own docstring states. Read-only: no turn_safety_guard, no `cursor` (E5 "
+        "rule 2), no require_durable_session (D-7 rule 2 — extension state is "
+        "runtime state and is never appended to the session log, so this answers "
+        "the same on a persisted and an unpersisted session)."
+    ),
+    params_schema=params_schema_for("get_extension_state"),
+    result_schema=GET_EXTENSION_STATE_RESULT_SCHEMA,
+)
+async def _handle_get_extension_state(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    from tau_agent_core.sdk import summarize_extensions
+
+    state = handler.session.get_extension_state()
+    return {
+        "extensions": [
+            {
+                "name": info.name,
+                "path": info.path,
+                "tools": list(info.tools),
+                "commands": list(info.commands),
+                "shortcuts": list(info.shortcuts),
+                "hooks": list(info.hooks),
+                "content_hash": info.content_hash,
+                "subjects": list(info.subjects),
+            }
+            for info in summarize_extensions(state)
+        ],
+        "errors": [{"path": err.path, "error": err.error} for err in state.errors],
+    }
+
+
+### end tier-c:get_extension_state
+
+
+@asynccontextmanager
+async def tree_mutation_guard(
+    handler: "RPCHandler", *, verb: str, appenders: tuple[str, ...]
+) -> AsyncIterator["AgentSession"]:
+    """The four things every tree-mutating verb does around its one core call.
+
+    D-1 (`turn_safety_guard`): a tree mutation rewrites what the next turn will be
+    sent, so it must not land while a turn is reading that same path.
+
+    D-7 rule 1 (`require_durable_session`): all five of these APPEND, so all five
+    refuse an unpersisted session before touching anything. A tree edit that is
+    lost with the process is worse than the same promise `set_model` refuses to
+    make — the host has re-shaped a conversation it can never load again.
+
+    `require_log_appender` for each name the operation will call, checked BEFORE
+    the first append rather than discovered halfway through: `commit_branch`
+    writes through three appenders, and finding out about the third after the
+    first two have landed would leave a half-built branch.
+
+    A `ValueError` out of `tau_agent_core.tree_ops` becomes `INVALID_PARAMS`. Every
+    one of them is a caller error the schema cannot check syntactically — an
+    unknown id, a resume point that is not an ancestor, a selection that composes
+    no turn-complete path — and `tree_ops` checks all of them before the first
+    append, so the refusal is total and the log is byte-identical.
+
+    Args:
+        handler: The RPC handler, for its bound session.
+        verb: The verb's name, for the refusal messages.
+        appenders: The `SessionLog` methods this operation will call.
+
+    Yields:
+        The bound session, with `turn_lock` held.
+    """
+    session = handler.session
+    async with turn_safety_guard(session):
+        require_durable_session(session, verb=verb)
+        for appender in appenders:
+            require_log_appender(session, appender, verb=verb)
+        try:
+            yield session
+        except ValueError as exc:
+            raise RPCError(INVALID_PARAMS, str(exc)) from exc
+
+
+_TREE_MUTATION_NOTES = (
+    "D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING "
+    "rather than re-shaping the path an in-flight turn is being run against. "
+    "D-7 rule 1: it APPENDS, so require_durable_session refuses an unpersisted "
+    "session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit "
+    "that dies with the process leaves a host holding a conversation it can "
+    "never load again. E5 rule 1: the completion carries the resulting `cursor`. "
+    "Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id "
+    "above all — comes back as INVALID_PARAMS, checked before the first append, "
+    "so a refusal leaves the log byte-identical. WHERE the entries land and for "
+    "how long is set_model's own note: a --mode rpc child defaults to a private "
+    "<tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime "
+    "unless the host passed --session-dir DIR."
+)
+
+NAVIGATE_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
+    "navigate",
+    overrides={
+        "target_id": {
+            "description": (
+                "The entry to move the cursor onto — an `entry_id` from "
+                "complete_message_id. The abandoned branch drops out of context "
+                "via the parentId walk but stays on disk and stays browsable; "
+                "nothing is erased."
+            ),
+        },
+    },
+)
+
+TREE_CONTEXT_RESULT_SCHEMA: dict[str, Any] = result_schema_for("navigate")
+
+
+@command(
+    "navigate",
+    tier="C",
+    since="0.9.8",
+    notes=(
+        "tau_agent_core.tree_ops.navigate, projected. Moves the session cursor to "
+        "an entry and hands back the context that produces. Zero model calls: it "
+        "appends one `navigate` entry. A target_id that is already the cursor is a "
+        "no-op that still returns the context, so a host need not check first. "
+        "Until this verb τ's differentiating feature — a session tree a caller can "
+        "move around in — was reachable only from inside the Textual head "
+        "(docs/VSCODE-HEAD.md §6). " + _TREE_MUTATION_NOTES
+    ),
+    params_schema=NAVIGATE_PARAMS_SCHEMA,
+    result_schema=result_schema_for("navigate"),
+)
+async def _handle_navigate(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    from tau_agent_core import tree_ops
+
+    async with tree_mutation_guard(handler, verb="navigate", appenders=("append_navigate",)) as s:
+        messages = tree_ops.navigate(s.session_log, params["target_id"])
+        return {"messages": messages, "cursor": s.session_log.cursor}
+
+
+### end tier-c:navigate
+
+SUMMARIZE_AND_NAVIGATE_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
+    "summarize_and_navigate",
+    overrides={
+        "target_id": {
+            "description": (
+                "The branch point. The subtree BELOW it is what gets summarized, "
+                "and the branch_summary entry is parented at it."
+            ),
+        },
+        "custom_instructions": {
+            "description": (
+                "Extra guidance for the summarizer's SYSTEM prompt. Omitted runs "
+                "the default summarizer prompt."
+            ),
+        },
+    },
+)
+
+
+@command(
+    "summarize_and_navigate",
+    tier="C",
+    since="0.9.8",
+    notes=(
+        "AgentSession.summarize_and_navigate(), projected. The summarizing arm of "
+        "navigate, and a SEPARATE verb rather than a flag on it for the reason the "
+        "core splits them: this one makes a completion call, so it costs tokens "
+        "and takes wall time that `navigate` does not. A host offering both should "
+        "say so in what it offers. The summarizer's tokens are banked to the "
+        "session's side ledger (AgentSession.record_side_usage) and are NOT "
+        "itemised in this response — stated, not hidden: there is no verb on this "
+        "wire that reports side_usage, so a host tracking spend sees them only in "
+        "aggregate. A summarizer that returns nothing usable RAISES "
+        "(session_manager.summarize_branch) and reaches the host as INTERNAL_ERROR "
+        "— it is a runtime failure, not a bad argument, and it is never fabricated "
+        "into an empty summary. " + _TREE_MUTATION_NOTES
+    ),
+    params_schema=SUMMARIZE_AND_NAVIGATE_PARAMS_SCHEMA,
+    result_schema=result_schema_for("summarize_and_navigate"),
+)
+async def _handle_summarize_and_navigate(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    async with tree_mutation_guard(
+        handler,
+        verb="summarize_and_navigate",
+        appenders=("append_navigate", "append_branch_summary"),
+    ) as s:
+        messages = await s.summarize_and_navigate(
+            params["target_id"],
+            custom_instructions=params.get("custom_instructions"),
+        )
+        return {"messages": messages, "cursor": s.session_log.cursor}
+
+
+### end tier-c:summarize_and_navigate
+
+ELIDE_SPAN_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
+    "elide_span",
+    overrides={
+        "anchor_id": {
+            "description": (
+                "The entry the fold jumps FROM. The elide entry is appended as its "
+                "child, so the anchor becomes the end of the kept region and the "
+                "new tip."
+            ),
+        },
+        "first_kept_id": {
+            "description": (
+                "The entry the fold resumes at — the anchor itself or one of its "
+                "ANCESTORS, never a descendant. Everything on the path before it "
+                "is the elided span. A resume point the fold's scan cannot reach "
+                "would empty the context silently, which is why the wrong "
+                "direction is refused rather than tolerated."
+            ),
+        },
+    },
+)
+
+
+@command(
+    "elide_span",
+    tier="C",
+    since="0.9.8",
+    notes=(
+        "tau_agent_core.tree_ops.elide_span, projected. Folds a span out of the "
+        "active context — the summary-less generalization of the compaction "
+        "anchor. Synchronous and free: no summary, therefore no model call. "
+        "Nothing is erased; every entry the fold now skips is still in the log and "
+        "still browsable. Two refusals beyond the ordinary unknown-id one, both "
+        "INVALID_PARAMS and both checked before the first append: a first_kept_id "
+        "that is not on the anchor's path (the fold's forward scan would never "
+        "find it and would emit the anchor and nothing else), and a span that "
+        "would hide nothing (a persisted node that changes nothing about the "
+        "context it was created to change is indistinguishable to a user from a "
+        "successful fold). " + _TREE_MUTATION_NOTES
+    ),
+    params_schema=ELIDE_SPAN_PARAMS_SCHEMA,
+    result_schema=result_schema_for("elide_span"),
+)
+async def _handle_elide_span(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    from tau_agent_core import tree_ops
+
+    async with tree_mutation_guard(
+        handler, verb="elide_span", appenders=("append_navigate", "append_elide")
+    ) as s:
+        messages = tree_ops.elide_span(s.session_log, params["anchor_id"], params["first_kept_id"])
+        return {"messages": messages, "cursor": s.session_log.cursor}
+
+
+### end tier-c:elide_span
+
+COMMIT_BRANCH_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
+    "commit_branch",
+    overrides={
+        "ids": {
+            "description": (
+                "The marked entry ids, in any order — tree_surgery puts them into "
+                "tree order. The longest run that is already an ancestor chain is "
+                "kept in place; the rest are minted as copies parented under it, "
+                "so nothing is re-parented and nothing is erased."
+            ),
+        },
+        "drop_context": {
+            "description": (
+                "Whether the branch keeps ONLY the selection. true appends an "
+                "elide resuming at the root-most mark, so the context becomes the "
+                "system prompt plus the branch; false leaves everything above the "
+                "attach point in context."
+            ),
+        },
+    },
+)
+
+
+@command(
+    "commit_branch",
+    tier="C",
+    since="0.9.8",
+    notes=(
+        "tau_agent_core.tree_ops.commit_branch, projected. Builds a branch out of "
+        "a set of marked entries and continues on it "
+        "(docs/TREE-BROWSER-AS-EDITOR.md §6). The copies are minted with append_at, "
+        "which does NOT move the leaf, and the leaf moves onto the last minted "
+        "entry afterwards — so the commit is atomic from the cursor's point of "
+        "view and a mint that fails partway leaves orphans hanging off the attach "
+        "point rather than a half-moved conversation. Refuses, all INVALID_PARAMS "
+        "and all before the first append: an empty selection, an unknown id, an "
+        "entry no branch can carry, or a selection composing a path that is not "
+        "turn-complete. " + _TREE_MUTATION_NOTES
+    ),
+    params_schema=COMMIT_BRANCH_PARAMS_SCHEMA,
+    result_schema=result_schema_for("commit_branch"),
+)
+async def _handle_commit_branch(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    from tau_agent_core import tree_ops
+
+    async with tree_mutation_guard(
+        handler,
+        verb="commit_branch",
+        appenders=("append_navigate", "append_at", "append_elide"),
+    ) as s:
+        messages = tree_ops.commit_branch(
+            s.session_log, params["ids"], drop_context=params["drop_context"]
+        )
+        return {"messages": messages, "cursor": s.session_log.cursor}
+
+
+### end tier-c:commit_branch
+
+PASTE_SUBTREE_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
+    "paste_subtree",
+    overrides={
+        "source_id": {"description": "The copied node — the root of the subtree."},
+        "target_id": {
+            "description": (
+                "The entry the copy hangs from. May not be inside the source's own subtree."
+            ),
+        },
+    },
+)
+
+PASTE_SUBTREE_RESULT_SCHEMA: dict[str, Any] = result_schema_for("paste_subtree")
+
+
+@command(
+    "paste_subtree",
+    tier="C",
+    since="0.9.8",
+    notes=(
+        "tau_agent_core.tree_ops.paste_subtree, projected "
+        "(docs/TREE-BROWSER-AS-EDITOR.md §7). Every copied entry is a new entry "
+        "carrying `copiedFrom`, minted with append_at, parents before children, "
+        "with a source-to-new id map re-hanging each child under its copied parent "
+        "— so the copy keeps the original's shape including its forks. The one "
+        "tree mutation whose result is NOT a message list: the leaf never moves, "
+        "so what the model sees changes only when someone navigates onto the copy. "
+        "Refuses: an unknown id, a source whose kind cannot be copied, a target "
+        "inside the source's own subtree, or a copied tool result whose call is on "
+        "neither the target's path nor the copied run. " + _TREE_MUTATION_NOTES
+    ),
+    params_schema=PASTE_SUBTREE_PARAMS_SCHEMA,
+    result_schema=PASTE_SUBTREE_RESULT_SCHEMA,
+)
+async def _handle_paste_subtree(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    from tau_agent_core import tree_ops
+
+    async with tree_mutation_guard(handler, verb="paste_subtree", appenders=("append_at",)) as s:
+        minted = tree_ops.paste_subtree(s.session_log, params["source_id"], params["target_id"])
+        return {"minted_ids": minted, "cursor": s.session_log.cursor}
+
+
+### end tier-c:paste_subtree
+
+
+EXTENSION_ACTION_RESULT_SCHEMA: dict[str, Any] = result_schema_for("enable_extension")
+
+_EXTENSION_MUTATION_NOTES = (
+    "D-1: guarded by turn_safety_guard. An extension's hooks fire inside the turn, "
+    "and its tools are resolved from the registry this action rewrites, so running "
+    "it mid-turn would change the tool table under a loop that had already read it "
+    "— TURN_STILL_RUNNING rather than that race. D-7 rule 2: appends NOTHING, so no "
+    "require_durable_session; extension state is runtime state and is never written "
+    "to the session log, which is also why it does not survive a respawn and a host "
+    "that wants an extension loaded at startup passes it on the command line. E5 "
+    "rule 1: the completion carries `cursor` anyway. `path` accepts a full managed "
+    "path or a unique file stem (AgentSession.resolve_extension_target); an "
+    "ambiguous stem resolves to nothing and comes back as ok=false, never a guess."
+)
+
+
+def _extension_action_result(
+    outcome: "ExtensionActionResult", session: "AgentSession"
+) -> dict[str, Any]:
+    """One :class:`ExtensionActionResult` plus the E5 cursor, as the three verbs report it.
+
+    Written once because all three actions return the same record and E5 rule 1
+    applies to all three identically; three copies of this projection is how the
+    tier's own findings 5 and 6 started.
+    """
+    return {
+        "action": outcome.action,
+        "path": outcome.path,
+        "ok": outcome.ok,
+        "message": outcome.message,
+        "cursor": session.session_log.cursor,
+    }
+
+
+@command(
+    "enable_extension",
+    tier="C",
+    since="0.9.8",
+    notes=(
+        "AgentSession.enable_extension(), projected. Re-binds a DISABLED extension "
+        "by re-invoking the stored register(api) — the same entry point the loader "
+        "called — against a fresh runner bucket, then fires session_start with "
+        "reason 'enable' so a watcher re-installs. It does not re-read the file; "
+        "reload_extension is the verb that does. ok=false for an unknown target or "
+        "one that is already enabled. " + _EXTENSION_MUTATION_NOTES
+    ),
+    params_schema=params_schema_for(
+        "enable_extension",
+        overrides={
+            "path": {
+                "description": (
+                    "The managed extension to enable — a `path` from "
+                    "list_managed_extensions, or a unique file stem."
+                ),
+            },
+        },
+    ),
+    result_schema=result_schema_for("enable_extension"),
+)
+async def _handle_enable_extension(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    session = handler.session
+    async with turn_safety_guard(session):
+        return _extension_action_result(await session.enable_extension(params["path"]), session)
+
+
+### end tier-c:enable_extension
+
+
+@command(
+    "disable_extension",
+    tier="C",
+    since="0.9.8",
+    notes=(
+        "AgentSession.disable_extension(), projected. Fires the extension's own "
+        "session_shutdown with reason 'disable' FIRST — the teardown seam, so a "
+        "watcher or exit-commit runs cleanly — then removes its runner bucket and "
+        "unwinds the tools, commands and shortcuts it registered. The LoadedExtension "
+        "record is KEPT, which is what lets enable_extension bring it back without "
+        "re-reading the file. ok=false for an unknown target or one that is already "
+        "disabled. " + _EXTENSION_MUTATION_NOTES
+    ),
+    params_schema=params_schema_for(
+        "disable_extension",
+        overrides={
+            "path": {
+                "description": (
+                    "The managed extension to disable — a `path` from "
+                    "list_managed_extensions, or a unique file stem."
+                ),
+            },
+        },
+    ),
+    result_schema=result_schema_for("disable_extension"),
+)
+async def _handle_disable_extension(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    session = handler.session
+    async with turn_safety_guard(session):
+        return _extension_action_result(await session.disable_extension(params["path"]), session)
+
+
+### end tier-c:disable_extension
+
+
+@command(
+    "reload_extension",
+    tier="C",
+    since="0.9.8",
+    notes=(
+        "AgentSession.reload_extension(), projected. Tears the current instance "
+        "down, RE-IMPORTS the file from disk as a new module object — so edits on "
+        "disk take effect — and re-registers it against a fresh bucket. The one "
+        "verb of the three that can hit a hard failure: a file that no longer "
+        "imports RAISES out of the action and reaches the host as INTERNAL_ERROR, "
+        "with the extension left torn down. That is Fail-Early and deliberate — an "
+        "ok=false there would report a no-op for a session whose extension is now "
+        "gone. Same argument shape as enable/disable, different risk, which is why "
+        "it is a third verb and not a mode of one of them. " + _EXTENSION_MUTATION_NOTES
+    ),
+    params_schema=params_schema_for(
+        "reload_extension",
+        overrides={
+            "path": {
+                "description": (
+                    "The managed extension to re-import — a `path` from "
+                    "list_managed_extensions, or a unique file stem."
+                ),
+            },
+        },
+    ),
+    result_schema=result_schema_for("reload_extension"),
+)
+async def _handle_reload_extension(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    session = handler.session
+    async with turn_safety_guard(session):
+        return _extension_action_result(await session.reload_extension(params["path"]), session)
+
+
+### end tier-c:reload_extension
+
+
+@command(
+    "get_extension_config",
+    tier="C",
+    since="0.9.8",
+    notes=(
+        "AgentSession.get_extension_config(), projected. The read a settings "
+        "screen is built from: `schema` is the extension's own CONFIG_SCHEMA "
+        "module attribute, validated at load into the {title, fields} shape "
+        "ui.form takes, and `values` is the live slice api.config returns for it. "
+        "A null `schema` is the honest answer for an extension that declares none "
+        "— a host renders no settings screen rather than an empty one. Read: no "
+        "cursor (E5 rule 2), no turn guard. Fail-Early: an unresolvable `path` "
+        "RAISES here rather than returning a null row, because unlike the "
+        "enable/disable/reload verbs there is no ok=false channel on a read."
+    ),
+    params_schema=params_schema_for(
+        "get_extension_config",
+        overrides={
+            "path": {
+                "description": (
+                    "The managed extension to read — a `path` from "
+                    "list_managed_extensions, or a unique file stem."
+                ),
+            },
+        },
+    ),
+    result_schema=result_schema_for("get_extension_config"),
+)
+async def _handle_get_extension_config(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    try:
+        return handler.session.get_extension_config(params["path"])
+    except ValueError as err:
+        raise RPCError(INVALID_PARAMS, str(err)) from err
+
+
+### end tier-c:get_extension_config
+
+
+@command(
+    "set_extension_config",
+    tier="C",
+    since="0.9.8",
+    notes=(
+        "AgentSession.set_extension_config(), projected. Replaces the slice "
+        "wholesale — not a merge — after checking every value against the "
+        "declared schema, then reloads the extension, because api.config is "
+        "captured when the extension's API is bound and a slice written without a "
+        "reload would be read by nobody. An undeclared key, a missing declared "
+        "field, or a value whose type does not match its field's kind reaches the "
+        "host as INVALID_PARAMS; so does an extension that declares no schema, "
+        "since there is then no contract to check against. `values` is why this "
+        "row's params are hand-written: its keys are whatever THIS extension "
+        "declared, which is not sayable in the Argument vocabulary — the same "
+        "reason `submit` carries arguments=None. Applies for this session only: "
+        "the core does not own ~/.tau/config.json, so persisting is head-local. "
+        + _EXTENSION_MUTATION_NOTES
+    ),
+    params_schema={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": (
+                    "The managed extension to configure — a `path` from "
+                    "list_managed_extensions, or a unique file stem."
+                ),
+            },
+            "values": {
+                "type": "object",
+                "description": (
+                    "The complete new slice, keyed by the field names "
+                    "get_extension_config's `schema` declares. Every declared "
+                    "field must be present: missing is not empty, and nothing is "
+                    "filled in for you."
+                ),
+            },
+        },
+        "required": ["path", "values"],
+    },
+    result_schema=result_schema_for("set_extension_config"),
+)
+async def _handle_set_extension_config(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    session = handler.session
+    async with turn_safety_guard(session):
+        try:
+            outcome = await session.set_extension_config(params["path"], params["values"])
+        except ValueError as err:
+            raise RPCError(INVALID_PARAMS, str(err)) from err
+        return _extension_action_result(outcome, session)
+
+
+### end tier-c:set_extension_config
+
+
+_RESULT_FAMILIES: dict[str, tuple[str, ...]] = {
+    "SESSION_LIFECYCLE_RESULT_SCHEMA": ("new_session", "fork", "switch_session"),
+    "TREE_CONTEXT_RESULT_SCHEMA": (
+        "navigate",
+        "summarize_and_navigate",
+        "elide_span",
+        "commit_branch",
+    ),
+    "EXTENSION_ACTION_RESULT_SCHEMA": (
+        "enable_extension",
+        "disable_extension",
+        "reload_extension",
+        "set_extension_config",
+    ),
+}
+
+
+def _check_result_families() -> None:
+    """The three named aliases above must describe every verb that shares them.
+
+    Each row derives its own `result_schema` from its own capability, so the aliases
+    are only names for a shape three or four capabilities happen to declare
+    identically — and `docs/RPC-PROTOCOL.md` and two tests quote them as if that
+    identity held. Checked at import so a capability that drifts out of its family
+    fails here rather than leaving a doc sentence quietly describing a shape one of
+    its verbs no longer returns.
+    """
+    for alias, members in _RESULT_FAMILIES.items():
+        shared = globals()[alias]
+        for member in members:
+            if result_schema_for(member) != shared:
+                raise ValueError(
+                    f"{alias} no longer describes {member!r}: its capability declares a "
+                    "different `returns`. Either give it its own alias or restore the shared "
+                    "declaration in capabilities.py."
+                )
+
+
+_check_result_families()

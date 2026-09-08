@@ -63,16 +63,12 @@ def test_context_for_splices_tip_appended_compaction() -> None:
         "role": "user",
         "content": [{"type": "text", "text": "[[Compaction summary: SUMMARY]]"}],
     }
-    # u1/a1 precede the boundary (e04) → dropped. sys precedes it too and is carried
-    # to the front: the tip-appended shape gets the same treatment as every other.
     assert [m["content"][0]["text"] for m in msgs[2:]] == ["u2", "a2"]
 
 
 def test_navigate_behind_boundary_restores_pre_compaction_messages() -> None:
     entries = _linear_then_appended_compaction()
     tree = ConversationTree(entries, cursor="c06")
-    # Behind the boundary the pre-compaction prefix is addressable again — nothing
-    # was deleted by the append-only compaction.
     tree.navigate("e05")
     assert [m["content"][0]["text"] for m in tree.context_for()] == [
         "sys",
@@ -84,10 +80,6 @@ def test_navigate_behind_boundary_restores_pre_compaction_messages() -> None:
 
 
 def test_branch_summary_appended_at_tip_is_inline_not_a_splice() -> None:
-    # Decision 5 fix 2 (§5): a branch_summary is NOT a splice anchor — appended at the
-    # tip it renders INLINE, dropping no prefix (unlike a compaction). The 1c version
-    # of this test asserted branch_summary spliced *like* compaction via the now-removed
-    # §2.4 unification; corrected here to the pi-verified behavior.
     branch = _linear_then_appended_compaction()[:-1] + [
         {
             "id": "c06",

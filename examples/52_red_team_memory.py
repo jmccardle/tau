@@ -81,10 +81,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# ``ext_kit`` and the sibling ``50_review_swarm`` baseline both live alongside the
-# numbered examples, not inside an installed package — bootstrap ``examples/`` onto
-# the path before importing them, whether run directly, imported, or loaded via
-# ``-e`` (D-E6-3), the same as the other ext_kit-using demos (20_delegate, 51_delegate_fleet).
 _EXAMPLES_DIR = str(Path(__file__).resolve().parent)
 if _EXAMPLES_DIR not in sys.path:
     sys.path.insert(0, _EXAMPLES_DIR)
@@ -92,12 +88,6 @@ if _EXAMPLES_DIR not in sys.path:
 from ext_kit import gate, spawn  # noqa: E402  (path insertion must precede the import)
 from ext_kit.state import FileStore  # noqa: E402
 
-# The S71 baseline this demo builds on. ``50_review_swarm`` is not importable by a
-# bare name (the leading digit is not a valid identifier), so load it by path — the
-# same importlib bootstrap its own test uses. This is the "S71 + FileStore"
-# composition the roadmap names: we reuse S71's swarm vocabulary verbatim (the
-# lenses, the pure parse/dedupe, the gate predicate, the triage panel + report) and
-# add only the cross-session corpus dial.
 _REVIEW_PATH = Path(_EXAMPLES_DIR) / "50_review_swarm.py"
 _review_spec = importlib.util.spec_from_file_location("_review_swarm_baseline", _REVIEW_PATH)
 if _review_spec is None or _review_spec.loader is None:  # pragma: no cover - defensive
@@ -106,16 +96,10 @@ review = importlib.util.module_from_spec(_review_spec)
 sys.modules[_review_spec.name] = review
 _review_spec.loader.exec_module(review)
 
-# The gate contract is SHARED with the S71 baseline: same verdict sentinels, same
-# survival predicate. We reuse them verbatim so a corpus-seeded adversary speaks the
-# exact protocol ``run_gate`` parses — one gate vocabulary, not two.
 _survives = review._survives
 _VERDICT_SURVIVES = review._VERDICT_SURVIVES
 _VERDICT_REFUTED = review._VERDICT_REFUTED
 
-#: The ``customEntry`` type this demo's conversation-scoped kept-findings live under
-#: (S71's TreeStore ledger; distinct from ``50_review_swarm``'s so the two demos
-#: never share a session ledger if both are ever loaded).
 FINDING_CUSTOM_TYPE = "red_team_finding"
 
 #: The keyed S68 panel this demo mounts for triage (its own key, not the baseline's).
@@ -124,8 +108,6 @@ PANEL_KEY = "red_team"
 #: The cross-session corpus FileStore name (``~/.tau/ext-state/<name>.json``).
 CORPUS_STORE_NAME = "red_team_corpus"
 
-#: Cap on how many remembered findings seed one adversary prompt (bounded context —
-#: the corpus can grow unboundedly across sessions, one prompt cannot).
 CORPUS_SEED_LIMIT = 20
 
 
@@ -378,8 +360,6 @@ async def _review_command(
         ctx.ui.panel(PANEL_KEY, None)
         return f"Nothing to review — no diff against {ref}."
 
-    # Seed the adversaries with the cross-session memory (re-read per run so a corpus
-    # another session grew is picked up).
     corpus = load_corpus(corpus_store)
     outcome = await run_red_team_swarm(
         diff,
@@ -514,8 +494,6 @@ def red_team_memory_extension(api: Any) -> None:
         return _review_discard_command(args, ctx, pending=pending)
 
     def findings_handler(args: str, ctx: Any) -> str:
-        # The conversation-scoped ledger listing is identical to S71 (store-only,
-        # no panel) — reuse the baseline handler verbatim.
         return review._findings_command(args, ctx, store=store)
 
     def red_team_handler(args: str, ctx: Any) -> str:
@@ -559,6 +537,4 @@ def red_team_memory_extension(api: Any) -> None:
     )
 
 
-#: The module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/52_red_team_memory.py`` → ``getattr(module, "register")``).
 register = red_team_memory_extension

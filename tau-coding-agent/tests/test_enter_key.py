@@ -15,8 +15,9 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from tau_coding_agent.app import ChatInput, Parley
+from tau_coding_agent.app import TauApp
 from tau_coding_agent.config import ConfigError
+from tau_coding_agent import chat_widgets
 
 
 class _Backend:
@@ -31,7 +32,7 @@ class _Backend:
 
 @pytest.fixture
 def enter_app(make_app):
-    def _build(mode: str | None = None) -> Parley:
+    def _build(mode: str | None = None) -> TauApp:
         config = {} if mode is None else {"enter_key": mode}
         return make_app(create_backend=lambda cfg: _Backend(), config=config)
 
@@ -45,7 +46,7 @@ class TestTheDefaultIsUnchanged:
         app = enter_app()
         async with app.run_test() as pilot:
             await pilot.pause()
-            editor = app.query_one(ChatInput)
+            editor = app.query_one(chat_widgets.ChatInput)
             editor.focus()
             editor.text = "one"
             editor.move_cursor(editor.document.end)
@@ -64,7 +65,7 @@ class TestTheDefaultIsUnchanged:
         sent: list[str] = []
         async with app.run_test() as pilot:
             await pilot.pause()
-            editor = app.query_one(ChatInput)
+            editor = app.query_one(chat_widgets.ChatInput)
             editor.action_submit = lambda: sent.append(editor.text)  # type: ignore[method-assign]
             editor.focus()
             editor.text = "send me"
@@ -95,9 +96,7 @@ class TestSubmitMode:
         sent: list[str] = []
         async with app.run_test() as pilot:
             await pilot.pause()
-            editor = app.query_one(ChatInput)
-            # Stubbed so the real submit path does not empty the box behind us —
-            # the assertion here is about the line break, not about sending.
+            editor = app.query_one(chat_widgets.ChatInput)
             editor.action_submit = lambda: sent.append(editor.text)  # type: ignore[method-assign]
             editor.focus()
             editor.text = "one"
@@ -110,7 +109,7 @@ class TestSubmitMode:
         app = enter_app("submit")
         async with app.run_test() as pilot:
             await pilot.pause()
-            editor = app.query_one(ChatInput)
+            editor = app.query_one(chat_widgets.ChatInput)
             editor.focus()
             editor.text = "one"
             editor.move_cursor(editor.document.end)
@@ -130,7 +129,7 @@ class TestSubmitMode:
         sent: list[str] = []
         async with app.run_test() as pilot:
             await pilot.pause()
-            editor = app.query_one(ChatInput)
+            editor = app.query_one(chat_widgets.ChatInput)
             editor.action_submit = lambda: sent.append(editor.text)  # type: ignore[method-assign]
             editor.focus()
             editor.text = "half a prompt"
@@ -151,7 +150,7 @@ class TestSubmitMode:
         app = enter_app("submit")
         async with app.run_test() as pilot:
             await pilot.pause()
-            editor = app.query_one(ChatInput)
+            editor = app.query_one(chat_widgets.ChatInput)
             editor.focus()
             editor.text = "one"
             editor.move_cursor(editor.document.end)
@@ -164,7 +163,7 @@ class TestSubmitMode:
         sent: list[str] = []
         async with app.run_test() as pilot:
             await pilot.pause()
-            editor = app.query_one(ChatInput)
+            editor = app.query_one(chat_widgets.ChatInput)
             editor.action_submit = lambda: sent.append(editor.text)  # type: ignore[method-assign]
             editor.focus()
             editor.text = "send me"
@@ -210,7 +209,7 @@ class TestFailEarly:
     def test_a_bad_value_on_disk_stops_the_app_starting(self, tau_home):
         """The startup check, which the sandbox fixture cannot exercise.
 
-        ``build_parley`` assigns ``app.config`` AFTER ``__init__`` has run, so a
+        ``build_tau_app`` assigns ``app.config`` AFTER ``__init__`` has run, so a
         config passed to the fixture is never seen by the startup check. Only a
         value actually on disk is, which is also the only way a real user reaches
         it. Held here so the failure keeps landing while τ is starting rather
@@ -223,16 +222,16 @@ class TestFailEarly:
 
         config_module.CONFIG_PATH.write_text(json.dumps({"models": {}, "enter_key": "nope"}))
         with pytest.raises(ConfigError, match="enter_key"):
-            Parley(session_catalog=FileSessionCatalog(tau_home / "sessions"))
+            TauApp(session_catalog=FileSessionCatalog(tau_home / "sessions"))
 
     def test_the_packaged_default_config_names_a_real_mode(self):
         import json
 
-        from tau_coding_agent.app import ENTER_KEY_CONFIG_KEY, ENTER_KEY_MODES
+        from tau_coding_agent.chat_widgets import ENTER_KEY_CONFIG_KEY, ENTER_KEY_MODES
         from tau_coding_agent.config import DEFAULT_CONFIG_TEMPLATE
 
         template = json.loads(DEFAULT_CONFIG_TEMPLATE.read_text())
-        assert template[ENTER_KEY_CONFIG_KEY] in ENTER_KEY_MODES
+        assert template[chat_widgets.ENTER_KEY_CONFIG_KEY] in chat_widgets.ENTER_KEY_MODES
 
 
 class TestTheWidgetAloneKeepsTheDefault:
@@ -244,6 +243,6 @@ class TestTheWidgetAloneKeepsTheDefault:
     """
 
     def test_unwired_chat_input_breaks_the_line(self):
-        editor = ChatInput()
+        editor = chat_widgets.ChatInput()
         assert editor.enter_key_mode is None
         assert editor._enter_sends() is False

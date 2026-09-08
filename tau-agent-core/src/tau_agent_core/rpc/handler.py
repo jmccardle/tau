@@ -21,6 +21,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TextIO
 
 from tau_agent_core.event_projection import MessageDeltaProjector
+from tau_agent_core.prompt_cache import PromptCacheObserver
 from tau_agent_core.rpc import commands, dialect, transport, wire_events
 from tau_llm.docs import agent_facing
 
@@ -30,81 +31,14 @@ if TYPE_CHECKING:
     from tau_agent_core.events import AgentEvent
 
 
-#: T3/G3/G4: the number of AgentEvent-derived wire items allowed to sit in
-#: `_output_queue` waiting for the host to read them before `_forward_event`
-#: (and, through it, `AgentLoop.run` — see that method's docstring) blocks.
-#:
-#: Chosen in ITEMS, not bytes: G3/E1 already keep each item small by
-#: construction (a `message_update` carries a delta, never the cumulative
-#: message — `wire_events.project_event`), so an item is bounded above by a
-#: single streamed chunk's worth of text/a tool-arg fragment, not by
-#: anything a host controls. A byte budget would be redundant accounting for
-#: the same guarantee E1 already gives structurally, so an item count is the
-#: simpler correct choice.
-#:
-#: 64 is deliberately small relative to what a burst of local-model
-#: streaming can produce in a fraction of a second (CLAUDE.md notes local
-#: servers "stream argument fragments aggressively") — big enough to absorb
-#: that burstiness without stalling a host that is merely a LITTLE behind,
-#: small enough that the worst case (every item near the largest a single
-#: delta chunk realistically is, a few KB) is a low-single-digit-MB cap
-#: rather than an open-ended one. It is a default, not a law — the
-#: constructor accepts an override for tests that want to hit the bound
-#: without manufacturing hundreds of chunks.
 DEFAULT_OUTPUT_QUEUE_EVENT_BOUND = 64
 
-#: How often `_acquire_event_credit` re-checks the current turn's abort
-#: signal while it is genuinely waiting on a full queue (see that method).
-#: `tau_llm.abort.AbortSignal`'s own docstring suggests "every 100ms" as the
-#: cooperative-check cadence; this reuses that number rather than inventing
-#: a second one.
 _EVENT_CREDIT_POLL_INTERVAL_S = 0.1
 
-#: `_cancel_background_tasks`, phase 1: how long to let an already-running
-#: background turn (C3) notice `RPCHandler._shutting_down` and unwind ON ITS
-#: OWN before this method resorts to `Task.cancel()`. A turn stalled inside
-#: `_acquire_event_credit`'s poll loop notices within one
-#: `_EVENT_CREDIT_POLL_INTERVAL_S`; ten poll intervals is generous slack
-#: without being a real user-facing delay (this is `run()`'s teardown path,
-#: not its steady state). Deliberately NOT skipped in favor of cancelling
-#: immediately — see that method's docstring for why a raw `Task.cancel()`
-#: delivered while the task is suspended in that specific wait would defeat
-#: the escape it exists to reach (it raises `CancelledError` AT that await
-#: point instead of letting the escape's own synchronous check run,
-#: dropping `agent_end` — the exact Fail-Early violation this whole fix is
-#: for).
 _BACKGROUND_TASK_GRACE_S = 1.0
 
-#: `_cancel_background_tasks`, phase 2: bound on the SECOND wait, after
-#: `Task.cancel()` has been sent to whatever is still running once the grace
-#: period (above) elapses — e.g. a tool call or provider request genuinely
-#: in flight, unrelated to the credit pool. Matches `AgentSessionRuntime
-#: .DEFAULT_SWAP_TIMEOUT_S`'s precedent for a stated, bounded wait on
-#: something that is expected to unwind promptly once cancelled.
 _BACKGROUND_TASK_CANCEL_TIMEOUT_S = 5.0
 
-#: `run()`'s post-EOF flush (P4): how long the writer may go WITHOUT the peer
-#: accepting a single further byte before we stop trying to flush and exit
-#: anyway.
-#:
-#: P4 says a clean shutdown flushes pending output, and `_write_stdout`'s loop
-#: condition ("`_running`, OR the queue is non-empty") implements exactly
-#: that. But EOF on stdin only tells us the host closed the end it WRITES to;
-#: it says nothing about whether it is still reading. A host that closes stdin
-#: and walks away leaves the writer parked in `await writer.drain()` on a full
-#: pipe with a backlog behind it, and `run()`'s `await self._stdout_task`
-#: waits on it forever — measured (R-T3's subprocess test, once it was made to
-#: build a real backlog) as a process that survived EOF by >15s with an event
-#: backlog and had to be killed. That is the same unkillable-process class as
-#: phase-4's two merge blockers, reached by a third route.
-#:
-#: The deadline is on LACK OF PROGRESS, not on total flush time: every drained
-#: item bumps `_drain_progress`, and only a whole window in which that counter
-#: does not move at all ends the flush. A slow-but-reading host therefore gets
-#: as long as it needs; only a host that has genuinely stopped reading is cut
-#: off. 5.0s matches `_BACKGROUND_TASK_CANCEL_TIMEOUT_S` and
-#: `AgentSessionRuntime.DEFAULT_SWAP_TIMEOUT_S` rather than inventing a third
-#: number. Giving up is reported on stderr (T4), never silently.
 _SHUTDOWN_FLUSH_NO_PROGRESS_TIMEOUT_S = 5.0
 
 
@@ -220,156 +154,23 @@ class RPCHandler:
         self._pending_requests: dict[int, asyncio.Future] = {}
         self._stdin_task = None  # type: asyncio.Task | None
         self._stdout_task = None  # type: asyncio.Task | None
-        # Monotonically increasing count of items `_write_stdout` has actually
-        # got the OS to ACCEPT (post-`drain()`, not post-`get()`). Its only
-        # consumer is `run()`'s post-EOF flush deadline — see
-        # `_SHUTDOWN_FLUSH_NO_PROGRESS_TIMEOUT_S` — which watches it to tell a
-        # host that is reading slowly (counter still moving; wait as long as it
-        # takes) from one that has stopped reading entirely (counter frozen;
-        # give up and exit). Deliberately a counter and not a timestamp: no
-        # clock to read, and a comparison that cannot be confused by a clock
-        # that jumps.
         self._drain_progress = 0
-        # T3/G3/G4: this container itself has NO capacity limit — see
-        # `_acquire_event_credit` and `_event_credits` just below for why the
-        # bound lives one layer up instead of on `maxsize` directly. A literal
-        # `asyncio.Queue(maxsize=N)` would make `commands._on_admitted`'s
-        # synchronous `put_nowait` (the C3 acceptance response, enqueued from
-        # inside a callback that MUST NOT suspend — see that function's own
-        # docstring) fail under exactly the backlog T3 exists to create,
-        # forcing a choice between reordering C3 (an `await put()`, which a
-        # pinned test refuses) or dropping the ack. Neither is acceptable, so
-        # the bound is scoped to what G3/G4 are actually about — the
-        # AgentEvent-driven PUSH stream — and control-plane responses
-        # (`_send_response`/`_send_error`, and the C3 ack) are exempt: they
-        # are 1:1 replies to a host-initiated request, not data τ pushes
-        # unprompted, and a host that floods requests without reading
-        # responses is a different, self-inflicted failure mode outside
-        # G3/G4's stated concern (push, not request/response).
         self._output_queue: asyncio.Queue = asyncio.Queue()
-        # T3/G4: `_forward_event` must acquire one of these before enqueueing
-        # an event-derived item, and the writer (`transport._write_stdout`)
-        # releases one after dequeueing a credited item — see both for the
-        # mechanics, `_EventCredits` for why this is a small bespoke type
-        # rather than `asyncio.Semaphore`, and `_acquire_event_credit` for
-        # the abort escape hatch.
         self._event_credits = _EventCredits(output_queue_event_bound)
         self._running = False
-        # Blocker 1 (phase-4 review): distinct from `_running`. `_running`
-        # starts False and stays False for the many white-box tests (and the
-        # reviewer's own credit-starvation repro) that construct an
-        # `RPCHandler` and drive it directly without ever calling `run()` —
-        # `_acquire_event_credit` checking `not self._running` there would
-        # disable backpressure entirely for every one of them, which is not
-        # this fix's problem to create. `_shutting_down` instead defaults
-        # False and is flipped True ONLY by `run()`'s own teardown (its
-        # `finally`, after `self._running` is already False) — see
-        # `_acquire_event_credit`'s second escape and `_cancel_background_
-        # tasks` for why that ordering, and only that one transition,
-        # matters.
         self._shutting_down = False
         # Real stdout handle for this run (see module-level `_take_over_stdout`).
         self._real_stdout: TextIO | None = None
-        # Set by `_on_signal`; "SIGTERM" or "SIGHUP" if shutdown was signal-
-        # triggered, else None (stdin EOF / explicit `stop()`).
         self._exit_signal: str | None = None
-        # Process exit code implied by the shutdown reason (143/129), for a
-        # future CLI wrapper to act on. None until a signal has fired.
         self.exit_code: int | None = None
         self._registered_signals: list[signal.Signals] = []
-        # Set once run() has fully torn down (writer drained/cancelled,
-        # signal handlers removed, stdout released) — including when run()
-        # exits via an exception. Lets stop() block until shutdown is
-        # actually complete rather than merely requested.
         self._stopped_event = asyncio.Event()
-        # Finding 4 (phase-4 review), P3's other half: `AgentSession
-        # .shutdown_requested` is checked in `transport._read_stdin` after
-        # each DISPATCHED line — see that method's own comment — but an
-        # extension's `ctx.shutdown()` most often fires from a hook running
-        # DURING a background turn (`commands._submit_and_acknowledge`'s
-        # `_drive` task, tracked via `track_background_task` below), well
-        # after the dispatch that started it already returned. At that
-        # point the reader is parked in `reader.readline()` waiting for a
-        # NEXT line that may never come, and nothing was ever checking the
-        # flag again. This `Event` is what `_read_stdin` races `readline()`
-        # against (in addition to the existing after-dispatch check, which
-        # still covers the synchronous case) — set once, from
-        # `_observe_shutdown_after_background_task` below, the moment a
-        # background turn that leaves `shutdown_requested` True finishes.
-        # Deliberately NOT a poll: nothing ever re-checks this on a timer,
-        # it is only ever set from that one done-callback and awaited by
-        # `_read_stdin`'s own `asyncio.wait(...)`.
         self._shutdown_signal = asyncio.Event()
-        # C3: submit/prompt drive AgentSession.submit() as a background task so
-        # the acceptance response can return at admission rather than at turn
-        # end (commands._submit_and_acknowledge). A plain local variable would
-        # let the task get garbage-collected mid-flight (asyncio holds only a
-        # weak reference); this set is the strong reference, and the done-
-        # callback reaps it — see track_background_task().
         self._background_tasks: set[asyncio.Task[Any]] = set()
-        # Blocker 1 (Tier B review), C3-style dual completion for `compact`:
-        # the id of the compaction currently running in the background, or
-        # None. `commands._handle_compact` sets it SYNCHRONOUSLY, on the
-        # dispatch path, before it creates its background task, and the task
-        # clears it in a `finally` — so a second `compact` line (which cannot
-        # even be PARSED until the first one's acknowledgement has been
-        # enqueued, `transport._read_stdin` being a serial reader) always
-        # sees a non-None value here and is refused outright, immediately,
-        # instead of sitting on the D-1 `turn_lock` wait for the full
-        # `DEFAULT_SWAP_TIMEOUT_S` only to be told the same thing five
-        # seconds later. One flag rather than a set: `_handle_compact`
-        # refuses the second one, so there is never more than one.
-        #
-        # Lives on the handler (per-connection state, like
-        # `_background_tasks` and `_delta_projector` beside it) rather than
-        # in a module-level map in `commands.py` keyed by handler identity —
-        # two handlers over two connections to the same process are
-        # independent, and a module-level map would also outlive them.
         self.compaction_in_flight: str | None = None
-        # Finding 5 (Tier B review): what `abort` reaches into that compaction
-        # with. Before this, `AgentSession.abort()` consulted no flag any
-        # compaction path reads (`agent_session.py`'s `compact` is
-        # emit(agent_start) -> _perform_compaction -> finally emit(agent_end)),
-        # so a host was answered `{"status": "aborted"}` at +0.00s and the tree
-        # was rewritten anyway at +20.01s. `commands._handle_compact` binds
-        # this callable at its ACKNOWLEDGEMENT — see that function for why not
-        # earlier — and `abort_compaction` below invokes it.
-        #
-        # A callable rather than the `asyncio.Task` itself so the handler keeps
-        # holding per-connection STATE while `commands.py` keeps owning what
-        # cancelling a compaction means (it is the module that then has to tell
-        # a host-requested cancellation apart from a shutdown reap, which is
-        # the whole difference between `cancelled: true` on the wire and D-5's
-        # stderr line).
         self._compaction_aborter: "Callable[[], None] | None" = None
-        # E1: the cumulative-message -> delta projector (event_projection.py),
-        # ONE instance for this handler's whole lifetime, reset per turn (see
-        # `_forward_event`'s call into `wire_events.project_event`, and that
-        # module's own docstring, for exactly where and why). It is safe to
-        # share a single instance across every turn this handler ever forwards
-        # BECAUSE the channel it is fed from — `session.subscribe`'s "all"
-        # AgentEvent stream — carries at most one turn's message_update stream
-        # at a time: "enqueue"/"rollback" submissions block on
-        # `AgentSession._turn_lock` before admission, and "steer" delivers INTO
-        # the in-flight turn rather than starting a concurrent one. The one
-        # multitask strategy that DOES run concurrently with an in-flight turn,
-        # "fork" (`agent_session._spawn_fork`), does not emit onto this channel
-        # at all — a fork's sub-agent events go out on the separate
-        # `"branch_event"` channel (`subscribe_channel`), which this handler
-        # does not forward (Tier C `open_lane`/`list_lanes`, a later unit). If
-        # a future unit forwards branch events too, they need their OWN
-        # projector per branch/lane — sharing this one would interleave two
-        # turns' text/thinking accumulators into nonsense.
         self._delta_projector = MessageDeltaProjector()
-        # One persistent subscription for the whole handler lifetime, forwarding
-        # every AgentEvent as an "event" notification (D2/E-series). Previously
-        # `_handle_send_prompt` subscribed fresh on every call and never
-        # unsubscribed — a leak, and it meant only events from a call already
-        # inside that handler were ever forwarded. A single subscription at
-        # construction (pi's own shape: `rebindSession` subscribes once, not
-        # per command — rpc-mode.ts) is what lets `submit`/`prompt`'s
-        # background turn (which returns from its own handler before the turn
-        # ends) still reach the wire.
+        self._prompt_cache = PromptCacheObserver()
         self._session.subscribe(self._forward_event)
 
     @property
@@ -601,6 +402,12 @@ class RPCHandler:
         (see that function's docstring); every other event type projects to
         exactly one.
 
+        This is also the single feed of the handler's `PromptCacheObserver`, and
+        the reason it is safe to feed here without naming a prefix: this
+        subscription is one conversation's, so a sub-agent's completions never
+        reach it. The observer answers only on `agent_end`, where the answer
+        becomes `WireEvent.cache_notice`.
+
         **T3/G4 — this is the backpressure mechanism, not a separate "pace
         hook".** `EventBus.emit` (`events.py`) calls each subscribed handler
         and, when it returns a coroutine, `await`s it before moving to the
@@ -641,7 +448,10 @@ class RPCHandler:
         item reaches `json.dumps`; every other event type does not get one
         and `_stamp_agent_end_cursor` is a no-op without it.
         """
-        for params in wire_events.project_event(self._delta_projector, event):
+        cache_notice = self._prompt_cache.feed_event(event)
+        for params in wire_events.project_event(
+            self._delta_projector, event, cache_notice=cache_notice
+        ):
             item: dict[str, Any] = {
                 "jsonrpc": "2.0",
                 "method": "event",
@@ -649,13 +459,6 @@ class RPCHandler:
             }
             if params.get("type") == "agent_end":
                 item["_cursor_log"] = self._session.session_log
-            # _cursor_log (if any) is captured ABOVE, before the potentially
-            # suspending wait below — so a session swap that lands WHILE this
-            # call is stalled on backpressure still cannot corrupt which log
-            # `_stamp_agent_end_cursor` later reads (Finding 2, phase-3
-            # review; see that method's docstring, and the class docstring
-            # here, for why suspending here does not also reopen the
-            # persistence-ordering half of that same finding).
             credited = await self._acquire_event_credit()
             if credited:
                 item["_credited"] = True
@@ -740,20 +543,6 @@ class RPCHandler:
                 if self._session.is_aborted or self._shutting_down:
                     return False
         except asyncio.CancelledError:
-            # Credit-leak fix, phase-4 review: `release()` hands a credit
-            # DIRECTLY to the longest-waiting `Future` by calling
-            # `waiter.set_result(None)` (`_EventCredits.release`) — it does
-            # not merely bump a counter for someone to race for. If THIS
-            # coroutine is cancelled after that grant landed (`waiter.done()`
-            # and not `waiter.cancelled()`) but before it could act on it
-            # (return True and let the caller mark the item `_credited`), the
-            # credit is not "in the pool" (release() already decremented
-            # `_available` when it handed it over) and it is not "with the
-            # caller" either (nobody will ever release it back) — it is
-            # simply gone, permanently shrinking the pool by one. This
-            # becomes reachable now that `_cancel_background_tasks` can
-            # cancel a turn stalled exactly here. Hand it back explicitly
-            # rather than let it vanish.
             if waiter.done() and not waiter.cancelled():
                 self._event_credits.release()
             raise
@@ -924,27 +713,12 @@ class RPCHandler:
             self._stdin_task = asyncio.create_task(self._read_stdin())
             self._stdout_task = asyncio.create_task(self._write_stdout())
 
-            # FIRST_COMPLETED, never gather(). gather()ing both deadlocked:
-            # _write_stdout loops `while self._running or queue`, and _running was
-            # cleared only in the finally below — which cannot run until gather
-            # returns, which waits on _write_stdout. run() then spun at 2
-            # wakeups/sec forever after its client closed the pipe, despite this
-            # method's promise to run "until stdin is closed".
-            #
-            # The writer is waited on ALONGSIDE the reader rather than after it,
-            # because the writer only ends early by raising (its loop cannot exit
-            # while _running is set). Awaiting the reader unconditionally would sit
-            # on stdin until EOF while a dead writer silently queued every response
-            # behind it — the same "keeps going after a fatal error" shape as the
-            # deadlock above.
             try:
                 done, _pending = await asyncio.wait(
                     {self._stdin_task, self._stdout_task},
                     return_when=asyncio.FIRST_COMPLETED,
                 )
             except asyncio.CancelledError:
-                # run()'s own task was cancelled from the outside; neither
-                # the reader nor the writer asked for this themselves.
                 self._stdin_task.cancel()
                 self._stdout_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -954,10 +728,6 @@ class RPCHandler:
                 raise
 
             if self._stdin_task not in done:
-                # The writer ended first -- almost always T6 (broken
-                # pipe): the peer is gone. Stop the reader instead of
-                # continuing to parse, execute, and queue requests into a
-                # sink nobody drains, then let the write failure surface.
                 self._stdin_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._stdin_task
@@ -968,61 +738,12 @@ class RPCHandler:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._stdin_task
 
-            # Finding 3 (Tier B review): reap the background tasks HERE,
-            # while `self._running` is still True and the writer is still
-            # looping, rather than leaving it entirely to the `finally`
-            # below — which runs only AFTER the writer has been drained and
-            # has exited. `_cancel_background_tasks`'s phase 1 waits
-            # `_BACKGROUND_TASK_GRACE_S` WITHOUT cancelling, so a background
-            # task that finishes inside that window used to `put_nowait` its
-            # completion onto a queue nobody would ever read again: measured
-            # on `compact` (docs/RPC-TIER-B.md D-5) as a compaction that
-            # ran, was durably written to the session log, and reported
-            # NOTHING — rc 0, empty stderr, no `compaction_end`, and a
-            # `compaction` entry the next process to resume that session
-            # would find unannounced. D-5 promises the only silent outcome
-            # is cancellation, "which says so on stderr (T4)"; this is what
-            # makes that true. Delivering it is strictly better than
-            # reporting it out of band, and reaping before the drain is what
-            # makes delivery possible: everything these tasks enqueue while
-            # winding down is then still ahead of `_flush_stdout_with_
-            # deadline`, i.e. covered by P4's "a clean shutdown flushes
-            # pending output".
-            #
-            # Costs nothing in shutdown latency: the same grace was already
-            # being paid in the `finally`, just later. `_shutting_down` moves
-            # with it, keeping Blocker 1 (phase-4)'s ordering invariant
-            # intact — the flag is still set strictly BEFORE any reaping, so
-            # `_acquire_event_credit`'s escape can see it (see that method
-            # and `_cancel_background_tasks`).
-            #
-            # The `finally`'s call is NOT removed: this one is skipped
-            # entirely by the writer-ended-first branch above and by any
-            # exception on the way here, and those paths still need a reap.
-            # It is idempotent — with nothing left pending it returns
-            # immediately — and on THOSE paths the writer really is gone, so
-            # a completion arriving during that reap cannot be delivered at
-            # all; `commands._handle_compact._complete` reports it on stderr
-            # (T4) instead of dropping it (`output_is_deliverable`).
             self._shutting_down = True
             await self._cancel_background_tasks()
 
             self._running = False
             if self._exit_signal == "SIGTERM":
                 self._stdout_task.cancel()
-                # Finding 3 (Tier B review), T4. P1 says SIGTERM skips the
-                # flush — the host is impatient and does not want to wait on
-                # us — and that is unchanged. What is NOT acceptable is
-                # discarding output without saying so: the reap above can
-                # leave a background task's last items (a `compaction_end`
-                # among them) queued microseconds before this cancel, and
-                # "the host was told nothing about a mutation that landed"
-                # is the defect this whole fix exists to remove, whatever
-                # the shutdown trigger. The non-SIGTERM paths already
-                # announce their own truncation — `_flush_stdout_with_
-                # deadline` when the peer stops reading, and a broken pipe
-                # by propagating out of `run()` — so this is the one route
-                # that had no report at all.
                 pending = self._output_queue.qsize()
                 if pending:
                     print(
@@ -1038,11 +759,6 @@ class RPCHandler:
                 await self._stdout_task
         finally:
             self._running = False
-            # Blocker 1 (phase-4 review): flip BEFORE reaping background
-            # tasks, so `_acquire_event_credit`'s escape can actually see it
-            # — see that method's docstring and `_cancel_background_tasks`
-            # for why the ORDER (not-running/shutting-down true first, then
-            # deal with the tasks) is load-bearing, not stylistic.
             self._shutting_down = True
             await self._cancel_background_tasks()
             self._unregister_signal_handlers()
@@ -1093,8 +809,6 @@ class RPCHandler:
             if done:
                 return
             if self._drain_progress != marker:
-                # The peer took at least one more item during the window --
-                # it is reading, merely not quickly. Reset and keep waiting.
                 continue
             print(
                 "tau rpc: giving up on flushing "
@@ -1121,11 +835,6 @@ class RPCHandler:
             self._stdin_task.cancel()
         await self._stopped_event.wait()
 
-    # Block [1] Transport: framing, stdout takeover, signal handling.
-    # Defined in transport.py and composed here so RPCHandler keeps them as
-    # bound methods (tests call/monkeypatch them as such) while the transport
-    # code itself lives in exactly one module (docs/REMOTE-CONTROL.md
-    # section 7.3, requirement X1).
     _register_signal_handlers = transport._register_signal_handlers
     _unregister_signal_handlers = transport._unregister_signal_handlers
     _on_signal = transport._on_signal
@@ -1210,9 +919,6 @@ class RPCHandler:
             return
 
         if result is None:
-            # The handler already sent its own response(s) directly (C3's dual
-            # completion — see commands._submit_and_acknowledge for why the
-            # ordinary "await, then send" shape below cannot be used there).
             return
         await self._send_response(msg_id, {**result, "method": method})
 

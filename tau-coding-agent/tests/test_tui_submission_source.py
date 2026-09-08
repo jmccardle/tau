@@ -26,7 +26,11 @@ from typing import Any
 
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.submission import Submission, SubmissionResult
+from tau_agent_core.flows import Ready
 from tau_coding_agent.backends import TauBackend
+
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
 
 
 def _backend() -> TauBackend:
@@ -76,8 +80,6 @@ async def test_stream_submission_admits_the_callers_record_verbatim():
 
     backend.agent_session.submit = recording_submit  # type: ignore[method-assign]
 
-    # prompt() must NOT be the route any more: a second admission underneath this
-    # one is the double-admission B2-a exists to avoid.
     def exploding_prompt(*a, **kw):
         raise AssertionError("stream_submission must not route through prompt()")
 
@@ -114,7 +116,7 @@ async def test_events_of_a_typed_turn_carry_interactive_provenance():
     backend = _backend()
     _stub_turn(
         backend,
-        [AgentEvent(type="turn_start", timestamp=0, turn_index=0)],
+        [AgentEvent(type="turn_start", timestamp=_TS, turn_index=0)],
     )
     captured: list[AgentEvent] = []
     backend.agent_session.subscribe(captured.append)
@@ -190,12 +192,6 @@ async def test_stream_chat_derives_the_ordinary_interactive_submission():
     assert seen[0].source == "interactive"
     assert seen[0].submitter == "human"
     assert seen[0].multitask_strategy == "enqueue"
-    # False, and since B2-b that is a DIVERGENCE from AgentSession.prompt() rather
-    # than parity with it: this method returns a 4-tuple with no slot for a
-    # CommandOutcome, so a dispatched command would be dropped. Since B2-c no
-    # frontend routes through here at all (headless owns its record too) — what is
-    # left is the SDK-shaped message-list contract, whose caller cannot know a
-    # command is in the list before calling nor receive an outcome after.
     assert seen[0].expand_commands is False
     assert seen[0].allow_user_input is True
     assert seen[0].submission_id, "every submission needs an id to be attributable"
@@ -239,8 +235,8 @@ async def test_submit_command_returns_the_outcome_without_streaming_anything():
 
     assert result.accepted is True
     assert result.messages == []
-    assert result.command is not None
-    assert (result.command.name, result.command.performer) == ("compact", "frontend")
+    assert isinstance(result.command, Ready)
+    assert (result.command.flow, result.command.mutation) == ("compact", "compact")
 
 
 async def test_submit_command_admits_through_the_same_door_as_a_prompt():

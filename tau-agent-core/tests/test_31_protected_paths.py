@@ -24,6 +24,9 @@ from tau_llm.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PATH = _REPO_ROOT / "examples" / "31_protected_paths.py"
 _spec = importlib.util.spec_from_file_location("protected_paths_31_example", _PATH)
@@ -40,7 +43,7 @@ def _tool_call_assistant(call_id: str, name: str, args: dict[str, Any]) -> Assis
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -52,7 +55,7 @@ def _text_assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -200,8 +203,6 @@ async def test_write_to_plain_path_is_allowed_through_the_loop() -> None:
         side_effect=_fake_stream_calling("write", {"path": "src/app.py", "content": "x"}),
     ):
         messages = await session.prompt("write a file")
-    # Not vetoed: the write tool is not registered here, so the loop reaches
-    # execution and reports an unknown-tool error, distinct from the veto text.
     assert '"src/app.py" is protected' not in _tool_result_text(messages, "write")
 
 

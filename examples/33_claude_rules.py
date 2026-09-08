@@ -133,6 +133,4 @@ def claude_rules_extension(api: Any) -> None:
     api.on("before_agent_start", state.on_before_agent_start)
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/33_claude_rules.py`` → ``getattr(module, "register")``).
 register = claude_rules_extension

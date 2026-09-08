@@ -22,7 +22,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from tau_llm.providers.base import split_tool_result_content
-from tau_llm.providers.openai import OpenAICompletionsProvider
+from tau_llm.providers.openai import (
+    OpenAICompletionsProvider,
+    _Accumulator,
+    _apply_cache_control,
+    _usage_from_openai,
+)
 from tau_llm.streaming import DoneEvent, ErrorEvent, TextDeltaEvent, ToolCallDeltaEvent
 from tau_llm.tools import ToolDefinition
 from tau_llm.types import (
@@ -37,9 +42,8 @@ from tau_llm.types import (
     UserMessage,
 )
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Helper: async context manager mimicking httpx's ``client.stream(...)``
-# ═══════════════════════════════════════════════════════════════════════════
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
 
 
 class _StreamCM:
@@ -59,11 +63,6 @@ class _StreamCM:
 
     async def __aexit__(self, *exc):
         return False
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Helper: build_sse_chunk and build_sse_stream (avoid nested f-strings)
-# ═══════════════════════════════════════════════════════════════════════════
 
 
 def _sse_chunk(data: dict) -> str:
@@ -297,11 +296,6 @@ def _collect_events(stream):
     return asyncio.run(_collect())
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Test 1: Message conversion — text only
-# ═══════════════════════════════════════════════════════════════════════════
-
-
 class TestConvertMessagesTextOnly:
     """Test 1 from PHASE-1-SUBPHASE-2.md "Testing Strategy"."""
 
@@ -339,7 +333,7 @@ class TestConvertMessagesTextOnly:
                     TextContent(text="First part"),
                     TextContent(text="Second part"),
                 ],
-                timestamp=0,
+                timestamp=_TS,
             ),
         ]
         result = self.provider._convert_messages_to_openai(messages)
@@ -368,7 +362,7 @@ class TestConvertMessagesTextOnly:
                 model="gpt-4",
                 usage=Usage(),
                 stop_reason="stop",
-                timestamp=0,
+                timestamp=_TS,
             ),
             UserMessage(content=[TextContent(text="And 3+3?")], timestamp=0),
         ]
@@ -378,11 +372,6 @@ class TestConvertMessagesTextOnly:
         assert result[0]["role"] == "user"
         assert result[1]["role"] == "assistant"
         assert result[2]["role"] == "user"
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Test: Message conversion — image content
-# ═══════════════════════════════════════════════════════════════════════════
 
 
 class TestConvertMessagesImageContent:
@@ -399,7 +388,7 @@ class TestConvertMessagesImageContent:
                     TextContent(text="What is in this image?"),
                     ImageContent(data="abc123", mime_type="image/png"),
                 ],
-                timestamp=0,
+                timestamp=_TS,
             ),
         ]
         result = self.provider._convert_messages_to_openai(messages)
@@ -416,7 +405,7 @@ class TestConvertMessagesImageContent:
         messages = [
             UserMessage(
                 content=[ImageContent(data="base64jpegdata", mime_type="image/jpeg")],
-                timestamp=0,
+                timestamp=_TS,
             ),
         ]
         result = self.provider._convert_messages_to_openai(messages)
@@ -434,7 +423,7 @@ class TestConvertMessagesImageContent:
                         data="data:image/png;base64,existingbase64data", mime_type="image/png"
                     ),
                 ],
-                timestamp=0,
+                timestamp=_TS,
             ),
         ]
         result = self.provider._convert_messages_to_openai(messages)
@@ -460,9 +449,7 @@ class TestToolResultImages:
 
     @staticmethod
     def _result(content):
-        return ToolResultMessage(
-            tool_call_id="c1", tool_name="read", content=content, timestamp=0
-        )
+        return ToolResultMessage(tool_call_id="c1", tool_name="read", content=content, timestamp=0)
 
     def test_a_text_only_result_is_unchanged(self):
         """Every result but a handful. One message, space-joined, as always —
@@ -637,9 +624,7 @@ class TestToolResultImageOrdering:
             self._result("c1", "alpha.png", "AAA"),
             self._result("c2", "beta.png", "BBB"),
         ]
-        result = self.provider._convert_messages_to_openai(
-            messages, multimodal_tool_results=True
-        )
+        result = self.provider._convert_messages_to_openai(messages, multimodal_tool_results=True)
 
         assert [m["role"] for m in result] == ["tool", "tool"]
 
@@ -680,11 +665,6 @@ class TestToolResultContentSplit:
             split_tool_result_content([{"type": "video", "data": "AAA"}])
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Test 2: Message conversion — tool calls
-# ═══════════════════════════════════════════════════════════════════════════
-
-
 class TestConvertMessagesWithToolCalls:
     """Test 2 from PHASE-1-SUBPHASE-2.md "Testing Strategy"."""
 
@@ -704,7 +684,7 @@ class TestConvertMessagesWithToolCalls:
                 model="gpt-4",
                 usage=Usage(),
                 stop_reason="toolUse",
-                timestamp=0,
+                timestamp=_TS,
             ),
         ]
         result = self.provider._convert_messages_to_openai(messages)
@@ -728,7 +708,7 @@ class TestConvertMessagesWithToolCalls:
                 model="gpt-4",
                 usage=Usage(),
                 stop_reason="stop",
-                timestamp=0,
+                timestamp=_TS,
             ),
         ]
         result = self.provider._convert_messages_to_openai(messages)
@@ -750,7 +730,7 @@ class TestConvertMessagesWithToolCalls:
                 model="gpt-4",
                 usage=Usage(),
                 stop_reason="toolUse",
-                timestamp=0,
+                timestamp=_TS,
             ),
         ]
         result = self.provider._convert_messages_to_openai(messages)
@@ -767,7 +747,7 @@ class TestConvertMessagesWithToolCalls:
                 tool_name="bash",
                 content=[TextContent(text="file1 file2")],
                 is_error=False,
-                timestamp=0,
+                timestamp=_TS,
             ),
         ]
         result = self.provider._convert_messages_to_openai(messages)
@@ -788,14 +768,14 @@ class TestConvertMessagesWithToolCalls:
                 model="gpt-4",
                 usage=Usage(),
                 stop_reason="toolUse",
-                timestamp=0,
+                timestamp=_TS,
             ),
             ToolResultMessage(
                 tool_call_id="c1",
                 tool_name="bash",
                 content=[TextContent(text="file1.txt file2.py")],
                 is_error=False,
-                timestamp=0,
+                timestamp=_TS,
             ),
         ]
         result = self.provider._convert_messages_to_openai(messages)
@@ -805,11 +785,6 @@ class TestConvertMessagesWithToolCalls:
         assert result[1]["role"] == "assistant"
         assert result[2]["role"] == "tool"
         assert result[2]["tool_call_id"] == "c1"
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Test 3: Tool conversion
-# ═══════════════════════════════════════════════════════════════════════════
 
 
 class TestConvertTools:
@@ -905,11 +880,6 @@ class TestConvertTools:
         props = result[0]["function"]["parameters"]["properties"]
         assert props["count"]["type"] == "integer"
         assert props["tags"]["type"] == "array"
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Test 4: Streaming event production — text response
-# ═══════════════════════════════════════════════════════════════════════════
 
 
 class TestStreamTextResponse:
@@ -1052,11 +1022,6 @@ class TestStreamTextResponse:
         assert error_events[0].is_error is True
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Test 5: Tool call delta accumulation
-# ═══════════════════════════════════════════════════════════════════════════
-
-
 class TestStreamToolCallDelta:
     """Test 5 from PHASE-1-SUBPHASE-2.md "Testing Strategy"."""
 
@@ -1151,12 +1116,6 @@ class TestStreamToolCallDelta:
         assert len(tool_calls) == 1
         assert tool_calls[0].name == "bash"
         assert tool_calls[0].id == "call_abc123"
-        # The finish_reason -> stop_reason mapping, asserted on the LIVE path.
-        # It used to be asserted in exactly one place repo-wide — a test of
-        # _convert_openai_choice_to_message, which production never called. Every
-        # other `stop_reason="toolUse"` in the suite CONSTRUCTS a fixture; none
-        # checked that the wire's "tool_calls" becomes it. Deleting that test
-        # without this line would have dropped the coverage silently.
         assert final.stop_reason == "toolUse"
 
     def test_stream_tool_call_accumulates_arguments(self, monkeypatch):
@@ -1244,11 +1203,6 @@ class TestStreamToolCallDelta:
         tool_calls = [c for c in final.content if isinstance(c, ToolCall)]
         assert len(text_blocks) > 0
         assert len(tool_calls) > 0
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Test 6: Error handling
-# ═══════════════════════════════════════════════════════════════════════════
 
 
 class TestErrorHandling:
@@ -1419,11 +1373,6 @@ class TestErrorHandling:
         error_events = [e for e in events if isinstance(e, ErrorEvent)]
         assert len(error_events) == 1
         assert error_events[0].type == "error"
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Additional tests: Conversion edge cases
-# ═══════════════════════════════════════════════════════════════════════════
 
 
 class TestConvertMessagesDict:
@@ -1706,11 +1655,6 @@ class TestReasoningReplayScope:
         assert out[3]["reasoning_content"] == "step two"
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Additional: Provider instantiation and configuration
-# ═══════════════════════════════════════════════════════════════════════════
-
-
 class TestProviderConfiguration:
     """Tests for provider initialization and configuration."""
 
@@ -1757,11 +1701,6 @@ class TestProviderConfiguration:
         assert callable(provider.stream_chat)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Additional: Thinking/reasoning content conversion
-# ═══════════════════════════════════════════════════════════════════════════
-
-
 class TestThinkingContentConversion:
     """Tests for thinking/reasoning content handling."""
 
@@ -1781,7 +1720,7 @@ class TestThinkingContentConversion:
                 model="gpt-4",
                 usage=Usage(),
                 stop_reason="stop",
-                timestamp=0,
+                timestamp=_TS,
             ),
         ]
         result = self.provider._convert_messages_to_openai(messages)
@@ -1789,6 +1728,7 @@ class TestThinkingContentConversion:
         assert result[0]["role"] == "assistant"
         # Thinking is included in the content field
         assert result[0]["content"] is not None
+
 
 class TestTokenLimitHandling:
     """Tests for token limit (truncated response) handling."""
@@ -1833,11 +1773,6 @@ class TestTokenLimitHandling:
         assert len(done_events) == 1
         assert done_events[0].final.stop_reason == "length"
         assert done_events[0].usage.total_tokens == 4010
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# API key resolution (Fail-Early): no fabricated fallback
-# ═══════════════════════════════════════════════════════════════════════════
 
 
 class TestApiKeyResolution:
@@ -1901,3 +1836,147 @@ class TestApiKeyResolution:
         """A truthy 'not-needed' sentinel (local servers) passes the check."""
         provider = OpenAICompletionsProvider(api_key="not-needed")
         assert provider.api_key == "not-needed"  # truthy → no raise at request
+
+
+class TestPromptCacheBreakpoints:
+    """`prompt_cache_dialect: "anthropic"` places the two breakpoints measured in
+    docs/PROMPT-CACHING.md §4, and changes nothing when it is unset."""
+
+    def test_marks_system_and_tail(self):
+        """One breakpoint on the last system block, one on the last message's."""
+        messages = [
+            {"role": "system", "content": "you are a fixture"},
+            {"role": "user", "content": [{"type": "text", "text": "go"}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "rows"},
+        ]
+        out = _apply_cache_control(messages)
+
+        assert out[0]["content"] == [
+            {"type": "text", "text": "you are a fixture", "cache_control": {"type": "ephemeral"}}
+        ]
+        assert "cache_control" not in out[1]["content"][-1]
+        assert out[2]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_input_is_not_mutated(self):
+        """The caller's list and its message dicts survive unchanged."""
+        messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+        _apply_cache_control(messages)
+        assert messages == [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+
+    def test_tail_walks_back_past_an_unmarkable_message(self):
+        """An assistant message that is only tool_calls has no block to mark."""
+        messages = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]},
+        ]
+        out = _apply_cache_control(messages)
+
+        assert out[1]["content"] is None
+        assert out[0]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_one_breakpoint_when_system_is_the_tail(self):
+        """A single-message request marks that message once, not twice."""
+        out = _apply_cache_control([{"role": "system", "content": "s"}])
+        assert len(out) == 1
+        assert out[0]["content"] == [
+            {"type": "text", "text": "s", "cache_control": {"type": "ephemeral"}}
+        ]
+
+    def test_unset_model_sends_no_marker(self):
+        """The default emits byte-identical messages to the pre-caching build.
+
+        ``prompt_cache`` is True by default and still writes nothing here, because
+        a marker on this wire needs a declared dialect to write."""
+        provider = OpenAICompletionsProvider(api_key="sk-test")
+        messages = [UserMessage(content="hi", timestamp=0)]
+        converted = provider._convert_messages_to_openai(messages)
+        assert "cache_control" not in json.dumps(converted)
+        assert _make_model().prompt_cache_dialect is None
+
+
+class TestUsageCacheWrite:
+    """`cache_write_tokens` is read back, and the three prompt fields partition
+    `prompt_tokens` (measured field names in docs/PROMPT-CACHING.md §3)."""
+
+    def test_cold_write_partitions_the_prompt(self):
+        """LiteLLM → Haiku 4.5 cold write, measured 2026-09-06."""
+        usage = _usage_from_openai(
+            {
+                "prompt_tokens": 14116,
+                "completion_tokens": 8,
+                "total_tokens": 14124,
+                "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 14113},
+            }
+        )
+        assert usage.cache_write_tokens == 14113
+        assert usage.cache_read_tokens == 0
+        assert usage.input_tokens == 3  # the server's own text_tokens
+        assert usage.cache_reported is True
+
+    def test_warm_read_partitions_the_prompt(self):
+        """The same prefix on the next request, measured 2026-09-06."""
+        usage = _usage_from_openai(
+            {
+                "prompt_tokens": 13461,
+                "completion_tokens": 5,
+                "total_tokens": 13466,
+                "prompt_tokens_details": {"cached_tokens": 13447, "cache_write_tokens": 0},
+            }
+        )
+        assert usage.cache_read_tokens == 13447
+        assert usage.input_tokens == 14
+
+    def test_server_without_the_field_is_unchanged(self):
+        """A server reporting cached_tokens only; the reading must not shift."""
+        usage = _usage_from_openai(
+            {
+                "prompt_tokens": 104,
+                "completion_tokens": 8,
+                "total_tokens": 112,
+                "prompt_tokens_details": {"cached_tokens": 100},
+            }
+        )
+        assert usage.cache_write_tokens == 0
+        assert usage.input_tokens == 4
+        assert usage.cache_reported is True
+
+    def test_a_server_that_accounts_for_no_cache_reports_nothing(self):
+        """llama.cpp sends no prompt_tokens_details at all. The counters read 0
+        either way, so ``cache_reported`` is the only thing separating this from
+        a gateway that cached nothing — which is what the notice gates on
+        (docs/PROMPT-CACHING.md §7)."""
+        usage = _usage_from_openai(
+            {"prompt_tokens": 104, "completion_tokens": 8, "total_tokens": 112}
+        )
+        assert usage.cache_read_tokens == 0
+        assert usage.cache_write_tokens == 0
+        assert usage.cache_reported is False
+        assert usage.input_tokens == 104
+
+
+class TestAssistantTimestamp:
+    """Epoch ms at the completion's end, on the wire τ defaults to.
+
+    `openai-completions` wrote a literal 0 here, which is the fabricated value
+    the repo's Fail-Early rule forbids and which the other two providers never
+    matched (`anthropic` ms, `google` seconds). docs/MESSAGE-TIMESTAMPS.md §1.
+    """
+
+    def test_final_message_is_stamped_in_epoch_ms(self):
+        provider = OpenAICompletionsProvider(api_key="sk-test")
+        accum = _Accumulator()
+        accum.text_parts.append("hi")
+        message = provider._build_final_message(accum, _make_model(), Usage(), "stop")
+
+        assert message.timestamp is not None
+        assert message.timestamp > 1_700_000_000_000  # ms, not seconds
+
+    def test_partial_message_is_stamped_too(self):
+        """The abort path persists a partial, so its clock is the cancellation."""
+        provider = OpenAICompletionsProvider(api_key="sk-test")
+        accum = _Accumulator()
+        accum.text_parts.append("par")
+        message = provider._build_partial_message(accum, _make_model())
+
+        assert message.timestamp is not None
+        assert message.timestamp > 1_700_000_000_000

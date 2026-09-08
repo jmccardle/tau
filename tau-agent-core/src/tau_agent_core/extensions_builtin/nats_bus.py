@@ -186,12 +186,6 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-# nats-py is the ``[bus]`` extra, not a base dependency of tau-agent-core. This
-# file is never imported by the package — it is read, compiled and exec'd by
-# ``_load_one_extension``, so this line runs only when someone actually loads the
-# extension. The loader reports the exception verbatim as "failed to load
-# extension <path>: <error>", and "No module named 'nats'" is not something a user
-# can act on: they asked for a bus, not for a library they have never heard of.
 try:
     import nats
     import nats.errors
@@ -202,11 +196,6 @@ except ModuleNotFoundError as _exc:  # pragma: no cover - depends on install ext
         "requires nats-py."
     ) from _exc
 
-#: The general subject namespace this extension type touches (H7). A concrete
-#: instance binds the configured subset. ``events.sensation.>`` and
-#: ``events.workspace.*.in`` are the two inbound shapes a tectum schema may
-#: drive an agent with; ``events.journal.>`` and ``events.action.>`` are the
-#: two ack namespaces (see :data:`VERBS`).
 TOUCHES_BUS = True
 SUBJECTS = (
     "events.sensation.>",
@@ -271,15 +260,7 @@ def _text_schema(detail: str) -> dict[str, Any]:
     }
 
 
-#: Every verb τ can publish. The tectum verbs are transcribed from its effector
-#: nodes and ``tectum/tools.py``; the world verbs from McRogueFace's body node
-#: (``robot_sim_stack/world/body_node.py`` + ``world/entities/verbs.py``) and
-#: confirmed against a running engine — see the WORLD VERBS comment below.
 VERBS: dict[str, VerbSpec] = {
-    # effectors/speech.py:107 — and parley-nats stands in for it in harness_text.
-    # Terminal, with tectum's own SPEAK.result wording (tools.py:50). Both halves
-    # matter: `terminal` stops the loop mechanically, and `result` tells the model
-    # why, so it does not simply try again on the next turn.
     "speak": VerbSpec(
         ack_subject="events.action.speech.completed.{binding_id}",
         description=(
@@ -287,16 +268,10 @@ VERBS: dict[str, VerbSpec] = {
             "staying silent is a valid choice. Your turn is over once it returns."
         ),
         parameters=_text_schema("what to say aloud"),
-        # An empty utterance still reaches the TTS effector, which acks it happily:
-        # silence that looks like speech, with no error anywhere. The schema cannot
-        # say this (see VerbSpec.non_empty), so it is said here.
         non_empty=("text",),
         result="spoken. Your turn is over: make no further tool calls and write nothing.",
         terminal=True,
     ),
-    # effectors/journal_append.py:48 — subjects.journal_ack("append", bid).
-    # NOT terminal: tectum's JOURNAL_APPEND leaves ToolSpec.result at its "" default,
-    # because noting something and then speaking about it is one coherent turn.
     "journal_append": VerbSpec(
         ack_subject="events.journal.append.{binding_id}",
         description=(
@@ -313,8 +288,6 @@ VERBS: dict[str, VerbSpec] = {
         parameters=_text_schema("the record to write"),
         non_empty=("text",),
     ),
-    # tools.py DELEGATE — consumed by agent.workspace_curator, which acks nothing;
-    # the curator's answer arrives later as a separate `posted` event.
     "delegate": VerbSpec(
         ack_subject=None,
         description=(
@@ -324,29 +297,6 @@ VERBS: dict[str, VerbSpec] = {
         parameters=_text_schema("the question or task to hand off"),
         non_empty=("text",),
     ),
-    # ---------------------------------------------------------------------
-    # WORLD VERBS — McRogueFace's body node, not a tectum effector.
-    #
-    # Transcribed from ``robot_sim_stack/world/entities/verbs.py`` (the payload
-    # contract) and ``world/body_node.py`` (the ack), then CONFIRMED on the wire
-    # against a running headless engine: a ``move_to`` acked
-    # ``{"status":"ok","trigger":"DONE","verb":"move_to","world_tick":383}`` on
-    # ``events.journal.move_to.<bid>`` and the courier moved to the target cell.
-    #
-    # Two things this table does NOT try to enforce, deliberately:
-    #
-    #   * ``wait`` requires ``turns >= 1`` and ``move_to`` requires a REACHABLE
-    #     cell. Neither is expressible in τ's schema validator, and neither is
-    #     τ's fact to know — the grid, its walls, and its pathfinder live in the
-    #     engine. τ validates SHAPE, the world validates SEMANTICS; a violation
-    #     comes back as a ``status: "error"`` / ``"refused"`` ack, which is a
-    #     real answer rather than a guess this side would have had to invent.
-    #   * coordinates are ``integer``, and τ's validator rejects a ``bool`` for
-    #     an integer param (``tau_llm/tools.py``). That matters here rather than
-    #     abstractly: ``verbs._require_int`` rejects bools too, so without the
-    #     τ-side check a model emitting ``{"x": true}`` would have burned a
-    #     round trip to be told what τ already knew.
-    # ---------------------------------------------------------------------
     "move_to": VerbSpec(
         ack_subject="events.journal.move_to.{binding_id}",
         description=(
@@ -374,10 +324,6 @@ VERBS: dict[str, VerbSpec] = {
             "required": ["turns"],
         },
     ),
-    # propose-class (verbs.py VERB_CLASSES): the body node records it in
-    # ``pending_proposals`` and returns WITHOUT acking — no set_behavior, no
-    # journal event. ``ack_subject=None`` is that fact, not a shortcut: waiting
-    # on an ack here would time out on every call.
     "note": VerbSpec(
         ack_subject=None,
         description=(
@@ -391,9 +337,6 @@ VERBS: dict[str, VerbSpec] = {
 
 DEFAULT_ACK_TIMEOUT_S = 30.0
 
-#: How long each poll of the ack subscription waits before re-checking the
-#: tool's AbortSignal — short enough to notice an abort promptly, long enough
-#: not to busy-loop.
 _ACK_POLL_INTERVAL_S = 0.2
 
 DEFAULT_TTL_MS = 60_000
@@ -467,10 +410,6 @@ def _ack_failure(payload: dict[str, Any]) -> str | None:
         return f"effector reported error={error!r}"
     status = payload.get("status")
     if status is not None and status != "ok":
-        # `trigger` names WHICH refusal (BLOCKED vs an immediate busy refusal,
-        # which carries trigger: null) — the model needs that to decide whether
-        # retrying could ever work, so it goes in the message rather than being
-        # left on the event for an operator to correlate.
         trigger = payload.get("trigger")
         detail = f" (trigger={trigger})" if trigger is not None else ""
         return f"effector reported status={status!r}{detail}: {payload!r}"
@@ -522,13 +461,6 @@ def register(api: Any) -> None:
     outbound_prefix = f"events.workspace.{workspace}.out"
     source = f"agent.{workspace}"
 
-    # Closure state, not module globals: a second instance of this file (a
-    # second workspace in one process) must not share a connection or a
-    # binding stamp with the first.
-    #
-    # ``binding_id`` is the per-turn stamp (point 5 in the module docstring):
-    # the inbound event's id, carried onto whatever this turn publishes so the
-    # flow stays correlated and the ack lands where this side is listening.
     state: dict[str, Any] = {
         "nc": None,
         "sub": None,
@@ -630,24 +562,6 @@ def register(api: Any) -> None:
         # The committed utterance supersedes whatever guess was on the strip.
         _draft(None)
 
-        # Refuse rather than queue while a turn is in flight — but the REFUSAL is
-        # the core's now (docs/SUBMISSION-LIFECYCLE.md phase 5), not a flag this
-        # file keeps. ``multitask_strategy="reject"`` is the same policy the
-        # hand-rolled ``state["turn_in_flight"]`` implemented: tectum's own
-        # dispatcher runs one dispatch at a time, interleaving two turns on one
-        # session would corrupt the message history, and silently queueing would
-        # make the agent answer a stale utterance minutes later. What changes is
-        # WHERE it lives: one implementation in ``AgentSession.submit`` instead of
-        # one per extension, and a typed ``SubmissionResult(accepted=False,
-        # rejection_reason=…)`` instead of a bare local flag — a refusal this
-        # side did not have to invent a reason string for. The flag also could
-        # not see a turn started by anything else (a human at the TUI, another
-        # extension); the lock it now consults can.
-        #
-        # ``correlation`` carries the flow's identity onto every AgentEvent the
-        # turn emits (the spec names exactly this use), so a renderer or monitor
-        # can tie a rendered turn back to the bus message that caused it without
-        # this extension publishing a second correlating event.
         try:
             result = await api.submit(
                 payload["text"],
@@ -672,10 +586,6 @@ def register(api: Any) -> None:
             )
 
     async def _on_session_start(event: dict[str, Any], ctx: Any) -> None:
-        # ``ctx`` is deliberately not stashed: a turn is originated through
-        # ``api.submit`` (bucket-bound, so the submission is attributed to THIS
-        # extension), which needs no context. The effector tools receive their
-        # own ctx per call.
         nc = await nats.connect(nats_url)
         state["nc"] = nc
         state["sub"] = await nc.subscribe(inbound_subject, cb=_on_inbound)
@@ -757,11 +667,6 @@ def register(api: Any) -> None:
             on_update: Any,
             ctx: Any,
         ) -> dict[str, Any]:
-            # Types and required-ness were already checked against
-            # ``spec.parameters`` by ``AgentLoop._prepare_tool_call`` before this
-            # coroutine was reached, so re-validating them here would be a second
-            # implementation of one contract — the thing this file exists to
-            # avoid. What is left is only what that validator cannot express.
             for field in spec.non_empty:
                 value = params.get(field)
                 if not isinstance(value, str) or not value.strip():
@@ -776,18 +681,7 @@ def register(api: Any) -> None:
                     f"{verb}: not connected to NATS (session_start has not run, or "
                     "session_shutdown already tore the connection down)"
                 )
-            # The flow's binding_id, preserved across hops. Absent an inbound
-            # event (a turn started some other way) this mints one so the event
-            # is still correlatable — the same thing tectum's shim does when
-            # TECTUM_BINDING_ID is unset.
             binding_id = state.get("binding_id") or uuid.uuid4().hex
-            # The payload IS the verb's arguments, plus the agent identity —
-            # one projection for every verb, not a builder per verb. Confirmed
-            # against both consumers: tectum's shim publishes
-            # ``{"text": …, "agent": …}`` (tools.py:247) and McRogueFace's body
-            # node reads the verb args straight off ``payload``, so
-            # ``{"x": …, "y": …, "agent": …}`` is the same shape with a
-            # different verb's arguments in it.
             wire = _envelope(
                 subject,
                 {**params, "agent": workspace},
@@ -806,8 +700,6 @@ def register(api: Any) -> None:
                 )
 
             ack_subject = ack_template.format(binding_id=binding_id or "none")
-            # Subscribe-first: be listening before the effector could reply, or
-            # a fast ack races the subscribe and is lost.
             ack_sub = await nc.subscribe(ack_subject)
             try:
                 await nc.publish(subject, json.dumps(wire).encode("utf-8"))
@@ -847,11 +739,6 @@ def register(api: Any) -> None:
             {
                 "name": verb,
                 "description": VERBS[verb].description,
-                # The verb's own schema, not a shared one-string shape. The
-                # shared shape was why every tool took `text`: `move_to` could
-                # not be expressed at any price, so the world verbs did not
-                # exist. This is also the schema the loop validates against
-                # before `execute` runs — see VerbSpec.parameters.
                 "parameters": VERBS[verb].parameters,
                 "execute": _make_effector(verb),
             }

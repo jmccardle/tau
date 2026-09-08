@@ -37,9 +37,6 @@ from __future__ import annotations
 
 from typing import Any
 
-# ONE formatter, shared with the TUI exchange summary (G4). The rendering of
-# t/s · repairs=N · forced=NN% lives next to format_tokens/format_duration in the
-# coding-agent widgets, so the live readout and this demo can never drift.
 from tau_coding_agent.chat_widgets import format_telemetry
 
 

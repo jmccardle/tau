@@ -80,20 +80,8 @@ class ErrorCall:
         self.error = error
 
 
-#: The result text a tool call gets when an abort reaches it before it ran.
-#: Matches pi's wording, and is deliberately a *result* rather than an omission —
-#: see :meth:`AgentLoop._aborted_batch`.
 ABORTED_TOOL_RESULT = "Operation aborted"
 
-#: Attribute name under which a failed :meth:`AgentLoop.run` /
-#: :meth:`AgentLoop.run_continue` attaches the messages it had already finished.
-#:
-#: An attribute on the raised exception, rather than a wrapper exception, on
-#: purpose: wrapping would change the type callers catch, and the loop raises
-#: several (``RuntimeError`` from a provider ``ErrorEvent``, ``ValueError`` from a
-#: malformed tool call, ``asyncio.CancelledError`` from a hard cancel). The
-#: failure must reach the caller exactly as it was; the completed work rides
-#: alongside it. Read it with :func:`completed_messages`.
 COMPLETED_MESSAGES_ATTR = "tau_completed_messages"
 
 
@@ -108,11 +96,6 @@ def completed_messages(exc: BaseException) -> list[Any]:
     *every complete message or tool result should be persisted*.
     """
     return list(getattr(exc, COMPLETED_MESSAGES_ATTR, []))
-
-
-# ---------------------------------------------------------------------------
-# AgentLoop
-# ---------------------------------------------------------------------------
 
 
 @agent_facing(topic="agent-loop")
@@ -166,14 +149,7 @@ class AgentLoop:
             self._tools[t.name] = t
         self._model = model
         self._abort_signal: AbortSignal | None = abort_signal
-        # The mutating-hook dispatcher (E2). Held here so the four hook
-        # call-sites (S11-S14: tool_call / tool_result / context, plus
-        # before_agent_start above the loop) can reach it. S10 only threads it
-        # in; the call-sites gate on has_hook_handlers() for the zero-extension
-        # fast path.
         self._hook_dispatcher: ExtensionRunner | None = hook_dispatcher
-        # The session's steering queue (phase 4). See the class docstring for why
-        # this is the shared list and not a drain callback.
         self._steer_queue: list[Any] | None = steer_queue
 
     @staticmethod
@@ -199,10 +175,6 @@ class AgentLoop:
         """
         return self._hook_dispatcher is not None and self._hook_dispatcher.has_handlers(event)
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     async def run(
         self,
         prompts: list[Any],
@@ -225,14 +197,6 @@ class AgentLoop:
         Returns:
             List of messages produced by the agent loop.
         """
-        # pi parity (agent-loop.ts:103-106): the loop simply concatenates the
-        # prior context with the new prompts — de-duplication is the caller's
-        # responsibility. AgentSession.prompt() threads the user message exactly
-        # once and never hands us a context that already ends with it. The old
-        # strip-compare dedup that lived here was a tau divergence: redundant
-        # with the session-layer check, blind to non-text (multimodal) content,
-        # and crash-prone (it referenced prev_text, which was only bound when the
-        # context tail was itself a user message).
         context = list(context) if context else []
         messages = list(context)
         messages.extend(prompts)
@@ -241,9 +205,6 @@ class AgentLoop:
 
         turn_index = 0
         final_messages: list[Any] = []
-        # The previous turn's tool batch, as (signature, all_errored), and how many
-        # turns in a row have now produced that same all-failing batch. Reset by
-        # any turn that differs or that got a single non-error result.
         prev_batch: tuple[str, bool] | None = None
         repeat_count = 1
         end_reason: AgentEndReason = "done"
@@ -262,23 +223,11 @@ class AgentLoop:
                     )
                 )
 
-                # Steering delivery (phase 4). BEFORE the LLM call and AFTER the
-                # previous iteration's tool results were appended — the definition of
-                # "steer". On the first iteration this catches content submitted
-                # between admission and the loop actually starting (pi polls here for
-                # the same reason: "user may have typed while waiting").
                 await self._deliver_steer(messages, final_messages)
 
                 # Stream response from LLM
                 assistant = await self._stream_response(messages)
                 final_messages.append(assistant)
-                # …and onto the running context the NEXT LLM call is built from.
-                # These are two different lists: `final_messages` is what the
-                # caller persists, `messages` is the wire. Appending only to the
-                # first sent the tool RESULTS below without the assistant message
-                # that requested them — a `tool_call_id` referring to a call the
-                # transcript never made, which a validating provider rejects
-                # outright.
                 messages.append(assistant)
 
                 tool_calls = assistant.get_tool_calls()
@@ -293,10 +242,6 @@ class AgentLoop:
                             tool_results=[],
                         )
                     )
-                    # S43 — the MUTATING turn_end hook fires AFTER the notify AgentEvent:
-                    # a returned message is a durable append. This is the final turn (the
-                    # loop breaks below), so the node is persisted but the model only sees
-                    # it on the NEXT prompt() — the same reload-durable path.
                     await self._run_mutating_turn_end(
                         turn_index,
                         self._turn_usage(assistant),
@@ -305,13 +250,6 @@ class AgentLoop:
                         final_messages,
                     )
                     turn_index += 1
-                    # A steer that landed during THIS turn keeps the loop alive for one
-                    # more LLM call — pi's inner-loop condition is
-                    # ``hasMoreToolCalls || pendingMessages.length > 0``
-                    # (agent-loop.ts:173), so "there is no next LLM call" is not the
-                    # answer: steering CREATES one. PEEKED, not drained, so the
-                    # ``max_turns`` bound above still owns the decision and content is
-                    # never taken off the queue by an iteration that will not send it.
                     if self._steer_queue:
                         continue
                     break
@@ -359,12 +297,6 @@ class AgentLoop:
                     )
                 )
 
-                # S43 — the MUTATING turn_end hook. A returned message is appended as a
-                # durable ``custom`` node to BOTH the running context (so the next turn's
-                # model sees it, custom→user on the wire) and ``final_messages`` (so
-                # AgentSession persists it as a ``customMessage`` tree node — the single
-                # durable artifact: persisted == rendered == sent). Append-only: it never
-                # rewrites the assistant/tool nodes above it.
                 await self._run_mutating_turn_end(
                     turn_index,
                     self._turn_usage(assistant),
@@ -380,11 +312,6 @@ class AgentLoop:
                     end_reason = "terminate"
                     break
 
-                # Repeat detection (docs/PLAN-0.9.3.md §4.2 item 2). Runs AFTER
-                # turn_end and the mutating turn_end hook, so a turn the loop
-                # refuses to follow is still fully observed and fully persisted —
-                # the stop is a decision about the NEXT turn, not a reason to hide
-                # this one.
                 signature = self._batch_signature(tool_calls, batch)
                 if prev_batch == signature and signature[1]:
                     repeat_count += 1
@@ -401,22 +328,9 @@ class AgentLoop:
                 turn_index += 1
 
             else:
-                # The `while` condition went false rather than a `break` firing,
-                # which for this loop means one thing: `max_turns` stopped it.
-                # Every other exit above breaks with its own reason. This is the
-                # case that used to be indistinguishable from a finished run.
                 end_reason = "max_turns"
 
         except BaseException as exc:
-            # The bracket closes however the loop ended — see _emit_agent_end.
-            # `except` rather than `finally` so the close can say WHY; the raise
-            # below is unconditional, so nothing is swallowed by observing it.
-            #
-            # `final_messages` is a LOCAL, so before this it died with the frame:
-            # a provider error mid-turn took the assistant message and every
-            # completed tool result down with it, and the caller had no way to
-            # reach them (docs/PLAN-0.9.4.md §3). Attaching them to the exception
-            # hands the caller what finished without changing what it catches.
             setattr(exc, COMPLETED_MESSAGES_ATTR, list(final_messages))
             await self._emit_agent_end(final_messages, exc)
             raise
@@ -444,8 +358,6 @@ class AgentLoop:
         messages = list(context)
         turn_index = self._turn_index
         final_messages: list[Any] = []
-        # See run(): a continuation is a turn like any other, so a runaway started
-        # from here is the same runaway and gets the same bound.
         prev_batch: tuple[str, bool] | None = None
         repeat_count = 1
         end_reason: AgentEndReason = "done"
@@ -466,15 +378,10 @@ class AgentLoop:
                     )
                 )
 
-                # Steering delivery — same contract as run() (phase 4). A continuation
-                # is a turn like any other, so content steered at it is delivered
-                # before its next LLM call rather than waiting for a fresh prompt.
                 await self._deliver_steer(messages, final_messages)
 
                 assistant = await self._stream_response(messages)
                 final_messages.append(assistant)
-                # Onto the wire as well as the persisted list — see run() for why
-                # appending to only one of them corrupts the next request.
                 messages.append(assistant)
 
                 tool_calls = assistant.get_tool_calls()
@@ -496,8 +403,6 @@ class AgentLoop:
                         final_messages,
                     )
                     turn_index += 1
-                    # See run(): a steer that arrived during this turn buys one more
-                    # LLM call rather than being stranded until the next prompt.
                     if self._steer_queue:
                         continue
                     break
@@ -578,15 +483,6 @@ class AgentLoop:
                 end_reason = "max_turns"
 
         except BaseException as exc:
-            # The bracket closes however the loop ended — see _emit_agent_end.
-            # `except` rather than `finally` so the close can say WHY; the raise
-            # below is unconditional, so nothing is swallowed by observing it.
-            #
-            # `final_messages` is a LOCAL, so before this it died with the frame:
-            # a provider error mid-turn took the assistant message and every
-            # completed tool result down with it, and the caller had no way to
-            # reach them (docs/PLAN-0.9.4.md §3). Attaching them to the exception
-            # hands the caller what finished without changing what it catches.
             setattr(exc, COMPLETED_MESSAGES_ATTR, list(final_messages))
             await self._emit_agent_end(final_messages, exc)
             raise
@@ -594,10 +490,6 @@ class AgentLoop:
         await self._emit_agent_end(final_messages, end_reason=end_reason)
 
         return final_messages
-
-    # ------------------------------------------------------------------
-    # Internal methods
-    # ------------------------------------------------------------------
 
     def _turn_ceiling_reached(self, turn_index: int) -> bool:
         """Whether ``max_turns`` forbids starting the turn at ``turn_index``.
@@ -838,24 +730,8 @@ class AgentLoop:
         Returns:
             The final AssistantMessage.
         """
-        # E5 §3.2 / S30 — the `context` mutating hook is ELIMINATED (not
-        # redefined). Under the durable-hook invariant (§1) the model's input for
-        # every LLM call is exactly the system prompt (attached below) + the linear
-        # active path — there is no ephemeral per-send transform. What `context`
-        # used to do folds into durable nodes: reminders edit the triggering
-        # `tool_result` in place (already durable), and pre-first-call injection
-        # rides `before_agent_start` (S29). So `context` here is passed straight to
-        # `convert_to_llm` with no interception; the on-disk path IS the wire.
 
-        # Serialize agent-level `custom` messages (extension-injected durable
-        # nodes, E5 §3.1 / S29) to the LLM-acceptable `user` role BEFORE the
-        # provider sees them — pi `convertToLlm` custom→user. The node stays
-        # `role: "custom"` in the tree / render; only the wire is remapped. A
-        # no-op for the zero-custom-message common case (passes each through).
         messages = convert_to_llm(list(context))
-        # Prepend system prompt as a system message if present.
-        # Only add it if the context doesn't already start with a system message
-        # (which it may have from the backend's conversation history).
         system_prompt = self.config.system_prompt
         if system_prompt:
             # Check if context already starts with a system message
@@ -874,26 +750,13 @@ class AgentLoop:
 
         model = self._model or self.config.model
 
-        # Forward the API key to the provider via options. client.py reads
-        # options["api_key"] to construct the provider, which then strips it from
-        # the request body. Only included when set, so None means "rely on the
-        # env/provider default" rather than sending an empty override.
         options: dict[str, Any] = {}
-        # Only when set. `None` means "no temperature" — not "0.7" — so an
-        # endpoint that has its own default keeps it, and a wire that removed the
-        # parameter (anthropic-messages) is not handed one it cannot carry.
         if self.config.temperature is not None:
             options["temperature"] = self.config.temperature
         if self.config.api_key:
             options["api_key"] = self.config.api_key
-        # Forward the requested thinking level; the provider clamps it and emits
-        # `reasoning_effort`. Only when set, so None = "don't request reasoning".
         if self.config.reasoning is not None:
             options["reasoning"] = self.config.reasoning
-        # Forward the abort signal so an abort mid-completion stops the LLM stream
-        # cooperatively — not just at the turn boundaries checked in `run`. The
-        # provider polls it per SSE line; client.py strips it from the request
-        # body. Without this an aborted turn still drains the whole completion.
         if self._abort_signal is not None:
             options["abort_signal"] = self._abort_signal
 
@@ -931,9 +794,6 @@ class AgentLoop:
                 AgentEvent(
                     type="message_start",
                     timestamp=int(time.time() * 1000),
-                    # Copied: every caller hands over a list it also puts on the
-                    # following `message_update`/`message_end`, and two events
-                    # sharing one list is a subscriber's mutation reaching both.
                     message={"role": "assistant", "content": list(content)},
                 )
             )
@@ -954,11 +814,6 @@ class AgentLoop:
                     )
                 )
             elif isinstance(event, ThinkingDeltaEvent):
-                # Reasoning streams on its own channel. Mirror the text path:
-                # accumulate and re-emit the full reasoning as a single thinking
-                # block so the backend can suffix-diff it exactly like text. Kept
-                # distinct from the answer text so the UI can render and collapse
-                # it separately.
                 partial_reasoning += event.delta
                 thinking_blocks = [{"type": "thinking", "thinking": partial_reasoning}]
                 await start_once(thinking_blocks)
@@ -973,13 +828,8 @@ class AgentLoop:
                     )
                 )
             elif isinstance(event, ToolCallDeltaEvent):
-                # The provider owns tool-call accumulation; consume its
-                # already-accumulated partial message rather than re-parsing the
-                # raw per-chunk delta (which is only a fragment).
                 partial = event.partial
                 if partial is not None:
-                    # partial.content holds pydantic blocks (TextContent /
-                    # ThinkingContent / ToolCall), each with model_dump().
                     partial_content_blocks = [c.model_dump() for c in partial.content]
 
                 await start_once(partial_content_blocks)
@@ -998,11 +848,6 @@ class AgentLoop:
                 final_blocks = [
                     c.model_dump() if hasattr(c, "model_dump") else c for c in final_msg.content
                 ]
-                # A completion that yielded no delta at all — an empty answer, or a
-                # provider that only ever produces a terminal message — would
-                # otherwise close a bracket that was never opened. Opening it here
-                # costs nothing when a delta already did (`start_once` is a no-op)
-                # and keeps every `message_end` this method emits paired.
                 await start_once(final_blocks)
                 await self._emit(
                     AgentEvent(
@@ -1011,22 +856,7 @@ class AgentLoop:
                         message={
                             "role": "assistant",
                             "content": final_blocks,
-                            # Real token usage for THIS completion. Attached to the
-                            # per-completion message_end (emitted exactly once here,
-                            # in _stream_response) rather than the duplicate
-                            # message_end run() emits for tool-bearing turns — so a
-                            # consumer can sum usage across turns without double-
-                            # counting. The provider fills final_msg.usage from the
-                            # stream's terminal usage chunk (Fail-Early: a real 0 is
-                            # surfaced as 0, never approximated).
                             "usage": final_msg.usage.model_dump(),
-                            # model + stop_reason ride the SAME per-completion
-                            # message_end so the pi-faithful ``--mode json`` serializer
-                            # (E-json / step S8) can surface a message_end carrying
-                            # usage/model/stop_reason — matching pi, where the full
-                            # assistant message is emitted on message_end
-                            # (agent-session.ts:639-644). Additive: existing consumers
-                            # read ``.get("usage")``/content and ignore these keys.
                             "model": final_msg.model,
                             "stop_reason": final_msg.stop_reason,
                         },
@@ -1034,14 +864,6 @@ class AgentLoop:
                 )
                 return final_msg
             elif isinstance(event, ErrorEvent):
-                # The message is the ONLY thing that survives to the operator: it
-                # becomes the transcript's error block and then the text of the
-                # RuntimeError raised below. A provider that emits an empty one
-                # therefore produced `RuntimeError: ` — a failure with no
-                # attribution at all, which is how a dropped connection used to
-                # surface (PLAN-0.9.3.md §4.2). τ's own provider now always fills
-                # it in; this is the boundary guard for any other provider, and it
-                # names the model rather than inventing a cause.
                 detail = (event.message or "").strip()
                 if not detail:
                     model_label = getattr(model, "id", model)
@@ -1130,13 +952,6 @@ class AgentLoop:
         Returns:
             ToolBatchResult with tool result messages.
         """
-        # Already aborted before the batch even starts. Two ways to get here: the
-        # user pressed Esc while the assistant message was still streaming, or
-        # while the PREVIOUS batch was running. Either way nothing in this batch
-        # may execute — and the parallel path below has no abort check of its own,
-        # so without this guard an abort mid-stream would still run every tool the
-        # model had asked for. The calls are answered rather than skipped; see
-        # :meth:`_aborted_batch`.
         if self._abort_signal and self._abort_signal.is_aborted():
             return await self._aborted_batch(tool_calls, prior=[])
 
@@ -1238,20 +1053,8 @@ class AgentLoop:
             if terminated:
                 break
             if self._abort_signal and self._abort_signal.is_aborted():
-                # The abort landed part-way through the batch. Everything already
-                # run keeps its real result; this call and the ones behind it are
-                # answered as aborted, so the assistant message leaves no
-                # tool_call_id unanswered (docs/PLAN-0.9.4.md §3).
                 return await self._aborted_batch(tool_calls, prior=all_results)
 
-            # Emit the start for EVERY call up front (pi agent-loop.ts:406-413) —
-            # BEFORE prepareToolCall — so a call vetoed by a `tool_call` hook (or
-            # blocked by arg validation) still surfaces a RENDERED node. A veto
-            # emits only tool_execution_end(is_error=True); without a preceding
-            # start the front-end has no widget to fold the blocked result into and
-            # silently drops it (backends.py `_on_tool_result` → "no ToolBox").
-            # The blocked node is already on the active path (its toolResult is
-            # appended below); this only makes it visible (E5 §4 / S33).
             await self._emit(
                 AgentEvent(
                     type="tool_execution_start",
@@ -1264,10 +1067,6 @@ class AgentLoop:
 
             prepared = await self._prepare_tool_call(tc)
             if isinstance(prepared, BlockedCall):
-                # An extension VETO (S50, anchor G11) is a distinct presentation from
-                # a generic error: mark the end event ``blocked`` + emit the JSON veto
-                # record. A non-veto block (arg validation) has no attribution and
-                # stays a plain errored result.
                 blocked_by = prepared.blocked_by_extension
                 if blocked_by is not None:
                     self._emit_veto_record(prepared.call.name, prepared.error, blocked_by)
@@ -1329,17 +1128,6 @@ class AgentLoop:
             if result.terminate:
                 terminated = True
 
-        # ``terminate=terminated`` — this argument was missing, and the parallel
-        # path two functions down always passed it. ``terminated`` still stopped
-        # the REST OF THE BATCH (the ``break`` at the top of the loop), so the
-        # visible half of the contract worked and the invisible half did not: the
-        # flag never reached ``ToolBatchResult``, so ``run``'s ``if
-        # batch.terminate: break`` never fired and a terminating tool in
-        # SEQUENTIAL mode did not end the turn. The loop went around again, the
-        # model called the same tool again, and it ran to ``max_turns`` — which
-        # was 50, and silent, so this read as a slow turn rather than a defect.
-        # Removing that ceiling is what turned it into a run that never ends, and
-        # is how it was found.
         return self._build_batch_result(all_results, terminate=terminated)
 
     async def _execute_parallel(
@@ -1361,12 +1149,6 @@ class AgentLoop:
             prepared = await self._prepare_tool_call(tc)
             prepared_calls.append(prepared)
 
-        # Emit start events for EVERY call (pi agent-loop.ts:459-466) — including
-        # ones a `tool_call` hook vetoed or arg-validation blocked — using the
-        # ORIGINAL tool call's id/name/args (order-aligned with prepared_calls), so
-        # a vetoed call surfaces a rendered node whose is_error result the
-        # front-end can fold in (E5 §4 / S33). Without this the blocked result had
-        # no widget and was silently dropped.
         for tc in tool_calls:
             await self._emit(
                 AgentEvent(
@@ -1393,8 +1175,6 @@ class AgentLoop:
         all_results: list[AgentToolResult] = []
         for i, res in enumerate(results):
             pc = prepared_calls[i]
-            # gather(return_exceptions=True) yields BaseException (not just
-            # Exception) for a failed/cancelled task — narrow on the broader type.
             if isinstance(res, BaseException):
                 # Task raised an exception
                 error_result = AgentToolResult(
@@ -1418,9 +1198,6 @@ class AgentLoop:
             else:
                 # Normal result (including from_error for BlockedCall/ ErrorCall)
                 all_results.append(res)
-                # An extension VETO (S50) surfaces distinctly: the blocked marker
-                # rides the end event and a JSON veto record is emitted. Recovered
-                # from the aligned prepared call (``from_error`` drops the attribution).
                 blocked_by: str | None = None
                 if isinstance(pc, BlockedCall) and pc.blocked_by_extension is not None:
                     blocked_by = pc.blocked_by_extension
@@ -1432,6 +1209,7 @@ class AgentLoop:
                         tool_call_id=res.tool_call_id,
                         tool_name=res.tool_name,
                         result=res.content,
+                        details=res.details,
                         is_error=res.is_error,
                         blocked=blocked_by is not None,
                         blocked_by=blocked_by,
@@ -1462,9 +1240,6 @@ class AgentLoop:
                 if isinstance(r.content, list)
                 else [{"type": "text", "text": str(r.content)}]
             )
-            # content_list holds raw block dicts; model_validate lets pydantic
-            # coerce them into the TextContent | ImageContent union the field
-            # declares (a plain constructor call can't be typed against dicts).
             result_messages.append(
                 ToolResultMessage.model_validate(
                     {
@@ -1472,6 +1247,7 @@ class AgentLoop:
                         "tool_call_id": r.tool_call_id or "",
                         "tool_name": r.tool_name,
                         "content": content_list,
+                        "details": r.details,
                         "is_error": r.is_error,
                         "timestamp": int(time.time() * 1000),
                     }
@@ -1503,17 +1279,8 @@ class AgentLoop:
                 tool = self._tools[call_name]
                 validate_tool_arguments(tool, call_args)
 
-            # The args dict the tool will execute with. The tool_call hook may
-            # mutate it IN PLACE to patch args; because this is the SAME object
-            # threaded into PreparedToolCall.arguments below, the patch reaches
-            # the tool without any re-validation (pi parity, §7 decision E2-a).
             input_args = call_args if isinstance(call_args, dict) else {}
 
-            # S11 — the `tool_call` mutating hook (E2). Gated on has_handlers for
-            # the zero-extension fast path. pi wires this at agent-session's
-            # beforeToolCall (agent-session.ts:405-424), consumed in agent-loop's
-            # prepareToolCall (agent-loop.ts:581-602): a `block: true` result
-            # short-circuits into an error tool result whose text is `reason`.
             dispatcher = self._hook_dispatcher
             if dispatcher is not None and dispatcher.has_handlers("tool_call"):
                 event: dict[str, Any] = {
@@ -1525,9 +1292,6 @@ class AgentLoop:
                 try:
                     hook_result = await dispatcher.emit_tool_call(event)
                 except Exception as hook_err:
-                    # Fail-CLOSED (pi agent-session.ts:419-424): a throwing
-                    # tool_call handler blocks execution rather than letting the
-                    # tool run unguarded.
                     return BlockedCall(
                         call=PreparedToolCall(
                             id=tool_call.id,
@@ -1544,13 +1308,8 @@ class AgentLoop:
                             arguments={},
                         ),
                         error=hook_result.get("reason") or "Tool execution was blocked",
-                        # The runner attributed the veto to the blocking extension
-                        # (S50); thread it so the call-site renders "⛔ blocked by
-                        # <ext>" + emits the JSON veto record.
                         blocked_by_extension=hook_result.get("extension"),
                     )
-                # No re-validation after mutation (pi parity): event["input"] is
-                # the possibly-patched args object the tool executes with.
                 input_args = event["input"]
 
             return PreparedToolCall(
@@ -1612,6 +1371,7 @@ class AgentLoop:
                 # Extract content from the result dict
                 content = result.get("content", "")
                 is_error = result.get("is_error", False)
+                details = result.get("details")
                 content_list = (
                     content
                     if isinstance(content, list)
@@ -1621,6 +1381,7 @@ class AgentLoop:
                     tool_name=call.name,
                     tool_call_id=call.id,
                     content=content_list,
+                    details=details if isinstance(details, dict) else None,
                     is_error=is_error,
                     terminate=result.get("terminate", False),
                 )
@@ -1655,13 +1416,10 @@ class AgentLoop:
         handler's exception is swallowed-and-continued but surfaced via the runner's
         ``emit_error`` (never silently dropped, pi runner.ts:754-763).
 
-        Only ``content`` and ``is_error`` map back onto the result — τ's
-        ``AgentToolResult`` has no ``details`` field (a genuine model divergence
-        from pi, not a swallowed value). ``details`` still rides the event so a
-        handler can read it and chain a patch to a later handler.
-
-        Applied pi-faithfully with ``?? existing`` semantics (agent-loop.ts:697-701):
-        a patched-to-``None`` field falls back to the original value.
+        All three patchable fields map back onto the result. ``?? existing``
+        semantics (agent-loop.ts:697-701): a patched-to-``None`` field falls back
+        to the original value, so a handler cannot clear ``details`` by patching
+        it to ``None`` — it must patch an empty dict.
 
         Args:
             result: The tool execution result.
@@ -1681,16 +1439,15 @@ class AgentLoop:
             "tool_call_id": result.tool_call_id,
             "input": input_args if input_args is not None else {},
             "content": result.content,
-            "details": None,
+            "details": result.details,
             "is_error": result.is_error,
         }
         patch = await dispatcher.emit_tool_result(event)
         if patch is not None:
-            # pi `afterResult.content ?? result.content`: only a non-None patch
-            # replaces; a handler that patched a field to None falls back to the
-            # original.
             if patch.get("content") is not None:
                 result.content = patch["content"]
+            if patch.get("details") is not None:
+                result.details = patch["details"]
             if patch.get("is_error") is not None:
                 result.is_error = patch["is_error"]
         return result

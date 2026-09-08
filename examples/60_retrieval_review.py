@@ -56,10 +56,6 @@ from tau_llm.constraints import ConstraintViolation, DecodeConstraints
 
 VERDICTS = ["include", "exclude"]
 
-# The labels must be DEFINED, not just named. An earlier version of this prompt only
-# said "reply with one word: include or exclude" and scored 2/8 — the grammar dutifully
-# forced a well-formed answer every time while the model guessed at what the words
-# meant. A constraint guarantees the SHAPE of an answer, never its correctness.
 JUDGE_SYSTEM = (
     "You are a retrieval relevance judge. Given a QUERY and a DOCUMENT, decide whether "
     "the document would help someone answer the query.\n"
@@ -129,8 +125,6 @@ def register(api: Any) -> None:
         try:
             hits = _retrieve(ctx, url, query, scope, limit)
             if not hits:
-                # An empty result is a real answer: the store has nothing on this. It is
-                # NOT an invitation to review something else instead.
                 api.ui.notify(f"no JMFTS hits for {query!r} (scope={scope})", level="warning")
                 return None
 
@@ -141,8 +135,6 @@ def register(api: Any) -> None:
             # Stateless => safe to fan out. This is the whole point of C1.
             verdicts = await asyncio.gather(*(judge(ctx, query, text) for _, text in docs))
         except ConstraintViolation as exc:
-            # The grammar did not hold: the server returned an UNCONSTRAINED generation.
-            # Surface it — do not record free prose as if it were a verdict.
             api.ui.notify(
                 f"constraint violated (the server dropped the grammar): {exc.output!r}",
                 level="error",
@@ -158,8 +150,6 @@ def register(api: Any) -> None:
                 "title": f"Retrieval review — {query}",
                 "table": {
                     "columns": ["", "verdict", "doc", "content"],
-                    # The doc id is in the table because a verdict you cannot trace back
-                    # to a document is an opinion, not a review.
                     "rows": [
                         ["✓" if v == "include" else "·", v, str(doc_id), text[:80]]
                         for (doc_id, text), v in zip(docs, verdicts)

@@ -67,8 +67,6 @@ def main() -> int:
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Pages for topics that no longer have any marked object are removed, not
-    # left behind. A stale page still answers when an agent reads it.
     written = set(files)
     for existing in OUTPUT_DIR.glob("*.md"):
         if existing not in written:

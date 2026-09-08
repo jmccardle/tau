@@ -169,8 +169,6 @@ class InMemoryJmftsClient:
             kids = [d for d in kids if d["title"] == title]
         if title_prefix is not None:
             kids = [d for d in kids if (d["title"] or "").startswith(title_prefix)]
-        # Newest-first: the server order is unspecified and the store must sort by CR-1
-        # position itself; returning the adversarial order keeps it honest.
         kids.sort(key=lambda d: d["id"], reverse=True)
         return [dict(d) for d in kids[:limit]]
 

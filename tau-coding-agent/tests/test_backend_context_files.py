@@ -23,10 +23,6 @@ import pytest
 from tau_agent_core.sdk import BASE_SYSTEM_PROMPT
 from tau_coding_agent.backends import TauBackend
 
-#: The base prompt's first paragraph, which carries no ``{{field}}`` slots.
-#: ``BASE_SYSTEM_PROMPT`` is a TEMPLATE — its ``{{cwd}}``/``{{model}}`` slots are
-#: filled at build time — so the raw constant never appears in a finished prompt
-#: and comparing against it would only assert that templating happened.
 _BASE_OPENING = BASE_SYSTEM_PROMPT.split("\n\n", 1)[0]
 
 

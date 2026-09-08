@@ -60,11 +60,6 @@ from tau_agent_core.extensions.runner import ExtensionHandlers, ExtensionRunner
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXAMPLES_DIR = _REPO_ROOT / "examples"
 
-#: Examples that are runnable SCRIPTS, not extensions — they call the SDK from a
-#: ``main()`` rather than registering anything, so ``register`` does not apply.
-#: Anything not listed here must satisfy the full extension contract. Listing is
-#: deliberate: a new extension example that forgets ``register`` fails this file
-#: rather than being silently reclassified as a script.
 SCRIPT_EXAMPLES = frozenset(
     {
         "10_sdk_create_session.py",
@@ -210,8 +205,6 @@ def test_example_tool_schemas_are_enforceable(path: Path) -> None:
             pytest.fail(f"{path.name} tool {name!r} has an unenforceable schema: {exc}")
 
 
-#: The loader snippet an example's docstring "## Usage" block tells the reader to
-#: paste. Captured so the test can execute it rather than eyeball it.
 _DOCSTRING_LOADER = re.compile(
     r"(_spec = importlib\.util\.spec_from_file_location\(.*?\)\n"
     r"ext = importlib\.util\.module_from_spec\(_spec\)\n"
@@ -248,9 +241,6 @@ def test_docstring_usage_block_actually_runs(path: Path) -> None:
     exec(match.group(1), namespace)  # noqa: S102 - executing the doc is the point
     loaded = namespace["ext"]
 
-    # The block goes on to reference the loaded module — `ext.register`, or a
-    # factory like `ext.make_budget_extension`. A snippet that loads and then
-    # names something absent is still a snippet the reader cannot run.
     referenced = sorted(set(re.findall(r"\bext\.(\w+)", doc)))
     missing = [name for name in referenced if not hasattr(loaded, name)]
     assert not missing, (
@@ -292,8 +282,6 @@ def test_example_hook_handlers_take_event_and_ctx(path: Path) -> None:
                 for p in signature.parameters.values()
                 if p.default is p.empty and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
             ]
-            # A bound method's `self` is already applied, so `inspect.signature`
-            # reports the call signature — no adjustment needed here.
             assert len(positional) == 2, (
                 f"{path.name} hook {event!r} handler "
                 f"{getattr(handler, '__name__', handler)}{signature} takes "

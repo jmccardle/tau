@@ -71,23 +71,10 @@ _logger = logging.getLogger(__name__)
 #: The wire protocol id this module implements, as it appears in ``Model.api``.
 API = "google-generative-ai"
 
-#: Top-level key under which a Google replay token rides on
-#: ``ToolCall.provider_signature`` (S8).
 SIGNATURE_NAMESPACE = "google"
 
-#: τ's stop-reason vocabulary, named so the mapping below is checked rather than
-#: assembled from bare strings — an unmapped reason must reach the ``error``
-#: branch, and a typo that silently produced ``"stop"`` is the exact failure that
-#: branch exists to prevent.
 StopReason = Literal["stop", "length", "toolUse", "error", "aborted"]
 
-#: Google ``finish_reason`` → τ ``AssistantMessage.stop_reason``.
-#:
-#: ``SAFETY``/``RECITATION``/``BLOCKLIST``/``PROHIBITED_CONTENT`` map to
-#: ``error`` for the reason Anthropic's ``refusal`` does: they arrive on a
-#: successful HTTP response with little or no content, so reporting ``stop``
-#: would hand the caller an empty successful answer and ``ctx.complete()`` would
-#: not raise.
 _STOP_REASONS: dict[str, StopReason] = {
     "STOP": "stop",
     "MAX_TOKENS": "length",
@@ -99,8 +86,6 @@ _STOP_REASONS: dict[str, StopReason] = {
     "MALFORMED_FUNCTION_CALL": "error",
 }
 
-#: Warn-once bookkeeping, keyed by model id. Each condition persists for a whole
-#: session, so warning per request would warn on every turn.
 _WARNED_FOREIGN_SIGNATURE: set[str] = set()
 _WARNED_UNSIGNED_TOOL_CALL: set[str] = set()
 
@@ -171,8 +156,6 @@ class GoogleGenerativeAIProvider(Provider):
                     "pip install 'ffwf-tau-llm[google]'"
                 ) from exc
 
-            # cast: the SDK types these as TypedDicts, which mypy will not accept
-            # from a dict[str, Any] built at runtime. It accepts them fine.
             self._client = Client(
                 api_key=self.api_key, http_options=cast(Any, self._http_options())
             )
@@ -290,9 +273,6 @@ class GoogleGenerativeAIProvider(Provider):
 
             if role == "assistant":
                 parts = self._assistant_parts(msg, model)
-                # An assistant turn that serialises to nothing is dropped rather
-                # than sent empty: Google rejects a content with no parts, and an
-                # empty turn carries no information anyway.
                 if parts:
                     contents.append({"role": "model", "parts": parts})
                 continue
@@ -349,10 +329,6 @@ class GoogleGenerativeAIProvider(Provider):
                     parts.append({"text": text})
 
             elif btype == "thinking":
-                # Thinking parts DO follow reasoning_replay: Google calls
-                # returning their signatures "recommended", with no validation
-                # error. This is the discretionary case the knob was designed
-                # for — unlike the functionCall signature below. (O4)
                 if not include_reasoning:
                     continue
                 thinking = block.get("thinking", "") if isinstance(block, dict) else block.thinking
@@ -390,8 +366,6 @@ class GoogleGenerativeAIProvider(Provider):
         part: dict[str, Any] = {"function_call": call}
 
         if not first:
-            # Later parallel calls carry no signature by protocol. Nothing to
-            # warn about, and nothing to send.
             return part
 
         signature = read_signature_payload(raw_signature)
@@ -412,16 +386,6 @@ class GoogleGenerativeAIProvider(Provider):
         several turns teaches the model to stop making parallel calls.
         """
 
-        # τ's field names, not pi's. ``ToolResultMessage`` (types.py) declares
-        # ``tool_name`` / ``tool_call_id`` / ``is_error`` / ``content`` and has no
-        # aliases, so ``model_dump()`` emits snake_case and pi's camelCase spelling
-        # read ``None`` from every field on every call. The visible failure was a
-        # 400 — ``function_response.name: Name cannot be empty`` — on the first
-        # turn after any tool call; the silent one was worse, since ``output``
-        # never resolved either and the model was sent an empty result for work it
-        # had actually done. The other two clients read the same message correctly
-        # (anthropic.py:429, openai.py:1161), which is what makes this the odd one
-        # out rather than a convention question.
         def field(name: str, default: Any = "") -> Any:
             if isinstance(msg, dict):
                 value = msg.get(name, default)
@@ -455,17 +419,6 @@ class GoogleGenerativeAIProvider(Provider):
             contents.append({"role": "user", "parts": [part]})
 
         if images and not nested:
-            # The conservative branch (O2 default): a separate user turn, which
-            # every model accepts. pi does the same below Gemini 3.
-            #
-            # ONE turn per image, not one turn holding every image. MEASURED
-            # 2026-08-28 on the OpenAI client's equivalent branch (llama.cpp
-            # b1637, Qwen3.8-27B): two images under a single label in one turn
-            # made the model describe one image and report the other missing,
-            # 3/3, while one image per turn was correct 3/3 with two images and
-            # with three. Not re-measured on Gemini — the same converter
-            # question, and the shape that was wrong there has nothing to
-            # recommend it here.
             for mime, data in images:
                 contents.append(
                     {
@@ -527,10 +480,6 @@ class GoogleGenerativeAIProvider(Provider):
         self.api_key = api_key
 
         if options.get("constraints") is not None and options["constraints"].has_constraint():
-            # S6. `response_schema` exists but is not τ's contract: it shapes the
-            # response, it does not constrain decoding, and a caller who asked
-            # for a constrained generation would receive an unconstrained one
-            # described as constrained.
             raise ValueError(
                 f"Model {model.id!r} speaks {API!r}, which has no decode-constraint "
                 "parameter. A constrained call cannot be honoured on this wire. "
@@ -545,27 +494,8 @@ class GoogleGenerativeAIProvider(Provider):
             config["system_instruction"] = system
         if tools:
             config["tools"] = self._convert_tools(tools)
-            # Automatic function calling OFF, explicitly. The SDK can run the
-            # tool loop itself — calling Python callables and feeding results
-            # back — and τ owns that loop: the agent loop executes tools, emits
-            # tool_execution_start/end, and enforces permissions. An SDK that
-            # quietly did it instead would bypass all of it.
-            #
-            # MEASURED: `_extra_utils.should_disable_afc()` returns False for a
-            # config without this flag and True with it, so AFC is ON by default
-            # and this line is what turns it off — not belt and braces. Passing
-            # declarations rather than callables happens to leave it nothing to
-            # execute, but "inert because of how we call it" is not "off".
-            #
-            # The SDK still logs its "direct use of AFC is not recommended"
-            # warning on the first streamed tool request either way: it is
-            # emitted once per process before the disable flag is consulted. The
-            # warning is therefore not a signal about this setting.
             config["automatic_function_calling"] = {"disable": True}
         config.update(self._thinking_config(model, options))
-        # Model.extra_body is the operator's escape hatch for anything this
-        # module does not model; per-call options win over it, as on every other
-        # path. Transport-only and τ-internal keys never reach the wire.
         config.update(model.extra_body)
         config.update(
             {
@@ -620,9 +550,6 @@ class GoogleGenerativeAIProvider(Provider):
                 return
 
             except Exception as exc:
-                # Name the model and the endpoint as well as the fault: a fleet
-                # behind one τ config can have several, and the answer is not in
-                # the exception.
                 yield ErrorEvent(
                     message=(
                         f"Streaming error from model {model.id!r} at "
@@ -646,10 +573,6 @@ class _StreamState:
         self.usage = Usage()
         self.finish_reason = ""
         self.error_message = ""
-        #: Signature for the NEXT functionCall part, retained across deltas.
-        #: pi keeps `retainThoughtSignature` for the same reason: some backends
-        #: send the signature only on a part's first delta, and a later delta's
-        #: absent one must not overwrite it.
         self._pending_signature = ""
 
     def consume(self, chunk: Any) -> list[Any]:
@@ -685,8 +608,6 @@ class _StreamState:
                     id=getattr(call, "id", "") or f"call_{len(self.tool_calls)}",
                     name=getattr(call, "name", "") or "",
                     arguments=dict(getattr(call, "args", None) or {}),
-                    # Only the first call of the step carries one; the retained
-                    # value is consumed here so a later call does not inherit it.
                     provider_signature=(
                         signature_payload(self._pending_signature)
                         if self._pending_signature
@@ -729,7 +650,7 @@ class _StreamState:
             model=self.model.id,
             usage=self.usage,
             stop_reason=stop_reason,
-            timestamp=int(time.time()),
+            timestamp=int(time.time() * 1000),
         )
 
     def finalize(self) -> AssistantMessage:
@@ -759,11 +680,6 @@ class _StreamState:
         if self.error_message:
             message.error_message = self.error_message
         return message
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# Helpers
-# ──────────────────────────────────────────────────────────────────────────
 
 
 def _b64(signature: Any) -> str:
@@ -838,5 +754,6 @@ def _usage_from_google(usage: Any) -> Usage:
         input_tokens=max(0, prompt - cached),
         output_tokens=candidates + thoughts,
         cache_read_tokens=cached,
+        cache_reported=getattr(usage, "cached_content_token_count", None) is not None,
         total_tokens=total or (prompt + candidates + thoughts),
     )

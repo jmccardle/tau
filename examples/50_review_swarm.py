@@ -86,10 +86,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# ``ext_kit`` lives alongside the numbered examples, not inside an installed
-# package — bootstrap ``examples/`` onto the path before importing it, whether run
-# directly, imported, or loaded via ``-e`` (D-E6-3), the same as the other
-# ext_kit-using demos (20_delegate, 41_bookmarks).
 _EXAMPLES_DIR = str(Path(__file__).resolve().parent)
 if _EXAMPLES_DIR not in sys.path:
     sys.path.insert(0, _EXAMPLES_DIR)
@@ -97,20 +93,13 @@ if _EXAMPLES_DIR not in sys.path:
 from ext_kit import gate, spawn  # noqa: E402  (path insertion must precede the import)
 from ext_kit.state import TreeStore  # noqa: E402
 
-#: The ``customEntry`` type kept findings live under (S39/S56). Cross-referenced by
-#: ``52_red_team_memory`` (S73), which promotes survivors of this ledger into its
-#: cross-session ``FileStore`` corpus.
 FINDING_CUSTOM_TYPE = "review_finding"
 
 #: The keyed S68 panel this demo mounts for triage (re-render / clear by this key).
 PANEL_KEY = "review"
 
-#: Read-only tool allowlist every swarm child gets — a reviewer inspects, it never
-#: mutates the tree (the same isolation ``20_delegate`` parallel children enforce).
 READONLY_TOOLS: tuple[str, ...] = ("read", "ls", "grep", "find")
 
-#: The review lenses fanned out over the diff — name → the focus the child is told
-#: to review for. One isolated child per lens (the fan-out atom).
 LENSES: dict[str, str] = {
     "security": (
         "security vulnerabilities: injection, auth/authz gaps, unsafe deserialization, "
@@ -126,8 +115,6 @@ LENSES: dict[str, str] = {
     ),
 }
 
-#: Verdict sentinels the adversary is instructed to end on. The gate keeps a finding
-#: iff SURVIVES is present and REFUTED is not (:func:`_survives`).
 _VERDICT_SURVIVES = "VERDICT: SURVIVES"
 _VERDICT_REFUTED = "VERDICT: REFUTED"
 
@@ -686,6 +673,4 @@ def review_swarm_extension(api: Any) -> None:
     )
 
 
-#: The module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/50_review_swarm.py`` → ``getattr(module, "register")``).
 register = review_swarm_extension

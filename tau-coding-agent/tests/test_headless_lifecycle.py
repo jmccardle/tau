@@ -73,8 +73,6 @@ class _LifecycleBackend:
     async def stream_submission(
         self, submission, context, callback, on_event=None, on_pi_event=None
     ):
-        # B2-c: run_print admits its own Submission through the one door, so this is
-        # the seam it calls (the 4-tuple plus the SubmissionResult).
         self.submission = submission
         self.started.set()
         if self._block:
@@ -159,8 +157,6 @@ async def test_shutdown_fires_on_signal(env, sig):
         run_print(CLIArgs(messages=["hi"], print_mode=True), _config())
     )
 
-    # Wait until the (blocking) stream has started — the loop signal handlers are
-    # installed before stream_submission runs, so the signal cannot slip past them.
     for _ in range(200):
         be = env.get("backend")
         if be is not None and be.started.is_set():

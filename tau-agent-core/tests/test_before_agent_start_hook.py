@@ -28,6 +28,9 @@ from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 class _Stream:
     """Minimal async stream matching the stream_simple contract."""
@@ -63,7 +66,7 @@ def _text_assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -160,13 +163,9 @@ async def test_two_handlers_chain_system_prompt_and_accumulate_messages() -> Non
 
     messages = captured["context"]["messages"]
 
-    # system_prompt chained (last wins), and the second handler saw the first's
-    # value live (BASE\nA), proving the running value threads forward.
     assert seen_by_second["system_prompt"] == "BASE\nA"
     assert _system_text(messages) == "BASE\nA\nB"
 
-    # Both accumulated messages reached the model, in accumulation order, after
-    # the user turn.
     user_texts = _user_texts(messages)
     assert user_texts == ["hello", "msg-A", "msg-B"]
 

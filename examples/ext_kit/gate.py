@@ -42,10 +42,6 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, TypeAlias
 
-#: How :func:`run_gate` decides pass / fail from a run:
-#: ``None`` → exit code ``0`` passes; a ``str`` / compiled regex → a *search*
-#: match over the combined output passes (and its text becomes ``matched``); a
-#: predicate → its ``bool`` return over the combined output is the verdict.
 GateParse: TypeAlias = "str | re.Pattern[str] | Callable[[str], bool]"
 
 #: Canonical verdict labels (the ``verdict`` field of :class:`GateResult`).

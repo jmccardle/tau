@@ -18,9 +18,6 @@ from tau_agent_core.conversation_tree import ConversationTree
 
 from tau_coding_agent.session_store import Session
 
-# TREE-BROWSER-AS-EDITOR.md §8/§11.3: ``append_compaction`` now requires the summary's
-# provenance as keyword-only arguments with no defaults. These tests are about
-# something else, so they name plausible values once here.
 _PROV = {
     "summarizer_model_id": "test-summarizer",
     "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
@@ -50,8 +47,6 @@ def test_append_compaction_is_byte_prefix_stable(tmp_path) -> None:
     session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
     after = session.path.read_bytes()
 
-    # Append-only: the whole prior file is a byte-prefix of the new file, and
-    # exactly one line (the compaction marker) was added.
     assert after.startswith(before)
     assert len(after.splitlines()) == len(before.splitlines()) + 1
     assert b'"type": "compaction"' in after.splitlines()[-1]
@@ -79,8 +74,6 @@ def test_navigate_behind_boundary_restores_pre_compaction(tmp_path) -> None:
     session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
 
     tree = ConversationTree(session.entries(), cursor=session._leaf_id)
-    # Behind the boundary the compacted prefix is addressable again — the append
-    # deleted nothing.
     tree.navigate(behind_id)
     restored = tree.context_for()
     assert restored == [
@@ -94,8 +87,6 @@ def test_reloaded_session_resolves_cursor_to_compaction_and_splices(tmp_path) ->
     session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
     assert session.path is not None
 
-    # A fresh load resolves the cursor from the last entry (the compaction) and the
-    # fold produces the same spliced context — the append-only log round-trips.
     reloaded = Session.load(session.path)
     tree = ConversationTree(reloaded.entries(), cursor=reloaded._leaf_id)
     msgs = tree.context_for()
@@ -118,8 +109,6 @@ def test_context_property_is_the_spliced_fold_not_the_linear_messages(tmp_path) 
     assert {"role": "assistant", "content": "old answer"} in session.messages
     assert all("SUMMARY" not in str(m.get("content")) for m in session.messages)
 
-    # .context is the active-path fold: summary spliced first, pre-boundary prefix
-    # dropped, "keep me" retained — and identical to the canonical ConversationTree.
     ctx = session.context
     assert ctx == ConversationTree(session.entries(), session._leaf_id).context_for()
     assert ctx[0]["content"] == [{"type": "text", "text": "[[Compaction summary: SUMMARY]]"}]

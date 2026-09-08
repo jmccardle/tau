@@ -39,9 +39,6 @@ from tau_jmfts.client import JmftsClient
 from tau_jmfts.importer import export_session, import_session
 from tau_jmfts.store import JmftsSessionLog
 
-# TREE-BROWSER-AS-EDITOR.md §8/§11.3: the splice appenders now require the anchor's
-# provenance as keyword-only arguments with no defaults. These tests are about
-# something else, so they name plausible values once here.
 _PROV = {
     "summarizer_model_id": "test-summarizer",
     "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
@@ -60,7 +57,7 @@ TEST_PREFIX = "tau-jmfts-test"
 @pytest.fixture(autouse=True)
 def _isolate_session_listeners(monkeypatch):
     """``tau_coding_agent.session_store._session_listeners`` is a process-wide
-    module global; a REAL ``Parley`` app (elsewhere in this monorepo's test
+    module global; a REAL ``TauApp`` app (elsewhere in this monorepo's test
     suite) registers a listener on it via ``subscribe_session_events`` and
     never unsubscribes ("harmless in a one-shot process" -- session_store.py's
     own comment). Across a shared pytest process that leaks into any LATER
@@ -100,9 +97,6 @@ _CROSS_REF_FIELD = {
     "navigate": "targetId",
     "compaction": "firstKeptId",
     "branch_summary": "fromId",
-    # ``elide`` (W3, NODE-ADDRESSABLE-AGENTS.md) reuses ``compaction``'s field --
-    # the summary-less splice anchor. Included here so the crossref signature
-    # below actually exercises it; see test_import_preserves_elide_crossref.
     "elide": "firstKeptId",
 }
 
@@ -176,11 +170,6 @@ def rich_source(tmp_path: Path) -> Session:
     return _build_rich_source_session(tmp_path)
 
 
-# ---------------------------------------------------------------------------
-# 1. Simple round trip: topology + uuid.
-# ---------------------------------------------------------------------------
-
-
 def test_import_preserves_uuid_and_topology(client: JmftsClient, tmp_path: Path) -> None:
     session = Session.create(
         "/tmp/tau-jmfts-importer-simple",
@@ -207,8 +196,6 @@ def test_import_preserves_uuid_and_topology(client: JmftsClient, tmp_path: Path)
 
 def test_import_rejects_header_missing_required_field(client: JmftsClient, tmp_path: Path) -> None:
     path = tmp_path / "malformed.jsonl"
-    # No "cwd" -- import_session must Fail-Early rather than import a header
-    # it cannot make well-formed.
     header = {
         "type": "session",
         "version": 1,
@@ -220,11 +207,6 @@ def test_import_rejects_header_missing_required_field(client: JmftsClient, tmp_p
 
     with pytest.raises(ValueError, match="missing required field"):
         import_session(path, client)
-
-
-# ---------------------------------------------------------------------------
-# 2. The full round trip: branches + compaction + navigate + branch_summary.
-# ---------------------------------------------------------------------------
 
 
 def test_import_export_round_trip_preserves_topology_and_crossrefs(
@@ -268,9 +250,6 @@ def test_import_export_round_trip_preserves_context_fold_at_every_branch(
         export_session(log, exported_path)
         exported_entries = Session.load(exported_path).entries()
 
-        # Positions of interest: the tip of each branch, and the compaction's
-        # own anchor position -- the set of cursors that would visibly show a
-        # broken splice or a dangling cross-reference to an end user.
         interesting_positions = {
             "branch_summary_tip": 7,  # "back on track" (after the branch_summary)
             "compaction_tip": 10,  # "continue after compaction"
@@ -283,8 +262,6 @@ def test_import_export_round_trip_preserves_context_fold_at_every_branch(
             assert jmfts_ctx == orig_ctx, f"JMFTS context diverged at {label}"
             assert exported_ctx == orig_ctx, f"exported context diverged at {label}"
 
-        # And the compaction message itself is really in the folded context
-        # (not silently dropped -- the dangling-firstKeptId failure mode).
         compaction_ctx = _context_at(jmfts_entries, jmfts_entries[10]["id"])
         assert any(
             "early chat summary" in block.get("text", "")
@@ -340,10 +317,6 @@ def test_import_preserves_elide_crossref_and_context_fold(
         jmfts_ctx = _context_at(jmfts_entries, jmfts_entries[-1]["id"])
         assert jmfts_ctx == orig_ctx
 
-        # The direct proof: "kept from here" must survive the fold. Under the
-        # bug this silently vanishes with the assertion above still able to
-        # pass only if both sides were equally broken -- so pin the content,
-        # not just the equality.
         def _has_text(ctx: list[dict[str, Any]], needle: str) -> bool:
             return any(
                 needle in block.get("text", "")

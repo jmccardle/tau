@@ -67,8 +67,6 @@ def score_one(client: httpx.Client, text: str) -> int:
     )
     resp.raise_for_status()
     content = resp.json()["choices"][0]["message"]["content"].strip()
-    # The grammar makes this total; if it ever raises, the grammar was not applied and we
-    # want to know loudly rather than coerce.
     return int(content)
 
 
@@ -102,8 +100,6 @@ def main() -> int:
                     eta = (len(rows) - n) / rate / 60
                     print(f"  {n}/{len(rows)}  {rate:.1f}/s  eta {eta:.1f}m", flush=True)
 
-    # Write back. Reassign structured_content rather than mutating it: JSONB mutation is
-    # not tracked by SQLAlchemy, so an in-place update would silently never persist.
     with factory() as db:
         for doc_id, score in scores.items():
             doc = db.get(Document, doc_id)

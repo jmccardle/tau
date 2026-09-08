@@ -21,8 +21,6 @@ import tau_coding_agent.session_store as store
 from tau_coding_agent.cli import CLIArgs
 from tau_coding_agent.headless import run_print
 
-# An extension registering a report command whose handler RETURNS a string (the
-# output channel) — no marker file needed, the printed/emitted output proves it ran.
 _OUTPUT_EXT = """
 def register(api):
     def _todos(args, ctx):
@@ -85,8 +83,6 @@ async def test_json_mode_emits_command_output_record(monkeypatch, tmp_path, caps
     assert rc == 0
 
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
-    # A command short-circuits before the model turn, so the ONLY record is the
-    # command_output one — no session header, no message_* events.
     assert lines == [{"type": "command_output", "command": "todos", "output": "TODOS:beta"}]
 
 
@@ -111,8 +107,6 @@ async def test_command_run_does_not_persist_a_user_turn(monkeypatch, tmp_path, c
     rc = await run_print(args, _config())
     assert rc == 0
 
-    # Reload every persisted session under this cwd and assert none recorded the
-    # command text as a user turn (nor any assistant/tool output).
     import os
     from pathlib import Path
 
@@ -156,9 +150,6 @@ async def test_unknown_slash_prompt_is_not_a_command(monkeypatch, tmp_path):
 
     monkeypatch.setattr(AgentSession, "run_extension_command", _spy)
 
-    # Stub stream_submission on the backend class so the fall-through does not hit a
-    # provider — capture that the model path WAS reached for the unknown command, and
-    # with the print-mode submission (not one derived by the adapter).
     admitted: list = []
     from tau_agent_core.submission import SubmissionResult
     from tau_coding_agent.backends import TauBackend
@@ -187,8 +178,6 @@ async def test_unknown_slash_prompt_is_not_a_command(monkeypatch, tmp_path):
     rc = await run_print(args, _config())
     assert rc == 0
 
-    # No handler dispatch was attempted, and the unrecognised slash reached the model
-    # as ordinary prompt text.
     assert dispatched == []
     assert [s.text for s in admitted] == ["/nope not-a-command"]
 

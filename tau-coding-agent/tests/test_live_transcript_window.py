@@ -18,8 +18,8 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 
-from tau_coding_agent.app import ChatDisplay, MessageBox
-from tau_coding_agent.chat_widgets import ExchangeBox
+from tau_coding_agent.chat_widgets import ExchangeBox, MessageBox
+from tau_coding_agent.transcript import ChatDisplay
 
 
 class _Harness(App):
@@ -66,8 +66,6 @@ async def test_a_live_session_stops_growing_at_the_cap(transcript):
             transcript.extend(_turn_messages(index))
             await _live_turn(display, pilot, index)
 
-        # RENDER_CAP_TURNS user messages survive, and one user box is mounted per
-        # user message — that correspondence is what trim_to_cap cuts on.
         users = [b for b in display.query(MessageBox) if b.role == "user"]
         assert len(users) == ChatDisplay.RENDER_CAP_TURNS
         assert [b.content_text for b in users] == ["q16", "q17", "q18", "q19"]
@@ -121,6 +119,9 @@ async def test_nothing_is_evicted_while_the_reader_is_scrolled_up(transcript):
     (``test_sliding_window.py``) — and a turn starting snaps a slid window
     forward again. Scrolling up to re-read the turn above is the case this test
     is about, and it is the case that stays undisturbed.
+
+    The turn they read THROUGH is what this holds. The one they start next is
+    ``test_a_second_turn_runs_the_trim_the_first_one_held``.
     """
     async with _Harness().run_test() as pilot:
         display = pilot.app.query_one(ChatDisplay)
@@ -135,9 +136,8 @@ async def test_nothing_is_evicted_while_the_reader_is_scrolled_up(transcript):
         assert not display._follow_tail
         assert display.scroll_offset.y > 0
 
-        for index in range(8, 14):
-            transcript.extend(_turn_messages(index))
-            await _live_turn(display, pilot, index)
+        transcript.extend(_turn_messages(8))
+        await _live_turn(display, pilot, 8)
 
         # Held, not run: the transcript grew and nothing was taken away.
         assert len(_content_children(display)) > trimmed
@@ -149,6 +149,40 @@ async def test_nothing_is_evicted_while_the_reader_is_scrolled_up(transcript):
         await pilot.pause()
 
         assert not display._trim_deferred
+        users = [b for b in display.query(MessageBox) if b.role == "user"]
+        assert len(users) == ChatDisplay.RENDER_CAP_TURNS
+
+
+async def test_a_second_turn_runs_the_trim_the_first_one_held(transcript):
+    """A reader who scrolls up and never scrolls back had an unbounded transcript.
+
+    ``watch_scroll_y`` was the only thing that cleared a deferred trim, and it
+    returns early while a lane is open — so every further turn deferred again and
+    the tree grew for the rest of the session (measured: 372 → 1860 widgets over
+    five 40-tool turns). Submitting is now the second release point.
+
+    The cost is asserted too: it pulls the reader back to the tail. That is the
+    trade ``snap_window_to_tail`` already makes on the line above it.
+    """
+    async with _Harness().run_test() as pilot:
+        display = pilot.app.query_one(ChatDisplay)
+        display.set_transcript_source(lambda: transcript)
+        for index in range(8):
+            transcript.extend(_turn_messages(index))
+            await _live_turn(display, pilot, index)
+        trimmed = len(_content_children(display))
+
+        display.scroll_to(y=max(1, display.max_scroll_y - 5), animate=False)
+        await pilot.pause()
+        assert not display._follow_tail
+
+        for index in range(8, 14):
+            transcript.extend(_turn_messages(index))
+            await _live_turn(display, pilot, index)
+
+        assert not display._trim_deferred
+        assert display._follow_tail
+        assert len(_content_children(display)) == trimmed
         users = [b for b in display.query(MessageBox) if b.role == "user"]
         assert len(users) == ChatDisplay.RENDER_CAP_TURNS
 

@@ -28,18 +28,6 @@ def _msg(role: str, text: str) -> dict[str, Any]:
     return {"role": role, "content": [{"type": "text", "text": text}]}
 
 
-# ── §8 anchor provenance ──────────────────────────────────────────────────
-#
-# TREE-BROWSER-AS-EDITOR.md §8 put transformation provenance on the splice
-# anchors, and §11.3 made every field a keyword argument with NO default, so an
-# implementor who cannot name a value fails at the call site instead of recording
-# ``None``. Widening a Protocol is exactly the kind of obligation this suite
-# exists to make visible, so the fields are spelled out here once and reused by
-# the dozen cases below that append an anchor for some OTHER reason. The two
-# ``test_*_records_its_provenance`` cases pass their own values explicitly —
-# reusing these constants there would test that the suite can echo itself.
-
-
 def _compaction_provenance() -> dict[str, Any]:
     """The five ``append_compaction`` provenance kwargs, for incidental appends."""
     return {
@@ -155,9 +143,6 @@ class SessionLogContractTests:
         ``extension_types.py`` → ``log.append_navigate(None)``), so it is a real code
         path, not a theoretical one.
         """
-        # NB: this first append is not necessarily root-level itself — the file store
-        # seeds a model_change entry at creation, so it may parent onto that. What the
-        # navigate below establishes is a genuinely root-level SECOND branch.
         log.append_message(_msg("user", "on the first branch"))
 
         log.append_navigate(None)
@@ -168,10 +153,6 @@ class SessionLogContractTests:
         by_id = {e["id"]: e for e in log.entries()}
         assert by_id[second]["parentId"] is None, "the post-navigate append is root-level"
 
-        # The two branches are siblings, and the context fold follows only the active
-        # one — the whole point of the manoeuvre. If a store leaked the first branch
-        # into the context here, it would be folding by insertion order rather than by
-        # parentId, which is the bug this contract exists to catch.
         context = ConversationTree(log.entries(), log.cursor).context_for(log.cursor)
         assert "on the first branch" not in _texts(context)
         assert "on a second, sibling branch" in _texts(context)
@@ -379,14 +360,6 @@ class SessionLogContractTests:
         assert any("SECOND" in t for t in texts)
         assert not any("FIRST" in t for t in texts)
 
-    # ----------------------------------------------------------- elide (W3/T3)
-    #
-    # NODE-ADDRESSABLE-AGENTS.md W3: ``elide`` generalizes the compaction anchor
-    # into a summary-less splice — the SAME fold step in
-    # ``ConversationTree._active_path_entries``, minus anything to render. Decision
-    # 2 (tree SHAPE, not a per-node flag) and Decision 7 (``entries()`` stays TOTAL —
-    # elide hides a span from a fold, never from the log) are what these tests pin.
-
     def test_elide_splices_the_context_with_no_summary(self, log):
         """T3 -- an anchor with no summary. The excluded span disappears from
         ``context_for`` exactly as it does for ``compaction``, but NO placeholder
@@ -448,8 +421,6 @@ class SessionLogContractTests:
         branch_leaf = branch.append_message(_msg("user", "branch content"))
         before = ConversationTree(log.entries(), log.cursor).context_for(branch_leaf)
 
-        # The primary continues past `b`, then elides everything up to `keep` --
-        # which puts `early` and `b` inside the excluded span from the PRIMARY leaf.
         keep = log.append_message(_msg("user", "kept on primary"))
         log.append_elide(keep, **_elide_provenance())
 
@@ -459,15 +430,6 @@ class SessionLogContractTests:
         after = ConversationTree(log.entries(), log.cursor).context_for(branch_leaf)
         assert after == before, "an elide on another path must not perturb the branch's context"
         assert "branch point" in _texts(after) and "branch content" in _texts(after)
-
-    # ------------------------------------------------- anchor provenance (§8)
-    #
-    # TREE-BROWSER-AS-EDITOR.md §8: an anchor's labels are only as good as what the
-    # log records, and both anchor kinds were discarding values that existed at the
-    # write. What a store owes here is narrow and total — persist these fields
-    # verbatim and give them back through ``entries()`` and a reload. It owes no
-    # interpretation: nothing in the fold reads them, which is why §8 could add them
-    # without touching ``ConversationTree``.
 
     def test_compaction_records_its_provenance(self, log):
         """§8.1 — which model wrote this summary, what it cost, what it folded.
@@ -729,14 +691,6 @@ class SessionLogContractTests:
 
         assert first == second
 
-    # ------------------------------------------------ node-addressable agents (I1/T2/T5)
-    #
-    # NODE-ADDRESSABLE-AGENTS.md §2 states I1 and I2 as consequences of the fold's
-    # shape (a leaf→root parentId walk that never consults siblings or load order)
-    # and never having a mutating write path. T1/T2/T5 below are that document's
-    # own "Test obligations" §, made executable per Decision 7 / the doc's framing
-    # that a contract belongs in the shared suite, not in a paragraph.
-
     def test_context_for_a_leaf_is_immutable_under_unrelated_appends(self, log):
         """T1 -- I1 as a conformance test. Per the spec, "the single most valuable
         test in this document": every concurrent reader (BranchView, a second
@@ -767,16 +721,10 @@ class SessionLogContractTests:
         branch.append_message(_msg("user", "lane-only content"))
         assert ConversationTree(log.entries(), log.cursor).context_for(leaf) == before
 
-        # 2. a plain sibling off the root -- shares only the root with `leaf`'s
-        #    ancestor chain, so it is "elsewhere" even though it is on the
-        #    PRIMARY lane (unlike case 1).
         log.append_navigate(root)
         log.append_message(_msg("user", "an unrelated sibling subtree"))
         assert ConversationTree(log.entries(), log.cursor).context_for(leaf) == before
 
-        # 3. a compaction spliced into that sibling subtree -- exercises the one
-        #    fold step that scans more than a single entry (the anchor search),
-        #    on a path that is still not an ancestor of `leaf`.
         keep = log.append_message(_msg("user", "kept on the other path"))
         log.append_compaction("SUMMARY ON THE OTHER PATH", keep, 10, **_compaction_provenance())
         assert ConversationTree(log.entries(), log.cursor).context_for(leaf) == before
@@ -879,9 +827,6 @@ class SessionLogContractTests:
         lane_entry = branch.append_message(_msg("user", "lane content"))
         minted.append(lane_entry)
 
-        # 2. re-parent via append_branch_summary -- `b`'s subtree drops out of
-        #    context_for (it is no longer an ancestor of the new leaf) but must
-        #    not drop out of entries().
         summary_id = log.append_branch_summary("BRANCH SUMMARY", a)
         minted.append(summary_id)
 
@@ -891,8 +836,6 @@ class SessionLogContractTests:
         compaction_id = log.append_compaction("SUMMARY", keep, 10, **_compaction_provenance())
         minted.append(compaction_id)
 
-        # 4. elide -- W3's summary-less anchor splices out a second span the same
-        #    way, and must be just as reachable through entries() afterward.
         keep2 = log.append_message(_msg("user", "kept again"))
         minted.append(keep2)
         elide_id = log.append_elide(keep2, **_elide_provenance())

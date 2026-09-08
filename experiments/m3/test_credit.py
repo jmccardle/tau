@@ -52,8 +52,6 @@ def _record(
 
 
 def test_white_move_dropping_white_eval_is_negative_swing() -> None:
-    # White moves and the White-positive eval falls 0.0 -> -3.0: White hung a
-    # knight. From White's perspective that is a blunder => negative swing.
     record = _record(
         [(WHITE, "b1c3", -3.0)],
         winner=BLACK,
@@ -65,8 +63,6 @@ def test_white_move_dropping_white_eval_is_negative_swing() -> None:
 
 
 def test_black_move_dropping_white_eval_is_positive_swing() -> None:
-    # Black moves and the White-positive eval falls 0.0 -> -3.0: that helps Black,
-    # so from the MOVER's (Black's) perspective it is a GAIN => positive swing.
     record = _record(
         [(BLACK, "b6c4", -3.0)],
         winner=BLACK,
@@ -78,9 +74,6 @@ def test_black_move_dropping_white_eval_is_positive_swing() -> None:
 
 
 def test_two_knights_hung_smoke_sequence() -> None:
-    # A concrete two-ply case: White hangs a knight (eval 0 -> -3), then Black
-    # blunders one straight back (eval -3 -> 0). Each mover's own perspective
-    # sees its own move as the -3 blunder.
     record = _record(
         [(WHITE, "b1c3", -3.0), (BLACK, "e6d4", 0.0)],
         winner=None,
@@ -99,8 +92,6 @@ def test_ply_zero_uses_default_initial_eval_zero() -> None:
 
 
 def test_ply_zero_custom_baseline_shifts_first_swing() -> None:
-    # Game started from a position already at +1.5 for White; the first move only
-    # reaches +1.0, so from White's view the move LOST 0.5 relative to the start.
     record = _record([(WHITE, "d2d3", 1.0)], winner=WHITE, reason="checkmate")
     (default_s,) = ply_swings(record)
     (custom_s,) = ply_swings(record, initial_eval=1.5)
@@ -109,8 +100,6 @@ def test_ply_zero_custom_baseline_shifts_first_swing() -> None:
 
 
 def test_prev_eval_chains_across_plies() -> None:
-    # White: 0 -> 2 (+2). Black: 2 -> 2.5, White-positive rose so Black's
-    # perspective swing is -0.5. White: 2.5 -> 1 (-1.5).
     record = _record(
         [(WHITE, "a", 2.0), (BLACK, "b", 2.5), (WHITE, "c", 1.0)],
         winner=None,
@@ -164,10 +153,6 @@ def test_swung_moves_negative_threshold_raises() -> None:
 
 
 def test_swing_correlates_positively_when_swing_predicts_result() -> None:
-    # A White win where White's moves gain and Black's moves lose (positive
-    # swings from the winner, negative from the loser), and a mirrored Black win.
-    # Winner-side moves have positive swings, loser-side negative => the per-move
-    # (swing, side-result) points line up on a positive slope.
     white_win = _record(
         [
             (WHITE, "w0", 1.0),  # +1.0, side result +1
@@ -193,8 +178,6 @@ def test_swing_correlates_positively_when_swing_predicts_result() -> None:
 
 
 def test_correlation_all_draws_has_no_variance_and_raises() -> None:
-    # All games drawn => every per-move result is 0 => zero variance in y. Per the
-    # documented contract this RAISES rather than silently returning 0.0.
     draw = _record(
         [(WHITE, "w0", 1.0), (BLACK, "b0", 0.5)],
         winner=None,
@@ -205,8 +188,6 @@ def test_correlation_all_draws_has_no_variance_and_raises() -> None:
 
 
 def test_correlation_rejects_unfinished_game() -> None:
-    # A max-plies game is UNFINISHED, not a draw; feeding it to the outcome
-    # correlation must raise, never be scored as 0.
     unfinished = _record(
         [(WHITE, "w0", 1.0), (BLACK, "b0", 0.5)],
         winner=None,
@@ -254,8 +235,6 @@ def test_strategy_used_only_in_blunders_gets_bad_stats() -> None:
         winner=BLACK,
         reason="checkmate",
     )
-    # w0: 0 -> -2  => White swing -2.0 (blunder)
-    # b0: -2 -> -1 => White-positive rose => Black swing -1.0 (blunder)
     trace = [["hang"], ["hang"]]
     stats = strategy_swing_stats([record], [trace])
     assert stats["hang"].count == 2
@@ -269,8 +248,6 @@ def test_strategy_used_in_good_moves_gets_low_bad_fraction() -> None:
         winner=WHITE,
         reason="checkmate",
     )
-    # w0: 0 -> 2  => White swing +2.0 (gain)
-    # b0: 2 -> 1  => White eval fell => Black swing +1.0 (gain)
     trace = [["center"], ["center"]]
     stats = strategy_swing_stats([record], [trace])
     assert stats["center"].count == 2
@@ -279,11 +256,6 @@ def test_strategy_used_in_good_moves_gets_low_bad_fraction() -> None:
 
 
 def test_strategy_present_in_loss_but_not_used_is_not_penalized() -> None:
-    # THE conditional-vs-marginal test. White loses the game. "good" was used only
-    # on White's genuinely strong move (w0, +2.0). The loss came from an unrelated
-    # blunder on w1 (-3.0) that "good" was NEVER invoked on. A marginal
-    # P(present | loss) would demote "good" for riding along in a lost game; the
-    # conditional signal must not, because "good" was not USED in the losing move.
     record = _record(
         [
             (WHITE, "w0", 2.0),  # swing +2.0, uses "good"
@@ -307,8 +279,6 @@ def test_strategy_present_in_loss_but_not_used_is_not_penalized() -> None:
 
 
 def test_strategy_stats_pool_across_games_and_zero_swing_not_bad() -> None:
-    # A strategy used across two games; one invoking move has an exactly-zero
-    # swing (a quiet move), which is neither gain nor blunder => not counted bad.
     g1 = _record([(WHITE, "w0", 1.0)], winner=WHITE, reason="checkmate")  # +1.0
     g2 = _record(
         [(WHITE, "w0", 0.0), (WHITE, "w1", -2.0)],
@@ -333,8 +303,6 @@ def test_records_and_hit_traces_length_mismatch_raises() -> None:
 
 
 def test_hit_trace_ply_misalignment_raises() -> None:
-    # Trace shorter than the ply-eval trace is a misaligned trace => raise, never
-    # silently zip short.
     record = _record(
         [(WHITE, "w0", 1.0), (BLACK, "b0", 0.5)],
         winner=WHITE,

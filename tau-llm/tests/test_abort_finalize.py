@@ -39,10 +39,6 @@ from tau_llm.providers.openai import OpenAICompletionsProvider
 from tau_llm.streaming import DoneEvent, ErrorEvent
 from tau_llm.types import Model, TextContent, UserMessage
 
-# ---------------------------------------------------------------------------
-# Scaffolding
-# ---------------------------------------------------------------------------
-
 
 class _StreamCM:
     """``httpx.AsyncClient.stream(...)``: a sync call returning an async CM."""
@@ -153,9 +149,6 @@ def _run(monkeypatch, response, *, abort_signal=None) -> list:
     provider = OpenAICompletionsProvider(api_key="sk-test")
 
     async def _go():
-        # The signal rides in ``options``, which is how ``AgentLoop`` passes it
-        # (agent_loop.py, "Forward the abort signal so an abort mid-completion
-        # stops the LLM stream").
         stream = await provider.stream_chat(
             model=_model(),
             messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
@@ -170,11 +163,6 @@ def _done(events) -> DoneEvent:
     done = [e for e in events if isinstance(e, DoneEvent)]
     assert len(done) == 1, f"expected exactly one DoneEvent, got {len(done)}"
     return done[0]
-
-
-# ---------------------------------------------------------------------------
-# The aborted stream
-# ---------------------------------------------------------------------------
 
 
 def test_an_abort_mid_arguments_finalizes_instead_of_erroring(monkeypatch):
@@ -289,11 +277,6 @@ def test_a_call_aborted_before_its_name_arrived_is_dropped_not_reported(monkeypa
     assert final.usage.extra.get("dropped_partial_tool_calls") == 1
 
 
-# ---------------------------------------------------------------------------
-# The complete stream: strictness is unchanged
-# ---------------------------------------------------------------------------
-
-
 def test_a_complete_stream_with_a_truncated_buffer_still_errors(monkeypatch):
     """The half that must not regress.
 
@@ -383,11 +366,6 @@ def test_no_abort_position_produces_an_error_event(monkeypatch, abort_after):
     assert not [e for e in events if isinstance(e, ErrorEvent)], (
         f"aborting after SSE line {abort_after} produced an ErrorEvent"
     )
-
-
-# ---------------------------------------------------------------------------
-# The stream the SERVER cut off: stop_reason == "length"
-# ---------------------------------------------------------------------------
 
 
 def test_a_length_truncation_mid_arguments_finalizes_instead_of_erroring(monkeypatch):

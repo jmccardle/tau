@@ -37,8 +37,6 @@ _DELEGATE_PATH = _REPO_ROOT / "examples" / "20_delegate.py"
 _spec = importlib.util.spec_from_file_location("delegate_example", _DELEGATE_PATH)
 assert _spec is not None and _spec.loader is not None
 delegate = importlib.util.module_from_spec(_spec)
-# Register before exec so dataclasses can resolve the module for its annotations
-# (``from __future__ import annotations`` makes dataclass consult sys.modules).
 sys.modules[_spec.name] = delegate
 _spec.loader.exec_module(delegate)
 
@@ -204,8 +202,6 @@ async def test_parallel_spawns_children_and_forces_readonly(fake_home):
 
 
 async def test_parallel_rejects_write_tool_endtoend(fake_home):
-    # A write tool in a parallel task aborts the whole call (Fail-Early), before
-    # any child is spawned.
     with pytest.raises(ValueError, match="read-only"):
         await delegate._delegate_execute(
             "call-3",
@@ -220,8 +216,6 @@ async def test_parallel_rejects_write_tool_endtoend(fake_home):
 
 
 def test_child_cli_args_delegates_to_kit_build_child_args():
-    # The demo's argv builder is now ext_kit.spawn.build_child_args + the Task:
-    # prefix (the one bit of wording the kit leaves to the caller).
     args = delegate._child_cli_args(
         model="m", tools=["read", "grep"], system_prompt_path=None, task="do it"
     )

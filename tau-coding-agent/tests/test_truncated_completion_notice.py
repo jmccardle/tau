@@ -18,7 +18,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tau_coding_agent.app import ChatDisplay, MessageBox, Parley
+from tau_coding_agent.app import TauApp
+from tau_coding_agent import chat_widgets, transcript
 
 
 class _Backend:
@@ -30,12 +31,12 @@ class _Backend:
         raise AssertionError("no test in this module runs a turn")
 
 
-def _app(make_app, config: dict[str, Any] | None = None) -> Parley:
+def _app(make_app, config: dict[str, Any] | None = None) -> TauApp:
     return make_app(create_backend=lambda cfg: _Backend(), config=config)
 
 
-def _system_text(app: Parley) -> str:
-    boxes = app.query_one(ChatDisplay).query(MessageBox)
+def _system_text(app: TauApp) -> str:
+    boxes = app.query_one(transcript.ChatDisplay).query(chat_widgets.MessageBox)
     return "\n".join(b._content for b in boxes if b.role == "system")
 
 
@@ -92,6 +93,71 @@ async def test_an_ordinary_completion_says_nothing(make_app):
             )
         await pilot.pause()
         assert _system_text(app) == ""
+
+
+async def test_the_box_counts_the_calls_the_cut_lost(make_app):
+    """The case that made this matter, said in numbers: the provider dropped N
+    calls rather than run them on a prefix, and the box now names N."""
+    app = _app(make_app)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._on_render_event(
+            {
+                "kind": "completion_end",
+                "output": 4096,
+                "context": 900,
+                "stop_reason": "length",
+                "dropped_tool_calls": 2,
+            }
+        )
+        await pilot.pause()
+        assert "2 tool calls were dropped" in _system_text(app)
+
+
+async def test_a_completion_end_without_the_count_still_reports(make_app):
+    """A render event from an older path carries no count; the cap is still the
+    thing to act on, so the box says the rest and claims no drop."""
+    app = _app(make_app)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._on_render_event(
+            {"kind": "completion_end", "output": 4096, "context": 900, "stop_reason": "length"}
+        )
+        await pilot.pause()
+        text = _system_text(app)
+        assert "output cap" in text
+        assert "dropped" not in text
+
+
+def test_the_stream_puts_the_count_on_completion_end():
+    """``TurnStream`` reads it off ``usage.extra`` — the one place the provider
+    records a call it refused to run."""
+    from tau_coding_agent.backends import TurnStream
+
+    class _Event:
+        type = "message_end"
+        timestamp = 1
+
+        def __init__(self, message):
+            self.message = message
+
+    stream = TurnStream(lane="main")
+    events = stream.feed(
+        _Event(
+            {
+                "role": "assistant",
+                "content": [],
+                "stop_reason": "length",
+                "usage": {
+                    "total_tokens": 100,
+                    "output_tokens": 90,
+                    "extra": {"dropped_partial_tool_calls": 3},
+                },
+            }
+        )
+    )
+    assert events[0]["stop_reason"] == "length"
+    assert events[0]["dropped_tool_calls"] == 3
 
 
 async def test_an_unresolvable_model_entry_reports_the_cap_as_unknown(make_app):

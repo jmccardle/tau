@@ -6,6 +6,8 @@
 that also drives headless (`-p`) and RPC (`--mode rpc`) runs. It's a fork
 of a prior Textual app called Parley, kept where Parley's design already
 fit and replaced where τ's agent model needed something Parley didn't have.
+τ's own class is `TauApp`; the fork's name survives only in sentences like
+this one, about where the code came from.
 
 ## What's genuinely still Parley
 
@@ -14,7 +16,7 @@ fit and replaced where τ's agent model needed something Parley didn't have.
 - **Catppuccin Mocha palette** — still the default look, and byte-identical to
   Parley's (`#1e1e2e` base, `#89dceb` on user-message borders, `#f38ba8` on
   errors). The hex is no longer in the stylesheet: 0.9.4 moved it into the
-  `mocha` theme and `parley.tcss` now contains no colour literal at all. See
+  `mocha` theme and `tau.tcss` now contains no colour literal at all. See
   [Colour themes](#colour-themes).
 - **Command palette (Ctrl+P)** — Textual's built-in, listing τ's own
   commands (`app.py`'s `get_system_commands`).
@@ -108,7 +110,7 @@ stale.
 | `--continue` / `--session REF` / `--fork REF` | `-c` | mutually exclusive with each other and with `--resume` |
 | `--resume` | `-r` | opens `SessionPickerModal` at TUI startup. Raises under `--print`, which has no screen to open a picker on — use `--continue` or `--session REF` there |
 | `--no-context-files` | `-nc` | turn off `AGENTS.md`/`CLAUDE.md` discovery. Run-level, so a mid-session `/model` switch cannot hand the files back |
-| `--fun` / `--no-fun` | | pick the startup tagline at random rather than always the same one. **On by default**, in a checkout and in every built artifact alike; `--no-fun` pins it to the first tagline. A `Parley` built in-process (tests, `testing.scenes`, `devshot`) defaults it OFF instead, which is what keeps rendered scenes byte-stable |
+| `--fun` / `--no-fun` | | pick the startup tagline at random rather than always the same one. **On by default**, in a checkout and in every built artifact alike; `--no-fun` pins it to the first tagline. A `TauApp` built in-process (tests, `testing.scenes`, `devshot`) defaults it OFF instead, which is what keeps rendered scenes byte-stable |
 | `--theme NAME` | | TUI colour theme for **this run only** — see the config table below. Never written to `config.json`, which is the whole difference between it and picking a theme from the command palette. Not validated here: an unknown name reaches the app, which raises an error toast and starts in `mocha` |
 | `--name` | `-n` | session display title |
 | `--no-session` | | ephemeral, no persistence |
@@ -123,7 +125,7 @@ stale.
 
 τ designs four: `mocha` (the default), `latte`, `gruvbox`, and `ansi`, and adapts
 Textual's own 21 on top of them. A theme is a palette, not a stylesheet —
-`parley.tcss` holds the structure and contains no colour literal, and each theme
+`tau.tcss` holds the structure and contains no colour literal, and each theme
 supplies the 25 `$tau-*` role variables the sheet names plus the Textual design
 tokens that colour the Footer, the scrollbars and the tree cursor.
 
@@ -195,7 +197,7 @@ and a file named after a built-in replaces it.
 `extends` names a built-in — one of τ's four, or any of Textual's 21 as adapted
 above — and supplies both halves. `palette` overrides τ's
 colours by the role names in `themes.TAU_PALETTE_KEYS`. The optional `textual`
-block overrides Textual's own design tokens, for the widgets `parley.tcss` does
+block overrides Textual's own design tokens, for the widgets `tau.tcss` does
 not reach — `"dark": false` there is what sends Textual's built-in widgets down
 their light branch, so a light palette does not end up under a dark Footer.
 

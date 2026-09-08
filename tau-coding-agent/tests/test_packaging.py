@@ -33,12 +33,6 @@ def _runtime_data_files() -> list[Path]:
             if p.is_file()
             and p.suffix != ".py"
             and "__pycache__" not in p.parts
-            # ``*.egg-info/`` is build metadata setuptools writes into src/ on any
-            # editable install -- the very install CLAUDE.md tells you to do. It is
-            # generated, gitignored, and never shipped, so holding it against
-            # package-data asserts something this test does not mean. It went
-            # unnoticed because .gitignore hides it: the tree looks clean, and the
-            # failure only appears after `pip install -e`.
             and not any(part.endswith(".egg-info") for part in p.parts)
         ]
     return found
@@ -67,7 +61,7 @@ def test_the_tarball_script_copies_every_runtime_suffix():
     )
 
 
-@pytest.mark.parametrize("name", ["tau_default_config.json", "parley.tcss"])
+@pytest.mark.parametrize("name", ["tau_default_config.json", "tau.tcss"])
 def test_the_two_load_bearing_data_files_are_where_the_code_looks(name):
     """Named explicitly, because each has its own failure mode: a missing
     config template kills first run, a missing stylesheet kills the TUI."""
@@ -76,9 +70,6 @@ def test_the_two_load_bearing_data_files_are_where_the_code_looks(name):
 
 # -- declared dependencies vs actual imports --------------------------------
 
-#: Third-party top-level modules each package's shipped code imports, and the
-#: distribution that provides them. Kept explicit: the point is to catch a NEW
-#: import that nobody declared, not to re-derive the mapping every run.
 PROVIDES = {
     "httpx": "httpx",
     "pydantic": "pydantic",
@@ -134,12 +125,6 @@ def test_every_imported_third_party_module_is_declared(pkg):
 
 # -- version, and the one place it is written ------------------------------
 
-#: Every distribution in this tree, and the module whose ``__version__`` is its
-#: version. They release in lockstep: one ``--version`` number, five wheels.
-#:
-#: ``tau-meta`` is the ``ffwf-tau`` metapackage. It ships no functional code, and
-#: ``tau_meta`` exists only to hold its version literal — which is why it belongs
-#: in this mapping rather than being exempted from it.
 DISTRIBUTIONS = {
     "tau-llm": "tau_llm",
     "tau-agent-core": "tau_agent_core",
@@ -326,10 +311,6 @@ def test_the_tarball_stages_every_file_the_metadata_points_at():
             )
 
 
-#: The private git remote. `github` is the public release mirror with truncated
-#: history; `origin` points at a private host carrying unfiltered history. The two
-#: are one `git remote -v` away from each other, which is exactly how a private
-#: hostname ends up pasted into a file that gets uploaded to PyPI.
 PRIVATE_HOST = "dev.ffwf.net"
 PUBLIC_REPO = "https://github.com/jmccardle/tau"
 

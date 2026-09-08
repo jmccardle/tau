@@ -5,7 +5,7 @@ session…" entry open: a list of the sessions on disk, newest first, scoped to 
 current working directory with a ``Tab`` toggle to every directory. Picking one
 dismisses with its :class:`~tau_agent_core.session_catalog.SessionInfo` ``ref``,
 which the app hands to the *existing* load path (``ChatSelected`` →
-``Parley.on_chat_selected`` → ``SessionCatalog.load``) — one loader, two entry
+``TauApp.on_chat_selected`` → ``SessionCatalog.load``) — one loader, two entry
 points.
 
 **This is not the tree browser.** ``app.SessionTreeModal`` navigates the
@@ -33,19 +33,13 @@ from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Container
-from textual.fuzzy import Matcher
 from textual.reactive import reactive
-from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Input, Static
 from textual.worker import get_current_worker
 
 from tau_agent_core.session_catalog import SessionCatalog, SessionInfo
+from tau_coding_agent.dialogs import TauDialog
 
-#: The two listing scopes (§5.8). ``SCOPE_CWD`` lists one dashed-cwd directory,
-#: which is the cheap case the on-disk partitioning exists to make cheap;
-#: ``SCOPE_ALL`` walks every directory under the session base. pi's picker calls
-#: the same pair "Current" and "All" and toggles them with Tab.
 SCOPE_CWD = "cwd"
 SCOPE_ALL = "all"
 
@@ -125,7 +119,23 @@ def search_text(info: SessionInfo) -> str:
     return " ".join(part for part in (info.name or "", info.first_message, info.last_message))
 
 
-class SessionPickerModal(ModalScreen[Optional[str]]):
+def matches_query(query: str, haystack: str) -> bool:
+    """Whether ``haystack`` admits ``query``: every term, case-insensitively, as a substring.
+
+    The query is split on whitespace and every term must appear, in any order and
+    anywhere in the haystack, so "compaction session_manager" finds the session
+    whose name says one and whose first message says the other.
+
+    Deliberately NOT fuzzy, and the reason is measured — docs/SESSION-UX-REDESIGN.md
+    §6.1. This costs one pass per term over the haystack; the matcher it replaced
+    enumerated every way the query's letters could be laid over the candidate and
+    kept them all in a list.
+    """
+    lowered = haystack.lower()
+    return all(term in lowered for term in query.lower().split())
+
+
+class SessionPickerModal(TauDialog[Optional[str]]):
     """Pick a saved session; dismiss with its ``ref``, or ``None`` on cancel.
 
     Built on ``DataTable(cursor_type="row")`` because it is the only Textual
@@ -141,35 +151,20 @@ class SessionPickerModal(ModalScreen[Optional[str]]):
     uses, for the same reason.
     """
 
+    # Textual merges BINDINGS across the MRO, so escape/cancel comes from TauDialog.
     BINDINGS = [
-        # Tab is Screen's focus-next key. It is rebound rather than shared because
-        # this screen has exactly two focus targets and an explicit key for each
-        # (`/` to the filter, Esc back to the table), so focus cycling buys
-        # nothing — and Current↔All is the toggle pi's picker puts on Tab.
         Binding("tab", "toggle_scope", "Current ↔ all"),
         Binding("slash", "focus_filter", "Filter"),
-        Binding("escape", "cancel", "Cancel"),
     ]
 
-    #: Fixed widths for the two narrow columns, so the title column gets whatever
-    #: the dialog has left. Each is its own HEADER's width, which is the real
-    #: floor — a column narrower than its label draws "Update" over a list of
-    #: ages, and a header nobody can read is worse than a column of slack.
+    DIALOG_ID = "session-picker-dialog"
+    TITLE_TEXT = "Resume a session"
+
     UPDATED_WIDTH = 7
     MSGS_WIDTH = 4
-    #: The directory column, drawn only in ``SCOPE_ALL`` — in cwd scope every row
-    #: has the same one and it would be a column of identical text.
     CWD_WIDTH = 26
-    #: Below this the title column is too narrow to identify a conversation, so
-    #: the table is allowed to overflow into its own horizontal scrollbar instead
-    #: of eliding every row down to nothing.
     MIN_TITLE_WIDTH = 20
 
-    #: ``always_update`` because a reactive only notifies on a CHANGED value, and
-    #: two empty listings compare equal: a directory with no sessions assigned
-    #: ``[]`` over the initial ``[]``, the watcher never ran, and the picker sat on
-    #: "Loading…" forever — a load that finished looking exactly like one that
-    #: hung. The listing is a snapshot of the disk, not a value to diff.
     sessions: reactive[list[SessionInfo]] = reactive(list, init=False, always_update=True)
     scope: reactive[str] = reactive(SCOPE_CWD, init=False)
     filter_query: reactive[str] = reactive("", init=False)
@@ -178,24 +173,21 @@ class SessionPickerModal(ModalScreen[Optional[str]]):
         super().__init__()
         self._catalog = catalog
         self._cwd = cwd
-        #: True between starting a load and applying its result — the status line
-        #: says "Loading…" rather than "0 sessions", which is a different claim.
         self._loading = True
 
     # -- composition ---------------------------------------------------------
 
-    def compose(self) -> ComposeResult:
-        with Container(id="session-picker-dialog"):
-            yield Static("Resume a session", id="session-picker-title")
-            yield Input(placeholder="filter sessions…", id="session-picker-filter")
-            table: DataTable[Text] = DataTable(id="session-picker-table")
-            table.cursor_type = "row"
-            yield table
-            yield Static("", id="session-picker-status")
-            # Inside the dialog, not beside it: `ModalScreen { align: center
-            # middle }` in parley.tcss centres every direct child of the screen,
-            # and a bottom-docked Footer is the one child that must not be.
-            yield Footer()
+    def compose_body(self) -> ComposeResult:
+        yield Input(
+            placeholder="filter sessions…",
+            id="session-picker-filter",
+            classes="tau-dialog-input",
+        )
+        table: DataTable[Text] = DataTable(id="session-picker-table")
+        table.cursor_type = "row"
+        yield table
+        yield Static("", id="session-picker-status")
+        yield Footer()
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
@@ -250,15 +242,15 @@ class SessionPickerModal(ModalScreen[Optional[str]]):
     def visible_sessions(self) -> list[SessionInfo]:
         """The rows the current filter admits, in catalog order (newest first).
 
-        ``textual.fuzzy.Matcher`` scores a candidate and returns ``0.0`` for no
-        match, so the filter is "score above zero" and the ORDER is left alone.
-        Re-sorting by score would mean the list reshuffles under the cursor as the
-        user types, and recency is the ordering a resume list is read in.
+        :func:`matches_query` answers yes or no rather than scoring, so the ORDER is
+        left alone. Re-sorting by relevance would mean the list reshuffles under the
+        cursor as the user types, and recency is the ordering a resume list is read
+        in.
         """
         if not self.filter_query:
             return list(self.sessions)
-        matcher = Matcher(self.filter_query)
-        return [info for info in self.sessions if matcher.match(search_text(info)) > 0]
+        query = self.filter_query
+        return [info for info in self.sessions if matches_query(query, search_text(info))]
 
     def _title_width(self, table: DataTable[Text]) -> int:
         """Columns left for the title once the fixed ones and their padding are paid."""
@@ -295,8 +287,6 @@ class SessionPickerModal(ModalScreen[Optional[str]]):
         if self.scope == SCOPE_ALL:
             table.add_column("Directory", width=self.CWD_WIDTH, key="cwd")
 
-        # The one clock read in this module, once per frame, so every row in a
-        # given table is an age measured from the same instant.
         now = datetime.now(timezone.utc)
         for info in self.visible_sessions():
             cells = [
@@ -330,18 +320,11 @@ class SessionPickerModal(ModalScreen[Optional[str]]):
         if self.scope == SCOPE_ALL:
             status.update(prefix + "every directory")
             return
-        # Cut the PATH rather than let the CSS clip the line: `text-overflow`
-        # takes the tail, which on a directory is the only part that identifies
-        # it. Width 0 before the first layout — the full string is written and
-        # `on_resize` rewrites it once the row has a width.
         room = status.content_size.width - len(prefix)
         where = home_relative(self._cwd)
         status.update(prefix + (elide_start(where, room) if room > 0 else where))
 
     def on_resize(self) -> None:
-        # The title column is a function of the table's width, so it has to be
-        # recomputed when that changes — the same reason SessionTreeModal relabels
-        # its rows on resize.
         self._populate()
 
     # -- actions -------------------------------------------------------------
@@ -385,8 +368,5 @@ class SessionPickerModal(ModalScreen[Optional[str]]):
         event.stop()
         ref = event.row_key.value
         if ref is None:
-            # Every row is added with the SessionInfo's ref as its key, so a
-            # keyless row means this table was populated by something other than
-            # _populate. Dismissing with None would look like a cancel.
             raise ValueError("session picker row has no ref key")
         self.dismiss(str(ref))

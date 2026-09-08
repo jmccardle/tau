@@ -16,11 +16,6 @@ from pathlib import Path
 from tau_agent_core.rpc import capabilities, protocol_doc
 from tau_agent_core.rpc.commands import COMMAND_TABLE
 
-#: The default line length of `asyncio.StreamReader` (`_DEFAULT_LIMIT`), and
-#: of a good many other stream readers a host might frame with. Spelled out
-#: because it appears on BOTH sides of this protocol: it is the bound T7 had
-#: to raise on the inbound side after it killed the child, and it is the trap
-#: the two tests below keep the OUTBOUND side honest about.
 _COMMON_READLINE_DEFAULT_BYTES = 64 * 1024
 
 
@@ -47,11 +42,6 @@ def test_the_document_has_exactly_k1s_keys():
         "event_schema",
         "ui_methods",
         "declined",
-        # T7 (review finding 9): what a host may SEND. Its contents, and the
-        # tie between the advertised number and the reader that enforces it,
-        # are pinned in test_rpc_transport.py's TestRequestLineBound —
-        # alongside the enforcement, so neither half can move without the
-        # other.
         "limits",
     }
 

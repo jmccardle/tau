@@ -58,9 +58,8 @@ from tau_agent_core.tools.base import (
     ToolDefinition,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
 
 
 async def async_emit(events: list, e: AgentEvent) -> None:
@@ -197,11 +196,6 @@ class _EventIterator:
         return event
 
 
-# ---------------------------------------------------------------------------
-# Test 1: Text-only response
-# ---------------------------------------------------------------------------
-
-
 class TestTextOnlyResponse:
     """Test 1: Pure text response (no tool calls)."""
 
@@ -225,7 +219,7 @@ class TestTextOnlyResponse:
                         provider="openai",
                         model="gpt-4o",
                         stop_reason="stop",
-                        timestamp=0,
+                        timestamp=_TS,
                     ),
                 ),
                 TextDeltaEvent(
@@ -236,7 +230,7 @@ class TestTextOnlyResponse:
                         provider="openai",
                         model="gpt-4o",
                         stop_reason="stop",
-                        timestamp=0,
+                        timestamp=_TS,
                     ),
                 ),
                 DoneEvent(
@@ -304,11 +298,6 @@ class TestTextOnlyResponse:
         assert types.index("message_start") < types.index("message_end")
         # turn_start before turn_end
         assert types.index("turn_start") < types.index("turn_end")
-
-
-# ---------------------------------------------------------------------------
-# Test 2: Single tool call (sequential)
-# ---------------------------------------------------------------------------
 
 
 class TestSingleToolCallSequential:
@@ -379,8 +368,6 @@ class TestSingleToolCallSequential:
         assert len(tool_ends) == 1
         assert tool_ends[0].tool_name == "bash"
 
-        # Verify messages: assistant response (tool call), tool result,
-        # assistant response (text)
         assert len(messages) >= 2
 
     @pytest.mark.asyncio
@@ -423,8 +410,6 @@ class TestSingleToolCallSequential:
 
         types = [e.type for e in events]
 
-        # Verify: turn_start -> tool_execution_start -> tool_execution_end
-        # -> message_end -> turn_end -> agent_end
         turn_start_idx = types.index("turn_start")
         tool_start_idx = types.index("tool_execution_start")
         tool_end_idx = types.index("tool_execution_end")
@@ -432,11 +417,6 @@ class TestSingleToolCallSequential:
         assert turn_start_idx < tool_start_idx < tool_end_idx
         assert events[tool_start_idx].tool_name == "ls"
         assert events[tool_start_idx].tool_call_id == "call_abc"
-
-
-# ---------------------------------------------------------------------------
-# Test 3: Multiple tool calls (parallel)
-# ---------------------------------------------------------------------------
 
 
 class TestParallelToolCalls:
@@ -525,11 +505,6 @@ class TestParallelToolCalls:
         # In parallel mode, both starts happen before their respective ends
         tool_ends = [e for e in events if e.type == "tool_execution_end"]
         assert len(tool_ends) == 2
-
-
-# ---------------------------------------------------------------------------
-# Test 4: Early termination
-# ---------------------------------------------------------------------------
 
 
 class TestEarlyTermination:
@@ -702,14 +677,7 @@ class TestEarlyTermination:
             )
 
         assert len(called) == 0
-        # ONE LLM call. A terminating tool ends the turn, so the model is never
-        # consulted again — the same claim the parallel path has always kept.
         assert call_count[0] == 1
-
-
-# ---------------------------------------------------------------------------
-# Test 5: Tool error handling
-# ---------------------------------------------------------------------------
 
 
 class TestToolErrorHandling:
@@ -837,11 +805,6 @@ class TestToolErrorHandling:
         assert error_ends[0].tool_name == "bad_tool"
 
 
-# ---------------------------------------------------------------------------
-# Test 6: Abort during tool execution
-# ---------------------------------------------------------------------------
-
-
 class TestAbortDuringToolExecution:
     """Test 6: Abort signal stops tool execution."""
 
@@ -961,11 +924,6 @@ class TestAbortDuringToolExecution:
         assert signal.is_aborted()
 
 
-# ---------------------------------------------------------------------------
-# Test 7: Multiple turns
-# ---------------------------------------------------------------------------
-
-
 class TestMultipleTurns:
     """Test 7: Multiple turns — the LLM calls itself until done."""
 
@@ -1032,11 +990,6 @@ class TestMultipleTurns:
         assert len(turn_starts) == 3
 
 
-# ---------------------------------------------------------------------------
-# Test 8: AgentLoop.run_continue()
-# ---------------------------------------------------------------------------
-
-
 class TestRunContinue:
     """Test: AgentLoop.run_continue() works."""
 
@@ -1078,11 +1031,6 @@ class TestRunContinue:
             assert call_count[0] == 2  # second LLM call made
 
 
-# ---------------------------------------------------------------------------
-# Test 9: Token usage tracking
-# ---------------------------------------------------------------------------
-
-
 class TestTokenUsageTracking:
     """Test: Token usage is tracked and emitted."""
 
@@ -1115,11 +1063,6 @@ class TestTokenUsageTracking:
         assert messages[0].usage.input_tokens == 100
 
 
-# ---------------------------------------------------------------------------
-# Test 10: Tool arguments validation
-# ---------------------------------------------------------------------------
-
-
 class TestToolArgumentValidation:
     """Test: Tool arguments are validated before execution."""
 
@@ -1142,8 +1085,6 @@ class TestToolArgumentValidation:
         )
 
         async def mock_stream_func(model, context, options):
-            # First call: invalid tool call (args missing required "path")
-            # Subsequent calls: text response (loop terminates)
             call_count = getattr(mock_stream_func, "_count", 0)
             mock_stream_func._count = call_count + 1
             if call_count == 0:
@@ -1183,11 +1124,6 @@ class TestToolArgumentValidation:
         error_ends = [e for e in events if e.type == "tool_execution_end" and e.is_error]
         assert len(error_ends) == 1
         assert error_ends[0].tool_name == "ls"
-
-
-# ---------------------------------------------------------------------------
-# Test 11: _prepare_tool_call helper
-# ---------------------------------------------------------------------------
 
 
 class TestPrepareToolCall:
@@ -1249,11 +1185,6 @@ class TestPrepareToolCall:
         assert result.name == "unknown_tool"
 
 
-# ---------------------------------------------------------------------------
-# Test 12: _execute_tool helper
-# ---------------------------------------------------------------------------
-
-
 class TestExecuteTool:
     """Tests for the _execute_tool helper method."""
 
@@ -1298,11 +1229,6 @@ class TestExecuteTool:
         assert isinstance(result, AgentToolResult)
         assert result.is_error
         assert result.error_message == "something broke"
-
-
-# ---------------------------------------------------------------------------
-# Test 13: Event emission completeness
-# ---------------------------------------------------------------------------
 
 
 class TestEventEmission:
@@ -1403,11 +1329,6 @@ class TestEventEmission:
         assert len(turn_starts) == len(turn_ends) == 2
 
 
-# ---------------------------------------------------------------------------
-# Test 14: Max turns limit
-# ---------------------------------------------------------------------------
-
-
 class TestMaxTurnsLimit:
     """Test: Max turns limits the number of iterations."""
 
@@ -1475,8 +1396,6 @@ class TestMaxTurnsLimit:
 
         async def mock_stream_func(model, context, options):
             call_count[0] += 1
-            # Turns 1..60 call a tool; turn 61 answers, which is the only thing
-            # that ends this run.
             if call_count[0] > 60:
                 return _make_mock_stream(
                     [DoneEvent(final=_make_text_assistant("done"), usage=Usage())]
@@ -1500,11 +1419,6 @@ class TestMaxTurnsLimit:
 
         assert call_count[0] == 61
         assert len([e for e in events if e.type == "turn_start"]) == 61
-
-
-# ---------------------------------------------------------------------------
-# Test 15: Tool call ID tracking
-# ---------------------------------------------------------------------------
 
 
 class TestToolCallIdTracking:
@@ -1568,11 +1482,6 @@ class TestToolCallIdTracking:
         assert end_events[0].tool_call_id == expected_id
 
 
-# ---------------------------------------------------------------------------
-# Test 16: AgentTool -> OpenAI function schema
-# ---------------------------------------------------------------------------
-
-
 class TestAgentToolConvertsToOpenAISchema:
     """The loop hands ``AgentTool`` objects straight to the client (``run()``
     passes ``list(self._tools.values())`` as ``tools``); the PROVIDER does the
@@ -1602,11 +1511,6 @@ class TestAgentToolConvertsToOpenAISchema:
         assert "path" in result["function"]["parameters"]["properties"]
 
 
-# ---------------------------------------------------------------------------
-# Test 17: add_tool method
-# ---------------------------------------------------------------------------
-
-
 class TestAddTool:
     """Tests for the add_tool method."""
 
@@ -1633,11 +1537,6 @@ class TestAddTool:
         assert "read" in loop._tools
 
 
-# ---------------------------------------------------------------------------
-# Test 18: BlockedCall and ErrorCall types
-# ---------------------------------------------------------------------------
-
-
 class TestBlockedCallAndErrorCall:
     """Tests for internal BlockedCall and ErrorCall types."""
 
@@ -1654,11 +1553,6 @@ class TestBlockedCallAndErrorCall:
         error_call = ErrorCall(call, "Unexpected error")
         assert error_call.call.id == "c2"
         assert error_call.error == "Unexpected error"
-
-
-# ---------------------------------------------------------------------------
-# Test 19: Sequential mode stops on first terminate
-# ---------------------------------------------------------------------------
 
 
 class TestSequentialTermination:
@@ -1767,11 +1661,6 @@ class TestSequentialTermination:
         assert len(called) == 0
 
 
-# ---------------------------------------------------------------------------
-# Test 20: run_continue with existing context
-# ---------------------------------------------------------------------------
-
-
 class TestRunContinueContext:
     """Test: run_continue uses existing context correctly."""
 
@@ -1807,11 +1696,6 @@ class TestRunContinueContext:
             messages2 = await loop.run_continue(context=messages)
             assert len(messages2) == 1  # one new assistant message
             assert call_count[0] == 2
-
-
-# ---------------------------------------------------------------------------
-# Test 21: _execute_tool_calls batch partition (pi agent-loop.ts:381-384)
-# ---------------------------------------------------------------------------
 
 
 def _make_tracking_tool(
@@ -1958,30 +1842,6 @@ class TestExecuteToolCallsBatchPartition:
         assert unknown_result.is_error
 
 
-# ---------------------------------------------------------------------------
-# Test 22: _execute_tool_calls against the ACTUAL built-in tool shape
-#
-# This is the exact runtime path `create_agent_session(tools=["read", "bash",
-# ...])` -> AgentSession -> AgentLoop takes, i.e. every non-extension `tau`
-# invocation, and it is the path no test exercised when tau-001's
-# `.definition.execution_mode` regression went out over a green suite.
-#
-# HISTORY, because the setup invariant below was inverted by tau-004 and an
-# inverted assertion is exactly the kind of thing that should never be silent:
-# self._tools USED TO BE heterogeneous -- extension tools were AgentTool, but
-# the seven built-ins from sdk._resolve_tools() were raw plain-class instances
-# (ReadTool, WriteTool, ...) with NO `.definition` at all. These two tests
-# therefore asserted `not hasattr(t, "definition")` as their setup invariant,
-# to guarantee they were driving the shape the regression crashed on. B1
-# (tau-004) normalised `_resolve_tools` to return AgentTool, so that invariant
-# is now false BY DESIGN and is replaced with its opposite: every element is an
-# AgentTool. That is a strictly stronger pin, not a weaker one -- it asserts a
-# type rather than the absence of an attribute -- and the behavioural bodies
-# (drive a real _resolve_tools batch through _execute_tool_calls and observe
-# serialization) are untouched, so what these tests actually catch is unchanged.
-# ---------------------------------------------------------------------------
-
-
 def _instrument_execute(
     tool: Any,
     active: list[int],
@@ -2033,10 +1893,6 @@ class TestExecuteToolCallsBuiltinToolShape:
         from tau_agent_core.sdk import _resolve_tools
 
         tools = _resolve_tools(["bash", "write", "edit"])
-        # Setup invariant, inverted by B1 (see the module comment above): the
-        # registry now holds ONE type. Asserting it here keeps the test from
-        # silently drifting off the production shape, which is the job the old
-        # `not hasattr(t, "definition")` assertion did for the old shape.
         assert all(isinstance(t, AgentTool) for t in tools), (
             "test setup invariant: _resolve_tools must return AgentTool uniformly"
         )
@@ -2142,20 +1998,6 @@ class TestExecuteToolCallsBuiltinToolShape:
             await loop._execute_tool_calls(assistant, tool_calls)
 
 
-# ---------------------------------------------------------------------------
-# Test 23 (B1 / tau-004): the loop's registry holds ONE type, end to end.
-#
-# tau-001's rejected commit shipped over a green pytest AND a green mypy. Both
-# gates reported success because `AgentLoop._tools` was annotated
-# `dict[str, AgentTool]` over a seam that was really `list`, and because no test
-# ever built a loop the way production builds one -- through
-# create_agent_session -> AgentSession -> _build_turn_tools -> AgentLoop.
-#
-# The tests below drive that full path and assert the invariant the annotation
-# was only claiming. They go red on the pre-B1 shape.
-# ---------------------------------------------------------------------------
-
-
 class TestLoopRegistryIsUniformlyAgentTool:
     """`AgentLoop._tools` is genuinely `dict[str, AgentTool]` on the real path."""
 
@@ -2220,11 +2062,6 @@ class TestLoopRegistryIsUniformlyAgentTool:
         # And the definition-level read works across both sources.
         assert loop._tools["bash"].definition.execution_mode == "sequential"
         assert loop._tools["ext_tool"].definition.execution_mode == "parallel"
-
-
-# ---------------------------------------------------------------------------
-# The assistant tool-call message must reach the wire
-# ---------------------------------------------------------------------------
 
 
 def _field(message: Any, name: str, default: Any = None) -> Any:
@@ -2363,11 +2200,6 @@ class TestAssistantToolCallReachesTheWire:
                     )
 
 
-# ---------------------------------------------------------------------------
-# message_start brackets ONE message
-# ---------------------------------------------------------------------------
-
-
 class TestMessageStartBracketsOneMessage:
     """`message_start` opens a bracket once per completion, on any content kind.
 
@@ -2379,10 +2211,6 @@ class TestMessageStartBracketsOneMessage:
 
     async def _types_for(self, events_in: list) -> tuple[list[str], list[AgentEvent]]:
         events: list[AgentEvent] = []
-        # max_turns=1 because this class is about ONE completion's bracket. The
-        # default is None (no ceiling), and the mock stream replays the same
-        # DoneEvent on every call — so a tool-bearing final message would be
-        # answered, re-offered, and answered again forever.
         config = AgentLoopConfig(model="gpt-4o", system_prompt="test", max_turns=1)
         loop = AgentLoop(config=config, emit=lambda e: async_emit(events, e))
         with patch(
@@ -2398,8 +2226,7 @@ class TestMessageStartBracketsOneMessage:
     async def test_many_text_deltas_emit_one_message_start(self):
         """The reported symptom: 2137 deltas, 2137 `message_start` events."""
         deltas = [
-            TextDeltaEvent(delta=f"{i} ", partial=_make_text_assistant(""))
-            for i in range(50)
+            TextDeltaEvent(delta=f"{i} ", partial=_make_text_assistant("")) for i in range(50)
         ]
         types, _ = await self._types_for(
             [*deltas, DoneEvent(final=_make_text_assistant("done"), usage=Usage())]
@@ -2417,9 +2244,7 @@ class TestMessageStartBracketsOneMessage:
         )
         assert types.count("message_start") == 1
         start = next(e for e in events if e.type == "message_start")
-        assert (start.message or {})["content"] == [
-            {"type": "thinking", "thinking": "thinking…"}
-        ]
+        assert (start.message or {})["content"] == [{"type": "thinking", "thinking": "thinking…"}]
         assert types.index("message_start") < types.index("message_update")
 
     async def test_a_tool_call_with_no_text_is_bracketed(self):

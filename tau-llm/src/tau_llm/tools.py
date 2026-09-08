@@ -16,15 +16,6 @@ from typing import Annotated, Any, Callable, Literal, Protocol
 from pydantic import BaseModel, WithJsonSchema
 from tau_llm.docs import agent_facing
 
-#: ``execute`` is a live Python callable, so it has no JSON representation — and
-#: without this annotation ``model_json_schema()`` does not merely omit it, it
-#: RAISES ``PydanticInvalidForJsonSchema``. That takes the whole tool hierarchy
-#: out of every schema-derived artifact (generated docs, an OpenAPI-style
-#: description of what crosses each module boundary) for the sake of one field.
-#:
-#: Describing it as an opaque marker keeps the rest of the shape generable and
-#: says plainly what the field is, rather than hiding it: a reader of the schema
-#: learns the tool carries an implementation, and that it is not data.
 ToolExecute = Annotated[
     Callable,
     WithJsonSchema(
@@ -69,10 +60,6 @@ def _validate_json_schema(schema: dict[str, Any], data: dict[str, Any]) -> dict[
                     errors.append(
                         f"Field '{field_name}': expected string, got {type(value).__name__}"
                     )
-                # `bool` subclasses `int` in Python but is a distinct type in JSON
-                # Schema, so both numeric checks must exclude it explicitly —
-                # otherwise a model emitting `true` for an integer parameter passes
-                # validation and the tool does arithmetic on a bool.
                 elif expected_type == "integer" and (
                     isinstance(value, bool) or not isinstance(value, int)
                 ):
@@ -152,21 +139,11 @@ class ToolSpec(Protocol):
     def parameters(self) -> dict[str, Any]: ...
 
 
-# The field names are read off the model rather than hardcoded so the two can
-# never drift: adding a field to ToolDefinition would otherwise make define_tool
-# reject it as "unknown", from a call site that looks perfectly correct.
 _KNOWN_FIELDS: tuple[str, ...] = tuple(ToolDefinition.model_fields)
 _REQUIRED_FIELDS: tuple[str, ...] = tuple(
     name for name, field in ToolDefinition.model_fields.items() if field.is_required()
 )
 
-# OpenAI's function-name constraint. A name outside this set is rejected by the
-# API for the WHOLE request, so one bad tool takes down every completion with an
-# opaque 400 that never mentions the tool. Names are also matched by exact string
-# against `tool_calls[].function.name` coming back, so a space or a dot in the
-# name means the returned call can never be routed to the tool that produced it.
-# Deliberately NOT enforcing snake_case: SUBPHASE-0.0.md states it as a
-# convention, and rejecting `wordCount` would be a rule the runtime does not have.
 _WIRE_SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
@@ -186,22 +163,12 @@ def _check_parameters_schema(parameters: Any) -> None:
             f"define_tool: 'parameters' must be a JSON Schema dict, got {type(parameters).__name__}"
         )
 
-    # An OpenAI tool's top-level parameters schema is an object schema, always.
-    # It matters beyond the wire format: `_validate_json_schema` reads `required`
-    # and `properties` unconditionally, so a non-object schema (`{"type":
-    # "string"}`) is not rejected at call time — it validates every call
-    # vacuously, which is the silent pass this check exists to prevent.
     if parameters.get("type") != "object":
         raise ValueError(
             "define_tool: 'parameters' must be a JSON Schema object schema — "
             f'expected "type": "object", got {parameters.get("type")!r}'
         )
 
-    # Required rather than defaulted: without `properties` the argument
-    # validator has nothing to type-check against and passes anything the model
-    # emits. A tool that takes no arguments spells that out as
-    # {"type": "object", "properties": {}} — which is also what
-    # pydantic.model_json_schema() emits for a field-less model.
     if "properties" not in parameters:
         raise ValueError(
             "define_tool: 'parameters' is missing 'properties'; a tool that takes "
@@ -213,9 +180,6 @@ def _check_parameters_schema(parameters: Any) -> None:
             f"define_tool: 'parameters.properties' must be a dict, got {type(properties).__name__}"
         )
     for prop_name, prop_schema in properties.items():
-        # `_validate_json_schema` calls .get("type") on each of these, so a
-        # non-dict property blows up with an AttributeError mid-tool-call
-        # instead of here.
         if not isinstance(prop_schema, dict):
             raise TypeError(
                 f"define_tool: 'parameters.properties[{prop_name!r}]' must be a dict, "
@@ -233,9 +197,6 @@ def _check_parameters_schema(parameters: Any) -> None:
                 f"define_tool: 'parameters.required' entries must be strings, "
                 f"got {type(entry).__name__} ({entry!r})"
             )
-        # A required name absent from `properties` is never described to the
-        # model, so the model cannot know to send it, but the validator demands
-        # it on every call — an unbreakable error loop at run time.
         if entry not in properties:
             raise ValueError(
                 f"define_tool: 'parameters.required' names {entry!r}, which is not in "
@@ -294,11 +255,6 @@ def define_tool(definition: Mapping[str, Any] | None = None, /, **fields: Any) -
             "or a single mapping positionally"
         )
 
-    # The parameter is positional-only, so the old advertised call
-    # `define_tool(definition={...})` now arrives as a field named "definition".
-    # Checked here, before the missing-required-fields sweep, because otherwise
-    # the caller is told five fields are missing rather than the one thing that
-    # is actually wrong with the call.
     if "definition" in fields:
         raise ValueError(
             "define_tool: 'definition' is not a tool field — pass a mapping "
@@ -311,9 +267,6 @@ def define_tool(definition: Mapping[str, Any] | None = None, /, **fields: Any) -
                 f"define_tool: the positional argument must be a mapping of fields, "
                 f"got {type(definition).__name__}"
             )
-        # Non-string keys would otherwise reach `ToolDefinition(**values)` and
-        # surface as an unhelpful "keywords must be strings" from the call
-        # machinery, naming neither define_tool nor the offending key.
         bad_keys = [key for key in definition if not isinstance(key, str)]
         if bad_keys:
             raise TypeError(f"define_tool: field names must be strings, got {bad_keys!r}")
@@ -328,10 +281,6 @@ def define_tool(definition: Mapping[str, Any] | None = None, /, **fields: Any) -
             f"every tool needs {list(_REQUIRED_FIELDS)!r}"
         )
 
-    # ToolDefinition is a pydantic model with the default `extra="ignore"`, so a
-    # typo'd optional field (`prompt_snipet=...`) would be dropped without a
-    # word and the prompt snippet would simply never appear. Catch it here
-    # rather than loosening the model, which other code constructs directly.
     unknown = [name for name in values if name not in _KNOWN_FIELDS]
     if unknown:
         raise ValueError(
@@ -339,8 +288,6 @@ def define_tool(definition: Mapping[str, Any] | None = None, /, **fields: Any) -
             f"ToolDefinition accepts {list(_KNOWN_FIELDS)!r}"
         )
 
-    # `execute` is the entire point of a tool; a non-callable here fails at the
-    # moment the model first calls it, which can be many turns after the mistake.
     if not callable(values["execute"]):
         raise TypeError(
             f"define_tool: 'execute' must be callable, got {type(values['execute']).__name__}"
@@ -357,9 +304,6 @@ def define_tool(definition: Mapping[str, Any] | None = None, /, **fields: Any) -
             "1-64 characters of letters, digits, underscores or hyphens"
         )
 
-    # An empty string satisfies pydantic's `str` but is useless where it lands:
-    # a blank chip in the TUI, and a tool the model is given no reason to call.
-    # `label` is required and is NEVER derived from `name` — see the docstring.
     for text_field in ("label", "description"):
         value = values[text_field]
         if not isinstance(value, str):
@@ -369,9 +313,6 @@ def define_tool(definition: Mapping[str, Any] | None = None, /, **fields: Any) -
         if not value.strip():
             raise ValueError(f"define_tool: {text_field!r} must not be empty")
 
-    # Everything left — prompt_snippet/prompt_guidelines types, the
-    # execution_mode literal — is exactly what pydantic already checks, and
-    # pydantic's ValidationError is a ValueError, so the contract above holds.
     return ToolDefinition(**values)
 
 

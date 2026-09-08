@@ -102,9 +102,6 @@ class BlockDelta:
     block: dict[str, Any] | None = None
 
 
-# Content-block types whose text grows incrementally and can therefore be
-# suffix-diffed against what was last seen. Every other type is passed through
-# whole (see BlockDelta.block) rather than diffed.
 _DIFFABLE_FIELD: dict[str, str] = {"text": "text", "thinking": "thinking"}
 
 
@@ -180,10 +177,6 @@ class MessageDeltaProjector:
                 continue
             block_type = block.get("type")
             if not isinstance(block_type, str):
-                # A block with no string "type" is not a well-formed content
-                # block; skip it rather than guess (mirrors the pre-extraction
-                # code, which never handled anything but "text"/"thinking" and
-                # dropped the rest).
                 continue
 
             field = _DIFFABLE_FIELD.get(block_type)
@@ -206,9 +199,6 @@ class MessageDeltaProjector:
             delta = full[len(prev_full) :]
             replace = False
         else:
-            # Either the first time this type is seen (delta == the whole
-            # value, replace=False — ordinary growth from nothing) or the
-            # provider replaced rather than extended (replace=True).
             delta = full
             replace = prev_full is not None
 
@@ -225,11 +215,6 @@ class MessageDeltaProjector:
         prev = self._passthrough_seen.get(key)
         if prev is not None and prev[0] == block_type and prev[1] == block:
             return None  # unchanged
-        # Snapshot rather than store the caller's own dict: the caller (and,
-        # per this delta, the eventual wire consumer) must be free to hold
-        # onto `block` after this call without a later in-place mutation by
-        # the producer silently rewriting history — either "prev" here on the
-        # next call, or the payload we hand back below.
         snapshot = copy.deepcopy(block)
         self._passthrough_seen[key] = (block_type, snapshot)
         return BlockDelta(index=index, type=block_type, block=snapshot)

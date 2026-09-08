@@ -39,17 +39,9 @@ from los_alamos import (
     square,
 )
 
-# Terminal reasons that denote a genuine finished DRAW. `max-plies` is deliberately absent
-# (it marks an UNFINISHED game, driver.py / §4.4) and is reported as such to the model.
 _DRAW_REASONS = frozenset({"stalemate", "insufficient-material", "fifty-move", "threefold"})
 
 
-# =====================================================================================
-# THE PROMPT. The repo owner reviews this before it runs on GPU. `{side}`, `{outcome}`,
-# and `{swings}` are filled per game; everything else is fixed. The variant rules are
-# stated up front so the model distils lessons about THIS game, not standard-chess priors
-# (those priors are the built-in poison of §4.5, not something the distiller should invent).
-# =====================================================================================
 DISTILL_PROMPT = (
     "You are analysing one finished game of Los Alamos chess to distil reusable "
     "strategic lessons.\n\n"
@@ -142,8 +134,6 @@ class Distiller:
         content = self._complete(prompt)
         lessons = _parse_lessons(content)
         if not lessons:
-            # Fail-Early: a non-empty completion that carried no parseable lesson is not a
-            # distillation result. Do NOT invent one — it would poison the store.
             raise RuntimeError(
                 f"distill: model returned no parseable lessons from completion {content!r}"
             )

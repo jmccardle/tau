@@ -1,16 +1,16 @@
-"""Smoke test for ``examples/30_permission_gate.py`` — confirm-gated veto (S60).
+"""Smoke test for ``examples/30_permission_gate.py`` — a veto that also STOPS (S60).
 
 Drives the real ``tool_call`` hook through the FULL agent loop (only the network
 boundary is faked, exactly like ``test_gatekeeper.py``), proving:
 
-* a non-dangerous ``bash`` command runs unimpeded (no dialog fired);
-* a dangerous command with the headless confirm policy set to "yes" is allowed;
-* a dangerous command with the policy set to "no" is blocked with "Blocked by user";
-* a dangerous command headless with NO policy fails CLOSED (blocked), because the
-  ``tool_call`` call-site turns any handler exception (here ``HeadlessDialogError``)
-  into a block — the module docstring's central claim.
+* a non-dangerous ``bash`` command runs unimpeded, and leaves no request;
+* a dangerous command is blocked AND locks the session, with the ask on the tree;
+* answering "allow" releases the lock and lets the same command through next time;
+* the lock needs no delegate, no policy and no human present: it is a tree node,
+  which is the whole difference from the ``ctx.ui.confirm`` this demo used to use
+  (docs/EXTENSION-LOCKS.md §1).
 
-Reference: docs/EXTENSIONS-DEMO-ROADMAP.md §5 S60.
+Reference: docs/EXTENSIONS-DEMO-ROADMAP.md §5 S60; docs/EXTENSION-LOCKS.md.
 """
 
 from __future__ import annotations
@@ -28,6 +28,10 @@ from tau_llm.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_log import InMemorySessionLog
+from tau_agent_core.submission import Submission
+
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PATH = _REPO_ROOT / "examples" / "30_permission_gate.py"
@@ -45,7 +49,7 @@ def _tool_call_assistant(call_id: str, name: str, args: dict[str, Any]) -> Assis
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -57,7 +61,7 @@ def _text_assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -168,11 +172,6 @@ def test_safe_commands_do_not_match() -> None:
 
 async def test_safe_command_runs_without_any_dialog() -> None:
     session = _session_with_gate()
-    # No headless policy is set; if the gate ever awaited a dialog on a safe
-    # command, this would raise HeadlessDialogError -> BlockedCall -> is_error
-    # whose text names the extension failure. The "bash" tool is not registered
-    # on this bare session, so the call still errors (unknown tool) — the
-    # assertion below distinguishes THAT from a gate-triggered dialog failure.
     with patch(
         "tau_agent_core.agent_loop.stream_simple",
         side_effect=_fake_stream_calling("bash", {"command": "ls -la"}),
@@ -183,72 +182,90 @@ async def test_safe_command_runs_without_any_dialog() -> None:
     assert "Blocked by user" not in text
 
 
-# ── integration: dangerous command, headless policy resolves the confirm ────
+# ── integration: dangerous command → blocked call AND a locked request ──────
 
 
-async def test_dangerous_command_allowed_when_policy_says_yes() -> None:
+async def test_dangerous_command_is_blocked_and_locks_the_session() -> None:
     session = _session_with_gate()
-    session.set_headless_ui_defaults({"confirm": "yes"})
     with patch(
         "tau_agent_core.agent_loop.stream_simple",
         side_effect=_fake_stream_calling("bash", {"command": "sudo rm file"}),
     ):
         messages = await session.prompt("clean up")
-    # "bash" is not registered on this bare session, so the call still errors
-    # (unknown tool) — the assertion checks the veto specifically did NOT fire.
-    text = _tool_result_text(messages, "bash")
-    assert "Extension failed" not in text
-    assert "Blocked by user" not in text
 
-
-async def test_dangerous_command_blocked_when_policy_says_no() -> None:
-    session = _session_with_gate()
-    session.set_headless_ui_defaults({"confirm": "no"})
-    with patch(
-        "tau_agent_core.agent_loop.stream_simple",
-        side_effect=_fake_stream_calling("bash", {"command": "sudo rm file"}),
-    ):
-        messages = await session.prompt("clean up")
     assert _tool_result_is_error(messages, "bash")
-    assert "Blocked by user" in _tool_result_text(messages, "bash")
+    assert "Blocked pending human approval" in _tool_result_text(messages, "bash")
+
+    request = session.pending_request
+    assert request is not None
+    assert request.lock is True
+    assert "sudo rm file" in request.sentence
+    assert [a["command"] for a in request.ask["actions"]] == ["gate-allow", "gate-deny"]
 
 
-async def test_dangerous_command_fails_closed_with_no_headless_policy() -> None:
-    """No ``--ui-defaults`` policy at all: the raise fails CLOSED (blocked)."""
+async def test_a_safe_command_leaves_no_request() -> None:
+    session = _session_with_gate()
+    with patch(
+        "tau_agent_core.agent_loop.stream_simple",
+        side_effect=_fake_stream_calling("bash", {"command": "ls -la"}),
+    ):
+        await session.prompt("list files")
+    assert session.pending_request is None
+
+
+async def test_the_lock_refuses_the_next_prompt() -> None:
     session = _session_with_gate()
     with patch(
         "tau_agent_core.agent_loop.stream_simple",
         side_effect=_fake_stream_calling("bash", {"command": "sudo rm file"}),
     ):
-        messages = await session.prompt("clean up")
-    assert _tool_result_is_error(messages, "bash")
+        await session.prompt("clean up")
+
+    result = await session.submit(
+        Submission(
+            text="carry on",
+            source="interactive",
+            submitter="human",
+            submission_id="after-lock",
+        )
+    )
+    assert result.accepted is False
+    assert result.lock is not None
 
 
-# ── integration: a real TUI-style confirm delegate is honored ───────────────
-
-
-class _ConfirmDelegate:
-    def __init__(self, answer: bool) -> None:
-        self.answer = answer
-        self.calls: list[tuple[str, str]] = []
-
-    async def confirm(self, title: str, message: str) -> bool:
-        self.calls.append((title, message))
-        return self.answer
-
-
-async def test_dangerous_command_asks_the_real_ui_delegate() -> None:
+async def test_allowing_releases_the_lock_and_lets_the_command_through() -> None:
     session = _session_with_gate()
-    delegate = _ConfirmDelegate(answer=False)
-    session.set_ui_delegate(delegate)
     with patch(
         "tau_agent_core.agent_loop.stream_simple",
         side_effect=_fake_stream_calling("bash", {"command": "sudo rm file"}),
     ):
-        messages = await session.prompt("clean up")
-    assert len(delegate.calls) == 1
-    assert _tool_result_is_error(messages, "bash")
-    assert "Blocked by user" in _tool_result_text(messages, "bash")
+        await session.prompt("clean up")
+
+    outcome = await session.answer_request(
+        session.pending_request.entry_id, "Allow this command", {}
+    )
+    assert "Allowed: sudo rm file" in str(outcome.output)
+    assert session.pending_request is None
+
+    # The veto itself is what changed: the same command no longer matches.
+    verdict = await session._extension_runner.emit_tool_call(
+        {"tool_name": "bash", "input": {"command": "sudo rm file"}}
+    )
+    assert verdict is None or not verdict.get("block")
+
+
+async def test_denying_leaves_it_blocked_but_still_unlocks() -> None:
+    """The lock is released by the ANSWER, not by which answer it was (§3)."""
+    session = _session_with_gate()
+    with patch(
+        "tau_agent_core.agent_loop.stream_simple",
+        side_effect=_fake_stream_calling("bash", {"command": "sudo rm file"}),
+    ):
+        await session.prompt("clean up")
+
+    outcome = await session.answer_request(session.pending_request.entry_id, "Deny", {})
+    assert "Denied" in str(outcome.output)
+    assert session.pending_request is None
 
 
 if __name__ == "__main__":  # pragma: no cover

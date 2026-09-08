@@ -1,10 +1,10 @@
-"""Tests for Parley app-level action / widget wiring (distinct from chat
+"""Tests for TauApp app-level action / widget wiring (distinct from chat
 rendering).
 
 Regression for the "+ New Chat" sidebar button doing nothing: its handler was a
 *sync* ``on_button_pressed`` that called the *async* ``action_new_chat()``
 without awaiting it, so the coroutine was created and silently discarded
-(Python even warned ``coroutine 'Parley.action_new_chat' was never awaited``).
+(Python even warned ``coroutine 'TauApp.action_new_chat' was never awaited``).
 
 Driven through the real app via ``App.run_test()`` / Pilot.
 """
@@ -18,38 +18,41 @@ from typing import Any
 
 import pytest
 
-from tau_agent_core.commands import CommandOutcome, resolve_command
+from tau_agent_core.commands import dispatch_builtin, resolve_command
+from tau_agent_core.flows import Dispatched, Performed
 from tau_agent_core.submission import SubmissionResult
-from tau_coding_agent.app import (
-    ChatDisplay,
-    ChatListItem,
-    ChatSelected,
-    ChatSidebar,
-    Parley,
-    PendingInput,
-)
+from tau_coding_agent.app import TauApp
 from tau_coding_agent.backends import TauBackend
-from tau_coding_agent.chat_widgets import ReasoningRegion, ToolBox
+from tau_coding_agent.chat_widgets import (
+    ReasoningRegion,
+    ToolBox,
+    ChatInput,
+    ChatSidebar,
+    ChatSelected,
+    ChatListItem,
+    MessageBox,
+)
+from tau_coding_agent import editor_widgets, transcript
 
 
-def resolve_and_report(text: str) -> CommandOutcome | None:
+def resolve_and_report(text: str) -> Dispatched | None:
     """What ``AgentSession.submit`` would report for ``text`` — the double's stand-in.
 
     The real dispatch lives in the core (tau-agent-core/tests/test_submit_commands.py
     pins it); what this double exists to prove is that the APP routes a command to
-    ``submit_command`` and then performs the outcome, so it reuses the same pure
-    resolver rather than inventing a second answer.
+    ``submit_command`` and then performs whichever arm came back, so it reuses the
+    same pure functions rather than inventing a second answer. The one arm it cannot
+    reuse is an extension command, which the core RUNS — there is nothing to run
+    behind a double.
     """
     invocation = resolve_command(text)
     if invocation is None:
         return None
-    return CommandOutcome(
-        name=invocation.name, args=invocation.args, performer=invocation.performer
-    )
+    if invocation.origin == "extension":
+        return Performed(flow=None, mutation=invocation.name, data={"output": None})
+    return dispatch_builtin(invocation.name, invocation.args)
 
 
-# A reloaded transcript with reasoning + a tool call/result + a final answer,
-# used to exercise the global fold toggles and the conversation rollup.
 _RELOAD = [
     {"role": "user", "content": "q"},
     {
@@ -85,13 +88,6 @@ _RELOAD = [
 
 @pytest.fixture
 def app(make_app):
-    # Sandboxing, config, and an injected file catalog all come from the shared
-    # ``make_app`` (tests/conftest.py); all this fixture still chooses is that no
-    # real backend gets built.
-    #
-    # The double carries ``system_prompt`` because a new chat now stores the
-    # prompt the BACKEND built — a bare ``object()`` would store nothing and the
-    # session would silently start with no system message.
     return make_app(
         create_backend=lambda cfg: SimpleNamespace(system_prompt=cfg.get("system_prompt", ""))
     )
@@ -102,17 +98,12 @@ async def test_new_chat_button_creates_chat(app, tmp_path):
         await pilot.pause()
         assert app.current_session is None
 
-        # The button lives in the sidebar, which mounts CLOSED (§8) — a click on
-        # a hidden widget lands on whatever is underneath it, which is how this
-        # test would silently stop testing anything.
         app.action_toggle_sidebar()
         await pilot.pause()
 
         await pilot.click("#new-chat-button")
         await pilot.pause()
 
-        # The async action actually ran: a session is active, seeded with the
-        # system prompt, and persisted to the (sandboxed) sessions dir.
         assert app.current_session is not None
         assert app.current_session.model == "m"
         assert app.messages[0] == {"role": "system", "content": "sys"}
@@ -127,31 +118,20 @@ async def test_chat_selected_loads_session_by_ref(app, wait_for_workers_settled)
     async with app.run_test() as pilot:
         await pilot.pause()
 
-        # Seed a session directly through the same catalog the app itself uses
-        # (bypassing the UI), so the sidebar has something to select.
         seeded = app.session_catalog.create(
             os.getcwd(), "m", "openai", system_prompt="sys", name="Picked"
         )
         seeded.append_message({"role": "user", "content": "hello"})
 
-        # §8: the sidebar mounts closed, and a closed sidebar deliberately does
-        # not mount its rows (``ChatSidebar._apply_sessions`` defers the render).
-        # This test reads a ``ChatListItem``, so it opens the sidebar the way a
-        # user does first.
         app.action_toggle_sidebar()
         await pilot.pause()
 
         sidebar = app.query_one(ChatSidebar)
         sidebar.refresh_chats()
-        # refresh_chats() only STARTS a thread worker now (Fix B: the catalog
-        # fetch is a blocking call, moved off the event loop) — wait for it to
-        # land before asserting on the rendered list.
         await wait_for_workers_settled(app)
         await pilot.pause()
 
         item = app.query_one(ChatListItem)
-        # A storage-agnostic ref (str), not a filesystem Path — matches what
-        # SessionCatalog.load() accepts back.
         assert item.chat_ref == str(seeded.path)
         assert isinstance(item.chat_ref, str)
 
@@ -163,15 +143,10 @@ async def test_chat_selected_loads_session_by_ref(app, wait_for_workers_settled)
         assert app.messages[-1] == {"role": "user", "content": "hello"}
 
 
-# ---------------------------------------------------------------------------
-# #6 — global thinking/tool-output toggles + conversation rollup.
-# ---------------------------------------------------------------------------
-
-
-async def _reload(app, pilot) -> ChatDisplay:
+async def _reload(app, pilot) -> transcript.ChatDisplay:
     """Reload a known transcript into the display and return it."""
     await app.action_new_chat()
-    display = app.query_one(ChatDisplay)
+    display = app.query_one(transcript.ChatDisplay)
     await display.reload_messages(_RELOAD)
     await pilot.pause()
     return display
@@ -226,11 +201,7 @@ async def test_toggle_with_no_widgets_is_noop(app):
 
 
 def test_aggregate_label_rolls_up_tools_and_tokens():
-    # Pure function: 1 tool call; cumulative ↑100+400 ↓30+12 R100; context is the
-    # LAST prompt (400 + 100 cached), NOT 100 + 500 summed.
-    assert Parley._aggregate_label(_RELOAD) == "1 tool · ↑500 ↓42 R100 · 500 ctx"
-    # Plural tools, the k-formatting, and a provider that reports no caching (the
-    # R and W arrows are dropped rather than shown as zero).
+    assert TauApp._aggregate_label(_RELOAD) == "1 tool · ↑500 ↓42 R100 · 500 ctx"
     many = [
         {
             "role": "assistant",
@@ -241,9 +212,9 @@ def test_aggregate_label_rolls_up_tools_and_tokens():
             ],
         },
     ]
-    assert Parley._aggregate_label(many) == "2 tools · ↑2.5k ↓300 · 2.5k ctx"
+    assert TauApp._aggregate_label(many) == "2 tools · ↑2.5k ↓300 · 2.5k ctx"
     # Nothing to roll up yet -> empty (subtitle then shows just the model).
-    assert Parley._aggregate_label([{"role": "user", "content": "hi"}]) == ""
+    assert TauApp._aggregate_label([{"role": "user", "content": "hi"}]) == ""
 
 
 def test_aggregate_label_reports_context_separately_from_cumulative_input():
@@ -259,24 +230,17 @@ def test_aggregate_label_reports_context_separately_from_cumulative_input():
         }
         for n in range(1, 11)
     ]
-    assert Parley._aggregate_label(messages) == "↑55.0k ↓100 · 10.0k ctx"
+    assert TauApp._aggregate_label(messages) == "↑55.0k ↓100 · 10.0k ctx"
 
 
 async def test_subtitle_shows_rollup_after_reload(app):
     async with app.run_test() as pilot:
         await pilot.pause()
         await _reload(app, pilot)
-        # The real reload path sets the working list to the loaded transcript;
-        # mirror that so the rollup (derived from app.messages) has it.
         app.messages = _RELOAD
         app._refresh_subtitle()
         await pilot.pause()
         assert app.sub_title == "m · 1 tool · ↑500 ↓42 R100 · 500 ctx"
-
-
-# ---------------------------------------------------------------------------
-# Generation runs in a worker; Esc cooperatively cancels it.
-# ---------------------------------------------------------------------------
 
 
 class _BlockingBackend:
@@ -304,13 +268,8 @@ class _BlockingBackend:
         self.aborted = False
         self._released = asyncio.Event()
         self._log = None
-        # Every submission the app handed over, in order, plus the context list it
-        # was given with it — the seam B2-a exists to make assertable.
         self.submissions: list[Any] = []
         self.contexts: list[list[dict]] = []
-        # Command submissions go through a DIFFERENT backend method (B2-b) — no
-        # streaming, no exchange — so they are recorded separately and a test can
-        # tell "this became a turn" from "this became a command".
         self.command_submissions: list[Any] = []
 
     async def submit_command(self, submission):
@@ -336,12 +295,8 @@ class _BlockingBackend:
         self.submissions.append(submission)
         self.contexts.append(list(context))
         await self._released.wait()
-        # One turn per release, so a queued second submission does not sail through
-        # on the first one's already-set event.
         self._released.clear()
         partial = {"role": "assistant", "content": [{"type": "text", "text": "partial"}]}
-        # Sole-persister contract: record the produced message through the bound log
-        # (the real backend does this inside AgentSession.submit).
         self._log.append_message(partial)
         return SubmissionResult(accepted=True, submission_id=submission.submission_id)
 
@@ -378,14 +333,9 @@ async def test_generation_runs_in_worker_and_esc_aborts(blocking_app, wait_for_w
     async with app.run_test() as pilot:
         await pilot.pause()
 
-        # Submit a turn. on_input_submitted starts a worker and returns — so this
-        # await completes even though the backend is still "streaming".
         await app.on_input_submitted(_Submit("hello"))
         await pilot.pause()
 
-        # In flight: worker running (blocked in submit_turn), UI live. The input
-        # stays ENABLED — since docs/TUI-STEERING.md §1 it is how a steering
-        # message gets typed, and it used to be disabled for the whole turn.
         assert app.is_generating is True
         assert app.query_one("#chat-input").disabled is False
         assert backend.aborted is False
@@ -412,12 +362,6 @@ async def test_cancel_generation_is_noop_when_idle(blocking_app):
         assert backend.aborted is False
 
 
-# ---------------------------------------------------------------------------
-# B2-a — the TUI is a renderer plus ONE source: a typed prompt is a Submission.
-# docs/SUBMISSION-LIFECYCLE.md phase 3.
-# ---------------------------------------------------------------------------
-
-
 async def test_typed_prompt_is_admitted_as_an_interactive_submission(
     blocking_app, wait_for_workers_settled
 ):
@@ -432,22 +376,15 @@ async def test_typed_prompt_is_admitted_as_an_interactive_submission(
         assert len(backend.submissions) == 1
         sub = backend.submissions[0]
         assert sub.text == "hello"
-        # Provenance (phase 2): every event this turn emits is attributable to a
-        # person at a terminal, distinguishably from a bus/timer/webhook turn.
         assert sub.source == "interactive"
         assert sub.submitter == "human"
         assert sub.submission_id, "an unattributable submission is not attributable"
         # Decision 1: interactive defaults to enqueue (steer is phase 4).
         assert sub.multitask_strategy == "enqueue"
-        # B2-b: dispatch moved into submit(), so the interactive frontend declares
-        # it. A bus/timer submission still passes False and its "/compact" stays
-        # literal prompt text — the flag is the security boundary.
         assert sub.expand_commands is True
         # A human typed it, so a hook under this turn may ask that human a question.
         assert sub.allow_user_input is True
 
-        # The context handed over is the TUI's own working list, ending with the
-        # user turn the app rendered — the pre-existing prompt(context=…) contract.
         assert backend.contexts[0][-1] == {"role": "user", "content": "hello"}
 
         backend.abort()
@@ -528,21 +465,17 @@ async def test_second_prompt_mid_turn_enqueues_rather_than_dropping(
         # The app is busy, and the input stays usable — that is how "two" got typed.
         assert app.is_generating is True
         assert app.query_one("#chat-input").disabled is False
-        # The second turn has not started, and is not lost: it is in the buffer,
-        # visible in the pending widget.
         assert [s.text for s in backend.submissions] == ["one"]
         assert app._pending_steer == ["two"]
-        assert app.query_one(PendingInput).display is True
+        assert app.query_one(editor_widgets.PendingInput).display is True
 
         # Finish the first turn. The buffer is delivered as the next turn.
         backend.release()
         await _until(pilot, lambda: len(backend.submissions) == 2)
         assert [s.text for s in backend.submissions] == ["one", "two"]
-        # Still busy: the delivered turn is outstanding, so the flag stays set and
-        # the pending widget has gone back to hidden.
         assert app.is_generating is True
         assert app._pending_steer == []
-        assert app.query_one(PendingInput).display is False
+        assert app.query_one(editor_widgets.PendingInput).display is False
 
         backend.release()
         await wait_for_workers_settled(app)
@@ -572,14 +505,6 @@ def test_taubackend_abort_delegates_to_session():
     backend.agent_session.abort.assert_called_once_with()
 
 
-# ---------------------------------------------------------------------------
-# The render cap's two gestures (docs/PLAN-0.9.4.md §1). The cap itself is
-# tested against ChatDisplay in test_chat_rendering.py; what is tested here is
-# that a reader can actually reach the messages it left off screen — by mouse
-# (the "⋯ N earlier" row is clickable) and by keyboard (the palette action).
-# ---------------------------------------------------------------------------
-
-
 def _long_transcript(turns: int) -> list[dict]:
     msgs: list[dict] = []
     for i in range(turns):
@@ -590,19 +515,16 @@ def _long_transcript(turns: int) -> list[dict]:
 
 async def test_clicking_the_earlier_row_mounts_the_rest(app):
     """The mouse half. Without it the row states a fact and offers no way to act."""
-    from tau_coding_agent.app import MessageBox
+    from tau_coding_agent.chat_widgets import MessageBox
 
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.action_new_chat()
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         await display.reload_messages(_long_transcript(20))
         await pilot.pause()
         assert display.elided_count == 32
 
-        # The reader reaches the row the only way it can be reached: a reload
-        # parks at the newest message, so scrolling up to the top is the gesture
-        # that puts the row on screen in the first place.
         display.scroll_home(animate=False)
         await pilot.pause()
         row = display.query_one(".chat-fold")
@@ -616,12 +538,12 @@ async def test_clicking_the_earlier_row_mounts_the_rest(app):
 async def test_the_palette_action_mounts_the_rest_and_says_it_is_doing_so(app):
     """The keyboard half, plus the notice — mounting hundreds of boxes is slow
     enough that a silent action reads as a dead key."""
-    from tau_coding_agent.app import MessageBox
+    from tau_coding_agent.chat_widgets import MessageBox
 
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.action_new_chat()
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         await display.reload_messages(_long_transcript(20))
         await pilot.pause()
 
@@ -640,7 +562,7 @@ async def test_the_palette_action_says_so_when_nothing_is_hidden(app):
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.action_new_chat()
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         await display.reload_messages(_long_transcript(2))
         await pilot.pause()
 
@@ -653,13 +575,8 @@ async def test_the_palette_action_says_so_when_nothing_is_hidden(app):
         assert notices == ["The whole conversation is already on screen."]
 
 
-# ---------------------------------------------------------------------------
-# ctrl+C and Esc: two keys that ask before doing something big (PLAN-0.9.4 §4)
-# ---------------------------------------------------------------------------
-
-
 def _input(app):
-    from tau_coding_agent.app import ChatInput
+    from tau_coding_agent.chat_widgets import ChatInput
 
     return app.query_one("#chat-input", ChatInput)
 

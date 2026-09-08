@@ -7,13 +7,13 @@ the chord tail (never a bare global key), so they cannot clobber a core binding
 (``ctrl+c``/``ctrl+n``/…). And it is *palette-discoverable* — each shortcut is also
 listed in the command palette (the always-reachable dispatch path).
 
-Under test, driven through the REAL Parley app via ``App.run_test()`` / Pilot:
+Under test, driven through the REAL TauApp app via ``App.run_test()`` / Pilot:
 
 - :class:`ExtensionChordScreen` (the which-key menu) captures the tail key and
   dismisses with ``(command, args)`` — or ``None`` on escape / an unbound key.
 - Pressing ``ctrl+e`` then the tail key on a REAL ``TauBackend`` with a loaded file
   extension dispatches its command (a marker file it writes proves it ran).
-- The shortcut is listed in :meth:`Parley.get_system_commands` and the
+- The shortcut is listed in :meth:`TauApp.get_system_commands` and the
   ``/extensions`` listing; with NO shortcut registered ``ctrl+e`` keeps its legacy
   meaning (edit the system prompt).
 
@@ -27,16 +27,10 @@ import pytest
 from textual.app import App
 
 from tau_agent_core.sdk import ExtensionInfo, LoadExtensionsResult
-from tau_coding_agent.app import (
-    ExtensionChordScreen,
-    Parley,
-    SystemPromptEditor,
-)
+from tau_coding_agent.app import TauApp
 from tau_coding_agent.backends import create_backend
+from tau_coding_agent import modals
 
-# A file extension that registers a command whose handler writes a marker file
-# capturing its args, AND a ctrl+e chord shortcut bound to that command. The marker
-# proves the shortcut dispatched the real command (not that a key was merely stored).
 _SHORTCUT_EXT = """
 import pathlib
 
@@ -77,7 +71,7 @@ _SHORTCUTS = [
 
 
 async def test_chord_screen_matching_key_dispatches_command_and_args():
-    harness = _ModalHarness(ExtensionChordScreen(_SHORTCUTS))
+    harness = _ModalHarness(modals.ExtensionChordScreen(_SHORTCUTS))
     async with harness.run_test() as pilot:
         await pilot.pause()
         await pilot.press("1")
@@ -86,7 +80,7 @@ async def test_chord_screen_matching_key_dispatches_command_and_args():
 
 
 async def test_chord_screen_argless_key_dispatches_empty_args():
-    harness = _ModalHarness(ExtensionChordScreen(_SHORTCUTS))
+    harness = _ModalHarness(modals.ExtensionChordScreen(_SHORTCUTS))
     async with harness.run_test() as pilot:
         await pilot.pause()
         await pilot.press("g")
@@ -95,7 +89,7 @@ async def test_chord_screen_argless_key_dispatches_empty_args():
 
 
 async def test_chord_screen_escape_cancels():
-    harness = _ModalHarness(ExtensionChordScreen(_SHORTCUTS))
+    harness = _ModalHarness(modals.ExtensionChordScreen(_SHORTCUTS))
     async with harness.run_test() as pilot:
         await pilot.pause()
         await pilot.press("escape")
@@ -105,7 +99,7 @@ async def test_chord_screen_escape_cancels():
 
 async def test_chord_screen_unbound_key_cancels():
     """An unregistered tail key dismisses with None (no fabricated dispatch)."""
-    harness = _ModalHarness(ExtensionChordScreen(_SHORTCUTS))
+    harness = _ModalHarness(modals.ExtensionChordScreen(_SHORTCUTS))
     async with harness.run_test() as pilot:
         await pilot.pause()
         await pilot.press("z")
@@ -113,12 +107,12 @@ async def test_chord_screen_unbound_key_cancels():
     assert harness.result is None
 
 
-# ── Real Parley + TauBackend: the binding dispatches the command ──────────────
+# ── Real TauApp + TauBackend: the binding dispatches the command ──────────────
 
 
 @pytest.fixture
 def app(make_app):
-    """A Parley wired to REAL TauBackends (TauBackend has no network in __init__)."""
+    """A TauApp wired to REAL TauBackends (TauBackend has no network in __init__)."""
     return make_app(create_backend=create_backend)
 
 
@@ -138,14 +132,11 @@ async def test_shortcut_binding_dispatches_command(app, tmp_path):
         # The shortcut reached the session registry (bound to THIS backend).
         assert app.current_backend.get_extension_shortcuts() == [("g", "greet", "", "Greet")]
 
-        # ctrl+e is non-priority (like the binding it replaced), so it only reaches
-        # the app binding when the message input is NOT focused (a focused TextArea
-        # takes ctrl+e for line-end). Blur it so the chord leader fires.
         app.set_focus(None)
         await pilot.press("ctrl+e")
         await pilot.pause()
         # The which-key menu is up; the tail key dispatches greet through the backend.
-        assert isinstance(app.screen, ExtensionChordScreen)
+        assert isinstance(app.screen, modals.ExtensionChordScreen)
         await pilot.press("g")
         await pilot.pause()
 
@@ -163,7 +154,7 @@ async def test_ctrl_e_edits_prompt_when_no_shortcuts(app, tmp_path):
         await app.action_extension_chord()
         await pilot.pause()
         # Fell back to the system-prompt editor, not the chord menu.
-        assert isinstance(app.screen, SystemPromptEditor)
+        assert isinstance(app.screen, modals.SystemPromptEditor)
 
 
 # ── Palette / listing discoverability ─────────────────────────────────────────
@@ -202,5 +193,5 @@ def test_extensions_listing_renders_shortcut_keys(monkeypatch):
             )
         ],
     )
-    text = Parley._format_extensions_listing(result)
+    text = TauApp._format_extensions_listing(result)
     assert "- shortcuts: ctrl+e g, ctrl+e 1" in text

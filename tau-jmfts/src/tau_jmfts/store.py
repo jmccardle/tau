@@ -32,23 +32,19 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from tau_agent_core.session_log import resolve_cursor
+from tau_agent_core.session_log import (
+    event_iso,
+    normalize_loaded_entries,
+    resolve_cursor,
+)
 from tau_jmfts.client import JmftsClient
 
-#: Sentinel for "no explicit parent supplied" in ``JmftsSessionLog._append``. ``None``
-#: cannot serve: it is a MEANINGFUL parent (root-level, the ``navigate(None)`` case).
 _UNSET: Any = object()
 
 SESSION_VERSION = 1
 
-# The fields a well-formed tau:conversation header (Sec2.2) must carry. `load`
-# raises if any are missing -- tau never opens an arbitrary document as a
-# conversation (Sec2.4, last line).
 _HEADER_REQUIRED = {"type", "version", "id", "timestamp", "cwd", "hostname", "parent"}
 
-# Entry kinds whose `content` projection is the concatenated text of a message
-# (Sec2.1). Everything else (navigate, compaction/branch_summary carry their own
-# case below, config kinds) projects to empty content.
 _MESSAGE_KINDS = ("message", "customMessage")
 _SUMMARY_KINDS = ("compaction", "branch_summary")
 
@@ -156,30 +152,8 @@ def _build_header(
     }
 
 
-#: The τ payload fields that hold an ENTRY ID (as opposed to content). Under the
-#: JMFTS store an entry id *is* a doc id, so any operation that mints new documents
-#: for existing entries -- ``fork`` today, a CR-3 batch copy tomorrow -- must rewrite
-#: these or leave them pointing at the wrong tree. Keep this list in sync with the
-#: appenders in :class:`JmftsSessionLog`: ``navigate`` (``targetId``), ``compaction``
-#: and ``elide`` (both ``firstKeptId``), ``branch_summary`` (``fromId``) —
-#: TREE-BROWSER-AS-EDITOR.md §7.3 caught ``elide`` missing from this list, which was
-#: a stale comment and not a behavioural gap: ``firstKeptId`` was already covered by
-#: the tuple. A ``None`` value is MEANINGFUL (pre-root cursor / root-level
-#: branch point) and must survive as ``None``, not be mistaken for a broken link.
 _CROSS_REF_FIELDS = ("targetId", "firstKeptId", "fromId")
 
-#: Payload fields that hold an entry id as PROVENANCE rather than as structure.
-#: ``copiedFrom`` (TREE-BROWSER-AS-EDITOR.md §7.1, written by
-#: ``tau_agent_core.tree_surgery.copy_of``) says where a copy's content came from.
-#: Nothing folds on it, so an unresolvable one costs a reader one hop of history,
-#: not a region of context — which is why it is remapped *when it can be* and left
-#: alone when it cannot, instead of raising like :data:`_CROSS_REF_FIELDS`.
-#:
-#: **Unresolvable is the NORMAL case here.** A copy's source is usually outside the
-#: subtree being copied — that is what makes it a copy rather than a move — so a
-#: fork that demanded every ``copiedFrom`` resolve would refuse to fork any tree
-#: anyone had pasted into. ``agentSpecId`` is left out of both tuples for the same
-#: reason it is not validated at the appender (§8): it is a record, never read back.
 _PROVENANCE_REF_FIELDS = ("copiedFrom",)
 
 
@@ -217,13 +191,8 @@ def _remap_cross_refs(
     for field in _PROVENANCE_REF_FIELDS:
         ref = tau.get(field)
         if ref is None or not str(ref).isdigit():
-            # Not a doc id at all — an imported log's provenance still naming a
-            # file-store id. It was already outside this store's numbering, so
-            # there is nothing here to point it at.
             continue
         moved = old_to_new.get(int(ref))
-        # Kept as-is when the source is outside the copied subtree: it still names
-        # the entry the content came from, in the tree it came from.
         if moved is not None:
             tau[field] = str(moved)
     return sc
@@ -270,15 +239,6 @@ class JmftsSessionLog:
         self._header = header
         self._entries = entries
         self._ids: set[str] = {e["id"] for e in entries}
-        # Cursor resolution must only ever be driven by tau's OWN writes. A foreign
-        # document (Sec2.4) can land in the subtree out-of-band -- e.g. an extension
-        # attaching a reference to a message between turns -- via a doc-id that sorts
-        # after every tau entry. Feeding the combined list to resolve_cursor would let
-        # that foreign write silently become the new cursor on the next `load`, which
-        # would be a foreign actor moving tau's own tip. Filtering foreign entries out
-        # before resolving keeps the invariant "the cursor only moves on a tau append"
-        # true across a reload, exactly as it is on the live path (a foreign create_document
-        # call never goes through self._leaf_id at all).
         self._leaf_id: str | None = resolve_cursor(
             [e for e in entries if e.get("type") != _FOREIGN_KIND]
         )
@@ -326,8 +286,6 @@ class JmftsSessionLog:
 
     @property
     def context(self) -> list[dict[str, Any]]:
-        # Imported lazily to keep the module import graph obvious (store.py's job
-        # is the mapping; ConversationTree is the shared fold every store reuses).
         from tau_agent_core.conversation_tree import ConversationTree
 
         return ConversationTree(self.entries(), self.cursor).context_for()
@@ -400,9 +358,6 @@ class JmftsSessionLog:
             parent_id=host_parent_id,
             structured_content={"tau": header},
             auto_embed=False,
-            # CR-1: a conversation root is never position-ordered — it is a
-            # recency-sorted collection, not a reading sequence. Force NULL even if
-            # host_parent_id happens to point at a positioned document.
             sequential=False,
         )
         session = cls(client, root["id"], header, [], next_seq=1)
@@ -475,7 +430,9 @@ class JmftsSessionLog:
             )
 
         next_seq = (max(seqs) + 1) if seqs else 1
-        return cls(client, root_doc_id, header, entries, next_seq=next_seq)
+        return cls(
+            client, root_doc_id, header, normalize_loaded_entries(entries), next_seq=next_seq
+        )
 
     @classmethod
     def fork(
@@ -544,9 +501,6 @@ class JmftsSessionLog:
                     doc.get("structured_content") or {}, old_to_new
                 ),
                 auto_embed=False,
-                # CR-1: carry sibling ordering into the fork. Descendants are copied
-                # in ascending-id (birth) order, so re-numbering positions here
-                # reproduces each sibling group's original order under its new parent.
                 sequential=True,
             )
             old_to_new[doc["id"]] = copied["id"]
@@ -711,7 +665,11 @@ class JmftsSessionLog:
         parent_leaf = self._leaf_id if not explicit_parent else _parent
         parent_doc_id = self._root_doc_id if parent_leaf is None else int(parent_leaf)
 
-        tau_payload: dict[str, Any] = {"type": kind, "timestamp": _now_iso(), **payload}
+        tau_payload: dict[str, Any] = {
+            "type": kind,
+            "timestamp": event_iso(payload, _now_iso),
+            **payload,
+        }
         seq = self._next_seq
         self._next_seq += 1
 
@@ -722,10 +680,6 @@ class JmftsSessionLog:
             usetype=f"tau:{kind}",
             structured_content={"tau": tau_payload, "seq": seq},
             auto_embed=False,
-            # CR-1: every entry takes an explicit sibling position (birth order).
-            # The root carries no position, so ordering must be opted into here at
-            # the top of the entry region; it then makes fork points (a node with
-            # several children) deterministically ordered rather than created_at-tied.
             sequential=True,
         )
 

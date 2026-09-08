@@ -19,13 +19,7 @@ from typing import Any
 
 import pytest
 from tau_agent_core.submission import SubmissionResult
-from tau_coding_agent.app import (
-    AttachmentBar,
-    AttachmentRow,
-    ChatDisplay,
-    ChatInput,
-    CommandPopup,
-)
+from tau_coding_agent import chat_widgets, editor_widgets, transcript
 
 PIL = pytest.importorskip("PIL.Image", reason="the [images] extra")
 
@@ -114,113 +108,103 @@ def app(make_app, workspace: Path):
     return make_app(create_backend=lambda cfg: _RecordingBackend())
 
 
-async def _type(pilot, editor: ChatInput, text: str) -> None:
+async def _type(pilot, editor: chat_widgets.ChatInput, text: str) -> None:
     """Put ``text`` in the editor with the cursor at the end."""
     editor.text = text
     editor.move_cursor(editor.document.end)
     await pilot.pause()
 
 
-# ---------------------------------------------------------------------------
-# §4 — the bar
-# ---------------------------------------------------------------------------
-
-
 class TestTheBarShowsWhatTheDraftWillAttach:
     async def test_prose_shows_nothing(self, app):
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await _type(pilot, editor, "just a question")
-            bar = app.query_one(AttachmentBar)
+            bar = app.query_one(editor_widgets.AttachmentBar)
             assert bar.display is False
             assert bar.attachments == ()
 
     async def test_a_reference_becomes_a_row(self, app):
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await _type(pilot, editor, "read @notes.txt please")
-            bar = app.query_one(AttachmentBar)
+            bar = app.query_one(editor_widgets.AttachmentBar)
             assert bar.display is True
             assert [a.token for a in bar.attachments] == ["notes.txt"]
-            (row,) = app.query(AttachmentRow).results()
+            (row,) = app.query(editor_widgets.AttachmentRow).results()
             assert "notes.txt" in row.text
 
     async def test_a_word_that_names_no_file_gets_no_row(self, app):
         """It is prose on its way to the model. The popup says so, not the bar."""
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await _type(pilot, editor, "ask @alice about it")
-            assert app.query_one(AttachmentBar).attachments == ()
+            assert app.query_one(editor_widgets.AttachmentBar).attachments == ()
 
     async def test_the_row_says_which_files_are_sent_by_path_only(self, app):
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await _type(pilot, editor, "read @big.log")
-            (row,) = app.query(AttachmentRow).results()
+            (row,) = app.query(editor_widgets.AttachmentRow).results()
             assert "path only" in row.text
 
     async def test_deleting_the_word_empties_the_bar(self, app):
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await _type(pilot, editor, "read @notes.txt")
-            assert app.query_one(AttachmentBar).display is True
+            assert app.query_one(editor_widgets.AttachmentBar).display is True
             await _type(pilot, editor, "read")
-            bar = app.query_one(AttachmentBar)
+            bar = app.query_one(editor_widgets.AttachmentBar)
             assert bar.display is False
-            assert list(app.query(AttachmentRow).results()) == []
+            assert list(app.query(editor_widgets.AttachmentRow).results()) == []
 
 
 class TestRemovingAnAttachment:
     async def test_clicking_a_row_deletes_the_word_from_the_editor(self, app):
         """The ✕ has no separate state to clear: the word IS the attachment."""
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await _type(pilot, editor, "read @notes.txt and stop")
-            (row,) = app.query(AttachmentRow).results()
+            (row,) = app.query(editor_widgets.AttachmentRow).results()
 
-            app.post_message(AttachmentBar.Remove(row.attachment))
+            app.post_message(editor_widgets.AttachmentBar.Remove(row.attachment))
             await pilot.pause()
 
             assert editor.text == "read and stop"
-            assert app.query_one(AttachmentBar).display is False
+            assert app.query_one(editor_widgets.AttachmentBar).display is False
 
     async def test_one_of_two_can_be_removed(self, app):
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await _type(pilot, editor, "@notes.txt and @other.txt")
-            rows = app.query(AttachmentRow).results()
+            rows = app.query(editor_widgets.AttachmentRow).results()
             assert len(list(rows)) == 2
 
-            first = app.query_one(AttachmentBar).attachments[0]
-            app.post_message(AttachmentBar.Remove(first))
+            first = app.query_one(editor_widgets.AttachmentBar).attachments[0]
+            app.post_message(editor_widgets.AttachmentBar.Remove(first))
             await pilot.pause()
 
             assert editor.text == "and @other.txt"
-            assert [a.token for a in app.query_one(AttachmentBar).attachments] == ["other.txt"]
+            assert [a.token for a in app.query_one(editor_widgets.AttachmentBar).attachments] == ["other.txt"]
 
     async def test_a_stale_span_warns_instead_of_cutting(self, app):
         """The human typed between the redraw and the click."""
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await _type(pilot, editor, "read @notes.txt")
-            stale = app.query_one(AttachmentBar).attachments[0]
+            stale = app.query_one(editor_widgets.AttachmentBar).attachments[0]
             await _type(pilot, editor, "completely different")
 
-            app.post_message(AttachmentBar.Remove(stale))
+            app.post_message(editor_widgets.AttachmentBar.Remove(stale))
             await pilot.pause()
 
             assert editor.text == "completely different"
 
 
-# ---------------------------------------------------------------------------
-# §3 — the Tab vocabulary
-# ---------------------------------------------------------------------------
-
-
 class TestTabCompletesAPath:
     async def test_it_completes_a_reference_mid_sentence(self, app):
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             editor.focus()
             await _type(pilot, editor, "read @no")
             await pilot.press("tab")
@@ -230,7 +214,7 @@ class TestTabCompletesAPath:
         """A reference can sit anywhere in the line, so the cursor must not jump
         to the end of the document the way a completed command's does."""
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             editor.focus()
             editor.text = "read @no and stop"
             editor.move_cursor(editor._location_of_offset(8))
@@ -243,7 +227,7 @@ class TestTabCompletesAPath:
     async def test_a_directory_is_inserted_without_a_space(self, app):
         """So the next Tab continues into it."""
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             editor.focus()
             await _type(pilot, editor, "read @su")
             await pilot.press("tab")
@@ -253,7 +237,7 @@ class TestTabCompletesAPath:
 
     async def test_repeated_tab_cycles_the_candidates(self, app):
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             editor.focus()
             await _type(pilot, editor, "read @")
             await pilot.press("tab")
@@ -266,7 +250,7 @@ class TestTabCompletesAPath:
     async def test_tab_outside_a_reference_still_completes_a_command(self, app):
         """The two vocabularies are asked in the order the cursor decides."""
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             editor.focus()
             await _type(pilot, editor, "/comp")
             await pilot.press("tab")
@@ -274,7 +258,7 @@ class TestTabCompletesAPath:
 
     async def test_a_reference_wins_over_the_command_on_the_same_line(self, app):
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             editor.focus()
             await _type(pilot, editor, "/fork @no")
             await pilot.press("tab")
@@ -282,7 +266,7 @@ class TestTabCompletesAPath:
 
     async def test_tab_with_nothing_to_insert_is_left_alone(self, app):
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             editor.focus()
             await _type(pilot, editor, "read @zzz")
             await pilot.press("tab")
@@ -292,40 +276,35 @@ class TestTabCompletesAPath:
 class TestThePopupUnderTheEditor:
     async def test_it_lists_paths_while_the_cursor_is_in_a_reference(self, app):
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await _type(pilot, editor, "read @no")
-            popup = app.query_one("#command-popup", CommandPopup)
+            popup = app.query_one("#command-popup", editor_widgets.CommandPopup)
             assert popup.display is True
             assert "@notes.txt" in popup.text
 
     async def test_it_warns_that_a_reference_names_no_file(self, app):
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await _type(pilot, editor, "ask @zzz")
-            popup = app.query_one("#command-popup", CommandPopup)
+            popup = app.query_one("#command-popup", editor_widgets.CommandPopup)
             assert popup.display is True
             assert "matches no file" in popup.text
 
     async def test_moving_the_cursor_out_of_the_reference_hides_it(self, app):
         """``SelectionChanged``, not ``Changed``: no character changed."""
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await _type(pilot, editor, "read @no ok")
             editor.move_cursor(editor._location_of_offset(0))
             await pilot.pause()
-            assert app.query_one("#command-popup", CommandPopup).display is False
+            assert app.query_one("#command-popup", editor_widgets.CommandPopup).display is False
 
     async def test_a_slash_line_still_gets_the_command_list(self, app):
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await _type(pilot, editor, "/comp")
-            popup = app.query_one("#command-popup", CommandPopup)
+            popup = app.query_one("#command-popup", editor_widgets.CommandPopup)
             assert "/compact" in popup.text
-
-
-# ---------------------------------------------------------------------------
-# §2 / §5 — what reaches the model
-# ---------------------------------------------------------------------------
 
 
 class TestTheSubmission:
@@ -402,7 +381,7 @@ class TestTheSubmission:
             )
             await pilot.pause()
             bodies = [
-                str(box._content) for box in app.query_one(ChatDisplay).query("MessageBox")
+                str(box._content) for box in app.query_one(transcript.ChatDisplay).query("MessageBox")
             ]
             assert any("not shown" in body for body in bodies)
             assert not any("hello\nworld" in body for body in bodies)
@@ -443,18 +422,18 @@ class TestSteeringAttachesToo:
         backend = _BlockingBackend()
         app = make_app(create_backend=lambda cfg: backend)
         async with app.run_test() as pilot:
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await app.on_input_submitted(_Submit("go"))
             await pilot.pause()
             await app.on_input_submitted(_Submit("also read @notes.txt"))
             await pilot.pause()
-            assert app.query_one(AttachmentBar).attachments == ()
+            assert app.query_one(editor_widgets.AttachmentBar).attachments == ()
 
             app._return_pending_to_the_editor()
             await pilot.pause()
 
             assert editor.text == "also read @notes.txt"
-            assert [a.token for a in app.query_one(AttachmentBar).attachments] == ["notes.txt"]
+            assert [a.token for a in app.query_one(editor_widgets.AttachmentBar).attachments] == ["notes.txt"]
             assert app._pending_steer == []
 
             backend.release()

@@ -56,9 +56,6 @@ class _RecordingFactory:
 
 
 def test_schedule_firing_distill_and_consolidate_counts() -> None:
-    # k_train=6, log_every_games=2 → all 6 games distilled (one call each, threshold 0 so
-    # every game has White swung moves). One lesson each → 6 logs. consolidate_every_logs=3
-    # → consolidate fires at log 3 and log 6 → 2 consolidations.
     config = RunConfig(
         condition="C1",
         k_train=6,
@@ -125,8 +122,6 @@ def test_c1_grows_store_and_injects_assembled_doc() -> None:
     assert len(client._docs) > 0
     log_docs = [d for d in client._docs.values() if d["usetype"] == "memory:strategy:log"]
     assert len(log_docs) == 2  # one lesson per training game.
-    # The last measure_suite_size contexts are the measurement injections: the assembled
-    # strategy doc, which is non-None and carries the induced lesson text.
     measure_contexts = factory.contexts[-config.measure_suite_size :]
     assert all(c is not None and "lesson" in c for c in measure_contexts)
 
@@ -143,8 +138,6 @@ def test_c1_persists_strategy_and_c0_does_not() -> None:
         agent_factory=_RecordingFactory(),
         distiller=_SpyDistiller(),
     )
-    # C1 preserves the induced strategy: the final doc plus the full immutable log with
-    # provenance and temporal position — the raw material for later analysis.
     assert c1.strategy is not None
     assert c1.strategy["final_doc"]
     assert len(c1.strategy["log"]) == 2  # one lesson per training game

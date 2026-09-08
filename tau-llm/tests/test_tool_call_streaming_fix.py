@@ -25,10 +25,6 @@ from tau_llm.providers.openai import OpenAICompletionsProvider
 from tau_llm.streaming import DoneEvent, ErrorEvent
 from tau_llm.types import Model, TextContent, ToolCall, UserMessage
 
-# ──────────────────────────────────────────────────────────────────────────
-# SSE test harness (feeds aiter_lines, the way real httpx does)
-# ──────────────────────────────────────────────────────────────────────────
-
 
 class _StreamCM:
     """Async context manager mimicking ``httpx.AsyncClient.stream(...)``."""
@@ -157,11 +153,6 @@ def _run_stream(provider: OpenAICompletionsProvider, response: _FakeResponse) ->
     return asyncio.run(go())
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Provider streaming: the regression
-# ──────────────────────────────────────────────────────────────────────────
-
-
 def test_fragmented_arguments_accumulate_to_valid_json():
     """The exact failure case: multi-fragment arguments must concatenate."""
     chunks = _tool_call_chunks(
@@ -214,13 +205,6 @@ def test_complete_but_invalid_final_arguments_raise_error_event():
     assert not any(isinstance(e, DoneEvent) for e in events)
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# End-to-end through stream_simple (the path the agent loop actually uses):
-# provider yields typed events → the streaming.py wrapper forwards them and
-# adopts the provider's DoneEvent.final.
-# ──────────────────────────────────────────────────────────────────────────
-
-
 def test_stream_simple_end_to_end_tool_call(monkeypatch):
     chunks = _tool_call_chunks(
         [{"id": "call_e2e", "name": "bash", "arguments": {"command": "echo hi", "n": 3}}],
@@ -242,11 +226,6 @@ def test_stream_simple_end_to_end_tool_call(monkeypatch):
     assert len(tcs) == 1
     assert tcs[0].name == "bash"
     assert tcs[0].arguments == {"command": "echo hi", "n": 3}
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# json_parse unit tests
-# ──────────────────────────────────────────────────────────────────────────
 
 
 def test_repair_json_escapes_raw_control_chars():
@@ -293,11 +272,6 @@ def test_parse_json_with_repair_info_control_char_is_repaired():
 def test_parse_json_with_repair_info_garbage_raises():
     with pytest.raises(json.JSONDecodeError):
         parse_json_with_repair_info('{"command": ')
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# W8/G4 telemetry: llama.cpp `timings` sibling chunk + repair count on Usage
-# ──────────────────────────────────────────────────────────────────────────
 
 
 def test_timings_sibling_chunk_lands_on_usage_extra():

@@ -31,9 +31,6 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from tau_agent_core.extension_types import ExtensionContext
 
-# A hook handler is called as ``handler(event, ctx)`` and may be sync or async.
-# ``event`` is a plain mutable dict (pi's "mutate event.input in place"); the
-# return value — when present — is the collected/threaded result.
 HookHandler = Callable[..., Any]
 
 
@@ -81,27 +78,10 @@ class ExtensionHandlers:
 
 ErrorListener = Callable[[ExtensionError], None]
 
-#: Declared discourse position for a ``before_agent_start`` injected message
-#: (§12.4's tempo table, corrected by §16.5). ``"before_user"`` threads the message
-#: AHEAD of the user's utterance — the *phasic* position, results attached as
-#: context deliberation begins from. ``"after_user"`` threads it behind the
-#: utterance, which is pi's order and therefore the default for a message that does
-#: not declare one.
 MESSAGE_POSITION_BEFORE_USER = "before_user"
 MESSAGE_POSITION_AFTER_USER = "after_user"
 MESSAGE_POSITIONS = (MESSAGE_POSITION_BEFORE_USER, MESSAGE_POSITION_AFTER_USER)
 
-#: The firing unit each turn-boundary hook event carries, as a field ON the event.
-#:
-#: Two hooks in this harness fire at turn boundaries and they count different
-#: turns: ``turn_end`` once per assistant completion, ``user_turn_end`` once per
-#: ``AgentSession.prompt()``. A handler receives a bare event dict, so without this
-#: field it holds a count whose unit it cannot state — it has to know the cadence
-#: from documentation it may have read about a different hook. That is §9 rule 1
-#: one layer down, and it is the same defect ``Trace.arm`` was added to close in
-#: freeze v1.1: a partition key that lived only in the surrounding directory, so
-#: any consumer holding the bare record had lost it and could pool two populations
-#: with nothing detecting the mix.
 FIRING_UNIT_AGENT_LOOP_TURN = "agent_loop_turn"
 FIRING_UNIT_USER_TURN = "user_turn"
 
@@ -179,10 +159,6 @@ class ExtensionRunner:
     identity result without doing any work.
     """
 
-    #: The mutating hook events this dispatcher owns (E2 supplies the call-sites;
-    #: S42 adds ``input``, fired pre-node at the top of ``AgentSession.prompt``;
-    #: S43 adds ``turn_end``, fired per turn in the loop with a durable append;
-    #: ``user_turn_end`` fires once per ``prompt()`` at the session tail).
     HOOK_EVENTS = (
         "tool_call",
         "tool_result",
@@ -193,10 +169,6 @@ class ExtensionRunner:
         "session_before_switch",
     )
 
-    #: The notify-grade session-lifecycle hooks (S41): no return effect, but
-    #: error-surfaced through :meth:`on_error` rather than swallowed. Routed to a
-    #: runner bucket (like ``HOOK_EVENTS``) so ``api.on(...)`` reaches the same
-    #: error-surfacing dispatcher — see :meth:`ExtensionAPI.on`.
     LIFECYCLE_EVENTS = ("session_start", "session_shutdown")
 
     def __init__(
@@ -220,10 +192,6 @@ class ExtensionRunner:
             context = _Ctx()
         self._context: ExtensionContext = context
         self._error_listeners: list[ErrorListener] = []
-
-    # ------------------------------------------------------------------
-    # Registration / wiring
-    # ------------------------------------------------------------------
 
     def register_extension(self, path: str) -> ExtensionHandlers:
         """Append a new extension handler-group and return it for registration.
@@ -287,10 +255,6 @@ class ExtensionRunner:
                 return True
         return False
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _emit_error(self, error: ExtensionError) -> None:
         """Surface a hook-handler error; never drop it silently (Fail-Early).
 
@@ -314,10 +278,6 @@ class ExtensionRunner:
             result = await result
         return result
 
-    # ------------------------------------------------------------------
-    # Hook dispatch — pi runner.ts parity
-    # ------------------------------------------------------------------
-
     async def emit_tool_call(self, event: dict[str, Any]) -> dict[str, Any] | None:
         """Dispatch ``tool_call``; first ``block: true`` short-circuits.
 
@@ -339,12 +299,6 @@ class ExtensionRunner:
                 if handler_result:
                     result = handler_result
                     if result.get("block"):
-                        # Attribute the veto to THIS extension (S50, anchor G11).
-                        # The runner is the one place that knows WHICH bucket
-                        # blocked; the call-site threads this onto the blocked
-                        # render + the JSON veto record. Copy so the handler's own
-                        # dict is never mutated; ``setdefault`` lets a handler that
-                        # deliberately names a different origin keep it.
                         blocked = dict(result)
                         blocked.setdefault("extension", ext.path)
                         return blocked
@@ -751,10 +705,6 @@ class ExtensionRunner:
         surfaces on the ``tool_execution_end`` AgentEvent's ``blocked`` field there.
         """
         self._context.emit_veto_record(extension=extension, tool=tool_name, reason=reason)
-
-    # ------------------------------------------------------------------
-    # Session-lifecycle dispatch — notify-grade, error-surfaced (S41)
-    # ------------------------------------------------------------------
 
     async def _emit_lifecycle(self, event_name: str, event: dict[str, Any]) -> None:
         """Dispatch a notify-grade session-lifecycle hook (S41).

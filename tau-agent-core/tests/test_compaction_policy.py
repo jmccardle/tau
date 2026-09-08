@@ -48,12 +48,8 @@ from tau_agent_core.run_manifest import (
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 
-# ── shared fakes ──────────────────────────────────────────────────────────
-#
-# The only thing stubbed is the network boundary. `run_compaction`,
-# `prepare_compaction`, the cut-point search, `append_compaction` and the whole
-# event path are the real ones — otherwise a test of "did a compaction happen"
-# would be a test of the stub.
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
 
 
 def _model(model_id: str = "session-model", context_window: int = 128_000) -> Model:
@@ -75,7 +71,7 @@ def _assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="session-model",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
 
@@ -156,29 +152,11 @@ def _session(policy: CompactionPolicy | None = None, **kwargs) -> AgentSession:
     )
 
 
-#: The prompt every "and then it compacts" test below sends SECOND. Patching
-#: ``should_compact`` to True is not by itself enough to make a compaction
-#: happen: the cut still has to have something on the far side of it, and the
-#: shipped ``keep_recent_tokens`` is 20000, so a conversation of two-word prompts
-#: produces a cut that keeps everything. ``prepare_compaction`` reports that
-#: honestly as "nothing to compact" (``None``) rather than spending a completion
-#: to summarise an empty ``<conversation>`` — so a test that wants the summariser
-#: reached has to supply a conversation the cut can actually bite into. The
-#: padding rides on the SECOND prompt so the cut lands on it and the first turn
-#: is what gets summarised (~25000 estimated tokens at ~4 chars/token).
 _COMPACTING_PROMPT = "two " + "x" * 100_000
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# Deliverable 1a — the declaration itself
-# ══════════════════════════════════════════════════════════════════════════
 
 
 class TestPolicyDeclarationIsAdmissibleOrRefused:
     def test_there_is_no_default_policy(self):
-        # The mechanism by which "leave the default" stops being an option is that
-        # there is nothing to leave: `mode` has no default, so a bare
-        # CompactionPolicy() cannot be constructed at all.
         with pytest.raises(TypeError):
             CompactionPolicy()  # type: ignore[call-arg]
 
@@ -203,8 +181,6 @@ class TestPolicyDeclarationIsAdmissibleOrRefused:
             CompactionPolicy(mode="local_summarizer", summarizer_model=_model())
 
     def test_a_field_the_mode_does_not_read_is_refused(self):
-        # The same failure H1/B2/B5 kept producing: a value that is accepted and
-        # consulted nowhere. Refused at declaration rather than ignored.
         with pytest.raises(CompactionPolicyError, match="does not use max_tokens_per_turn"):
             CompactionPolicy(mode="disabled", max_turns=3, max_tokens_per_turn=100)
         with pytest.raises(CompactionPolicyError, match="does not use max_turns"):
@@ -235,9 +211,6 @@ class TestPolicyDeclarationIsAdmissibleOrRefused:
         assert local.summarizer_model is not None and local.summarizer_model.id == "board"
 
     def test_only_disabled_switches_compaction_off(self):
-        # turn_cap deliberately leaves the shipped mechanism ENABLED — the threshold
-        # is kept out of reach by the budget, not by switching compaction off, so
-        # the measured system stays the shipped system.
         assert CompactionPolicy.disabled(max_turns=3).compaction_settings.enabled is False
         assert (
             CompactionPolicy.turn_cap(
@@ -253,11 +226,6 @@ class TestPolicyDeclarationIsAdmissibleOrRefused:
         )
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Deliverable 1b — a declared policy PER SCENARIO
-# ══════════════════════════════════════════════════════════════════════════
-
-
 class TestEveryScenarioDeclaresAPolicy:
     def test_all_five_lettered_scenarios_are_declared(self):
         assert set(SCENARIO_POLICY_MODES) == {"A", "B", "C", "D", "E"}
@@ -270,8 +238,6 @@ class TestEveryScenarioDeclaresAPolicy:
         }
 
     def test_the_partition_scenarios_do_not_declare_a_remote_summariser(self):
-        # §11.1: a partition removes the bus, JMFTS *and* the LLM. D and E must not
-        # depend on a model call to survive their own partition.
         for scenario in ("D", "E"):
             assert SCENARIO_POLICY_MODES[scenario] != "local_summarizer"
 
@@ -286,8 +252,6 @@ class TestEveryScenarioDeclaresAPolicy:
         )
 
     def test_the_numbers_are_required_of_the_caller(self):
-        # This module refuses to invent a per-turn token bound; an invented one
-        # turns the turn_cap proof back into the estimate §16.8 rejects.
         with pytest.raises(TypeError):
             policy_for_scenario("D")  # type: ignore[call-arg]
 
@@ -295,11 +259,6 @@ class TestEveryScenarioDeclaresAPolicy:
         with patch.dict(SCENARIO_POLICY_MODES, {"D": "disabled"}):
             with pytest.raises(CompactionPolicyError, match="cannot construct"):
                 policy_for_scenario("D", max_turns=4, max_tokens_per_turn=1000)
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# Deliverable 1c — "PROVABLY cannot reach the threshold" means a test
-# ══════════════════════════════════════════════════════════════════════════
 
 
 class TestTurnCapBudgetArithmetic:
@@ -317,8 +276,6 @@ class TestTurnCapBudgetArithmetic:
         assert budget == 23_616
         # Exactly the budget: admissible.
         CompactionPolicy.turn_cap(max_turns=1, max_tokens_per_turn=budget).bind_to(model)
-        # One token more: refused. If this ever passes, the "cannot reach" claim is
-        # off by exactly the amount that makes it false.
         with pytest.raises(CompactionPolicyError, match="budget does not close"):
             CompactionPolicy.turn_cap(max_turns=1, max_tokens_per_turn=budget + 1).bind_to(model)
 
@@ -337,8 +294,6 @@ class TestTurnCapBudgetArithmetic:
             )
 
     def test_switching_model_rechecks_the_proof(self):
-        # A policy proven against a 128k window is not proven against a 40k one, and
-        # ctx.set_model() would otherwise invalidate it silently.
         big, small = _model("big", 128_000), _model("small", 40_000)
         session = _session(
             CompactionPolicy.turn_cap(max_turns=10, max_tokens_per_turn=3_000), model=big
@@ -366,15 +321,11 @@ class TestTurnCapPremisesAreEnforcedAtRuntime:
             policy.observe_context(turns_used=2, context_tokens=201, context_window=128_000)
 
     def test_the_claim_itself_is_checked_not_only_its_premise(self):
-        # Belt and braces: even if the per-turn arithmetic were satisfied, crossing
-        # the actual compaction threshold voids the run.
         policy = CompactionPolicy.turn_cap(max_turns=1, max_tokens_per_turn=1_000_000)
         with pytest.raises(CompactionPolicyViolation, match="claim failed"):
             policy.observe_context(turns_used=1, context_tokens=120_000, context_window=128_000)
 
     def test_modes_without_a_token_bound_have_nothing_to_violate(self):
-        # Stated as a test because the asymmetry is the argument for turn_cap over
-        # disabled: `disabled` bounds turn COUNT and says nothing about turn SIZE.
         CompactionPolicy.disabled(max_turns=3).observe_context(
             turns_used=99, context_tokens=10**9, context_window=128_000
         )
@@ -424,12 +375,6 @@ class TestTurnCapOverARealSession:
         assert len(models_seen) == 2, "the refusal must cost nothing"
 
     async def test_the_per_turn_bound_is_in_the_units_should_compact_uses(self):
-        # Load-bearing for the proof, and NOT obvious: estimate_context_tokens
-        # prefers the provider's reported `total_tokens` on the last assistant
-        # message (compaction.py `calculate_context_tokens`) and only falls back to
-        # the ~4-chars-per-token heuristic. So a long prompt with a small reported
-        # usage estimates SMALL. The policy measures the same quantity the threshold
-        # does — if it ever stopped, the cap would be proving something else.
         session = _session()
         with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_stream_stub()):
             await session.prompt("a prompt comfortably longer than two tokens")
@@ -438,8 +383,6 @@ class TestTurnCapOverARealSession:
         assert estimate_context_tokens(session.messages).tokens == 2
 
     async def test_a_run_that_breaks_its_per_turn_bound_dies_loudly(self):
-        # The premise is enforced, so the "proof" is a proof. A per-turn bound of 1
-        # against a turn the estimator scores at 2 breaks P1 at the compaction site.
         policy = CompactionPolicy.turn_cap(max_turns=4, max_tokens_per_turn=1)
         session = _session(policy)
         with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_stream_stub()):
@@ -447,20 +390,12 @@ class TestTurnCapOverARealSession:
                 await session.prompt("a prompt comfortably longer than two tokens")
 
     async def test_the_violation_is_not_a_compaction_error(self):
-        # A policy violation says the run's premise failed; a CompactionError says a
-        # summarisation failed. Conflating them would make a void run look like a
-        # scenario result, which is the whole failure §16.8 is about.
         policy = CompactionPolicy.turn_cap(max_turns=1, max_tokens_per_turn=1)
         session = _session(policy)
         with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_stream_stub()):
             with pytest.raises(CompactionPolicyViolation) as excinfo:
                 await session.prompt("a prompt comfortably longer than two tokens")
         assert not isinstance(excinfo.value, CompactionError)
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# Deliverable 1d — the local-summariser option is genuinely implementable
-# ══════════════════════════════════════════════════════════════════════════
 
 
 class TestLocalSummarizerPolicy:
@@ -561,8 +496,6 @@ class TestLocalSummarizerPolicy:
         assert spec["type"] == "customEntry" and spec["customType"] == "agent_spec"
 
     def test_a_summariser_that_cannot_hold_the_window_is_refused(self):
-        # It would be asked to summarise a full session window and 400 at the
-        # provider — mid-partition, as a CompactionError that reads as a result.
         policy = CompactionPolicy.local_summarizer(
             model=_model("tiny", context_window=32_000), api_key="k"
         )
@@ -576,18 +509,11 @@ class TestLocalSummarizerPolicy:
         assert key == "session-key"
 
     def test_the_summariser_follows_set_model_when_no_policy_declares_one(self):
-        # Shipped behaviour read `self._model` live; caching it at construction
-        # would have silently pinned compaction to a stale model after set_model.
         other = _model("other")
         session = _session()
         session.set_model_resolver(lambda name: other)
         session.set_model("other")
         assert session._summarizer()[0] is other
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# The guard rail: nothing about τ's compaction gets quieter or more forgiving
-# ══════════════════════════════════════════════════════════════════════════
 
 
 class TestShippedCompactionBehaviourIsUnchanged:
@@ -599,9 +525,6 @@ class TestShippedCompactionBehaviourIsUnchanged:
         assert _session()._compaction_policy is None
 
     async def test_a_failed_compaction_still_raises_and_still_propagates(self):
-        # §16.8: the Fail-Early raise is explicitly endorsed. If this ever starts
-        # passing silently, the degradation trap §6.3 exists to detect has been
-        # walked into by this very task.
         session = _session()
 
         async def boom(*args, **kwargs):
@@ -680,8 +603,6 @@ class TestShippedCompactionBehaviourIsUnchanged:
         assert summarizer_calls == []
 
     async def test_an_undeclared_session_does_not_pay_for_the_policy_check(self):
-        # The estimate is only computed when a policy is declared, so the default
-        # path is byte-for-byte the shipped one.
         session = _session()
         with (
             patch("tau_agent_core.agent_loop.stream_simple", side_effect=_stream_stub()),
@@ -689,11 +610,6 @@ class TestShippedCompactionBehaviourIsUnchanged:
         ):
             await session.prompt("one")
         observe.assert_not_called()
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# Deliverable 2 — the choice is recorded in manifest.json, BESIDE `harness`
-# ══════════════════════════════════════════════════════════════════════════
 
 
 class TestManifestRecordsThePolicy:
@@ -752,8 +668,6 @@ class TestManifestRecordsThePolicy:
             )
 
     def test_a_pi_era_run_records_a_different_harness(self):
-        # §5.2: "no pi-era latency is a baseline for a τ-era number". The key exists
-        # so the two populations can be told apart, so it must be settable.
         manifest = build_run_manifest(
             harness="pi", compaction_policy=CompactionPolicy.disabled(max_turns=3)
         )
@@ -776,11 +690,6 @@ class TestManifestRecordsThePolicy:
         assert loaded["harness"] == HARNESS
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Deliverable 3 — compaction-bearing prompts are tagged OUT of latency.json
-# ══════════════════════════════════════════════════════════════════════════
-
-
 def _event(event_type: str, ts: int) -> AgentEvent:
     return AgentEvent(type=event_type, timestamp=ts)  # type: ignore[arg-type]
 
@@ -797,8 +706,6 @@ class TestSummarizeShape:
             assert stats[key] in values, f"{key} was interpolated into a value nobody measured"
 
     def test_an_empty_population_reports_no_median(self):
-        # A fabricated 0.0 median for a population with no members reads as a
-        # measurement. Fail-Early: say n=0 and nothing else.
         assert summarize([]) == {"n": 0}
 
 
@@ -828,8 +735,6 @@ class TestTheBracketMarker:
         assert collector.samples[0].compaction_bearing is False
 
     def test_more_than_one_bare_pair_in_one_prompt_is_counted(self):
-        # Measured fact: _end_of_prompt_drain runs _maybe_auto_compact once at the
-        # tail and again after every followUp re-entry, so "one per prompt" is false.
         session = _session()
         collector = PromptLatencyCollector(session)
         with collector.prompt():
@@ -888,8 +793,6 @@ class TestTheCompactionBearingPromptsAreNotPooled:
 
     async def test_a_compacting_prompt_and_a_clean_prompt_land_in_different_buckets(self):
         session = _session()
-        # The compaction summariser is made measurably slow, so the compacting
-        # prompt is exactly the outlier §5.2's p99 would otherwise absorb.
         with (
             patch("tau_agent_core.agent_loop.stream_simple", side_effect=_stream_stub()),
             patch(
@@ -923,8 +826,6 @@ class TestTheCompactionBearingPromptsAreNotPooled:
         assert turns["compaction_bearing"]["max"] == compacting_ms
 
     def test_there_is_no_api_that_returns_the_pooled_population(self):
-        # Structural, like Trace.arm: a consumer must not be able to have lost the
-        # partition key. `to_latency_json` emits named populations and no union.
         session = _session()
         collector = PromptLatencyCollector(session)
         keys = set(collector.to_latency_json()["assembled_turn_latency"])
@@ -938,9 +839,6 @@ class TestTheCompactionBearingPromptsAreNotPooled:
             assert banned not in keys
 
     async def test_a_bare_bracket_with_no_committed_compaction_is_still_excluded(self):
-        # The marker over-tags: prepare_compaction()->None emits the bare pair with
-        # no model call at all. Over-tagging is the safe direction for an exclusion,
-        # and the corroborator keeps the excluded population decomposable.
         session = _session()
         with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_stream_stub()):
             collector = PromptLatencyCollector(session)
@@ -960,9 +858,6 @@ class TestTheCompactionBearingPromptsAreNotPooled:
         assert artifact["counts"]["excluding_compaction_bearing"] == 1
 
     async def test_a_prompt_that_raises_still_yields_a_sample(self):
-        # A raising prompt may still have carried a compaction — _maybe_auto_compact
-        # emits agent_end from a finally and then propagates. Dropping the sample
-        # would delete exactly the observation the exclusion exists to catch.
         session = _session()
 
         async def boom(*args, **kwargs):
@@ -985,9 +880,6 @@ class TestTheCompactionBearingPromptsAreNotPooled:
         assert collector.samples[1].compactions_committed == 0
 
     async def test_the_marker_has_no_false_negative_on_the_real_path(self):
-        # Every compaction path brackets unconditionally, the closing agent_end is in
-        # a finally, so a compaction cannot happen unobserved. Proved for the
-        # committed, the no-op and the raising case together.
         session = _session()
         seen: list[int] = []
         with (

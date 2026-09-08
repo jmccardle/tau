@@ -32,9 +32,6 @@ from tau_coding_agent.session_store import (
     subscribe_session_events,
 )
 
-# TREE-BROWSER-AS-EDITOR.md §8/§11.3: ``append_compaction`` now requires the summary's
-# provenance as keyword-only arguments with no defaults. These tests are about
-# something else, so they name plausible values once here.
 _PROV = {
     "summarizer_model_id": "test-summarizer",
     "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
@@ -147,8 +144,6 @@ def test_name_property_latest_wins(tmp_path):
 
 
 def test_model_property_raises_without_model_change(tmp_path):
-    # A session always has a model_change from create; an entries-only Session
-    # built without one must not fabricate a default (Fail-Early).
     bare = Session(
         None, Session._build_header("x", "2026-01-01T00:00:00.000Z", CWD, parent=None), []
     )
@@ -286,9 +281,6 @@ def test_session_info_title_cannot_come_from_a_sub_agents_prompt(tmp_path):
     branch.append_message({"role": "user", "content": "SUB-AGENT INTERNAL PROMPT"})
     branch.append_message({"role": "assistant", "content": "sub-agent scratch work"})
 
-    # The primary turn continues after the sub-agent finishes, so it wrote last. (If the
-    # process died between those two writes the cursor would land in the branch — the
-    # guarantee dropped in docs/LANE-REMOVAL.md §2, deliberately not bought back here.)
     session.append_message({"role": "user", "content": "the follow-up"})
 
     info = read_session_info(session.path)
@@ -338,9 +330,6 @@ def test_lifecycle_events_emitted(tmp_path):
     try:
         source = _create(tmp_path)  # → session_start
         Session.fork(source, CWD, base_dir=tmp_path)  # → session_before_fork (+ no start)
-        # A REAL anchor id: append_compaction now Fail-Earlys on one that names no entry
-        # (an unknown anchor is never found by the fold, so the whole kept region would
-        # silently vanish from the context).
         keep = source.append_message({"role": "user", "content": "recent"})
         source.append_compaction("summary", first_kept_id=keep, tokens_before=100, **_PROV)
     finally:
@@ -373,10 +362,6 @@ def test_navigate_entry_round_trips(tmp_path):
     nav = next(e for e in entries if e["id"] == nav_id)
     assert nav["type"] == "navigate"
     assert nav["targetId"] == interior
-    # navigate carries no message → skipped by reconstruction. And ``messages`` follows
-    # the cursor the navigate moved (docs/LANE-REMOVAL.md §3.2): it is the ancestry of
-    # the leaf, so "hi" — a DESCENDANT of the node we navigated back to — is not part of
-    # the conversation this session would resume. It is still in ``entries()``.
     assert reloaded.messages == [{"role": "user", "content": "hello"}]
     assert any(e.get("message") == {"role": "assistant", "content": "hi"} for e in entries)
 
@@ -420,8 +405,6 @@ def test_cursor_persists_across_navigate_reload(tmp_path):
 
 
 def test_navigate_unknown_target_raises(tmp_path):
-    # Fail-Early: a dangling cursor would silently drop the whole conversation at
-    # read time; mirror pi branch()'s "Entry ... not found" throw.
     session = _create(tmp_path)
     session.append_message({"role": "user", "content": "hello"})
     with pytest.raises(ValueError, match="navigate target"):
@@ -440,8 +423,6 @@ def test_branch_summary_unknown_from_raises(tmp_path):
 
 
 def test_pi_parity_no_navigate_cursor_is_last_entry(tmp_path):
-    # A pi-style file with no navigate entries: cursor = last entry, identical
-    # to pi's fall-back-to-last-entry on load.
     session = _create(tmp_path)
     session.append_message({"role": "user", "content": "hello"})
     last_id = session.append_message({"role": "assistant", "content": "hi"})
@@ -449,16 +430,6 @@ def test_pi_parity_no_navigate_cursor_is_last_entry(tmp_path):
     reloaded = Session.load(session.path)
     assert reloaded._leaf_id == last_id
     assert reloaded.entries()[-1]["id"] == last_id
-
-
-# ── FileSessionCatalog (W10 seam adapter) ───────────────────────────────────
-#
-# The catalog *algebra* — create/load/list/fork/most_recent/resolve_ref — is no
-# longer spelled out here: it is ``SessionCatalogContractTests``, run over this
-# store in test_contract_file_catalog.py and over two others elsewhere. Six tests
-# that restated it by hand are gone. What remains is what the shared contract
-# cannot express, because it is about this store's *medium*: bytes on disk, and a
-# ref spelled as a path.
 
 
 def test_catalog_create_ephemeral_never_touches_disk(tmp_path):
@@ -506,6 +477,57 @@ def test_catalog_resolve_ref_accepts_a_jsonl_path(tmp_path):
     session.append_message({"role": "user", "content": "hi"})
 
     assert catalog.resolve_ref(str(session.path), cwd=CWD).id == session.id
-    # A path that does not exist falls THROUGH to the id search rather than raising,
-    # so the two ref spellings coexist instead of one shadowing the other.
     assert catalog.resolve_ref(session.id, cwd=CWD).id == session.id
+
+
+def _stamped(role: str, text: str, stamp: int | None) -> dict:
+    return {"role": role, "content": text, "timestamp": stamp}
+
+
+def test_timestamps_survive_write_reload_fork_and_paste(tmp_path):
+    """The parity requirement, as one check (docs/MESSAGE-TIMESTAMPS.md §4).
+
+    A head that reloads a session, or a second head that opens the same file,
+    must read the timestamps the first one wrote — every stage, byte for byte.
+    Fork is included because it copies entries into a new file, which is where a
+    re-stamp would hide.
+    """
+    catalog = FileSessionCatalog(base_dir=tmp_path)
+    session = catalog.create(CWD, "local-llm", "openai", system_prompt="sys")
+    session.append_message(_stamped("user", "ask", 1_700_000_000_000))
+    session.append_message(_stamped("assistant", "think", 1_700_000_003_500))
+    session.append_message(_stamped("toolResult", "rows", 1_700_000_004_000))
+    session.append_message(_stamped("assistant", "answer", 1_700_000_009_250))
+
+    def stamps(sess) -> list:
+        return [
+            (e["timestamp"], (e.get("message") or {}).get("timestamp"))
+            for e in sess.entries()
+            if e.get("type") == "message"
+            and (e.get("message") or {}).get("role") != "system"
+        ]
+
+    written = stamps(session)
+    assert [m for _, m in written] == [
+        1_700_000_000_000,
+        1_700_000_003_500,
+        1_700_000_004_000,
+        1_700_000_009_250,
+    ]
+    # The entry clock tracks the event clock, so a turn no longer collapses.
+    assert len({entry for entry, _ in written}) == 4
+
+    assert stamps(Session.load(session.path)) == written
+    assert stamps(catalog.fork(session, CWD)) == written
+
+
+def test_a_legacy_zero_reads_back_as_unknown(tmp_path):
+    """τ did not run in 1970. A 0 on disk is the value ``openai-completions``
+    fabricated before this fix, and load is the ONE place it is interpreted."""
+    catalog = FileSessionCatalog(base_dir=tmp_path)
+    session = catalog.create(CWD, "local-llm", "openai", system_prompt="sys")
+    session.append_message(_stamped("assistant", "old", 0))
+
+    reloaded = Session.load(session.path)
+    messages = [e["message"] for e in reloaded.entries() if e.get("type") == "message"]
+    assert messages[-1]["timestamp"] is None

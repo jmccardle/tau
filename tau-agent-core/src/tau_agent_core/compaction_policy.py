@@ -87,8 +87,6 @@ from tau_llm.types import Model
 from tau_agent_core.compaction import DEFAULT_COMPACTION_SETTINGS, CompactionSettings
 from tau_llm.docs import agent_facing
 
-#: The three admissible policies of §16.8. There is deliberately no fourth value
-#: meaning "whatever the harness defaults to" — that is the option §16.8 removes.
 PolicyMode = Literal["disabled", "local_summarizer", "turn_cap"]
 
 
@@ -127,19 +125,12 @@ class CompactionPolicy:
     """
 
     mode: PolicyMode
-    #: Bound on user turns (``prompt()`` calls). Required by ``disabled`` and
-    #: ``turn_cap``; must be absent for ``local_summarizer``.
     max_turns: int | None = None
     #: Bound on the context each user turn may add. Required by ``turn_cap`` only.
     max_tokens_per_turn: int | None = None
     #: The summariser. Required by ``local_summarizer`` only.
     summarizer_model: Model | None = None
-    #: The summariser's credential. Required (never inferred) by
-    #: ``local_summarizer``; never serialised into a manifest.
     summarizer_api_key: str | None = None
-    #: The thresholds this policy runs under. The reserve is what
-    #: ``should_compact`` measures against, so it is part of the declaration and
-    #: part of the arithmetic ``turn_cap`` proves.
     reserve_tokens: int = DEFAULT_COMPACTION_SETTINGS.reserve_tokens
     keep_recent_tokens: int = DEFAULT_COMPACTION_SETTINGS.keep_recent_tokens
 
@@ -347,8 +338,6 @@ class CompactionPolicy:
         if self.max_tokens_per_turn is not None:
             declared["max_tokens_per_turn"] = self.max_tokens_per_turn
         if self.summarizer_model is not None:
-            # Identity and endpoint only. The api key is deliberately absent — a
-            # manifest is an artifact that gets copied, attached and shared.
             declared["summarizer_model"] = {
                 "id": self.summarizer_model.id,
                 "provider": self.summarizer_model.provider,
@@ -364,53 +353,6 @@ class CompactionPolicy:
         }
 
 
-# ── the per-scenario declaration (§16.8 deliverable 1) ────────────────────
-#
-# The decision §16.11 says must be taken "before phase 3, not after" is *which
-# mode* each scenario runs under. It is recorded here, in code, where a run has to
-# go through it — not in prose where a run can skip it.
-#
-# All five scenarios declare `turn_cap`, and the argument is one argument:
-#
-#   * It is the only one of the three that leaves τ's compaction mechanism exactly
-#     as shipped. §16.8 says outright that the automatic firing and the
-#     raise-rather-than-degrade choice are deliberate and correct; `disabled` turns
-#     that mechanism off, so the measured harness is no longer the shipped harness.
-#     `turn_cap` changes the *run*, not the system under test.
-#   * It is the only one of the three whose safety claim is checked rather than
-#     assumed. `disabled` bounds turn COUNT and says nothing about turn SIZE, so a
-#     six-turn run with three large tool results overruns the window and the first
-#     thing to notice is the provider, mid-request. `turn_cap` bounds both, checks
-#     the arithmetic at construction and the premise at runtime, and names the
-#     numbers when it fails.
-#   * It makes §5.2's headline population unimodal *by construction* rather than
-#     merely partitioned after the fact. Tagging (see `tau_agent_core.latency`)
-#     rescues a contaminated population; a proven cap means there is nothing to
-#     rescue, and the tagging becomes the detector that says so — a measured zero
-#     instead of an assumed one.
-#   * `local_summarizer` is implemented and admissible, and is declared for none of
-#     the five, because for D and E it would be a fabricated mechanism: §11.1's
-#     backpack runs `praxis/backpack_audio.yaml` — ASR, accumulator, resolver, echo
-#     gate, speech — and no LLM, and §7.7's precondition is that the preprocessor
-#     MoE is *absent* because it needs over half of midlife's GPU. Declaring a
-#     board-local summariser today would be declaring a model that does not exist.
-#     For A/B/C it would run, but it is the one policy under which compaction can
-#     still fire, so it reintroduces the bimodality into the primary output and adds
-#     a second model as an uncontrolled variable.
-#
-# This disagrees with §16.8's parenthetical preference for `disabled` ("the
-# cleanest for a scripted scenario"). The disagreement is narrow and deliberate:
-# §16.8 lists all three as admissible and expresses a preference, not a
-# requirement, and the preference was stated before anyone had to write down what
-# "bounded turns" bounds. Recorded here rather than acted on silently.
-#
-# The NUMBERS are not here, and that is also the decision. `max_turns` and
-# `max_tokens_per_turn` are per-run inputs the scenario harness must supply, because
-# this module has no basis on which to choose them: §7's scenario specifications
-# state preconditions, assertions and yields, and state no turn budget. Writing a
-# plausible pair here would be exactly the estimate wearing a proof's clothes that
-# §16.8's "provably means a test, not an estimate" refuses. What IS decided is that
-# a run cannot proceed without them.
 SCENARIO_POLICY_MODES: dict[str, PolicyMode] = {
     "A": "turn_cap",  # §7.3 verbal, connected, from idle
     "B": "turn_cap",  # §7.4 τ typed, connected
@@ -448,9 +390,6 @@ def policy_for_scenario(
         )
     mode = SCENARIO_POLICY_MODES[key]
     if mode != "turn_cap":
-        # Reached only if SCENARIO_POLICY_MODES is edited without editing this
-        # builder. Raising keeps the table and the constructor from drifting apart
-        # silently, which would hand back a policy of the wrong mode.
         raise CompactionPolicyError(
             f"scenario {key} declares mode {mode!r}, which this builder cannot construct "
             f"from (max_turns, max_tokens_per_turn); use CompactionPolicy.{mode}(...)"

@@ -50,9 +50,6 @@ from dataclasses import dataclass
 from driver import GameRecord
 from los_alamos import BLACK, WHITE
 
-# The terminal reasons that denote a genuine DRAW (winner is None *and* the game
-# actually finished). `max-plies` is deliberately NOT here: it marks an UNFINISHED
-# game and must never be scored as a draw (driver.py / §4.4).
 _DRAW_REASONS = frozenset({"stalemate", "insufficient-material", "fifty-move", "threefold"})
 
 
@@ -92,8 +89,6 @@ def ply_swings(record: GameRecord, *, initial_eval: float = 0.0) -> list[Swing]:
         elif pe.side == BLACK:
             sign = -1.0
         else:
-            # Fail-Early: a side that is neither WHITE nor BLACK has no defined
-            # perspective; do not guess a sign.
             raise ValueError(f"ply {pe.ply_index}: unknown side {pe.side!r}")
         swing = (pe.eval_after - prev_eval) * sign
         swings.append(
@@ -204,10 +199,6 @@ def _pearson(xs: list[float], ys: list[float]) -> float:
 
 # --- §7 CONDITIONAL credit assignment (the gate input) ----------------------
 
-# A strategy-hit trace for ONE game: parallel to `GameRecord.ply_evals`, where
-# entry i is the list of strategy ids that were USED to choose the move at ply i
-# (empty list = a move chosen without invoking any tracked strategy). "Used", not
-# "present": this is the distinction §7's conditional gate turns on.
 HitTrace = list[list[str]]
 
 

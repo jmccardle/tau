@@ -29,6 +29,8 @@ Reference: docs/REMOTE-CONTROL.md §4[6] H1-H4.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from tau_llm.types import Usage
@@ -37,7 +39,7 @@ from tau_coding_agent.backends import create_backend
 
 @pytest.fixture
 def app(make_app):
-    """A Parley wired to a REAL TauBackend (network-free at construction)."""
+    """A TauApp wired to a REAL TauBackend (network-free at construction)."""
     return make_app(create_backend=create_backend)
 
 
@@ -71,9 +73,6 @@ async def test_clear_chat_resets_dirtied_runtime_state(app, wait_for_workers_set
         assert session._pending_follow_up_messages == []
         assert session._pending_next_turn_messages == []
         assert session._is_streaming is False
-        # The runtime callback ran too (Finding 5's other untested item —
-        # "_rebind_after_session_swap now arrives via the runtime callback"):
-        # the seam-3 bridge only gets (re)bound from inside that callback.
         assert app._session_event_unsub is not None
 
 
@@ -100,3 +99,70 @@ async def test_clear_chat_veto_leaves_app_state_unchanged(app, wait_for_workers_
 
         assert app.current_session is session_before
         assert app.messages == messages_before
+
+
+async def test_fork_moves_onto_a_new_session_and_leaves_the_source_alone(
+    app, wait_for_workers_settled
+):
+    """``/fork`` performs the ``fork`` capability the RPC verb has always exposed.
+
+    Until the capability/flow split the slash was an alias of ``/tree`` and nothing
+    in any head reached ``AgentSessionRuntime.fork()``. This pins what it does: the
+    app moves onto a NEW session id, and the source session — which the catalog's
+    fork contract never touches — is still on disk with its own history.
+    """
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+        await wait_for_workers_settled(app)
+
+        source = app.current_session
+        source_id = source.id
+
+        await app.action_fork_session()
+        await pilot.pause()
+        await wait_for_workers_settled(app)
+
+        assert app.current_session.id != source_id
+        assert app.messages == list(app.current_session.context)
+        assert any(info.id == source_id for info in app.session_catalog.list(os.getcwd()))
+
+
+async def test_fork_veto_leaves_app_state_unchanged(app, wait_for_workers_settled):
+    """H2 again: a ``session_before_switch`` hook refuses, and the app does nothing."""
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+        await wait_for_workers_settled(app)
+
+        session = app.current_backend.agent_session
+        session_before = app.current_session
+        messages_before = list(app.messages)
+
+        bucket = session._extension_runner.register_extension("veto-ext")
+        bucket.on("session_before_switch", lambda event, ctx: {"cancel": True})
+
+        await app.action_fork_session()
+        await pilot.pause()
+
+        assert app.current_session is session_before
+        assert app.messages == messages_before
+
+
+async def test_fork_without_a_runtime_says_so_rather_than_appearing_to_work(make_app):
+    """Fail-Early: no runtime means no catalog to fork through."""
+    notes: list[tuple[str, str]] = []
+    application = make_app()
+    async with application.run_test() as pilot:
+        await pilot.pause()
+        application._session_runtime = None
+        application.notify = lambda message, **kw: notes.append(  # type: ignore[method-assign]
+            (message, kw.get("severity", ""))
+        )
+
+        await application.action_fork_session()
+        await pilot.pause()
+
+        assert notes == [("Forking needs a persistent session", "warning")]

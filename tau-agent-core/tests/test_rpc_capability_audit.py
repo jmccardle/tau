@@ -39,15 +39,6 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.agent_session_runtime import AgentSessionRuntime
 from tau_agent_core.rpc import commands
 
-# ─────────────────────────────────────────────────────────────────────────
-# EXPOSED[method name] = the COMMAND_TABLE verb that reaches it.
-#
-# Not always a literal 1:1 call — §6 A2 is exactly the point that most of
-# the interesting verbs are NOT 1:1: `get_state` is an aggregate over six of
-# these (state/is_streaming/get_model/get_usage/messages/session_log), so
-# each of those six maps to "get_state" here, not to a same-named verb.
-# ─────────────────────────────────────────────────────────────────────────
-
 EXPOSED: dict[str, str] = {
     "submit": "submit",
     "abort": "abort",
@@ -61,128 +52,74 @@ EXPOSED: dict[str, str] = {
     "new_session": "new_session",
     "fork": "fork",
     "switch_session": "switch_session",
-    # ── Tier B (docs/RPC-TIER-B.md). Eight marker regions below, one per verb,
-    # alphabetically ordered and CONTIGUOUS — see rpc/commands.py's own Tier B
-    # marker-region comment for why an empty pair is a reservation, not
-    # clutter to delete. A verb writes an entry here ONLY if wiring it makes
-    # an AgentSession/AgentSessionRuntime method newly reachable — some do
-    # not (a verb the RPC layer computes without calling a new session
-    # method, e.g. one already covered by an existing EXPOSED entry, leaves
-    # this region empty on purpose).
-    ### begin tier-b:compact
     "compact": "compact",
-    ### end tier-b:compact
-    ### begin tier-b:complete_path
-    # Deliberately empty (protocol 1.4). The verb touches no AgentSession or
-    # AgentSessionRuntime member at all — public or private: it calls the pure
-    # `attachments.complete_attachment` against the process working directory.
-    # There is nothing for wiring it to make newly reachable, which is also
-    # why it needs no D-1 guard and answers mid-turn.
-    ### end tier-b:complete_path
-    ### begin tier-b:get_last_assistant_text
-    # B6: left EMPTY on purpose — get_last_assistant_text reads
-    # AgentSession.messages, which "messages": "get_messages" above already
-    # covers. No NEW AgentSession/AgentSessionRuntime method is reached.
-    ### end tier-b:get_last_assistant_text
-    ### begin tier-b:get_models
-    # Deliberately empty (finding 7 of the Tier B review). The verb reads
-    # `session._model_resolver` — a PRIVATE attribute, which `_public_members`
-    # never sees (leading underscore), the same idiom `get_tools` uses for
-    # `_tools` and `get_session_stats` for `_compaction_settings`. The one
-    # PUBLIC member in the neighbourhood, `set_model_resolver`, keeps its
-    # pre-existing NOT_EXPOSED entry below unchanged and outside any marker
-    # region: this verb does not make it wire-reachable — a host still cannot
-    # BIND a resolver, only read the names the one bound at startup accepts.
-    ### end tier-b:get_models
-    ### begin tier-b:get_session_stats
-    # Deliberately empty (B3, RPC-TIER-B.md D-3: "Compute in the RPC layer
-    # from public surface; do not add an AgentSession method"). Every member
-    # the verb touches is already triaged: `messages` and `get_model`/
-    # `get_usage` above (EXPOSED, each mapped to the verb that FIRST reached
-    # it — this dict names one verb per member, not every verb that reads
-    # it), `session_log` in NOT_EXPOSED below (this verb reads `.entries()`
-    # off it; that entry says why the property itself is still not
-    # wire-shaped), and `_compaction_settings`, which `_public_members` never
-    # sees at all (leading underscore). No NEW AgentSession/
-    # AgentSessionRuntime method became reachable, so per the marker-region
-    # comment above there is nothing to add.
-    ### end tier-b:get_session_stats
-    ### begin tier-b:list_sessions
-    # Deliberately empty (finding 8 of the Tier B review), for the same reason
-    # `get_models`' region above is: the verb reads `runtime._catalog` and
-    # `runtime._cwd` — PRIVATE attributes, which `_public_members` never sees
-    # (leading underscore). `SessionCatalog.list` is not a member of either
-    # AUDITED_CLASS at all; it belongs to the catalog those two attributes
-    # hold, which this audit does not walk. The public members in the
-    # neighbourhood — `new_session`/`fork`/`switch_session` — keep their
-    # existing EXPOSED entries above, unchanged: this verb makes no new one
-    # reachable, it makes the ids the LAST of them takes discoverable.
-    ### end tier-b:list_sessions
-    ### begin tier-b:set_auto_compaction
-    # Deliberately empty (B4, RPC-TIER-B.md D-4 / §1): the verb mutates
-    # `session._compaction_settings.enabled` directly, and `_compaction_settings`
-    # is a private attribute — never a member of `_public_members(AgentSession)`
-    # (leading underscore), so it was never in EXPOSED or NOT_EXPOSED before this
-    # unit either. No public AgentSession/AgentSessionRuntime method became
-    # newly reachable, so per the marker-region comment above there is nothing
-    # to add here.
-    ### end tier-b:set_auto_compaction
-    ### begin tier-b:set_model
     "set_model": "set_model",
-    ### end tier-b:set_model
-    ### begin tier-b:set_session_name
-    # Deliberately empty: `set_session_name`/`get_session_name` are not
-    # public methods on AgentSession or AgentSessionRuntime (AUDITED_CLASSES
-    # below) — they live on ExtensionAPI (extension_types.py), which this
-    # audit does not walk, and the two verbs call
-    # extension_types.apply_session_name/read_session_name directly
-    # (docs/RPC-TIER-B.md B5), never a new AgentSession method. There is
-    # nothing here for either verb to make newly reachable.
-    ### end tier-b:set_session_name
+    # The accessors that replaced the RPC layer's reaches past this class's
+    # public surface. Each verb below used to read a private attribute; the
+    # audit could not see any of them, which is why the count jumped without a
+    # single new behaviour being added.
+    "tools": "get_tools",
+    "model_resolver": "get_models",
+    "compaction_settings": "get_session_stats",
+    "set_auto_compaction": "set_auto_compaction",
+    "get_session_name": "get_session_name",
+    "set_session_name": "set_session_name",
+    "catalog": "list_sessions",
+    "cwd": "list_sessions",
+    "store": "list_sessions",
+    # The three aggregate reads the wire layer used to assemble for itself.
+    "get_last_assistant_text": "get_last_assistant_text",
+    "get_session_stats": "get_session_stats",
+    "get_last_compaction": "get_session_stats",
+    "is_addressable": "get_state",
+    # 0.9.8's eleven; the other four tree mutations are `tree_ops` functions
+    # over a SessionLog, which this audit cannot see and never could.
+    "summarize_and_navigate": "summarize_and_navigate",
+    "enable_extension": "enable_extension",
+    "disable_extension": "disable_extension",
+    "reload_extension": "reload_extension",
+    "list_managed_extensions": "list_managed_extensions",
+    "get_extension_state": "get_extension_state",
+    "get_extension_config": "get_extension_config",
+    "set_extension_config": "set_extension_config",
 }
 
-# ─────────────────────────────────────────────────────────────────────────
-# NOT_EXPOSED[method name] = why a host cannot reach it over RPC today.
-#
-# §6 "Cost, stated honestly": every reason says WHY, not "internal". Two
-# different KINDS of reason appear below, and each entry says which:
-#
-#   (a) Tier B/C candidates (docs/REMOTE-CONTROL.md §3) that already exist
-#       on AgentSession and are cheap to wire, but this unit does not wire
-#       them — deliberately deferred future work, not a permanent refusal.
-#   (b) methods that are not wire-shaped at all: Python-callable observer
-#       APIs, TUI-only affordances, construction-time frontend wiring, or
-#       internal helpers a verb already reaches indirectly. These are not
-#       expected to ever become EXPOSED entries as-is.
-# ─────────────────────────────────────────────────────────────────────────
-
 NOT_EXPOSED: dict[str, str] = {
-    # -- (a) Tier B/C: exists, cheap, deliberately not wired by this unit --
-    # set_model's and compact's entries that lived here moved to EXPOSED
-    # (docs/RPC-TIER-B.md B1 and B2) — see the EXPOSED dict's own comment on
-    # why deleting, not moving into the tier-b marker region below, is the
-    # ordinary case.
+    "pending_request": (
+        "The extension request at the cursor (docs/EXTENSION-LOCKS.md §2). A host "
+        "learns of it the moment it matters — the submit refusal carries the whole "
+        "entry in its error data — and a verb that answered 'is anything pending' "
+        "between submissions would be a second reader of the cursor that could "
+        "disagree with the first."
+    ),
+    "answer_request": (
+        "Answering an ask appends a response entry and dispatches the action's "
+        "command (docs/EXTENSION-LOCKS.md §8). Both halves are already verbs a host "
+        "has: the command is run_extension_command, and the entry the answer writes "
+        "is the extension's own business rather than the protocol's. It goes on the "
+        "wire when a head that is not the TUI actually renders an ask, which is the "
+        "point at which its argument shape can be fixed against a real caller."
+    ),
+    "vocabulary": (
+        "The registry this session reads — τ's flows plus the ones its extensions "
+        "declared (docs/EXTENSION-FLOWS.md). Every fact a host wants from it is "
+        "already on the wire in the shape a host can use: get_commands says which "
+        "names are flows, next_step says what one still needs, enumerate_domain "
+        "lists a domain's values. Publishing the object itself would put a Python "
+        "callable (a domain's enumerator) in a JSON result, where it cannot go — "
+        "which is exactly why the enumerators are held apart from the domains."
+    ),
+    "performed": (
+        "The stamp that turns a mutation's return value into a Performed "
+        "carrying the cursor its capability declares. It reports a call the host "
+        "already made rather than making one, so naming it over the wire would "
+        "mean asking for a completion record for nothing — and every verb that "
+        "does mutate already returns that shape as its result."
+    ),
     "compact_messages": (
         "A caller-supplied-list variant of compact(), used internally by "
         "the auto-compaction path — not a standalone Tier B candidate "
         "distinct from compact() itself; wiring compact would not need this."
-    ),
-    "disable_extension": (
-        "Tier C candidate (§3: 'already implemented, trivially exposed') — "
-        "not yet wired to an RPC verb; deferred, not declined."
-    ),
-    "enable_extension": (
-        "Tier C candidate (§3: 'already implemented, trivially exposed') — "
-        "not yet wired to an RPC verb; deferred, not declined."
-    ),
-    "reload_extension": (
-        "Tier C candidate (§3: 'already implemented, trivially exposed') — "
-        "not yet wired to an RPC verb; deferred, not declined."
-    ),
-    "list_managed_extensions": (
-        "Backs the not-yet-wired Tier C extension-management group above "
-        "(enable/disable/reload) as the listing a management verb would "
-        "return; no verb reads it yet."
     ),
     "resolve_extension_target": (
         "A token-resolution helper ('/extensions <verb> <token>' parsing) "
@@ -377,63 +314,6 @@ NOT_EXPOSED: dict[str, str] = {
         "set_ui_delegate already use. Not a per-call verb — a host has no "
         "callback to hand across a wire protocol."
     ),
-    # ── Tier B (docs/RPC-TIER-B.md). Eight marker regions below, one per verb,
-    # alphabetically ordered and CONTIGUOUS — see the EXPOSED dict above (and
-    # rpc/commands.py's own Tier B marker-region comment) for why an empty
-    # pair is a reservation, not clutter to delete. A verb moves its existing
-    # NOT_EXPOSED "deferred" entry here only if it turns out NOT to expose
-    # the AgentSession method that entry names (unusual — the ordinary case
-    # is deleting that pre-existing entry and adding to EXPOSED instead);
-    # most Tier B units are expected to leave this region empty.
-    ### begin tier-b:compact
-    ### end tier-b:compact
-    ### begin tier-b:complete_path
-    # Deliberately empty, symmetric with the EXPOSED region above: the verb
-    # defers no AgentSession method because it reaches none.
-    ### end tier-b:complete_path
-    ### begin tier-b:get_last_assistant_text
-    # B6: left EMPTY, symmetric with the EXPOSED region above — this verb
-    # does not name a deferred AgentSession method either; "messages" is
-    # already triaged (EXPOSED) and stays there.
-    ### end tier-b:get_last_assistant_text
-    ### begin tier-b:get_models
-    # Deliberately empty, symmetric with the EXPOSED region above: there was no
-    # pre-existing NOT_EXPOSED entry to move (no public AgentSession method
-    # enumerates models — the names live on the resolver a frontend binds, not
-    # on the session), and `set_model_resolver`'s own entry above stays exactly
-    # where and as it was.
-    ### end tier-b:get_models
-    ### begin tier-b:get_session_stats
-    # Deliberately empty, symmetric with the EXPOSED region above: B3 names no
-    # deferred AgentSession method either. The one member it reads that lives
-    # in THIS dict — `session_log` — was already triaged here before Tier B,
-    # outside any marker region, and this unit does not move or re-file it.
-    ### end tier-b:get_session_stats
-    ### begin tier-b:list_sessions
-    # Deliberately empty, symmetric with the EXPOSED region above: there was no
-    # pre-existing NOT_EXPOSED entry to move (no public AgentSession or
-    # AgentSessionRuntime method enumerates sessions — listing lives on the
-    # `SessionCatalog` the runtime was constructed with, and this audit walks
-    # neither that class nor a private attribute holding one), and this unit
-    # adds none.
-    ### end tier-b:list_sessions
-    ### begin tier-b:set_auto_compaction
-    # Deliberately empty, same reasoning as the EXPOSED region above: there was
-    # no pre-existing NOT_EXPOSED["set_auto_compaction"] entry to move (no
-    # public AgentSession method of that name ever existed — §1 ground truth:
-    # "No accessor"), and this unit does not add one.
-    ### end tier-b:set_auto_compaction
-    ### begin tier-b:set_model
-    ### end tier-b:set_model
-    ### begin tier-b:set_session_name
-    # Same reasoning as the EXPOSED region above: nothing to defer here
-    # either, since the verbs never touch a new AgentSession/
-    # AgentSessionRuntime method in the first place (session_log — the one
-    # AgentSession property the underlying apply_session_name/
-    # read_session_name DO read — already has its own pre-existing
-    # NOT_EXPOSED entry above, outside any tier-b marker, unchanged by this
-    # unit).
-    ### end tier-b:set_session_name
 }
 
 AUDITED_CLASSES: tuple[type, ...] = (AgentSession, AgentSessionRuntime)
@@ -457,11 +337,6 @@ def _all_audited_members() -> set[str]:
     for cls in AUDITED_CLASSES:
         members |= _public_members(cls)
     return members
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# The audit itself.
-# ─────────────────────────────────────────────────────────────────────────
 
 
 def test_every_public_method_is_triaged():
@@ -533,9 +408,6 @@ def test_every_exposed_method_names_a_live_undeclined_handler():
         )
 
 
-#: "not wired", "not yet implemented" and the rest of the family, as they
-#: appear in prose a HOST reads — `notes` and `declined_because` are both
-#: rendered into `get_capabilities` and into docs/RPC-PROTOCOL.md.
 _UNWIRED_CLAIM = re.compile(r"not\s+(?:yet\s+)?(?:wired|implemented|available|shipped|built)")
 
 #: How much text either side of such a claim counts as "what it is about".
@@ -578,14 +450,6 @@ def test_no_capability_text_calls_a_SHIPPED_verb_unwired():
                 )
 
 
-#: pi state fields `get_state`'s notes once listed as having no τ equivalent,
-#: and the Tier B verb that now publishes each — as (pi field, τ verb, the
-#: result-schema property that carries it).
-#:
-#: `get_state` itself is deliberately NOT widened to carry them; the claim
-#: being pinned is only that its notes stop telling a host τ cannot answer a
-#: question τ now answers. Both halves are asserted, so the table cannot rot
-#: into a promise about a verb that stopped publishing the field.
 _PI_STATE_FIELDS_TIER_B_ANSWERED = (
     ("sessionName", "get_session_name", "name"),
     ("autoCompactionEnabled", "get_session_stats", "compaction_settings"),
@@ -625,9 +489,6 @@ def test_get_state_does_not_claim_tau_lacks_what_tier_b_now_publishes():
     """
     notes = commands.COMMAND_TABLE["get_state"].notes
     claim_start = notes.index("τ has no equivalent")
-    # Only the "no equivalent" sentence — the notes go on to name both fields
-    # deliberately, as things OTHER verbs answer, and that mention must not
-    # satisfy (or trip) this.
     claim = notes[claim_start : notes.index(".", notes.index("fabricated", claim_start))]
 
     for pi_field, verb, property_name in _PI_STATE_FIELDS_TIER_B_ANSWERED:

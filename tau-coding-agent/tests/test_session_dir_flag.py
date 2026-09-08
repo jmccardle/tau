@@ -49,7 +49,7 @@ def test_session_dir_defaults_to_none_meaning_each_modes_own_default():
 
 
 def test_session_dir_reaches_the_tui_run_config(monkeypatch, tmp_path):
-    """``_launch_tui`` hands it to ``Parley``, which resolves the catalog with
+    """``_launch_tui`` hands it to ``TauApp``, which resolves the catalog with
     it — how a human reviews the sessions an RPC host wrote elsewhere."""
     captured: dict = {}
 
@@ -62,7 +62,7 @@ def test_session_dir_reaches_the_tui_run_config(monkeypatch, tmp_path):
 
     import tau_coding_agent.app as app_module
 
-    monkeypatch.setattr(app_module, "Parley", _FakeParley)
+    monkeypatch.setattr(app_module, "TauApp", _FakeParley)
     assert cli._launch_tui(CLIArgs(session_dir=str(tmp_path)), {}) == 0
     assert captured["run_config"]["session_dir"] == str(tmp_path)
 
@@ -226,9 +226,6 @@ def test_two_users_sharing_one_temp_dir_do_not_contend_for_one_entry(
     first = rpc_default_session_base()
     (first / "a-real-session.jsonl").write_text("{}\n")
 
-    # A different uid on the same box. Only the IDENTITY moves (chown needs
-    # root); to the code under test this is indistinguishable from being the
-    # second real user to arrive.
     monkeypatch.setattr(os, "getuid", lambda: real_uid + 1)
     second = rpc_default_session_base()
 

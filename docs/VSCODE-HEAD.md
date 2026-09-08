@@ -371,6 +371,24 @@ This is the real cost column, and none of it is extension work.
    feature is currently reachable only from inside the Textual head. A VS Code
    head needs a tree read verb and branch/paste write verbs before Option C is
    possible at all, and before Option A can show anything the terminal cannot.
+
+   **Closed 2026-09-03.** `COMMAND_TABLE` now holds 41 entries, 34 with a
+   handler. Eleven of the new ones are the tree and the extension system:
+   `navigate`, `summarize_and_navigate`, `elide_span`, `commit_branch`,
+   `paste_subtree` (each projecting `tau_agent_core.tree_ops`, which is where the
+   durable half moved when the capability/flow split took it off `TauBackend`),
+   `enable_extension`, `disable_extension`, `reload_extension`, and the three
+   reads that make their arguments discoverable — `complete_message_id`,
+   `list_managed_extensions`, `get_extension_state`. Every declared capability is
+   now on the wire; `docs/REMOTE-CONTROL.md` §6's second 2026-09-03 revision has
+   the table and the guards.
+
+   **What this does NOT give a tree VIEW**, and Option C still needs it: there is
+   no verb returning the tree's SHAPE. `complete_message_id` returns a flat list
+   of `(entry_id, preview)` pairs in tree order with no parent links, which is a
+   picker, not a `TreeView`. `ConversationTree.tree()` returns `TreeNode`s and has
+   no verb. That is one read to add, and it is now the only structural gap
+   between here and Option C.
 5. **File-change records. τ computes them and throws them away.** This is §6.1
    below, and it is the second blocking item.
 6. **A transcript window policy for the webview.** `docs/TRANSCRIPT-WINDOW.md`

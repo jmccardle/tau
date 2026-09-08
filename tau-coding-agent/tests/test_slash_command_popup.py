@@ -14,7 +14,8 @@ from __future__ import annotations
 from typing import Any
 
 from tau_agent_core.commands import FRONTEND_COMMANDS
-from tau_coding_agent.app import ChatInput, CommandPopup, Parley
+from tau_coding_agent.app import TauApp
+from tau_coding_agent import chat_widgets, editor_widgets
 
 
 class _Backend:
@@ -30,10 +31,27 @@ class _Backend:
         raise AssertionError("no test in this module runs a turn")
 
 
+class _Resolver:
+    """The one method ``_model_values`` reads off a session's model resolver."""
+
+    def model_names(self) -> list[str]:
+        return ["local-llm", "gpt-4o", "logan"]
+
+
+class _Session:
+    model_resolver = _Resolver()
+
+
+class _ModelBackend(_Backend):
+    """A backend whose session can be asked which models are configured."""
+
+    agent_session = _Session()
+
+
 class _NoExtensionsBackend:
     """A backend from before extensions loaded — no ``get_extension_commands``.
 
-    The ``getattr`` guard in :meth:`Parley._extension_command_table` exists for
+    The ``getattr`` guard in :meth:`TauApp._extension_command_table` exists for
     this shape, and completion has to survive it the same way the peek does.
     """
 
@@ -41,11 +59,11 @@ class _NoExtensionsBackend:
         raise AssertionError("no test in this module runs a turn")
 
 
-def _app(make_app, backend: Any = None) -> Parley:
+def _app(make_app, backend: Any = None) -> TauApp:
     return make_app(create_backend=lambda cfg: backend or _Backend())
 
 
-async def _type(pilot, editor: ChatInput, text: str) -> None:
+async def _type(pilot, editor: chat_widgets.ChatInput, text: str) -> None:
     """Put ``text`` in the editor the way the app's other code paths do."""
     editor.text = text
     editor.move_cursor(editor.document.end)
@@ -59,8 +77,8 @@ class TestThePopupSaysWhetherTheSlashIsReal:
     async def test_ordinary_prose_shows_nothing(self, make_app):
         app = _app(make_app)
         async with app.run_test() as pilot:
-            editor = app.query_one(ChatInput)
-            popup = app.query_one(CommandPopup)
+            editor = app.query_one(chat_widgets.ChatInput)
+            popup = app.query_one(editor_widgets.CommandPopup)
             await _type(pilot, editor, "summarise the readme")
             assert popup.display is False
             assert popup.text == ""
@@ -68,8 +86,8 @@ class TestThePopupSaysWhetherTheSlashIsReal:
     async def test_a_known_command_shows_its_description(self, make_app):
         app = _app(make_app)
         async with app.run_test() as pilot:
-            editor = app.query_one(ChatInput)
-            popup = app.query_one(CommandPopup)
+            editor = app.query_one(chat_widgets.ChatInput)
+            popup = app.query_one(editor_widgets.CommandPopup)
             await _type(pilot, editor, "/tree")
             assert popup.display is True
             assert "/tree" in popup.text
@@ -78,8 +96,8 @@ class TestThePopupSaysWhetherTheSlashIsReal:
     async def test_an_unknown_command_says_it_goes_to_the_model(self, make_app):
         app = _app(make_app)
         async with app.run_test() as pilot:
-            editor = app.query_one(ChatInput)
-            popup = app.query_one(CommandPopup)
+            editor = app.query_one(chat_widgets.ChatInput)
+            popup = app.query_one(editor_widgets.CommandPopup)
             await _type(pilot, editor, "/exntesions")
             assert popup.display is True
             assert "is not a command" in popup.text
@@ -90,8 +108,8 @@ class TestThePopupSaysWhetherTheSlashIsReal:
         """A stale class would paint a real command in the warning colour."""
         app = _app(make_app)
         async with app.run_test() as pilot:
-            editor = app.query_one(ChatInput)
-            popup = app.query_one(CommandPopup)
+            editor = app.query_one(chat_widgets.ChatInput)
+            popup = app.query_one(editor_widgets.CommandPopup)
             await _type(pilot, editor, "/exntesions")
             await _type(pilot, editor, "/tree")
             assert popup.has_class("command-popup-unknown") is False
@@ -101,28 +119,38 @@ class TestThePopupSaysWhetherTheSlashIsReal:
         so the warning must not fire on every one of them."""
         app = _app(make_app)
         async with app.run_test() as pilot:
-            editor = app.query_one(ChatInput)
-            popup = app.query_one(CommandPopup)
+            editor = app.query_one(chat_widgets.ChatInput)
+            popup = app.query_one(editor_widgets.CommandPopup)
             await _type(pilot, editor, "/usr/bin/env is on my PATH")
             assert popup.display is False
 
-    async def test_a_bare_slash_lists_the_vocabulary(self, make_app):
+    async def test_a_bare_slash_lists_the_vocabulary_a_window_at_a_time(self, make_app):
+        """The whole vocabulary is browsable, and it no longer fits in one window.
+
+        It did until the three extension actions became their own flows. What holds
+        is not that every name is on screen — that stopped being true and the popup
+        already says so — but that the window is the first ``MAX_ROWS`` names in
+        vocabulary order and the count line accounts for every one below the fold.
+        """
         app = _app(make_app, _Backend([("todo", "manage the todo list")]))
         async with app.run_test() as pilot:
             await app.action_new_chat()
-            editor = app.query_one(ChatInput)
-            popup = app.query_one(CommandPopup)
+            editor = app.query_one(chat_widgets.ChatInput)
+            popup = app.query_one(editor_widgets.CommandPopup)
             await _type(pilot, editor, "/")
-            for name in FRONTEND_COMMANDS:
+
+            rows = editor_widgets.CommandPopup.MAX_ROWS
+            names = [*FRONTEND_COMMANDS, "todo"]
+            for name in names[:rows]:
                 assert f"/{name}" in popup.text
-            assert "/todo" in popup.text
+            assert f"… {len(names) - rows} more" in popup.text
 
     async def test_an_extension_command_reaches_the_popup(self, make_app):
         app = _app(make_app, _Backend([("todo", "manage the todo list")]))
         async with app.run_test() as pilot:
             await app.action_new_chat()
-            editor = app.query_one(ChatInput)
-            popup = app.query_one(CommandPopup)
+            editor = app.query_one(chat_widgets.ChatInput)
+            popup = app.query_one(editor_widgets.CommandPopup)
             await _type(pilot, editor, "/tod")
             assert "/todo" in popup.text
             assert "manage the todo list" in popup.text
@@ -130,7 +158,7 @@ class TestThePopupSaysWhetherTheSlashIsReal:
     async def test_before_any_chat_an_extension_command_reads_as_unknown(self, make_app):
         """Not a gap in the popup — the popup reporting a gap accurately.
 
-        ``Parley.current_backend`` is built by ``action_new_chat``, which the app
+        ``TauApp.current_backend`` is built by ``action_new_chat``, which the app
         runs lazily at the FIRST submit, so before then no extension has loaded
         and no extension command exists. ``on_input_submitted``'s own peek reads
         the same empty vocabulary and sends such a line to the model as prose.
@@ -140,8 +168,8 @@ class TestThePopupSaysWhetherTheSlashIsReal:
         app = _app(make_app, _Backend([("todo", "manage the todo list")]))
         async with app.run_test() as pilot:
             assert app.current_backend is None
-            editor = app.query_one(ChatInput)
-            popup = app.query_one(CommandPopup)
+            editor = app.query_one(chat_widgets.ChatInput)
+            popup = app.query_one(editor_widgets.CommandPopup)
             await _type(pilot, editor, "/todo")
             assert "is not a command" in popup.text
             assert app._extension_command_names() == []
@@ -149,16 +177,16 @@ class TestThePopupSaysWhetherTheSlashIsReal:
     async def test_a_backend_without_extensions_still_shows_the_built_ins(self, make_app):
         app = _app(make_app, _NoExtensionsBackend())
         async with app.run_test() as pilot:
-            editor = app.query_one(ChatInput)
-            popup = app.query_one(CommandPopup)
+            editor = app.query_one(chat_widgets.ChatInput)
+            popup = app.query_one(editor_widgets.CommandPopup)
             await _type(pilot, editor, "/comp")
             assert "/compact" in popup.text
 
     async def test_clearing_the_editor_hides_it(self, make_app):
         app = _app(make_app)
         async with app.run_test() as pilot:
-            editor = app.query_one(ChatInput)
-            popup = app.query_one(CommandPopup)
+            editor = app.query_one(chat_widgets.ChatInput)
+            popup = app.query_one(editor_widgets.CommandPopup)
             await _type(pilot, editor, "/tree")
             editor.clear_input()
             await pilot.pause()
@@ -169,7 +197,7 @@ class TestTabCompletes:
     async def test_a_unique_prefix_completes(self, make_app):
         app = _app(make_app)
         async with app.run_test() as pilot:
-            editor = app.query_one(ChatInput)
+            editor = app.query_one(chat_widgets.ChatInput)
             editor.focus()
             await _type(pilot, editor, "/comp")
             await pilot.press("tab")
@@ -182,7 +210,7 @@ class TestTabCompletes:
         strips."""
         app = _app(make_app)
         async with app.run_test() as pilot:
-            editor = app.query_one(ChatInput)
+            editor = app.query_one(chat_widgets.ChatInput)
             editor.focus()
             await _type(pilot, editor, "/res")
             await pilot.press("tab")
@@ -192,7 +220,7 @@ class TestTabCompletes:
     async def test_repeated_tab_cycles(self, make_app):
         app = _app(make_app)
         async with app.run_test() as pilot:
-            editor = app.query_one(ChatInput)
+            editor = app.query_one(chat_widgets.ChatInput)
             editor.focus()
             await _type(pilot, editor, "/")
             seen = []
@@ -205,7 +233,7 @@ class TestTabCompletes:
     async def test_the_cycle_wraps(self, make_app):
         app = _app(make_app)
         async with app.run_test() as pilot:
-            editor = app.query_one(ChatInput)
+            editor = app.query_one(chat_widgets.ChatInput)
             editor.focus()
             await _type(pilot, editor, "/")
             for _ in range(len(FRONTEND_COMMANDS) + 1):
@@ -218,7 +246,7 @@ class TestTabCompletes:
         wrote, which is what lets ANY keystroke end it with no mode to clear."""
         app = _app(make_app)
         async with app.run_test() as pilot:
-            editor = app.query_one(ChatInput)
+            editor = app.query_one(chat_widgets.ChatInput)
             editor.focus()
             await _type(pilot, editor, "/t")
             await pilot.press("tab")
@@ -232,8 +260,8 @@ class TestTabCompletes:
     async def test_the_selected_row_is_marked(self, make_app):
         app = _app(make_app)
         async with app.run_test() as pilot:
-            editor = app.query_one(ChatInput)
-            popup = app.query_one(CommandPopup)
+            editor = app.query_one(chat_widgets.ChatInput)
+            popup = app.query_one(editor_widgets.CommandPopup)
             editor.focus()
             await _type(pilot, editor, "/")
             await pilot.press("tab")
@@ -244,8 +272,8 @@ class TestTabCompletes:
     async def test_the_marker_goes_away_when_the_cycle_does(self, make_app):
         app = _app(make_app)
         async with app.run_test() as pilot:
-            editor = app.query_one(ChatInput)
-            popup = app.query_one(CommandPopup)
+            editor = app.query_one(chat_widgets.ChatInput)
+            popup = app.query_one(editor_widgets.CommandPopup)
             editor.focus()
             await _type(pilot, editor, "/")
             await pilot.press("tab")
@@ -257,12 +285,134 @@ class TestTabCompletes:
         app = _app(make_app, _Backend([("todo", "manage the todo list")]))
         async with app.run_test() as pilot:
             await app.action_new_chat()
-            editor = app.query_one(ChatInput)
+            editor = app.query_one(chat_widgets.ChatInput)
             editor.focus()
             await _type(pilot, editor, "/tod")
             await pilot.press("tab")
             await pilot.pause()
             assert editor.text == "/todo "
+
+
+class TestTheArgumentVocabulary:
+    """``/mo<tab> loc<tab>`` — the second Tab completes a MODEL, not the command
+    again. The popup and the cycle switch vocabularies at the space."""
+
+    async def test_a_space_after_the_command_lists_the_values(self, make_app):
+        app = _app(make_app)
+        async with app.run_test() as pilot:
+            app.current_backend = _ModelBackend()
+            editor = app.query_one(chat_widgets.ChatInput)
+            popup = app.query_one(editor_widgets.CommandPopup)
+            editor.focus()
+            await _type(pilot, editor, "/model ")
+            assert popup.display is True
+            assert "local-llm" in popup.text
+            assert "gpt-4o" in popup.text
+
+    async def test_a_partial_value_narrows_the_list(self, make_app):
+        app = _app(make_app)
+        async with app.run_test() as pilot:
+            app.current_backend = _ModelBackend()
+            editor = app.query_one(chat_widgets.ChatInput)
+            popup = app.query_one(editor_widgets.CommandPopup)
+            editor.focus()
+            await _type(pilot, editor, "/model lo")
+            assert "local-llm" in popup.text
+            assert "logan" in popup.text
+            assert "gpt-4o" not in popup.text
+
+    async def test_tab_completes_the_value_and_keeps_the_command(self, make_app):
+        app = _app(make_app)
+        async with app.run_test() as pilot:
+            app.current_backend = _ModelBackend()
+            editor = app.query_one(chat_widgets.ChatInput)
+            editor.focus()
+            await _type(pilot, editor, "/model loc")
+            await pilot.press("tab")
+            await pilot.pause()
+            assert editor.text == "/model local-llm "
+
+    async def test_the_whole_gesture(self, make_app):
+        """The report: ``/mo`` Tab, type ``loc``, Tab. One vocabulary each."""
+        app = _app(make_app)
+        async with app.run_test() as pilot:
+            app.current_backend = _ModelBackend()
+            editor = app.query_one(chat_widgets.ChatInput)
+            editor.focus()
+            await _type(pilot, editor, "/mo")
+            await pilot.press("tab")
+            await pilot.pause()
+            assert editor.text == "/model "
+            await _type(pilot, editor, "/model loc")
+            await pilot.press("tab")
+            await pilot.pause()
+            assert editor.text == "/model local-llm "
+
+    async def test_repeated_tab_cycles_the_values(self, make_app):
+        app = _app(make_app)
+        async with app.run_test() as pilot:
+            app.current_backend = _ModelBackend()
+            editor = app.query_one(chat_widgets.ChatInput)
+            editor.focus()
+            await _type(pilot, editor, "/model lo")
+            seen = []
+            for _ in range(3):
+                await pilot.press("tab")
+                await pilot.pause()
+                seen.append(editor.text)
+            assert seen == ["/model local-llm ", "/model logan ", "/model local-llm "]
+
+    async def test_a_value_that_matches_nothing_says_so(self, make_app):
+        app = _app(make_app)
+        async with app.run_test() as pilot:
+            app.current_backend = _ModelBackend()
+            editor = app.query_one(chat_widgets.ChatInput)
+            popup = app.query_one(editor_widgets.CommandPopup)
+            editor.focus()
+            await _type(pilot, editor, "/model zzz")
+            assert popup.display is True
+            assert popup.text == "no model_name matches 'zzz'"
+
+    async def test_a_domain_that_cannot_be_enumerated_says_why(self, make_app):
+        """Fail-Early in a redrawn widget: ``enumerate_domain`` refuses to report
+        an empty list for a question it could not ask, and the popup carries the
+        refusal instead of raising on every keystroke."""
+        app = _app(make_app)
+        async with app.run_test() as pilot:
+            app.current_backend = _Backend()
+            editor = app.query_one(chat_widgets.ChatInput)
+            popup = app.query_one(editor_widgets.CommandPopup)
+            editor.focus()
+            await _type(pilot, editor, "/model ")
+            assert popup.display is True
+            assert "needs a session" in popup.text
+
+    async def test_a_free_argument_keeps_the_command_description(self, make_app):
+        """``/name`` takes any text, so there is nothing to offer and the popup
+        goes on saying what the command does — the behaviour
+        ``test_a_typed_argument_keeps_the_command_on_screen`` holds in the core."""
+        app = _app(make_app)
+        async with app.run_test() as pilot:
+            app.current_backend = _ModelBackend()
+            editor = app.query_one(chat_widgets.ChatInput)
+            popup = app.query_one(editor_widgets.CommandPopup)
+            editor.focus()
+            await _type(pilot, editor, "/name my session")
+            assert "/name" in popup.text
+            assert "display name" in popup.text
+
+    async def test_tab_on_a_free_argument_keeps_what_was_typed(self, make_app):
+        """The defect underneath the missing feature: completing the command word
+        used to rewrite the whole editor, so a Tab here discarded the name."""
+        app = _app(make_app)
+        async with app.run_test() as pilot:
+            app.current_backend = _ModelBackend()
+            editor = app.query_one(chat_widgets.ChatInput)
+            editor.focus()
+            await _type(pilot, editor, "/nam my session")
+            await pilot.press("tab")
+            await pilot.pause()
+            assert editor.text == "/name my session"
 
 
 class TestTabIsOnlyClaimedWhenItHasSomethingToInsert:
@@ -273,7 +423,7 @@ class TestTabIsOnlyClaimedWhenItHasSomethingToInsert:
     async def test_prose_leaves_the_text_alone(self, make_app):
         app = _app(make_app)
         async with app.run_test() as pilot:
-            editor = app.query_one(ChatInput)
+            editor = app.query_one(chat_widgets.ChatInput)
             editor.focus()
             await _type(pilot, editor, "summarise the readme")
             await pilot.press("tab")
@@ -283,7 +433,7 @@ class TestTabIsOnlyClaimedWhenItHasSomethingToInsert:
     async def test_an_unknown_command_leaves_the_text_alone(self, make_app):
         app = _app(make_app)
         async with app.run_test() as pilot:
-            editor = app.query_one(ChatInput)
+            editor = app.query_one(chat_widgets.ChatInput)
             editor.focus()
             await _type(pilot, editor, "/exntesions")
             await pilot.press("tab")
@@ -294,7 +444,7 @@ class TestTabIsOnlyClaimedWhenItHasSomethingToInsert:
         """A ``ChatInput`` built without the app has no vocabulary to offer, and
         that is not an error: it is a widget with no completion source, which is
         how most of its own tests build it."""
-        editor = ChatInput()
+        editor = chat_widgets.ChatInput()
         assert editor.command_completions is None
         assert editor._complete() is False
         assert editor.completion_index is None
@@ -305,13 +455,13 @@ class TestTheWindowFollowsTheSelection:
     slice instead of letting a scrollbar do it."""
 
     def test_a_long_list_is_capped(self):
-        popup = CommandPopup()
+        popup = editor_widgets.CommandPopup()
         popup.show(_completions(20), selected=None)
-        assert len(popup.text.splitlines()) == CommandPopup.MAX_ROWS + 1
+        assert len(popup.text.splitlines()) == editor_widgets.CommandPopup.MAX_ROWS + 1
         assert "… 12 more" in popup.text
 
     def test_a_selection_past_the_window_scrolls_it_into_view(self):
-        popup = CommandPopup()
+        popup = editor_widgets.CommandPopup()
         popup.show(_completions(20), selected=15)
         lines = popup.text.splitlines()
         assert any(line.startswith("▸") for line in lines)
@@ -325,7 +475,7 @@ def _completions(count: int):
     return CommandCompletions(
         token="",
         matches=tuple(
-            CommandCompletion(name=f"cmd{i:02d}", description="", performer="core")
+            CommandCompletion(name=f"cmd{i:02d}", description="", origin="extension")
             for i in range(count)
         ),
     )

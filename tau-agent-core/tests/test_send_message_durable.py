@@ -128,3 +128,48 @@ def test_send_message_requires_content_and_custom_type() -> None:
         api.send_message({"customType": "gate-note"})  # no content
     with pytest.raises(ValueError):
         api.send_message({"content": "hi"})  # no customType
+
+
+async def test_send_message_announces_the_append_on_its_channel() -> None:
+    """docs/EXTENSION-LOCKS.md §9.1: the append is on a channel, or no head sees it.
+
+    A ``customMessage`` belongs to no completion and no tool call, so nothing in
+    the ``AgentEvent`` stream mentions it. Without this channel a display built
+    from streaming events learned of the node only at its next reload.
+    """
+    import asyncio
+
+    session = _make_session()
+    seen: list[dict] = []
+
+    session.subscribe_channel(
+        "custom_message", lambda *, entry_id, message: seen.append({"id": entry_id, "m": message})
+    )
+    api = ExtensionAPI(session=session)
+    api.send_message({"customType": "gate-note", "content": "announced"})
+    await asyncio.sleep(0)  # the emit is a task; let it run
+
+    assert len(seen) == 1
+    assert seen[0]["m"]["customType"] == "gate-note"
+    assert seen[0]["m"]["content"][0]["text"] == "announced"
+    assert seen[0]["id"] in {str(e["id"]) for e in session._session_log.entries()}
+
+
+def test_an_unreachable_announcement_raises_rather_than_vanishing() -> None:
+    """Off the loop WITH a subscriber is a head that would silently fall behind."""
+    import pytest
+
+    session = _make_session()
+    session.subscribe_channel("custom_message", lambda **kwargs: None)
+    api = ExtensionAPI(session=session)
+
+    with pytest.raises(RuntimeError, match="custom_message"):
+        api.send_message({"customType": "gate-note", "content": "nobody hears this"})
+
+
+def test_no_subscriber_off_the_loop_is_not_an_error() -> None:
+    """A headless script building a session loses nothing, so it is not refused."""
+    session = _make_session()
+    api = ExtensionAPI(session=session)
+    api.send_message({"customType": "gate-note", "content": "fine"})
+    assert any(e.get("customType") == "gate-note" for e in session._session_log.entries())

@@ -30,10 +30,6 @@ from tau_llm.streaming import (
 )
 from tau_llm.types import Model, TextContent, ThinkingContent, ToolCall, UserMessage
 
-# ──────────────────────────────────────────────────────────────────────────
-# SSE harness (feeds aiter_lines like real httpx)
-# ──────────────────────────────────────────────────────────────────────────
-
 
 class _StreamCM:
     """Async context manager mimicking ``httpx.AsyncClient.stream(...)``."""
@@ -105,8 +101,6 @@ def _run(provider: OpenAICompletionsProvider, response: _FakeResponse) -> list:
     return asyncio.run(go())
 
 
-# The canonical llama.cpp / Qwen3 reasoning stream: role chunk, reasoning_content
-# deltas, answer content, finish_reason, then a trailing usage-only chunk.
 _LLAMACPP_SHAPE = [
     {"id": "x", "choices": [{"index": 0, "delta": {"role": "assistant", "content": None}}]},
     {"id": "x", "choices": [{"index": 0, "delta": {"reasoning_content": "Hmm,"}}]},
@@ -127,8 +121,6 @@ def test_reasoning_content_streams_live_and_finalizes():
         OpenAICompletionsProvider(api_key="sk-test"), _FakeResponse(_sse(_LLAMACPP_SHAPE))
     )
 
-    # Gate 1+2: reasoning_content extracted AND yielded live, in order, distinct
-    # from the answer text.
     thinking = [e for e in events if isinstance(e, ThinkingDeltaEvent)]
     assert [e.delta for e in thinking] == ["Hmm,", " 17*23 = 391."]
     text = [e for e in events if isinstance(e, TextDeltaEvent)]
@@ -202,11 +194,6 @@ def test_final_message_consolidates_blocks_thinking_before_text():
     assert final.content.index(thinking[0]) < final.content.index(text[0])
 
 
-# A reasoning-then-tool-call stream: this is the shape that produced the
-# "reasoning shown N×" bug — every tool-arg fragment re-emitted a partial whose
-# content was the full (bloated) reasoning trace. Consolidation (fix A) makes
-# each partial carry exactly one thinking block, so the backend suffix-diff has
-# nothing to re-emit.
 _REASON_THEN_TOOL_SHAPE = [
     {"id": "x", "choices": [{"index": 0, "delta": {"reasoning_content": "I should"}}]},
     {"id": "x", "choices": [{"index": 0, "delta": {"reasoning_content": " run date."}}]},
@@ -332,14 +319,7 @@ def test_no_reasoning_means_no_thinking_events():
     assert not any(isinstance(c, ThinkingContent) for c in final.content)
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Helpers
-# ──────────────────────────────────────────────────────────────────────────
-
-
 def test_extract_reasoning_priority():
-    # First non-empty wins, in priority order; the field name (signature) is
-    # returned alongside the text so a follow-up turn can replay reasoning.
     assert _extract_reasoning({"reasoning_content": "a", "reasoning": "b"}) == (
         "a",
         "reasoning_content",
@@ -363,16 +343,9 @@ def test_usage_from_openai_maps_and_computes_total():
     u3 = _usage_from_openai({})
     assert u3.total_tokens == 0
 
-    # Cached prompt tokens map to cache_read AND come OUT of input_tokens: OpenAI's
-    # prompt_tokens INCLUDES cached_tokens, so leaving both at 9 and 4 would make
-    # every consumer that reads the pair count the cached span twice (pi does the
-    # same subtraction, openai-completions.ts:1487). The three still partition the
-    # prompt: 5 + 4 == 9.
     u4 = _usage_from_openai({"prompt_tokens": 9, "prompt_tokens_details": {"cached_tokens": 4}})
     assert (u4.input_tokens, u4.cache_read_tokens) == (5, 4)
 
-    # A server reporting the whole prompt as a cache hit leaves 0 uncached input,
-    # never a negative.
     u5 = _usage_from_openai({"prompt_tokens": 9, "prompt_tokens_details": {"cached_tokens": 9}})
     assert (u5.input_tokens, u5.cache_read_tokens) == (0, 9)
 

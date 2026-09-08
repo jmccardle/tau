@@ -45,11 +45,6 @@ HEALTH = "http://127.0.0.1:8080/health"
 SLOTS = 2
 GRAMMAR = "root ::= [0-2]"
 
-# jf35 is tau's LIVE local-llm. Thinking+grammar needs the server-side --reasoning-budget
-# flag to force the end-of-think tag (per-request budget is silently ignored on this build);
-# without it a rare long-deliberation query never closes </think> and returns empty content.
-# We restart jf35 with the budget and RESTORE it (no flag) in a finally, verified. This is
-# the exact invocation captured live (pid 1034864) and used by budget_sweep.py.
 SERVER_CWD = "/home/john/Development/turboquant_experiments/repos/llama-pr-thinking-grammar"
 SERVER_BASE = (
     "./build-jf-cuda/bin/llama-server -m /fast/model/moe-compare/qwen36-35B-IQ4_XS.gguf "
@@ -99,10 +94,6 @@ DIMS = ["dim1_query", "dim2_query", "dim3_query"]
 KS = [1, 5, 10, 20]
 HALFLIFE = 365.0  # fixed at the M2 best; per-query t-half is out of scope (see spec)
 
-# The classifier's prompt. State-vs-fact, three anchored classes that line up with the M2
-# breakdown: dim1/dim2 (restate a possibly-stale premise) -> 2, dim3 (state but no restated
-# premise) -> 1, LoCoMo (specific past fact) -> 0. Thinking is ON (the 0.29->2.45-bit M2
-# finding: enable_thinking:false destroys judgement signal on exactly this kind of task).
 CLASSIFY = (
     "A memory system answers a question by searching a person's past conversations. "
     "Decide how much the correct answer depends on RECENCY. Reply with one digit.\n\n"
@@ -121,18 +112,7 @@ CLASSIFY = (
     "Digit:"
 )
 
-# Few-shot variant. The zero-shot confusion (2026-07-17) had two costly errors: (1) dim2
-# 'Since the user [stated fact], can you [task]?' queries routed to 0 — the classifier read
-# the task request and missed that the conditioning premise is the staleness-sensitive fact
-# (the STALE shortfall, ~25% of dim1/2); (2) LoCoMo fact-recall questions with STATE FLAVOUR
-# but no staleness marker routed to 2 (the LoCoMo cost, ~25%). The refined rubric makes the
-# class-2 trigger explicit — a staleness MARKER ('still/now/currently/these days') OR a
-# conditioning premise ('since the user is X') — so bare state-flavoured recall falls to 0/1
-# instead of 2. Exemplars are hand-written to the observed patterns, NOT verbatim corpus
-# queries, so there is no train/test leakage and nothing to exclude from the eval.
 FEWSHOT_EXAMPLES = [
-    # 2: explicit staleness marker, OR a premise the query conditions on (a newer memory
-    #    could overturn it, so retrieval must surface the freshest value)
     ("Based on the conversation history, is the user still working as a nurse?", 2),
     (
         "Since the user says they live right by the coast, can you suggest a few weekend "
@@ -194,9 +174,6 @@ def classify_one(client, text, template=CLASSIFY):
     r.raise_for_status()
     c = (r.json()["choices"][0]["message"]["content"] or "").strip()
     if not c:
-        # Fail-Early: a truncated-before-answer completion is not a class. Do NOT fabricate
-        # a default (it would poison the very term under test). If this fires broadly the
-        # prompt deliberates too long; simplify it rather than restart the shared jf35.
         raise RuntimeError("empty content — reasoning ran past max_tokens before the digit")
     return int(c)
 
@@ -388,8 +365,6 @@ def main() -> int:
 
     queries = load_queries(stale, locomo)
 
-    # Few-shot A/B: classify a stratified sample with the few-shot prompt, compare the
-    # retrieval-relevant binary accuracy to the zero-shot cache. Cheap gate before the full run.
     if args.sample:
         random.seed(SAMPLE_SEED)
         groups = defaultdict(list)
@@ -459,9 +434,6 @@ def main() -> int:
         n = sum(dist.values())
         print(f"  {grp:>22}: {dist}  (n={n})")
 
-    # Perfect-routing ceiling: route by the oracle group instead of the predicted class.
-    # The gap between selector_* here and under `classes` is the classifier's cost;
-    # the gap between this and `global`/`baseline` is the policy's own ceiling.
     oracle_classes = {qid: meta["oracle"] for qid, meta in queries.items()}
 
     factory = get_session_factory()

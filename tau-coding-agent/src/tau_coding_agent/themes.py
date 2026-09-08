@@ -2,7 +2,7 @@
 
 Reference: docs/PLAN-0.9.4.md §6 ("Swappable TCSS themes").
 
-Why this is not a second ``parley.tcss``
+Why this is not a second ``tau.tcss``
 ----------------------------------------
 The obvious way to ship themes is one whole stylesheet per theme. It cannot get
 out of sync — and it costs a thousand-line copy per theme, of which ~975 lines
@@ -14,12 +14,12 @@ younger.
 So the split is **structure in one stylesheet, colour in a palette**, and the
 palette mechanism is the one Textual already ships: :class:`textual.theme.Theme`.
 Its ``variables`` mapping is merged into the CSS variable namespace by
-``App.get_css_variables``, so ``parley.tcss`` can say ``color: $tau-text`` and a
+``App.get_css_variables``, so ``tau.tcss`` can say ``color: $tau-text`` and a
 theme decides what that is. Setting ``App.theme`` re-runs
 ``refresh_css`` — a live swap, no restart, no stylesheet reloading of our own.
 
 Using Textual's ``Theme`` rather than a bare ``dict`` of variables buys the half
-of a theme that ``parley.tcss`` does **not** reach: Textual's own widgets
+of a theme that ``tau.tcss`` does **not** reach: Textual's own widgets
 (``Footer``, ``Header``, scrollbars, ``Toast``, ``Tree``'s cursor line, ``Button``
 defaults) are coloured from the design tokens ``$primary``/``$surface``/
 ``$background``/``dark``. A light τ palette laid over a dark Textual base leaves
@@ -27,7 +27,7 @@ a dark Footer under a light chat pane. A ``Theme`` carries both halves at once,
 which is exactly the pairing a theme is.
 
 The split is verifiable, not aspirational: ``tests/test_themes.py`` fails if a
-colour literal appears anywhere in ``parley.tcss``, which is the only thing that
+colour literal appears anywhere in ``tau.tcss``, which is the only thing that
 keeps "structure has no colour" true a year from now.
 
 The default is load-bearing
@@ -37,7 +37,7 @@ to the pre-theme TUI, because ``tests/test_tui_snapshots.py`` compares seven
 composited screens against committed SVGs. Two things make that true:
 
 1. Every ``$tau-*`` value in ``_MOCHA_PALETTE`` is the hex literal that stood at
-   that spot in ``parley.tcss`` before the variables landed.
+   that spot in ``tau.tcss`` before the variables landed.
 2. ``mocha``'s *design tokens* are Textual's ``textual-dark`` tokens exactly —
    ``textual-dark`` is ``App``'s default theme, so this is what the app was
    already running. ``test_themes.py`` re-derives that from
@@ -60,7 +60,7 @@ otherwise stop τ from starting at all — including when the theme in use is a
 built-in and the broken file is one the user is not even selecting. So
 :func:`build_theme_registry` and :func:`load_user_themes` take an ``errors``
 list: pass one and a bad file is *collected and skipped* instead of raised, for
-the caller to report. ``Parley`` passes one and turns each entry into an error
+the caller to report. ``TauApp`` passes one and turns each entry into an error
 toast, then runs in the default theme. The problem is still shown — on the one
 screen the user is looking at — and τ still starts.
 
@@ -93,17 +93,10 @@ __all__ = [
     "textual_themes",
 ]
 
-#: The ``~/.tau/config.json`` key holding the standing choice. One flat top-level
-#: key, like ``default_model`` and ``system_prompt`` beside it.
 THEME_CONFIG_KEY = "theme"
 
 DEFAULT_THEME_NAME = "mocha"
 
-#: Where a user's own themes live. A *relative* name resolved against
-#: ``config.CONFIG_PATH.parent`` at call time, never against ``config.TAU_DIR``:
-#: ``TAU_DIR`` is frozen at import and ``testing.sandbox.sandbox_tau_home`` only
-#: redirects ``CONFIG_PATH``, so reading ``TAU_DIR`` here is how a "hermetic" test
-#: quietly starts loading the developer's real themes.
 USER_THEME_DIRNAME = "themes"
 
 
@@ -115,23 +108,6 @@ class ThemeError(ConfigError):
     as a traceback.
     """
 
-
-# ---------------------------------------------------------------------------
-# The palette vocabulary
-# ---------------------------------------------------------------------------
-#
-# Every colour ``parley.tcss`` can name, and nothing else. The names are ROLES
-# ("what is this colour for") rather than hues ("mauve"), because a role survives
-# a palette that has no mauve in it. Where the old stylesheet deliberately reused
-# one hue for two things — the branch-summary pair borrowing the user cyan, the
-# hover divergence borrowing the assistant amber — the rules now share the *role*
-# variable, so the pairing those comments describe survives a theme swap by
-# construction instead of by two hex literals happening to agree.
-#
-# The six ``text-*`` entries are a monotone ramp, brightest first. A theme that
-# breaks the ordering is not rejected (some palettes genuinely have no six steps)
-# but it will read as noise: the stylesheet uses position in the ramp to say how
-# loud a piece of chrome is.
 
 TAU_PALETTE_KEYS: tuple[str, ...] = (
     # Surfaces, back to front.
@@ -151,8 +127,6 @@ TAU_PALETTE_KEYS: tuple[str, ...] = (
     "text-quiet",
     "text-muted",
     "text-faint",
-    # Message roles. These carry meaning through colour, which is the whole
-    # reason a single-accent brand palette is hard here (docs/PLAN-0.9.4.md §6).
     "role-user",
     "role-assistant",
     "role-system",
@@ -162,8 +136,6 @@ TAU_PALETTE_KEYS: tuple[str, ...] = (
     "role-blocked",
     "role-foreign",
     "role-pending",
-    # The one tree-browser zone with no role to borrow: "on the cursor's
-    # ancestry" is about position, not about a transformation.
     "zone-path",
     # Code inside a markdown fence.
     "code-fg",
@@ -171,9 +143,6 @@ TAU_PALETTE_KEYS: tuple[str, ...] = (
 
 _PALETTE_KEY_SET = frozenset(TAU_PALETTE_KEYS)
 
-#: Textual ``Theme`` fields a user theme file may override. ``name`` is not one of
-#: them — the file name is the theme's name, and a file that disagreed with itself
-#: would register under a name nobody could type.
 _TEXTUAL_THEME_FIELDS: frozenset[str] = frozenset(
     {
         "primary",
@@ -207,7 +176,7 @@ def _variables(palette: Mapping[str, str]) -> dict[str, str]:
     if missing:
         raise ThemeError(
             "theme palette is missing " + ", ".join(missing) + ". Every key in "
-            "themes.TAU_PALETTE_KEYS must have a colour: parley.tcss references "
+            "themes.TAU_PALETTE_KEYS must have a colour: tau.tcss references "
             "all of them, and an absent one is a CSS parse error at startup, not "
             "a colour that quietly stays the same."
         )
@@ -222,13 +191,6 @@ def _variables(palette: Mapping[str, str]) -> dict[str, str]:
     return {f"tau-{key}": value for key, value in palette.items()}
 
 
-# ---------------------------------------------------------------------------
-# The built-in themes
-# ---------------------------------------------------------------------------
-
-#: Catppuccin Mocha — τ's look since the fork, and the default. Every value here
-#: is the literal that stood at that spot in ``parley.tcss`` before this module
-#: existed; the snapshot suite is the proof.
 _MOCHA_PALETTE: dict[str, str] = {
     "bg": "#1e1e2e",  # base
     "bg-alt": "#181825",  # mantle
@@ -257,23 +219,6 @@ _MOCHA_PALETTE: dict[str, str] = {
     "code-fg": "#a6e3a1",  # green
 }
 
-#: Catppuccin Latte — the light counterpart of the default, and the answer to the
-#: one obviously unserved case: a light terminal, where the whole app was
-#: previously a dark rectangle pasted onto a white screen. Same hue *family* per
-#: role as Mocha (sky→sky, yellow→yellow, peach→peach), so a user who knows what
-#: an amber border means keeps knowing.
-#:
-#: The surfaces and the text ramp are Catppuccin Latte verbatim. **The role hues
-#: are not**, and that is the one real piece of design in this theme: Latte's
-#: published accents are tuned to be borders on a light base, so its yellow
-#: (#df8e1d) is 2.3:1 against the chat pane and its peach (#fe640b) is 2.6:1 —
-#: and τ does not use these as borders only. ``.tool-box > CollapsibleTitle``
-#: paints a whole title row in ``$tau-role-tool``, ``Markdown CodeBlock`` paints
-#: the code itself in ``$tau-code-fg``. Every role is therefore darkened to clear
-#: 3:1 against the pane, which ``test_themes.py`` re-measures. Dark themes get
-#: this for free (a saturated hue on near-black is high-contrast by
-#: construction); a light theme is where the borrowed-palette shortcut stops
-#: working, so it is the one that had to be tuned.
 _LATTE_PALETTE: dict[str, str] = {
     "bg": "#eff1f5",  # base
     "bg-alt": "#e6e9ef",  # mantle
@@ -303,16 +248,6 @@ _LATTE_PALETTE: dict[str, str] = {
     "code-fg": "#2f761f",  # green, deepened
 }
 
-#: Two of Textual's own variables that Latte's design tokens derive badly, found
-#: by looking at a render rather than by reading a palette (docs/PLAN-0.9.4.md §6
-#: acceptance step 6):
-#:
-#: * the scrollbar thumb defaults off ``$primary``, which for Catppuccin Latte is
-#:   a saturated mauve — on a light background a full-height bar of it is the
-#:   loudest thing on the screen, louder than any message border, which inverts
-#:   the hierarchy the whole palette is arranged around.
-#: * the Footer's key labels default off ``$accent``, Latte's peach #fe640b, which
-#:   is 2.6:1 on the Footer's panel. The deepened peach reads and keeps the hue.
 _LATTE_TEXTUAL_VARS: dict[str, str] = {
     "scrollbar": "#acb0be",  # surface2 — present, quiet
     "scrollbar-hover": "#9ca0b0",  # overlay0
@@ -324,17 +259,6 @@ _LATTE_TEXTUAL_VARS: dict[str, str] = {
     "footer-key-foreground": "#b34a05",
 }
 
-#: Gruvbox Dark — the third theme exists to be *unlike* the first two rather than
-#: to be a third pastel. Warm, higher contrast, retro-terminal: where Mocha and
-#: Latte are the same cool palette at two luminosities, this one is a different
-#: temperature entirely, which is the axis a reader picks a theme on.
-#:
-#: Gruvbox has exactly one purple, so ``accent``, ``role-system`` and
-#: ``role-foreign`` all land on it. That is a real (small) loss against Mocha,
-#: where the foreign lane's lavender is a shade off the system mauve — the lane
-#: is still unmistakable because its border is ``dashed`` and indented, which is
-#: structure, not colour. It is also the miniature of the FFwF problem: a palette
-#: with fewer hues than the UI has roles has to spend one twice.
 _GRUVBOX_PALETTE: dict[str, str] = {
     "bg": "#282828",  # bg0
     "bg-alt": "#1d2021",  # bg0_hard
@@ -364,42 +288,6 @@ _GRUVBOX_PALETTE: dict[str, str] = {
 }
 
 
-#: ANSI — the only theme that fits a terminal τ has never seen.
-#:
-#: Every value is an ANSI colour *name* rather than a hex literal, so the 16
-#: colours the user already curated in their terminal emulator decide what τ looks
-#: like. Textual resolves these to ``Color(..., ansi=n)`` and emits the ANSI code
-#: rather than a truecolor escape, which is what makes that true.
-#:
-#: **It paints no backgrounds.** Every surface is ``ansi_default`` — the
-#: terminal's own background — and all of τ's structure is carried by foreground
-#: hues and borders. That is not minimalism; it is the only design that is correct
-#: in a scheme whose direction is unknown. ``ansi_black`` is a black sidebar on a
-#: light terminal and invisible on a dark one, so no surface can name it.
-#:
-#: For the same reason the roles use the *non-bright* half of the palette: a
-#: terminal tunes its normal six to be readable against its own background, and
-#: tunes the bright six to stand out against the normal ones. Bright is used only
-#: where a role needs a second shade of a hue already spent (``role-tool`` beside
-#: ``role-assistant``, ``role-foreign`` beside ``role-system``) — the same pairs
-#: Mocha spends two adjacent hues on.
-#:
-#: Two costs, on the record, both consequences of having 16 colours where the
-#: other themes have 24 bits:
-#:
-#: * The six-step text ramp collapses to three. ``text``/``text-soft`` are the
-#:   terminal's foreground and ``text-dim`` down to ``text-faint`` are all
-#:   ``ansi_bright_black``, because grey is the only quieter step ANSI has.
-#: * ``border`` and ``border-subtle`` are the same colour, so the divider that is
-#:   meant not to read as a border does read as one.
-#:
-#: ``dark=True`` is inherited from Textual's ``ansi-dark`` and is the one thing
-#: here that *is* a guess — it selects Textual's dark branch for its own widgets.
-#: A light-terminal user overrides it without a new palette, which is what the
-#: user-theme format is for::
-#:
-#:     ~/.tau/themes/ansi-light.json
-#:     { "extends": "ansi", "textual": { "dark": false } }
 _ANSI_PALETTE: dict[str, str] = {
     "bg": "ansi_default",
     "bg-alt": "ansi_default",
@@ -440,13 +328,6 @@ def _builtin_tau_themes() -> dict[str, Theme]:
     return {
         "mocha": Theme(
             name="mocha",
-            # ``textual-dark``'s design tokens, verbatim. Not a stylistic
-            # choice: ``textual-dark`` is ``App``'s default, so these are the
-            # tokens the TUI has always run under, and any other value here
-            # would recolour the Footer, the scrollbars and the Tree cursor —
-            # i.e. break the snapshot suite. ``test_themes.py`` re-derives them
-            # from ``textual.theme.BUILTIN_THEMES`` so a Textual upgrade that
-            # restyles ``textual-dark`` is caught here.
             primary="#0178D4",
             secondary="#004578",
             accent="#ffa62b",
@@ -471,13 +352,13 @@ def _derive(
 ) -> Theme:
     """A τ theme carrying *base*'s Textual design tokens and *palette*'s colours.
 
-    The tokens colour everything ``parley.tcss`` never mentions; the palette
+    The tokens colour everything ``tau.tcss`` never mentions; the palette
     colours everything it does. Both halves have to move together or the app is
     two themes at once.
 
     ``extra`` is for Textual's *own* named variables (``scrollbar``,
     ``footer-key-foreground``, …) where the base theme's derived default is wrong
-    for τ. These are not part of τ's vocabulary and no rule in ``parley.tcss``
+    for τ. These are not part of τ's vocabulary and no rule in ``tau.tcss``
     names them — they exist because Textual derives some of them from
     ``$accent``/``$primary``, and a hue chosen to be an accent is not always a hue
     that works as a 40-row scrollbar.
@@ -500,8 +381,6 @@ def _derive(
         luminosity_spread=tokens.luminosity_spread,
         text_alpha=tokens.text_alpha,
         ansi=tokens.ansi,
-        # The base's own variables first (Catppuccin Latte sets a button
-        # foreground, Gruvbox an input selection), then ours on top.
         variables={**tokens.variables, **(extra or {}), **_variables(palette)},
     )
 
@@ -509,32 +388,6 @@ def _derive(
 def tau_themes() -> dict[str, Theme]:
     """The built-in τ themes, by name."""
     return _builtin_tau_themes()
-
-
-# ---------------------------------------------------------------------------
-# Textual's own themes, adapted
-# ---------------------------------------------------------------------------
-#
-# ``App.__init__`` registers all of ``textual.theme.BUILTIN_THEMES``, and
-# Textual's "Theme" system command lists every registered theme. None of those
-# 21 themes knows what ``$tau-bg`` is, so selecting one used to stop the app with
-# ``reference to undefined variable '$tau-bg'`` — τ's four themes worked and the
-# other 21 crashed.
-#
-# The fix is to give each of them a τ palette *derived from the design tokens it
-# already has*, and re-register the result under the same name, so the theme the
-# palette selects is the adapted one. The derivation names no colour: every value
-# is a lookup into the variables Textual generates from the theme
-# (``ColorSystem.generate()``), which is the "set some tcss defaults to other tcss
-# values" shape — resolved in Python so the result is a concrete value and does
-# not depend on variable ordering in the stylesheet.
-#
-# An adapted theme is not a designed theme. τ's four spend two hues on roles
-# Textual has no token for, tune a light palette's roles for 3:1 on a *filled
-# row*, and pick surfaces that layer the way τ's panes are stacked. An adapted
-# theme gets what its author's six semantic hues can cover, and where τ needs
-# more hues than that it spends one twice — the same trade ``gruvbox`` already
-# documents above, applied 21 more times.
 
 
 def _first(generated: Mapping[str, str], *names: str) -> str:
@@ -582,14 +435,6 @@ def _derived_palette(theme: Theme) -> dict[str, str]:
     because Textual derives the ``text-`` forms to be legible *against the
     background*, and τ paints roles as whole rows of text, not only as borders.
     """
-    # ``ansi-dark`` and ``ansi-light`` have no colour ramp to derive from: every
-    # surface they generate is ``transparent`` and every hue is an ANSI name, so
-    # the derivation below would produce invisible borders on invisible panes.
-    # τ already designed the palette for that situation — the one every other
-    # theme's tokens cannot express — so use it rather than a worse copy.
-    # ``ansi-light`` then becomes exactly the light-terminal ANSI theme
-    # ``_ANSI_PALETTE``'s note says you would otherwise write by hand: same
-    # palette, ``dark=False``.
     if theme.ansi:
         return _variables(_ANSI_PALETTE)
 
@@ -622,16 +467,9 @@ def _derived_palette(theme: Theme) -> dict[str, str]:
         "bg-deep": _first(generated, "panel", "surface", "background"),
         "surface": _first(generated, f"surface-{away}-1", "surface", "background"),
         "surface-hover": _first(generated, f"surface-{away}-2", "surface", "background"),
-        # Lines. ``border`` lands on ``surface-hover``'s value and
-        # ``border-subtle`` on ``surface``'s; mocha makes both of those
-        # collisions too, for the same reason — a raised control and the line
-        # around a sunken one are the same distance from the background.
         "border": _first(generated, f"surface-{away}-2", "surface", "foreground"),
         "border-subtle": _first(generated, f"surface-{away}-1", "surface", "background"),
         "accent": _first(generated, "text-accent", "accent", "foreground"),
-        # Text, brightest to faintest. Monotonic by construction — see ``fade``.
-        # Alpha is safe here because no rule in parley.tcss uses a text variable
-        # for anything but ``color:``, which ``test_themes.py`` asserts.
         "text": foreground,
         "text-soft": fade(87),
         "text-dim": fade(74),
@@ -647,20 +485,15 @@ def _derived_palette(theme: Theme) -> dict[str, str]:
         "role-error": _first(generated, "text-error", "error", "foreground"),
         "role-blocked": _first(generated, "text-warning", "warning", "foreground"),
         "role-foreign": _first(generated, "text-accent", "accent", "foreground"),
-        # The same step as ``text-muted``: mocha spends one grey on both, and a
-        # pending row is a quiet row, not a coloured one.
         "role-pending": fade(50),
         "zone-path": _first(generated, "text-secondary", "secondary", "foreground"),
         "code-fg": _first(generated, "text-success", "success", "foreground"),
     }
-    # Through ``_variables`` rather than a dict comprehension so a key added to
-    # TAU_PALETTE_KEYS without a line above is a startup error naming it, exactly
-    # as it is for a theme file that forgets one.
     return _variables(palette)
 
 
 def adapt_theme(theme: Theme) -> Theme:
-    """*theme* plus a derived ``$tau-*`` palette, so ``parley.tcss`` can parse.
+    """*theme* plus a derived ``$tau-*`` palette, so ``tau.tcss`` can parse.
 
     A copy, never a mutation: ``BUILTIN_THEMES`` holds one shared ``Theme`` per
     name for the whole process, and ``Theme`` is a plain mutable dataclass.
@@ -681,11 +514,6 @@ def textual_themes() -> dict[str, Theme]:
     makes *Textual's* "Theme" system command safe as well as τ's own list.
     """
     return {name: adapt_theme(theme) for name, theme in BUILTIN_THEMES.items()}
-
-
-# ---------------------------------------------------------------------------
-# User themes
-# ---------------------------------------------------------------------------
 
 
 def user_theme_dir() -> Path:
@@ -724,7 +552,7 @@ def load_user_themes(
     as adapted by :func:`adapt_theme` — and supplies both halves (design tokens
     and starting palette); ``palette`` overrides τ colours by
     :data:`TAU_PALETTE_KEYS` name; the optional ``textual`` block overrides
-    Textual's own design tokens for the widgets ``parley.tcss`` does not reach.
+    Textual's own design tokens for the widgets ``tau.tcss`` does not reach.
     The file's stem is the theme's name, so ``midnight.json`` is ``"midnight"``.
 
     Unreadable JSON, an unknown ``extends``, an unknown palette key and an unknown
@@ -780,9 +608,6 @@ def _read_user_theme(path: Path, builtins: Mapping[str, Theme]) -> Theme:
         )
     base = builtins[base_name]
 
-    # The base's palette, with the file's overrides on top. Written back through
-    # ``_variables`` so an unknown key is rejected by the same check the built-ins
-    # pass, rather than becoming a ``$tau-typo`` no rule reads.
     palette = {
         key[len("tau-") :]: value for key, value in base.variables.items() if key.startswith("tau-")
     }
@@ -814,11 +639,6 @@ def _read_user_theme(path: Path, builtins: Mapping[str, Theme]) -> Theme:
     return Theme(name=path.stem, variables={**non_tau, **variables}, **tokens)
 
 
-# ---------------------------------------------------------------------------
-# Resolution
-# ---------------------------------------------------------------------------
-
-
 def build_theme_registry(
     directory: Path | None = None, *, errors: list[str] | None = None
 ) -> dict[str, Theme]:
@@ -848,18 +668,18 @@ def install_themes(
     """Register every τ theme on *app* and make one of them live. Returns it.
 
     The whole mechanism in four lines, and the reason it is a free function
-    rather than a ``Parley`` method: ``parley.tcss`` is loaded by two apps. The
+    rather than a ``TauApp`` method: ``tau.tcss`` is loaded by two apps. The
     second is ``tests/test_tui_appearance._ModalHarness``, a bare ``App`` that
     hosts one modal so a tree shape can be asserted without the whole TUI — it
     needs the stylesheet, so it needs the palette the stylesheet is written
-    against. Anything else that mounts τ's widgets outside ``Parley`` has the
+    against. Anything else that mounts τ's widgets outside ``TauApp`` has the
     same need and the same one call.
 
     ``app.stylesheet.set_variables`` is the load-bearing half. ``App.theme``'s
     watcher schedules a ``refresh_css`` for the next idle, which is fine once the
     app is running and useless during ``__init__`` — and ``__init__`` is when the
     stylesheet is first parsed. Re-seeding the variable table here is what stands
-    between ``parley.tcss`` and ``UnresolvedVariableError: $tau-bg``.
+    between ``tau.tcss`` and ``UnresolvedVariableError: $tau-bg``.
     """
     themes = build_theme_registry() if registry is None else registry
     for theme in themes.values():

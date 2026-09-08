@@ -18,11 +18,10 @@ from __future__ import annotations
 
 import pytest
 
-from tau_coding_agent.app import Parley
+from tau_coding_agent.app import TauApp
 from tau_coding_agent.backends import create_backend, resolve_tool_names
+from tau_coding_agent import chat_widgets, transcript
 
-# A file extension registering a tool_result hook — presence on the backend's
-# live runner proves register(api) ran against THIS session (not a standalone one).
 _TOOL_RESULT_EXT = """
 def register(api):
     api.on("tool_result", lambda event, ctx: {"content": event.get("content")})
@@ -31,7 +30,7 @@ def register(api):
 
 @pytest.fixture
 def app(make_app):
-    """A Parley wired to REAL TauBackends (TauBackend has no network in __init__)."""
+    """A TauApp wired to REAL TauBackends (TauBackend has no network in __init__)."""
     return make_app(create_backend=create_backend)
 
 
@@ -354,8 +353,6 @@ async def test_explicit_failure_surfaces_error_notice(app, monkeypatch):
 
 # ── /extensions palette listing (E5 §5 / S34) ─────────────────────────────────
 
-# A file extension registering a tool, a command, and a hook — everything the
-# /extensions listing must surface for one loaded extension.
 _FULL_EXT = """
 async def _exec(tool_call_id, params, signal, on_update, ctx):
     return {"content": [{"type": "text", "text": "ok"}]}
@@ -374,7 +371,8 @@ def register(api):
 
 async def test_extensions_command_lists_loaded_extension(app, tmp_path):
     """/extensions renders a system box with the loaded extension's name/path/…."""
-    from tau_coding_agent.app import ChatDisplay, ChatInput, MessageBox
+    from tau_coding_agent.chat_widgets import ChatInput, MessageBox
+    from tau_coding_agent.transcript import ChatDisplay
 
     ext = tmp_path / "full_ext.py"
     ext.write_text(_FULL_EXT)
@@ -386,14 +384,12 @@ async def test_extensions_command_lists_loaded_extension(app, tmp_path):
         await app.action_new_chat()
         await pilot.pause()
 
-        # Drive the real slash path (text → interception → listing), exactly as a
-        # user typing /extensions: proves the dispatch wiring, not just the action.
-        input_widget = app.query_one("#chat-input", ChatInput)
+        input_widget = app.query_one("#chat-input", chat_widgets.ChatInput)
         input_widget.text = "/extensions"
         input_widget.action_submit()
         await pilot.pause()
 
-        boxes = [b for b in app.query(MessageBox) if b.role == "system"]
+        boxes = [b for b in app.query(chat_widgets.MessageBox) if b.role == "system"]
         assert boxes, "no system box rendered for /extensions"
         listing = boxes[-1]._content
         assert "full_ext" in listing  # name
@@ -402,11 +398,9 @@ async def test_extensions_command_lists_loaded_extension(app, tmp_path):
         assert "hello" in listing  # registered command
         assert "tool_result" in listing  # registered hook
 
-        # Read-only: the listing is UI chrome, NOT a conversation node — it must not
-        # leak into the working message list the model is sent (invariant, E5 §1).
         assert not any(m.get("content") == listing for m in app.messages)
         # And the ChatDisplay is where it lives.
-        assert app.query_one(ChatDisplay) is not None
+        assert app.query_one(transcript.ChatDisplay) is not None
 
 
 async def test_partial_load_keeps_good_and_lists_errors(app, tmp_path):
@@ -419,7 +413,7 @@ async def test_partial_load_keeps_good_and_lists_errors(app, tmp_path):
     so the good extension is kept in ``result.extensions`` AND the failure lands in
     ``result.errors`` — and the /extensions listing shows both.
     """
-    from tau_coding_agent.app import MessageBox
+    from tau_coding_agent.chat_widgets import MessageBox
 
     good = tmp_path / "full_ext.py"
     good.write_text(_FULL_EXT)
@@ -433,10 +427,11 @@ async def test_partial_load_keeps_good_and_lists_errors(app, tmp_path):
         await app.action_new_chat()
         await pilot.pause()
 
-        # Result carries the good extension AND the failure (no longer split-brained).
-        loaded_paths = [e.path for e in app._extension_load_result.extensions]
+        # State carries the good extension AND the failure (no longer split-brained).
+        state = app.current_backend.get_extension_state()
+        loaded_paths = [e.path for e in state.extensions]
         assert loaded_paths == [str(good)]
-        error_paths = [e.path for e in app._extension_load_result.errors]
+        error_paths = [e.path for e in state.errors]
         assert str(broken) in error_paths[0]
         # The good extension's command really is bound to the live registry.
         commands = dict(app.current_backend.get_extension_commands())
@@ -445,7 +440,7 @@ async def test_partial_load_keeps_good_and_lists_errors(app, tmp_path):
         # The /extensions listing shows the good extension AND a Load errors section.
         app.action_show_extensions()
         await pilot.pause()
-        boxes = [b for b in app.query(MessageBox) if b.role == "system"]
+        boxes = [b for b in app.query(chat_widgets.MessageBox) if b.role == "system"]
         listing = boxes[-1]._content
         assert "full_ext" in listing
         assert "hello" in listing  # bound command
@@ -467,7 +462,7 @@ def test_format_extensions_listing_surfaces_load_errors(tmp_path):
     # A discovered failure the loader would have collected alongside the good one.
     result.errors.append(ExtensionLoadError(path="/x/broken.py", error="boom during import"))
 
-    text = Parley._format_extensions_listing(result)
+    text = TauApp._format_extensions_listing(result)
     assert "full_ext" in text
     assert "probe" in text  # tool
     assert "hello" in text  # command
@@ -480,4 +475,4 @@ def test_format_extensions_listing_empty_when_nothing_loaded():
     """With no extensions and no errors the listing says so (honest empty state)."""
     from tau_agent_core.sdk import LoadExtensionsResult
 
-    assert Parley._format_extensions_listing(LoadExtensionsResult()) == "No extensions loaded."
+    assert TauApp._format_extensions_listing(LoadExtensionsResult()) == "No extensions loaded."

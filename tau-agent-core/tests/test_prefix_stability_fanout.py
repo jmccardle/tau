@@ -36,15 +36,6 @@ from tau_agent_core.extension_types import ExtensionContext
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_llm.types import Model
 
-# ──────────────────────────────────────────────────────────────────────────
-# Capturing-client harness — see test_prefix_stability.py's copy for the full
-# rationale. Every concurrent ``ctx.complete()`` call gets its OWN
-# OpenAICompletionsProvider + httpx client instance (tau_llm.client.stream_simple
-# builds a fresh, unregistered ``Registry()`` per call — see client.py), so
-# payload capture is a CLASS attribute shared across every fake-client
-# instance, appended to under whatever interleaving asyncio.gather() produces.
-# ──────────────────────────────────────────────────────────────────────────
-
 
 def _mock_response(text: str) -> MagicMock:
     chunks = [
@@ -133,8 +124,6 @@ def _messages_json(payload: dict, upto: int | None = None) -> str:
     return json.dumps(msgs, separators=(",", ":"))
 
 
-# The shared prefix every fan-out branch carries verbatim: a system message plus
-# a chunk of common retrieved context. `SHARED_PREFIX_LEN` messages of it.
 SHARED_PREFIX: list[dict[str, Any]] = [
     {"role": "system", "content": "You are a document reviewer. Answer include or exclude."},
     {"role": "user", "content": "Shared corpus context: quarterly filings batch #42."},
@@ -174,15 +163,9 @@ async def test_n_way_fan_out_shares_a_byte_identical_prefix(monkeypatch):
     for payload in captured:
         assert len(payload["messages"]) == SHARED_PREFIX_LEN + 1
 
-    # 2. The shared PREFIX ARRAY (as a single compact JSON string, i.e. byte for
-    #    byte) is identical across every one of the N concurrent requests —
-    #    this is the literal property server-side slot-LCP matching depends on.
     prefixes = {_messages_json(p, upto=SHARED_PREFIX_LEN) for p in captured}
     assert len(prefixes) == 1, f"the shared prefix diverged across branches: {prefixes}"
 
-    # 3. The one diverging (per-item) message is genuinely per-item distinct —
-    #    otherwise "the prefix matches" would be vacuous (all N requests
-    #    identical, not merely prefix-sharing).
     suffixes = {
         json.dumps(p["messages"][SHARED_PREFIX_LEN], separators=(",", ":")) for p in captured
     }

@@ -78,15 +78,6 @@ def _headers(ep: Endpoint) -> dict[str, str]:
     return h
 
 
-# The headers a backoff implementation could act on, lowercased because httpx
-# matches case-insensitively but a JSON result file does not.
-#
-# `retry-after` is the standard (RFC 9110 §10.2.3) and carries either a delay in
-# seconds or an HTTP date. The `x-ratelimit-*` family is OpenAI's, echoed by most
-# gateways that imitate it, and is the only one that says anything BEFORE the
-# limit is hit. `x-should-retry` is Anthropic's explicit override, which pi reads
-# in `utils/provider-retry.ts` — a server saying "don't bother" outranks any
-# status-code heuristic.
 _RETRY_HEADERS = (
     "retry-after",
     "x-should-retry",
@@ -121,10 +112,6 @@ def _retry_evidence(r: httpx.Response) -> dict[str, Any]:
         "present": sorted(found),
         "headers": found,
     }
-    # Some gateways put the interval in the BODY instead of a header
-    # ("try again in 47s"), which no header-only reader would find. Keep the
-    # body verbatim on a rejection so a later reading can look for one; a 2xx
-    # body is the completion itself and is not evidence about retrying.
     if r.status_code // 100 != 2:
         ev["body"] = r.text[:400].strip()
     return ev
@@ -158,21 +145,9 @@ def _raw(
     ev = _retry_evidence(r)
     if r.status_code // 100 == 2:
         return True, f"{r.status_code}", ev
-    # A 429 says nothing about whether the FIELD is accepted — it is the tier
-    # answering before the body was ever looked at. Reported as unknown (None)
-    # so a rate limit is never read as "this server rejects this spelling".
-    #
-    # It says a great deal about RETRYING, though, which is why `ev` is carried
-    # out alongside the verdict: PLAN-0.9.3 §4.3 wants backoff, and whether these
-    # servers name their own interval is the question that decides whether τ can
-    # honour one or must guess. Measure it; do not assume the header is there.
     if r.status_code == 429:
         named = ", ".join(ev["present"]) if ev["present"] else "no retry headers"
         return None, f"{r.status_code} rate-limited (field not evaluated; {named})", ev
-    # 5xx is the gateway or origin failing, not the body being judged. Measured
-    # against UnoRouter, whose non-streaming path takes 95-125s and trips
-    # Cloudflare's 100s ceiling with a 524 — which read as "rejects max_tokens"
-    # until the same field returned 200 in 1.6s on the streamed path.
     if r.status_code // 100 == 5:
         return None, f"{r.status_code} upstream failure (field not evaluated)", ev
     return False, f"{r.status_code} {r.text[:160].strip()}", ev
@@ -330,10 +305,6 @@ def render(results: list[dict[str, Any]]) -> str:
         lines.append(f"  accepts stream_options ........ {_mark(r['raw_stream_options']['ok'])}   {r['raw_stream_options']['detail']}")
         lines.append(f"  τ detects ..................... {detected_field}  [{verdict}, server takes: {truth}]")
 
-        # Retry evidence, pooled across the three raw probes (PLAN-0.9.3 §4.3).
-        # Printed for every endpoint including the ones that never failed, because
-        # "this server sent no rate-limit headers on a successful call either" is
-        # the finding that says a backoff cannot be informed here.
         seen: dict[str, str] = {}
         statuses: set[int] = set()
         for key in ("raw_max_tokens", "raw_max_completion_tokens", "raw_stream_options"):

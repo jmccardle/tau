@@ -23,10 +23,6 @@ from tau_jmfts.ext.strategy_store import (
     StrategyStore,
 )
 
-# ======================================================================================
-# TEST DOUBLE — in-memory fake of the JmftsClient subset the store uses. Test-only.
-# ======================================================================================
-
 
 class FakeJmftsClient:
     """A minimal in-memory stand-in for :class:`JmftsClient`.
@@ -50,11 +46,6 @@ class FakeJmftsClient:
     # -- position helper (CR-1) --------------------------------------------------
 
     def _assign_position(self, parent_id: int | None, sequential: bool | None) -> int | None:
-        # The real server REFUSES sequential ordering on a root (jmfts d70cc57,
-        # repositories/document.py). CR-1 is a relationship between siblings under a
-        # parent, so it is undefined without one. The fake let this through, which is how
-        # a root create that has never worked against a live server survived in the
-        # offline suite — reproduce the refusal so it cannot happen again.
         if sequential and parent_id is None:
             raise ValueError(
                 "sequential ordering is not defined for root documents "
@@ -116,8 +107,6 @@ class FakeJmftsClient:
         re_embed: bool = False,
     ) -> dict[str, Any]:
         doc = self._docs[doc_id]
-        # PATCH semantics: only fields the caller actually passed are changed;
-        # structured_content is REPLACED wholesale when passed.
         if title is not None:
             doc["title"] = title
         if content is not None:
@@ -145,8 +134,6 @@ class FakeJmftsClient:
             kids = [d for d in kids if d["title"] == title]
         if title_prefix is not None:
             kids = [d for d in kids if (d["title"] or "").startswith(title_prefix)]
-        # Adversarial order: return NEWEST first so the store cannot rely on server
-        # order and must sort by CR-1 position itself.
         kids.sort(key=lambda d: d["id"], reverse=True)
         return [dict(d) for d in kids[:limit]]
 
@@ -194,8 +181,6 @@ class FakeJmftsClient:
 
 @pytest.fixture
 def store() -> StrategyStore:
-    # The fake is duck-typed against the JmftsClient surface the store calls; the store
-    # never introspects the client's concrete type, so this is sound.
     return StrategyStore(FakeJmftsClient())  # type: ignore[arg-type]
 
 
@@ -203,11 +188,6 @@ def _fake(store: StrategyStore) -> FakeJmftsClient:
     client = store._client
     assert isinstance(client, FakeJmftsClient)
     return client
-
-
-# ======================================================================================
-# Root + family
-# ======================================================================================
 
 
 def test_root_is_created_once_and_reused() -> None:
@@ -259,11 +239,6 @@ def test_family_get_or_create_is_idempotent(store: StrategyStore) -> None:
     assert heads[0]["structured_content"] == {"kind": "strategy_head"}
 
 
-# ======================================================================================
-# Append-only log + temporal order
-# ======================================================================================
-
-
 def test_append_preserves_temporal_order_and_is_append_only(store: StrategyStore) -> None:
     fam = store.family("openings")
     first = store.append_log(fam, "control the center")
@@ -299,11 +274,6 @@ def test_append_extra_cannot_shadow_reserved_keys(store: StrategyStore) -> None:
         store.append_log(fam, "x", extra={"consolidated": True})
 
 
-# ======================================================================================
-# Footer (unconsolidated tree-read)
-# ======================================================================================
-
-
 def test_footer_returns_only_unconsolidated_logs(store: StrategyStore) -> None:
     fam = store.family("f")
     store.append_log(fam, "lesson one")
@@ -324,11 +294,6 @@ def test_footer_excludes_consolidated_logs(store: StrategyStore) -> None:
 
     footer = store.footer(fam)
     assert [d["content"] for d in footer] == ["fresh lesson"]
-
-
-# ======================================================================================
-# Consolidation
-# ======================================================================================
 
 
 def test_consolidate_rewrites_head_and_clears_flags(store: StrategyStore) -> None:
@@ -382,11 +347,6 @@ def test_consolidate_with_empty_footer_still_rewrites_head(store: StrategyStore)
     assert _fake(store).get_document(fam.head_id)["content"] == "seeded head"
 
 
-# ======================================================================================
-# History / provenance (the poison audit)
-# ======================================================================================
-
-
 def test_history_returns_all_entries_in_order_including_consolidated(store: StrategyStore) -> None:
     fam = store.family("f")
     store.append_log(fam, "one")
@@ -418,11 +378,6 @@ def test_provenance_poison_survives_consolidation(store: StrategyStore) -> None:
     assert poison[0]["structured_content"]["source"] == "lucky-win-game-4"
 
 
-# ======================================================================================
-# Assemble (the read-back)
-# ======================================================================================
-
-
 def test_assemble_is_head_plus_footer(store: StrategyStore) -> None:
     fam = store.family("f")
     store.consolidate(fam, "HEAD BODY")
@@ -439,11 +394,6 @@ def test_assemble_empty_footer_is_head_verbatim(store: StrategyStore) -> None:
     fam = store.family("f")
     store.consolidate(fam, "just the head")
     assert store.assemble(fam) == "just the head"
-
-
-# ======================================================================================
-# Fail-Early: corrupt log state raises
-# ======================================================================================
 
 
 def test_missing_consolidated_flag_raises(store: StrategyStore) -> None:
@@ -463,11 +413,6 @@ def test_non_boolean_consolidated_flag_raises(store: StrategyStore) -> None:
         store.history(fam)
 
 
-# ======================================================================================
-# Find (retrieval step 1)
-# ======================================================================================
-
-
 def test_find_scopes_to_subtree_and_heads_and_returns_ranked(store: StrategyStore) -> None:
     fam = store.family("endgame")
     fake = _fake(store)
@@ -485,10 +430,6 @@ def test_find_scopes_to_subtree_and_heads_and_returns_ranked(store: StrategyStor
     assert call["parent_id"] == store.root_id
     assert call["usetype"] == HEAD_USETYPE
 
-
-# ======================================================================================
-# Live integration — real JmftsClient against a server. SKIPS when none configured.
-# ======================================================================================
 
 pytest_live = pytest.mark.jmfts
 

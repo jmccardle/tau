@@ -54,16 +54,12 @@ def test_initial_setup() -> None:
 
 def test_perft_values_stable() -> None:
     b = Board()
-    # No external oracle for this variant; assert the computed values are the
-    # stable, reproducible numbers this generator produces.
     assert b.perft(1) == 10
     assert b.perft(2) == 100
     assert b.perft(3) == 1212
 
 
 def test_perft_cross_check_independent_generator() -> None:
-    # The structured generator and the standalone brute-force generator must
-    # agree — an independent recount, since there is no external oracle.
     for depth in (1, 2, 3):
         assert Board().perft(depth) == brute_force_perft(Board(), depth)
 
@@ -128,8 +124,6 @@ def test_no_legal_move_leaves_own_king_in_check() -> None:
 
 
 def test_mate_in_one_detection() -> None:
-    # White: Kd1, Qa1. Black: Kd6, and pawns walling the king in on rank 5 so
-    # it has no escape. Qa1-a6 delivers back-rank mate along rank 6.
     b = Board.from_piece_map(
         {
             "d1": "K",
@@ -160,8 +154,6 @@ def test_best_move_finds_the_mate() -> None:
 
 
 def test_stalemate_detection() -> None:
-    # Black king on f6 (corner), White Qe4 and Kd4. Black is NOT in check but
-    # every king move (e6/f5/e5) is covered by the queen -> stalemate.
     b = Board.from_piece_map({"d4": "K", "e4": "Q", "f6": "k"}, side=BLACK)
     assert not b.is_in_check(BLACK)
     assert b.is_stalemate()
@@ -191,8 +183,6 @@ def test_promotion_moves_are_generated() -> None:
 
 
 def test_greedy_captures_free_hanging_piece() -> None:
-    # White Rook on a1 can capture an undefended Black queen on a5 for free.
-    # A one-ply material maximizer must take it.
     b = Board.from_piece_map(
         {"d1": "K", "a1": "R", "a5": "q", "d6": "k", "f6": "p"},
         side=WHITE,

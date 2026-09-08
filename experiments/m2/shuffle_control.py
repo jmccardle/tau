@@ -114,8 +114,6 @@ def main() -> int:
                 if n % 100 == 0:
                     print(f"  {n}/{len(manifest)}", flush=True)
     finally:
-        # Always restore, even on failure: a corpus left with shuffled timestamps would
-        # silently corrupt every subsequent experiment on this instance.
         with factory() as db:
             for doc_id, ts in original.items():
                 db.get(Document, doc_id).event_time = ts

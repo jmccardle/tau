@@ -143,11 +143,6 @@ def register(api: Any) -> None:
     url = cfg.get("url")
     index = cfg.get("index", "default")
     default_scope = cfg.get("default_scope", "conversation")
-    # CR-4: shared-bearer token for the config-built (non-borrowed) fallback
-    # client. Config first, then $JMFTS_API_TOKEN. Not defaulted (Fail-Early):
-    # a missing token means the fallback client 401s loudly against an auth'd
-    # server. The primary path borrows the session's already-authenticated
-    # client and never reaches this.
     token = cfg.get("token") or os.environ.get("JMFTS_API_TOKEN")
 
     def _client(ctx: Any) -> JmftsClient:
@@ -180,9 +175,6 @@ def register(api: Any) -> None:
         if scope == "conversation":
             parent_id = _conversation_root(ctx)
             if parent_id is None:
-                # Fail-Early. Falling back to an unscoped search would answer a
-                # DIFFERENT question than the one asked — "anything, anywhere" instead
-                # of "in this conversation" — and would look like it worked.
                 raise RuntimeError(
                     "jmfts_search(scope='conversation'): this session is not JMFTS-backed, "
                     "so it has no conversation subtree to search. Use scope='all' or "
@@ -236,17 +228,12 @@ def register(api: Any) -> None:
         client = _client(ctx)
         usetype = str(params.get("usetype") or "note")
         if usetype.startswith("tau:"):
-            # `tau:*` is τ's own namespace: the loader reads those documents as
-            # conversation ENTRIES and expects a structured_content.tau payload. Letting
-            # the agent mint one would let it forge entries into a conversation tree.
             raise ValueError(
                 f"jmfts_ingest: usetype {usetype!r} must not start with 'tau:' — that "
                 "namespace belongs to τ's own conversation entries."
             )
         content = str(params["content"])
         if not content.strip():
-            # An empty document cannot be embedded and cannot be found; filing one is a
-            # write to /dev/null that reports success. Say so instead.
             raise ValueError("jmfts_ingest: content is empty — there is nothing to file.")
         doc = client.create_document(
             title=str(params["title"]),
@@ -255,24 +242,10 @@ def register(api: Any) -> None:
             usetype=usetype,
             structured_content={
                 "ingested_by": "tau",
-                # Provenance: which conversation filed this. The τ session id (stable
-                # across stores), not the JMFTS doc id.
                 "session": ctx._require_session().session_log.id,
             },
-            # Write first, embed second — deliberately NOT auto_embed=True. Whether this
-            # content fits the embedder's 512-TOKEN window is a fact only the server can
-            # compute, and `POST /documents` reports the over-window case as a bare 400
-            # string that would also fail the write. Embedding as a separate step gets
-            # the same measurement as a typed, structured refusal, and keeps the document
-            # written either way.
             auto_embed=False,
         )
-        # An ingested document nobody can find is a write to /dev/null, so embed it now:
-        # this is not the hot path (the agent is already waiting on a tool call), unlike
-        # the session write path that must defer. Over-window content is made findable
-        # through its chunks instead — the server measures each one against its own
-        # tokenizer (chunk_document's auto_embed=True) — and the parent keeps its full
-        # text for BM25.
         try:
             client.embed_document(doc["id"])
         except JmftsTextTooLongError:

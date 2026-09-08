@@ -89,12 +89,6 @@ class TestReentrantSubmissionRaises:
             session_log=InMemorySessionLog(), model=_model(), tools=[], extensions=[ext]
         )
         surfaced: list = []
-        # ExtensionRunner.on_error() supports multiple listeners; add ours
-        # alongside the session's own rather than replacing
-        # session._surface_extension_error, which ExtensionRunner already
-        # captured as a bound-method value at __init__ time (reassigning the
-        # attribute afterward would not reach a reference the runner already
-        # holds).
         session._extension_runner.on_error(lambda err: surfaced.append(err))
 
         messages = await asyncio.wait_for(session.prompt("outer"), timeout=2.0)

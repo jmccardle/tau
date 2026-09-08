@@ -92,8 +92,6 @@ class PromptLatencySample:
     bare_brackets: int
     #: ``compaction`` entries the session log gained during this prompt.
     compactions_committed: int
-    #: Every event type seen, in order. §9 rule 2: inspect raw output before
-    #: believing an aggregate.
     event_types: tuple[str, ...]
 
     @property
@@ -173,18 +171,7 @@ class PromptLatencyCollector:
         self._window: _Window | None = None
         self._bracket: _Bracket | None = None
         self._samples: list[PromptLatencySample] = []
-        #: Bare brackets observed while no prompt window was open — a manual
-        #: ``compact()``, typically. Counted rather than dropped, because a
-        #: compaction outside a measured prompt still spent a full window of tokens
-        #: and a reader of the artifact should be able to see that it happened.
         self.bare_brackets_outside_prompt = 0
-        #: Structural violations of the bracket marker seen on this stream.
-        #: Recorded rather than raised at the observation site, because
-        #: :class:`~tau_agent_core.events.EventBus` catches a handler exception and
-        #: routes it to ``on_error`` — raising there would turn a marker that does
-        #: not hold into a stderr line. :meth:`to_latency_json` refuses to produce
-        #: an artifact while this list is non-empty, which is the place the failure
-        #: has to be loud.
         self._anomalies: list[str] = []
 
     # ── lifecycle ─────────────────────────────────────────────────────────
@@ -212,9 +199,6 @@ class PromptLatencyCollector:
             window.event_types.append(event.type)
 
         if event.type == "agent_start":
-            # A nested agent_start would mean a bracket inside a bracket, which the
-            # harness does not produce; treating the new one as authoritative would
-            # silently lose the outer.
             if self._bracket is not None:
                 self._anomalies.append(
                     "nested agent_start on one session bus: the compaction marker assumes "
@@ -234,8 +218,6 @@ class PromptLatencyCollector:
                 return
             if bracket.saw_inner:
                 return
-            # A bare bracket: agent_start immediately followed by agent_end. See the
-            # module docstring for exactly what this does and does not prove.
             if window is None:
                 self.bare_brackets_outside_prompt += 1
             else:

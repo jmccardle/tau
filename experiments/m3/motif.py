@@ -63,9 +63,6 @@ class MotifDescriptor:
 
 # --- Prompt framing (review this before it hits the real model) -------------
 
-# The game rules, so the model can reason about the position — but with NO
-# instruction to emit a move (this is analysis, not play) and, deliberately, NO
-# enumerated menu of motif names. The vocabulary must be the model's own (§4.6).
 _SYSTEM_PREFACE = (
     "You are analysing a position in Los Alamos chess: a 6x6 variant on files "
     "a-f, ranks 1-6. There are NO bishops. The queen keeps full "
@@ -75,16 +72,6 @@ _SYSTEM_PREFACE = (
     "to Q/R/N (no bishop). There is no castling."
 )
 
-# The task. BARED-DOWN after the first emergent-vocabulary review (2026-07-17):
-# an earlier version named categories of salience (threats / weaknesses /
-# imbalances / initiative), and the "where the initiative lies" clause in
-# particular forced the model to declare a one-sided verdict even in dead-equal
-# openings — producing grandiose, boilerplate-heavy descriptions that would swamp
-# the discriminating tactical signal in the embedded key. This version keeps only
-# the anti-placement-dump guard (the §4.6 pathology to avoid) and a brevity nudge,
-# and lets the vocabulary — and what counts as "important" — stay entirely the
-# model's own. It still supplies NO motif names (no "fork / pin / skewer ..."):
-# naming the motifs is exactly what we want to observe the model do unaided.
 _TASK_INSTRUCTION = (
     "Describe what matters tactically in this position, briefly and in your own "
     "words, surfacing only the few most important features. Do NOT restate where "
@@ -149,9 +136,6 @@ class MotifExtractor:
                 client.close()
         text = (data["choices"][0]["message"]["content"] or "").strip()
         if not text:
-            # Fail-Early: a truncated-before-answer completion is not a key. Do
-            # NOT fabricate a descriptor — a poisoned key corrupts every
-            # retrieval that later matches on it.
             raise RuntimeError(
                 "LLM returned empty content — reasoning likely ran past max_tokens "
                 "before emitting a position description"

@@ -24,13 +24,8 @@ from __future__ import annotations
 import io
 from typing import NamedTuple
 
-#: pi's default, and τ's. See the module docstring for why this is a chosen
-#: budget rather than a measured model property.
 DEFAULT_MAX_IMAGE_DIMENSION = 2000
 
-#: Output format per input mime type. GIF is absent on purpose: Pillow writes a
-#: single frame, so an animated GIF would come back silently de-animated. It is
-#: re-encoded to PNG instead, and :func:`resize_image` reports the change.
 _FORMATS = {
     "image/png": "PNG",
     "image/jpeg": "JPEG",
@@ -117,17 +112,10 @@ def resize_image(
             return ResizedImage(data, mime_type, (width, height), (width, height), False)
 
         scale = max_dimension / max(width, height)
-        # At least 1px per side: a 4000x3 source scaled by 0.5 rounds the short
-        # side to 1, and int() would make it 0, which Pillow rejects.
         target = (max(1, round(width * scale)), max(1, round(height * scale)))
 
         fmt = _FORMATS.get(mime_type, "PNG")
         out_mime = mime_type if mime_type in _FORMATS else "image/png"
-        # JPEG has no alpha channel. A source that is RGBA and encodes as JPEG
-        # raises in Pillow, so the mode is converted rather than the failure
-        # being reported as a resize fault.
-        # `Image.Resampling.LANCZOS` rather than the `Image.LANCZOS` alias: the
-        # alias is untyped, so mypy reports it as a missing attribute.
         shrunk = img.resize(target, Image.Resampling.LANCZOS)
         if fmt == "JPEG" and shrunk.mode not in ("RGB", "L"):
             shrunk = shrunk.convert("RGB")

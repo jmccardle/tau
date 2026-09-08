@@ -33,7 +33,7 @@ from __future__ import annotations
 import copy
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 from tau_llm.docs import agent_facing
 
 
@@ -188,8 +188,8 @@ class SessionLog(Protocol):
         reproducing it in the five stores that implement this Protocol would be five
         copies, and pushing it down here would make every store depend on
         ``ConversationTree``. (3) Both call sites already compute the span and throw
-        it away — ``TauBackend.elide_span`` builds the exact ``hidden`` list for its
-        no-op refusal check (backends.py) — which is §8.1's pattern verbatim.
+        it away — ``tree_ops.elide_span`` builds the exact ``hidden`` list for its
+        no-op refusal check — which is §8.1's pattern verbatim.
         """
         ...
 
@@ -306,6 +306,62 @@ def agent_spec_in_force(entries: list[dict[str, Any]], leaf_id: str | None) -> s
     return None
 
 
+DURABLE_LOCATION_ATTRS: tuple[str, ...] = ("path", "root_doc_id")
+"""The attribute names a store declares to say WHERE a session is written.
+
+``path`` is the file store's; ``root_doc_id`` is the JMFTS store's. A log that
+declares neither is not a store at all — :class:`BranchView` is the shipped case.
+"""
+
+
+def declared_durable_locations(log: object) -> dict[str, Any]:
+    """Which of :data:`DURABLE_LOCATION_ATTRS` ``log`` declares, and to what.
+
+    One implementation, two callers with different jobs.
+    :func:`session_log_is_addressable` needs the yes/no;
+    ``tau_agent_core.rpc.commands.require_durable_session`` needs to tell "declares
+    nothing" from "declares ``None``", because those get different refusal messages.
+
+    Args:
+        log: Any object; the check is structural, never an isinstance test.
+
+    Returns:
+        A mapping of each declared attribute name to its value. Empty when the log
+        declares no durable location at all.
+    """
+    return {name: getattr(log, name) for name in DURABLE_LOCATION_ATTRS if hasattr(log, name)}
+
+
+@agent_facing(topic="sessions")
+def session_log_is_addressable(log: object) -> bool:
+    """Whether a later ``switch_session`` could reach the session ``log`` holds.
+
+    A session is addressable exactly when it declares a durable location and that
+    location is set, because that is also what puts it in the store's listing:
+    ``SessionCatalog.list`` is what the RPC ``list_sessions`` verb returns and what
+    ``resolve_ref`` resolves against. So this is not an opinion — it is
+    "``list_sessions`` will return this id", answerable at the moment the id is
+    minted.
+
+    An ephemeral session (``create_ephemeral`` — the file store's ``path``-less
+    ``Session``, the JMFTS store's ``_EphemeralConversationSession``) declares
+    neither attribute and is therefore ``False``.
+
+    A predicate rather than a raise: a caller that was ASKED for an unpersisted
+    session made the right one. What it must not do is describe it as addressable.
+    The raising form is ``rpc.commands.require_durable_session``, which asks this
+    same question of the verbs that append (docs/RPC-PROTOCOL.md, D-7 rule 1).
+
+    Args:
+        log: The session log to ask about.
+
+    Returns:
+        Whether the session is one the store can hand back later.
+    """
+    declared = declared_durable_locations(log)
+    return bool(declared) and any(value is not None for value in declared.values())
+
+
 def _now_iso() -> str:
     """Current UTC time as an ISO-8601 string with ms precision + ``Z``.
 
@@ -313,6 +369,78 @@ def _now_iso() -> str:
     identically-shaped ``timestamp`` (JS ``new Date().toISOString()``)."""
     now = datetime.now(timezone.utc)
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+
+
+def _iso_from_epoch_ms(epoch_ms: int) -> str:
+    """Epoch milliseconds in :func:`_now_iso`'s exact format.
+
+    The same format matters rather than merely a valid one: entry ``timestamp``
+    is the sibling sort key in ``ConversationTree.children_of``, which compares
+    the strings, so a differently-shaped ISO string would sort against its
+    neighbours by punctuation.
+    """
+    moment = datetime.fromtimestamp(epoch_ms / 1000, timezone.utc)
+    return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
+
+
+@agent_facing(topic="sessions")
+def event_iso(payload: dict[str, Any], now: Callable[[], str]) -> str:
+    """The event time of an entry payload, or now when it carries no clock.
+
+    A ``message``/``customMessage`` payload holds the message dict, whose
+    ``timestamp`` is epoch ms set where the event happened — the user's send, the
+    tool result's collection, the completion's end. Anything else (a navigate, a
+    compaction, a system message) has no event of its own and takes the write
+    time, which for those is the same moment. All three ``SessionLog``
+    implementations call this from ``append_at``, so the same session reads the
+    same whichever one wrote it (docs/MESSAGE-TIMESTAMPS.md §4).
+
+    Args:
+        payload: The entry payload about to be written.
+        now: The CALLER's write-time clock, passed rather than imported so each
+            store keeps its own ``_now_iso`` as the one thing a test can
+            substitute.
+
+    Returns:
+        An ISO-8601 UTC string in ``_now_iso``'s exact format.
+    """
+    message = payload.get("message")
+    if isinstance(message, dict):
+        stamp = message.get("timestamp")
+        if isinstance(stamp, int) and not isinstance(stamp, bool):
+            return _iso_from_epoch_ms(stamp)
+    return now()
+
+
+@agent_facing(topic="sessions")
+def normalize_loaded_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Map legacy ``timestamp: 0`` on a loaded assistant message to ``None``.
+
+    The ONE place a 0 is interpreted. τ did not run in 1970, so a 0 in a stored
+    message is the fabricated value ``openai-completions`` wrote before
+    docs/MESSAGE-TIMESTAMPS.md; everything downstream reads ``None`` and never
+    tests for 0. Every session store calls this on its load path, so a session
+    reads the same whichever store it came from.
+
+    Mutates the message dicts in place and returns the same list, because a store
+    loading tens of thousands of entries should not copy them all to fix a field
+    that is usually already absent.
+
+    Args:
+        entries: Session-log entries as read from storage.
+
+    Returns:
+        The same list, with legacy assistant zeros replaced by ``None``.
+    """
+    for entry in entries:
+        message = entry.get("message")
+        if (
+            isinstance(message, dict)
+            and message.get("role") == "assistant"
+            and message.get("timestamp") == 0
+        ):
+            message["timestamp"] = None
+    return entries
 
 
 def _generate_entry_id(existing: set[str]) -> str:
@@ -352,11 +480,6 @@ class InMemorySessionLog:
         return self._leaf_id
 
     def entries(self) -> list[dict[str, Any]]:
-        # deepcopy, not dict(e): a shallow copy protects the top-level keys and leaves
-        # the nested payload SHARED, so `log.entries()[0]["message"]["content"] = ...`
-        # mutates the live log — and, in a file-backed store, silently diverges memory
-        # from the on-disk JSONL. ctx.entries() promises callers a read-only copy; this
-        # is what makes that promise true.
         return copy.deepcopy(self._entries)
 
     def append_message(self, message: dict[str, Any]) -> str:
@@ -493,14 +616,22 @@ class InMemorySessionLog:
         entry_type: str,
         payload: dict[str, Any],
     ) -> str:
-        """Explicit-parent append (see the Protocol). Does NOT move this log's leaf."""
+        """Explicit-parent append (see the Protocol). Does NOT move this log's leaf.
+
+        The entry's ``timestamp`` is WHEN THE EVENT HAPPENED, not when the log was
+        written: a whole turn is persisted in one pass after the agent loop
+        returns, so the write time collapses every completion of that turn onto one
+        millisecond (docs/MESSAGE-TIMESTAMPS.md §1). It is taken from the payload's
+        message when that message carries one, and falls back to now for an entry
+        with no event of its own — a system message, a navigate, a compaction.
+        """
         if parent_id is not None and parent_id not in self._ids:
             raise ValueError(f"append parent {parent_id!r} not found")
         entry: dict[str, Any] = {
             "type": entry_type,
             "id": _generate_entry_id(self._ids),
             "parentId": parent_id,
-            "timestamp": _now_iso(),
+            "timestamp": event_iso(payload, _now_iso),
             **payload,
         }
         self._entries.append(entry)

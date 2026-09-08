@@ -35,11 +35,14 @@ if _EXAMPLES not in sys.path:
 
 from ext_kit import spawn, stream  # noqa: E402  (path insertion must precede the import)
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 # ── synthetic event builders ─────────────────────────────────────────────────
 
 
 def _turn_start(index: int = 0) -> dict[str, Any]:
-    return {"type": "turn_start", "timestamp": 0, "turn_index": index}
+    return {"type": "turn_start", "timestamp": _TS, "turn_index": index}
 
 
 def _tool_start(
@@ -47,7 +50,7 @@ def _tool_start(
 ) -> dict[str, Any]:
     return {
         "type": "tool_execution_start",
-        "timestamp": 0,
+        "timestamp": _TS,
         "tool_call_id": call_id,
         "tool_name": name,
         "args": args if args is not None else {},
@@ -57,7 +60,7 @@ def _tool_start(
 def _assistant_end(text: str = "hi") -> dict[str, Any]:
     return {
         "type": "message_end",
-        "timestamp": 0,
+        "timestamp": _TS,
         "message": {
             "role": "assistant",
             "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
@@ -102,7 +105,7 @@ class _FakeStream:
 
 def test_iter_jsonl_decodes_and_skips_blank_lines():
     lines = [
-        json.dumps({"type": "agent_start", "timestamp": 0}),
+        json.dumps({"type": "agent_start", "timestamp": _TS}),
         "",
         "   ",
         json.dumps(_assistant_end()),
@@ -119,7 +122,7 @@ def test_iter_jsonl_is_strict_on_malformed():
 
 def test_read_jsonl_parses_a_whole_blob():
     blob = "\n".join(
-        [json.dumps({"type": "agent_start", "timestamp": 0}), json.dumps(_assistant_end())]
+        [json.dumps({"type": "agent_start", "timestamp": _TS}), json.dumps(_assistant_end())]
     )
     events = stream.read_jsonl(blob)
     assert [e["type"] for e in events] == ["agent_start", "message_end"]
@@ -156,7 +159,7 @@ def test_stream_counters_tally_turns_tools_and_messages():
         _tool_start("grep", {"q": "x"}),
         _assistant_end(),
         _turn_start(1),
-        {"type": "agent_end", "timestamp": 0},  # ignored kind
+        {"type": "agent_end", "timestamp": _TS},  # ignored kind
     ]:
         counters.observe(event)
     assert counters.turns == 2
@@ -199,8 +202,6 @@ def test_stuck_detector_resets_on_different_signature():
 
 
 def test_stuck_detector_ignores_non_tool_events_between_identical_calls():
-    # A text/turn event between identical tool calls neither extends nor resets the
-    # run: an assistant that says something between two identical calls is still a loop.
     det = stream.StuckDetector(2)
     call = _tool_start("bash", {"cmd": "ls"})
     assert det.observe(call) is False
@@ -280,8 +281,6 @@ async def test_monitor_stream_stops_and_kills_on_stuck():
     mon = stream.StreamMonitor(stuck_limit=3)
     flags: list[str] = []
     seen = [e async for e in stream.monitor_stream(src, monitor=mon, on_flag=flags.append)]
-    # Yields exactly the three offending calls (the 3rd trips), then stops — the
-    # trailing event is never delivered.
     assert len(seen) == 3
     assert all(e["type"] == "tool_execution_start" for e in seen)
     assert flags == ["stuck"]

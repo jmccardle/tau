@@ -56,8 +56,6 @@ CENTER_SQUARES = (
 # --- Evaluation constants (§4.2) --------------------------------------------
 
 PIECE_VALUE = {"P": 1.0, "N": 3.0, "R": 5.0, "Q": 9.0, "K": 0.0}
-# King is not scored as material; terminal outcomes are handled by mate/
-# stalemate detection, so no large king constant is needed.
 
 MOBILITY_LAMBDA = 0.1  # λ, the mobility-difference weight (§4.2).
 CENTER_BONUS = 0.25  # per-piece bonus for occupying a central square.
@@ -236,8 +234,6 @@ class Board:
         f, r = file_of(sq), rank_of(sq)
         sqs = self.squares
 
-        # Pawn attacks. A white pawn attacks the two squares diagonally *above*
-        # it, so `sq` is hit by a white pawn sitting one rank below diagonally.
         pawn_char = "P" if by_white else "p"
         pawn_rank = r - 1 if by_white else r + 1
         if 0 <= pawn_rank < BOARD_SIZE:
@@ -566,8 +562,6 @@ class Board:
         best_score = -MATE_SCORE * 4
         for move in moves:
             self.push(move)
-            # Full window at the root keeps the choice independent of ordering
-            # pruning, so the deterministic tie-break is purely first-best-wins.
             score = -self._negamax(depth - 1, -MATE_SCORE * 4, MATE_SCORE * 4)
             self.pop()
             if score > best_score:

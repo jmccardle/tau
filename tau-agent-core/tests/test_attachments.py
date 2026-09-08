@@ -77,9 +77,7 @@ class TestWhatAWordInAPromptIs:
         """The ``@`` must open a word. ``bob@example.com`` does not."""
         assert scan_attachments("mail bob@example.com", cwd=workspace) == ()
 
-    def test_trailing_punctuation_is_dropped_only_when_it_has_to_be(
-        self, workspace: Path
-    ) -> None:
+    def test_trailing_punctuation_is_dropped_only_when_it_has_to_be(self, workspace: Path) -> None:
         (found,) = scan_attachments("read @notes.txt, then stop", cwd=workspace)
         assert (found.kind, found.token) == ("inline", "notes.txt")
 
@@ -122,9 +120,7 @@ class TestTheBlocksThatReachTheModel:
         assert 'reason="' in rendered.prefix
         assert rendered.prefix.endswith("/>\n")
 
-    def test_an_image_becomes_a_content_block_and_an_empty_marker(
-        self, workspace: Path
-    ) -> None:
+    def test_an_image_becomes_a_content_block_and_an_empty_marker(self, workspace: Path) -> None:
         rendered = render_attachments(scan_attachments("@shot.png", cwd=workspace))
         assert rendered.prefix == '<attachment filename="shot.png" type="image/png" />\n'
         (image,) = rendered.images
@@ -143,9 +139,7 @@ class TestTheBlocksThatReachTheModel:
         rendered = render_attachments(scan_attachments("ask @alice", cwd=workspace))
         assert (rendered.prefix, rendered.images, rendered.failures) == ("", (), ())
 
-    def test_a_file_deleted_after_the_scan_is_reported_not_dropped(
-        self, workspace: Path
-    ) -> None:
+    def test_a_file_deleted_after_the_scan_is_reported_not_dropped(self, workspace: Path) -> None:
         """Fail-Early: the model is told, and so is the frontend."""
         found = scan_attachments("@notes.txt", cwd=workspace)
         (workspace / "notes.txt").unlink()

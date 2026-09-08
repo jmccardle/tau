@@ -190,15 +190,6 @@ def test_off_value_mapping_sent_for_default_on_model(monkeypatch):
     assert payload["reasoning_effort"] == "none"
 
 
-# ── Body-fragment level values ───────────────────────────────────────────────
-# `reasoning_effort` is one vendor's spelling of "think this hard". A server that
-# spells it differently ignores it in silence -- measured against llama.cpp
-# b1061-2da6686, where high/low/banana all produced byte-identical generations
-# while `thinking_budget_tokens` tracked the budget (docs/probe-results/). A map
-# value may therefore be a request-body fragment instead of a string, so the level
-# enum stays the stable abstraction while the FIELD carrying it is per-endpoint.
-
-
 def test_a_fragment_value_lands_as_its_own_keys_not_as_reasoning_effort(monkeypatch):
     _patch_client(monkeypatch)
     payload = _run(
@@ -206,8 +197,6 @@ def test_a_fragment_value_lands_as_its_own_keys_not_as_reasoning_effort(monkeypa
         {"reasoning": "high"},
     )
     assert payload["thinking_budget_tokens"] == 4096
-    # The point of the whole feature: the level did NOT go out under the key this
-    # endpoint ignores.
     assert "reasoning_effort" not in payload
 
 

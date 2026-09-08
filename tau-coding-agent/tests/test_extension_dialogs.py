@@ -1,34 +1,28 @@
-"""E7 §3 (S47) — the TUI ``confirm`` / ``select`` / ``input`` dialogs are wired.
+"""The TUI's remaining blocking dialogs, after docs/EXTENSION-LOCKS.md §8.2.
 
-Two layers, both driven through the REAL Textual runtime (``App.run_test()`` /
-Pilot), matching the ``test_session_tree_browser`` modal style:
+``confirm``/``select``/``input`` are gone from ``ExtensionUI`` and from the
+delegate protocol, and with them ``ExtensionConfirmModal`` and
+``ExtensionSelectModal``. Two screens survive, for two different reasons:
 
-1. The three ``ModalScreen`` overlays in isolation: each dialogs' Yes/No, choose,
-   type-and-submit, and Esc/Cancel paths dismiss with the right value.
-2. The ``_ExtensionUIDelegate`` end-to-end: an extension calling ``api.ui.confirm``
-   / ``select`` / ``input`` (via the delegate) pushes the modal, the user answers,
-   and the awaited value flows back to the caller. This is what a loaded
-   extension's hook actually awaits, so it runs inside a worker (the context
-   ``push_screen_wait`` requires), exactly like the generation worker.
+* ``ExtensionInputModal`` is now HEAD-LOCAL — the palette opens it to collect the
+  argument string for a command that declares ``"args"``, and no extension
+  reaches it. It is tested here because that is where its tests were.
+* ``ExtensionFormScreen`` is the one dialog an extension can still open, through
+  ``ctx.ui.form``, and it is how a flow collects a missing argument.
 
-Reference: docs/EXTENSIONS-DEMO-ROADMAP.md §3 S47.
+Both are driven through the REAL Textual runtime (``App.run_test()`` / Pilot).
+The ask that replaced the three removed dialogs is
+``test_extension_locks_tui.py``.
+
+Reference: docs/EXTENSIONS-DEMO-ROADMAP.md §3 S47; docs/EXTENSION-LOCKS.md §8.2.
 """
 
 from __future__ import annotations
 
 from textual.app import App
-from textual.widgets import Input, OptionList
+from textual.widgets import Input
 
-from tau_coding_agent.app import (
-    ExtensionConfirmModal,
-    ExtensionInputModal,
-    ExtensionSelectModal,
-    _ExtensionUIDelegate,
-)
-
-# ---------------------------------------------------------------------------
-# 1. the modal overlays in isolation
-# ---------------------------------------------------------------------------
+from tau_coding_agent import modals, extension_ui
 
 
 class _ModalHarness(App):
@@ -46,58 +40,8 @@ class _ModalHarness(App):
         self.result = value
 
 
-async def test_confirm_modal_yes_returns_true() -> None:
-    harness = _ModalHarness(ExtensionConfirmModal("Delete?", "Are you sure?"))
-    async with harness.run_test() as pilot:
-        await pilot.pause()
-        await pilot.click("#ext-confirm-yes")
-        await pilot.pause()
-    assert harness.result is True
-
-
-async def test_confirm_modal_no_returns_false() -> None:
-    harness = _ModalHarness(ExtensionConfirmModal("Delete?", "Are you sure?"))
-    async with harness.run_test() as pilot:
-        await pilot.pause()
-        await pilot.click("#ext-confirm-no")
-        await pilot.pause()
-    assert harness.result is False
-
-
-async def test_confirm_modal_escape_returns_false() -> None:
-    # Fail-Early: a cancelled confirm is a "no", never a hidden yes.
-    harness = _ModalHarness(ExtensionConfirmModal("Delete?", "Are you sure?"))
-    async with harness.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("escape")
-        await pilot.pause()
-    assert harness.result is False
-
-
-async def test_select_modal_enter_returns_highlighted_item() -> None:
-    harness = _ModalHarness(ExtensionSelectModal("Pick one", ["alpha", "beta", "gamma"]))
-    async with harness.run_test() as pilot:
-        await pilot.pause()
-        option_list = harness.screen.query_one("#ext-select-list", OptionList)
-        # Move the highlight to the second option, then Enter selects it.
-        option_list.highlighted = 1
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-    assert harness.result == "beta"
-
-
-async def test_select_modal_escape_returns_none() -> None:
-    harness = _ModalHarness(ExtensionSelectModal("Pick one", ["alpha", "beta"]))
-    async with harness.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("escape")
-        await pilot.pause()
-    assert harness.result is None
-
-
 async def test_input_modal_type_and_submit_returns_text() -> None:
-    harness = _ModalHarness(ExtensionInputModal("Name?", default="draft"))
+    harness = _ModalHarness(modals.ExtensionInputModal("Name?", default="draft"))
     async with harness.run_test() as pilot:
         await pilot.pause()
         field = harness.screen.query_one("#ext-input-field", Input)
@@ -111,7 +55,7 @@ async def test_input_modal_type_and_submit_returns_text() -> None:
 
 
 async def test_input_modal_default_prefills_and_ok_returns_it() -> None:
-    harness = _ModalHarness(ExtensionInputModal("Name?", default="draft"))
+    harness = _ModalHarness(modals.ExtensionInputModal("Name?", default="draft"))
     async with harness.run_test() as pilot:
         await pilot.pause()
         assert harness.screen.query_one("#ext-input-field", Input).value == "draft"
@@ -121,7 +65,7 @@ async def test_input_modal_default_prefills_and_ok_returns_it() -> None:
 
 
 async def test_input_modal_escape_returns_none() -> None:
-    harness = _ModalHarness(ExtensionInputModal("Name?", default="draft"))
+    harness = _ModalHarness(modals.ExtensionInputModal("Name?", default="draft"))
     async with harness.run_test() as pilot:
         await pilot.pause()
         await pilot.press("escape")
@@ -129,76 +73,63 @@ async def test_input_modal_escape_returns_none() -> None:
     assert harness.result is None
 
 
-# ---------------------------------------------------------------------------
-# 2. the delegate end-to-end (what an extension hook awaits)
-# ---------------------------------------------------------------------------
+_FORM_SPEC = {
+    "title": "Details",
+    "fields": [{"name": "who", "kind": "text", "label": "Who", "default": "nobody"}],
+}
+
+
+async def test_form_modal_submit_returns_the_answers() -> None:
+    harness = _ModalHarness(modals.ExtensionFormScreen(_FORM_SPEC))
+    async with harness.run_test() as pilot:
+        await pilot.pause()
+        await pilot.click("#ext-form-submit")
+        await pilot.pause()
+    assert harness.result == {"who": "nobody"}
+
+
+async def test_form_modal_escape_fabricates_nothing() -> None:
+    harness = _ModalHarness(modals.ExtensionFormScreen(_FORM_SPEC))
+    async with harness.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+    assert harness.result is None
 
 
 class _DelegateHarness(App):
     """A bare app that hosts the ``_ExtensionUIDelegate`` modals.
 
     The delegate is app-agnostic at runtime (it only calls ``push_screen_wait`` /
-    ``notify``), so this stands in for ``Parley`` without booting a backend.
+    ``notify``), so this stands in for ``TauApp`` without booting a backend.
     """
 
 
-async def test_delegate_confirm_flows_answer_back() -> None:
+async def test_delegate_form_flows_answers_back() -> None:
+    """The one dialog an extension still awaits, end to end through the delegate."""
     app = _DelegateHarness()
-    delegate = _ExtensionUIDelegate(app)  # type: ignore[arg-type]
+    delegate = extension_ui._ExtensionUIDelegate(app)  # type: ignore[arg-type]
     box: dict[str, object] = {}
 
     async with app.run_test() as pilot:
         await pilot.pause()
 
         async def call() -> None:
-            box["value"] = await delegate.confirm("Proceed?", "Run the command?")
+            box["value"] = await delegate.form(_FORM_SPEC)
 
         worker = app.run_worker(call(), exclusive=False)
         await pilot.pause()  # let the modal mount
-        await pilot.click("#ext-confirm-yes")
+        await pilot.click("#ext-form-submit")
         await worker.wait()
 
-    assert box["value"] is True
+    assert box["value"] == {"who": "nobody"}
 
 
-async def test_delegate_select_flows_choice_back() -> None:
-    app = _DelegateHarness()
-    delegate = _ExtensionUIDelegate(app)  # type: ignore[arg-type]
-    box: dict[str, object] = {}
-
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        async def call() -> None:
-            box["value"] = await delegate.select("Model?", ["fast", "smart"])
-
-        worker = app.run_worker(call(), exclusive=False)
-        await pilot.pause()
-        option_list = app.screen.query_one("#ext-select-list", OptionList)
-        option_list.highlighted = 1
-        await pilot.pause()
-        await pilot.press("enter")
-        await worker.wait()
-
-    assert box["value"] == "smart"
-
-
-async def test_delegate_input_cancel_returns_default() -> None:
-    # The delegate contract is ``-> str``: a cancelled input resolves to the
-    # default (the same value headless returns), never a fabricated "".
-    app = _DelegateHarness()
-    delegate = _ExtensionUIDelegate(app)  # type: ignore[arg-type]
-    box: dict[str, object] = {}
-
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        async def call() -> None:
-            box["value"] = await delegate.input("Branch name?", default="main")
-
-        worker = app.run_worker(call(), exclusive=False)
-        await pilot.pause()
-        await pilot.press("escape")
-        await worker.wait()
-
-    assert box["value"] == "main"
+async def test_the_delegate_offers_four_methods() -> None:
+    """§8.2: three that paint, one that blocks. A fifth would be a new surface."""
+    public = {
+        name
+        for name in dir(extension_ui._ExtensionUIDelegate)
+        if not name.startswith("_") and callable(getattr(extension_ui._ExtensionUIDelegate, name))
+    }
+    assert public == {"notify", "set_status", "panel", "form"}

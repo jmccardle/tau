@@ -30,6 +30,9 @@ from tau_llm.providers.google import (
 )
 from tau_llm.types import Model, ToolCall, ToolResultMessage
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 SIGNATURE_B64 = base64.b64encode(b"thought-bytes").decode("ascii")
 
 
@@ -64,7 +67,7 @@ def _tool_result(
             "tool_name": name,
             "content": blocks,
             "is_error": is_error,
-            "timestamp": 0,
+            "timestamp": _TS,
         }
     ).model_dump()
 
@@ -106,11 +109,6 @@ def _assistant_with_calls(*calls: ToolCall) -> dict[str, Any]:
     return {"role": "assistant", "content": [c.model_dump() for c in calls]}
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Registration
-# ──────────────────────────────────────────────────────────────────────────
-
-
 def test_the_wire_protocol_is_registered() -> None:
     assert API in registered_apis()
 
@@ -136,11 +134,6 @@ def test_gemini_api_key_is_preferred_over_google_api_key() -> None:
     assert spec.api_key_env == ("GEMINI_API_KEY", "GOOGLE_API_KEY")
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# The signature payload (S8)
-# ──────────────────────────────────────────────────────────────────────────
-
-
 def test_a_signature_round_trips_through_the_payload() -> None:
     assert read_signature_payload(signature_payload(SIGNATURE_B64)) == SIGNATURE_B64
 
@@ -164,11 +157,6 @@ def test_another_vendors_payload_reads_as_absent() -> None:
 
 def test_a_non_dict_signature_reads_as_absent() -> None:
     assert read_signature_payload("a-bare-string") == ""
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# O4 — where the signature goes, and where it must not
-# ──────────────────────────────────────────────────────────────────────────
 
 
 def test_the_first_tool_call_carries_its_signature() -> None:
@@ -284,11 +272,6 @@ def test_thinking_is_replayed_by_default() -> None:
     assert contents[0]["parts"][0] == {"text": "deliberating", "thought": True}
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# O2 — the measured defaults
-# ──────────────────────────────────────────────────────────────────────────
-
-
 def test_a_tool_call_id_is_sent_by_default() -> None:
     """MEASURED: accepted by every model tried, including one pi says takes no id.
 
@@ -379,11 +362,6 @@ def test_images_nest_when_the_model_says_it_supports_it() -> None:
 
     assert contents[0]["parts"][0]["function_response"]["parts"][0]["inline_data"]["data"] == "AAA"
     assert len(contents) == 1
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# Message conversion
-# ──────────────────────────────────────────────────────────────────────────
 
 
 def test_system_messages_are_lifted_out_of_contents() -> None:
@@ -505,11 +483,6 @@ async def test_no_afc_key_is_sent_when_there_are_no_tools(
     assert "automatic_function_calling" not in captured["config"]
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Refusals
-# ──────────────────────────────────────────────────────────────────────────
-
-
 async def test_a_missing_key_raises() -> None:
     provider = GoogleGenerativeAIProvider(api_key=None)
 
@@ -568,11 +541,6 @@ def test_the_extra_is_genuinely_optional() -> None:
     provider = GoogleGenerativeAIProvider(api_key="k")
 
     assert provider.base_url == "https://generativelanguage.googleapis.com"
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# Streaming state
-# ──────────────────────────────────────────────────────────────────────────
 
 
 class _Part:
@@ -674,11 +642,6 @@ def test_an_unmapped_finish_reason_is_an_error_not_a_stop() -> None:
     assert "SOMETHING_NEW_IN_2027" in (final.error_message or "")
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# The SDK boundary
-# ──────────────────────────────────────────────────────────────────────────
-
-
 def test_stored_base64_becomes_bytes_for_the_sdk() -> None:
     """Text everywhere above; bytes only at the boundary, in one pass."""
     contents = [{"role": "model", "parts": [{"thought_signature": SIGNATURE_B64}]}]
@@ -716,9 +679,6 @@ def test_usage_counts_thinking_tokens_as_output() -> None:
 
     assert converted.output_tokens == 12
     assert converted.cache_read_tokens == 2
-    # prompt_token_count 10 INCLUDES the 2 cached, so input_tokens is the uncached
-    # 8. Left at 10 the pair would count the cached span twice (pi subtracts too,
-    # google-generative-ai.ts:227). The server's total is untouched.
     assert converted.input_tokens == 8
     assert converted.total_tokens == 22
 

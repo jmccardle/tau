@@ -19,7 +19,7 @@ transcription of code that runs today.
 τ facts are from this checkout — branch `sim/integration`, `9cf92f5`. That
 matters: the copy on `midlife` (`7c72173`) differs, and at least one blocker
 below is *less* severe here than there (`rpc.py` has tests on this branch and
-not on that one). tectum facts are from `/home/john/Development/tectum` at
+not on that one). tectum facts are from `~/Development/tectum` at
 `d212c5e`. Where something was not verified, it says so.
 
 ---

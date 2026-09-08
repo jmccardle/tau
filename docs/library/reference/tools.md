@@ -72,6 +72,16 @@ Result from a single tool execution.
 
 List of content blocks (mirrors Message content)
 
+### details
+
+`tau_agent_core.tools.base.AgentToolResult.details: dict[str, Any] | None`
+
+Structured facts about the execution that are NOT part of what
+the model reads — a path, a line range, a match count, a diff. Every
+built-in tool sets it; it rides the ``toolResult`` message and the
+``tool_execution_end`` event so a head can render more than the text
+block. ``None`` means the tool declared none, never "dropped".
+
 ### error_message
 
 `tau_agent_core.tools.base.AgentToolResult.error_message: str | None`

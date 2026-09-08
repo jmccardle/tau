@@ -75,8 +75,6 @@ SCOPE_FILE = os.path.join(".tau", "scope.txt")
 # The held-out test directory (relative to the run cwd) the agent must not touch.
 HELD_OUT_DIR = "tests_heldout"
 
-# Path-based mutation tools governed by the scope guard. ``bash`` is NOT here:
-# its write target is not statically known, so it is held-out-guarded only.
 WRITE_TOOLS: frozenset[str] = frozenset({"write", "edit"})
 
 
@@ -195,10 +193,4 @@ def gatekeeper_extension(api: Any) -> None:
     api.on("tool_call", gatekeeper_tool_call)
 
 
-#: The module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/22_gatekeeper.py`` → ``sdk._load_one_extension`` → ``getattr(module,
-#: "register")``). It IS :func:`gatekeeper_extension`; the alias makes the demo
-#: loadable through the public ``-e`` surface used by the live procedures
-#: (EXTENSIONS-LIVE-PROCEDURES.md; EXTENSIONS-E5-WIRING.md §6 / S37), not only via
-#: the direct ``gatekeeper_extension(api)`` call the unit tests use.
 register = gatekeeper_extension

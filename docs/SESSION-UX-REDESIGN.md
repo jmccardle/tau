@@ -123,7 +123,7 @@ CommandRegistry (app.py)          ← one handler per action…
 dashed = "--" + abspath.lstrip("/\\").replace("/", "-").replace("\\", "-").replace(":", "-") + "--"
 ```
 
-`/home/john/Development/agent-harness-py` → `--home-john-Development-agent-harness-py--`.
+`/home/dev/Development/agent-harness-py` → `--home-dev-Development-agent-harness-py--`.
 
 Resolution helper (new): `session_dir_for_cwd(cwd: str) -> Path`. The base dir is
 `~/.tau/sessions/`; mirror pi, which derives it from `APP_NAME`
@@ -330,7 +330,8 @@ research found across every tool with a real picker.
   deliberately, not both (Fail-Early: no try/fallback between control flows).
 - `Tab` toggles **current-cwd ↔ all** (re-runs the loader with `cwd=` / `cwd=None`).
   pi parity: the picker's Current/All toggle (`session-selector.ts`).
-- `/` filters via `textual.fuzzy.Matcher` over `name`/`first_message`/`last_message`.
+- `/` filters over `name`/`first_message`/`last_message` — every whitespace-separated
+  term must appear, case-insensitively, in any order. **Not fuzzy any more**; §6.1.
 - `Esc` cancels (built-in `dismiss` with no result).
 - `Footer()` renders the key hints from the screen's `BINDINGS`; `DEFAULT_CSS`
   (auto-scoped since Textual 0.38) centers the dialog (`align: center middle`).
@@ -343,6 +344,42 @@ Rename (`Ctrl+R` → `append_session_info`) and delete (`Ctrl+D`) are pi-parity
 picker actions (`session-selector.ts`); include them in Phase B as sub-modals if
 cheap, else defer to §10. Git-branch column and threaded fork display are
 explicitly **deferred** (§10).
+
+### 6.1 Why the filter is not fuzzy (2026-09-05)
+
+Typing `what is` into the picker's filter box OOM-killed the process. Reported
+live, then reproduced: `textual.fuzzy.FuzzySearch._match` (`fuzzy.py:122-146`)
+collects **every** strictly-increasing placement of the query's letters over the
+candidate into one `possible_offsets` list, with no bound on how many that is. It
+is safe for what Textual uses it for — command-palette entries, tens of characters
+— and this filter matches whole conversation text.
+
+Measured, query `what is`, against a repeating English haystack, 2 GB address-space
+cap:
+
+| Haystack | Time |
+|---|---|
+| 132 chars | 0.002 s |
+| 264 chars | 0.182 s |
+| 396 chars | 3.541 s |
+| 528 chars | `MemoryError` |
+
+That is per row, on every keystroke. Note the shape of the report — "some search
+results disappeared at first, then it locked up": shorter queries were finding
+their answer through `_match`'s substring quick-exit, which returns before the
+enumeration starts. `what ` exits early; `what i` does not.
+
+`matches_query` replaces it: lowercase, split the query on whitespace, require
+every term as a substring. One pass per term, and the answer no longer depends on
+how long the conversation was.
+
+**What that costs**, stated rather than hidden: no typo tolerance and no initials
+— `cmp` no longer finds `compaction`. Fuzzy did filter usefully on short
+candidates (measured: on a 118-character haystack, `nats` scored 15.0 and
+`compaction` scored 0.0), so this is a real trade and not the removal of something
+that never worked. A bounded fuzzy matcher over the `name` field alone would buy
+it back; it would also mean two matching rules over one haystack, and the name is
+empty until someone runs `/name`.
 
 ## 7. Command unification — one action, three surfaces
 

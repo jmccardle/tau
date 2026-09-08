@@ -38,6 +38,9 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 # ── load the example module (its filename is not a valid identifier) ─────────
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MOD_PATH = _REPO_ROOT / "examples" / "53_router_ledger.py"
@@ -73,7 +76,7 @@ def _tool_call_assistant(call_id: str, model: str, usage: Usage) -> AssistantMes
         provider="openai",
         model=model,
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=usage,
     )
 
@@ -118,9 +121,6 @@ def _make_model(model_id: str = "gpt-4o") -> Model:
 
 
 def _make_session(model_id: str = "gpt-4o") -> AgentSession:
-    # No tools registered: each `write` call yields an error tool result, so the
-    # loop keeps taking turns. Compaction disabled: the fake reports large usage on
-    # purpose, which would otherwise trip unrelated auto-compaction machinery.
     return AgentSession(
         session_log=InMemorySessionLog(),
         model=_make_model(model_id),
@@ -142,7 +142,7 @@ def _n_turn_fake(model_id: str, usage: Usage, stop_after: int):
                 provider="openai",
                 model=model_id,
                 stop_reason="stop",
-                timestamp=0,
+                timestamp=_TS,
                 usage=usage,
             )
             return _Stream([DoneEvent(final=final, usage=Usage())])
@@ -176,16 +176,12 @@ async def test_records_accrue_per_task_model_through_the_loop(tmp_path) -> None:
         await session.prompt("do the refactor")
 
     records = cost_ledger.records()
-    # Three usage-bearing completions (two tool turns + the final stop turn), each a
-    # (refactor, gpt-4o) record; the duplicate tool-turn message_end carries no usage.
     assert len(records) == 3
     assert {r["outcome"] for r in records} == {"refactor"}
     assert {r["model"] for r in records} == {"gpt-4o"}
     assert all(r["tokens"] == 60_000 for r in records)
     assert all(r["usd"] is not None for r in records)
 
-    # Cross-session RELOAD-INVARIANCE: a fresh CostLedger over the same file (as a
-    # restarted process would build) rolls up to the identical (task, model) cell.
     reloaded = demo.ledger.CostLedger("router-loop", base_dir=tmp_path)
     stats = demo.route_stats(reloaded.records())
     cell = stats[("refactor", "gpt-4o")]
@@ -205,8 +201,8 @@ def _seed_two_model_ledger(tmp_path) -> demo.ledger.CostLedger:
     return cl
 
 
-async def _load_router(session: AgentSession, tmp_path, *, confirm: str) -> None:
-    """Load the demo through the real loader with a headless confirm policy + resolver."""
+async def _load_router(session: AgentSession, tmp_path) -> None:
+    """Load the demo through the real loader, with a model resolver behind it."""
     cfg = {
         "53_router_ledger": {
             "models": {
@@ -217,41 +213,58 @@ async def _load_router(session: AgentSession, tmp_path, *, confirm: str) -> None
             "ledger_name": "router-cmd",
         }
     }
-    # The demo's CostLedger("router-cmd") defaults base_dir to ~/.tau/ext-state, and
-    # the caller sets HOME=tmp_path, so it resolves to the seeded file on disk.
     result = await session.load_extensions([str(_MOD_PATH)], discover=False, extensions_config=cfg)
     assert result.extensions and not result.errors
-    session.set_headless_ui_defaults({"confirm": confirm})
     session.set_model_resolver(lambda name: _make_model(name))
 
 
-async def test_route_applies_reassignment_on_confirm_yes(tmp_path, monkeypatch) -> None:
-    """`/route` recommends the cheaper model and, on confirm=yes, calls set_model."""
+async def test_route_asks_rather_than_reassigning(tmp_path, monkeypatch) -> None:
+    """`/route` recommends the cheaper model and ASKS; it changes nothing by itself."""
     monkeypatch.setenv("HOME", str(tmp_path))
     _seed_two_model_ledger(tmp_path / ".tau" / "ext-state")
 
     session = _make_session("gpt-4o")
-    await _load_router(session, tmp_path, confirm="yes")
+    await _load_router(session, tmp_path)
 
     assert session.get_model()["id"] == "gpt-4o"
     result = await session.run_extension_command("route", "")
     assert result.handled
     assert "reassign 'gpt-4o' → 'gpt-4o-mini'" in result.output
-    assert "Reassigned: active model is now 'gpt-4o-mini'" in result.output
-    # The S45 reassignment took effect: the active model switched by name (S47 gate).
-    assert session.get_model()["id"] == "gpt-4o-mini"
+
+    request = session.pending_request
+    assert request is not None
+    assert request.lock is False, "a recommendation is advisory; ignoring it must work"
+    assert session.get_model()["id"] == "gpt-4o"
 
 
-async def test_route_keeps_model_on_confirm_no(tmp_path, monkeypatch) -> None:
+async def test_answering_the_ask_applies_the_reassignment(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     _seed_two_model_ledger(tmp_path / ".tau" / "ext-state")
 
     session = _make_session("gpt-4o")
-    await _load_router(session, tmp_path, confirm="no")
+    await _load_router(session, tmp_path)
+    await session.run_extension_command("route", "")
 
-    result = await session.run_extension_command("route", "")
-    assert "Kept 'gpt-4o' — no change." in result.output
-    assert session.get_model()["id"] == "gpt-4o"  # unchanged — the human vetoed
+    outcome = await session.answer_request(
+        session.pending_request.entry_id, "Switch to gpt-4o-mini", {}
+    )
+
+    assert "Reassigned: active model is now 'gpt-4o-mini'" in str(outcome.output)
+    assert session.get_model()["id"] == "gpt-4o-mini"
+
+
+async def test_declining_the_ask_keeps_the_model(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _seed_two_model_ledger(tmp_path / ".tau" / "ext-state")
+
+    session = _make_session("gpt-4o")
+    await _load_router(session, tmp_path)
+    await session.run_extension_command("route", "")
+
+    outcome = await session.answer_request(session.pending_request.entry_id, "Keep gpt-4o", {})
+
+    assert "Kept the current model" in str(outcome.output)
+    assert session.get_model()["id"] == "gpt-4o"
 
 
 async def test_route_reports_but_recommends_nothing_when_active_is_cheapest(
@@ -261,10 +274,11 @@ async def test_route_reports_but_recommends_nothing_when_active_is_cheapest(
     _seed_two_model_ledger(tmp_path / ".tau" / "ext-state")
 
     session = _make_session("gpt-4o-mini")  # already on the cheapest model
-    await _load_router(session, tmp_path, confirm="yes")
+    await _load_router(session, tmp_path)
 
     result = await session.run_extension_command("route", "")
     assert "No reassignment recommended" in result.output
+    assert session.pending_request is None
     assert session.get_model()["id"] == "gpt-4o-mini"
 
 
@@ -342,8 +356,6 @@ def test_unpriced_cells_never_participate_in_a_recommendation() -> None:
         ]
     )
     assert stats[("refactor", "unpriced")].usd_per_1k_tokens is None
-    # Active 'priced' has no cheaper priced rival → no recommendation (the unpriced
-    # one is not treated as a free $0 alternative).
     assert demo.recommend_reassignment(stats, "refactor", "priced") is None
 
 
@@ -448,4 +460,4 @@ def test_router_ledger_extension_registers_the_hook_and_command(tmp_path, monkey
 
     demo.router_ledger_extension(_RecordingApi())
     assert registered_hooks == ["message_end"]
-    assert registered_commands == ["route"]
+    assert registered_commands == ["route", "route-apply", "route-keep"]

@@ -37,6 +37,9 @@ from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.submission import Submission
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 def _model() -> Model:
     return Model(
@@ -70,7 +73,7 @@ def _assistant(text: str, tool_calls: list[ToolCall] | None = None) -> Assistant
         provider="openai",
         model="m",
         stop_reason="toolUse" if tool_calls else "stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
 
@@ -231,12 +234,8 @@ class TestDeliveryPoint:
         assert "actually, use ripgrep" not in _joined(provider.calls[0])
         second = _texts(provider.calls[1])
         assert "actually, use ripgrep" in second
-        # ...and it lands AFTER the tool result — the "after the current turn's
-        # tool calls" half of the sentence.
         assert second.index("TOOL-RAN") < second.index("actually, use ripgrep")
 
-        # The transcript is coherent: a real user node on the active path, in the
-        # position the model saw it, and in this submission's returned messages.
         active = _texts(
             ConversationTree(
                 session._session_log.entries(), session._session_log.cursor
@@ -298,8 +297,6 @@ class TestDeliveryPoint:
             turn = asyncio.create_task(
                 session.submit(_sub("go", "a-1", multitask_strategy="enqueue"))
             )
-            # Wait until the provider is inside its (gated) first call, so the
-            # steer genuinely arrives during a turn whose output has no tool calls.
             while not provider.calls:
                 await asyncio.sleep(0)
             await session.submit(_sub("one more thing", "s-1", multitask_strategy="steer"))
@@ -468,12 +465,6 @@ class TestReentrancy:
         provider = _Scripted([_assistant("done")])
 
         with patch("tau_agent_core.agent_loop.stream_simple", side_effect=provider.stream):
-            # The `input` hook is dispatched from the turn's own task (unlike a
-            # tool, which parallel execution hands to a gather-created one), so
-            # this is the exact same-task shape test_submit_reentrant.py pins for
-            # the other strategies. emit_input is Fail-Closed: the handler's
-            # exception is SURFACED and dispatch continues, so the outer turn
-            # still completes — what matters is that it completes AT ALL.
             await asyncio.wait_for(
                 session.submit(_sub("go", "a-1", multitask_strategy="enqueue")), timeout=2.0
             )

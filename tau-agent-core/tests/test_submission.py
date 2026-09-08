@@ -45,9 +45,6 @@ def _sub(**overrides: Any) -> Submission:
 
 def test_defaults_are_the_fail_early_ones() -> None:
     sub = _sub()
-    # reject, not enqueue: pi throws when streaming and no behaviour is named; "reject" is
-    # that failure as a value. A default of "enqueue" would silently paper over the missing
-    # concurrency guard prompt() has today.
     assert sub.multitask_strategy == "reject"
     # False, not True: injected text (e.g. off a bus) must never command-dispatch by default.
     assert sub.expand_commands is False
@@ -60,16 +57,10 @@ def test_defaults_are_the_fail_early_ones() -> None:
 
 
 def test_max_submission_depth_is_ten() -> None:
-    # decision 3. Enforcement is submit()'s job (next work item) — this module only
-    # declares the bound and stores whatever depth it is given; see
-    # test_depth_beyond_max_does_not_raise_at_construction below.
     assert MAX_SUBMISSION_DEPTH == 10
 
 
 def test_depth_beyond_max_does_not_raise_at_construction() -> None:
-    # The cap is enforced in AgentSession.submit(), not here — a Submission is just a
-    # record. Pinning this now documents the boundary so a future submit() patch cannot
-    # accidentally move the check here without a test noticing the behaviour changed.
     sub = _sub(depth=MAX_SUBMISSION_DEPTH + 5)
     assert sub.depth == MAX_SUBMISSION_DEPTH + 5
 
@@ -125,8 +116,6 @@ def test_correlation_rejects_a_live_object_at_top_level() -> None:
 
 
 def test_correlation_rejects_a_live_object_nested_two_levels_deep() -> None:
-    # This is exactly the failure decision 4 names: a live object riding inside a nested
-    # dict/list, which would otherwise only fail three hops downstream in a JSON renderer.
     class FakeNatsMessage:
         pass
 
@@ -148,8 +137,6 @@ def test_correlation_rejects_a_non_string_key_nested() -> None:
 
 
 def test_correlation_rejects_tuple_and_set_and_bytes() -> None:
-    # Not JSON scalars/list/dict, and they round-trip through asdict()/json differently
-    # (or not at all) — exactly the shapes decision 4 excludes on purpose.
     with pytest.raises(ValueError, match="not a JSON scalar/list/dict"):
         _sub(correlation={"t": (1, 2)})
     with pytest.raises(ValueError, match="not a JSON scalar/list/dict"):
@@ -194,16 +181,12 @@ def test_round_trip_with_images_and_rich_correlation() -> None:
     )
     rebuilt = _round_trip(sub)
     assert rebuilt == sub
-    # The dump is a plain, independent structure — mutating it must not alias the original,
-    # or a caller holding the dict could corrupt a Submission already in flight.
     dumped = dataclasses.asdict(sub)
     dumped["correlation"]["meta"]["ok"] = False
     assert sub.correlation["meta"]["ok"] is True
 
 
 def test_round_trip_silent_submission() -> None:
-    # silent=True normalizes store_history to False in __post_init__; the ROUND-TRIPPED
-    # object must land on the same normalized state, not re-derive something different.
     sub = _sub(silent=True, store_history=True)
     assert sub.store_history is False
     rebuilt = _round_trip(sub)
@@ -227,8 +210,6 @@ def test_submission_result_accepted() -> None:
 
 
 def test_submission_result_rejection_is_a_value_not_an_exception() -> None:
-    # decision-adjacent to "Five mechanisms" point 5 (LSP ApplyWorkspaceEditResult): a refusal
-    # is constructed normally, never raised.
     result = SubmissionResult(
         accepted=False, submission_id="sid-2", rejection_reason="a turn is already in flight"
     )

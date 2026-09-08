@@ -66,10 +66,6 @@ from tau_llm.types import Model
 _CWD = "/work"
 _OTHER_CWD = "/elsewhere"
 
-#: The fake store's base directory. Deliberately NOT under a home directory:
-#: the property the `ref` projection exists for is "which universe is this",
-#: and unit S made `<tmp>/.tau/sessions` vs `~/.tau/sessions` the live
-#: instance of that question (D-6/H1b).
 _BASE = "/tmp-fake/.tau/sessions"
 
 
@@ -111,9 +107,6 @@ class _FakeConversationSession:
         now = datetime.now(timezone.utc)
         self._created = now
         self._modified = now
-        #: What `SessionInfo` would carry for this session. Kept here so a
-        #: test can make a row unreadable, or give it a 40kB first message,
-        #: without reaching into the catalog's listing code.
         self._first_message = ""
         self._last_message = ""
         self._parent: str | None = None
@@ -251,8 +244,6 @@ class _FakeCatalog(SessionCatalog):
     def create_ephemeral(
         self, cwd, model, backend, *, system_prompt: str | None = None, name: str | None = None
     ) -> ConversationSession:
-        # Mirrors FileSessionCatalog: same construction, no path, never
-        # registered — so it is never listed and never resolvable.
         session = _FakeConversationSession(cwd, model, backend, name, path=None)
         if system_prompt:
             session.append_message({"role": "system", "content": system_prompt})
@@ -293,8 +284,6 @@ class _FakeCatalog(SessionCatalog):
             for session in self._sessions.values()
             if cwd is None or session._cwd == cwd
         ]
-        # Newest-modified first — SessionCatalog.list's documented contract,
-        # and what `most_recent` depends on.
         return sorted(rows, key=lambda info: info.modified, reverse=True)
 
 
@@ -343,10 +332,7 @@ def test_list_sessions_is_a_tier_b_read_with_schemas() -> None:
     assert entry.declined_because is None
     assert entry.result_schema is not None
     assert entry.result_schema["required"] == ["sessions", "scope"]
-    # A read takes no params at all (the same NO_PARAMS_SCHEMA object every
-    # other read on the table uses, so an unexpected param is refused by
-    # `validate_params` before the handler runs).
-    assert entry.params_schema is commands.NO_PARAMS_SCHEMA
+    assert entry.params_schema == commands.NO_PARAMS_SCHEMA
 
 
 async def test_an_unexpected_param_is_refused(handler: RPCHandler) -> None:
@@ -597,9 +583,6 @@ async def test_an_unpersisted_tuple_still_reports_its_store_and_cursor(
     assert result["session"]["addressable"] is False
     assert result["session"]["store"] == "file"
     assert result["session"]["lane"] == "primary"
-    # E5: `cursor` is still reported (this fake's fresh log has no entries
-    # yet, so it is null here — the KEY is what E5 requires, and the two
-    # copies must agree).
     assert "cursor" in result
     assert result["cursor"] == result["session"]["cursor"]
 
@@ -611,10 +594,6 @@ async def test_fork_and_switch_session_report_addressable_too(
     a host reads ONE contract: the field is present on every one of them,
     not only on the verb whose param made it necessary."""
     planted = catalog.create(_CWD, "m", "openai")
-    # `fork` needs the connection to be ON a catalog-produced session first
-    # (AgentSessionRuntime.fork refuses the bare scratch log an AgentSession
-    # is constructed with) — that is rpc_mode's startup invariant, restated
-    # here in one call.
     await _call(handler, method="new_session")
 
     forked = await _call(handler, method="fork")
@@ -641,8 +620,6 @@ async def test_the_lifecycle_schema_describes_every_field_the_tuple_carries(
     for field in fresh["result"]["session"]:
         assert field in described, f"the session tuple carries {field!r}, undescribed"
 
-    # The unconditional claim finding 7 named, gone: the tuple is not
-    # "addressable" by definition any more, it is addressable when it says so.
     assert "F2's addressable tuple" not in described
 
 

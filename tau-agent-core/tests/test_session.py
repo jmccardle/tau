@@ -19,6 +19,9 @@ from tau_agent_core.session import (
     CompactionEntry,
 )
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 class TestSessionEntry:
     """Tests for SessionEntry."""
@@ -265,7 +268,7 @@ class TestSessionEntryTypes:
         entry = SessionEntry(
             id="test",
             type="session",
-            timestamp=0,
+            timestamp=_TS,
         )
         assert isinstance(entry.type, str)
 
@@ -317,8 +320,6 @@ class TestSessionAppendOnly:
 
     def test_entries_are_added_not_modified(self):
         """Entries should be added, not modified in place."""
-        # This test documents the append-only contract
-        # Implementation: session_manager only appends, never updates
         pass  # Will be tested when session_manager exists
 
     def test_entry_id_is_unique(self):

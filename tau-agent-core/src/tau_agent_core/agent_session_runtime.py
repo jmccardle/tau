@@ -194,51 +194,16 @@ import asyncio
 import inspect
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+from tau_llm.docs import agent_facing
+
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.usage import zero_usage
 
 if TYPE_CHECKING:
     from tau_agent_core.agent_session import AgentSession
 
-#: How long :meth:`AgentSessionRuntime._apply_swap` waits, after signalling
-#: ``session.abort()``, for :attr:`AgentSession.turn_lock` to free up before
-#: REFUSING rather than hanging (phase-3 review Finding 1).
-#:
-#: ``abort()`` only ever REQUESTS a stop — it is not a guarantee (its own
-#: docstring, and the module docstring's H4 section above). The degenerate
-#: case has no bound at all: a provider that accepts the connection and never
-#: sends a line never reaches the cooperative-cancellation check at all
-#: (``tau_llm``'s ``openai.py`` checks ``abort_signal.is_aborted()`` INSIDE
-#: ``async for line in response.aiter_lines()`` — no line, no check), so the
-#: turn only unwinds once the transport's OWN read timeout finally fires
-#: (``openai.py``'s ``httpx.Timeout(300.0, connect=10.0)``). No finite value
-#: here can "outlast" that worst case, and that is not this timeout's job.
-#: Its job is narrower and load-bearing regardless: stay off the RPC
-#: reader's single serial chokepoint. ``transport._read_stdin`` awaits every
-#: ``_handle_line`` to completion before it will even PARSE the next line on
-#: the wire — an unbounded wait here wedges every later request behind this
-#: one, including ``abort`` itself, which is the host's only OTHER recourse
-#: short of killing the process (the exact thing a warm pooled process
-#: exists to avoid, on the path a host would use to *recover*).
-#:
-#: A well-behaved turn unwinds far faster than either bound: the cooperative
-#: check runs on every received SSE line, and a real completion streams a
-#: token — hence a line — every well under a second. 5 seconds is generous
-#: headroom over that common case, including the turn's own persistence and
-#: every synchronously-dispatched trailing ``AgentEvent`` (H4), while still
-#: keeping the wire's worst-case latency on the order of "a human notices",
-#: not "a host gives up and kills the process". Not a knob a host is
-#: expected to tune day to day; the constructor override exists so tests do
-#: not have to sleep it out (see ``test_agent_session_runtime.py``).
 DEFAULT_SWAP_TIMEOUT_S = 5.0
 
-#: The caller-supplied post-swap hook (pi's ``rebindSession``). Invoked with
-#: the (unchanged-identity) ``AgentSession`` after every NON-cancelled swap,
-#: once the new ``session_log`` is already live and :attr:`turn_lock` has
-#: been released — so a rebind that itself calls back into the session
-#: (e.g. a renderer re-reading ``.messages``) sees the new state and cannot
-#: deadlock against the lock this module just released. May be sync or
-#: async; may be ``None`` (no rebind step — RPC mode needs none today).
 RebindCallback = Callable[["AgentSession"], "Awaitable[None] | None"]
 
 
@@ -309,9 +274,38 @@ class AgentSessionRuntime:
         self._swap_timeout_s = swap_timeout_s
         self._rebind: RebindCallback | None = None
 
-    # ------------------------------------------------------------------
-    # pi's setRebindSession
-    # ------------------------------------------------------------------
+    @property
+    @agent_facing(topic="sessions")
+    def catalog(self) -> "SessionCatalog":
+        """The catalog this runtime creates, forks and resolves sessions through.
+
+        The read behind ``list_sessions`` and the ``session_id`` domain. It is the
+        runtime's and not the session's because a session knows only itself: which
+        OTHER sessions exist is a question about the store.
+        """
+        return self._catalog
+
+    @property
+    @agent_facing(topic="sessions")
+    def cwd(self) -> str:
+        """The working directory sessions are listed and resolved against.
+
+        Every catalog call in this class passes it, and so must every caller that
+        lists sessions or completes a path — a listing taken against a different
+        directory is a different listing, not a slightly stale one.
+        """
+        return self._cwd
+
+    @property
+    @agent_facing(topic="sessions")
+    def store(self) -> str:
+        """The catalog's storage-backend label, the first field of a session ref.
+
+        Purely descriptive — this class never branches on it. Published because a
+        caller building a ref (``{store, session_id, lane, cursor}``) needs the same
+        label this runtime stamps, not one it guessed.
+        """
+        return self._store
 
     def set_rebind_session(self, callback: RebindCallback | None) -> None:
         """Install (or clear, with ``None``) the post-swap rebind callback.
@@ -320,10 +314,6 @@ class AgentSessionRuntime:
         relative to the lock and the swap).
         """
         self._rebind = callback
-
-    # ------------------------------------------------------------------
-    # The three verbs (H1-H4)
-    # ------------------------------------------------------------------
 
     async def new_session(
         self, *, persist: bool, system_prompt: str | None = None
@@ -437,10 +427,6 @@ class AgentSessionRuntime:
         """
         await self._session.emit_session_shutdown("quit")
 
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
-
     async def _apply_swap(
         self,
         build_log: Callable[[], ConversationSession],
@@ -459,15 +445,6 @@ class AgentSessionRuntime:
             if await runner.emit_session_before_switch(reason, target):
                 return {"cancelled": True}
 
-        # H4: request the in-flight turn (if any) to stop, then wait for the
-        # admission lock — uncontended if nothing was running, or blocks
-        # until the running turn has fully unwound, persisted, and finished
-        # emitting (see the module docstring's H4 section for exactly why
-        # that is what "blocks until" means here) — BOUNDED (Finding 1): a
-        # provider that never notices the abort signal must not be allowed
-        # to wedge this call, and this call's own caller, forever. Nothing
-        # has been touched yet at this point, so a timeout can simply refuse
-        # rather than unwind anything.
         session.abort()
         try:
             await asyncio.wait_for(session.turn_lock.acquire(), timeout=self._swap_timeout_s)
@@ -482,9 +459,6 @@ class AgentSessionRuntime:
                 ),
             }
         try:
-            # No `await` between here and `session.session_log = new_log`
-            # below — see the module docstring: that absence is what makes
-            # the swap atomic with respect to a concurrently-admitted turn.
             new_log = build_log()
             self._reset_transient_state()
             session.session_log = new_log

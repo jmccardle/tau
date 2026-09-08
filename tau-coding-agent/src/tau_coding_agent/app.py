@@ -1,58 +1,23 @@
 """
-Parley - A minimalist, performant chat interface for LLMs.
+TauApp - A minimalist, performant chat interface for LLMs.
 
 Clean, simple, fast. Built with Textual.
 """
 
-from rich import box
-from rich.console import RenderableType
-from rich.markup import escape
-from rich.style import Style
-from rich.table import Table
-from rich.text import Text
 from textual.app import App, ComposeResult, SystemCommand
-from textual.containers import Container, Horizontal, Vertical, VerticalScroll
-from textual.geometry import Size
-from textual.widget import Widget
-from textual.widgets import (
-    Static,
-    Input,
-    Header,
-    Footer,
-    Markdown,
-    Button,
-    TextArea,
-    Tree,
-    OptionList,
-    Checkbox,
-    RadioSet,
-    RadioButton,
-    SelectionList,
-)
-from textual.widgets.markdown import MarkdownStream
-
-# Aliased: ``TreeNode`` is already the name of ``ConversationTree``'s DATA node in
-# this module (imported below), and the browser deliberately keeps the two apart —
-# one is a log entry's place in the conversation, the other is a row's place in the
-# widget, and §2 made those two shapes differ.
-from textual.widgets.tree import TreeNode as WidgetTreeNode
+from textual.containers import Horizontal, Vertical
+from textual.widgets import Input, Header, Footer, TextArea
 from textual.binding import Binding
 from textual.reactive import reactive
-from textual import events, on, work
-from textual.message import Message
-from textual.screen import ModalScreen
+from textual import on, work
 from textual.timer import Timer
-from textual.worker import get_current_worker
-from bisect import bisect_right
-from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import datetime
 import asyncio
-import json
+import inspect
 import os
-import time
 import traceback
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Literal, Optional, Sequence
+from typing import Any, Callable, Optional
 from uuid import uuid4
 
 from tau_coding_agent.backends import (
@@ -63,20 +28,11 @@ from tau_coding_agent.backends import (
     create_backend,
     make_model_resolver,
     prompt_tokens,
-    resolve_tool_names,
 )
 from tau_coding_agent.tagline import pick_tagline
 from tau_coding_agent.headless import resolve_extensions_config
-
-# Session persistence lives in a Textual-free module so `tau -p` can save
-# sessions without importing the TUI. Sessions are append-only JSONL transcripts
-# partitioned by cwd (docs/SESSION-UX-REDESIGN.md); the TUI keeps a live working
-# message list and funnels each produced message through Session.append_message.
-# Construction/lookup goes through the storage-agnostic SessionCatalog seam (W10)
-# rather than the concrete Session directly, so the TUI never hardcodes the file
-# store either.
 from tau_agent_core.agent_session_runtime import AgentSessionRuntime
-from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, SessionInfo
+from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_coding_agent.config import TAU_DIR, ConfigError, bootstrap_config, update_config
 from tau_coding_agent.session_picker import SessionPickerModal
 from tau_coding_agent.session_store import (
@@ -91,56 +47,35 @@ from tau_coding_agent.themes import (
     install_themes,
     resolve_theme,
 )
-
-# The pure session-tree algebra lives in tau-agent-core (the loop's package, not
-# the TUI); the tree-browser (§3) is a view over ConversationTree.tree().
-from tau_agent_core.conversation_tree import ConversationTree, TreeNode
-from tau_agent_core.tree_surgery import (
-    COPYABLE_KINDS,
-    branch_refusal_reason,
-    paste_refusal_reason,
-    plan_branch,
-    plan_paste,
-    selection_order,
-    tool_group,
-)
-
-# The declarative ``ui.form`` spec validator — the single source of truth the
-# generic ``ExtensionFormScreen`` shares with ``ExtensionUI.form`` (E10 §6 / S66).
-# ``ui.panel`` (S68) normalizes in ``ExtensionUI.panel`` before reaching the delegate,
-# so ``ExtensionPanel`` renders the already-normalized ``{title, body, actions}`` dict.
-from tau_agent_core.extension_types import validate_form_spec
-
-# The result of running an extension command (handled flag + the handler's
-# returned output) — the command output channel (E7 §3 / S46).
+from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.tree_surgery import plan_branch, plan_paste
 from tau_agent_core.agent_session import ExtensionCommandResult
-
-# Extension load result + the read-only per-extension summary the /extensions
-# palette listing renders (E5 §5 / S34).
+from tau_agent_core.extension_locks import ExtensionRequest, refusal_reason
 from tau_agent_core.sdk import BASE_SYSTEM_PROMPT, LoadExtensionsResult, summarize_extensions
-
-# The submission record every input source funnels through
-# (docs/SUBMISSION-LIFECYCLE.md "The one door"). The TUI constructs one per typed
-# prompt in ``on_input_submitted`` — it is a SOURCE like any other, not a
-# privileged path into the loop.
 from tau_agent_core.submission import Submission
-
-# Command dispatch (docs/SUBMISSION-LIFECYCLE.md submit() step 3 / B2-b). The DECISION
-# — "this input is command X with arguments Y" — is the core's and is shared with
-# ``AgentSession.submit``; performing a frontend-shaped outcome (a modal, a panel, a
-# transcript re-render) is this app's, and failing to be able to is an exception.
+from tau_agent_core.truncation import Truncation, truncation_notice
+from tau_agent_core.capabilities import BUILTIN, FLOWS, Vocabulary
+from tau_agent_core.flows import (
+    Dispatched,
+    FlowStep,
+    Performed,
+    Ready,
+    bind_command_args,
+    enumerate_domain,
+    flow_arguments,
+    flow_form_spec,
+    next_step,
+)
 from tau_agent_core.commands import (
+    FRONTEND_COMMANDS,
+    ArgumentCompletions,
     CommandCompletions,
-    CommandOutcome,
     UnsupportedCommandError,
     complete_command,
+    complete_command_argument,
     resolve_command,
     unsupported_command_message,
 )
-
-# ``@file`` attachments (docs/FILE-ATTACHMENTS.md). Same split as commands: the
-# core decides what a ``@word`` is and what block it becomes; this app draws the
-# bar, cycles the Tab candidates, and puts the result on the submission.
 from tau_agent_core.attachments import (
     DEFAULT_INLINE_LIMIT,
     SENDABLE_KINDS,
@@ -148,6413 +83,73 @@ from tau_agent_core.attachments import (
     AttachmentCompletions,
     complete_attachment,
     elide_attachment_bodies,
-    human_size,
     remove_attachment,
     render_attachments,
     scan_attachments,
 )
 from tau_agent_core.tools.image_resize import DEFAULT_MAX_IMAGE_DIMENSION
-
-# Collapsible chat components. MessageBox (below) is the universal per-message
-# host; these are the children it composes — one reasoning region and N tool
-# boxes — plus the exchange grouping used by the streaming state machine.
 from tau_coding_agent.chat_widgets import (
-    ContentSource,
-    ExchangeBox,
-    MarkdownLineFormatter,
     ReasoningRegion,
     ToolBox,
-    format_duration,
     format_telemetry,
     format_tokens,
+    ChatInput,
+    ChatSidebar,
+    ReclaimPending,
+    ChatSelected,
+    _join_text_blocks,
+    DEFAULT_ENTER_KEY_MODE,
+    ENTER_KEY_MODES,
+    ENTER_KEY_CONFIG_KEY,
 )
+from tau_coding_agent import modals, editor_widgets, extension_ui, transcript, tree_browser
 
 
-class _ExtensionUIDelegate:
-    """Paints a loaded extension's ``api.notify(...)`` onto the live TUI (E5 §4 / S33).
-
-    Bound onto every extension's shared ``ExtensionContext`` via
-    ``TauBackend.set_ui_delegate`` → ``AgentSession.set_ui_delegate`` after each
-    ``create_backend``, so ``api.ui.notify(msg, level)`` reaches the Textual screen
-    instead of the headless stderr sink. Extension hooks run on the app's event
-    loop (the generation worker is async, not threaded), so ``App.notify`` is
-    called directly.
-
-    S33 wired ``notify`` only. E7 §3 / S47 now wires the interactive dialogs
-    (``confirm`` / ``select`` / ``input``) onto real ``ModalScreen`` overlays
-    (:class:`ExtensionConfirmModal` / :class:`ExtensionSelectModal` /
-    :class:`ExtensionInputModal`), pushed via ``push_screen_wait`` so the extension
-    hook awaits the user's answer. Extension hooks run inside the generation worker
-    (async, not threaded), which is the worker context ``push_screen_wait`` needs.
-    A cancelled ``confirm`` resolves to ``False`` — flipping into TUI mode must not
-    turn a ``confirm`` prompt into a hidden "yes" (Fail-Early).
-    """
-
-    #: extension notify level → Textual ``App.notify`` severity.
-    _SEVERITY: dict[str, Literal["information", "warning", "error"]] = {
-        "info": "information",
-        "warning": "warning",
-        "error": "error",
-    }
-
-    def __init__(self, app: "Parley") -> None:
-        self._app = app
-
-    def notify(self, message: str, level: str = "info") -> None:
-        self._app.notify(message, severity=self._SEVERITY.get(level, "information"))
-
-    async def confirm(self, title: str, message: str) -> bool:
-        return await self._app.push_screen_wait(ExtensionConfirmModal(title, message))
-
-    async def select(self, title: str, items: list[str]) -> str | None:
-        return await self._app.push_screen_wait(ExtensionSelectModal(title, items))
-
-    async def input(self, title: str, default: str = "") -> str:
-        # The modal dismisses with None on cancel (Esc / Cancel); the ExtensionUI
-        # contract is ``-> str``, so a cancelled prompt resolves to the default
-        # (the same value the headless path returns), never a fabricated "".
-        result = await self._app.push_screen_wait(ExtensionInputModal(title, default))
-        return result if result is not None else default
-
-    async def form(self, spec: dict[str, Any]) -> dict[str, Any] | None:
-        # One generic screen renders every field kind (E10 §6 / S66). Submit
-        # dismisses with the ``{name: value}`` dict; Esc/Cancel dismisses with
-        # ``None`` (a cancelled form is not a fabricated answer set — Fail-Early).
-        return await self._app.push_screen_wait(ExtensionFormScreen(spec))
-
-    def set_status(self, key: str, text: str | None) -> None:
-        # Ambient keyed slot in the footer status strip (E10 §6 / S67). Non-blocking
-        # (no dialog to await): forwards to the app, which updates the single
-        # ``ExtensionStatusBar`` slot in place; ``text=None`` clears it. Extension
-        # hooks run on the app's event loop, so the widget mutation is direct.
-        self._app.set_extension_status(key, text)
-
-    def panel(self, key: str, spec: dict[str, Any] | None) -> None:
-        # Persistent keyed panel (E10 §6 / S68). Non-blocking (not a dialog): forwards
-        # to the app, which mounts / updates / removes the keyed ``ExtensionPanel`` in
-        # the panel host; ``spec=None`` clears it. ``spec`` is already the normalized
-        # ``{title, body, actions}`` dict from ``ExtensionUI.panel``.
-        self._app.set_extension_panel(key, spec)
-
-
-class ExtensionStatusBar(Static):
-    """One-line footer strip of keyed extension status slots (E10 §6 / S67).
-
-    The TUI surface behind ``ctx.ui.set_status(key, text)`` (pi's ``setStatus``,
-    types.ts:141): ambient, live state — e.g. budget proximity ticking each turn.
-    Each ``key`` names a SLOT; :meth:`set_slot` UPDATES that slot in place on a
-    re-call (never appends a duplicate) and REMOVES it when ``text is None`` (pi's
-    "pass undefined to clear"). Slots render in first-seen order (an insertion-
-    ordered dict) joined by a thin separator, so the strip reads left-to-right in a
-    stable order across updates.
-
-    When no slots remain the strip hides itself (``display = False``) so it costs
-    zero rows — it only occupies its one line while at least one extension has
-    something live to show. It sits just above the built-in ``Footer`` in the app's
-    vertical flow (not docked), so the two stack cleanly.
-    """
-
-    _SEPARATOR = "  │  "
-
-    def __init__(self) -> None:
-        super().__init__("", id="ext-status-bar")
-        # Insertion-ordered slots: {key: text}. A dict preserves first-seen order,
-        # so an in-place update of an existing key keeps its position.
-        self._slots: dict[str, str] = {}
-        self.display = False
-
-    def set_slot(self, key: str, text: str | None) -> None:
-        """Set, update, or clear one keyed slot, then re-render the strip."""
-        if text is None:
-            self._slots.pop(key, None)
-        else:
-            self._slots[key] = text
-        if self._slots:
-            self.display = True
-            self.update(self._SEPARATOR.join(self._slots.values()))
-        else:
-            # Nothing live to show — collapse the strip to zero rows rather than
-            # leave an empty bar.
-            self.display = False
-            self.update("")
-
-
-class LaneStrip(Static):
-    """One-line footer strip naming every FOREIGN lane currently streaming (B3-b).
-
-    Reference: docs/SUBMISSION-LIFECYCLE.md phase 3. The transcript shows a
-    foreign lane's *content* — badged bubbles, a labelled exchange — but content
-    scrolls, and a forked sub-agent that runs for two minutes inside a collapsed
-    exchange three screens up is running invisibly. This is the ambient half: while
-    anything the user did not type is in flight, one line says so, and it says
-    which.
-
-    Deliberately a separate widget from :class:`ExtensionStatusBar` rather than a
-    slot in it. That bar's slots are an EXTENSION's to name (``ctx.ui.set_status``
-    keys come from extension code), so lane activity living there would be one
-    ``set_status("lanes", …)`` away from being silently overwritten by the very
-    extension whose fork it is reporting.
-
-    Same idiom as that bar, though — an insertion-ordered dict of live entries,
-    joined by a thin separator, hidden (``display = False``) at zero entries so it
-    costs no rows on an ordinary session. Only foreign lanes are listed: the
-    frontend's own typed turn already has its exchange on screen and the header
-    subtitle to say it is working, and a strip that lit up for every prompt would
-    be the noise the badge rules exist to avoid.
-    """
-
-    _SEPARATOR = "  │  "
-
-    def __init__(self) -> None:
-        super().__init__("", id="lane-strip")
-        # lane id -> origin badge, in the order the lanes opened.
-        self._lanes: dict[str, str] = {}
-        self.display = False
-
-    def open_lane(self, lane: str, label: str | None) -> None:
-        """Track ``lane`` as live under its origin badge.
-
-        ``label is None`` is this frontend's own typed turn, which the strip does
-        not report — not a filtered-out source, a lane the reader is already
-        looking at.
-        """
-        if label is None:
-            return
-        self._lanes[lane] = label
-        self._render_strip()
-
-    def close_lane(self, lane: str) -> None:
-        """Drop ``lane`` from the strip. A lane it never tracked is a no-op —
-        that is the ordinary interactive lane ending."""
-        if self._lanes.pop(lane, None) is not None:
-            self._render_strip()
-
-    def clear_lanes(self) -> None:
-        """Forget every tracked lane (a backend/session swap abandons them)."""
-        if self._lanes:
-            self._lanes = {}
-            self._render_strip()
-
-    @property
-    def lanes(self) -> dict[str, str]:
-        """The live lanes, ``{lane: badge}``, in open order."""
-        return dict(self._lanes)
-
-    @property
-    def summary(self) -> str:
-        """The line this strip currently shows — ``""`` when it is hidden.
-
-        Derived from :attr:`lanes` rather than cached, so what the strip says and
-        what it is tracking cannot drift; the widget's own text is set from here.
-        """
-        if not self._lanes:
-            return ""
-        count = len(self._lanes)
-        noun = "lane" if count == 1 else "lanes"
-        return f"⑂ {count} other {noun}: " + self._SEPARATOR.join(self._lanes.values())
-
-    def _render_strip(self) -> None:
-        summary = self.summary
-        self.display = bool(summary)
-        self.update(summary)
-
-
-class PendingInput(Static):
-    """The lines typed during a turn that have not reached the model yet.
-
-    Reference: docs/TUI-STEERING.md §3.
-
-    It sits between the transcript and the input box, and it is the ONLY place a
-    steering message is visible between the Enter that wrote it and the boundary
-    that delivers it. Without it the input box would accept text during a turn
-    and appear to swallow it: the transcript cannot show the line yet, because
-    the model has not been given it yet.
-
-    Hidden (``display = False``) with nothing pending, like :class:`LaneStrip`,
-    so an ordinary turn costs no rows. It holds no state of its own — the app
-    owns the buffer and calls :meth:`show` — because the buffer has to survive
-    the reclaim gesture, which empties the widget and refills the editor.
-    """
-
-    def __init__(self) -> None:
-        super().__init__("", id="pending-input")
-        self._text = ""
-        self.display = False
-
-    @property
-    def text(self) -> str:
-        """The line this widget currently shows — ``""`` when it is hidden.
-
-        Same idiom as :attr:`LaneStrip.summary`: the widget's own text is set
-        from here, so what it says and what it was told cannot drift, and a
-        caller asking what is on screen does not have to reach into Textual's
-        rendering internals to find out.
-        """
-        return self._text
-
-    def show(self, lines: list[str], note: str) -> None:
-        """Display ``lines`` under ``note``, or hide the widget when there are none.
-
-        Args:
-            lines: The pending messages, oldest first — the app's buffer verbatim.
-            note: When these will be delivered, in words. The app writes it from
-                the steering strategy in force, because "after the tool it is
-                running" and "when this turn ends" are the two different promises
-                the two strategies make, and a widget that named neither would
-                leave the reader unable to tell which one they are waiting for.
-        """
-        self.display = bool(lines)
-        if not lines:
-            self._text = ""
-            self.update("")
-            return
-        body = "\n".join(f"› {line}" for line in lines)
-        self._text = f"{note}  ·  ↑ to edit\n{body}"
-        self.update(self._text)
-
-
-def attachment_row_text(attachment: Attachment) -> str:
-    """The one line :class:`AttachmentRow` shows for one attached file.
-
-    Three shapes, because there are three things that can happen to a ``@file``
-    and a bar that showed only the name would hide the two that matter: the image
-    that will cost a vision call, and the file whose CONTENT is not being sent.
-
-    Args:
-        attachment: A sendable attachment (:data:`~tau_agent_core.attachments.SENDABLE_KINDS`).
-
-    Returns:
-        Rich markup for the row, starting with the ``✕`` that removes it.
-    """
-    name = escape(attachment.token)
-    if attachment.kind == "image":
-        detail = f"image · {human_size(attachment.size)}"
-    elif attachment.kind == "reference":
-        detail = f"path only · {escape(attachment.note)}"
-    else:
-        detail = human_size(attachment.size)
-    return f"[b]✕[/b]  {name}  [dim]{detail}[/dim]"
-
-
-class AttachmentRow(Static):
-    """One attached file in the bar above the editor.
-
-    Reference: docs/FILE-ATTACHMENTS.md §4.
-
-    Clicking it removes the attachment, which means deleting the ``@…`` word from
-    the editor — the word IS the attachment, so there is no second place for the
-    two to disagree. The whole row is the click target rather than the ``✕``
-    glyph alone: a one-line row inside a bordered bar leaves a two-cell target
-    that is easy to miss, and the cost of a mis-click is retyping one path.
-    """
-
-    def __init__(self, attachment: Attachment) -> None:
-        self._text = attachment_row_text(attachment)
-        super().__init__(self._text, classes="attachment-row")
-        self.attachment = attachment
-
-    @property
-    def text(self) -> str:
-        """The markup this row shows.
-
-        Same idiom as :attr:`PendingInput.text`: the widget's own content is set
-        from here, so a caller asking what is on screen does not have to reach
-        into Textual's rendering internals.
-        """
-        return self._text
-
-    def on_click(self, event: events.Click) -> None:
-        """Ask the app to remove this attachment from the editor's text."""
-        event.stop()
-        self.post_message(AttachmentBar.Remove(self.attachment))
-
-
-class AttachmentBar(Vertical):
-    """The files the draft in the editor will attach, and how to drop one.
-
-    Reference: docs/FILE-ATTACHMENTS.md §4.
-
-    It sits between :class:`PendingInput` and the editor, and it holds no state
-    the editor does not: :meth:`show` is called from the editor's ``Changed``
-    handler with whatever :func:`~tau_agent_core.attachments.scan_attachments`
-    found, so the bar is a VIEW of the draft rather than a second buffer that
-    could drift from it. That is what makes removal simple — it edits the text,
-    the text change redraws the bar.
-
-    Hidden (``display = False``) with nothing attached, like :class:`LaneStrip`
-    and :class:`PendingInput`, so an ordinary line costs no rows.
-
-    Unresolved references are deliberately NOT shown. A ``@word`` that names no
-    file is ordinary prose on its way to the model — the same answer an
-    unrecognised ``/…`` gets — and the popup under the editor is where that is
-    said, while the cursor is still in the word.
-    """
-
-    class Remove(Message):
-        """A row was clicked. The app deletes the reference from the editor."""
-
-        def __init__(self, attachment: Attachment) -> None:
-            super().__init__()
-            self.attachment = attachment
-
-    def __init__(self) -> None:
-        super().__init__(id="attachment-bar")
-        self._attachments: tuple[Attachment, ...] = ()
-        self.display = False
-
-    @property
-    def attachments(self) -> tuple[Attachment, ...]:
-        """What the bar is currently showing, in the order it shows them."""
-        return self._attachments
-
-    def show(self, attachments: Sequence[Attachment]) -> None:
-        """Redraw the bar from a scan of the editor's text.
-
-        Args:
-            attachments: Every reference the scan found, unresolved ones
-                included. This method does the filtering, so a caller cannot
-                accidentally show a row for a word that attaches nothing.
-        """
-        sendable = tuple(a for a in attachments if a.kind in SENDABLE_KINDS)
-        if sendable == self._attachments:
-            # Called on every keystroke. Re-mounting identical rows would flicker
-            # the bar under the cursor for no change.
-            return
-        self._attachments = sendable
-        self.remove_children()
-        self.display = bool(sendable)
-        if sendable:
-            self.mount_all([AttachmentRow(a) for a in sendable])
-
-
-class CommandPopup(Static):
-    """The slash commands — or the file paths — a half-typed line could become.
-
-    Reference: docs/SLASH-COMMANDS.md, docs/FILE-ATTACHMENTS.md §3.
-
-    It serves two vocabularies through two methods, :meth:`show` and
-    :meth:`show_files`, and the name is historical: it was the command popup
-    before ``@file`` existed. Only one vocabulary can apply at a time, so one
-    widget is one row of chrome rather than two.
-
-    It sits under the editor and answers one question the editor could not: is
-    this ``/…`` a command τ knows, or ordinary text on its way to the model? An
-    unknown slash resolves to ``None`` and is sent as a prompt
-    (:func:`~tau_agent_core.commands.resolve_command`), which is the right
-    behaviour — refusing every unrecognised slash would break pasting a file path
-    — but it is silent, and a user who mistypes ``/exntesions`` finds out by
-    reading the model's guess at what they meant. This widget says so before the
-    Enter key.
-
-    Hidden (``display = False``) with nothing to say, like :class:`LaneStrip` and
-    :class:`PendingInput`, so an ordinary line costs no rows. It holds no state:
-    :class:`ChatInput` owns the Tab cycle, because the cycle has to survive the
-    text edits that redraw this.
-    """
-
-    #: Rows shown at once. The window scrolls to keep the selected row inside it
-    #: rather than the widget scrolling, because a ``Static`` has no notion of a
-    #: selected line to scroll to and a Tab cycle that walked off the bottom of a
-    #: fixed viewport would leave the reader watching a list that never moves.
-    MAX_ROWS = 8
-
-    def __init__(self) -> None:
-        super().__init__("", id="command-popup")
-        self._text = ""
-        self.display = False
-
-    @property
-    def text(self) -> str:
-        """What this widget currently shows — ``""`` when it is hidden.
-
-        Same idiom as :attr:`LaneStrip.summary` and :attr:`PendingInput.text`: the
-        widget's own content is set from here, so what it says and what it was
-        told cannot drift, and a test does not have to reach into Textual's
-        rendering internals to read it.
-        """
-        return self._text
-
-    def show(self, completions: CommandCompletions | None, selected: int | None = None) -> None:
-        """Display ``completions``, or hide the widget when there are none.
-
-        Args:
-            completions: What :func:`~tau_agent_core.commands.complete_command`
-                said about the editor's current text. ``None`` hides the widget.
-                A value with an EMPTY ``matches`` does not hide it — that is the
-                unknown-command warning, and it is the case this widget exists
-                for.
-            selected: Index into ``completions.matches`` of the candidate a Tab
-                press has inserted, or ``None`` when no cycle is running. Marks
-                the row and decides which slice of a long list is visible.
-        """
-        if completions is None:
-            self.display = False
-            self._text = ""
-            self.update("")
-            return
-
-        self.display = True
-        self.set_class(not completions.matches, "command-popup-unknown")
-        if not completions.matches:
-            shown = escape(f"/{completions.token}".replace("\n", "↵"))
-            self._text = f"{shown} is not a command — this line goes to the model as text"
-            self.update(self._text)
-            return
-
-        self._show_rows(
-            [
-                (f"/{escape(match.name)}", escape(match.description))
-                for match in completions.matches
-            ],
-            selected,
-        )
-
-    def show_files(
-        self, completions: AttachmentCompletions | None, selected: int | None = None
-    ) -> None:
-        """Display path candidates for a half-typed ``@…`` (docs/FILE-ATTACHMENTS.md §3).
-
-        The same widget as the command list, because only one of the two can be
-        relevant at a time: the cursor is either inside a ``@…`` or it is not, and
-        :meth:`Parley._refresh_command_popup` asks in that order. Two popups would
-        be two rows of chrome to answer one question.
-
-        Args:
-            completions: What :func:`~tau_agent_core.attachments.complete_attachment`
-                said. ``None`` hides the widget. An EMPTY ``matches`` does not —
-                that is the warning that this ``@…`` names no file, which is the
-                same service this widget performs for an unknown ``/…``.
-            selected: Index into ``completions.matches`` of the candidate a Tab
-                press has inserted, or ``None`` when no cycle is running.
-        """
-        if completions is None:
-            self.display = False
-            self._text = ""
-            self.update("")
-            return
-
-        self.display = True
-        self.set_class(not completions.matches, "command-popup-unknown")
-        if not completions.matches:
-            shown = escape(f"@{completions.token}".replace("\n", "↵"))
-            self._text = f"{shown} matches no file — this word goes to the model as text"
-            self.update(self._text)
-            return
-
-        rows = [(f"@{escape(match.name)}", escape(match.detail)) for match in completions.matches]
-        hidden = completions.total - len(completions.matches)
-        self._show_rows(rows, selected, extra_hidden=hidden)
-
-    def _show_rows(
-        self,
-        rows: list[tuple[str, str]],
-        selected: int | None,
-        extra_hidden: int = 0,
-    ) -> None:
-        """Render ``(label, detail)`` rows, windowed around ``selected``.
-
-        Shared by both vocabularies so the marker, the window and the "… N more"
-        line cannot drift between them.
-
-        Args:
-            rows: The candidates, already escaped and already prefixed with the
-                sigil their vocabulary uses.
-            selected: Which row a running Tab cycle has inserted, or ``None``.
-            extra_hidden: Candidates the caller did not pass at all (a listing cap
-                upstream), added to the count of those scrolled out of the window.
-        """
-        start = 0
-        if selected is not None and selected >= self.MAX_ROWS:
-            start = selected - self.MAX_ROWS + 1
-        window = rows[start : start + self.MAX_ROWS]
-
-        lines = []
-        for offset, (label, detail) in enumerate(window):
-            marker = "▸" if selected == start + offset else " "
-            row = f"{marker} [b]{label}[/b]"
-            if detail:
-                row += f"  {detail}"
-            lines.append(row)
-        hidden = len(rows) - start - len(window) + extra_hidden
-        if hidden:
-            lines.append(f"  … {hidden} more")
-
-        self._text = "\n".join(lines)
-        self.update(self._text)
-
-
-def render_panel_body(body: dict[str, Any]) -> RenderableType:
-    """Render a normalized ``ui.panel`` body dict to the panel's body renderable (S68).
-
-    Pure (no widget access) so it is unit-testable: given a ``{"kind": …}`` body from
-    :func:`~tau_agent_core.extension_types.validate_panel_spec` it returns what the
-    panel's body :class:`Static` shows. ``text`` → the string as-is; ``list`` → one
-    ``• item`` line per entry; ``table`` → a Rich :class:`~rich.table.Table` styled as
-    the same monospace grid (a header row, a rule row, then the data rows).
-
-    The table is a *renderable* rather than a pre-padded string because the width it
-    has to fit is not knowable here: the body ``Static`` is built in
-    :meth:`ExtensionPanel.compose`, before the compositor has given the panel a
-    region, and that region changes again on every terminal resize. A grid padded to
-    its widest cell overflows any panel narrower than the sum of those cells, and the
-    ``Static`` then soft-wraps it mid-row into unreadable fragments. A ``Table`` is
-    measured against the console width it is actually handed, so it divides that width
-    between the columns, wraps a cell that has somewhere to wrap, and marks one it had
-    to cut with an ellipsis.
-    """
-    kind = body["kind"]
-    if kind == "text":
-        return str(body["text"])
-    if kind == "list":
-        return "\n".join(f"• {item}" for item in body["items"])
-    # table
-    columns: list[str] = body["columns"]
-    rows: list[list[str]] = body["rows"]
-    # SIMPLE_HEAD is the header rule and nothing else; its column divider is a space,
-    # which with the right padding reproduces the two-space gap of the old grid.
-    table = Table(
-        box=box.SIMPLE_HEAD,
-        show_edge=False,
-        pad_edge=False,
-        padding=(0, 1, 0, 0),
-        header_style=None,
-    )
-    for column in columns:
-        table.add_column(column)
-    for row in rows:
-        table.add_row(*row)
-    return table
-
-
-class _PanelActionButton(Button):
-    """A panel action button carrying the command it dispatches (E10 §6 / S68).
-
-    Subclasses :class:`Button` to attach the ``command``/``args`` an action declares,
-    so :meth:`ExtensionPanel.on_button_pressed` can map a press straight to a command
-    dispatch without brittle id-parsing — and so an ordinary ``Button`` elsewhere in a
-    panel (were one added) would not be mistaken for an action.
-    """
-
-    def __init__(self, label: str, command: str, args: str) -> None:
-        super().__init__(label, classes="ext-panel-action")
-        self.command = command
-        self.args = args
-
-
-class ExtensionPanel(Vertical):
-    """One persistent keyed panel from a declarative spec (E10 §6 / S68).
-
-    The TUI surface behind ``ctx.ui.panel(key, spec)`` (D-E6-4: a plain-data SPEC, not
-    a widget factory) — the fleet-dashboard primitive. Renders the normalized
-    ``{title, body, actions}`` from
-    :func:`~tau_agent_core.extension_types.validate_panel_spec`: a title
-    :class:`Static`, a body :class:`Static` (via :func:`render_panel_body` — text /
-    bullet list / table grid), and, when the spec declares ``actions``, a row of
-    :class:`_PanelActionButton`. Pressing an action posts an :class:`Action` message
-    that bubbles to the app, which DISPATCHES the action's ``command`` back into the
-    extension as a ``register_command`` call — the panel→extension loop.
-
-    Live-updatable: :meth:`update_spec` rebuilds the panel's children in place (the
-    panel widget keeps its DOM position, so a re-call for the same key updates content
-    without reordering sibling panels — the fleet table ticking each turn).
-    """
-
-    class Action(Message):
-        """A panel action was pressed → dispatch ``command`` with ``args`` (S68)."""
-
-        def __init__(self, command: str, args: str) -> None:
-            self.command = command
-            self.args = args
-            super().__init__()
-
-    def __init__(self, key: str, spec: dict[str, Any]) -> None:
-        super().__init__(classes="ext-panel")
-        self._key = key
-        self._spec = spec
-
-    def compose(self) -> ComposeResult:
-        yield from self._build_widgets()
-
-    def _build_widgets(self) -> ComposeResult:
-        yield Static(self._spec["title"], classes="ext-panel-title")
-        yield Static(render_panel_body(self._spec["body"]), classes="ext-panel-body")
-        actions = self._spec["actions"]
-        if actions:
-            yield Horizontal(
-                *(_PanelActionButton(a["label"], a["command"], a["args"]) for a in actions),
-                classes="ext-panel-actions",
-            )
-
-    async def update_spec(self, spec: dict[str, Any]) -> None:
-        """Re-render this panel in place from a new normalized spec (live update)."""
-        self._spec = spec
-        await self.remove_children()
-        await self.mount(*self._build_widgets())
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        button = event.button
-        if isinstance(button, _PanelActionButton):
-            # Consume the press here and re-emit it as a semantic Action, so the app
-            # sees "run command X" rather than a raw button event it must decode.
-            event.stop()
-            self.post_message(self.Action(button.command, button.args))
-
-
-class ExtensionPanelHost(VerticalScroll):
-    """The container of live keyed :class:`ExtensionPanel` widgets (E10 §6 / S68).
-
-    The app-side landing for ``ctx.ui.panel(key, spec)``. :meth:`set_panel` MOUNTS a
-    new panel for an unseen key, UPDATES an existing key's panel in place (identity
-    preserved, so sibling order is stable across a live re-call), and REMOVES a panel
-    when ``spec is None`` (pi's "pass undefined to clear"). When no panels remain the
-    host hides itself (``display = False``) so it costs zero space — it only occupies
-    the side column while at least one extension has a panel live. Docked to the right
-    of the main area, so the chat flow is untouched when empty.
-    """
-
-    # There was a ``VisibilityChanged`` message here. It existed for exactly one
-    # listener — ``Parley._apply_side_columns``, which used to re-decide whether
-    # the SIDEBAR still fit beside a newly-opened panel. §8 mounts the sidebar
-    # closed and honors ctrl+b at any width, so that decision no longer exists and
-    # neither does the message: an announcement nobody listens to is a promise
-    # this class would have to keep for no one.
-
-    def __init__(self) -> None:
-        super().__init__(id="ext-panel-host")
-        # Insertion-ordered {key: panel}; a dict preserves first-seen order so an
-        # in-place update keeps a panel's column position.
-        self._panels: dict[str, ExtensionPanel] = {}
-        self.display = False
-
-    def _set_visible(self, visible: bool) -> None:
-        """Show/hide the host. Idempotent — an unchanged state is left alone."""
-        if self.display == visible:
-            return
-        self.display = visible
-
-    def set_panel(self, key: str, spec: dict[str, Any] | None) -> None:
-        """Mount, update in place, or remove one keyed panel (E10 §6 / S68)."""
-        if spec is None:
-            panel = self._panels.pop(key, None)
-            if panel is not None:
-                panel.remove()
-            if not self._panels:
-                self._set_visible(False)
-            return
-        self._set_visible(True)
-        existing = self._panels.get(key)
-        if existing is not None:
-            # Update the SAME widget (order-stable). update_spec is async (mount /
-            # remove children); schedule it on the loop — the delegate call is sync.
-            self.call_later(existing.update_spec, spec)
-        else:
-            panel = ExtensionPanel(key, spec)
-            self._panels[key] = panel
-            self.mount(panel)
-
-
-class SystemPromptEditor(ModalScreen):
-    """Modal screen for editing the system prompt."""
-
-    def __init__(self, current_prompt: str):
-        super().__init__()
-        self.current_prompt = current_prompt
-        self.new_prompt = current_prompt
-
-    def compose(self) -> ComposeResult:
-        """Compose the modal."""
-        with Container(id="prompt-editor-dialog"):
-            yield Static("Edit System Prompt", id="prompt-editor-title")
-            yield TextArea(self.current_prompt, id="prompt-editor-textarea")
-            with Horizontal(id="prompt-editor-buttons"):
-                yield Button("Save", variant="primary", id="prompt-save")
-                yield Button("Cancel", variant="default", id="prompt-cancel")
-
-    def on_button_pressed(self, event: Button.Pressed):
-        """Handle button presses."""
-        if event.button.id == "prompt-save":
-            textarea = self.query_one("#prompt-editor-textarea", TextArea)
-            self.new_prompt = textarea.text
-            self.dismiss(self.new_prompt)
-        elif event.button.id == "prompt-cancel":
-            self.dismiss(None)
-
-
-#: The narrowest column :func:`_elide` can still say something in: one character of
-#: the text, plus the ``…`` that says the rest was cut.
-_ELIDE_MIN_WIDTH = 2
-
-#: What a row becomes when its column is narrower than :data:`_ELIDE_MIN_WIDTH`.
-#: One cell — the marker alone, with nothing left to mark.
-_ELIDE_TOO_NARROW = "…"
-
-
-def _elide(text: str, width: int) -> str:
-    """``text`` cut to ``width`` cells, ending in ``…`` when anything was cut.
-
-    Below :data:`_ELIDE_MIN_WIDTH` the label is *replaced* by
-    :data:`_ELIDE_TOO_NARROW` rather than returned whole. The previous behaviour
-    returned the text unchanged on the theory that a label elided to nothing tells
-    the reader less than one that overflows. It tells them less either way, and the
-    overflow is not free: ``textual.widgets.Tree`` renders one unwrapped line per
-    node and sizes ``virtual_size`` to the widest of them, so one un-elided row grows
-    a horizontal scrollbar across the whole browser — the exact defect this function
-    exists to prevent, manufactured by the function itself
-    (TREE-BROWSER-AS-EDITOR.md §1.1, "a Fail-Early inversion in its own right").
-
-    A row that cannot be shortened is a bug worth showing. ``…`` in a column with no
-    room for anything else shows it, and costs one cell instead of the row's whole
-    length (TREE-BROWSER-AS-EDITOR.md §2).
-    """
-    if width < _ELIDE_MIN_WIDTH:
-        return _ELIDE_TOO_NARROW
-    if len(text) <= width:
-        return text
-    return text[: width - 1] + "…"
-
-
-#: What a :class:`SessionTreeModal` can answer with (TREE-BROWSER-AS-EDITOR.md
-#: §5.3 / §11.1). A ``Literal`` rather than the document's loose ``str``: the
-#: browser is about to grow gestures that each mean something different to the
-#: caller, and an action name that is only ever compared against string literals
-#: turns a typo into a branch that silently never runs. Listed here are the
-#: actions the modal ACTUALLY emits — two. §6's ``commit`` and §7's copy/paste
-#: actions join them when the code that emits them lands; naming them early would
-#: be a vocabulary no producer backs.
-#:
-#: ``navigate`` continues from BELOW the named node. ``revise`` says the reader
-#: named a USER message, which means the opposite side of it: fork from that
-#: message's parent and hand its text back for editing (PLAN-0.9.4 §4, item 2).
-#: Both carry exactly one id — the node that was pointed at, in both cases.
-#: ``elide`` is the only one that carries TWO ids, and it is the reason
-#: :attr:`TreeIntent.sole_id` raises rather than returning ``ids[0]``: an elide
-#: names ``(anchor, first_kept)`` and a caller that read one of them would fold a
-#: span it did not choose. It replaces the ``"elide"`` entry of
-#: :class:`TreeModeModal`, which asked for the second id by re-opening this same
-#: browser — a second full-screen modal for a question the first one could answer
-#: with a key (PLAN-0.9.4 §4, the elide feedback).
-#:
-#: ``branch`` and ``paste`` are §6 and §7 of TREE-BROWSER-AS-EDITOR.md, the step the
-#: build order left for last. ``branch`` carries the marked set — every id, in row
-#: order, so :func:`~tau_agent_core.tree_surgery.plan_branch` can work out which of
-#: them are already an ancestor chain — and is the one action whose id count is not
-#: fixed. ``paste`` carries ``(copied, target)``: two ids like ``elide``, and for the
-#: same reason :attr:`TreeIntent.sole_id` raises rather than picking one.
-TreeAction = Literal["navigate", "revise", "elide", "branch", "paste"]
-
-
-@dataclass(frozen=True)
-class TreeIntent:
-    """What the browser was asked to do, and to which nodes (§5.3, §11.1).
-
-    Replaces the bare ``Optional[str]`` the modal used to dismiss with. Every
-    operation §1.3 lists needs more than a node id — a subtree summary is one node
-    plus an action, a traversal summary is a *set* of nodes — so the return type is
-    widened once, here, rather than rewritten per operation.
-
-    ``TreeIntent("navigate", (id,))`` is the degenerate case §5.3 names: exactly
-    what ``dismiss(id)`` used to mean, said in the wider vocabulary.
-
-    Frozen, and ``ids`` is a tuple rather than a list, because the intent crosses a
-    screen boundary: the modal is gone by the time the caller reads it, and a
-    mutable answer would let the caller edit a record of what it was told.
-    """
-
-    action: TreeAction
-    ids: tuple[str, ...]
-
-    @property
-    def sole_id(self) -> str:
-        """The one id this intent applies to.
-
-        Fail-Early for the callers that can only act on a single node (both of
-        today's): an intent carrying zero or several ids means the modal answered a
-        question the caller did not ask, and reading ``ids[0]`` would act on an
-        arbitrary one of them instead of saying so.
-        """
-        if len(self.ids) != 1:
-            raise ValueError(f"{self.action!r} intent names {len(self.ids)} ids, expected 1")
-        return self.ids[0]
-
-
-@dataclass(frozen=True)
-class ElidePlan:
-    """A legal ``elide_span`` call, worked out from the marked node and the cursor.
-
-    **The two ends bracket what is KEPT, not what is removed.** This is the thing
-    about an elide that a reader guesses backwards, and it is worth stating in
-    the type rather than only in the manual: over ``[1,2,3,4,5,6]``, pairing 2
-    with 4 leaves ``[2,3,4]``, not ``[1,5,6]``. An elide is the summary-less form
-    of the compaction anchor, and a compaction keeps a tail and drops the head —
-    ``ConversationTree._active_path_entries`` emits the anchor and then its
-    ancestors from ``firstKeptId`` onward, so the kept region is always ONE
-    contiguous run ending at the anchor. Cutting a span out of the middle is not
-    a shape this operation can express at all.
-
-    ``anchor`` is where the fold jumps FROM — the elide entry is appended under it
-    and the conversation continues there. ``first_kept`` is where it jumps TO: the
-    oldest entry the fold keeps.
-
-    **Which of the two nodes is which is decided by the tree, not by the gesture
-    order.** The two ends of an elide are an ancestor and a descendant of each
-    other; the deeper one is always the anchor, because the shallower one is by
-    construction on its path and the reverse is impossible. So the reader marks
-    one node and puts the cursor on the other and does not have to remember which
-    they picked first — which is what was asked for.
-
-    Two counts, because they answer two different questions and the first one
-    alone under-reports:
-
-    * ``folded`` — entries the fold itself drops, measured at the ANCHOR. This is
-      the number ``TauBackend.elide_span`` computes, and an elide that folds 0 is
-      what it refuses, so this is what gates the offer.
-    * ``dropped`` — entries that leave the context the model can see RIGHT NOW.
-      Never smaller than ``folded``, and larger whenever the anchor is not the
-      current tip: moving the cursor back to it abandons everything newer. Over
-      ``[1..6]`` with the cursor at 6, pairing 2 with 4 folds ``[1]`` and drops
-      ``[1,5,6]``. This is what the reader loses, so it is what the offer says.
-
-    ``moves_cursor`` is that same difference stated as a fact rather than a
-    number: the conversation will continue somewhere other than where it is now.
-    """
-
-    anchor: str
-    first_kept: str
-    folded: int
-    dropped: int
-    moves_cursor: bool
-
-
-@dataclass(frozen=True)
-class TreeRow:
-    """One row the tree browser will draw, and where it sits (PLAN-0.9.4 §4).
-
-    The output of :func:`plan_tree_rows`. ``parent`` is an INDEX into the row list
-    rather than a node id, because two rows can name the same id only if the
-    planner is broken, and an index makes the widget build a single pass with no
-    lookup table. ``None`` means the widget root.
-
-    ``depth`` is the WIDGET depth — what ``_relabel`` spends ``guide_depth`` cells
-    on per level — and is not the ``parentId`` depth. See :meth:`_index` for the
-    data depth, which is a different number and stays a property of the log.
-    """
-
-    node: TreeNode
-    parent: Optional[int]
-    depth: int
-    expanded: bool
-    #: Whether any other row hangs off this one — i.e. whether this row is a turn
-    #: group or a fork. ``Tree.render_label`` draws its expand toggle off
-    #: ``allow_expand`` ALONE and never asks whether there are children (textual
-    #: 8.2.7, _tree.py), so without this every assistant and tool row wears an
-    #: arrow that clicks and toggles and reveals nothing. It is a property of the
-    #: plan, not of the entry: a node whose only child is a hidden ``navigate``
-    #: has children in the log and none on screen.
-    has_children: bool
-
-
-def _row_is_hidden(node: TreeNode) -> bool:
-    """Whether this entry gets no row at all (PLAN-0.9.4 §4, item 4).
-
-    A ``navigate`` entry records that the cursor moved. It carries no message, it
-    is not a branch target worth naming, and it sits between an assistant message
-    and the user message that forked off it — which is the one place an extra row
-    does the most damage to the shape the reader is trying to read. Its children
-    attach to its nearest drawn ancestor, which reads as what actually happened:
-    the new turn hangs off the node it was forked from.
-
-    Two exceptions, and neither is tidiness:
-
-    * **The cursor is never hidden.** A browser that will not say where you are
-      has failed at the one thing it must do.
-    * **A ``navigate`` with more than one child is a real fork point.** Hiding it
-      would draw two branches as one run — a shape the log does not have.
-
-    Only ``navigate``. ``model_change`` and ``agent_spec`` carry no message
-    either, but each records a real change to what the model is and what it was
-    told, which is worth seeing while browsing history.
-    """
-    return node.kind == "navigate" and not node.is_leaf and len(node.children) <= 1
-
-
-def _drawn_children(node: TreeNode) -> list[TreeNode]:
-    """``node``'s children with hidden ones spliced out, in order.
-
-    Recurses only through runs of hidden nodes (a ``navigate`` under a
-    ``navigate``), which are at most a handful long.
-    """
-    drawn: list[TreeNode] = []
-    for child in node.children:
-        if _row_is_hidden(child):
-            drawn.extend(_drawn_children(child))
-        else:
-            drawn.append(child)
-    return drawn
-
-
-def plan_tree_rows(roots: list[TreeNode]) -> list[TreeRow]:
-    """Decide what the browser draws, under what, at what depth (PLAN-0.9.4 §4).
-
-    Pure, and separate from the widget build, because these are the rules the
-    owner's feedback was about and they are worth testing without a terminal.
-
-    **Two nesting rules, and they compose.**
-
-    1. **A fork opens a level** — TREE-BROWSER-AS-EDITOR.md §2, unchanged. A run
-       of single-child entries is a run of SIBLINGS, so indent depth counts
-       branches rather than messages and does not grow as a conversation does.
-    2. **A user message opens a level, and the next user message closes it.** A
-       user turn is the boundary §2 did not use: everything from a user message
-       down to the next one is that turn, so it gets a widget parent and can be
-       folded. The next user message is that group's SIBLING, not its child,
-       which is what keeps rule 1's bound intact — a hundred linear turns is a
-       hundred rows at depth 0, each holding its own tool traffic.
-
-    The walk carries two containers to make rule 2 work. ``current`` is where an
-    ordinary row attaches (inside the open turn group). ``outer`` is where the
-    NEXT user message attaches, which is the group's own parent — that is the
-    whole of "the group closes at the next user message". A fork sets both, since
-    a fork's branches are the next turns.
-
-    **Turn groups mount collapsed; everything else mounts open.** The exception is
-    the groups the cursor row is actually inside — its WIDGET ancestors, not its
-    ``parentId`` ancestors, and the difference is the whole rule. In a linear
-    conversation every earlier user message is a ``parentId`` ancestor of the
-    cursor but none of them is a widget ancestor, because rule 2 makes them
-    siblings; keying off the data chain would leave every turn in the session
-    open, which is the state the owner asked to get out of. Off the widget chain,
-    exactly one turn opens — the one you are in. Fork rows never collapse: a
-    browser that opens without showing where you are has failed at the one thing
-    it must do, and folding the branch you are on is a gesture, not a default.
-
-    Iterative rather than recursive: a linear conversation is one frame per entry
-    and Python's default limit is 1000, so the recursive build this replaces would
-    have raised on a long session. ``ConversationTree.tree`` went iterative for the
-    same reason.
-    """
-    # (node, widget parent index or None, widget depth, opens a turn group)
-    built: list[tuple[TreeNode, Optional[int], int, bool]] = []
-    # A container is (row index or None for the widget root, depth for its rows).
-    top: tuple[Optional[int], int] = (None, 0)
-    # A hidden root has no ancestor to splice into, so its children become roots
-    # themselves rather than vanishing with it.
-    drawn_roots: list[TreeNode] = []
-    for root in roots:
-        drawn_roots.extend([root] if not _row_is_hidden(root) else _drawn_children(root))
-    stack: list[tuple[TreeNode, tuple[Optional[int], int], tuple[Optional[int], int]]] = [
-        (node, top, top) for node in reversed(drawn_roots)
-    ]
-    while stack:
-        node, outer, current = stack.pop()
-        is_turn = node.kind == "message" and node.role == "user"
-        container = outer if is_turn else current
-        index = len(built)
-        built.append((node, container[0], container[1], is_turn))
-        children = _drawn_children(node)
-        mine: tuple[Optional[int], int] = (index, container[1] + 1)
-        if len(children) > 1:
-            child_outer = child_current = mine
-        elif is_turn:
-            child_outer, child_current = outer, mine
-        else:
-            child_outer, child_current = outer, current
-        for child in reversed(children):
-            stack.append((child, child_outer, child_current))
-
-    # The cursor's widget ancestry, walked back up the parent indices recorded
-    # above. ``is_leaf`` is ``ConversationTree``'s own cursor mark and
-    # :func:`_row_is_hidden` never drops it, so this finds a row whenever the tree
-    # has a cursor at all.
-    open_groups: set[int] = set()
-    walk: Optional[int] = next((i for i, (n, _p, _d, _t) in enumerate(built) if n.is_leaf), None)
-    while walk is not None:
-        open_groups.add(walk)
-        walk = built[walk][1]
-    parents = {parent for _n, parent, _d, _t in built if parent is not None}
-    return [
-        TreeRow(
-            node=node,
-            parent=parent,
-            depth=depth,
-            expanded=not is_turn or i in open_groups,
-            has_children=i in parents,
-        )
-        for i, (node, parent, depth, is_turn) in enumerate(built)
-    ]
-
-
-@dataclass(frozen=True)
-class TreeZones:
-    """The four selection sets the browser renders against (§5.3).
-
-    §5.3's list, with set 3 ("derived — what the cursor node covers or connects")
-    split into the three roles §3's class table actually distinguishes:
-
-    1. ``cursor`` — one node; drives :class:`TreeDetailPane`.
-    2. ``marked`` — the multi-select set; drives the counts and the lowest common
-       ancestor.
-    3. derived: ``path`` (the cursor's ancestor chain), ``folded`` (entries on that
-       chain that the active splice anchor drops) and ``covered`` (``folded``, when
-       the cursor IS that anchor).
-    4. ``hidden`` — collapsed or archived. **View state** (§11.2): nothing is
-       appended for either, and this is computed from the modal, never read from
-       the log.
-
-    ``copied`` is §7's set: the node ``c`` put on the clipboard and everything under
-    it, which is what ``v`` would re-create. It was declared here, and in
-    :attr:`ZoneTree.COMPONENT_CLASSES`, for two steps before it had a producer —
-    with no default value, because a constructor that quietly fills in an empty set
-    is how a real producer gets forgotten. :meth:`SessionTreeModal._copied_zone` is
-    that producer.
-
-    ``summary``/``abandoned`` are §4.3's pair, and ``hover_common``/
-    ``hover_divergent`` are §3's hover divergence (§10 step 5). Both arrived after
-    §5.3's list was written and neither is a *selection* set — the first is a fixed
-    property of the log's shape, the second is a function of the mouse. They live
-    here anyway so there is one zone container, one "nothing painted" value
-    (:data:`_NO_ZONES`) and one place a renderer has to look. What differs is how
-    they are REFRESHED: see :meth:`ZoneTree.set_hover_zones`.
-
-    Frozen sets, because the renderer holds this across many ``render_label`` calls
-    and a set mutated underneath it would paint two rows from two different states.
-    """
-
-    cursor: Optional[str]
-    marked: frozenset[str]
-    path: frozenset[str]
-    folded: frozenset[str]
-    covered: frozenset[str]
-    hidden: frozenset[str]
-    copied: frozenset[str]
-    #: A ``branch_summary`` row that has an abandoned branch to be the summary OF,
-    #: and the head of that branch (TREE-BROWSER-AS-EDITOR.md §4.3). Two sets rather
-    #: than one so the two halves of the relation read differently — a single
-    #: "this row is part of a summary pair" class cannot say which half it is.
-    summary: frozenset[str]
-    abandoned: frozenset[str]
-    #: Rows that cannot be the other end of the elide the reader has started —
-    #: everything not on one root→leaf line with the marked node (PLAN-0.9.4 §4,
-    #: the elide feedback). Empty unless exactly ONE node is marked: a mark is
-    #: what says "I am choosing a span", and greying half the tree while somebody
-    #: is only browsing would answer a question they did not ask.
-    ineligible: frozenset[str]
-    #: The hovered node's ancestry, split where it leaves the cursor's (§3, step 5).
-    #: ``hover_common`` is the shared prefix, ``hover_divergent`` the tail below it.
-    #: Both empty when there is no divergence to report — see
-    #: :meth:`SessionTreeModal._hover_divergence`.
-    hover_common: frozenset[str]
-    hover_divergent: frozenset[str]
-
-
-#: What :class:`ZoneTree` renders with before the modal has computed anything.
-#: Every set empty, so the first ``get_label_width`` pass (which Textual runs
-#: during ``_build``, before ``on_mount`` can set real zones) paints plain rows.
-_NO_ZONES = TreeZones(
-    cursor=None,
-    marked=frozenset(),
-    path=frozenset(),
-    folded=frozenset(),
-    covered=frozenset(),
-    hidden=frozenset(),
-    copied=frozenset(),
-    summary=frozenset(),
-    abandoned=frozenset(),
-    ineligible=frozenset(),
-    hover_common=frozenset(),
-    hover_divergent=frozenset(),
-)
-
-
-#: Which ``tree--kind-*`` component class a row's ``role``/``kind`` tag is painted
-#: with. The KEY is exactly what :meth:`SessionTreeModal._label` puts before the
-#: colon (``node.role or node.kind``), so the table is read off the rendered label
-#: rather than off a second derivation of it.
-#:
-#: Five classes for eleven tags, because the reader is separating *sides of a
-#: conversation*, not enumerating entry kinds: who spoke (user / assistant), what
-#: the tools said, what the system said, and what is bookkeeping. A class per kind
-#: would put eight colours on one screen and say nothing more.
-_TREE_KIND_CLASS: dict[str, str] = {
-    # message roles
-    "user": "tree--kind-user",
-    "assistant": "tree--kind-assistant",
-    "toolResult": "tree--kind-tool",
-    "system": "tree--kind-system",
-    # non-message entry kinds. `navigate` is in the table although the planner
-    # drops its row (PLAN-0.9.4 §4): a `navigate` that forks, or that is the
-    # cursor, KEEPS its row, and an unpainted row there would be the only tag on
-    # screen with no colour.
-    "compaction": "tree--kind-structural",
-    "branch_summary": "tree--kind-structural",
-    "elide": "tree--kind-structural",
-    "navigate": "tree--kind-structural",
-    "model_change": "tree--kind-structural",
-    "agent_spec": "tree--kind-structural",
-    "customEntry": "tree--kind-structural",
-}
-
-
-def tree_kind_span(node: TreeNode) -> tuple[str, int] | None:
-    """``(component class, tag length)`` for ``node``'s label, or ``None``.
-
-    The tag length counts the tag AND its colon — ``"user:"`` is 5 — which is the
-    range :meth:`ZoneTree.render_label` paints. ``None`` for a tag the table does
-    not know: an unmapped kind renders in the row's ordinary colour rather than
-    borrowing a hue that means something else (Fail-Early — an unknown kind should
-    look unknown, not look like a tool result).
-    """
-    tag = node.role or node.kind
-    component = _TREE_KIND_CLASS.get(tag)
-    if component is None:
-        return None
-    return component, len(tag) + 1
-
-
-class ZoneTree(Tree[str]):
-    """A ``Tree`` that paints per-row *zone* styling (TREE-BROWSER-AS-EDITOR.md §3).
-
-    Textual ``Tree`` rows are not DOM nodes and cannot carry per-row CSS classes,
-    so §3 uses the two hooks that exist instead: a ``COMPONENT_CLASSES`` frozenset
-    resolved through ``get_component_styles`` (textual 8.2.7, ``dom.py:601`` /
-    ``widget.py:1175``), and an override of ``render_label`` (``_tree.py:877``),
-    which Textual calls once per row.
-
-    The classes name zone **roles**, not branches. A class per branch would mint an
-    unbounded vocabulary that no stylesheet can enumerate; branch-distinguishing
-    colour, when it is wanted, cycles a small fixed palette modulo N instead (§3) —
-    not implemented here, and deliberately not faked with a role class.
-
-    This subclass exists for the styling alone. It adds no state the tree does not
-    already have except :attr:`zones`, and every colour lives in ``parley.tcss``.
-    """
-
-    #: Declared as a ``set`` and not the ``frozenset`` §3's prose names, because
-    #: the base declares ``ClassVar[set[str]]`` (textual 8.2.7, ``dom.py:144``) and
-    #: narrowing it in a subclass is a type error. Textual is what produces the
-    #: frozenset: ``DOMNode._get_component_classes`` (``dom.py:757``) unions this
-    #: with every base's, so the seven inherited ``tree--*`` names stay available
-    #: and only the new ones are listed.
-    COMPONENT_CLASSES: ClassVar[set[str]] = {
-        # On the cursor's ancestor chain. §10 puts this in step 5; it is populated
-        # HERE because step 1 removed the guide-hover ancestry highlight (§2, "§3 is
-        # the replacement, not an embellishment") and leaving it unpopulated would
-        # ship that removal as a regression. What step 5 still owns is the *hover
-        # divergence* highlight — where a hovered node's path leaves the cursor's.
-        "tree--zone-path",
-        # On the path, dropped by a splice anchor: in the chain, not in the context.
-        "tree--zone-folded",
-        # The same span, when the cursor is the anchor doing the dropping.
-        "tree--zone-covered",
-        # In the multi-select set.
-        "tree--zone-marked",
-        # Collapsed or archived (§11.2: view state, never read from the log).
-        "tree--zone-hidden",
-        # §7's clipboard: the copied node and its subtree, which is what `v` mints.
-        # Declared two steps before it had a producer, so that step 7 added one
-        # producer rather than a producer plus a stylesheet plus a renderer branch.
-        "tree--zone-copied",
-        # §4.3's pair: a `branch_summary` row, and the head of the abandoned branch
-        # it looks back on. Two classes for the two ends of ONE relation — the
-        # stylesheet gives them a shared hue (that is what says "these two go
-        # together") and different weights (that is what says which is which).
-        "tree--zone-summary",
-        "tree--zone-abandoned",
-        # Cannot be the other end of the elide in progress. Greyed rather than
-        # made unselectable: the cursor still moves through these rows, because
-        # the reader is also using them to work out WHERE the eligible ones are,
-        # and a tree the arrow keys skip around in is harder to read than a tree
-        # that says which rows are live. `ctrl+E` is what refuses.
-        "tree--zone-ineligible",
-        # §3's hover divergence (§10 step 5): where the hovered node's ancestry
-        # parts company with the cursor's. These are laid over whatever the row
-        # already carries rather than instead of it — see `render_label`.
-        "tree--zone-hover-common",
-        "tree--zone-hover-divergent",
-        # The row's TYPE tag — the `user:` / `assistant:` / `toolResult:` prefix
-        # `_label` writes. Not a zone: a zone is a set the reader's gestures move,
-        # and a row's kind never moves. They live in the same frozenset because
-        # `get_component_rich_style` is the only way a `Tree` subclass can resolve
-        # a stylesheet rule at all, and `render_label` is the only place either
-        # gets applied. See `_TREE_KIND_CLASS` for why there are five and not one
-        # per entry kind.
-        "tree--kind-user",
-        "tree--kind-assistant",
-        "tree--kind-tool",
-        "tree--kind-system",
-        "tree--kind-structural",
-    }
-
-    #: Label-portion precedence, first match wins. Ordered by how much the reader
-    #: asked for the row: a mark is a deliberate act, so it outranks everything;
-    #: ``hidden`` states that a row is excluded, which outranks what it is; the
-    #: structural zones follow, most specific first (``covered`` is the anchor's own
-    #: span, ``folded`` is any anchor's); ``path`` is last because it is true of a
-    #: whole chain and would otherwise swallow the rest.
-    #:
-    #: §4.3's pair sits between the fold zones and ``path``. Behind the fold zones
-    #: because "this row is not in your context" outranks what the row IS; ahead of
-    #: ``path`` for the reason ``path`` is last at all — the summary pair names two
-    #: specific rows, and a whole-chain zone would swallow it.
-    _LABEL_ZONES: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("marked", "tree--zone-marked"),
-        # Ahead of everything but the mark: "you cannot pick this" is the only
-        # thing that matters about a row while a span is being chosen, and it has
-        # to outrank what the row IS. Behind the mark because the marked node is
-        # never ineligible and the reader's own act still wins.
-        ("ineligible", "tree--zone-ineligible"),
-        ("hidden", "tree--zone-hidden"),
-        ("copied", "tree--zone-copied"),
-        ("covered", "tree--zone-covered"),
-        ("folded", "tree--zone-folded"),
-        ("summary", "tree--zone-summary"),
-        ("abandoned", "tree--zone-abandoned"),
-        ("path", "tree--zone-path"),
-    )
-
-    #: The hover divergence (§3, step 5). NOT part of :attr:`_LABEL_ZONES`, because
-    #: it does not compete with those classes — it COMPOSES with them. A hovered
-    #: chain crosses rows that are already on the path, already marked, already
-    #: folded, and the reader wants to keep knowing that while they trace it. So
-    #: ``render_label`` stylizes this over the whole row as a second span, and Rich
-    #: merges the two attribute-wise: the stylesheet's ``underline`` survives on top
-    #: of a marked row's green, and the divergent half's colour is what separates
-    #: the two halves of the trace.
-    #:
-    #: Two entries and first-match-wins, but the two sets are disjoint by
-    #: construction (a node is on one side of the divergence or the other), so the
-    #: order is a formality rather than a precedence decision.
-    _HOVER_ZONES: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("hover_divergent", "tree--zone-hover-divergent"),
-        ("hover_common", "tree--zone-hover-common"),
-    )
-
-    #: Gutter-portion precedence — the range BEFORE the label, which for
-    #: ``render_label`` is the expand toggle (the indentation rails further left are
-    #: drawn by ``Tree._render_line`` from ``tree--guides*`` and are not ours to
-    #: style per row). Only the span zones are listed: a fold marking its own
-    #: toggle is §3's "a row can carry one style on its gutter portion and another
-    #: on its text", and it is the case §4's fold header needs that capability for.
-    _GUTTER_ZONES: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("covered", "tree--zone-covered"),
-        ("folded", "tree--zone-folded"),
-    )
-
-    class HoverChanged(Message):
-        """The ROW under the mouse changed — not the mouse (§3, step 5).
-
-        ``Tree.hover_line`` is a ``var`` (textual 8.2.7, ``_tree.py:655``), so
-        ``watch_hover_line`` runs only when the line number actually changes.
-        Sliding the mouse along one row therefore costs the assignment in
-        ``_on_mouse_move`` and nothing else, and this message is posted at most once
-        per row the pointer crosses. That is what makes it affordable to recompute
-        anything at all on hover.
-
-        Carries the ENTRY id rather than the widget node, because the divergence is
-        a fact about ``parentId`` ancestry and the widget nesting counts forks (§2)
-        — the two are deliberately different shapes. ``None`` when the pointer left
-        the tree, or landed on a row with no entry behind it.
-        """
-
-        def __init__(self, zone_tree: "ZoneTree", entry_id: Optional[str]) -> None:
-            super().__init__()
-            self.zone_tree = zone_tree
-            self.entry_id = entry_id
-
-        @property
-        def control(self) -> "ZoneTree":
-            return self.zone_tree
-
-    def __init__(self, label: str, *, id: Optional[str] = None) -> None:
-        super().__init__(label, id=id)
-        self._zones = _NO_ZONES
-        self._kinds: dict[str, tuple[str, int]] = {}
-
-    @property
-    def zones(self) -> TreeZones:
-        """The sets the next repaint will render against."""
-        return self._zones
-
-    def set_kinds(self, kinds: dict[str, tuple[str, int]]) -> None:
-        """Tell the renderer each row's type tag: ``id -> (class, tag length)``.
-
-        Handed in whole, once, at build time. Unlike every zone this is not state
-        a gesture can move — a row's kind is a property of its entry — so there is
-        no cache to clear and no repaint to ask for: it is set before the first
-        row is drawn. Rows missing from the map render their tag plainly.
-        """
-        self._kinds = kinds
-
-    def watch_hover_line(self, previous_hover_line: int, hover_line: int) -> None:
-        """Tell the screen which row the pointer moved onto (§3, step 5).
-
-        ``super()`` first: the base flips ``_hover`` on the two nodes and refreshes
-        their regions, which is what drives ``tree--highlight-line`` and the guide
-        hover. This adds the announcement the *divergence* highlight needs, and
-        computes nothing itself — the ancestry it would need is the ``parentId``
-        chain, which lives in :class:`SessionTreeModal` and not in a widget that
-        nests by fork.
-
-        ``_get_node`` is private and is used deliberately: it is the base's own way
-        of turning a line number into a node (``_tree.py:1102``, called by the
-        watcher this overrides), the mapping is not exposed publicly, and
-        re-deriving it from ``_tree_lines`` would touch the same privates one level
-        deeper.
-        """
-        super().watch_hover_line(previous_hover_line, hover_line)
-        node = self._get_node(hover_line)
-        data = None if node is None else node.data
-        self.post_message(self.HoverChanged(self, None if data is None else str(data)))
-
-    def set_zones(self, zones: TreeZones) -> None:
-        """Replace the zone sets and repaint the visible rows.
-
-        The line cache has to be dropped by hand. ``Tree._render_line``'s cache key
-        (textual 8.2.7, ``_tree.py:1325-1332``) is ``(y, is_hover, width,
-        self._updates, pseudo_class_state, per-node _updates)`` — zone state appears
-        in none of it, and only the two nodes whose ``_selected`` flips get a new
-        per-node ``_updates`` when the cursor moves (``_tree.py:178-181``). Every
-        OTHER row on the old and new ancestor chains would keep serving the strip it
-        was painted with, which is precisely the set of rows ``tree--zone-path``
-        exists to change.
-
-        ``self._line_cache.clear()`` rather than ``Tree._invalidate()``: the latter
-        also drops ``_tree_lines_cached`` and asks for a layout pass, which rebuilds
-        every row's width. Zone styling changes no row's WIDTH — ``render_label``
-        adds spans, never characters — so the geometry is still correct and the cost
-        should be the visible rows, not the whole tree, on every arrow key.
-        """
-        self._zones = zones
-        self._line_cache.clear()
-        self.refresh()
-
-    def set_hover_zones(self, common: frozenset[str], divergent: frozenset[str]) -> None:
-        """Replace ONLY the hover divergence, leaving the selection sets alone (step 5).
-
-        The separate write path is the whole performance story of this step.
-        :meth:`SessionTreeModal._refresh_zones` walks the conversation twice
-        (``ConversationTree.path`` and ``context_entries``) and every widget row
-        (``_hidden``); the hover divergence is two ``parentId`` walks and a common
-        prefix, bounded by the tree's DEPTH. Rebuilding the whole
-        :class:`TreeZones` on hover would put the first cost on every row the
-        pointer crosses, so ``replace`` swaps the two hover fields and nothing else.
-
-        **The no-op guard is not an optimisation detail.** The commonest hover is
-        along the cursor's own path, where there IS no divergence and both sets stay
-        empty; without this the reader would pay a full repaint per row for a frame
-        that is identical to the last one. Returning early also keeps ``refresh``
-        out of the ``_on_leave`` → already-empty case.
-        """
-        if common == self._zones.hover_common and divergent == self._zones.hover_divergent:
-            return
-        self._zones = replace(self._zones, hover_common=common, hover_divergent=divergent)
-        # Same reasoning as `set_zones`: the strip cache key holds no zone state, and
-        # the base's `watch_hover_line` refreshes only the two rows whose `_hover`
-        # flipped — while a divergence highlight changes a whole chain of them.
-        self._line_cache.clear()
-        self.refresh()
-
-    def render_label(self, node: WidgetTreeNode[str], base_style: Style, style: Style) -> Text:
-        """Paint one row's zone styling over Textual's own label (§3).
-
-        Composes with the base rather than replacing it: ``super()`` assembles the
-        expand toggle and the label with Textual's styles, and this adds spans over
-        character RANGES of the result — the gutter portion gets the span zones, the
-        text portion gets the selection zones. Rich combines span styles
-        attribute-wise, so a zone that sets only ``color`` leaves the row's
-        background and weight alone.
-
-        A fourth range, ahead of those three: the row's TYPE TAG — the ``user:`` /
-        ``toolResult:`` prefix — is painted from :meth:`set_kinds`. It is what the
-        reader scans a long tree with, and it is not a zone (see the comment on
-        the ``tree--kind-*`` entries in :attr:`COMPONENT_CLASSES`).
-
-        **The cursor row is left alone.** Its style is resolved with ``partial=False``
-        (``_tree.py:1424-1427``) and, when the tree has focus, sets a foreground
-        against the cursor's own background; a zone colour layered on top wins the
-        foreground and loses the contrast that made the row readable. The cursor is
-        already the strongest state on the screen and needs no second marking. The
-        cost is that marking the row under the cursor shows no change on that row —
-        which is why :meth:`SessionTreeModal._marks_summary` reports the count. The
-        hover divergence is skipped there for the same reason, and can only ever
-        want the cursor row for its COMMON half anyway: the divergent tail is by
-        construction the part of the hovered chain the cursor's does not contain.
-        """
-        text = super().render_label(node, base_style, style)
-        entry_id = node.data
-        if entry_id is None or entry_id == self._zones.cursor:
-            return text
-        # ``super()`` returns ``prefix + label``; the prefix is the 2-cell expand
-        # toggle or nothing (``_tree.py:893-901``), so the split is the difference
-        # in length. Character offsets, which is what ``Text.stylize`` takes.
-        label = node.label
-        label_len = len(label.plain if isinstance(label, Text) else label)
-        split = len(text.plain) - label_len
-        # The type tag first, so a zone the reader put there paints OVER it. The
-        # tag says what the row is, which is true of every row; a zone says what
-        # the reader has done to it, which is true of few — and when both apply,
-        # the answer to "did my mark land?" is the one that has to win.
-        #
-        # The end offset is clamped: `_relabel` elides from the tail, so the tag
-        # survives at any width a row can still say something at, but a tree
-        # narrow enough to elide INTO the tag would otherwise paint past the end
-        # of the line.
-        kind = self._kinds.get(entry_id)
-        if kind is not None:
-            component, tag_len = kind
-            tag_end = min(split + tag_len, len(text.plain))
-            if tag_end > split:
-                text.stylize(self.get_component_rich_style(component, partial=True), split, tag_end)
-        gutter_class = self._first_zone(self._GUTTER_ZONES, entry_id)
-        if gutter_class is not None and split > 0:
-            text.stylize(self.get_component_rich_style(gutter_class, partial=True), 0, split)
-        label_class = self._first_zone(self._LABEL_ZONES, entry_id)
-        if label_class is not None:
-            text.stylize(
-                self.get_component_rich_style(label_class, partial=True),
-                split,
-                len(text.plain),
-            )
-        # The hover divergence goes on LAST and over the WHOLE row, including the
-        # toggle: it is a trace the reader is drawing with the pointer, so it should
-        # read as one continuous thing down the rows it covers rather than stopping
-        # at each row's gutter. Layered rather than substituted (see
-        # :attr:`_HOVER_ZONES`) — the row keeps saying what it is while it says it
-        # is on the traced chain.
-        hover_class = self._first_zone(self._HOVER_ZONES, entry_id)
-        if hover_class is not None:
-            text.stylize(
-                self.get_component_rich_style(hover_class, partial=True),
-                0,
-                len(text.plain),
-            )
-        return text
-
-    def _first_zone(self, order: tuple[tuple[str, str], ...], entry_id: str) -> Optional[str]:
-        """The first component class in ``order`` whose set holds ``entry_id``."""
-        for field_name, component_class in order:
-            members: frozenset[str] = getattr(self._zones, field_name)
-            if entry_id in members:
-                return component_class
-        return None
-
-
-class SessionTreeModal(ModalScreen[Optional[TreeIntent]]):
-    """Browse the conversation tree and pick a node to branch from (§3.2).
-
-    Port of pi's ``showTreeSelector`` (interactive-mode.ts:4446): a
-    ``textual.widgets.Tree`` populated from ``ConversationTree.tree()``, the current
-    leaf highlighted. ``Enter`` dismisses with a :class:`TreeIntent`; ``Esc`` cancels
-    (``None``). Copies the ``SystemPromptEditor`` modal template.
-
-    Selecting and committing are two gestures, not one (TREE-BROWSER-AS-EDITOR.md
-    §5.1). A click moves the cursor and leaves the browser open; only ``Enter``
-    dismisses. ``left`` collapses a fork, or moves to the enclosing one (§5.2).
-
-    The widget nesting handed to ``Tree`` counts **forks, not messages** (§2): see
-    :meth:`on_mount`.
-
-    **It takes the whole ``ConversationTree``, not ``roots`` plus a resolver**
-    (§5.3). Three of the four selection sets are derived rather than handed in —
-    ``path`` is ``ConversationTree.path``, ``folded``/``covered`` are the difference
-    between that and ``context_entries``, and the lowest common ancestor of the
-    marked set comes off the ``_parent_of`` map built at :meth:`_index`. A resolver
-    alone cannot answer any of them. Collapsing ``roots`` and ``resolve_entry`` into
-    the one object also removes the way they could disagree: the rows and the bodies
-    are now provably the same log, where before a caller could pass a ``roots`` graph
-    built from one tree and a resolver closed over another.
-
-    This does not weaken the standing contract that a body must be showable — it
-    strengthens it. ``resolve_entry`` was required because "a browser that cannot
-    show a body is the elided-preview draft this replaced". A ``ConversationTree``
-    cannot be passed without one: :meth:`~ConversationTree.entry` answers for every
-    id :meth:`~ConversationTree.tree` produced, by construction.
-
-    **It holds no ``SessionLog`` and performs no durable operation** (§11.1). Every
-    gesture accumulates in-memory state and the commit returns one intent for the
-    caller to apply. The rejected alternative — injecting a live editor the modal
-    calls — is on the record in §11.1; the visible consequence of not taking it is
-    that this class is constructible from a ``ConversationTree`` alone, which is what
-    every test across four files does.
-
-    ``title``/``help_text`` exist for the SECOND pick of the elide flow (W3), which
-    asks a different question of the same browser — "where does the fold resume?"
-    rather than "where do we branch from?". One reused browser with a different
-    caption, not a second widget: the tree, the leaf highlight and the key handling
-    are identical, and only the sentence above them is not.
-
-    Rows sit beside a :class:`TreeDetailPane` showing the highlighted node in full
-    — the rows say *which* node, the pane says *what it is*.
-    """
-
-    BINDINGS = [
-        Binding("escape", "cancel", "Cancel", show=False),
-        # ``priority`` is what splits the click from the commit
-        # (TREE-BROWSER-AS-EDITOR.md §5.1). ``App._check_bindings(key,
-        # priority=True)`` runs the whole binding chain from the App DOWN before the
-        # key is forwarded to the focused widget (textual 8.2.7, app.py:3966/4136),
-        # so this fires and ``Tree``'s own ``enter`` → ``action_select_cursor``
-        # (_tree.py:544) never does. ``Tree.NodeSelected`` therefore reaches
-        # :meth:`on_tree_node_selected` only from a click, which is what lets that
-        # handler select rather than dismiss. The rejected alternative — overriding
-        # ``Tree._on_click`` to suppress ``select_cursor`` — couples the modal to a
-        # private method across Textual versions.
-        Binding("enter", "commit", "Choose", priority=True, show=False),
-        Binding("left", "collapse", "Collapse", show=False),
-        # `left` collapses, so something has to re-open. `right` is unbound in
-        # `Tree.BINDINGS` exactly as `left` was (textual 8.2.7, _tree.py:524-551),
-        # and it is the other half of the file-tree idiom §5.2 borrowed.
-        Binding("right", "expand", "Expand", show=False),
-        # `space` for the multi-select mark is MY choice, not the document's — §5.3
-        # names the marked set and binds no key to it. Priority, and therefore
-        # taking the key from `Tree`'s own space=toggle-expand (_tree.py:556): the
-        # expand gesture moved to `left`/`right` above, which is where a reader of a
-        # fork-nested tree reaches for it, and marking is the gesture with no other
-        # home. Same trade `enter` already made for the commit.
-        Binding("space", "toggle_mark", "Mark", priority=True, show=False),
-        # Fold the detail pane away to see more tree (§4a).
-        #
-        # `ctrl+d`, and NOT the `ctrl+m` that was asked for: a terminal sends one
-        # byte (0x0D) for both Enter and Ctrl+M, and textual says so —
-        # ``KEY_ALIASES`` maps ``enter`` to ``["ctrl+m"]`` (textual 8.2.7,
-        # keys.py), so a ``ctrl+m`` binding on this screen would fire on every
-        # Enter, which is the commit key three lines above. There is no way to
-        # tell the two apart, so the gesture takes the next free key rather than
-        # a key that works some of the time.
-        Binding("ctrl+d", "toggle_detail", "Detail pane", priority=True, show=False),
-        # Fold a span out of the context, from the browser rather than through the
-        # mode chooser and a second copy of this screen (PLAN-0.9.4 §4). Priority
-        # for the same reason the others are, and because the App binds `ctrl+e`
-        # to the extension chord — that binding is not priority, so a screen-level
-        # one would win anyway, but relying on which of two non-priority bindings
-        # textual reaches first is how a key silently changes meaning.
-        Binding("ctrl+e", "elide", "Elide", priority=True, show=False),
-        # Build a branch out of the marked messages (§6). `ctrl+B` beside `ctrl+E`
-        # because the two are the same family — one keeps a contiguous span, the
-        # other keeps a selection with gaps in it — and a reader who has found one
-        # should find the other next to it.
-        Binding("ctrl+b", "branch", "Branch from marks", priority=True, show=False),
-        # Copy and paste (§7). Bare letters, and the only ones on this screen: there
-        # is no text input here, so a letter is free, and `c`/`v` are what the
-        # gesture is called everywhere else. Priority for the same reason the rest
-        # are — `Tree` binds no letters today, and relying on that staying true is
-        # how a key silently changes meaning on a Textual upgrade.
-        Binding("c", "copy", "Copy subtree", priority=True, show=False),
-        Binding("v", "paste", "Paste subtree", priority=True, show=False),
-    ]
-
-    #: Terminal HEIGHT at or above which the detail pane is drawn. The pane is
-    #: stacked under the tree and takes half the body, so rows are what it can run
-    #: out of — width it always has all of. Its floor is the arrangement it exists
-    #: to produce: :attr:`TreeDetailPane.LEAD_ROWS` of the previous message, then
-    #: the selected box's top border and a line of its text. Below that the pane
-    #: can no longer say what it was added to say, and the rows are better spent
-    #: on tree nodes. Measured, not derived — 20 is where the pane first holds the
-    #: lead plus the selected box's top border and two lines of its text; at 18 it
-    #: is down to one line and at 16 to the border alone, which identifies a node
-    #: without showing it. ``test_detail_pane_min_height_is_where_the_floor_is``
-    #: re-measures this, so a later change to the split, the chrome or the title
-    #: block fails rather than silently drifting.
-    DETAIL_MIN_HEIGHT = 20
-
-    def __init__(
-        self,
-        tree: ConversationTree,
-        *,
-        title: str = "Browse Conversation Tree",
-        # Two spaces between items rather than three, and ``Tab/^D: pane`` for what
-        # was ``Tab: detail pane``: this line is one row and must stay one row. The
-        # dialog's interior is the terminal less its border and padding — 76
-        # columns at 80 — and a help line that wraps takes a row from the tree to
-        # tell it about a key.
-        help_text: str = (
-            # 71 columns. The dialog's interior is 76 at an 80-column terminal and
-            # this must stay ONE row: it wrapped once already, when `^E` and `^D`
-            # pushed it to 94, and a wrapped help line costs the tree a row to tell
-            # it about a key. Three gestures joined it (§6, §7), so the separators
-            # went from two spaces to one and the verbs got shorter — every key is
-            # still named, which is the property worth the crowding. `Tab` also
-            # focuses the pane and `Esc` cancels; both are conventional enough to
-            # survive being unlabelled here, and the readout below names the
-            # gestures that apply to the row you are on.
-            "↵ pick Space mark ←→ fold ^E elide ^B branch c copy v paste ^D pane Esc"
-        ),
-        copied: Optional[str] = None,
-    ) -> None:
-        super().__init__()
-        self._tree = tree
-        # Computed here rather than taken as a parameter: see the class docstring on
-        # §5.3. `tree()` is one O(entries) walk at construction, which the callers
-        # were already paying to build the argument this replaced.
-        self._roots = tree.tree()
-        self._resolve_entry: Callable[[str], dict[str, Any]] = tree.entry
-        self._title = title
-        self._help_text = help_text
-        self._rows: list[tuple[Any, str, int, bool]] = []
-        # Set 2 of §5.3's four: the multi-select set, toggled by `space`. In-memory
-        # and per-open — nothing is appended for it (§11.1).
-        self._marked: set[str] = set()
-        # id → node, and id → parent id, for the detail pane's neighbours. Built
-        # from the graph handed in, so the pane never re-walks the session log.
-        self._by_id: dict[str, TreeNode] = {}
-        self._parent_of: dict[str, str] = {}
-        self._depth_of: dict[str, int] = {}
-        for root in self._roots:
-            self._index(root, 0)
-        # §4.3's pair, computed ONCE. It is a property of the log's shape and no
-        # gesture can move it, so recomputing it in `_refresh_zones` beside the
-        # cursor-dependent sets would pay an O(entries) walk per arrow key for an
-        # answer that never changes.
-        self._summary_zone, self._abandoned_zone = self._branch_summary_pairs()
-        # The entry under the mouse, kept so `_refresh_zones` can re-derive the
-        # divergence after a CURSOR move — the divergence is a relation between two
-        # nodes and either end moving makes the painted one stale.
-        self._hovered: Optional[str] = None
-        # The node `c` copied, if any — §7's clipboard, and the producer
-        # `tree--zone-copied` was declared without in step 3. One node, not a set: a
-        # copy names a subtree root, and a clipboard holding several roots would have
-        # to answer what order they paste in and where relative to each other. It is
-        # per-open like the marks, for the same reason (§11.1): the modal owns no
-        # log, so nothing it holds can outlive it. The CALLER may hand one back when
-        # it re-opens the browser after a paste, which is how a single copy reaches
-        # more than one destination without being re-copied — the clipboard survives
-        # the re-open because the caller carried it, not because this screen did.
-        self._copied: Optional[str] = (
-            copied if copied is not None and tree.contains(copied) else None
-        )
-        # Whether the reader has folded the detail pane away to see more tree
-        # (PLAN-0.9.4 §4a). A CHOICE, kept separate from the height rule in
-        # `_apply_detail_pane` that also hides the pane: a terminal that grows
-        # back past `DETAIL_MIN_HEIGHT` must not un-fold a pane the reader folded.
-        self._detail_folded = False
-        # Every node on one root→leaf line with the elide's other end — its
-        # ancestors and its descendants. Cached because it moves only when the
-        # MARK moves, while the rows are repainted on every cursor key.
-        self._elide_line = self._line_through(self._elide_other_end())
-
-    def _index(self, node: TreeNode, depth: int) -> None:
-        self._by_id[node.id] = node
-        self._depth_of[node.id] = depth
-        for child in node.children:
-            self._parent_of[child.id] = node.id
-            self._index(child, depth + 1)
-
-    def compose(self) -> ComposeResult:
-        with Container(id="tree-browser-dialog"):
-            yield Static(self._title, id="tree-browser-title")
-            # Stacked, not side by side: both halves are wrapped text, and a
-            # column split starves both of the width they need (see the
-            # `#tree-browser-body` rule in parley.tcss).
-            with Vertical(id="tree-browser-body"):
-                tree = ZoneTree("session", id="tree-browser-tree")
-                tree.show_root = False
-                # 2 is ``validate_guide_depth``'s floor (textual 8.2.7,
-                # _tree.py:1063) and the whole indent budget a row can spare once
-                # nesting counts forks (TREE-BROWSER-AS-EDITOR.md §2). It also makes
-                # ``_relabel``'s width arithmetic exact rather than approximate —
-                # see the comment there.
-                tree.guide_depth = 2
-                yield tree
-                yield TreeDetailPane(self._resolve_entry)
-                # What stands where the pane was when it is folded away: one row,
-                # so the tree gains the pane's whole half of the body minus this.
-                # It exists so the fold is REVERSIBLE by pointing at it — a pane
-                # that vanishes with only a key to bring it back is a pane the
-                # reader has to remember they hid.
-                yield Static(
-                    "▸ detail pane hidden — ctrl+D, or click here, to show it",
-                    id="tree-detail-folded",
-                )
-            # The selection readout: what is marked, where those marks converge,
-            # and what they are estimated to cost. Outside the body, so it keeps
-            # its row when the detail pane gives its own away on a short terminal
-            # — the count is the ONLY feedback a mark on the cursor row produces
-            # (see :meth:`ZoneTree.render_label`).
-            yield Static(self._marks_summary(), id="tree-browser-marks")
-            yield Static(self._help_text, id="tree-browser-help")
-
-    # -- the detail pane's window on the tree --------------------------------
-
-    # ``DetailView``/``TreeDetailPane`` are defined further down the module (they
-    # build on ``MessageBox``, which builds on nothing here); quoted because this
-    # file does not use postponed annotation evaluation.
-    def _view_of(self, node_id: str) -> "DetailView | None":
-        """The three-node window around ``node_id``, or ``None`` if unknown.
-
-        ``None`` rather than a raise: ``Tree.NodeHighlighted`` also fires for the
-        widget's own hidden root, whose ``data`` is ``None`` and which names no
-        conversation node at all.
-        """
-        selected = self._by_id.get(node_id)
-        if selected is None:
-            return None
-        parent_id = self._parent_of.get(node_id)
-        previous = self._by_id.get(parent_id) if parent_id is not None else None
-        # The oldest child (``ConversationTree.tree`` sorts children by
-        # timestamp), which is the message that actually followed this one in
-        # time. A later sibling is a *branch*, counted separately rather than
-        # silently chosen as "the" next message.
-        following = selected.children[0] if selected.children else None
-        return DetailView(
-            selected=selected,
-            previous=previous,
-            following=following,
-            earlier=self._depth_of[previous.id] if previous is not None else 0,
-            later=self._subtree_size(following) - 1 if following is not None else 0,
-            branches=len(selected.children),
-        )
-
-    @staticmethod
-    def _subtree_size(node: TreeNode) -> int:
-        total = 0
-        stack = [node]
-        while stack:
-            current = stack.pop()
-            total += 1
-            stack.extend(current.children)
-        return total
-
-    async def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
-        """Move the detail pane, and the zone sets, to what the cursor now sits on."""
-        await self._show_node(event.node.data)
-        self._refresh_zones()
-
-    def on_tree_node_collapsed(self, event: Tree.NodeCollapsed) -> None:
-        """Folding a branch changes set 4 (``hidden``), so the zones are stale.
-
-        The labels are NOT refitted here. A fold changes how many rows the tree
-        holds and therefore whether it has a vertical scrollbar — but
-        :meth:`_relabel` reserves that width whether the bar is there or not, so
-        the answer it gives does not depend on a fold. See the comment there for
-        why chasing the current state instead is a loop.
-        """
-        self._refresh_zones()
-
-    def on_tree_node_expanded(self, event: Tree.NodeExpanded) -> None:
-        """The other direction. Not posted during :meth:`on_mount`'s build — the
-        rows are added with ``add(expand=…)``, which sets the flag without a
-        message (textual 8.2.7, ``_tree.py:426-431``), so this does not fire once
-        per row at startup."""
-        self._refresh_zones()
-
-    async def _show_cursor_node(self) -> None:
-        """Draw the pane for wherever the cursor already is.
-
-        ``Tree`` posts ``NodeHighlighted`` only when ``cursor_line`` *changes*, so
-        a session whose current leaf is also the first row — a conversation with
-        no branches yet, which is most of them — never emits one, and the pane
-        would open blank next to a highlighted row. Called once after the initial
-        layout; :meth:`TreeDetailPane.show` dedupes it against the event that a
-        session with a deeper leaf does emit.
-        """
-        node = self.query_one("#tree-browser-tree", Tree).cursor_node
-        await self._show_node(None if node is None else node.data)
-
-    async def _show_node(self, node_id: object) -> None:
-        pane = self.query_one(TreeDetailPane)
-        if not pane.display:
-            return
-        view = None if node_id is None else self._view_of(str(node_id))
-        if view is not None:
-            await pane.show(view)
-
-    def _apply_detail_pane(self) -> None:
-        """Show or hide the pane for the current height and fold state.
-
-        The one place the pane's ``display`` is written, mirroring
-        ``Parley._apply_side_columns``: an inline style set from two places is
-        permanent and invisible to the other.
-
-        Two reasons the pane can be absent and they are not the same reason. The
-        HEIGHT rule (:attr:`DETAIL_MIN_HEIGHT`) is the layout's — below it the
-        pane cannot say what it exists to say, so it gives its rows to the tree
-        and the one-row marker would be a worse use of the last of them. The FOLD
-        is the reader's, and it gets the marker, because a choice needs a way back.
-        """
-        pane = self.query_one(TreeDetailPane)
-        marker = self.query_one("#tree-detail-folded", Static)
-        tall_enough = self.app.size.height >= self.DETAIL_MIN_HEIGHT
-        pane.display = tall_enough and not self._detail_folded
-        marker.display = tall_enough and self._detail_folded
-
-    async def action_toggle_detail(self) -> None:
-        """``ctrl+D``: fold the detail pane away, or bring it back (§4a).
-
-        The pane takes half the body, and a reader who is following the SHAPE of
-        a conversation rather than reading a message wants those rows. Nothing
-        but the terminal's height used to be able to hide it.
-
-        Redrawing on the way back rather than on the way out: :meth:`_show_node`
-        does nothing while the pane is hidden (there is no audience), so the
-        cursor may have moved several rows since the last frame the pane drew.
-        :meth:`TreeDetailPane.show` dedupes, so a cursor that did not move costs
-        nothing here.
-        """
-        self._detail_folded = not self._detail_folded
-        self._apply_detail_pane()
-        if not self._detail_folded:
-            await self._show_cursor_node()
-
-    async def on_click(self, event: events.Click) -> None:
-        """Double-click the pane to fold it; single-click the marker to unfold.
-
-        ``event.widget is pane`` and not "the pane or anything in it": a click
-        inside the pane lands on a :class:`MessageBox`, a tool box or a markdown
-        block, and those are things the reader is *reading*. The pane itself is
-        reachable only at its border and padding, which is the gesture asked for.
-
-        The marker is one row of text with nothing to read, so one click is
-        enough — a fold you have to double-click your way out of is a trap.
-        """
-        pane = self.query_one(TreeDetailPane)
-        if event.widget is pane and event.chain >= 2:
-            await self.action_toggle_detail()
-            return
-        if event.widget is self.query_one("#tree-detail-folded", Static):
-            await self.action_toggle_detail()
-
-    def on_mount(self) -> None:
-        """Build the widget tree from :func:`plan_tree_rows`.
-
-        The nesting rules live in that function, which is pure and has its own
-        tests; this is the widget build alone. Two rules: a fork opens a level
-        (TREE-BROWSER-AS-EDITOR.md §2 — indent counts branches, not messages, so
-        it does not grow with the conversation) and a user message opens a level
-        that the next user message closes (PLAN-0.9.4 §4, the turn group). Line
-        ORDER is a depth-first walk either way, so the rows appear in the sequence
-        the log has.
-
-        ``data=node.id`` is deliberately unchanged — the widget nesting is a
-        rendering decision and ``parentId`` stays the property of the data, so
-        :meth:`_view_of`, :class:`TreeDetailPane` and every caller reading
-        ``node.data`` are unaffected. :attr:`_depth_of` (built in :meth:`_index`)
-        remains the *data* depth the pane counts with; the depth recorded in
-        :attr:`_rows` is the *widget* depth, because that is what :meth:`_relabel`
-        needs to know how much indentation a row is paying for. A row the planner
-        drops is dropped from the DRAWING only: it keeps its entry, its place in
-        :attr:`_by_id` and its ancestry.
-
-        The cost is on the record: Textual highlights the hovered row's ancestry
-        through its guide rails, and a flattened run has no rails between siblings.
-        §3's ``tree--zone-path`` is the replacement.
-        """
-        self._apply_detail_pane()
-        tree = self.query_one("#tree-browser-tree", Tree)
-        if isinstance(tree, ZoneTree):
-            # Every node, not just the drawn ones — building the map from
-            # `_by_id` costs one pass over the log and means a row the planner
-            # later starts drawing (a `navigate` that forks) needs no second
-            # producer. `isinstance` because `query_one` is typed to `Tree` here
-            # and a test double could supply a plain one.
-            tree.set_kinds(
-                {
-                    node_id: span
-                    for node_id, node in self._by_id.items()
-                    if (span := tree_kind_span(node)) is not None
-                }
-            )
-        leaf_widget: list[Any] = []
-        # (widget node, full label, WIDGET depth) for every row, kept so _relabel
-        # can re-elide from the untruncated text on every resize. Eliding an already
-        # elided label would eat a character per resize.
-        self._rows = []
-
-        widgets: list[Any] = []
-        for row in plan_tree_rows(self._roots):
-            label = self._label(row.node)
-            parent = tree.root if row.parent is None else widgets[row.parent]
-            # ``expand`` on the ``add`` rather than a following ``.expand()``: both
-            # set the flag, but ``expand()`` also POSTS ``NodeExpanded`` (textual
-            # 8.2.7, _tree.py:249-258), and :meth:`on_tree_node_expanded` recomputes
-            # every zone set. One message per row at mount would make building the
-            # tree quadratic in the conversation's length.
-            # ``allow_expand`` off for a row nothing hangs from: Textual draws the
-            # toggle off that flag alone and never checks for children, so an
-            # assistant or tool row otherwise wears an arrow that clicks, toggles,
-            # and reveals nothing.
-            widget_node = parent.add(
-                label,
-                data=row.node.id,
-                expand=row.expanded,
-                allow_expand=row.has_children,
-            )
-            widgets.append(widget_node)
-            self._rows.append((widget_node, label, row.depth, row.has_children))
-            if row.node.is_leaf:
-                leaf_widget.append(widget_node)
-
-        # Highlight the current leaf (pi passes realLeafId to the selector). Defer
-        # until after the first refresh — a node's ``line`` (which ``move_cursor``
-        # reads) is only assigned once the tree has laid out.
-        if leaf_widget:
-            leaf_node = leaf_widget[0]
-            tree.call_after_refresh(tree.move_cursor, leaf_node)
-        # Same reason: the tree has no width yet, so the labels cannot be sized
-        # to it until it has laid out at least once.
-        tree.call_after_refresh(self._relabel)
-        tree.call_after_refresh(self._show_cursor_node)
-        # After the deferred cursor move, for the same reason the pane's first draw
-        # is deferred: the zones are a function of where the cursor ended up, and a
-        # session whose leaf is also the first row posts no ``NodeHighlighted``.
-        tree.call_after_refresh(self._refresh_zones)
-        tree.focus()
-
-    def on_resize(self, event: object) -> None:
-        self._apply_detail_pane()
-        self._relabel()
-
-    def _relabel(self) -> None:
-        """Fit every row's label to the tree's current width.
-
-        ``textual.widgets.Tree`` renders one physical line per node and does not
-        wrap, so a preview longer than the row is not shortened — it runs off the
-        edge and the tree grows a horizontal scrollbar, which is a poor way to
-        read a sentence. Eliding puts the truncation where the reader can see it.
-
-        An elided preview is a preview the reader cannot finish, which is what
-        :class:`TreeDetailPane` beside these rows is for: the row identifies the
-        node, the pane shows it whole and wrapped.
-        """
-        if not self._rows:
-            return
-        tree = self.query_one("#tree-browser-tree", Tree)
-        # The vertical scrollbar's width, subtracted ALWAYS. ``content_size`` is
-        # ``region.shrink(styles.gutter)`` in textual 8.2.7 — border and padding
-        # only, never the scrollbar — so a tree tall enough to scroll had every
-        # label sized two cells too wide, the rows overflowed, and it grew a
-        # horizontal scrollbar showing two cells of nothing (which then cost a
-        # row of height as well). The arithmetic below was always exact; it was
-        # the width handed to it that was wrong.
-        #
-        # Reserved unconditionally rather than read off the CURRENT scrollbar
-        # state (``scrollable_content_region``), because that state is a moving
-        # target and this method is one of the things that moves it: shortening
-        # the labels can retire the horizontal scrollbar, which gives back a row
-        # of height, which can retire the VERTICAL one, which would widen the
-        # labels again and bring the first one back. Measured: three ``_relabel``
-        # passes at mount, all three seeing a vertical scrollbar that was gone by
-        # the time the tree settled. Folding a turn open moves it too, and
-        # reproduced the reported symptom exactly — a tree that opened at four
-        # rows with no scrollbar reached ``max_scroll_x == 2`` on the first
-        # expand.
-        #
-        # The cost is two cells of preview on a tree short enough not to scroll.
-        # A stable answer that is occasionally two cells conservative beats a
-        # tight one that oscillates.
-        #
-        # ``styles.scrollbar_size_vertical`` and not ``Widget`` 's property of the
-        # same name: the property answers 0 when the bar is not currently shown,
-        # which is the very state this refuses to depend on.
-        width = tree.content_size.width - tree.styles.scrollbar_size_vertical
-        if width <= 0:
-            return
-        for widget_node, label, depth, has_children in self._rows:
-            # Textual indents each level by ``guide_depth`` cells (_tree.py:65-81,
-            # ``show_root`` False) and ``render_label`` prefixes the row with a
-            # 2-cell toggle (_tree.py:876-901); both eat into the label's share of
-            # the line. ``depth`` is the WIDGET depth, which counts forks and turn
-            # groups — so the term no longer grows with the conversation. At
-            # ``guide_depth == 2`` the toggle is exactly one more level, which makes
-            # this arithmetic exact instead of merely conservative.
-            #
-            # A row nothing hangs from carries no toggle (``allow_expand`` is off
-            # for it), so it gets those two cells back for its preview.
-            toggle = tree.guide_depth if has_children else 0
-            available = width - depth * tree.guide_depth - toggle
-            widget_node.set_label(_elide(label, available))
-
-    @staticmethod
-    def _label(node: TreeNode) -> str:
-        tag = node.role or node.kind
-        text = node.preview or f"({node.kind})"
-        marker = "  ◀ current" if node.is_leaf else ""
-        return f"{tag}: {text}{marker}"
-
-    def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
-        """A click SELECTS; it does not commit (TREE-BROWSER-AS-EDITOR.md §5.1).
-
-        ``Tree._on_click`` sets ``cursor_line`` and then runs ``select_cursor``
-        (textual 8.2.7, _tree.py:1453-1466), which posts this message — the same
-        message ``Enter`` used to arrive by. Dismissing here is why a click jumped
-        straight out of the browser: the reader could not point at a node to read it
-        in the detail pane without leaving. The screen's priority ``enter`` binding
-        now owns the commit, so this message can only have come from a click.
-
-        ``move_cursor`` rather than nothing: the click has already moved the cursor,
-        but a ``NodeSelected`` raised any other way should still leave the cursor —
-        and therefore the detail pane — on the node the reader named.
-        """
-        event.stop()
-        self.query_one("#tree-browser-tree", Tree).move_cursor(event.node)
-
-    def action_commit(self) -> None:
-        """``Enter``: dismiss with an intent naming the cursor node (§5.1).
-
-        ``TreeIntent("navigate", (id,))`` is §5.3's degenerate case, and is exactly
-        what ``dismiss(id)`` meant before the return type widened (§11.1). One id,
-        because the cursor is one node; the marked set is not committed here — no
-        gesture consumes it yet, and inventing one would be a producer for an
-        operation §6 has not built.
-
-        **Two actions, because pointing at a user message means something else**
-        (PLAN-0.9.4 §4, item 2). ``navigate`` continues from BELOW the named node,
-        which is right for an assistant or tool row. A user message's below is the
-        one place a conversation cannot go — two user turns in a row — and what
-        the reader means by pointing at one is "ask this differently", which is a
-        fork from that message's PARENT with its text in hand to edit. That is
-        ``revise``, and the id it carries is still the node the reader named.
-
-        The id, not the parent: this modal reports what was pointed at and the
-        CALLER knows the question (§5.3 / §11.1). The elide flow asks a different
-        question of this same browser and reads ``sole_id``, which both actions
-        carry — see :meth:`Parley._elide_span_flow`, which says so rather than
-        relying on it.
-
-        No cursor means nothing was named, so there is nothing to answer with and
-        the browser stays open. Dismissing with ``None`` here would be indexed as a
-        cancel, which is a different thing than "Enter on an empty tree".
-        """
-        node = self.query_one("#tree-browser-tree", Tree).cursor_node
-        if node is None or node.data is None:
-            return
-        entry_id = str(node.data)
-        picked = self._by_id.get(entry_id)
-        is_user = picked is not None and picked.kind == "message" and picked.role == "user"
-        self.dismiss(TreeIntent("revise" if is_user else "navigate", (entry_id,)))
-
-    def action_collapse(self) -> None:
-        """``left``: fold this fork, or step out to the enclosing one (§5.2).
-
-        ``left`` is unbound in ``Tree.BINDINGS`` (textual 8.2.7, _tree.py:524-551 —
-        only ``shift+left`` is ``cursor_parent``), so the standard file-tree idiom
-        was simply missing. A node with widget children is a fork or a user turn
-        (PLAN-0.9.4 §4 added the second), which makes "collapse what the cursor is
-        on, else go to what contains it" the gesture for folding away a branch or a
-        turn rather than for hiding one message.
-
-        The widget root is skipped: ``show_root`` is ``False``, so it occupies no
-        line and ``move_cursor`` onto it would clear the cursor rather than move it.
-        """
-        tree = self.query_one("#tree-browser-tree", Tree)
-        node = tree.cursor_node
-        if node is None:
-            return
-        if node.children and node.is_expanded:
-            node.collapse()
-            return
-        parent = node.parent
-        if parent is not None and parent is not tree.root:
-            tree.move_cursor(parent)
-
-    def action_expand(self) -> None:
-        """``right``: unfold the fork or turn the cursor is on.
-
-        The counterpart :meth:`action_collapse` needs, and the gesture that opens a
-        turn group, which is how most rows now arrive (PLAN-0.9.4 §4: a group
-        mounts collapsed unless the cursor is inside it). ``space`` used to be
-        ``Tree``'s expand/collapse toggle and now marks (see :attr:`BINDINGS`), so
-        without this a collapsed row could not be reopened from the keyboard at
-        all. A row with no widget children has nothing to unfold; moving the cursor
-        into the subtree on ``right`` is deliberately NOT done — ``down`` already
-        goes there, and the pair here is about folding.
-        """
-        node = self.query_one("#tree-browser-tree", Tree).cursor_node
-        if node is not None and node.children and not node.is_expanded:
-            node.expand()
-
-    def action_toggle_mark(self) -> None:
-        """``space``: add or remove the cursor node from the marked set (§5.3 set 2).
-
-        The key is this implementation's choice; §5.3 names the set and binds
-        nothing to it. Marks are in-memory and per-open: §11.1 keeps the modal free
-        of a ``SessionLog``, so nothing here is durable and closing the browser
-        forgets them.
-
-        **A mark takes its tool group with it**
-        (:func:`~tau_agent_core.tree_surgery.tool_group`). An assistant message that
-        made tool calls and the results answering them are one unit to every
-        provider, so marking either end marks both, and unmarking either unmarks
-        both. The alternative — let the reader build the half-selection and refuse it
-        at the commit — teaches the rule by rejection, one attempt at a time; this
-        way the group lights up on the rows and the reader can see what a branch
-        would have to carry.
-        """
-        node = self.query_one("#tree-browser-tree", Tree).cursor_node
-        if node is None or node.data is None:
-            return
-        entry_id = str(node.data)
-        group = tool_group(self._tree, entry_id)
-        if entry_id in self._marked:
-            self._marked -= group
-        else:
-            self._marked |= group
-        self._elide_line = self._line_through(self._elide_other_end())
-        self._refresh_zones()
-
-    # -- branch, copy and paste (TREE-BROWSER-AS-EDITOR.md §6, §7) -------------
-
-    def action_branch(self) -> None:
-        """``ctrl+B``: build a branch out of the marked messages.
-
-        Dismisses with every marked id, in row order. The caller asks which of the
-        two attach modes the reader wants and performs the commit
-        (:meth:`Parley._branch_flow`); this screen still writes nothing (§11.1).
-
-        Refused here, with the reason, while the tree is still on screen — the same
-        rule ``ctrl+E`` follows. The refusals are
-        :func:`~tau_agent_core.tree_surgery.branch_refusal_reason`'s, computed
-        against the tree this browser was built from, so an offer made here is one
-        the backend accepts.
-        """
-        if not self._marked:
-            self.app.notify(
-                "Nothing marked. Space marks the row under the cursor; ^B branches "
-                "from every marked message.",
-                severity="warning",
-            )
-            return
-        # ``drop_context=False`` for the check: the mode is chosen after this screen
-        # closes, and the two modes differ only in whether an elide follows. Every
-        # refusal that depends on the mode is re-checked by the backend, which is the
-        # side that knows which mode was picked.
-        refusal = branch_refusal_reason(self._tree, self._marked, drop_context=False)
-        if refusal is not None:
-            self.app.notify(f"Cannot branch from this selection: {refusal}", severity="warning")
-            return
-        self.dismiss(TreeIntent("branch", selection_order(self._tree, self._marked)))
-
-    def action_copy(self) -> None:
-        """``c``: copy the subtree rooted at the cursor node.
-
-        Nothing is written and the browser stays open: a copy is a note about which
-        node ``v`` will re-create, held in :attr:`_copied` until the browser closes.
-        The copied rows are painted with ``tree--zone-copied``, which until now was a
-        declared class with no producer.
-        """
-        node = self.query_one("#tree-browser-tree", Tree).cursor_node
-        if node is None or node.data is None:
-            return
-        entry_id = str(node.data)
-        kind = str(self._resolve_entry(entry_id).get("type", ""))
-        if kind not in COPYABLE_KINDS:
-            self.app.notify(
-                f"A {kind!r} entry cannot be copied — it is structure, not a message.",
-                severity="warning",
-            )
-            return
-        self._copied = entry_id
-        self._refresh_zones()
-
-    def action_paste(self) -> None:
-        """``v``: re-create the copied subtree under the cursor node.
-
-        Dismisses with ``(copied, target)``; the caller performs the mint and
-        re-opens this browser so the copy can be seen and navigated onto. The paste
-        does NOT move the cursor — it edits the tree, and what the model sees changes
-        only when the reader chooses a node with ``Enter``.
-        """
-        node = self.query_one("#tree-browser-tree", Tree).cursor_node
-        target = None if node is None or node.data is None else str(node.data)
-        if self._copied is None:
-            self.app.notify(
-                "Nothing copied. `c` copies the subtree under the cursor, `v` pastes it.",
-                severity="warning",
-            )
-            return
-        if target is None:
-            self.app.notify("Put the cursor on the node to paste under.", severity="warning")
-            return
-        try:
-            plan = plan_paste(self._tree, self._copied, target)
-            refusal = paste_refusal_reason(self._tree, plan)
-        except ValueError as exc:
-            self.app.notify(str(exc), severity="warning")
-            return
-        if refusal is not None:
-            self.app.notify(f"Cannot paste here: {refusal}", severity="warning")
-            return
-        self.dismiss(TreeIntent("paste", (self._copied, target)))
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    # -- the elide, from inside the browser (PLAN-0.9.4 §4) -------------------
-
-    def _elide_other_end(self) -> Optional[str]:
-        """The node the cursor is being paired WITH, or ``None`` if there isn't one.
-
-        Exactly one mark is the pairing the reader asked for. **No** mark still
-        elides — against the current leaf, which is the ordinary case ("fold the
-        history behind where I am and keep going") and the one that would
-        otherwise cost a mark to say. More than one mark is refused: an elide has
-        two ends and a set of three does not name them.
-        """
-        if len(self._marked) == 1:
-            return next(iter(self._marked))
-        if self._marked:
-            return None
-        return self._leaf_id()
-
-    def _leaf_id(self) -> Optional[str]:
-        """The ``◀ current`` node — the log's cursor as the browser drew it."""
-        for node in self._by_id.values():
-            if node.is_leaf:
-                return node.id
-        return None
-
-    def _line_through(self, node_id: Optional[str]) -> frozenset[str]:
-        """Every node on a root→leaf line through ``node_id``: its ancestry and its
-        descendants.
-
-        This is exactly the set an elide's other end can come from, because
-        ``elide_span`` requires the resume point to be on the anchor's path — the
-        fold's forward scan only ever walks ancestors, and a boundary it cannot
-        reach would empty the context in silence (``TauBackend.elide_span``).
-
-        Both directions, because either node can turn out to be the anchor: the
-        deeper of the two always is (see :class:`ElidePlan`).
-        """
-        if node_id is None:
-            return frozenset()
-        line = {node_id}
-        walk = self._parent_of.get(node_id)
-        while walk is not None:
-            line.add(walk)
-            walk = self._parent_of.get(walk)
-        stack = list(self._by_id[node_id].children)
-        while stack:
-            node = stack.pop()
-            line.add(node.id)
-            stack.extend(node.children)
-        return frozenset(line)
-
-    def _copied_zone(self) -> frozenset[str]:
-        """The copied node and its descendants — what ``v`` would re-create.
-
-        The whole subtree, not the one row, because that is what a paste mints
-        (:func:`~tau_agent_core.tree_surgery.plan_paste`) and the reader should be
-        able to see the size of what they are about to duplicate before they press
-        the key.
-        """
-        if self._copied is None:
-            return frozenset()
-        zone = {self._copied}
-        stack = list(self._by_id[self._copied].children)
-        while stack:
-            node = stack.pop()
-            zone.add(node.id)
-            stack.extend(node.children)
-        return frozenset(zone)
-
-    def _elide_ineligible(self) -> frozenset[str]:
-        """Rows to grey out: everything off the line, while a span is being chosen.
-
-        Only when exactly ONE node is marked. With none, the reader is browsing
-        and the elide is merely available; with several, nothing has been named
-        and greying to a set of three would be a guess.
-
-        This is the ANCESTRY rule alone. The other way an elide can be illegal —
-        a legal pair whose span happens to be empty — is one row, and it is
-        refused by name when ``ctrl+E`` is pressed rather than greyed here,
-        because computing it for every row means one context walk per row.
-        """
-        if len(self._marked) != 1:
-            return frozenset()
-        return frozenset(node_id for node_id in self._by_id if node_id not in self._elide_line)
-
-    def _elide_plan(self, cursor: Optional[str]) -> "ElidePlan | None":
-        """The elide ``cursor`` and the other end would make, or ``None``.
-
-        Every rejection ``TauBackend.elide_span`` performs is performed here
-        first, on the same rules and against the same tree, so the help line can
-        only offer an elide the backend will accept. That is the point of doing
-        it here: the reported problem was learning the pick was illegal by
-        landing back in the conversation with an error.
-
-        **The refusal is measured at the anchor and the COST at the cursor**, and
-        those are two different sets — see :class:`ElidePlan`. Measuring both at
-        the anchor is the defect this fixed: over ``[1..6]`` with the cursor at 6,
-        pairing 2 with 4 was offered as "elide 1 message" when three leave, because
-        ``context_entries(anchor)`` cannot see the two the cursor move abandons.
-        Measuring both at the cursor would be wrong the other way — it would offer
-        an elide whose fold hides nothing, which the backend then refuses.
-        """
-        other = self._elide_other_end()
-        if cursor is None or other is None or cursor == other:
-            return None
-        # Deeper end is the anchor. `_depth_of` is the DATA depth (built in
-        # `_index`), not the widget depth the planner assigns — the fold walks
-        # `parentId`, so this has to be the same graph `elide_span` will walk.
-        if self._depth_of[cursor] > self._depth_of[other]:
-            anchor, first_kept = cursor, other
-        else:
-            anchor, first_kept = other, cursor
-        path_ids = [entry["id"] for entry in self._tree.path(anchor)]
-        if first_kept not in path_ids:
-            return None
-        kept = set(path_ids[path_ids.index(first_kept) :])
-        folded = [e for e in self._tree.context_entries(anchor) if e["id"] not in kept]
-        if not folded:
-            return None
-        dropped = [e for e in self._tree.context_entries() if e["id"] not in kept]
-        return ElidePlan(
-            anchor=anchor,
-            first_kept=first_kept,
-            folded=len(folded),
-            dropped=len(dropped),
-            moves_cursor=anchor != self._tree.cursor,
-        )
-
-    def action_elide(self) -> None:
-        """``ctrl+E``: fold the span between the cursor and the other end.
-
-        Dismisses with the pair; the caller performs it. This screen still holds
-        no ``SessionLog`` and still writes nothing (§11.1).
-
-        An illegal pick is refused HERE, with the reason, and the browser stays
-        open — which is the whole change. It used to be discovered one modal
-        later, after the browser had closed, as an error notification over a
-        conversation the reader could no longer see the shape of.
-        """
-        node = self.query_one("#tree-browser-tree", Tree).cursor_node
-        cursor = None if node is None or node.data is None else str(node.data)
-        plan = self._elide_plan(cursor)
-        if plan is not None:
-            self.dismiss(TreeIntent("elide", (plan.anchor, plan.first_kept)))
-            return
-        self.app.notify(self._elide_refusal(cursor), severity="warning")
-
-    def _elide_refusal(self, cursor: Optional[str]) -> str:
-        """Why the elide the reader just asked for is not one. One sentence each.
-
-        Ordered from "nothing was named" to "this pair is legal but empty", which
-        is the order the reader hits them in.
-        """
-        if cursor is None:
-            return "Put the cursor on a node first."
-        if len(self._marked) > 1:
-            return (
-                f"{len(self._marked)} nodes are marked. An elide has two ends — "
-                "mark one node, and put the cursor on the other."
-            )
-        other = self._elide_other_end()
-        if other is None:
-            return "There is no current node to fold back to."
-        if cursor == other:
-            return "That is both ends of the elide. Move the cursor, or mark another node."
-        if cursor not in self._elide_line:
-            return (
-                "Those two nodes are on different branches. An elide folds a span "
-                "of ONE line of the conversation, so the two ends have to be on it."
-            )
-        return "That would hide nothing — the span between those two nodes is already empty."
-
-    # -- the four selection sets (§5.3) --------------------------------------
-
-    def _refresh_zones(self) -> None:
-        """Recompute all four sets and hand them to the renderer.
-
-        One entry point, called from every gesture that can move a set: the cursor
-        (``NodeHighlighted``), a mark (``space``), a fold (``NodeCollapsed`` /
-        ``NodeExpanded``) and the deferred initial layout. Recomputing all four
-        rather than patching the one that moved — ``path``/``folded``/``covered``
-        are all functions of the cursor, and a partial update is how two of them
-        end up describing different cursors.
-
-        This is the EXPENSIVE path — two walks of the conversation plus one of every
-        widget row — and it is deliberately not what a hover runs. See
-        :meth:`ZoneTree.set_hover_zones`.
-        """
-        if not self._rows:
-            return
-        tree = self.query_one("#tree-browser-tree", ZoneTree)
-        node = tree.cursor_node
-        cursor = None if node is None or node.data is None else str(node.data)
-        path, folded, covered = self._derived(cursor)
-        hover_common, hover_divergent = self._hover_divergence(cursor, self._hovered)
-        tree.set_zones(
-            TreeZones(
-                cursor=cursor,
-                marked=frozenset(self._marked),
-                path=path,
-                folded=folded,
-                covered=covered,
-                hidden=self._hidden(),
-                # §7's producer, added with the copy gesture: the copied node and
-                # everything under it, which is what `v` would re-create. Empty until
-                # `c` is pressed, which is the truth rather than a placeholder.
-                copied=self._copied_zone(),
-                summary=self._summary_zone,
-                abandoned=self._abandoned_zone,
-                ineligible=self._elide_ineligible(),
-                # Re-derived, not carried over: the divergence is measured FROM the
-                # cursor, so the cursor move that brought us here invalidated
-                # whatever is painted. Cheap — see :meth:`_hover_divergence`.
-                hover_common=hover_common,
-                hover_divergent=hover_divergent,
-            )
-        )
-        self.query_one("#tree-browser-marks", Static).update(self._marks_summary(cursor))
-
-    def _derived(
-        self, cursor: Optional[str]
-    ) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
-        """§5.3's set 3, as the three roles §3's class table distinguishes.
-
-        ``path`` is the cursor's raw ancestor chain (``ConversationTree.path``,
-        every kind, no splice). ``folded`` is what the fold at the cursor drops from
-        that chain — the difference between the raw walk and ``context_entries``,
-        which is exactly "on the path, dropped by a splice anchor".
-
-        ``covered`` is the same span, reported separately when the cursor IS the
-        anchor doing the dropping. Which anchor that is comes out of
-        ``context_entries`` rather than out of a kind test:
-        ``_active_path_entries`` emits ``[anchor] + kept + after``
-        (``conversation_tree.py:383-391``), so element 0 of a folded result is the
-        anchor by construction. Reading it there instead of re-testing
-        ``entry["type"] in ("compaction", "elide")`` keeps the anchor vocabulary in
-        the one module that owns it — ``_SPLICE_ANCHOR_KINDS`` is private to
-        ``conversation_tree`` and a second copy in the TUI would be a fifth kind
-        away from being wrong.
-
-        ``folded`` deliberately still contains ``covered``: the two are the same
-        rows seen from two positions, and :attr:`ZoneTree._LABEL_ZONES` resolves
-        which class wins rather than the sets pre-subtracting each other.
-        """
-        empty: frozenset[str] = frozenset()
-        if cursor is None:
-            return empty, empty, empty
-        path_ids = frozenset(entry["id"] for entry in self._tree.path(cursor))
-        kept = self._tree.context_entries(cursor)
-        kept_ids = {entry["id"] for entry in kept}
-        folded = frozenset(entry_id for entry_id in path_ids if entry_id not in kept_ids)
-        anchor = kept[0]["id"] if kept else None
-        covered = folded if (folded and anchor == cursor) else empty
-        return path_ids, folded, covered
-
-    def _branch_summary_pairs(self) -> tuple[frozenset[str], frozenset[str]]:
-        """§4.3's two-row relation: each ``branch_summary`` and what it summarizes.
-
-        §1.2 established that no structural change is needed —
-        ``SessionStore.append_branch_summary`` (``session_store.py:665``) moves the
-        leaf to ``from_id`` *before* appending, mirroring pi's ``branchWithSummary``
-        (``session-manager.ts:1272``), so ``parentId == fromId`` and the summary is
-        already a sibling of the abandoned branch's first message. What was missing
-        is that a reader cannot see it. §4.3 was attempted inside ``_preview_of``
-        and correctly bounced there: that renders one line for one node, and this is
-        a relation BETWEEN two rows. So it is zone work (§3).
-
-        **Which sibling.** The immediately PRECEDING one, in the order the browser
-        already draws them (``ConversationTree.tree`` sorts children by timestamp;
-        roots keep load order, which for an append-only log is the same order). Not
-        "every sibling that is not the summary": a branch point can be abandoned
-        more than once, and ``b1, S1, b2, S2`` then pairs correctly — ``S1`` looks
-        back at ``b1``, ``S2`` at ``b2`` — where a set-difference rule would blame
-        ``S2`` for ``b1`` as well. It is also the phrase §4.3 uses: *the* abandoned
-        branch's first message, singular.
-
-        A ``branch_summary`` with no earlier sibling is left out of both sets rather
-        than paired with something. That shape means a branch was summarized before
-        it existed; painting half a pair would state a relation that is not there.
-
-        Computed on the ``TreeNode`` graph, so it needs no payload lookup — ``kind``
-        is on the node (``conversation_tree.py:173``) and the ``fromId`` the payload
-        carries would only re-state the ``parentId`` the graph is already built
-        from.
-        """
-        summary: set[str] = set()
-        abandoned: set[str] = set()
-        stack: list[list[TreeNode]] = [self._roots]
-        while stack:
-            siblings = stack.pop()
-            for position, node in enumerate(siblings):
-                if node.children:
-                    stack.append(node.children)
-                if node.kind != "branch_summary" or position == 0:
-                    continue
-                summary.add(node.id)
-                abandoned.add(siblings[position - 1].id)
-        return frozenset(summary), frozenset(abandoned)
-
-    def on_zone_tree_hover_changed(self, event: "ZoneTree.HoverChanged") -> None:
-        """Repaint the divergence for the row the pointer moved onto (§3, step 5).
-
-        §2 removed the guide-rail ancestry highlight — after flattening, a
-        30-message run is 30 siblings at one level with no rails between them — and
-        §3 is "the replacement, not an embellishment". ``tree--zone-path`` replaced
-        the CURSOR's ancestry in step 3; this replaces the HOVER's, and says
-        something the rails never did: not just "these are the hovered row's
-        ancestors" but *where that ancestry stops agreeing with where you are*.
-
-        Nothing here recomputes a selection set. The two ancestry walks in
-        :meth:`_hover_divergence` are the whole per-hover cost.
-        """
-        event.stop()
-        self._hovered = event.entry_id
-        tree = event.zone_tree
-        node = tree.cursor_node
-        cursor = None if node is None or node.data is None else str(node.data)
-        tree.set_hover_zones(*self._hover_divergence(cursor, self._hovered))
-
-    def _hover_divergence(
-        self, cursor: Optional[str], hovered: Optional[str]
-    ) -> tuple[frozenset[str], frozenset[str]]:
-        """Split ``hovered``'s ancestry where it leaves ``cursor``'s (§3, step 5).
-
-        The common prefix and the divergent tail are different facts and the
-        stylesheet reads them differently: the prefix is context the two nodes
-        share, the tail is what you would be picking up if you went there.
-
-        **A node ON the cursor's path reports no divergence.** Its chain is then a
-        PREFIX of the cursor's, the tail is empty by construction, and this returns
-        two empty sets rather than a prefix with nothing to contrast against —
-        painting the shared half alone would show a highlight that means "you are
-        already here", which reads as a divergence that is not there. Hovering the
-        cursor itself, or leaving the tree entirely, lands in the same case.
-
-        A DESCENDANT of the cursor is not on the cursor's path and does diverge:
-        the rows below the cursor are exactly what the cursor's context does not
-        contain, which is the question this answers.
-
-        ``k == 0`` — two different roots, which ``ConversationTree.tree`` really can
-        produce from an orphaned entry — gives an empty prefix and the hovered
-        chain entire. That is the honest answer, and it is the same answer
-        :meth:`_lowest_common_ancestor` gives for the same shape.
-
-        Cost is O(depth), twice: :meth:`_ancestry` is a ``_parent_of`` walk, and the
-        prefix scan is a ``zip``. No conversation walk, no row walk — which is the
-        constraint, because this runs on every row the pointer crosses.
-        """
-        empty: frozenset[str] = frozenset()
-        if cursor is None or hovered is None:
-            return empty, empty
-        hover_chain = self._ancestry(hovered)
-        cursor_chain = self._ancestry(cursor)
-        shared = 0
-        for mine, theirs in zip(hover_chain, cursor_chain):
-            if mine != theirs:
-                break
-            shared += 1
-        if shared == len(hover_chain):
-            # `hovered` is the cursor, or one of its ancestors. Nothing diverges.
-            return empty, empty
-        return frozenset(hover_chain[:shared]), frozenset(hover_chain[shared:])
-
-    def _hidden(self) -> frozenset[str]:
-        """§5.3's set 4: rows the reader has folded out of sight.
-
-        View state, per §11.2 — computed from the widget tree, never read from the
-        log, and nothing is appended for it. The *archived* half of §11.2's decision
-        has no gesture yet, so this is the collapsed half alone; a row in it is not
-        currently drawn, which is why ``tree--zone-hidden`` has no visible effect
-        today and why :meth:`_marks_summary` is where the set is observable at all.
-
-        The walk stops one short of the widget root. ``Tree.__init__`` builds its
-        root with ``expand=False`` (textual 8.2.7, ``_tree.py:783`` →
-        ``_add_node``'s default) and ``_build`` adds the root's children anyway
-        when ``show_root`` is ``False`` (``_tree.py:1272-1275``) — so the root's
-        collapsed flag means nothing here, and counting it would report every
-        top-level row as folded away.
-        """
-        hidden: set[str] = set()
-        for widget_node, _label, _depth, _has_children in self._rows:
-            walk = widget_node.parent
-            while walk is not None and walk.parent is not None:
-                if not walk.is_expanded:
-                    hidden.add(str(widget_node.data))
-                    break
-                walk = walk.parent
-        return frozenset(hidden)
-
-    def _lowest_common_ancestor(self, ids: set[str]) -> Optional[str]:
-        """The deepest node every id in ``ids`` descends from, itself included.
-
-        §5.3: the ``_parent_of`` map :meth:`_index` already builds "gives the lowest
-        common ancestor for free". Root→node chains, then the longest common prefix.
-
-        ``None`` when the marked nodes are in different roots — an orphaned entry
-        (broken parent chain) is its own root in ``ConversationTree.tree``, so two
-        marks really can have no ancestor in common, and saying so beats naming an
-        arbitrary one.
-        """
-        if not ids:
-            return None
-        chains = [self._ancestry(entry_id) for entry_id in sorted(ids)]
-        common: Optional[str] = None
-        for step in zip(*chains):
-            if len(set(step)) != 1:
-                break
-            common = step[0]
-        return common
-
-    def _ancestry(self, entry_id: str) -> list[str]:
-        """``entry_id``'s root→self chain through :attr:`_parent_of`."""
-        chain = [entry_id]
-        walk = self._parent_of.get(entry_id)
-        seen = {entry_id}
-        while walk is not None and walk not in seen:
-            chain.append(walk)
-            seen.add(walk)
-            walk = self._parent_of.get(walk)
-        chain.reverse()
-        return chain
-
-    def _marks_summary(self, cursor: Optional[str] = None) -> str:
-        """The marked set's count, its lowest common ancestor and its size (§5.3).
-
-        **The size is a labelled estimate, and says so.** ``compaction.estimate_tokens``
-        is a ~4-chars-per-token heuristic over the payload; the only measured number
-        in a session is ``usage.input_tokens`` on an assistant message
-        (``agent_loop.py:819``), which is a measurement of one request rather than of
-        an arbitrary set of entries. §5.3: "a row may state a measured
-        ``input_tokens``; a selection total may only state an estimate, and must say
-        so". So this prints ``~N tokens (estimate)`` and never a bare number.
-
-        **The offer goes FIRST when there is one.** This line is one row
-        (``#tree-browser-marks`` is ``height: 1``), so it clips rather than
-        wrapping — and the readout plus the offer runs to about 96 columns, which
-        on an 80-column terminal means whatever is last is what disappears. The
-        offer is the only part of the line that is an action.
-
-        **At most ONE offer, and which one is a priority, not a merge.** Three
-        gestures can apply to the same row now (§6, §7) and two of their offers do
-        not fit on one row together, so they are ordered by how specific the state
-        that produced them is: a pending paste (the reader is mid-gesture and the
-        clipboard is holding something) beats a legal elide (which needs a legal pair
-        of ends) beats a branch (which needs only a mark). The narrow collision is
-        one mark with a legal elide, where the branch offer is not shown and the help
-        line is what names ``^B``.
-        """
-        offer = self._paste_offer(cursor) or self._elide_offer(cursor) or self._branch_offer()
-        if not self._marked:
-            base = "nothing marked · space marks the row under the cursor"
-            return f"{offer} · {base}" if offer else base
-        count = len(self._marked)
-        noun = "node" if count == 1 else "nodes"
-        folded_away = len(self._marked & self._hidden())
-        out_of_sight = f" ({folded_away} folded away)" if folded_away else ""
-        ancestor = self._lowest_common_ancestor(self._marked)
-        where = f"common ancestor {ancestor}" if ancestor is not None else "no common ancestor"
-        line = (
-            f"{count} {noun} marked{out_of_sight} · {where} · "
-            f"~{self._estimated_tokens(self._marked)} tokens (estimate)"
-        )
-        return f"{offer} · {line}" if offer else line
-
-    def _branch_offer(self) -> str:
-        """``^B: branch from 3 marked messages`` — or ``""`` when nothing is marked.
-
-        Same rule as :meth:`_elide_offer`: the offer appears exactly when pressing
-        the key would do something. It states the COUNT rather than the shape of the
-        branch, because the shape (which marks are kept in place and which are
-        copied) is worked out by
-        :func:`~tau_agent_core.tree_surgery.plan_branch` and is not something the
-        reader has to decide or predict — what they chose is the set.
-        """
-        if not self._marked:
-            return ""
-        noun = "message" if len(self._marked) == 1 else "messages"
-        return f"^B: branch from {len(self._marked)} marked {noun}"
-
-    def _paste_offer(self, cursor: Optional[str]) -> str:
-        """``v: paste 4 entries under this node`` — or ``""``.
-
-        Shown while the clipboard holds something and the cursor is somewhere the
-        copy can legally land. "Legally" here is only the cheap half of the check —
-        that the target is outside the copied subtree, which is the refusal a reader
-        walks into by moving one row. The tool-result check
-        (:func:`~tau_agent_core.tree_surgery.paste_refusal_reason`) needs the whole
-        plan and is run on the key press, where paying for it once is right; running
-        it per cursor move would cost a subtree walk per arrow key to hide an offer
-        that is almost always legal.
-        """
-        if self._copied is None or cursor is None:
-            return ""
-        zone = self._copied_zone()
-        if cursor in zone:
-            return ""
-        noun = "entry" if len(zone) == 1 else "entries"
-        return f"v: paste {len(zone)} copied {noun} under this node"
-
-    def _elide_offer(self, cursor: Optional[str]) -> str:
-        """``ctrl+E: keep this span, drop the other 14`` — or ``""``.
-
-        The empty string is the feature, not a fallback: the offer appears exactly
-        when pressing the key would do something, so a reader who has never used
-        the gesture meets it on the row where it applies rather than in a list of
-        keys they have to test one at a time. This is what was asked for in place
-        of the mode-chooser's ``Elide a span ending here…`` button, which named the
-        operation on every node whether or not it could be performed on that one.
-
-        **"keep this span" is load-bearing wording.** It read ``elide N messages``,
-        which every reader parses as "remove the N between these two rows" — the
-        opposite of what an elide does (:class:`ElidePlan`). The frame has to be
-        stated where the gesture is, not only in the manual, because the manual is
-        not open at the moment somebody presses the key.
-
-        ``and move back to it`` is appended when the anchor is not the current tip,
-        because that is a second thing happening: the conversation resumes
-        somewhere else, and the entries newer than the anchor are part of the
-        ``dropped`` count precisely for that reason.
-
-        ``cursor`` is passed in rather than read off the tree: :meth:`compose`
-        writes the first version of this line, and the tree it would query does
-        not exist yet at that point. ``None`` there is honest — no row is under
-        the cursor until one is drawn.
-        """
-        plan = self._elide_plan(cursor)
-        if plan is None:
-            return ""
-        noun = "entry" if plan.dropped == 1 else "entries"
-        move = ", and move back to it" if plan.moves_cursor else ""
-        return f"ctrl+E: keep this span, drop the other {plan.dropped} {noun}{move}"
-
-    def _estimated_tokens(self, ids: set[str]) -> int:
-        """A character-based token estimate over the entries ``ids`` names.
-
-        ``compaction.estimate_tokens`` for the entries that carry a message, and the
-        same arithmetic over the summary text for the kinds that carry one instead
-        (``compaction``, ``branch_summary`` — what ``context_for`` injects for them
-        is a message built from that string, ``conversation_tree.py:78-96``). Kinds
-        with neither, such as ``navigate`` and ``elide``, contribute nothing to a
-        context and so contribute nothing here.
-
-        Never presented without the word "estimate" beside it — see
-        :meth:`_marks_summary`.
-        """
-        from tau_agent_core.compaction import estimate_tokens
-
-        total = 0
-        for entry_id in ids:
-            entry = self._resolve_entry(entry_id)
-            message = entry.get("message")
-            if isinstance(message, dict):
-                total += estimate_tokens(message)
-                continue
-            summary = entry.get("summary")
-            if isinstance(summary, str):
-                total += estimate_tokens({"role": "user", "content": summary})
-        return total
-
-
-class TreeModeModal(ModalScreen[Optional[str]]):
-    """The mode chooser after a node is picked (§3.1).
-
-    pi's ``showExtensionSelector`` (interactive-mode.ts:4479-4483): "No summary" /
-    "Summarize" / "Summarize with custom instructions". Dismisses with
-    ``"navigate"`` / ``"summarize"`` / ``"custom"`` (or ``None`` on cancel).
-
-    **``elide`` used to be a fourth button here and is not one any more**
-    (PLAN-0.9.4 §4). It never fitted: the other three treat the picked node as a
-    BRANCH POINT and move the cursor back to it, while an elide treats it as the
-    fold's ANCHOR and needs a second node before it can do anything — so choosing
-    it re-opened the whole tree browser to ask for that second node, and an
-    illegal pick was reported after both screens had closed. It is a key in the
-    browser now (``ctrl+E``, :meth:`SessionTreeModal.action_elide`), which is the
-    one place both nodes are visible at once and the only place a refusal can be
-    stated while the reader can still see what they picked.
-    """
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
-
-    def compose(self) -> ComposeResult:
-        with Container(id="tree-mode-dialog"):
-            yield Static("Act on selected node", id="tree-mode-title")
-            with Vertical(id="tree-mode-buttons"):
-                yield Button("Branch: no summary", variant="primary", id="mode-navigate")
-                yield Button("Branch: summarize abandoned branch", id="mode-summarize")
-                yield Button("Branch: summarize with custom instructions…", id="mode-custom")
-                yield Button("Cancel", id="mode-cancel")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        mapping = {
-            "mode-navigate": "navigate",
-            "mode-summarize": "summarize",
-            "mode-custom": "custom",
-        }
-        self.dismiss(mapping.get(event.button.id or ""))
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-
-class BranchModeModal(ModalScreen[Optional[str]]):
-    """How much context the branch from the marked messages keeps (§6).
-
-    Two modes, and the difference is one ``elide``:
-
-    * ``"keep"`` — the branch hangs off the deepest mark that is already on the
-      path, and everything above that stays in context. This is "carefully choose
-      what is added to what is already here".
-    * ``"only"`` — the same branch, followed by an elide resuming at the root-most
-      mark, so the context becomes the system prompt plus the marked messages and
-      nothing else. This is "start again from these, and only these".
-
-    Named as a separate screen rather than a fourth button on :class:`TreeModeModal`
-    for the reason that took the elide off that screen: the three buttons there
-    treat one node as a branch point and choose what to do about the branch being
-    abandoned, while this chooses what a *new* branch inherits. Same shape, opposite
-    question.
-    """
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
-
-    def compose(self) -> ComposeResult:
-        with Container(id="tree-mode-dialog"):
-            yield Static("Branch from the marked messages", id="tree-mode-title")
-            with Vertical(id="tree-mode-buttons"):
-                yield Button("Keep the context above them", variant="primary", id="branch-keep")
-                yield Button("Keep only the system prompt", id="branch-only")
-                yield Button("Cancel", id="branch-cancel")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        mapping = {"branch-keep": "keep", "branch-only": "only"}
-        self.dismiss(mapping.get(event.button.id or ""))
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-
-class TreeCustomInstructionsModal(ModalScreen[Optional[str]]):
-    """Collect the custom summarizer instructions for mode 3 (§3.1).
-
-    pi's ``showExtensionEditor`` (interactive-mode.ts:4494). Reuses the
-    ``SystemPromptEditor`` ``TextArea`` shell; Save dismisses with the text, Cancel
-    with ``None``.
-    """
-
-    def compose(self) -> ComposeResult:
-        with Container(id="prompt-editor-dialog"):
-            yield Static("Custom Summary Instructions", id="prompt-editor-title")
-            yield TextArea("", id="prompt-editor-textarea")
-            with Horizontal(id="prompt-editor-buttons"):
-                yield Button("Summarize", variant="primary", id="custom-save")
-                yield Button("Cancel", variant="default", id="custom-cancel")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "custom-save":
-            self.dismiss(self.query_one("#prompt-editor-textarea", TextArea).text)
-        elif event.button.id == "custom-cancel":
-            self.dismiss(None)
-
-
-class RollbackPromptModal(ModalScreen[Optional[str]]):
-    """Collect the prompt that replaces the turn being rolled back.
-
-    The affordance for ``multitask_strategy="rollback"``
-    (docs/SUBMISSION-LIFECYCLE.md decision 2). A rollback is not "stop" — it is
-    "stop, un-path what that turn did, and run THIS instead", and the core has no
-    way to express the first two halves without the third: ``submit()`` needs the
-    replacement text, and it must be submitted while the doomed turn still holds
-    the turn slot. So the affordance has to ask for text. It asks in a modal
-    rather than in the chat editor: since docs/TUI-STEERING.md that editor is
-    usable during a turn and may hold a half-typed steering message, and taking
-    it over for the rollback prompt would destroy what is in it.
-
-    Prefilled with the aborted turn's own prompt, because the two things a person
-    wants here are "run that again from before it went wrong" (accept the prefill)
-    and "run this corrected version instead" (edit it), and prefilling makes the
-    first one a single keypress. Reuses the ``SystemPromptEditor`` shell like
-    :class:`TreeCustomInstructionsModal` does, plus one line saying what is about
-    to happen to the running turn — the operation discards visible work, and the
-    other destructive tree operations (branch, summarize, elide) all name their
-    consequence before they run.
-    """
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
-
-    def __init__(self, prefill: str = "") -> None:
-        super().__init__()
-        self._prefill = prefill
-
-    def compose(self) -> ComposeResult:
-        with Container(id="prompt-editor-dialog"):
-            yield Static("Roll back the in-flight turn", id="prompt-editor-title")
-            yield Static(
-                "The running turn is aborted and its messages fall off the active "
-                "path — nothing is deleted, the tree browser still shows them. This "
-                "prompt runs in their place, from the context as it stood before "
-                "that turn started.",
-                id="rollback-help",
-            )
-            yield TextArea(self._prefill, id="prompt-editor-textarea")
-            with Horizontal(id="prompt-editor-buttons"):
-                yield Button("Roll back & run", variant="primary", id="rollback-run")
-                yield Button("Cancel", variant="default", id="rollback-cancel")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "rollback-run":
-            self.dismiss(self.query_one("#prompt-editor-textarea", TextArea).text)
-        elif event.button.id == "rollback-cancel":
-            self.dismiss(None)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-
-class ExtensionConfirmModal(ModalScreen[bool]):
-    """Yes/No confirmation for an extension's ``api.ui.confirm`` (E7 §3 / S47).
-
-    Ports pi's ``ctx.ui.confirm(title, message)`` (types.ts:129). Copies the
-    ``TreeModeModal`` button template. ``Yes`` → ``True``; ``No`` or ``Esc`` →
-    ``False`` (a cancelled confirmation is a "no", never a hidden yes — Fail-Early).
-    pi's ``timed-confirm`` timeout option is deferred.
-    """
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
-
-    def __init__(self, title: str, message: str) -> None:
-        super().__init__()
-        self._title = title
-        self._message = message
-
-    def compose(self) -> ComposeResult:
-        with Container(id="ext-confirm-dialog"):
-            yield Static(self._title, id="ext-confirm-title")
-            yield Static(self._message, id="ext-confirm-message")
-            with Horizontal(id="ext-confirm-buttons"):
-                yield Button("Yes", variant="primary", id="ext-confirm-yes")
-                yield Button("No", variant="default", id="ext-confirm-no")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id == "ext-confirm-yes")
-
-    def action_cancel(self) -> None:
-        self.dismiss(False)
-
-
-class ExtensionSelectModal(ModalScreen[Optional[str]]):
-    """Single-choice selector for an extension's ``api.ui.select`` (E7 §3 / S47).
-
-    Ports pi's ``ctx.ui.select(title, options)`` (types.ts:126). An ``OptionList``
-    of the items; ``Enter``/click dismisses with the chosen string, ``Esc`` with
-    ``None`` (no selection). The index into the original ``items`` list is the
-    source of truth, so the returned value is exactly the caller's string.
-    """
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
-
-    def __init__(self, title: str, items: list[str]) -> None:
-        super().__init__()
-        self._title = title
-        self._items = items
-
-    def compose(self) -> ComposeResult:
-        with Container(id="ext-select-dialog"):
-            yield Static(self._title, id="ext-select-title")
-            yield OptionList(*self._items, id="ext-select-list")
-            yield Static("Enter: choose    Esc: cancel", id="ext-select-help")
-
-    def on_mount(self) -> None:
-        self.query_one("#ext-select-list", OptionList).focus()
-
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        event.stop()
-        self.dismiss(self._items[event.option_index])
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-
-class ExtensionInputModal(ModalScreen[Optional[str]]):
-    """Text prompt for an extension's ``api.ui.input`` (E7 §3 / S47).
-
-    Ports pi's ``ctx.ui.input(title, placeholder?)`` (types.ts:132). An ``Input``
-    pre-filled with the extension-supplied default; ``Enter`` or ``OK`` dismisses
-    with the (possibly edited) text, ``Esc`` or ``Cancel`` with ``None``. The
-    delegate maps a ``None`` cancel back to the default (see
-    ``_ExtensionUIDelegate.input``).
-    """
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
-
-    def __init__(self, title: str, default: str = "") -> None:
-        super().__init__()
-        self._title = title
-        self._default = default
-
-    def compose(self) -> ComposeResult:
-        with Container(id="ext-input-dialog"):
-            yield Static(self._title, id="ext-input-title")
-            yield Input(value=self._default, id="ext-input-field")
-            with Horizontal(id="ext-input-buttons"):
-                yield Button("OK", variant="primary", id="ext-input-ok")
-                yield Button("Cancel", variant="default", id="ext-input-cancel")
-
-    def on_mount(self) -> None:
-        self.query_one("#ext-input-field", Input).focus()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        event.stop()
-        self.dismiss(event.value)
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "ext-input-ok":
-            self.dismiss(self.query_one("#ext-input-field", Input).value)
-        else:
-            self.dismiss(None)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-
-class ExtensionChordScreen(ModalScreen[Optional[tuple[str, str]]]):
-    """Which-key popup for the ``ctrl+e`` extension shortcut chord (E10 §6 / S69).
-
-    The second half of an extension key binding: after the ``ctrl+e`` leader (the
-    guarded namespace), this modal lists every registered shortcut as
-    ``ctrl+e <key> → /command`` and captures the NEXT key. A matching key dismisses
-    with ``(command, args)`` — dispatched by :meth:`Parley.action_extension_chord`
-    through the SAME ``run_extension_command`` path a typed ``/name args`` uses;
-    ``escape`` (or any unbound key) dismisses ``None``.
-
-    Rendered as a menu (not a silent capture) so the guarded namespace is
-    DISCOVERABLE — the user sees what ``ctrl+e`` offers, the same shortcuts the
-    command palette also lists. Only ``Static`` children (none focusable), so the
-    screen itself receives the key event — no inner widget swallows the tail key.
-    """
-
-    def __init__(self, shortcuts: list[tuple[str, str, str, str]]) -> None:
-        super().__init__()
-        self._shortcuts = shortcuts
-        # tail key -> (command, args) for O(1) capture; the list drives display order.
-        self._by_key: dict[str, tuple[str, str]] = {
-            key: (command, args) for key, command, args, _desc in shortcuts
-        }
-
-    def compose(self) -> ComposeResult:
-        with Container(id="ext-chord-dialog"):
-            yield Static("Extension shortcuts — ctrl+e then…", id="ext-chord-title")
-            for key, command, args, desc in self._shortcuts:
-                label = f"  [b]{key}[/b]  →  /{command}"
-                if args:
-                    label += f" {args}"
-                if desc:
-                    label += f"   — {desc}"
-                yield Static(label, classes="ext-chord-entry")
-
-    def on_key(self, event: events.Key) -> None:
-        # The chord tail: a registered key dispatches its command, anything else
-        # (including escape) cancels. Stop + prevent-default either way so the
-        # captured key never leaks to the app underneath.
-        event.stop()
-        event.prevent_default()
-        if event.key == "escape":
-            self.dismiss(None)
-            return
-        self.dismiss(self._by_key.get(event.key))
-
-
-class ExtensionFormScreen(ModalScreen[Optional[dict]]):
-    """One generic declarative form for an extension's ``api.ui.form`` (E10 §6 / S66).
-
-    The τ answer to pi's ``question``/``questionnaire`` widget factory: instead of an
-    extension shipping bespoke TUI code, it hands ``ui.form`` a plain-data SPEC
-    (D-E6-4) and THIS single screen renders every field. One widget maps to each
-    :data:`~tau_agent_core.extension_types.FORM_FIELD_KINDS` kind:
-
-    - ``text`` / ``number`` → :class:`Input` (``number`` restricts to numerics);
-    - ``confirm`` → :class:`Checkbox` (its own label carries the field label);
-    - ``select`` → :class:`RadioSet` of :class:`RadioButton` (single choice);
-    - ``multiselect`` → :class:`SelectionList` (N-of-M).
-
-    ``Submit`` dismisses with the ``{name: value}`` answers dict; ``Cancel``/``Esc``
-    dismisses with ``None`` (a cancelled form is not a fabricated answer set —
-    Fail-Early). The spec is validated by the SAME
-    :func:`~tau_agent_core.extension_types.validate_form_spec` the headless path
-    uses, so the two frontends can never disagree about a field's meaning.
-    """
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
-
-    def __init__(self, spec: dict[str, Any]) -> None:
-        super().__init__()
-        # Re-validate the raw spec here (idempotent with ExtensionUI.form's own
-        # check) so the screen is self-contained and never renders a malformed field.
-        self._form_title, self._fields = validate_form_spec(spec)
-
-    @staticmethod
-    def _field_widget_id(index: int) -> str:
-        return f"ext-form-field-{index}"
-
-    def compose(self) -> ComposeResult:
-        with Container(id="ext-form-dialog"):
-            yield Static(self._form_title, id="ext-form-title")
-            with VerticalScroll(id="ext-form-fields"):
-                for index, field in enumerate(self._fields):
-                    yield from self._compose_field(index, field)
-            yield Static("Submit: confirm    Esc: cancel", id="ext-form-help")
-            with Horizontal(id="ext-form-buttons"):
-                yield Button("Submit", variant="primary", id="ext-form-submit")
-                yield Button("Cancel", variant="default", id="ext-form-cancel")
-
-    def _compose_field(self, index: int, field: dict[str, Any]) -> ComposeResult:
-        wid = self._field_widget_id(index)
-        kind = field["kind"]
-        label = field["label"]
-        if kind == "confirm":
-            # The Checkbox carries its own label; no separate Static row.
-            yield Checkbox(label, value=bool(field.get("default", False)), id=wid)
-            return
-        yield Static(label, classes="ext-form-label")
-        if kind in ("text", "number"):
-            default = field.get("default", "")
-            yield Input(
-                value="" if default == "" else str(default),
-                id=wid,
-                type="number" if kind == "number" else "text",
-                classes="ext-form-input",
-            )
-        elif kind == "select":
-            options = field["options"]
-            chosen = field.get("default", options[0])
-            yield RadioSet(
-                *(RadioButton(opt, value=(opt == chosen)) for opt in options),
-                id=wid,
-            )
-        elif kind == "multiselect":
-            options = field["options"]
-            chosen_set = set(field.get("default", []) or [])
-            yield SelectionList[str](
-                *((opt, opt, opt in chosen_set) for opt in options),
-                id=wid,
-            )
-
-    def _collect(self) -> dict[str, Any]:
-        answers: dict[str, Any] = {}
-        for index, field in enumerate(self._fields):
-            wid = f"#{self._field_widget_id(index)}"
-            kind = field["kind"]
-            name = field["name"]
-            if kind == "text":
-                answers[name] = self.query_one(wid, Input).value
-            elif kind == "number":
-                answers[name] = self._parse_number(self.query_one(wid, Input).value, field)
-            elif kind == "confirm":
-                answers[name] = self.query_one(wid, Checkbox).value
-            elif kind == "select":
-                radio_set = self.query_one(wid, RadioSet)
-                idx = radio_set.pressed_index
-                options = field["options"]
-                # A RadioSet always keeps one pressed once composed with a default;
-                # -1 (nothing pressed) falls back to the declared/first option.
-                answers[name] = (
-                    options[idx] if 0 <= idx < len(options) else field.get("default", options[0])
-                )
-            elif kind == "multiselect":
-                answers[name] = list(self.query_one(wid, SelectionList).selected)
-        return answers
-
-    @staticmethod
-    def _parse_number(text: str, field: dict[str, Any]) -> Any:
-        # The Input is numeric-restricted, so ``text`` is a number or empty. An empty
-        # field resolves to the declared default (or 0) — a UI default the user left
-        # untouched, not a fabricated headless answer.
-        stripped = text.strip()
-        if not stripped:
-            return field.get("default", 0)
-        try:
-            return int(stripped)
-        except ValueError:
-            return float(stripped)
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "ext-form-submit":
-            self.dismiss(self._collect())
-        else:
-            self.dismiss(None)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-
-# Role → (display label, CSS modifier class). ONE widget renders every kind of
-# message; the role only selects a label + color (via the `box-<role>` class in
-# parley.tcss). Adding a kind = adding an entry here + a CSS rule, nothing else.
-ROLE_LABELS: dict[str, str] = {
-    "pending": "…",
-    "user": "User",
-    "assistant": "Assistant",
-    "system": "System",
-    "toolCall": "Tool call",
-    "toolResult": "Tool result",
-    # Extension-injected durable node (before_agent_start, E5 §3.1): rendered
-    # distinctly so it never reads as a literal user turn (role "custom" on the
-    # node, serialized custom→user only on the wire).
-    "custom": "Extension",
-    # Submission sources (B3-b). A turn nobody typed HERE still opens with a
-    # bubble carrying its own text — Jupyter's ``execute_input`` re-broadcast —
-    # and that bubble must not claim a human wrote it. So the SOURCE is the role
-    # (docs/SUBMISSION-LIFECYCLE.md ``SubmissionSource``) and it selects the label
-    # + colour exactly the way every other kind here does.
-    #
-    # These are entries, not an allow-list: an unlisted source falls through to
-    # ``role.capitalize()`` in :meth:`MessageBox.on_mount` and to the shared
-    # ``lane-foreign`` CSS rule, so a novel source renders with a generic
-    # attribution instead of being dropped. Filtering is the failure mode this
-    # whole design exists to prevent.
-    "interactive": "User",  # a human, but not the one at THIS frontend
-    "rpc": "RPC",
-    "extension": "Extension",
-    "bus": "Bus",
-    "timer": "Timer",
-    "webhook": "Webhook",
-    "voice": "Voice",
-    "agent": "Sub-agent",
-    # Session-log entry kinds that are NOT messages. They never appear in the
-    # transcript — nothing produces one as a turn — but the tree browser's detail
-    # pane (:class:`TreeDetailPane`) draws them in the same boxes, and the same
-    # ``role.capitalize()`` fallthrough would title them "Branch_summary".
-    "compaction": "Compaction",
-    "branch_summary": "Branch summary",
-    "navigate": "Navigate",
-    "elide": "Elide",
-    "customEntry": "Entry",
-}
-
-#: CSS class worn by every widget belonging to a lane this frontend did not
-#: originate — a bus/timer submission's bubble, a forked sub-agent's steps, the
-#: answer promoted out of either (B3-b). ONE class rather than one per source, so
-#: a source nobody has heard of is still visually foreign; the box's border TITLE
-#: names which source it actually was.
-LANE_FOREIGN_CLASS = "lane-foreign"
-
-#: config.json key naming when text typed during a turn is delivered
-#: (docs/TUI-STEERING.md §2).
 STEERING_CONFIG_KEY = "steering_strategy"
 
-#: The values it accepts. Both are
-#: :data:`~tau_agent_core.submission.MultitaskStrategy` members, spelled exactly
-#: as the core spells them, because this setting IS the field the app puts on the
-#: submission — a second vocabulary here would be one more thing to keep in step.
 STEERING_STRATEGIES = ("steer", "enqueue")
 
-#: pi's binding for Enter during a turn (``interactive-mode.ts:3129``,
-#: ``streamingBehavior: "steer"``), and τ's default for the same reason: the
-#: point of typing mid-turn is to change what the agent is doing, and a message
-#: that waits for the turn to end is a follow-up rather than steering.
 DEFAULT_STEERING_STRATEGY = "steer"
 
-#: config.json key naming what the Enter key does in the chat editor
-#: (docs/ENTER-KEY.md).
-ENTER_KEY_CONFIG_KEY = "enter_key"
-
-#: The values it accepts, named for what Enter itself does:
-#:
-#: - ``"newline"`` — Enter inserts a line break, Ctrl+J sends.
-#: - ``"submit"`` — Enter sends, Shift+Enter and Ctrl+J insert a line break.
-#:   This is pi's pair (``tui/src/keybindings.ts:143``: ``tui.input.submit`` is
-#:   ``enter``, ``tui.input.newLine`` is ``["shift+enter", "ctrl+j"]``) and the
-#:   one every other terminal coding agent uses.
-ENTER_KEY_MODES = ("newline", "submit")
-
-#: τ's default, and a deliberate divergence from pi.
-#:
-#: A prompt is usually several lines, and Enter is the key a text editor already
-#: spends on a line break. The cost of the other choice is not symmetric: sending
-#: half a prompt is unrecoverable, while an unwanted line break costs a Backspace.
-#: The value of this setting is that the divergence is now a choice rather than
-#: an assumption — a user who moves between τ and another agent all day can spell
-#: ``"submit"`` and stop losing the coin flip.
-DEFAULT_ENTER_KEY_MODE = "newline"
-
-#: The key that inserts a line break while Enter sends, when the terminal can
-#: report it. It reaches Textual as ``shift+enter`` ONLY under the kitty keyboard
-#: protocol, which Textual requests at startup
-#: (``textual/drivers/linux_driver.py``, flags 1|8|16) and which a terminal is
-#: free to ignore. Legacy encoding has no room for a modifier on Enter: the byte
-#: is CR either way. Ctrl+J is therefore kept as the second newline key in this
-#: mode and is the only one that works everywhere — it is a distinct byte (LF)
-#: rather than a modifier, which is exactly why it survives.
-NEWLINE_KEYS_IN_SUBMIT_MODE = ("shift+enter", "ctrl+j")
-
-#: config.json key bounding how large a text file may be before ``@file`` sends a
-#: pointer to it instead of its contents (docs/FILE-ATTACHMENTS.md §2). In bytes.
 ATTACHMENT_LIMIT_CONFIG_KEY = "attachment_inline_limit"
 
-
-def format_tool_call_body(name: str, arguments: object) -> str:
-    """Render a tool call's Markdown body. Shared by the live streaming path and
-    the saved-chat reload path so the two can never drift apart."""
-    args_text = json.dumps(arguments, indent=2, default=str)
-    return f"`{name}`\n\n```json\n{args_text}\n```"
-
-
-def format_tool_result_body(name: str, result_text: str, is_error: bool) -> str:
-    """Render a tool result's Markdown body (live + reload). Truncated for
-    display, matching the live ``tool_execution_end`` rendering."""
-    status = "Error" if is_error else "Success"
-    return f"`{name}` — {status}\n\n```\n{result_text[:500]}\n```"
-
-
-def _join_text_blocks(blocks: object) -> str:
-    """Concatenate the ``text`` blocks of a τ message content list (or pass a
-    plain string through). Used to flatten persisted assistant/toolResult bodies."""
-    if isinstance(blocks, str):
-        return blocks
-    if isinstance(blocks, list):
-        return "".join(
-            b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"
-        )
-    return ""
-
-
-def _split_assistant_blocks(content: object) -> tuple[str, str, list[dict]]:
-    """Split a persisted assistant message's content into ``(thinking, text,
-    tool_calls)`` for exchange reconstruction.
-
-    Mirrors how a completion is composed live: one reasoning region, one answer
-    body, and N tool calls. Fragments are joined — both the fixed single-block
-    shape and the legacy bloated shape (hundreds of one-fragment blocks, written
-    before the provider consolidated them) collapse to one reasoning + one answer
-    string here. A plain-string body is treated as answer text."""
-    thinking_parts: list[str] = []
-    text_parts: list[str] = []
-    calls: list[dict] = []
-    if isinstance(content, str):
-        text_parts.append(content)
-    elif isinstance(content, list):
-        for b in content:
-            if not isinstance(b, dict):
-                continue
-            btype = b.get("type")
-            if btype == "thinking":
-                thinking_parts.append(b.get("thinking", ""))
-            elif btype == "text":
-                text_parts.append(b.get("text", ""))
-            elif btype == "toolCall":
-                calls.append(b)
-    return "".join(thinking_parts), "".join(text_parts), calls
-
-
-class MessageBox(Static):
-    """The ONE universal widget per message — the messages-list 1:1 mapping.
-
-    Every ``{"role": ...}`` dict in the transcript renders as exactly one
-    MessageBox, so the widget tree mirrors the data model (which is what makes
-    reload trivial and freeze-proof). A box renders, top to bottom:
-
-      - an optional :class:`ReasoningRegion` (assistant reasoning — streamed and
-        collapsible), mounted lazily the instant reasoning arrives,
-      - the message text (a Markdown body),
-      - zero or more :class:`ToolBox` children (one per tool call; the matching
-        tool *result* folds into its box by ``tool_call_id``).
-
-    user/system messages use only the text body; an assistant turn may add
-    reasoning and tool boxes — reasoning + answer + the turn's tools are one
-    completion, so they live in one bordered box (per the design discussion).
-    The role selects the border label + color (``box-<role>``); the border is
-    on the box itself so the whole completion reads as a single box.
-
-    A box may start as ``role="pending"`` and be *resolved* in place via
-    :meth:`set_role` without re-mounting, preserving true arrival order.
-
-    ``source`` says what the body text IS — an assistant's markdown, or verbatim
-    line-oriented output (a tool result, a traceback, what a user typed). It is
-    required, because only the caller knows, and the two are rendered differently
-    (see :class:`MarkdownLineFormatter`). It is deliberately NOT derived from
-    ``role``: ``set_role`` retypes a box in place, and a box's text does not
-    change kind when its label does.
-    """
-
-    def __init__(
-        self,
-        role: str,
-        content: str = "",
-        subtitle: str = "",
-        *,
-        source: ContentSource,
-    ):
-        super().__init__(classes=f"chat-message box-{role}")
-        self.role = role
-        self._content = content
-        self._subtitle = subtitle
-        self._source = source
-        self._reasoning: ReasoningRegion | None = None
-        self._tool_boxes: dict[str, ToolBox] = {}
-        # Children created before compose() ran, mounted in creation order by
-        # on_mount. A live step box is mounted fire-and-forget
-        # (ExchangeBox.add_step) and the agent loop drains a non-empty
-        # asyncio.Queue without ever yielding to the event loop, so the first
-        # reasoning delta or tool call of a turn routinely arrives while
-        # compose() still has not run and the slots below do not exist yet.
-        # Mirrors the text body's own pre-compose buffering (see
-        # append_content_delta's hasattr gate and on_mount's catch-up).
-        #
-        # NOT named _pending_children: Textual's Widget already owns that name
-        # for its own compose stack, and shadowing it with these (slot, widget)
-        # tuples makes mount_composed_widgets try to mount a tuple.
-        self._deferred_children: list[tuple[str, Widget]] = []
-        # Lazily created by append_content_delta on the first streamed delta
-        # once the inner Markdown has composed; see append_content_delta/finish_stream.
-        self._stream: MarkdownStream | None = None
-        # Carries fenced-code-block state across streamed deltas. Reset by
-        # _format, which re-seats it from a whole document.
-        self._formatter = MarkdownLineFormatter(self._source)
-
-    def _format(self, content: str) -> str:
-        """Format a WHOLE body, and re-seat the streaming formatter to match.
-
-        Every caller of this method replaces the entire document (``on_mount``
-        catching up a pre-mount buffer, ``update_content`` swapping the body), so
-        the incremental state has to restart from the same text — otherwise a
-        delta appended afterwards would continue from a fence state belonging to
-        text that is no longer there.
-        """
-        self._formatter = MarkdownLineFormatter(self._source)
-        return self._formatter.feed(content)
-
-    def compose(self) -> ComposeResult:
-        # Three stacked slots: reasoning (lazy), the text body, tool boxes (lazy).
-        # Empty slots collapse to zero height, so a plain user message looks
-        # exactly like a single text box.
-        #
-        # The inner Markdown is always constructed EMPTY, even when
-        # self._content is already non-empty here (a streaming step whose
-        # first delta(s) landed before compose() ran, buffered by
-        # append_content_delta's hasattr gate) -- on_mount catches it up via
-        # append(), deliberately not by seeding the constructor. See
-        # on_mount's comment for why: Markdown(text)'s implicit update(text)
-        # call computes its _last_parsed_line bookkeeping differently than
-        # append() does, and the two can disagree.
-        self._reasoning_slot = Vertical(classes="message-reasoning")
-        yield self._reasoning_slot
-        md = Markdown("", classes="message-content")
-        self._md_widget = md
-        yield md
-        self._tools_slot = Vertical(classes="message-tools")
-        yield self._tools_slot
-
-    def on_mount(self) -> None:
-        # The role label + color live on the box border (not the inner Markdown),
-        # so reasoning + text + tools sit inside one titled border.
-        self.border_title = ROLE_LABELS.get(self.role, self.role.capitalize())
-        # Catch up whatever content was already set (a normal fully-formed
-        # message, or a streaming step whose deltas outran compose()) onto the
-        # now-mounted, still-empty Markdown widget.
-        #
-        # Routed through append(), deliberately NOT update(): Markdown.update()
-        # computes its internal _last_parsed_line bookkeeping as a naive
-        # "physical line count", whereas Markdown.append() derives it from the
-        # actual parse tree (the start line of the last still-open top-level
-        # block). These disagree whenever the seeded text ends with a
-        # construct spanning more than one physical line as ONE block -- a
-        # still-open fenced code block is the everyday case, and _format now
-        # leaves its interior newlines alone, so it stays one multi-line block --
-        # a
-        # later append_content_delta would then reparse from update()'s wrong
-        # line offset and *replace* the block already rendered, silently
-        # dropping the earlier text (same failure mode verified directly on
-        # ReasoningRegion's identical fix). Since existing_blocks is empty on
-        # a freshly-mounted widget either way, append() here mounts the exact
-        # same block tree update() would have for this first-ever content —
-        # the only difference is _last_parsed_line staying self-consistent
-        # with every append_content_delta call that follows.
-        if self._content:
-            self._md_widget.append(self._format(self._content))
-        if self._subtitle:
-            self.border_subtitle = self._subtitle
-        # Mount whatever ensure_reasoning/add_tool_call created while the slots
-        # did not exist yet, in creation order. compose() has run by now, so
-        # every slot named here is present and attached.
-        for slot, widget in self._deferred_children:
-            getattr(self, slot).mount(widget)
-        self._deferred_children.clear()
-
-    def _mount_lazy(self, slot: str, widget: Widget) -> None:
-        """Mount a lazily-created child into one of ``compose()``'s slots.
-
-        Buffers the child when ``compose()`` has not run yet; :meth:`on_mount`
-        flushes the buffer. Before this existed, both callers raised
-        ``AttributeError: 'MessageBox' object has no attribute '_reasoning_slot'``
-        on the first delta of a turn — and because ``ensure_reasoning`` had
-        already assigned ``self._reasoning``, every later call took the
-        already-created branch and handed back a region that was never mounted,
-        so the whole turn's reasoning accumulated into a widget nobody could see.
-        """
-        container = getattr(self, slot, None)
-        if container is None:
-            self._deferred_children.append((slot, widget))
-            return
-        container.mount(widget)
-
-    # -- text body -----------------------------------------------------------
-
-    def set_role(self, role: str) -> None:
-        """Resolve/retype this box in place (e.g. pending → assistant)."""
-        self.remove_class(f"box-{self.role}")
-        self.role = role
-        self.add_class(f"box-{role}")
-        self.border_title = ROLE_LABELS.get(role, role.capitalize())
-
-    def update_content(self, content: str) -> None:
-        """Replace the text body in place (used for streaming text)."""
-        # Same string in twice in a row -- a _flush/finalize call after
-        # append_content_delta already streamed every delta in -- is the
-        # common case now; Markdown.update() unconditionally re-parses and
-        # remounts every block, so skip it when nothing actually changed.
-        # content_text/_promote_answer read self._content, not the widget, so
-        # it's fine to bail before touching the Markdown -- the value they'd
-        # see is unchanged either way.
-        if content == self._content:
-            return
-        self._content = content
-        if hasattr(self, "_md_widget"):
-            self._md_widget.update(self._format(content))
-
-    async def append_content_delta(self, delta: str) -> None:
-        """Stream one delta into the text body without a full document rebuild.
-
-        Uses ``Markdown.get_stream``/``MarkdownStream.write`` (Textual 8.2.7),
-        appending instead of the reparse+remount-everything ``update_content``/
-        ``Markdown.update()`` does. Each delta is formatted by the box's
-        :class:`MarkdownLineFormatter`, which carries fenced-code-block state
-        forward across calls; feeding it one delta at a time therefore produces
-        the identical document a whole-text ``update_content(self._content)``
-        would, even when a delta splits mid newline or mid fence marker.
-
-        ``self._content`` is kept in sync on every call (not just a throttled
-        tick) so ``content_text``/``update_content``'s equality guard stay
-        correct whether or not this delta was actually streamed yet. Mirrors
-        ``update_content``'s existing ``hasattr`` gate: a delta that arrives
-        before ``compose()`` has run is accumulated into ``self._content``
-        only -- ``on_mount`` catches the full buffered text up via ``append()``
-        once the widget mounts (not ``update()`` -- see its comment), and
-        streaming resumes from there.
-        """
-        if not delta:
-            return
-        self._content += delta
-        if not hasattr(self, "_md_widget"):
-            return
-        if self._stream is None:
-            self._stream = Markdown.get_stream(self._md_widget)
-        await self._stream.write(self._formatter.feed(delta))
-
-    async def finish_stream(self) -> None:
-        """Stop this box's open content stream, if any.
-
-        Called at every point the active step stops being the streaming target
-        (``_flush``, ``finalize_exchange``) so no ``MarkdownStream`` background
-        task is left running once the box may be collapsed, promoted from, or
-        removed. Safe to call when nothing was ever streamed (idempotent no-op).
-        """
-        if self._stream is not None:
-            stream, self._stream = self._stream, None
-            await stream.stop()
-
-    @property
-    def content_text(self) -> str:
-        return self._content
-
-    def set_subtitle(self, subtitle: str) -> None:
-        self._subtitle = subtitle
-        self.border_subtitle = subtitle
-
-    # -- reasoning + tools: the unified host API (used by the task-4 wiring) --
-
-    def ensure_reasoning(self) -> ReasoningRegion:
-        """Lazily mount (once) and return this message's reasoning region.
-
-        The region buffers its own streamed text until it mounts, so callers may
-        ``set_text``/``append`` on the returned region immediately -- including
-        before this box has composed, in which case :meth:`_mount_lazy` holds the
-        region until ``on_mount``.
-        """
-        if self._reasoning is None:
-            self._reasoning = ReasoningRegion()
-            self._mount_lazy("_reasoning_slot", self._reasoning)
-        return self._reasoning
-
-    def add_tool_call(self, name: str, arguments: object, tool_call_id: str = "") -> ToolBox:
-        """Append a tool call as a child ToolBox, tracked by id for its result.
-
-        ``ToolBox`` buffers a result written before it mounts, so a call and its
-        result arriving in the same synchronous burst are both rendered even when
-        this box has not composed yet.
-        """
-        box = ToolBox(name, arguments, tool_call_id)
-        if tool_call_id:
-            self._tool_boxes[tool_call_id] = box
-        self._mount_lazy("_tools_slot", box)
-        return box
-
-    async def add_tool_call_async(
-        self, name: str, arguments: object, tool_call_id: str = ""
-    ) -> ToolBox:
-        """Like :meth:`add_tool_call` but awaits the ToolBox mount.
-
-        The reload path folds a tool *result* into this box immediately after the
-        next persisted message; awaiting the mount here keeps that write on the
-        direct path rather than through ``ToolBox``'s pre-mount buffer. Every
-        reload caller has already awaited the step's own mount, so the slot
-        exists and this really does await. The live path is network-paced and
-        uses the fire-and-forget variant."""
-        box = ToolBox(name, arguments, tool_call_id)
-        if tool_call_id:
-            self._tool_boxes[tool_call_id] = box
-        slot = getattr(self, "_tools_slot", None)
-        if slot is None:
-            self._deferred_children.append(("_tools_slot", box))
-            return box
-        await slot.mount(box)
-        return box
-
-    def set_tool_result(
-        self,
-        tool_call_id: str,
-        result_text: str,
-        is_error: bool = False,
-        *,
-        blocked: bool = False,
-        blocked_by: str | None = None,
-    ) -> bool:
-        """Fold a tool result into its matching ToolBox. Returns ``False`` if no
-        box matches the id — the caller decides what to do, nothing is fabricated.
-
-        ``blocked``/``blocked_by`` mark an extension VETO (S50) so the ToolBox
-        renders "⛔ blocked by <ext>" instead of a generic error."""
-        box = self._tool_boxes.get(tool_call_id)
-        if box is None:
-            return False
-        box.set_result(result_text, is_error, blocked=blocked, blocked_by=blocked_by)
-        return True
-
-    @property
-    def reasoning(self) -> ReasoningRegion | None:
-        return self._reasoning
-
-    @property
-    def tool_boxes(self) -> dict[str, ToolBox]:
-        return self._tool_boxes
-
-
-# Backwards-compatible alias: older code/tests referenced `ChatMessage`.
-ChatMessage = MessageBox
-
-
-class ChatListItem(Static):
-    """A clickable session list item."""
-
-    def __init__(self, info: SessionInfo):
-        super().__init__(f"• {info.display_title()}", classes="chat-list-item")
-        # A storage-agnostic handle (SessionCatalog.load(ref)), not a filesystem
-        # path — a path for the file store, a doc id for a future JMFTS-backed one
-        # (W10). Named for what it IS, not for the one store that happens to back
-        # it today.
-        self.chat_ref = info.ref
-        self.info = info
-
-    def on_click(self):
-        """Handle click to load this session."""
-        self.post_message(ChatSelected(self.chat_ref))
-
-
-class ChatSelected(Message):
-    """Message sent when a session is selected from the sidebar."""
-
-    def __init__(self, chat_ref: str):
-        super().__init__()
-        self.chat_ref = chat_ref
-
-
-class ReclaimPending(Message):
-    """alt+up: put the pending steering buffer back in the editor.
-
-    Reference: docs/TUI-STEERING.md §4. A message rather than a direct call
-    because this variant of the gesture works with a draft in the box, and
-    combining the two texts is the app's job — the editor knows what it holds,
-    the app knows what is pending, and only one of them can be told to do it.
-    """
-
-
-class ChatSidebar(Container):
-    """Sidebar showing this directory's recent sessions, grouped by date."""
-
-    # Applies to today/yesterday/older alike (older was the only one capped
-    # before this fix) — an unbounded group is how a single mount storm grows
-    # without limit as the catalog does.
-    _GROUP_LIMIT = 10
-
-    def __init__(self, catalog: SessionCatalog):
-        super().__init__(id="sidebar")
-        self.catalog = catalog
-        self.sessions: list[SessionInfo] = []
-        # Set by _apply_sessions when a refresh lands while collapsed — the
-        # mount/compositor cost of _render_chat_list is real (seconds, for a
-        # large catalog) and paid for zero visible effect while nothing can
-        # see #chat-list. ensure_rendered() catches it up on expand.
-        self._render_pending = False
-
-    def compose(self) -> ComposeResult:
-        """Compose sidebar contents."""
-        yield Static("τ", classes="sidebar-title")
-        yield Button("+ New Chat", id="new-chat-button", variant="primary")
-
-        with VerticalScroll(id="chat-list"):
-            # Will be populated dynamically
-            pass
-
-    def refresh_chats(self) -> None:
-        """Refresh the session list (cwd-scoped — §8 of the redesign).
-
-        ``catalog.list()`` is a synchronous call that can be a genuine blocking
-        network round trip: the JMFTS-backed catalog pages over EVERY
-        ``tau:conversation`` root in the whole instance and filters by cwd
-        client-side (measured live: 1,762 roots, 18 sequential HTTP requests,
-        ~154ms — and it only grows). Calling it directly here, on the event
-        loop, used to freeze the entire TUI for that long. It is dispatched to
-        a thread worker instead (Textual's own rule: "if the await might take
-        more than ~50ms, use a worker").
-
-        This method itself stays synchronous and returns immediately — it only
-        *starts* the worker. Callers that must observe the refreshed list
-        before proceeding (chiefly tests) should await it settling — see
-        ``tests/conftest.py``'s ``wait_for_workers_settled``, not the bare
-        ``app.workers.wait_for_complete()``: because this worker is
-        ``exclusive``, a still-running previous refresh gets cancelled rather
-        than awaited to completion, and ``Worker.wait()`` raises
-        ``WorkerCancelled`` for that — a benign, expected outcome of this
-        method's own staleness guard, not a failure a caller should have to
-        handle case-by-case.
-        """
-        self._refresh_chats_worker()
-
-    @work(thread=True, exclusive=True, group="sidebar-refresh")
-    def _refresh_chats_worker(self) -> None:
-        """The blocking fetch, off the event loop.
-
-        ``exclusive=True`` cancels any still-running refresh from this same
-        widget when a newer one starts (turns can end back-to-back faster than
-        one listing round trip). That cancellation only flips
-        ``worker.is_cancelled`` — a thread already blocked inside
-        ``catalog.list()`` keeps running to completion regardless — so the
-        result is checked for staleness before it is applied. Without that
-        check, a slow superseded fetch could land after a faster newer one and
-        overwrite the sidebar with stale data: a freeze traded for a lie.
-        """
-        worker = get_current_worker()
-        sessions = self.catalog.list(os.getcwd())
-        if worker.is_cancelled:
-            return
-        self.app.call_from_thread(self._apply_sessions, sessions)
-
-    def _apply_sessions(self, sessions: list[SessionInfo]) -> None:
-        """Runs on the UI thread via ``call_from_thread`` — the only place
-        ``self.sessions`` is written and the chat list re-rendered, so widget
-        mutation never happens off the main thread.
-
-        While the sidebar is collapsed (``display: none``, toggled by
-        ``action_toggle_sidebar``), ``_render_chat_list`` is skipped rather
-        than run into a DOM nobody can see: a catalog fetch started before
-        collapsing (mount-time, or a stale one still in flight) can land at
-        an arbitrary later moment, and its render cost does not go away just
-        because the widget is hidden — Textual still pays it in full,
-        synchronously, on the main thread (confirmed live via py-spy: an
-        unbatched mount loop over a few hundred sessions pinned the event
-        loop — and with it every keystroke — for 8+ seconds). The data is
-        still recorded so ``ensure_rendered`` can catch up on expand.
-        """
-        self.sessions = sessions
-        if self.styles.display == "none":
-            self._render_pending = True
-            return
-        self._render_chat_list()
-
-    def ensure_rendered(self) -> None:
-        """Catch up a render that ``_apply_sessions`` deferred while collapsed.
-
-        Called by ``action_toggle_sidebar`` when the sidebar becomes visible
-        again — the counterpart to the skip in ``_apply_sessions``.
-        """
-        if self._render_pending:
-            self._render_pending = False
-            self._render_chat_list()
-
-    def _render_chat_list(self):
-        """Render the session list grouped by recency."""
-        chat_list = self.query_one("#chat-list", VerticalScroll)
-
-        # Clear existing items
-        chat_list.query("ChatListItem, Static").remove()
-
-        if not self.sessions:
-            chat_list.mount(Static("No sessions yet", classes="chat-list-empty"))
-            return
-
-        # Group by date (SessionInfo.modified is UTC; compare in local time).
-        now = datetime.now()
-        today: list[SessionInfo] = []
-        yesterday: list[SessionInfo] = []
-        older: list[SessionInfo] = []
-
-        for info in self.sessions:
-            when = info.modified.astimezone()
-            if when.date() == now.date():
-                today.append(info)
-            elif when.date() == (now - timedelta(days=1)).date():
-                yesterday.append(info)
-            else:
-                older.append(info)
-
-        # One mount() call for every widget in the group, not one call per
-        # item: Textual's mount() does real synchronous attach/CSS/layout
-        # work per call, and looping it item-by-item over a few hundred
-        # sessions is exactly what turned into the multi-second freeze this
-        # fixes. Every group is capped at _GROUP_LIMIT for the same reason
-        # "older" already was — today/yesterday were the unbounded ones.
-        widgets: list[Widget] = []
-        if today:
-            widgets.append(Static("[bold]Today[/bold]", classes="chat-group-header"))
-            widgets.extend(ChatListItem(info) for info in today[: self._GROUP_LIMIT])
-
-        if yesterday:
-            widgets.append(Static("[bold]Yesterday[/bold]", classes="chat-group-header"))
-            widgets.extend(ChatListItem(info) for info in yesterday[: self._GROUP_LIMIT])
-
-        if older:
-            widgets.append(Static("[bold]Older[/bold]", classes="chat-group-header"))
-            widgets.extend(ChatListItem(info) for info in older[: self._GROUP_LIMIT])
-
-        chat_list.mount(*widgets)
-
-    def on_mount(self):
-        """Refresh sessions when mounted."""
-        self.refresh_chats()
-
-    async def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Handle button presses."""
-        if event.button.id == "new-chat-button":
-            # action_new_chat is async; dispatch through run_action so it is
-            # actually awaited. A bare self.app.action_new_chat() just builds an
-            # un-awaited coroutine and silently does nothing — the "+ New Chat"
-            # button bug.
-            await self.app.run_action("new_chat")
-
-
-class _LaneRender:
-    """One render lane's live exchange state (B3-a).
-
-    Was five instance attributes on :class:`ChatDisplay`, which is precisely why
-    the display could render one turn at a time: ``begin_exchange`` reset them and
-    ``finalize_exchange`` closed whatever they currently pointed at, so two
-    overlapping turns interleaved into one exchange and finalized each other's.
-    As a per-lane record the same state exists once per concurrently-streaming
-    turn — a forked sub-agent, or a bus submission arriving mid-answer.
-    """
-
-    __slots__ = (
-        "exchange",
-        "label",
-        "active_box",
-        "active_text",
-        "active_reasoning",
-        "tool_routes",
-        "started",
-        "measured_output",
-        "chunks",
-    )
-
-    def __init__(self, exchange: Optional[ExchangeBox] = None, label: str | None = None) -> None:
-        self.exchange = exchange
-        #: This lane's origin badge (``"bus · nats_bus"``, ``"agent · fork:explore"``),
-        #: or ``None`` for the ordinary "a human typed it here" lane. Held on the
-        #: LANE rather than only on the exchange because the exchange does not
-        #: survive the span: a no-tool exchange is unwrapped at finalize and its
-        #: answer promoted to top level, so a fork's answer would otherwise end up
-        #: an unlabelled ``Assistant`` box in the middle of the primary transcript
-        #: — exactly the mistake a reader must never be able to make (B3-b).
-        self.label = label
-        #: The current turn's assistant step box (reasoning + text + tools).
-        self.active_box: Optional[MessageBox] = None
-        # Accumulators for the active step (the 30 Hz throttle can skip the final
-        # delta, so the tails are flushed when the target changes).
-        self.active_text: str = ""
-        self.active_reasoning: str = ""
-        #: Route each tool result to the step that issued the call, by id.
-        self.tool_routes: dict[str, MessageBox] = {}
-        #: When this lane's exchange opened, on the MONOTONIC clock — the right
-        #: one for an elapsed readout that must not jump when the wall clock is
-        #: adjusted. ``None`` for a lane nobody opened an exchange for (the
-        #: defensive path), which shows no duration rather than a fabricated one.
-        #: The FINISHED exchange's duration is still ``Parley``'s own
-        #: ``time.time()`` measurement, passed to :meth:`finalize_exchange`, so
-        #: this clock cannot change what a completed turn reports.
-        self.started: float | None = None
-        #: Real ``output_tokens`` summed over this lane's COMPLETED completions,
-        #: as of the last ``completion_end``. Never an estimate.
-        self.measured_output: int = 0
-        #: Stream events received since the last completion boundary — the
-        #: completion in flight, which has no measured token count at all.
-        self.chunks: int = 0
-
-
-def _display_path(path: Path) -> str:
-    """``path`` with ``$HOME`` collapsed to ``~``, for display only.
-
-    Purely cosmetic, and never fed back to anything that opens a file — the whole
-    point is that ``~/Development/agent-harness-py`` fits the chat column where
-    the absolute path may not. A path outside ``$HOME`` is returned unchanged.
-    """
-    try:
-        return f"~/{path.relative_to(Path.home())}"
-    except ValueError:
-        return str(path)
-
-
-#: The parenthetical for an empty tool row, keyed by the resolved ``no_tools``
-#: policy. The two flags are NOT interchangeable to a reader of this row: under
-#: ``--no-tools`` the next turn has nothing at all, while under
-#: ``--no-builtin-tools`` an extension may still be offering tools this row does
-#: not list (it states the built-ins, which is all ``resolve_tool_names`` knows).
-_NO_TOOLS_REASON: dict[str, str] = {
-    "all": "none (--no-tools)",
-    "builtin": "none (--no-builtin-tools)",
+_EXTENSION_FLOWS: dict[str, str] = {
+    flow.name.removesuffix("_extension"): flow.name
+    for flow in FLOWS
+    if flow.mutation.endswith("_extension")
 }
+"""The verb a reader types inside ``/extensions``, mapped to the flow it names.
+
+Derived so the ``/extensions`` view cannot offer a verb the registry does not declare;
+it held its own ``{"enable", "disable", "reload"}`` literal until the three became
+flows, and a literal is what let the view and the core disagree unnoticed.
+"""
+
+_SESSION_FLOWS: frozenset[str] = frozenset(
+    flow.name
+    for flow in FLOWS
+    if len(flow.arguments) == 1 and flow.name not in _EXTENSION_FLOWS.values()
+)
+"""The flows :meth:`TauApp.action_run_session_flow` can drive with one typed word.
+
+Derived rather than listed, and the shape of the derivation is the whole claim: a
+flow that takes exactly one argument needs no modal, because the text after the
+slash command IS that argument. ``/name``, ``/autocompact``, ``/model``,
+``/resume`` and ``/compact`` all qualify; the last three keep their own actions
+anyway — ``/model`` and ``/resume`` open a picker when the argument is missing,
+and ``/compact`` re-renders the transcript and takes its argument optionally,
+where this method refuses a missing one.
+"""
+
+
+class TauApp(App):
+    """Main TauApp application."""
+
+    CSS_PATH = "tau.tcss"
 
-
-def _tools_row(model_config: dict[str, Any]) -> str:
-    """Render the pane's ``tools`` row for one resolved model config.
-
-    Names the flag that emptied the list rather than guessing one. Before this,
-    the row said ``--no-builtin-tools`` for every empty set — including under
-    ``--no-tools``, and including a ``"tools": []`` the config file itself
-    declared, neither of which that flag caused. A config-declared empty set now
-    reads as a plain ``none``: true, and not attributed to a flag nobody passed.
-    """
-    names = resolve_tool_names(model_config)
-    if names:
-        return " ".join(names)
-    return _NO_TOOLS_REASON.get(str(model_config.get("no_tools")), "none")
-
-
-@dataclass(frozen=True)
-class SessionFacts:
-    """What the empty chat pane states, already resolved to display strings.
-
-    Everything here is *configuration*, never a probe: ``endpoint`` is the URL τ
-    will post to, not a URL it has reached. Showing a reachability tick nothing
-    verified is the failure this type is shaped to avoid — the pane can be honest
-    about what it was told without pretending to know what it was not.
-    """
-
-    #: One line under the τ. Constant unless ``--fun`` is on (see
-    #: :mod:`tau_coding_agent.tagline`).
-    tagline: str
-    #: The model id that goes on the wire, e.g. ``qwen36-35B-IQ4_XS``.
-    model: str
-    #: Where it goes: a ``base_url`` when the entry has one, else the backend name
-    #: (``anthropic``/``gemini`` entries address their own endpoints).
-    endpoint: str
-    #: The working directory every ``read``/``write``/``bash`` call is relative
-    #: to, with ``$HOME`` collapsed to ``~``.
-    cwd: str
-    #: What the next turn's tool set is, already rendered: the resolved built-in
-    #: names space-separated, or — when there are none — ``none`` naming the flag
-    #: that emptied it (``--no-tools`` withholds extension tools too;
-    #: ``--no-builtin-tools`` does not). An empty tool set is a fact worth
-    #: reading, not a blank row, and WHICH flag produced it is the fact.
-    #: Empty string only when there is no resolvable model entry to ask.
-    tools: str
-    #: The session store this chat will be written to.
-    store: str
-
-
-class ChatPlaceholder(Static):
-    """What the chat column says before the first message (handoff §4.4).
-
-    Not a greeting. The header already says ``Tau``, the footer already lists the
-    keybindings, and the sidebar already says whether there are saved sessions —
-    so the one thing this frame can add is the **configuration the next turn will
-    run against**, which nothing else on screen states. A wrong ``base_url`` or a
-    missing ``bash`` is otherwise discovered after a prompt is typed and a
-    timeout elapses.
-
-    It also carries the one line of identity: the τ and its tagline. That is here
-    rather than in a splash because this frame IS the screenshot — the README and
-    the docs header render exactly this, for a reader who has never run τ.
-
-    Deliberately NOT here: rotating startup tips. A tip that changes on the next
-    ``ctrl+n`` cannot be found again, restates a footer that is three rows below,
-    and makes the pane non-deterministic — which would break the SVG snapshot
-    suite and ``devshot``. The single fixed hint below explains a footer key
-    (``ctrl+g``) instead of repeating it.
-    """
-
-    #: Width of the label gutter. ``store`` is the longest label at 5, so 9 leaves
-    #: four spaces before the value column.
-    LABEL_WIDTH = 9
-
-    def __init__(self, facts: SessionFacts) -> None:
-        super().__init__(id="chat-placeholder")
-        self._facts = facts
-
-    def update_facts(self, facts: SessionFacts) -> None:
-        """Re-state the pane against ``facts``.
-
-        Called by :meth:`ChatDisplay._sync_placeholder` every time the pane
-        becomes visible, because the model can change (``/model``, a resumed
-        session) while the chat is empty. Re-reading on show — rather than
-        snapshotting once at construction — is what keeps a visible fact true.
-        """
-        self._facts = facts
-        self.refresh()
-
-    def render(self) -> RenderableType:
-        """Rebuild the pane from :attr:`_facts`.
-
-        ``render`` rather than a stored renderable, so :meth:`update_facts` only
-        has to swap the dataclass and call ``refresh()`` — there is no second copy
-        of the text to keep in step.
-        """
-        f = self._facts
-        rows = [
-            ("model", f.model),
-            ("", f.endpoint),
-            ("cwd", f.cwd),
-            # ``_session_facts`` has already named the flag; the bare "none" is
-            # only reachable from the unresolvable-model branch, which has no
-            # config to attribute it to.
-            ("tools", f.tools or "none"),
-            ("store", f.store),
-        ]
-        body = Text(justify="left")
-        body.append("τ\n", style="bold")
-        body.append(f.tagline + "\n\n", style="dim")
-        for label, value in rows:
-            # `dim` rather than a hex literal: it composes with whatever color the
-            # stylesheet gives this widget, so the label/value hierarchy survives a
-            # future theme swap without a second palette living in Python.
-            body.append(f"{label:<{self.LABEL_WIDTH}}", style="dim")
-            body.append(value + "\n")
-        body.append("\nCtrl+Enter sends · Ctrl+P commands\n", style="dim")
-        body.append(
-            "Ctrl+G opens the session tree, where you can branch from any earlier message.",
-            style="dim",
-        )
-        return body
-
-
-class MessageList(VerticalScroll):
-    """A scrollable column of :class:`MessageBox` widgets, and how to fill it.
-
-    The two renderers every transcript view shares: :meth:`add_message` (one
-    finished box) and :meth:`add_persisted_message` (one τ on-disk message, which
-    may be several boxes). :class:`ChatDisplay` adds the live streaming state
-    machine on top; :class:`TreeDetailPane` adds nothing but a scroll position.
-
-    It is a base class rather than a helper function because the boxes must be
-    CHILDREN of the scrolling widget, and because ``.chat-message`` styling is
-    written against that containment — the detail pane looks like the chat view
-    for the reason that it *is* the chat view's renderer, not because a second
-    implementation was kept in step by hand.
-    """
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        # Whether new content should pull the view down with it. See
-        # :meth:`scroll_to_tail`. True at construction because an empty list is
-        # at its own tail, and because that is the reading position every
-        # transcript starts in.
-        self._follow_tail: bool = True
-
-    # -- following the tail, and letting go of it ---------------------------
-
-    def scroll_to_tail(self) -> None:
-        """Show the newest content, but ONLY if the reader is already there.
-
-        Every renderer in this class and in :class:`ChatDisplay` calls this
-        instead of ``scroll_end``. The difference is the whole of "you can read
-        while it writes": a turn that streams for ninety seconds used to yank
-        the view back to the bottom on every delta, so scrolling up to re-read a
-        tool result was impossible until the turn ended.
-
-        :attr:`_follow_tail` is maintained by :meth:`watch_scroll_y` rather than
-        being decided here, because "is the reader at the bottom" has to be
-        sampled when the READER moves, not when content arrives: content arriving
-        while detached grows ``max_scroll_y`` without moving ``scroll_y``, which
-        would make a check at this moment answer "no" forever after the first
-        delta, and a check after the mount answer "yes" every time.
-        """
-        if self._follow_tail:
-            self.scroll_end(animate=False)
-
-    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
-        """Re-decide whether to follow the tail, on every vertical scroll.
-
-        Textual's own watcher, extended. It fires for a scroll from any cause —
-        wheel, keys, scrollbar drag, and this class's own
-        :meth:`scroll_to_tail` — and the rule is the same for all of them:
-        following means the view is at the bottom right now.
-
-        So scrolling up releases the tail on the next delta, and scrolling back
-        down re-attaches it, with no separate gesture to learn. Textual's own
-        ``anchor()`` implements almost this, but its release is wired into
-        ``scroll_to``'s ``release_anchor`` argument rather than into the
-        position, so this class's own ``scroll_end`` calls would release it.
-        """
-        super().watch_scroll_y(old_value, new_value)
-        self._follow_tail = self.is_vertical_scroll_end
-
-    def add_message(self, role: str, content: str, subtitle: str = "", *, source: ContentSource):
-        """Add a finished (non-streaming) message box to the display.
-
-        ``source`` is passed straight through to :class:`MessageBox` and is
-        required for the same reason it is required there: only this caller knows
-        whether it is handing over an assistant's markdown or verbatim output.
-        """
-        box = MessageBox(role, content, subtitle, source=source)
-        self.mount(box)
-        self.scroll_to_tail()
-        return box
-
-    def add_persisted_message(self, msg: dict) -> list[MessageBox]:
-        """Render one *persisted* message (from a saved chat) in arrival order.
-
-        Unlike the live path — driven by streaming lifecycle events — a reloaded
-        message carries its content as the τ on-disk shape: a plain string
-        (user/system), or a list of block dicts (assistant: ``text`` +
-        ``toolCall`` blocks; ``toolResult``: a separate role with ``text`` blocks
-        plus top-level ``tool_name``/``is_error``). Each block becomes the SAME
-        ``MessageBox`` kind the live path would have produced — a ``str``-only
-        renderer here is exactly the bug that froze the TUI on chat reload, so we
-        normalize instead of handing a list to ``MessageBox``.
-
-        Returns every box it mounted, in order, because one message is not one
-        box: an assistant turn that interleaves text and tool calls becomes
-        several, and a caller that has to style or scroll to "that message"
-        (:class:`TreeDetailPane`) needs all of them, not the first.
-
-        Raises ``TypeError`` on an unrenderable content shape rather than
-        silently dropping it (Fail-Early): an unexpected shape is a real bug.
-        """
-        role = msg.get("role", "")
-
-        # toolResult is its own message role; the tool name + error flag live at
-        # the message level, the result text in `text` blocks.
-        if role == "toolResult":
-            result_text = _join_text_blocks(msg.get("content", []))
-            box = self.add_message(
-                "toolResult",
-                format_tool_result_body(
-                    msg.get("tool_name", ""),
-                    result_text,
-                    bool(msg.get("is_error", False)),
-                ),
-                source="verbatim",
-            )
-            if msg.get("is_error"):
-                box.add_class("box-error")
-            return [box]
-
-        # A bare-string body is the on-disk shape for a user or system turn —
-        # literal text nobody wrote as markdown — and, for an assistant turn, the
-        # answer markdown it authored.
-        text_source: ContentSource = "markdown" if role == "assistant" else "verbatim"
-
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            # Same display fold a live user bubble gets, so a reloaded chat and
-            # the chat it was reloaded from look alike (docs/FILE-ATTACHMENTS.md
-            # §6). Only a user turn can hold an inlined attachment; an assistant
-            # turn's markdown is left exactly as the model wrote it.
-            if role == "user":
-                content = elide_attachment_bodies(content)
-            return [self.add_message(role, content, source=text_source)]
-        if isinstance(content, list):
-            # Assistant turns interleave text and tool calls. Accumulate text
-            # into one box, flushing it before each tool call so order is kept
-            # (text-then-call renders as two boxes, the call after the text).
-            boxes: list[MessageBox] = []
-            text_buf: list[str] = []
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                btype = block.get("type")
-                if btype == "text":
-                    text = block.get("text", "")
-                    text_buf.append(elide_attachment_bodies(text) if role == "user" else text)
-                elif btype == "image":
-                    # A terminal cannot show the pixels, and this branch used to
-                    # skip the block entirely — a user turn that was ONLY an image
-                    # reloaded as an empty box. One line naming it is the honest
-                    # minimum; the ``<attachment>`` marker in the same message
-                    # says which file it came from.
-                    encoded = block.get("data", "")
-                    size = human_size(len(encoded) * 3 // 4)
-                    text_buf.append(f"[{block.get('mime_type', 'image')}, {size}]")
-                elif btype == "toolCall":
-                    if text_buf:
-                        boxes.append(self.add_message(role, "".join(text_buf), source=text_source))
-                        text_buf = []
-                    boxes.append(
-                        self.add_message(
-                            "toolCall",
-                            format_tool_call_body(
-                                block.get("name", ""), block.get("arguments", {})
-                            ),
-                            source="verbatim",
-                        )
-                    )
-            if text_buf:
-                boxes.append(self.add_message(role, "".join(text_buf), source=text_source))
-            return boxes
-
-        raise TypeError(f"cannot render persisted message content of type {type(content).__name__}")
-
-
-@dataclass(frozen=True)
-class DetailView:
-    """The window of conversation the tree browser's detail pane shows.
-
-    Three nodes at most — the selected one and its two conversational neighbours
-    — plus counts of what lies beyond them, which is all the ``⋯`` rows need to
-    say something true. Computed by :meth:`SessionTreeModal._view_of` from the
-    ``TreeNode`` graph alone; the pane resolves the bodies.
-    """
-
-    selected: TreeNode
-    previous: TreeNode | None
-    following: TreeNode | None
-    #: Ancestors strictly above ``previous`` (0 → the fold marker is not drawn).
-    earlier: int
-    #: Descendants strictly below ``following`` along the whole subtree.
-    later: int
-    #: Children of ``selected``, when more than one — a fork below the cursor.
-    branches: int
-
-
-class TreeDetailPane(MessageList):
-    """The tree browser's right-hand pane: the selected node, in full, in context.
-
-    The browser row is one elided line, which answers "which node is this?" and
-    not "is this the one I meant?". This pane answers the second question with
-    the SAME renderer the transcript uses (:class:`MessageList`), so a node reads
-    here exactly as it read in the chat — collapsibles and all, since the boxes
-    are real :class:`MessageBox` widgets and a tool box or reasoning region in
-    one can be opened.
-
-    Only three nodes are mounted at a time. That is not a performance hedge that
-    trades away completeness — a tree browser's neighbours are the PARENT and a
-    CHILD, and moving between forks replaces both, so a full-conversation list
-    would be rewritten on most moves anyway. ``⋯ N earlier`` / ``⋯ N later`` rows
-    state what is not drawn instead of implying the conversation is three
-    messages long.
-
-    The neighbours wear ``detail-context``, which desaturates their border and
-    body while keeping the per-role hue: the reader still sees "user above,
-    assistant below" without those boxes competing with the selection.
-    """
-
-    #: Rows of the previous message kept on screen above the selection. Enough to
-    #: show its closing border and a line of its tail, so the selected box reads
-    #: as following something rather than starting the pane.
-    LEAD_ROWS = 3
-
-    def __init__(self, resolve_entry: Callable[[str], dict[str, Any]]) -> None:
-        super().__init__(id="tree-detail")
-        #: id → raw session entry. The pane needs bodies, which ``TreeNode`` does
-        #: not carry (see ``ConversationTree.entry``); injected rather than
-        #: imported so the modal's caller decides what log is being browsed.
-        self._resolve_entry = resolve_entry
-        self._shown_id: str | None = None
-        self._selected_boxes: list[MessageBox] = []
-        #: A rebuild is waiting to be scrolled into place. Cleared by
-        #: :meth:`_scroll_to_selection` once the layout it needs actually exists.
-        self._position_pending = False
-
-    async def show(self, view: DetailView) -> None:
-        """Rebuild the pane for ``view`` and scroll the selection into place.
-
-        A repeat of the node already shown is a no-op — Textual re-emits
-        ``NodeHighlighted`` on events that do not move the cursor (a click on the
-        current row, a re-focus), and rebuilding on those would drop the reader's
-        scroll position and any collapsible they had opened.
-        """
-        if view.selected.id == self._shown_id:
-            return
-        self._shown_id = view.selected.id
-        await self.remove_children()
-        self._selected_boxes = []
-
-        if view.earlier:
-            await self.mount(self._fold_row(f"⋯ {view.earlier} earlier"))
-        if view.previous is not None:
-            self._dim(self._render_node(view.previous))
-        self._selected_boxes = self._render_node(view.selected)
-        if view.following is not None:
-            self._dim(self._render_node(view.following))
-        trailer = self._trailer(view)
-        if trailer:
-            await self.mount(self._fold_row(trailer))
-
-        # Positioning needs measured heights, which exist only after a layout.
-        self._position_pending = True
-        self.call_after_refresh(self._scroll_to_selection)
-
-    def _size_updated(self, size, virtual_size, container_size, layout: bool = True) -> bool:
-        """Take the second chance at positioning, once the layout is real.
-
-        The ``call_after_refresh`` in :meth:`show` is not reliably late enough:
-        the boxes it mounted may still be unmeasured on that tick, and a scroll
-        against a zero ``max_scroll_y`` clamps to the top and silently does
-        nothing — leaving the selection under a long previous message, which is
-        the one arrangement the pane exists to prevent. This hook is where
-        ``ScrollView`` learns its virtual size, so it is the earliest point at
-        which the answer can be right. Both paths run; whichever finds a measured
-        layout first clears the flag and the other becomes a no-op.
-        """
-        changed = super()._size_updated(size, virtual_size, container_size, layout)
-        if self._position_pending:
-            self._scroll_to_selection()
-        return changed
-
-    @staticmethod
-    def _trailer(view: DetailView) -> str:
-        """The bottom ``⋯`` row's text, or ``""`` when nothing is below.
-
-        A fork is reported separately from the count because it is a different
-        fact: ``later`` says how much conversation is hidden, ``branches`` says
-        that the node the reader is looking at is where the history splits, which
-        is usually why they opened this browser at all.
-        """
-        parts = []
-        if view.branches > 1:
-            parts.append(f"{view.branches} branches from here")
-        if view.later:
-            parts.append(f"{view.later} later")
-        return f"⋯ {', '.join(parts)}" if parts else ""
-
-    @staticmethod
-    def _fold_row(text: str) -> Static:
-        return Static(text, classes="detail-fold")
-
-    @staticmethod
-    def _dim(boxes: list[MessageBox]) -> None:
-        for message_box in boxes:
-            message_box.add_class("detail-context")
-
-    def _render_node(self, node: TreeNode) -> list[MessageBox]:
-        """One tree node as the boxes the transcript would have drawn for it.
-
-        Three kinds of payload, handled explicitly rather than by a single
-        ``preview`` shortcut, because the pane exists to show more than the row
-        already did:
-
-        - a ``message``/``customMessage`` carries a real message — rendered by
-          the shared :meth:`~MessageList.add_persisted_message`, so an assistant
-          turn arrives with its tool boxes attached;
-        - a ``compaction``/``branch_summary`` carries a ``summary``, of which the
-          row showed only the first line — the whole text is drawn here;
-        - anything else (``navigate``, ``elide``, ``customEntry``) has no body
-          beyond what ``ConversationTree`` already composed into ``preview``, so
-          that IS the full text, not a truncation of one.
-        """
-        entry = self._resolve_entry(node.id)
-        kind = str(entry.get("type", "")) or node.kind
-        if kind in ("message", "customMessage"):
-            message = entry.get("message")
-            if isinstance(message, dict):
-                return self.add_persisted_message(message)
-        if kind in ("compaction", "branch_summary"):
-            return [self.add_message(kind, str(entry.get("summary", "")), source="verbatim")]
-        return [self.add_message(kind, node.preview, source="verbatim")]
-
-    def _scroll_to_selection(self) -> None:
-        """Put the selected node's top edge :attr:`LEAD_ROWS` below the pane top.
-
-        Not ``scroll_to_widget(top=True)``: that would park the selection flush
-        against the pane's top edge and scroll the previous message entirely out,
-        which is the one thing the layout is supposed to prevent. Scrolling to an
-        absolute virtual row instead means a short previous message (nothing to
-        scroll past) and a very long one land in the same place.
-
-        Returns without clearing :attr:`_position_pending` when the boxes have no
-        measured height yet — the position is not yet knowable, and guessing at it
-        would put the selection somewhere arbitrary. :meth:`_size_updated` calls
-        back when the layout lands.
-        """
-        if not self._selected_boxes:
-            self._position_pending = False
-            return
-        selected = self._selected_boxes[0]
-        if not selected.virtual_region.height:
-            return
-        self._position_pending = False
-        self.scroll_to(y=max(0, selected.virtual_region.y - self.LEAD_ROWS), animate=False)
-
-    @property
-    def selected_boxes(self) -> list[MessageBox]:
-        """The boxes drawn for the selected node (the undimmed ones)."""
-        return list(self._selected_boxes)
-
-    @property
-    def shown_id(self) -> str | None:
-        """The node currently drawn, or ``None`` before the first :meth:`show`.
-
-        Public so a caller can wait for the pane to catch up with the tree rather
-        than guess at how many event-loop turns that takes — the pane's draw is
-        two deferred callbacks behind a cursor move.
-        """
-        return self._shown_id
-
-
-class ChatDisplay(MessageList):
-    """Main chat display area with incremental, arrival-ordered rendering.
-
-    One user→answer span is an **exchange**, and each concurrently-streaming turn
-    is a **lane** (B3-a) — keyed by ``submission_id``, or ``branch:<lane>`` for a
-    forked sub-agent. Lanes render side by side without interleaving; a lane
-    nobody named is :data:`DEFAULT_LANE`, which is what every pre-B3-a caller (the
-    reload path, a test replaying widget events) implicitly used.
-
-    While the agent loop streams, each lane runs a state machine driven by
-    normalized backend events (see ``RenderRouter`` in ``backends.py``) that groups
-    the span under one collapsible :class:`ExchangeBox`:
-
-    - :meth:`begin_exchange` (before the loop) opens an expanded ``ExchangeBox``.
-    - each ``turn_start`` mounts ONE assistant :class:`MessageBox` *step* into
-      the exchange — a completion's reasoning + text + tool boxes share it.
-    - ``reasoning_delta`` streams into the step's lazily-mounted reasoning
-      region; the region collapses the instant answer text / a tool call begins.
-    - ``text_delta`` streams into the step's text body (in place, never dup'd).
-    - ``tool_call`` adds a :class:`ToolBox` child to the step; ``tool_result``
-      folds into it, matched by ``tool_call_id`` (routed across the exchange).
-    - :meth:`finalize_exchange` (after the loop) flushes tails, snaps the final
-      text-only answer OUT below the now-collapsed summary line, and stamps the
-      summary (``N tools · X tok · M:SS``). A trivial no-tool exchange is
-      unwrapped entirely — just the plain answer, no grouping. ONE reparent, at
-      the end (Textual has no live reparent, so the answer is reconstructed).
-    - while any lane is open, a timer repaints each exchange's ``Working…``
-      title with a measured token count, the in-flight chunk count and the
-      elapsed time (:meth:`_tick_live_counters`). Per lane rather than one
-      global readout: two concurrent turns have two different answers, and the
-      one line a header subtitle has could only report one of them.
-
-    Reloaded (persisted) chats still render as flat boxes via
-    :meth:`add_persisted_message` — rebuilding exchanges from the saved message
-    list is a separate concern.
-    """
-
-    def __init__(self, facts: Callable[[], SessionFacts] | None = None):
-        super().__init__(id="chat-display")
-        # Per-LANE streaming state (B3-a). One entry per concurrently-streaming
-        # turn; created on demand so an event for a lane nobody opened still
-        # renders (the pre-B3-a defensive path, where a step with no exchange
-        # mounts at top level) instead of vanishing.
-        self._lanes: dict[str, _LaneRender] = {}
-        # A CALLABLE, not a snapshot: the model can change (/model, a resumed
-        # session) while the chat is empty, and a pane stating last hour's model
-        # is worse than no pane. Called on each show, which is rare.
-        #
-        # Optional because a bare renderer harness legitimately has no empty
-        # state — two test apps mount a ChatDisplay purely to assert what
-        # add_message produced. `None` composes no placeholder at all rather than
-        # inventing facts nobody supplied.
-        self._facts_source = facts
-        self._placeholder: ChatPlaceholder | None = None
-        #: The list the last :meth:`reload_messages` was handed, kept by
-        #: reference so :meth:`show_all_messages` can re-render the WHOLE
-        #: transcript. It is the caller's own list object, not a copy — there is
-        #: no second source of truth to fall out of step.
-        #:
-        #: Two writers, both meaning the same thing: :meth:`reload_messages` when
-        #: it is handed a transcript, and :meth:`_refresh_transcript` at every
-        #: turn edge. It would otherwise go stale the moment a live turn ended —
-        #: the app REBINDS its working list
-        #: (``self.messages = list(session.context)``) rather than appending to
-        #: it, so a reference taken at the last reload answers for a conversation
-        #: that has moved on, and :meth:`show_all_messages` would restore LESS
-        #: than the reader already had.
-        self._reload_source: list[dict] = []
-        #: Where :meth:`_refresh_transcript` re-reads it from. A callable and not
-        #: a snapshot for the same reason :attr:`_facts_source` is one: the list
-        #: object itself is replaced after every turn. Set by
-        #: :meth:`set_transcript_source`; ``None`` on a bare renderer harness,
-        #: which has no app behind it and keeps what it was handed.
-        self._transcript_source: Callable[[], list[dict]] | None = None
-        #: How many messages the last reload — or the last :meth:`trim_to_cap` —
-        #: declined to MOUNT, ABOVE the window. Zero when the whole transcript is
-        #: on screen.
-        self._elided = 0
-        #: The same count BELOW the window, which is non-zero only while the
-        #: reader has slid the window back into history. The two are separate
-        #: because they are two different rows saying two different things, and
-        #: because ``elided_count`` has always meant the first one.
-        self._elided_after = 0
-        #: The mounted region of :attr:`_reload_source`, as ``[start, end)``
-        #: message indices. ``0, 0`` before anything is rendered. Attached to the
-        #: tail means ``_window_end == len(_reload_source)``, which is the state
-        #: every live turn requires and :attr:`_elided_after` reports the negative
-        #: of.
-        self._window_start = 0
-        self._window_end = 0
-        #: Claimed synchronously by :meth:`watch_scroll_y` before it schedules a
-        #: move, and released by :meth:`move_window`. A move re-renders, which
-        #: moves ``scroll_y``, which re-enters the watcher — and one flick of the
-        #: wheel posts several scroll events, so without a claim taken in the
-        #: watcher itself one gesture would queue several moves.
-        self._window_moving = False
-        #: Bumped by every :meth:`_render_window`. A move is SCHEDULED by the
-        #: scroll watcher and RUNS a tick later, and in between the window can be
-        #: rebuilt under it — a reload, a snap back to the tail for a starting
-        #: turn. The scheduled call carries the generation it was decided in and
-        #: declines to act on a different one, which is what stops a queued
-        #: "one turn back" from undoing the reload that overtook it.
-        self._window_generation = 0
-        #: Message index of each mounted turn → the top-level widget that opens
-        #: it. Built by :meth:`_render_window` and valid ONLY for the tree it just
-        #: built: the live path mounts turns without registering them, and
-        #: :meth:`trim_to_cap` removes them without unregistering. That is not a
-        #: leak to fix — the map exists to hold a scroll position across ONE
-        #: re-render, and every reader of it runs directly after one.
-        self._turn_anchors: dict[int, Widget] = {}
-        #: A trim that came due while the reader was scrolled up, held until they
-        #: return to the tail. Evicting the head moves everything under a reader
-        #: who is mid-sentence, which is the one thing docs/TUI-STEERING.md's
-        #: scroll release exists to prevent.
-        self._trim_deferred = False
-        #: True while :meth:`_render_window` is assembling the transcript, cleared
-        #: by :meth:`_finish_build` a refresh later — which is also where a build
-        #: that wanted the tail finally lands on it.
-        self._building = False
-        #: Repaints every open exchange's live counter. Created paused in
-        #: :meth:`on_mount` and only running while a lane is open, so an idle
-        #: chat costs nothing. ``None`` on a display that was never mounted (a
-        #: bare renderer harness), which simply has no counter.
-        self._live_timer: Timer | None = None
-
-    #: Bound on how much of a transcript is mounted as widgets — on RELOAD
-    #: (:meth:`reload_messages`) and, since the live window, as a turn ENDS
-    #: (:meth:`trim_to_cap`). Whichever limit is reached first walking BACKWARDS
-    #: from the end wins.
-    #:
-    #: This is a RENDERING bound and nothing else. The whole conversation is
-    #: still loaded, still in the session log, and still what the model is sent;
-    #: only the widget tree is capped. If this ever changes model input it has
-    #: become a silent context bug (docs/TREE-BROWSER-AS-EDITOR.md's
-    #: tree-as-truth invariant), which is why the cap lives here on the display
-    #: and touches no message list.
-    #:
-    #: The numbers matter because the render cost is superlinear in the mounted
-    #: widget count: an 800-message reload takes over four minutes, and the same
-    #: mounted tree throttles streaming to a couple of tokens per second.
-    #:
-    #: Applying the cap only on reload was the gap the live window closes. One
-    #: turn costs about 66 widgets (an exchange, its steps, their reasoning and
-    #: tool boxes, and every ``MarkdownBlock`` inside them), and until a reload
-    #: happened nothing ever took any of them back. Measured on this tree,
-    #: Textual 8.2.7, feeding 200 deltas at 40/s — a stream a perfect renderer
-    #: finishes in 5.0s:
-    #:
-    #: ===============  =========  ==========
-    #: mounted turns    widgets    wall clock
-    #: ===============  =========  ==========
-    #: 0                        1       5.2 s
-    #: 20                    1321       7.7 s
-    #: 40                    2641      11.7 s
-    #: 60                    3961      18.9 s
-    #: ===============  =========  ==========
-    #:
-    #: The cost is not this widget's own. Every ``MarkdownBlock.update`` reaches
-    #: ``Widget.refresh`` → ``_set_dirty`` → ``self.size`` →
-    #: ``Screen.find_widget`` → ``_compositor.full_map``, and ``full_map``
-    #: arranges the ENTIRE screen tree with ``visible_only=False``. A delta
-    #: changes the layout, which invalidates the cached map, so the next block
-    #: update rebuilds it over every widget in the transcript. Nothing τ writes
-    #: can skip that call — only make the tree it walks smaller.
-    #:
-    #: Which is why the window EVICTS rather than hides. Measured at a
-    #: 60-exchange backlog, per delta: ``display: none`` on the old exchanges
-    #: 417 → 301 ms, dropping the collapsed exchanges' interiors 417 → 286 ms,
-    #: flattening each finished ``Markdown`` to one ``Static`` 436 → 225 ms,
-    #: coalescing the stream writes to 10 Hz 18.9 → 15.5 s of wall clock — and
-    #: evicting whole turns 417 → 58 ms, which is the empty-transcript cost.
-    #: Only removal works, because only removal is what ``full_map`` counts.
-    RENDER_CAP_TURNS = 4
-    #: 100, raised from 50 (2026-08-31) — see docs/TRANSCRIPT-WINDOW.md §9.
-    #:
-    #: §5 named ``RENDER_CAP_TURNS`` as the number to revisit first. It was the
-    #: wrong one: in a tool-heavy conversation the MESSAGE bound is what binds,
-    #: because one turn of 48 tool calls is 88 messages on its own. At 50 the
-    #: turn cap never got a chance to matter, and the windows either side of such
-    #: a turn were 2 and 4 messages — positions that show almost nothing while
-    #: claiming a hundred hidden below.
-    #:
-    #: Measured on two real sessions (205 and 283 messages), reloading the tail
-    #: window and taking one step back:
-    #:
-    #: =====  ===============  =========  ==========  =========
-    #: cap    smallest window  widgets    reload      one step
-    #: =====  ===============  =========  ==========  =========
-    #: 50                   2      212       634 ms     2343 ms
-    #: 100                 16      212       699 ms     2271 ms
-    #: 150                 16     1179      3604 ms     3436 ms
-    #: =====  ===============  =========  ==========  =========
-    #:
-    #: 100 is free and 150 is a cliff, and the cliff is not gradual: at 150
-    #: ``render_cap_start`` moves back past the 88-message turn, so the window a
-    #: session OPENS in swallows it. That is the number to hold the line at.
-    RENDER_CAP_MESSAGES = 100
-
-    #: How often the live exchange counter repaints, in seconds. Deliberately
-    #: decoupled from the delta rate: the counter must keep moving through a
-    #: thirty-second tool call, when nothing is arriving at all, and it must not
-    #: cost a title repaint per delta on a fast stream.
-    LIVE_TICK_SECONDS = 0.25
-
-    def on_mount(self) -> None:
-        """Create the (paused) live-counter timer.
-
-        Paused, because it is started by :meth:`begin_exchange` and stopped again
-        when the last lane closes — a chat with nothing streaming does no work.
-        """
-        self._live_timer = self.set_interval(
-            self.LIVE_TICK_SECONDS, self._tick_live_counters, pause=True
-        )
-
-    def _tick_live_counters(self) -> None:
-        """Repaint every open exchange's ``Working…`` line.
-
-        Reads the lane state and writes the title; it measures nothing itself, so
-        a lane whose provider reports no usage shows the duration and the chunk
-        count and makes no token claim.
-        """
-        now = time.monotonic()
-        for state in self._lanes.values():
-            if state.exchange is None:
-                continue
-            state.exchange.set_live(
-                seconds=None if state.started is None else now - state.started,
-                output=state.measured_output,
-                chunks=state.chunks,
-            )
-
-    def _sync_live_timer(self) -> None:
-        """Run the counter timer exactly while at least one lane is open."""
-        if self._live_timer is None:
-            return
-        if self._lanes:
-            self._live_timer.resume()
-        else:
-            self._live_timer.pause()
-
-    def compose(self) -> ComposeResult:
-        """Compose the placeholder, when this display has facts to state.
-
-        Yielded rather than mounted, so it does not pass through :meth:`mount` —
-        which would re-enter :meth:`_sync_placeholder` before the attribute it
-        reads is assigned.
-        """
-        if self._facts_source is not None:
-            self._placeholder = ChatPlaceholder(self._facts_source())
-            yield self._placeholder
-
-    def _sync_placeholder(self) -> None:
-        """Show the placeholder exactly while this display holds no messages.
-
-        **Derived from the DOM, never told.** Every caller that adds or removes
-        content would otherwise have to remember to update a flag, and the one
-        that forgot would leave the pane visible under a live transcript. Asking
-        the tree what is in it cannot go stale — the only failure mode left is a
-        missed call, which is why ``test_chat_placeholder.py`` asserts the state
-        after every public entry point.
-
-        Derived from the DIRECT children, not from two deep ``query()`` calls.
-        Each ``query()`` walks the whole subtree and builds a list; this runs on
-        every mount, so on a reload it was Σ O(widgets) — 12 % of a 150-message
-        reload, and 3.2 s of an 8.6 s 200-message one. The direct children answer
-        the same question: a nested ``MessageBox`` is a step inside an
-        ``ExchangeBox``, and that exchange IS a direct child. ``any()`` also stops
-        at the first box instead of collecting every one of them.
-        """
-        placeholder = self._placeholder
-        if placeholder is None:
-            return
-        has_content = any(isinstance(child, (MessageBox, ExchangeBox)) for child in self.children)
-        placeholder.display = not has_content
-        if not has_content:
-            placeholder.update_facts(self._facts_source())  # type: ignore[misc]
-
-    def mount(self, *widgets: Widget, before=None, after=None):
-        """Mount children, then re-decide whether the placeholder still applies.
-
-        The structural hook for "content arrived": every box that enters this
-        display directly — :meth:`MessageList.add_message`, :meth:`begin_exchange`,
-        the defensive top-level step path — goes through here. Overriding one
-        method beats sprinkling a sync call through five call sites and finding
-        out later which one was missed.
-        """
-        result = super().mount(*widgets, before=before, after=after)
-        self._sync_placeholder()
-        return result
-
-    async def clear_messages(self):
-        """Clear all messages from display and reset streaming state.
-
-        Async: a chat cleared *mid-stream* (new-chat/clear-chat while a turn is
-        still streaming) can have an open ``MarkdownStream`` on the active
-        lane's step (content and/or reasoning) -- ``.remove()``ing that box out
-        without stopping its stream first would leave the stream's background
-        task referencing a detached widget forever (a leaked task, and the
-        exact "left open on a box that gets removed" case the streaming
-        redesign has to not raise on). Stopping first, via the same
-        ``finish_stream`` every other lane-transition point uses, makes the
-        ensuing ``.remove()`` calls safe.
-        """
-        for state in self._lanes.values():
-            box = state.active_box
-            if box is None:
-                continue
-            if box.reasoning is not None:
-                await box.reasoning.finish_stream()
-            await box.finish_stream()
-        await self.query(ExchangeBox).remove()
-        await self.query(MessageBox).remove()
-        # The ``⋯ N earlier`` row is neither, and a stale one would keep claiming
-        # a count for a transcript that is no longer on screen.
-        await self.query(".chat-fold").remove()
-        self._elided = 0
-        self._elided_after = 0
-        # An empty display shows no span of anything. _render_window sets real
-        # bounds straight after this; every other caller leaves a display that
-        # genuinely has no window.
-        self._window_start = 0
-        self._window_end = 0
-        self._turn_anchors = {}
-        # A trim held for a reader who scrolled up is about a transcript that is
-        # no longer on screen. Running it later would cut a conversation it never
-        # measured.
-        self._trim_deferred = False
-        self._lanes = {}
-        # Every exchange the counter had to draw has just been removed.
-        self._sync_live_timer()
-        # The "content left" half of the pair with :meth:`mount`. Awaiting the two
-        # removals above is what makes this correct rather than racy: _sync reads
-        # the DOM, so it has to run after the nodes are actually gone.
-        self._sync_placeholder()
-
-    def _lane(self, lane: str) -> _LaneRender:
-        """This lane's render state, created on demand.
-
-        On demand rather than "raise if absent": the display has always tolerated
-        an event with no exchange open (``_start_step`` mounts at top level), and
-        that tolerance is what keeps a chat cleared mid-turn from turning every
-        subsequent delta into an error.
-        """
-        state = self._lanes.get(lane)
-        if state is None:
-            state = _LaneRender()
-            self._lanes[lane] = state
-        return state
-
-    def active_step(self, lane: str = DEFAULT_LANE) -> Optional[MessageBox]:
-        """The step box a lane is currently streaming into, if any.
-
-        The one piece of lane state anything outside this class reads (tests
-        asserting where reasoning/tool output landed). Public and lane-addressed
-        rather than a poked-at private attribute, because "which box is live" is
-        now a question that has a different answer per lane.
-        """
-        state = self._lanes.get(lane)
-        return None if state is None else state.active_box
-
-    # ------------------------------------------------------------------
-    # Streaming state machine (driven by backends.RenderRouter's lane events)
-    # ------------------------------------------------------------------
-
-    async def begin_exchange(self, lane: str = DEFAULT_LANE, *, label: str | None = None) -> None:
-        """Open a new exchange for ``lane`` before its agent loop runs.
-
-        Awaits the mount so the exchange's collapsible body has composed before
-        the first ``turn_start`` adds a step into it (begin→turn_start has no
-        natural render tick between them, unlike the network-paced events that
-        follow). Steps mount into the expanded ``ExchangeBox`` as the loop
-        streams; :meth:`finalize_exchange` later collapses it to a summary line.
-
-        ``label`` marks a lane that is NOT this frontend's own typed turn — a bus
-        or timer submission, a forked sub-agent — so the reader can tell it apart
-        (Jupyter's rule: render every source, differently). ``None`` renders
-        exactly as it always has. It is kept on the lane as well as on the
-        exchange, because every box the lane mounts wears it (B3-b): the exchange
-        outlives neither the promoted answer nor, for a no-tool span, itself.
-        """
-        await self.snap_window_to_tail()
-        exchange = ExchangeBox(label=label)
-        state = _LaneRender(exchange, label)
-        state.started = time.monotonic()
-        self._lanes[lane] = state
-        await self.mount(exchange)
-        self._sync_live_timer()
-        self.scroll_to_tail()
-
-    async def snap_window_to_tail(self) -> bool:
-        """Put the window back on the end of the transcript. Returns whether it
-        had to move.
-
-        A no-op unless the reader has slid the window back into history, which is
-        the only state this exists for. It is called from :meth:`begin_exchange`,
-        and it is the answer to the one question a slid window cannot otherwise
-        answer: a turn is starting, and the live state machine mounts into the
-        END of this display — so a window showing turn 5 of 40 would grow a live
-        exchange directly under turn 8, in a place that means nothing.
-
-        It DOES pull a reader out of history, and that is the cost. It is the
-        cheaper of the two costs: the alternative is a live turn rendering where
-        the reader cannot see it, and the state machine having to tolerate
-        streaming into a box that is not on screen. A turn beginning is the
-        present changing, and the present is what the tail shows.
-        """
-        if not self._elided_after:
-            return False
-        self._refresh_transcript()
-        messages = self._reload_source
-        start = self.render_cap_start(messages)
-        await self._render_window(messages, start, self.window_end(messages, start))
-        self._follow_tail = True
-        self.scroll_to_tail()
-        return True
-
-    async def handle_stream_event(self, event: dict) -> None:
-        """Render one normalized backend lifecycle event in arrival order.
-
-        The event names its lane; an event that names none belongs to
-        :data:`DEFAULT_LANE`, the one implicit lane every pre-B3-a caller used.
-
-        Async because reasoning/text deltas now stream through a
-        ``MarkdownStream`` (``MessageBox.append_content_delta`` /
-        ``ReasoningRegion.append_delta``), whose ``write()`` is itself async;
-        every caller in the live path already awaits its way down from the
-        event bus, so this just extends that chain one level further.
-        """
-        state = self._lane(event.get("lane") or DEFAULT_LANE)
-        kind = event.get("kind")
-        if kind == "turn_start":
-            await self._on_turn_start(state)
-        elif kind == "reasoning_delta":
-            state.chunks += 1
-            await self._on_reasoning_delta(state, event.get("delta", ""))
-        elif kind == "text_delta":
-            state.chunks += 1
-            await self._on_text_delta(state, event.get("delta", ""))
-        elif kind == "tool_call":
-            await self._on_tool_call(state, event)
-        elif kind == "tool_result":
-            self._on_tool_result(state, event)
-        elif kind == "steer_message":
-            await self._on_steer_message(state, event.get("text", ""))
-        elif kind == "completion_end":
-            # A completion boundary: what was estimated is now measured, and
-            # nothing is in flight until the next delta. Reasoning and answer
-            # text both count as chunks above — both are stream events, and a
-            # reasoning model that thinks for a minute before answering is the
-            # case this counter exists for.
-            state.measured_output = int(event.get("output", 0) or 0)
-            state.chunks = 0
-
-    def _start_step(self, state: _LaneRender) -> MessageBox:
-        """Mount a fresh assistant step box for this lane's current turn.
-
-        Steps live inside the lane's exchange so the whole span groups under one
-        summary. If no exchange is open (defensive — the live path always calls
-        :meth:`begin_exchange` first), the step mounts at top level.
-
-        A foreign lane's step is badged and class-marked (B3-b). The step is an
-        ``assistant`` message either way — a forked sub-agent's answer really is
-        an assistant message — but WHOSE assistant it is has to be on the box
-        itself, not only on the enclosing exchange, or a reader scrolling past a
-        collapsed summary reads a sub-agent's text as the main line's.
-        """
-        box = MessageBox("assistant", "", state.label or "", source="markdown")
-        if state.label is not None:
-            box.add_class(LANE_FOREIGN_CLASS)
-        if state.exchange is not None:
-            state.exchange.add_step(box)
-        else:
-            self.mount(box)
-        return box
-
-    async def _flush(self, state: _LaneRender) -> None:
-        """Stop the lane's active step's streams and show all accumulated text.
-
-        Every stream write is applied as it arrives now (no throttle to skip a
-        final delta), so by the time this runs ``self._text``/``self._content``
-        already equal ``state.active_reasoning``/``state.active_text`` and the
-        ``set_text``/``update_content`` calls below are no-ops in the streaming
-        case — they remain as a safety net for any caller that set content some
-        other way. Stopping the stream FIRST (rather than after) is what makes
-        this call safe to follow with ``.remove()``: no ``MarkdownStream``
-        background task is left referencing a box that leaves the DOM.
-        """
-        box = state.active_box
-        if box is None:
-            return
-        if box.reasoning is not None:
-            await box.reasoning.finish_stream()
-            if state.active_reasoning:
-                box.reasoning.set_text(state.active_reasoning)
-        await box.finish_stream()
-        if state.active_text:
-            box.update_content(state.active_text)
-        self.scroll_to_tail()
-
-    async def _collapse_active_reasoning(self, state: _LaneRender) -> None:
-        """Freeze + collapse the lane's active reasoning once the answer begins.
-
-        Reasoning precedes a completion's answer/tool calls, so the first text
-        or tool event marks it complete. Runs once per step (a collapsed region
-        short-circuits), stopping the reasoning stream and flushing the full
-        text before it folds away.
-        """
-        box = state.active_box
-        if box is not None and box.reasoning is not None and not box.reasoning.collapsed:
-            await box.reasoning.finish_stream()
-            if state.active_reasoning:
-                box.reasoning.set_text(state.active_reasoning)
-            box.reasoning.mark_done()
-            box.reasoning.collapsed = True
-
-    async def _on_turn_start(self, state: _LaneRender) -> None:
-        # Flush the previous step's tail and freeze its reasoning (a new turn
-        # means the previous completion is done, even if it was reasoning-only),
-        # then open a fresh step and reset the accumulators.
-        await self._flush(state)
-        await self._collapse_active_reasoning(state)
-        state.active_text = ""
-        state.active_reasoning = ""
-        state.active_box = self._start_step(state)
-        self.scroll_to_tail()
-
-    async def _on_reasoning_delta(self, state: _LaneRender, delta: str) -> None:
-        if not delta or state.active_box is None:
-            return
-        state.active_reasoning += delta
-        region = state.active_box.ensure_reasoning()
-        # No hand-rolled throttle: MarkdownStream coalesces bursts on its own
-        # (its background task batches whatever accumulated in its pending
-        # queue while a previous append was still being applied). Measured at
-        # 40 tok/s over 8s (tmp/paced.py): the old 30 Hz gate still issued 152
-        # Markdown.update() full-document rebuilds (89,696 chars re-parsed,
-        # 76x the document size); routing every delta here through
-        # append_delta instead issues 1 update() (the framework's own
-        # mount-time seed) and 299 Markdown.append() calls totalling 1,196
-        # chars -- i.e. almost exactly the document size, not a multiple of it.
-        await region.append_delta(delta)
-        self.scroll_to_tail()
-
-    async def _on_text_delta(self, state: _LaneRender, delta: str) -> None:
-        if not delta or state.active_box is None:
-            return
-        # Answer content has begun — this step's reasoning is complete.
-        await self._collapse_active_reasoning(state)
-        state.active_text += delta
-        await state.active_box.append_content_delta(delta)
-        self.scroll_to_tail()
-
-    async def _on_steer_message(self, state: _LaneRender, text: str) -> None:
-        """Show a steering message the running turn has just been given.
-
-        Reference: docs/TUI-STEERING.md §5. The core weaves it into the context
-        and the log between one tool result and the next call to the model
-        (``AgentLoop._deliver_steer``), so the transcript has to show it in the
-        same place — a user line that appeared only after a reload would make the
-        model's next answer read as a non-sequitur.
-
-        It mounts as a step INSIDE the open exchange, in arrival order, rather
-        than as a top-level bubble: this is a user turn that happened inside
-        somebody else's exchange, and hoisting it out would put it above content
-        that preceded it.
-        """
-        await self._flush(state)
-        await self._collapse_active_reasoning(state)
-        box = MessageBox("user", text, source="verbatim")
-        if state.exchange is not None:
-            state.exchange.add_step(box)
-        else:
-            self.mount(box)
-        # The next completion opens its own step; this one is not it.
-        state.active_box = None
-        self.scroll_to_tail()
-
-    async def _on_tool_call(self, state: _LaneRender, event: dict) -> None:
-        # Preamble reasoning/text for this step is complete; show it, fold the
-        # reasoning, then add the tool box below the text (reasoning→text→tools).
-        if state.active_box is None:
-            state.active_box = self._start_step(state)
-        await self._flush(state)
-        await self._collapse_active_reasoning(state)
-        tc_id = event.get("id", "") or ""
-        state.active_box.add_tool_call(event.get("name", ""), event.get("arguments", {}), tc_id)
-        if tc_id:
-            state.tool_routes[tc_id] = state.active_box
-        self.scroll_to_tail()
-
-    def _on_tool_result(self, state: _LaneRender, event: dict) -> None:
-        tc_id = event.get("id", "") or ""
-        result_text = str(event.get("result", ""))
-        is_error = bool(event.get("is_error", False))
-        blocked = bool(event.get("blocked", False))
-        blocked_by = event.get("blocked_by")
-        # Routed within the lane: two turns streaming at once can each have a live
-        # tool call, and a shared route table would fold one lane's result into the
-        # other lane's box.
-        box = state.tool_routes.get(tc_id)
-        if box is not None and box.set_tool_result(
-            tc_id, result_text, is_error, blocked=blocked, blocked_by=blocked_by
-        ):
-            self.scroll_to_tail()
-            return
-        # No matching tool box: the call always precedes its result in the live
-        # loop, so this means an id we never saw a call for. Don't fabricate a
-        # standalone box — surface it loudly instead (Fail-Early).
-        self.app.log(f"tool_result for unknown tool_call_id {tc_id!r}; no ToolBox to fold into")
-
-    async def finalize_exchange(
-        self,
-        *,
-        context: int,
-        output: int,
-        seconds: float | None,
-        telemetry: str | None = None,
-        lane: str = DEFAULT_LANE,
-    ) -> None:
-        """Close ``lane``'s exchange after its agent loop finishes.
-
-        Flushes tails, then snaps the final text-only answer OUT below the
-        collapsed summary so it stays visible. A trivial exchange (no tools) is
-        unwrapped to just the plain answer — no grouping where there's nothing
-        to group. One reparent, here, by reconstruction (Textual cannot move a
-        live widget across parents).
-
-        ``telemetry`` is the last completion's G4 readout string (from
-        :func:`format_telemetry`), appended to the summary/subtitle when present;
-        ``None`` (a provider that reported no timings) leaves the summary unchanged.
-        """
-        state = self._lanes.pop(lane, None)
-        # Popped above, so the counter timer stops with the last lane and can no
-        # longer overwrite the summary this call is about to stamp.
-        self._sync_live_timer()
-        if state is None:
-            # Nothing was ever opened for this lane — a lane_end whose lane_start
-            # never rendered (a chat cleared mid-turn). Say so rather than
-            # finalizing some other lane's exchange, which is the interleaving
-            # this refactor exists to make impossible.
-            self.app.log(f"finalize_exchange for lane {lane!r} with no open exchange")
-            return
-        await self._flush(state)
-        await self._collapse_active_reasoning(state)  # freeze the last step's reasoning
-        exchange = state.exchange
-        if exchange is None:
-            return
-
-        await self._close_exchange(
-            exchange,
-            context=context,
-            output=output,
-            seconds=seconds,
-            telemetry=telemetry,
-            label=state.label,
-        )
-        await self._maybe_trim()
-        self.scroll_to_tail()
-
-    async def _maybe_trim(self) -> None:
-        """Run the live window, if this is a moment at which it is safe to.
-
-        Two conditions, and both are about not moving something a reader or a
-        renderer is holding:
-
-        * every lane must be closed. Evicting while another lane streams could
-          take out that lane's own exchange, and :meth:`trim_to_cap` cuts by
-          transcript position, which says nothing about which lane a widget
-          belongs to.
-        * the reader must be at the tail. Removing the head shifts every row
-          under someone who scrolled up to read, which is precisely what
-          docs/TUI-STEERING.md's scroll release exists to prevent. The trim is
-          held instead, and :meth:`watch_scroll_y` runs it when they come back.
-
-        The transcript is re-read FIRST, before either guard. A turn edge is the
-        moment the app's list is known to be current, and a held trim must be
-        held against what the conversation is now — not against what it was when
-        the reader last stood at the bottom.
-        """
-        self._refresh_transcript()
-        if self._lanes:
-            return
-        if not self._follow_tail:
-            self._trim_deferred = True
-            return
-        self._trim_deferred = False
-        await self.trim_to_cap()
-
-    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
-        """Re-decide tail-following, then run a trim this scroll made safe.
-
-        Extends :meth:`MessageList.watch_scroll_y`, which owns the tail decision
-        itself. The trim runs through ``call_later`` because this watcher is
-        synchronous and the eviction is not — and because the eviction moves
-        ``scroll_y``, which would re-enter this method. :attr:`_trim_deferred` is
-        cleared before the call is scheduled, so the re-entry finds nothing to do.
-
-        Sliding the window is NOT decided here; see :meth:`_slide_at_edge` for
-        why a scroll position is the wrong signal for it.
-        """
-        super().watch_scroll_y(old_value, new_value)
-        if self._window_moving or self._lanes:
-            return
-        if self._trim_deferred and self._follow_tail:
-            self._trim_deferred = False
-            self.call_later(self.trim_to_cap)
-
-    def _size_updated(
-        self, size: Size, virtual_size: Size, container_size: Size, layout: bool = True
-    ) -> bool:
-        """Re-assert the tail once the mounted content actually has a height.
-
-        :meth:`MessageList.scroll_to_tail` scrolls to ``max_scroll_y``, and
-        ``max_scroll_y`` is derived from ``virtual_size`` — which is still the
-        PREVIOUS layout's answer at the moment the renderers call it, because
-        :meth:`_render_window` mounts inside ``App.batch_update`` and the batch is
-        what holds the layout off. A scroll against a stale (usually zero) maximum
-        clamps and silently does nothing, so ``reload_messages`` opened the reader
-        at the TOP of the conversation they resumed to continue, with
-        :attr:`_follow_tail` still saying they were at the bottom of it.
-
-        This hook is where ``ScrollView`` learns its new virtual size, so it is the
-        earliest point at which the answer can be right —
-        :meth:`TreeDetailPane._size_updated` takes the same second chance, for the
-        same reason, and its comment records the same clamp.
-
-        **Only while following.** A reader who has scrolled away released the tail
-        in :meth:`watch_scroll_y`, and this must not drag them back: growing content
-        pulls the view down only for someone already at the bottom, which is the
-        whole of "you can read while it writes" (docs/TUI-STEERING.md §1).
-
-        Why it was invisible in the tests: a transcript of plain messages lands on
-        the tail anyway, because every ``add_message`` on the way down calls
-        ``scroll_to_tail`` and the last of them runs late enough to find a measured
-        layout. A transcript with tool calls rebuilds its answers through
-        ``_reload_exchange`` instead, whose final height arrives with the
-        ``Collapsible`` — after the last scroll anybody performs.
-        """
-        changed = super()._size_updated(size, virtual_size, container_size, layout)
-        if self._follow_tail and self.scroll_y < self.max_scroll_y:
-            self.scroll_end(animate=False, immediate=True)
-        return changed
-
-    # -- sliding the window: a scroll that pushes PAST an edge ----------------
-
-    def _slide_at_edge(self, turns: int) -> bool:
-        """Schedule a slide if this scroll is a push against an edge, else False.
-
-        The trigger is the gesture, not the position. A reader who scrolls to the
-        top ARRIVES at the top; sliding there would mean the ``⋯ N earlier`` row
-        can never be looked at, let alone clicked — reaching it would load more
-        and scroll it away, every time. So the first scroll takes them to the
-        edge and the next one, which has nowhere left to go, moves the window.
-
-        This is also why the trigger is not in :meth:`watch_scroll_y`. A push
-        against an edge does not change ``scroll_y``, so the watcher cannot see
-        it; and the watcher sees a great deal that is not a reader — mounting
-        content, a resize, this class's own ``scroll_end`` — each of which lands
-        on an edge and none of which is someone asking for more transcript.
-
-        The claim is taken here, synchronously, for the reason
-        :attr:`_window_moving` exists: one flick of a wheel is several events.
-        """
-        if self._window_moving or self._lanes:
-            return False
-        if turns < 0:
-            if self.scroll_offset.y > 0 or self._window_start <= 0:
-                return False
-        elif not self.is_vertical_scroll_end or not self._elided_after:
-            return False
-        self._window_moving = True
-        self.call_later(self.move_window, turns, self._window_generation)
-        return True
-
-    def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
-        if self._slide_at_edge(-1):
-            event.stop()
-            return
-        super()._on_mouse_scroll_up(event)
-
-    def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
-        if self._slide_at_edge(1):
-            event.stop()
-            return
-        super()._on_mouse_scroll_down(event)
-
-    def action_scroll_up(self) -> None:
-        """Up-arrow at the top edge loads older turns, exactly as the wheel does.
-
-        The keyboard half. Without it a reader who never touches the mouse can
-        reach the ``⋯`` row and find no way past it.
-        """
-        if self._slide_at_edge(-1):
-            return
-        super().action_scroll_up()
-
-    def action_scroll_down(self) -> None:
-        """Down-arrow at the bottom edge loads newer turns. The keyboard half of
-        :meth:`_on_mouse_scroll_down`."""
-        if self._slide_at_edge(1):
-            return
-        super().action_scroll_down()
-
-    @staticmethod
-    def _exchange_subtitle(
-        context: int,
-        output: int,
-        seconds: float | None,
-        telemetry: str | None = None,
-        label: str | None = None,
-    ) -> str:
-        """The stats line stamped on an unwrapped (no-tool) answer. Duration is
-        omitted when unknown (reload) rather than fabricated (Fail-Early).
-
-        Two token numbers, never their sum. ``context`` is how large the prompt had
-        grown by the end of this turn; ``output`` is what the turn generated. The
-        single ``N tok`` this replaced was ``total_tokens``, i.e. context + output —
-        which on turn 12 read as ~the whole conversation and looked like a running
-        total, because it was one.
-
-        ``telemetry`` is the last completion's G4 readout, appended as one more
-        ``·`` part when present; ``None`` appends nothing.
-
-        ``label`` is the lane's origin badge and leads the line when present
-        (B3-b), because this subtitle is the ONLY chrome an unwrapped answer has
-        left: the exchange that carried the badge is removed on this path."""
-        parts = [f"{format_tokens(context)} ctx", f"{format_tokens(output)} out"]
-        if seconds is not None:
-            parts.append(format_duration(seconds))
-        if telemetry is not None:
-            parts.append(telemetry)
-        if label is not None:
-            parts.insert(0, label)
-        return " · ".join(parts)
-
-    async def _close_exchange(
-        self,
-        exchange: ExchangeBox,
-        *,
-        context: int,
-        output: int,
-        seconds: float | None,
-        telemetry: str | None = None,
-        label: str | None = None,
-    ) -> None:
-        """Collapse a fully-built exchange to its summary and surface the answer.
-
-        Shared close-out for both the live state machine (:meth:`finalize_exchange`,
-        which builds the exchange as events stream) and the reload reconstruction
-        (:meth:`_reload_exchange`, which builds it all at once). Given an exchange
-        already populated with step boxes, it: promotes the terminal text answer
-        OUT below the exchange so it stays visible, unwraps a no-tool span to a
-        plain answer, and otherwise collapses the exchange behind its summary
-        line. ``seconds=None`` means duration is unknown (reload) and is omitted.
-        """
-        steps = list(exchange.query(MessageBox))
-        tool_count = sum(len(b.tool_boxes) for b in steps)
-        # An exchange's steps are the model's, except for a steering message
-        # woven into the middle of it (docs/TUI-STEERING.md §5), which is a USER
-        # box. Only an assistant step can be the answer: promoting a user box
-        # would render the person's own words as the model's reply, which is what
-        # happens whenever a steer is the last thing to arrive in a turn.
-        answers = [b for b in steps if b.role == "assistant"]
-        # The terminal turn is the no-tool-call answer; pull it out so it stays
-        # visible. If the last step still has tools (e.g. max_turns hit mid-
-        # tool), there is no clean final answer — leave everything collapsed.
-        final = answers[-1] if answers and not answers[-1].tool_boxes else None
-        # An entirely empty terminal step (no text, no reasoning) is not a real
-        # answer — don't promote a blank box (Fail-Early: render nothing, not a
-        # placeholder).
-        if final is not None and not final.content_text.strip() and final.reasoning is None:
-            final = None
-
-        promoted = None
-        if final is not None:
-            promoted = await self._promote_answer(final, after=exchange, label=label)
-
-        if tool_count == 0 and len(answers) == len(steps):
-            # Nothing worth grouping — drop the wrapper entirely (this also
-            # removes the original `final` box it still contains). A trivial
-            # span has no summary line, so the (real) token + duration would be
-            # lost — stamp them on the answer's subtitle instead of hiding them.
-            #
-            # An exchange holding a steering message is never trivial, whatever
-            # its tool count: unwrapping destroys every box it contains, and only
-            # the promoted answer survives that. The user's own line would be the
-            # casualty.
-            if promoted is not None:
-                promoted.set_subtitle(
-                    self._exchange_subtitle(context, output, seconds, telemetry, label)
-                )
-            exchange.remove()
-        else:
-            if final is not None:
-                final.remove()
-            exchange.collapsed = True
-            exchange.set_summary(
-                tools=tool_count,
-                context=context,
-                output=output,
-                seconds=seconds,
-                telemetry=telemetry,
-            )
-
-    async def _promote_answer(
-        self, src: MessageBox, *, after: Widget, label: str | None = None
-    ) -> MessageBox:
-        """Mount a fresh top-level answer box copied from ``src``, after ``after``.
-
-        Reconstructs rather than reparents (Textual has no cross-parent move).
-        The terminal answer is text + optional reasoning (no tools), so copying
-        its text and reasoning string is faithful and cheap.
-
-        The copied reasoning is mounted collapsed (D1): ``ReasoningRegion``
-        defers the actual Markdown parse until the region is expanded, so
-        copying a long reasoning string here no longer means parsing it for a
-        Contents container nobody can see (measured 104ms at 2.2k reasoning
-        tokens before the fix). ``region.text`` still returns the real string
-        immediately either way -- only the widget-side parse is deferred.
-
-        ``label`` is copied too (B3-b). Promotion moves the answer OUT of the
-        exchange to top level, where the primary transcript lives; a fork's
-        answer arriving there unbadged is the one place a sub-agent's text could
-        be read as the main agent's.
-        """
-        new = MessageBox("assistant", src.content_text, label or "", source="markdown")
-        if label is not None:
-            new.add_class(LANE_FOREIGN_CLASS)
-        await self.mount(new, after=after)
-        if src.reasoning is not None:
-            region = new.ensure_reasoning()
-            region.set_text(src.reasoning.text)
-            region.mark_done()
-            region.collapsed = True
-        return new
-
-    # ------------------------------------------------------------------
-    # Reload: reconstruct exchanges from the persisted flat message list
-    # ------------------------------------------------------------------
-
-    def render_cap_start(self, messages: list[dict]) -> int:
-        """Index of the first message :meth:`reload_messages` will MOUNT.
-
-        Walks backwards from the end and stops at whichever bound is reached
-        first: :attr:`RENDER_CAP_TURNS` user turns, or
-        :attr:`RENDER_CAP_MESSAGES` messages. The larger index wins, because
-        walking backwards the bound that cuts more is the one reached first.
-
-        The answer is always a ``user`` message, so a user→answer span is never
-        cut in half. That is also why the message bound cannot be applied
-        literally: it lands wherever it lands, so the true start is the LAST user
-        message that still leaves the span within the bound.
-
-        A single span longer than the message bound mounts whole rather than
-        being cut, and a transcript with no user message at all mounts whole.
-        Rendering nothing is not a smaller version of rendering something.
-        """
-        users = [i for i, m in enumerate(messages) if m.get("role", "") == "user"]
-        if not users:
-            return 0
-        by_turns = users[-self.RENDER_CAP_TURNS] if len(users) > self.RENDER_CAP_TURNS else 0
-        # 0 leads the candidates so a transcript that already fits reports a
-        # start of 0 rather than the first user message -- otherwise a leading
-        # system message would read as one elided message that never renders.
-        starts = [0, *users]
-        within = [s for s in starts if len(messages) - s <= self.RENDER_CAP_MESSAGES]
-        # No candidate leaves a short enough tail: one span is over the bound on
-        # its own, so mount that span rather than nothing.
-        by_count = within[0] if within else users[-1]
-        return max(by_turns, by_count)
-
-    def window_end(self, messages: list[dict], start: int) -> int:
-        """One past the last message a window starting at *start* mounts.
-
-        The forward twin of :meth:`render_cap_start`, bound by the same two caps,
-        and required to AGREE with it at the tail::
-
-            window_end(m, render_cap_start(m)) == len(m)
-
-        That identity is what lets one pair of numbers describe both a window the
-        cap placed and a window the reader slid — without it, attaching to the
-        tail would leave a phantom ``⋯ 0 later`` row, or a reload and a
-        scrolled-back-then-forward window would mount different things.
-
-        Turns are counted from the window's FIRST turn, not from *start*. The two
-        differ when a leading system message sits above it: ``start`` is then 0
-        and the first turn opens at 1, and counting from ``start`` would spend one
-        of the four turns on a message that renders nothing.
-        """
-        n = len(messages)
-        users = [i for i, m in enumerate(messages) if m.get("role", "") == "user" and i >= start]
-        if not users:
-            return n
-        # Every turn boundary strictly after the window's own first turn. The
-        # window holds RENDER_CAP_TURNS turns, so it ends where the next begins.
-        later = [u for u in users if u > users[0]]
-        by_turns = later[self.RENDER_CAP_TURNS - 1] if len(later) >= self.RENDER_CAP_TURNS else n
-        limit = start + self.RENDER_CAP_MESSAGES
-        if limit >= n:
-            # The rest of the transcript is within the message bound, so that
-            # bound cuts nothing. Stated explicitly because the general branch
-            # below would answer the LAST turn boundary instead of the end, and
-            # break the identity above.
-            by_count = n
-        else:
-            within = [u for u in later if u <= limit]
-            # Nothing within the bound means this one turn is longer than it.
-            # Mount the turn whole rather than cut it, matching
-            # render_cap_start's own rule for the same case.
-            by_count = within[-1] if within else (later[0] if later else n)
-        return min(by_turns, by_count)
-
-    def turn_starts(self, messages: list[dict]) -> list[int]:
-        """Every message index a window may legally start at, ascending.
-
-        The user messages, plus 0 — the same candidate set
-        :meth:`render_cap_start` picks from, so a window the reader slides can
-        only ever land where the cap could have put it. Sliding is therefore
-        movement along this list, one entry per step, which is why a move never
-        cuts a turn in half and never needs to ask how tall anything is.
-        """
-        users = [i for i, m in enumerate(messages) if m.get("role", "") == "user"]
-        return sorted({0, *users})
-
-    async def _render_window(self, messages: list[dict], start: int, end: int) -> None:
-        """Mount ``messages[start:end]`` as the whole transcript view.
-
-        The one renderer. :meth:`reload_messages` calls it with the tail, and
-        :meth:`move_window` with a span the reader slid to; neither has a second
-        way to build a box, which is what keeps a scrolled-back view identical to
-        the view a reload of the same span would produce.
-
-        The mounting runs inside ``App.batch_update``, which holds off the screen
-        layout until it is done. Without it every awaited mount hands control
-        back to the event loop, Textual's screen timer fires, and the ENTIRE
-        widget tree is re-arranged — 78 to 104 full layout passes on a
-        200-message reload, each over a tree that is still growing. Batched it is
-        5, and the reader sees the finished transcript rather than it being
-        assembled a message at a time.
-
-        Leaves the scroll position alone. The two callers want different ones —
-        a reload re-attaches to the tail, a move holds the reader's place — and
-        neither can be derived from the span.
-        """
-        # Cleared by ``_finish_build`` one refresh later, which is where a build
-        # that wanted the tail lands on it — after everything this build schedules.
-        self._building = True
-        # Cleared FIRST: clear_messages resets the counts and the bounds, so
-        # setting them before this would hand the rows a zero.
-        await self.clear_messages()
-        self._window_start = start
-        self._window_end = end
-        # Any move decided against the window this replaces is now about a tree
-        # that no longer exists.
-        self._window_generation += 1
-        # System messages never render, so counting them would claim more is
-        # hidden than a reader could ever get back.
-        self._elided = sum(1 for m in messages[:start] if m.get("role", "") != "system")
-        self._elided_after = sum(1 for m in messages[end:] if m.get("role", "") != "system")
-        anchors: dict[int, Widget] = {}
-        # Every add_message on the way down calls scroll_to_tail, which would pin
-        # a window the reader slid BACK to its own bottom edge — and the bottom
-        # edge is where the watcher slides it forward again. Detached for the
-        # build; both callers set the value they want straight afterwards.
-        self._follow_tail = False
-        with self.app.batch_update():
-            if self._elided:
-                await self.mount(self._earlier_row())
-            i = start
-            while i < end:
-                role = messages[i].get("role", "")
-                if role == "system":
-                    i += 1
-                    continue
-                turn_at = i
-                if role == "user":
-                    # The user box sits above the exchange, as in the live path.
-                    boxes = self.add_persisted_message(messages[i])
-                    if boxes:
-                        anchors[turn_at] = boxes[0]
-                    i += 1
-                # Collect the answer span (assistant + toolResult) up to the next
-                # user/system message, and rebuild it as one exchange.
-                span: list[dict] = []
-                while i < end and messages[i].get("role") not in ("user", "system"):
-                    span.append(messages[i])
-                    i += 1
-                if span:
-                    await self._reload_exchange(span)
-            if self._elided_after:
-                await self.mount(self._later_row())
-        if start not in anchors:
-            # A window whose first message renders no box of its own — start 0
-            # with a leading system message is the everyday case. Anchor it on
-            # whatever came first, so a move back still has somewhere to put the
-            # reader.
-            content = [c for c in self.children if isinstance(c, (MessageBox, ExchangeBox))]
-            if content:
-                anchors[start] = content[0]
-        self._turn_anchors = anchors
-        self.call_after_refresh(self._finish_build)
-
-    def _finish_build(self) -> None:
-        """End the build, and land where the build's own scrolling was aiming.
-
-        Clears :attr:`_building`, and re-asserts the tail for a caller that wanted
-        it. The re-assertion is not belt-and-braces: the collapses performed during
-        the build each schedule a ``scroll_visible`` of their own
-        (``Collapsible._watch_collapsed``), and those were queued BEFORE this
-        callback, so the last word about the scroll position would otherwise
-        belong to whichever box happened to fold last — three rows short of the
-        newest message, in the case that started this.
-
-        Only when following. :meth:`move_window` rebuilds through the same method
-        with :attr:`_follow_tail` false and puts the reader back itself
-        (:meth:`_settle_move`), which runs after this.
-        """
-        self._building = False
-        if self._follow_tail:
-            self.scroll_to_tail()
-
-    async def move_window(self, turns: int, generation: int | None = None) -> bool:
-        """Slide the mounted window *turns* turns along the transcript.
-
-        Negative moves back into history, positive forward toward the tail.
-        Returns whether it actually moved: at either end of the transcript, with
-        a lane still streaming, during another move, or — when *generation* is
-        given — if the window has been rebuilt since the move was decided on.
-
-        *generation* is how :meth:`watch_scroll_y` says "act on the window I saw".
-        The watcher decides synchronously and the move runs a tick later, and a
-        reload or a :meth:`snap_window_to_tail` can land in between; without the
-        check, a queued step back undoes whichever of them overtook it. A caller
-        that means "now", including every test, passes nothing.
-
-        **The window is bounded, not anchored.** Sliding back mounts older turns
-        and drops the same number of newer ones, so the mounted count — which is
-        the only thing the render cost depends on (docs/TRANSCRIPT-WINDOW.md §1)
-        — does not change. That is what makes reading history free rather than a
-        slow return of the defect the window was built to fix.
-
-        Movement is along :meth:`turn_starts`, one entry per step, so a step is
-        always one whole turn and never asks how tall anything is.
-
-        The reader's place is held across the re-render by scrolling a turn they
-        were already looking at back under the viewport's top edge: moving back
-        that is the turn that WAS at the top, moving forward it is the last turn
-        of the old window. Either way something they had just read stays on
-        screen, which is what makes repeated steps read as scrolling rather than
-        as paging.
-        """
-        self._window_moving = True
-        handed_off = False
-        try:
-            if generation is not None and generation != self._window_generation:
-                return False
-            if self._lanes:
-                return False
-            messages = self._reload_source
-            if not messages:
-                return False
-            candidates = self.turn_starts(messages)
-            # The window's own start is always one of these — every writer of it
-            # takes it from render_cap_start or from this list — but bisect
-            # answers correctly for any index rather than raising on a transcript
-            # that was spliced under us (a compaction, a branch swap).
-            position = max(0, bisect_right(candidates, self._window_start) - 1)
-            # Forward stops at the tail-anchored start and no further. Without
-            # this a window already ON the tail slides past it, mounting a span
-            # that ends before the newest turn — the display would show a
-            # conversation with its own present missing.
-            last = max(0, bisect_right(candidates, self.render_cap_start(messages)) - 1)
-            moved_to = min(max(position + turns, 0), last)
-            new_start = candidates[moved_to]
-            if new_start == self._window_start:
-                return False
-            old_start = self._window_start
-            old_last = max((c for c in candidates if c < self._window_end), default=old_start)
-
-            await self._render_window(messages, new_start, self.window_end(messages, new_start))
-
-            # The new tree has no geometry yet — it was mounted inside
-            # batch_update, and every widget's region is computed on the refresh
-            # that follows. scroll_to_widget here would silently do nothing,
-            # leave the view where the mounts left it, and (at the bottom) have
-            # the watcher immediately slide the window back. So the restore waits
-            # for the refresh, and it — not this method — releases the claim.
-            self.call_after_refresh(
-                self._settle_move,
-                old_start if turns < 0 else old_last,
-                self._window_generation,
-            )
-            handed_off = True
-            return True
-        finally:
-            if not handed_off:
-                self._window_moving = False
-
-    def _settle_move(self, anchor_at: int, generation: int) -> None:
-        """Put the reader back on *anchor_at* once the moved window has laid out.
-
-        The second half of :meth:`move_window`, split off because the first half
-        cannot see where anything is. Releases :attr:`_window_moving`, which is
-        what re-arms :meth:`watch_scroll_y` — deliberately last, so the scroll
-        this method performs is not read as the reader asking for another move.
-
-        Carries the same generation check :meth:`move_window` does, and for a
-        sharper reason: a reload that lands between the move and this refresh has
-        already scrolled the view where it wants it, and an anchor scroll from
-        the window it replaced would drag the reader off the tail it just
-        attached to.
-        """
-        if generation != self._window_generation:
-            self._window_moving = False
-            return
-        try:
-            anchor = self._turn_anchors.get(anchor_at)
-            if anchor is not None:
-                # immediate=True: the default defers the scroll to after the NEXT
-                # screen refresh, and this method already runs on one. Deferring
-                # again lands the jump a frame later than the content it belongs
-                # to, and leaves the line below reading a position that is about
-                # to change.
-                self.scroll_to_widget(anchor, top=True, animate=False, immediate=True)
-            # Re-decide from where the move actually left the view, rather than
-            # inheriting the answer from the position it was taken at.
-            self._follow_tail = self.is_vertical_scroll_end
-        finally:
-            self._window_moving = False
-
-    async def reload_messages(self, messages: list[dict], *, cap: bool = True) -> None:
-        """Render a saved chat as exchanges, matching the finalized live look.
-
-        The persisted transcript is a flat list — ``system``, ``user``, then per
-        completion an ``assistant`` message (reasoning + text + ``toolCall``
-        blocks) and a ``toolResult`` message per call. This walks it back into
-        the same widget tree the live state machine leaves behind: each
-        user→answer span groups under one collapsed :class:`ExchangeBox` (summary
-        ``N tools · X tok``), the terminal answer promoted out below it; a no-tool
-        span is unwrapped to a plain answer.
-
-        The ONE difference from live is the summary omits wall-clock duration —
-        it is not persisted and we do not fabricate it (Fail-Early). Tokens come
-        from each completion's persisted ``usage`` (a true 0 for pre-fix chats).
-
-        ``cap=True`` mounts only the tail :meth:`render_cap_start` names and
-        writes a ``⋯ N earlier`` row above it; ``cap=False`` mounts everything.
-        The whole list is loaded either way — see :attr:`RENDER_CAP_MESSAGES`.
-
-        A reload always lands on the TAIL, whatever the reader had slid the
-        window to. It replaces the transcript — resume, compact, rollback, a
-        branch swap — so a window position taken in the old document names
-        nothing in the new one.
-        """
-        self._reload_source = messages
-        start = self.render_cap_start(messages) if cap else 0
-        end = self.window_end(messages, start) if cap else len(messages)
-        await self._render_window(messages, start, end)
-        # Re-attaches the tail rather than honouring a scroll position taken in a
-        # document that no longer exists.
-        self._follow_tail = True
-        self.scroll_to_tail()
-
-    @property
-    def elided_count(self) -> int:
-        """How many messages are hidden ABOVE the window. 0 at the top of the chat.
-
-        Set by :meth:`reload_messages` (what the reload declined to mount),
-        :meth:`trim_to_cap` (what the live window has since evicted) and
-        :meth:`move_window` (what the reader has slid past). One number for all
-        three, because they hide the head of the same transcript for the same
-        reason.
-
-        This is the count the ``⋯ N earlier`` row states, and it deliberately
-        does NOT include what a slid window hides BELOW it — see
-        :attr:`later_count`. Two rows, two questions, two numbers.
-        """
-        return self._elided
-
-    @property
-    def later_count(self) -> int:
-        """How many messages are hidden BELOW the window.
-
-        Non-zero only while the reader has slid the window back into history:
-        every other state has the window on the tail, where there is nothing
-        below it. :meth:`snap_window_to_tail` reads this to decide whether a
-        starting turn has anything to snap back from.
-        """
-        return self._elided_after
-
-    @property
-    def hidden_count(self) -> int:
-        """Everything :meth:`show_all_messages` would mount, both directions."""
-        return self._elided + self._elided_after
-
-    def set_transcript_source(self, source: Callable[[], list[dict]]) -> None:
-        """Tell this display where to read the app's CURRENT transcript.
-
-        A callable, not a list: the app rebinds its working list after every turn
-        (``self.messages = list(session.context)``), so a display holding the list
-        object answers for the conversation as it stood at the last reload. That
-        staleness is only a bug once something reads the transcript BETWEEN
-        reloads, which is exactly what the live window does —
-        :meth:`trim_to_cap` decides where to cut from it, and
-        :meth:`show_all_messages` mounts it back.
-
-        Optional. A bare renderer harness that never calls this keeps the old
-        behaviour: :attr:`_reload_source`, whatever the last reload was handed.
-
-        Not read here and now. :meth:`_refresh_transcript` calls it at each turn
-        edge, which is the moment the app's list is known to be current — reading
-        it at any other moment is how a display ends up holding a transcript that
-        belongs to neither the screen nor the session.
-        """
-        self._transcript_source = source
-
-    def _refresh_transcript(self) -> None:
-        """Re-read the app's transcript into :attr:`_reload_source`.
-
-        Called at every turn edge (:meth:`_maybe_trim`), which is what keeps that
-        attribute meaning "the transcript this display is a view of" rather than
-        "the list the last reload happened to be handed". The two writers are this
-        and :meth:`reload_messages`, and they write the same kind of thing.
-
-        A display with no source — a bare renderer harness — keeps whatever
-        ``reload_messages`` gave it. That is not a fallback for a missing value:
-        such a display has no app behind it, so the list it was handed is the only
-        transcript in existence.
-        """
-        if self._transcript_source is not None:
-            self._reload_source = self._transcript_source()
-
-    async def trim_to_cap(self) -> int:
-        """Evict the head of a LIVE transcript down to the same cap a reload uses.
-
-        Returns the number of top-level widgets removed; 0 when this display has
-        no transcript, when the one it has already fits the cap, or when the cut
-        the cap names is already the top of the mounted tree.
-
-        It runs again after :meth:`show_all_messages`, at the end of the next
-        turn. That is deliberate rather than overlooked: "show them" mounts the
-        whole conversation to be READ, and the reader is not prompting while they
-        read, so the re-trim lands when they have moved on. Suppressing the
-        window after an explicit show-all would be the unbounded transcript back,
-        by request.
-
-        A live session grew without bound before this existed. Only
-        :meth:`reload_messages` ever applied :attr:`RENDER_CAP_TURNS`, so a
-        transcript that was capped when it was opened climbed straight back past
-        the cap as the reader worked in it — and the render cost climbs with it
-        (see the cap's own comment for the measurements).
-
-        **The cut point is a user message, in both representations at once.**
-        :meth:`render_cap_start` names it as an index into the message list; this
-        walks the top-level children backwards for the same user box. That is
-        what makes the eviction and the ``⋯ N earlier`` count describe the same
-        place: one top-level user ``MessageBox`` is mounted per user message, so
-        counting user boxes from the end and counting user messages from the end
-        arrive together. Cutting anywhere else — at a widget budget, say, which
-        is what the cost law is actually written in — would strand an
-        :class:`ExchangeBox` above the user turn that opened it, and leave the
-        count with nothing true to say.
-
-        Streams are stopped before the removal, exactly as
-        :meth:`clear_messages` does it. Nothing should be streaming here (the
-        caller only trims with every lane closed), so this is belt and braces
-        rather than a live case — but a ``MarkdownStream`` left running on a
-        removed box leaks its task forever, and that is not a failure worth
-        risking on a should.
-        """
-        messages = self._reload_source
-        if not messages:
-            return 0
-        if self._elided_after:
-            # The reader has slid the window back, so what is mounted is not the
-            # tail — and this method's whole arithmetic is "count user boxes back
-            # from the end and cut there", which would answer for a span that is
-            # not on screen. The window is bounded already; there is nothing here
-            # to evict. begin_exchange snaps back before any turn streams, so a
-            # slid window is never the state a live trim needs to handle.
-            return 0
-        start = self.render_cap_start(messages)
-        if start == 0:
-            return 0
-        keep_users = sum(1 for m in messages[start:] if m.get("role", "") == "user")
-        if keep_users == 0:
-            return 0
-
-        content = [c for c in self.children if isinstance(c, (MessageBox, ExchangeBox))]
-        # Walk backwards to the user box that opens the oldest turn still within
-        # the cap. That box is the first one KEPT; everything before it goes.
-        seen = 0
-        cut = 0
-        for index in range(len(content) - 1, -1, -1):
-            child = content[index]
-            if isinstance(child, MessageBox) and child.role == "user":
-                seen += 1
-                if seen == keep_users:
-                    cut = index
-                    break
-        if cut == 0:
-            return 0
-
-        evicted = content[:cut]
-        for child in evicted:
-            boxes = list(child.query(MessageBox))
-            if isinstance(child, MessageBox):
-                boxes.append(child)
-            # Not ``box``: that name is a module-level import here (ruff F402).
-            for message_box in boxes:
-                if message_box.reasoning is not None:
-                    await message_box.reasoning.finish_stream()
-                await message_box.finish_stream()
-            await child.remove()
-
-        # The identical line reload uses. System messages never render, so
-        # counting them would claim more is hidden than a reader could get back.
-        self._elided = sum(1 for m in messages[:start] if m.get("role", "") != "system")
-        # This method evicts in place instead of re-rendering, so it has to state
-        # the bounds _render_window would have set. They are what
-        # :meth:`move_window` starts its next step from, and what
-        # :attr:`_elided_after` being 0 means: still attached to the tail.
-        self._window_start = start
-        self._window_end = len(messages)
-        await self._sync_earlier_row()
-        self.scroll_to_tail()
-        return len(evicted)
-
-    async def _sync_earlier_row(self) -> None:
-        """Put the ``⋯ N earlier`` row above the transcript, or update the one there.
-
-        Updated in place when it already exists, rather than removed and
-        remounted: the row is a widget like any other, and churning it every turn
-        is the cost this whole window exists to stop paying.
-        """
-        existing = self.query(".chat-fold")
-        if existing:
-            existing.first(Static).update(self._earlier_text())
-            return
-        row = self._earlier_row()
-        survivors = [c for c in self.children if isinstance(c, (MessageBox, ExchangeBox))]
-        if survivors:
-            await self.mount(row, before=survivors[0])
-        else:
-            await self.mount(row)
-
-    def _earlier_text(self) -> str:
-        """What the top ``⋯`` row says. Shared so the mounted row and an updated
-        one cannot word the same count differently."""
-        return f"⋯ {self._elided} earlier · scroll up to load, click for all"
-
-    def _later_text(self) -> str:
-        """What the bottom ``⋯`` row says. Present only while the reader has slid
-        the window back, which is the only way messages end up BELOW it."""
-        return f"⋯ {self._elided_after} later · scroll down to load, click for all"
-
-    def _earlier_row(self) -> Static:
-        """The ``⋯ N earlier`` row that stands where the elided messages would be.
-
-        A count rather than a blank gap, matching :class:`TreeDetailPane`'s row,
-        because a gap does not say anything and this does. It names BOTH its
-        gestures: scrolling into it slides the window one turn back
-        (:meth:`move_window`), and clicking it mounts the whole conversation. The
-        second is also in the command palette, so neither the mouse nor the
-        keyboard is a dead end.
-        """
-        row = Static(self._earlier_text(), classes="chat-fold")
-        row.tooltip = "Scroll into this row to load older turns, or click to mount them all."
-        return row
-
-    def _later_row(self) -> Static:
-        """The ``⋯ N later`` row, the bottom half of a slid window.
-
-        Carries ``chat-fold`` as well as its own class so it gets the same
-        styling, the same click, and the same removal in :meth:`clear_messages` —
-        the two rows are one idea pointing in two directions, and giving the new
-        one its own vocabulary would be two things to keep in step.
-        """
-        row = Static(self._later_text(), classes="chat-fold chat-fold-later")
-        row.tooltip = "Scroll into this row to load newer turns, or click to mount them all."
-        return row
-
-    async def on_click(self, event: events.Click) -> None:
-        """Show the whole transcript when the reader clicks the ``⋯`` row."""
-        widget = getattr(event, "widget", None)
-        if widget is not None and widget.has_class("chat-fold"):
-            await self.show_all_messages()
-
-    async def show_all_messages(self) -> None:
-        """Re-render the WHOLE current transcript, with no cap.
-
-        A no-op when nothing was elided, so the palette entry is safe to invoke
-        at any time. It is deliberately not cheap: mounting the rest costs the
-        same superlinear layout the cap avoided, which is why it is a gesture the
-        reader asks for rather than something scrolling triggers.
-
-        :attr:`_reload_source` is re-read from the app at every turn edge
-        (:meth:`_refresh_transcript`), so what this mounts includes the live turns
-        the window put behind the ``⋯`` row and no reload ever saw. Before that
-        refresh existed this method could only restore the conversation as it
-        stood when it was opened: the reader would ask to see more and be shown
-        less.
-
-        Guarded on :attr:`hidden_count`, not on :attr:`elided_count`: a reader who
-        has slid the window all the way back to the top has nothing hidden above
-        them and most of the conversation hidden below, and the row they clicked
-        to get here is the ``⋯ N later`` one.
-        """
-        if not self.hidden_count:
-            return
-        await self.reload_messages(self._reload_source, cap=False)
-
-    async def _reload_exchange(self, span: list[dict]) -> None:
-        """Rebuild one user→answer span (assistant + toolResult messages) as a
-        collapsed exchange, then close it out exactly like the live path."""
-        exchange = ExchangeBox()
-        await self.mount(exchange)
-        routes: dict[str, ToolBox] = {}
-        # Mirrors the live path (TurnStream): output sums, context replaces.
-        output = 0
-        context = 0
-        for msg in span:
-            role = msg.get("role", "")
-            if role == "assistant":
-                step = MessageBox("assistant", "", source="markdown")
-                await exchange.add_step_async(step)
-                thinking, text, calls = _split_assistant_blocks(msg.get("content"))
-                if thinking:
-                    region = step.ensure_reasoning()
-                    region.set_text(thinking)
-                    region.mark_done()
-                    region.collapsed = True
-                if text:
-                    step.update_content(text)
-                for call in calls:
-                    tc_id = call.get("id", "") or ""
-                    box = await step.add_tool_call_async(
-                        call.get("name", ""), call.get("arguments", {}), tc_id
-                    )
-                    if tc_id:
-                        routes[tc_id] = box
-                usage = msg.get("usage")
-                if isinstance(usage, dict):
-                    output += int(usage.get("output_tokens", 0) or 0)
-                    context = prompt_tokens(usage)
-            elif role == "toolResult":
-                tc_id = msg.get("tool_call_id", "") or ""
-                target = routes.get(tc_id)
-                result_text = _join_text_blocks(msg.get("content", []))
-                if target is not None:
-                    target.set_result(result_text, bool(msg.get("is_error", False)))
-                else:
-                    # The call always precedes its result on disk; a missing box
-                    # means a dangling id — surface it, don't fabricate one.
-                    self.app.log(f"reload: toolResult for unknown tool_call_id {tc_id!r}")
-            else:
-                # Unexpected role inside an answer span — render flat rather than
-                # drop it (add_persisted_message raises on a bad content shape).
-                self.add_persisted_message(msg)
-        await self._close_exchange(exchange, context=context, output=output, seconds=None)
-
-
-class ChatInput(TextArea):
-    """Custom input with multiline support and history navigation.
-
-    Enter and Ctrl+J trade places according to :data:`ENTER_KEY_CONFIG_KEY`; see
-    :meth:`on_key` for why the swap lives in a key handler rather than in
-    ``BINDINGS``, and ``docs/ENTER-KEY.md`` for what the terminal can and cannot
-    tell us about a modifier on Enter.
-    """
-
-    BINDINGS = [
-        # Reached only in ``"newline"`` mode: in ``"submit"`` mode :meth:`on_key`
-        # consumes ctrl+j first, and a stopped key never reaches the binding
-        # check, which Textual runs at App level after the event has bubbled.
-        Binding("ctrl+j", "submit", "Send", show=False),
-    ]
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.command_history: list[str] = []
-        self.command_history_index = -1
-        self.current_draft = ""
-        # Set by the app after mount (docs/TUI-STEERING.md §4). Returns the
-        # pending steering text and empties the app's buffer, or ``None`` when
-        # there is nothing pending. A callback rather than a reach into
-        # ``self.app`` so this widget stays constructible on its own, which is
-        # how most of its tests build it.
-        self.reclaim_pending: Callable[[], str | None] | None = None
-        # Set by the app after mount, same reasoning as ``reclaim_pending``, and
-        # a callback rather than a bool because the app derives it from config on
-        # every read — a config assigned after construction (every sandboxed app)
-        # is the one that decides.
-        self.enter_key_mode: Callable[[], str] | None = None
-        # Set by the app after mount, same reasoning again. Returns the candidate
-        # commands for the given text — the app supplies it because the extension
-        # half of the vocabulary lives on the backend, which this widget must not
-        # reach for. Unset, Tab keeps its Textual default of moving focus.
-        self.command_completions: Callable[[str], CommandCompletions | None] | None = None
-        # Set by the app after mount, same reasoning again: the candidate PATHS
-        # for the ``@…`` the cursor is inside (docs/FILE-ATTACHMENTS.md §3). It
-        # takes the text and the cursor offset, because which reference is being
-        # completed is a question about where the cursor is, not about the line.
-        # Unset, Tab falls through to the command vocabulary.
-        self.attachment_completions: Callable[[str, int], AttachmentCompletions | None] | None = (
-            None
-        )
-        # The Tab cycle (docs/SLASH-COMMANDS.md §3). ``_completion_inserted`` is
-        # the exact text the last Tab wrote; the cycle continues only while the
-        # editor still holds it, which is how ANY other keystroke ends the cycle
-        # without a key handler or a mode flag to clear.
-        self._completion_prefix = ""
-        self._completion_index: int | None = None
-        self._completion_inserted: str | None = None
-        # Where the cursor was when the running cycle started. Only the ``@…``
-        # vocabulary needs it — a command is always the first word — but it is
-        # part of the same cycle state, so it is stored and cleared with it.
-        self._completion_cursor: int = 0
-
-    @property
-    def completion_index(self) -> int | None:
-        """Which candidate the running Tab cycle has inserted, or ``None``.
-
-        Read by the app to mark the row in :class:`CommandPopup`. It is set BEFORE
-        the text is replaced, so the ``TextArea.Changed`` the replacement posts
-        already sees the new value.
-
-        Guarded by the same test :meth:`_complete` uses to decide whether a cycle
-        is still running, rather than by the raw field: the marker must vanish the
-        moment the user types a character, and typing does not run any code of
-        ours that could clear the field.
-        """
-        if self._completion_inserted is not None and self.text == self._completion_inserted:
-            return self._completion_index
-        return None
-
-    @property
-    def cursor_offset(self) -> int:
-        """The cursor's character offset into :attr:`text`.
-
-        ``TextArea`` counts in ``(row, column)``; the attachment vocabulary is
-        defined on the flat string, because a file reference is a word and words
-        do not know about rows. This is the translation between the two.
-
-        Computed from ``document.lines`` and ``document.newline`` rather than from
-        ``Document.get_index_from_location``, which is not on the ``DocumentBase``
-        the ``document`` property is typed as.
-        """
-        row, column = self.cursor_location
-        separator = len(self.document.newline)
-        lines = self.document.lines
-        return sum(len(line) + separator for line in lines[:row]) + column
-
-    def _location_of_offset(self, offset: int) -> tuple[int, int]:
-        """The ``(row, column)`` for a character offset into :attr:`text`.
-
-        The inverse of :attr:`cursor_offset`. An offset past the end of the text
-        clamps to the end, which is where a caller that computed it from a string
-        it just built would want the cursor anyway.
-        """
-        separator = len(self.document.newline)
-        remaining = offset
-        lines = self.document.lines
-        for row, line in enumerate(lines):
-            if remaining <= len(line):
-                return row, remaining
-            remaining -= len(line) + separator
-        last = max(len(lines) - 1, 0)
-        return last, len(lines[last]) if lines else 0
-
-    def _complete(self) -> bool:
-        """Insert the next candidate — a path if the cursor is in a ``@…``, else a
-        command. True if it did.
-
-        A press with a cycle already running advances to the next candidate and
-        wraps at the end; a press without one starts a cycle at the first. The
-        cycle is identified by the editor still holding exactly what the previous
-        press wrote — a user who typed a character since then gets a fresh cycle
-        from the new prefix, which is what they meant by typing it.
-
-        The two vocabularies are asked in the order the cursor decides
-        (docs/FILE-ATTACHMENTS.md §3), and they cannot both apply: a command is
-        the first word of the line, and a ``@…`` the cursor is inside is not it.
-        Asking the attachment side first is what makes ``/fork @notes.txt``
-        complete the path rather than re-completing the command.
-        """
-        cycling = self._completion_inserted is not None and self.text == self._completion_inserted
-        source = self._completion_prefix if cycling else self.text
-        cursor = self._completion_cursor if cycling else self.cursor_offset
-
-        if self._complete_attachment(source, cursor, cycling):
-            return True
-        return self._complete_command(source, cycling)
-
-    def _complete_attachment(self, source: str, cursor: int, cycling: bool) -> bool:
-        """Replace the ``@…`` the cursor is inside with the next candidate path.
-
-        Unlike a command, a reference can sit anywhere in the line, so this
-        replaces a SPAN rather than the whole text and leaves the cursor just
-        after what it inserted — the human is usually mid-sentence.
-
-        A directory is inserted without a trailing space, because the next thing
-        they want is to keep completing into it; a file gets one, like a command.
-
-        Args:
-            source: The text the cycle started from (the editor's current text
-                when no cycle is running).
-            cursor: The cursor offset within ``source``.
-            cycling: Whether a Tab cycle is already running.
-
-        Returns:
-            True when a candidate was inserted.
-        """
-        if self.attachment_completions is None:
-            return False
-        completions = self.attachment_completions(source, cursor)
-        if completions is None or not completions.matches:
-            return False
-
-        if cycling and self._completion_index is not None:
-            index = (self._completion_index + 1) % len(completions.matches)
-        else:
-            index = 0
-
-        match = completions.matches[index]
-        insert = f"@{match.name}" if match.is_dir else f"@{match.name} "
-        text = source[: completions.start] + insert + source[completions.end :]
-
-        self._completion_prefix = source
-        self._completion_cursor = cursor
-        self._completion_index = index
-        self._completion_inserted = text
-        self.text = text
-        self.move_cursor(self._location_of_offset(completions.start + len(insert)))
-
-        if len(completions.matches) == 1:
-            # Nothing to cycle through, so the next Tab means something else: with
-            # one candidate it is "go on from here", which for a directory is the
-            # only way to reach what is inside it. Ending the cycle makes that
-            # press re-scan from the text this one just wrote.
-            self._reset_completion()
-        return True
-
-    def _complete_command(self, source: str, cycling: bool) -> bool:
-        """Insert the next candidate command. True if it did.
-
-        The inserted text keeps its trailing space (pi's ``applyCompletion``, at
-        ``tui/src/autocomplete.ts:393``): a command taking arguments is then ready
-        for them, and one taking none resolves identically, because
-        :func:`~tau_agent_core.commands.parse_command` strips.
-
-        Args:
-            source: The text the cycle started from.
-            cycling: Whether a Tab cycle is already running.
-
-        Returns:
-            True when a candidate was inserted.
-        """
-        if self.command_completions is None:
-            return False
-
-        completions = self.command_completions(source)
-        if completions is None or not completions.matches:
-            # Nothing to insert. Tab is left alone so it keeps moving focus, which
-            # is what it did here before completion existed.
-            self._reset_completion()
-            return False
-
-        if cycling and self._completion_index is not None:
-            index = (self._completion_index + 1) % len(completions.matches)
-        else:
-            index = 0
-
-        inserted = f"/{completions.matches[index].name} "
-        self._completion_prefix = source
-        self._completion_index = index
-        self._completion_inserted = inserted
-        self.text = inserted
-        self.move_cursor(self.document.end)
-        return True
-
-    def _reset_completion(self) -> None:
-        """Forget the running Tab cycle, so the next Tab starts a new one."""
-        self._completion_prefix = ""
-        self._completion_index = None
-        self._completion_inserted = None
-        self._completion_cursor = 0
-
-    def _enter_sends(self) -> bool:
-        """True when Enter submits and Ctrl+J inserts a line break.
-
-        Unconfigured — a ``ChatInput`` built without the app, which is how its
-        own unit tests build it — is τ's documented default rather than an error:
-        this reports a *setting*, and :data:`DEFAULT_ENTER_KEY_MODE` is what the
-        setting is when nobody set it. The Fail-Early check on a misspelled value
-        is one layer up, in :meth:`Parley._configured_enter_key_mode`, where there
-        is a config to be wrong about.
-        """
-        if self.enter_key_mode is None:
-            return DEFAULT_ENTER_KEY_MODE == "submit"
-        return self.enter_key_mode() == "submit"
-
-    def action_submit(self):
-        """Submit the current message."""
-        text = self.text.strip()
-        if text:
-            self.post_message(Input.Submitted(self, text))
-
-    def _insert_newline(self) -> None:
-        """Insert a line break at the cursor, as Enter does in ``"newline"`` mode.
-
-        ``TextArea._on_key`` is what normally does this, and in ``"submit"`` mode
-        it is exactly what we have suppressed, so the two newline keys have to do
-        it themselves. ``_replace_via_keyboard`` rather than ``insert`` because it
-        is the method TextArea's own Enter uses: it respects a selection and the
-        read-only flag, and it records a single undo step.
-        """
-        start, end = self.selection
-        self._replace_via_keyboard("\n", start, end)
-
-    def _try_reclaim(self) -> bool:
-        """Pull pending steering text back into the editor. True if it did.
-
-        The gesture is Up on an EMPTY editor: pending input is the newest thing
-        the user wrote, so it sits one step in front of the history that Up
-        otherwise walks. Requiring the editor to be empty is what keeps the two
-        apart without a mode — with a draft in the box, Up still means history,
-        and reclaiming would have overwritten the draft.
-        """
-        if self.text or self.reclaim_pending is None:
-            return False
-        text = self.reclaim_pending()
-        if not text:
-            return False
-        self.text = text
-        self.move_cursor(self.document.end)
-        return True
-
-    def on_key(self, event: events.Key) -> None:
-        """Handle history navigation, and the Enter/Ctrl+J swap.
-
-        The swap is here and not in ``BINDINGS`` because a ``Binding("enter", …)``
-        on a ``TextArea`` never fires. ``TextArea._on_key`` claims Enter, inserts
-        ``"\\n"``, and calls ``event.stop()``; Textual checks non-priority bindings
-        only once the key has bubbled up to the App, which a stopped key does not
-        do. ``priority=True`` would fire, but it is checked before the event is
-        forwarded to *any* widget, so it would take Enter away from every other
-        editor on the screen too.
-
-        A handler is the right seam instead of a workaround. Textual walks the MRO
-        for handlers and takes ``_on_key`` over ``on_key`` per class, so the order
-        is ``ChatInput.on_key`` then ``TextArea._on_key``, and ``prevent_default``
-        ends the walk. This method therefore gets Enter first and decides.
-        """
-
-        if event.key == "tab":
-            # Only consumed when there is a command to insert. With no ``/`` in
-            # the box, or a ``/…`` that names nothing, the key is left alone and
-            # keeps Textual's ``tab_behavior="focus"`` — the one thing Tab did in
-            # this editor before completion existed, and the reason completion
-            # could claim it (docs/SLASH-COMMANDS.md §3).
-            if self._complete():
-                event.prevent_default()
-                event.stop()
-            return
-
-        if event.key == "enter" and self._enter_sends():
-            # Before ``TextArea._on_key`` can insert the line break.
-            event.prevent_default()
-            event.stop()
-            self.action_submit()
-            return
-
-        if event.key in NEWLINE_KEYS_IN_SUBMIT_MODE and self._enter_sends():
-            # ``stop()`` matters for ctrl+j specifically: unstopped it would bubble
-            # to the App, where the ``BINDINGS`` entry above would submit the very
-            # message this keystroke was meant to keep editing.
-            event.prevent_default()
-            event.stop()
-            self._insert_newline()
-            return
-
-        # alt+up is pi's binding for this (``app.message.dequeue``), and it works
-        # with a draft in the box, where bare Up cannot: it has to leave that case
-        # to history.
-        if event.key == "alt+up":
-            self.post_message(ReclaimPending())
-            event.prevent_default()
-            return
-
-        # Up/Down for history (only when on first/last line)
-        if event.key == "up":
-            if self._try_reclaim():
-                event.prevent_default()
-                return
-            cursor_row, _ = self.cursor_location
-            if (
-                cursor_row == 0
-                and self.command_history
-                and self.command_history_index < len(self.command_history) - 1
-            ):
-                if self.command_history_index == -1:
-                    self.current_draft = self.text
-                self.command_history_index += 1
-                self.text = self.command_history[-(self.command_history_index + 1)]
-                event.prevent_default()
-        elif event.key == "down":
-            cursor_row, _ = self.cursor_location
-            if cursor_row == self.document.line_count - 1 and self.command_history_index > -1:
-                self.command_history_index -= 1
-                if self.command_history_index == -1:
-                    self.text = self.current_draft
-                else:
-                    self.text = self.command_history[-(self.command_history_index + 1)]
-                event.prevent_default()
-
-    def add_to_history(self, text: str):
-        """Add text to command history."""
-        if text.strip():
-            self.command_history.append(text)
-            self.command_history_index = -1
-            self.current_draft = ""
-
-    def clear_input(self):
-        """Clear the input area."""
-        self.text = ""
-
-
-class Parley(App):
-    """Main Parley application."""
-
-    CSS_PATH = "parley.tcss"
-
-    # Declared, not assigned in on_mount: `App.title` falls back to the CLASS
-    # NAME until something overwrites it, so anything that reads it before mount
-    # — the terminal window title Textual sets on startup, `take_svg_screenshot`
-    # captioning a screenshot — got "Parley", the fork's name rather than this
-    # program's. Same values, set early enough to be the only ones there ever
-    # were. `sub_title` still changes constantly at runtime; this is its resting
-    # value.
     TITLE = "Tau"
     SUB_TITLE = "Ready"
 
-    #: Narrowest terminal on which the sidebar and an open extension panel can BOTH
-    #: sit beside a readable chat column. It is no longer a breakpoint the app acts
-    #: on — since the sidebar defaults to CLOSED (SESSION-UX-REDESIGN §8, decision
-    #: 4) the only way it is on screen is that someone pressed ctrl+b, and an
-    #: explicit request is honored at any width — but it is still the measured
-    #: geometry cliff that request runs into, which is why it stays written down.
-    #:
-    #: It follows from the two CSS widths (``#sidebar`` 25%, ``#ext-panel-host`` 30%
-    #: in parley.tcss): the chat is left 45%, less 2 columns of scrollbar gutter and
-    #: 4 of ChatDisplay padding, so its content column is about ``0.45W - 6``. 101 is
-    #: the measured width at which that first reaches the 40-column floor — 100 is
-    #: one column short, which is why the number is not round.
-    #: ``test_side_columns_min_width_is_where_the_floor_is`` re-measures it, so a
-    #: later change to either percentage fails rather than silently drifts.
     SIDE_COLUMNS_MIN_WIDTH = 101
 
     BINDINGS = [
@@ -6564,60 +159,31 @@ class Parley(App):
         Binding("ctrl+g", "browse_tree", "Tree"),
         Binding("ctrl+r", "toggle_reasoning", "Reasoning", priority=True),
         Binding("ctrl+t", "toggle_tools", "Tools", priority=True),
-        # One of these two is live at a time, chosen by ``check_action`` from
-        # ``enter_key`` (docs/ENTER-KEY.md). Both are listed so the Footer names the
-        # key that actually sends, in either mode. The dead one is not merely
-        # unadvertised: a falsy ``check_action`` also stops it consuming the key,
-        # so in "submit" mode ctrl+j does not send from a non-editor focus either.
         Binding("ctrl+j", "focus_and_send", "^J=Send", show=True),
         Binding("enter", "focus_and_send_on_enter", "Enter=Send", show=True),
         Binding("ctrl+p", "command_palette", "Commands", show=False),
-        # NOT bound straight to `quit` any more: one mistimed press ended a session
-        # with a draft in the input and no warning. See `action_interrupt` for the
-        # four steps. `priority` so it reaches this action while the ChatInput has
-        # focus, which is where it is pressed.
-        # `show=False` keeps the Footer exactly as it was. Textual's own system
-        # `ctrl+c` binding is `show=False` and used to shadow this one; making this
-        # `priority` put `^c Quit` in the footer for the first time, costing ten
-        # columns to advertise the most widely known key in a terminal. The first
-        # press now says what the second one will do, which is the affordance.
         Binding("ctrl+c", "interrupt", "Quit", priority=True, show=False),
-        # priority=True: caught during generation regardless of which widget holds
-        # focus. Idle, it offers the tree browser on a second press.
         Binding("escape", "escape", "Cancel", show=False, priority=True),
-        # Esc's "and un-path what it did" variant (docs/SUBMISSION-LIFECYCLE.md
-        # decision 2). ctrl+z is TextArea's undo, and this steals it ONLY while a
-        # turn is generating: ``check_action`` returns False otherwise, and a
-        # priority binding whose check_action is False does not consume the key
-        # (textual app.py ``_check_bindings`` → ``run_action``), so it falls through
-        # to the editor untouched. The same False hides it from the Footer, so the
-        # label appears exactly when pressing it would do something.
-        #
-        # That steal used to cost nothing, because the editor was disabled for the
-        # length of a turn and its undo was unreachable anyway. Since
-        # docs/TUI-STEERING.md the editor IS usable then, so the two uses now
-        # genuinely contend, and rollback wins: the Footer says ``^z Rollback``
-        # for exactly as long as this binding is live, and a key doing what the
-        # Footer promises beats an unadvertised undo.
         Binding("ctrl+z", "rollback_turn", "Rollback", show=True, priority=True),
     ]
+    """The TUI's keys. Hand-written, and NOT derived from the core's flow table.
 
-    # The active persisted session (append-only sink) and the live working
-    # message list sent to the model. They are kept in step: every produced
-    # message is appended to both; clear/compact mutate the working list (the
-    # session file keeps the full transcript — append-only, no rewrite).
+    The command palette is a projection of :data:`FRONTEND_COMMANDS`
+    (:meth:`_builtin_vocabulary_commands`) and this deliberately is not, because the
+    two vocabularies are not the same shape. Nine of these twelve keys are head-local
+    — a sidebar, a send key, a cancel, a chord, two collapse toggles — and name no
+    capability at all; the other three back ``new_session``, ``abort`` and a rollback
+    ``submit``, none of which takes an argument, so a table about argument lists has
+    nothing to give them. Deriving this list would mean inventing keys for flows that
+    have none and finding a home in the core for keys that mean nothing outside a
+    terminal.
+    """
+
     current_session: reactive[Optional[ConversationSession]] = reactive(None)
     current_backend: Optional[Backend] = None
     config: dict = {}
-    # Global show/hide state for the two collapsible content kinds. Each toggle
-    # flips every reasoning region / tool box in the transcript at once; the
-    # reactive records the last-applied intent (for the toggle's feedback).
     reasoning_collapsed: reactive[bool] = reactive(False)
     tools_collapsed: reactive[bool] = reactive(False)
-    # True while ANY submitted turn is outstanding (streaming, or waiting behind
-    # one that is). Gates Esc-to-cancel and the input-disabled state; flipped on in
-    # on_input_submitted, off in the worker's finally once the LAST outstanding
-    # submission has finished — see ``_submissions_in_flight``.
     is_generating: reactive[bool] = reactive(False)
 
     def __init__(
@@ -6629,134 +195,28 @@ class Parley(App):
         resume: bool = False,
     ):
         super().__init__()
-        # ``tau --resume``: open the session picker over the first frame (§6/§7).
-        # Its own argument rather than a ``cli_run_config`` key, for the reason
-        # ``fun`` is one — run_config is threaded into every backend this app
-        # builds, and a one-shot startup action has no business being visible
-        # from there. It is the whole reach of the flag: `on_mount` reads it once
-        # and nothing downstream can branch on "was this a --resume run".
         self._resume_on_start: bool = resume
-        # --fun (see tau_coding_agent.tagline). Defaults FALSE here rather than to
-        # tagline.FUN_DEFAULT, so constructing a Parley programmatically — every
-        # test, every scene, devshot — is deterministic whether or not this tree
-        # was packaged. Only cli.py passes the packaged default through.
-        #
-        # Resolved to a string ONCE, right here: this is the whole reach of the
-        # flag. `self._tagline` is a str from this line onward, so nothing
-        # downstream can branch on "is fun on".
         self._tagline: str = pick_tagline(fun)
-        # The working directory the empty chat pane reports. An attribute rather
-        # than a Path.cwd() call at the point of use, because it is part of what
-        # `testing.sandbox.build_parley` has to pin: a rendered scene that printed
-        # the developer's real cwd would differ on every machine, which is the
-        # same class of leak as a test app reading the real ~/.tau/config.json.
-        # Nothing but the pane reads it — tools resolve paths themselves.
         self._cwd: Path = Path.cwd()
-        # The live conversation context (sent to the model). Mirrors the active
-        # session's messages but is mutable for clear/compact.
         self.messages: list[dict] = []
-        # Seam-3 → extension bus bridge (S21): the module-global session-lifecycle
-        # subscription for the CURRENT backend. Rebound on every _bind_backend_session
-        # (new-chat / clear / resume / model-swap) — unsub the old backend first so a
-        # replaced backend's dead bus stops receiving events (no listener leak).
         self._session_event_unsub: Optional[Callable[[], None]] = None
-        # How many submissions this app has handed to the backend and not yet seen
-        # finish. Almost always 0 or 1; >1 only when a second prompt is submitted
-        # while a turn is outstanding, which the core queues (the submissions
-        # declare ``multitask_strategy="enqueue"``). ``is_generating`` is a
-        # function of "is this zero", so a turn ending while another is still
-        # queued must NOT report the app as idle.
         self._submissions_in_flight: int = 0
-        # Lines typed DURING a turn, oldest first, that have not been handed to
-        # the backend yet (docs/TUI-STEERING.md §2). The app owns them rather
-        # than the core, because the reclaim gesture has to be able to take them
-        # back, and only text this side of ``submit()`` can be taken back.
-        # Emptied by :meth:`_flush_pending_steer` at the strategy's delivery
-        # point, and by :meth:`_reclaim_pending_steer` when the user asks for it.
         self._pending_steer: list[str] = []
-        # B3-a: the persistent render subscription. ONE attach for the life of a
-        # backend (``_bind_backend_session``), not one per awaited turn — which is
-        # what makes a turn this app never initiated renderable at all. Rebound
-        # alongside ``_session_event_unsub`` when the backend/session changes.
         self._render_router: Optional[RenderRouter] = None
-        # The "press it again" offers currently standing, action name -> the timer
-        # that will withdraw one. A dict rather than two attributes because both
-        # keys that use it (`ctrl+C` to exit, `Esc` to open the tree) write the
-        # SAME status bar, and only one offer can be readable there at a time —
-        # see :meth:`_offer_again`.
         self._pending_confirm: dict[str, Timer] = {}
-        # Whether the sidebar is open. FALSE at startup (SESSION-UX-REDESIGN §8,
-        # decision 4): the picker and the command palette are the canonical session
-        # surface now, so the list does not spend a quarter of the first screen
-        # before anyone asks for it. ctrl+b is the only thing that writes it, and
-        # what it writes STICKS — nothing in the app overrides a choice the user
-        # made by hand, at any terminal width (see SIDE_COLUMNS_MIN_WIDTH).
         self._sidebar_open: bool = False
-        # When each open lane started, for the exchange summary's wall clock. Keyed
-        # by lane, because two lanes have two different clocks — the previous code
-        # could keep one ``start`` local precisely because it could only ever be
-        # rendering one turn.
-        self._lane_started: dict[str, float] = {}
-        # A mutex over THE WORKING MESSAGE LIST, not over the display.
-        #
-        # Until B3-a this was ``_display_lock`` and its job was to stop two turns
-        # interleaving into one exchange; the per-lane renderer makes that
-        # impossible by construction, so that reason is gone. What remains is a
-        # real, narrower one: ``self.messages`` is the context handed to
-        # ``submit_turn`` and is REBOUND from ``session.context`` when a turn
-        # finishes, so a second submission that read it before the first turn
-        # reconciled would send the model a conversation missing the answer it is
-        # replying to. Held from reading the list to writing it back.
-        #
-        # It serializes only THIS app's own typed submissions, which declare
-        # ``multitask_strategy="enqueue"`` and are serialized by the core anyway. It
-        # is not on the render path at all: a forked or bus-originated lane streams
-        # while this is held.
+        self._cache_warned_models: set[str] = set()
         self._working_list_lock = asyncio.Lock()
-        # Run-level extension loading config (CLI ``-e`` / ``-ne``), applied to
-        # EVERY backend this app creates via ``_load_backend_extensions`` so a model
-        # switch doesn't drop extensions (E5 §2.2). Defaults match a bare ``tau``:
-        # no explicit paths, discovery ON (scan ``~/.tau/extensions``).
         run_config = cli_run_config or {}
         self._extension_paths: list[str] = list(run_config.get("extensions", []))
         self._discover_extensions: bool = not run_config.get("no_extensions", False)
-        # The most recent extension load result (E5 §5 / S34) — read by the
-        # ``/extensions`` palette listing. Starts empty (nothing loaded yet); every
-        # ``_load_backend_extensions`` replaces it with the live result.
-        self._extension_load_result: LoadExtensionsResult = LoadExtensionsResult()
-        # Run-level tool/prompt flags (S28), applied at each create_backend /
-        # new-chat so a model switch keeps them. Defaults are inert (a bare tau).
         self._exclude_tools: list[str] = list(run_config.get("exclude_tools", []))
-        # The resolved tool-suppression policy for this RUN: ``"all"`` (-nt),
-        # ``"builtin"`` (-nbt) or ``None``. Run-level for the same reason
-        # ``_exclude_tools`` is — ``/model`` builds a new backend from a different
-        # model entry, and a policy that lived on the entry would be handed back
-        # by the switch. ``cli._launch_tui`` collapses the two flags into this one
-        # value before the app ever sees them.
         self._no_tools: str | None = run_config.get("no_tools")
-        #: ``--tools``: the built-in allowlist, run-level for the same reason
-        #: ``no_tools`` is (see :meth:`_apply_run_config`). ``None`` means the flag
-        #: was absent and each model entry's own ``tools`` key still applies.
         self._tool_allowlist: list[str] | None = run_config.get("tools")
         self._append_system_prompt: list[str] = list(run_config.get("append_system_prompt", []))
-        # ``--bus`` (H8): run-level, for the same reason the extension flags are —
-        # the capability gates which extensions may load, so a model switch that
-        # silently revoked it would unload the bus mid-session.
         self._bus_available: bool = bool(run_config.get("bus", False))
-        # ``--no-context-files``/``-nc``: run-level like the flags above, so a
-        # ``/model`` switch cannot silently re-enable the AGENTS.md/CLAUDE.md
-        # discovery this invocation turned off.
         self._no_context_files: bool = bool(run_config.get("no_context_files", False))
-        # ``--max-turns`` (the turn ceiling): run-level like the flags above. Its
-        # ``None`` is meaningful and is NOT coerced — it means "the flag was
-        # absent", which lets ``_apply_run_config`` fall through to config.json's
-        # top-level ``max_turns`` and then to no ceiling at all.
         self._max_turns: Optional[int] = run_config.get("max_turns")
-        # Per-extension config overrides (S40): the parsed ``--ext-config`` map
-        # ({name: {key: value}}). Merged over config.json's ``"extensions"`` block at
-        # each backend load (``_load_backend_extensions``) so each extension's
-        # ``api.config`` gets its slice. Resolved lazily against ``self.config``
-        # (loaded just below), not here, so a config reload is reflected.
         self._ext_config_overrides: dict[str, dict[str, Any]] = dict(
             run_config.get("ext_config", {})
         )
@@ -6764,69 +224,24 @@ class Parley(App):
         if cli_overrides:
             self._apply_cli_overrides(cli_overrides)
 
-        # Resolve the steering strategy once here and throw the value away: it is
-        # read from :attr:`_steering_strategy` on every use, and this call is the
-        # STARTUP CHECK. A misspelt value should fail while τ is starting, with
-        # the spelling in the message, rather than at the first mid-turn
-        # keystroke half an hour later.
         self._configured_steering_strategy()
         # Same startup check, same reason, for the Enter key.
         self._configured_enter_key_mode()
 
-        # === Colour theme (docs/PLAN-0.9.4.md §6) ===
-        # Registered and applied HERE, in ``__init__``, and not in ``on_mount``:
-        # ``App.__init__`` has already built ``self.stylesheet`` from
-        # ``get_css_variables()``, and the first parse of ``parley.tcss`` happens
-        # before ``on_mount`` runs. Every colour in that sheet is a ``$tau-*``
-        # variable a theme supplies, so a theme applied at mount time would be a
-        # sheet parsed against variables that do not exist yet. ``_apply_theme``
-        # re-seeds the stylesheet's variable table for exactly that reason.
-        #
-        # A theme that cannot be loaded does not stop τ from starting. Each
-        # failure lands in ``_theme_errors`` and ``on_mount`` raises it as an
-        # error toast, and the app runs in the default theme — so the problem is
-        # reported on the one screen the user is looking at, without a broken file
-        # for a theme they are not even selecting taking the whole TUI down.
-        # ``themes.py``'s module docstring has the Fail-Early reasoning.
         self._theme_errors: list[str] = []
         self._theme_registry = build_theme_registry(errors=self._theme_errors)
         self._apply_theme(self._configured_theme_name())
 
-        # The storage-agnostic construction/lookup seam (W10): every current_session
-        # assignment goes through this one instance rather than the concrete file
-        # Session, so ``--store``/config ``session_store`` (W12,
-        # docs/JMFTS-INTEGRATION-PLAN.md §3.1) can inject a different SessionCatalog
-        # without touching the TUI again. Built AFTER ``self.config`` is loaded
-        # (``load_config()`` above) since resolving the "jmfts" backend needs it —
-        # and it performs a real network health check, so a misconfigured/
-        # unreachable store must fail HERE, before the TUI's event loop starts
-        # (Fail-Early), not on the first session action. ``session_catalog`` (an
-        # explicit constructor arg, e.g. from tests) always wins over resolving one.
         self.session_catalog: SessionCatalog = (
             session_catalog
             if session_catalog is not None
             else build_session_catalog(
                 self.config,
                 run_config.get("store"),
-                # --session-dir (unit S): the TUI's default is unchanged
-                # (~/.tau/sessions); passing DIR is also how a human opens the
-                # sessions --mode rpc wrote to its private <tmp>/.tau-<uid>/sessions.
                 run_config.get("session_dir"),
             )
         )
-        # Purely descriptive metadata for AgentSessionRuntime's F2 wire tuple
-        # (docs/REMOTE-CONTROL.md §7.2) — the TUI itself never reads it back.
-        # Resolved the same way session_catalog itself is; if a caller passed
-        # an explicit `session_catalog=` not built from `run_config["store"]`
-        # (a test double), this label may not describe it — harmless, since
-        # nothing here branches on it.
         self._store_name: str = resolve_backend_name(self.config, run_config.get("store"))
-        # AgentSessionRuntime (phase 3, H1) — the session-lifecycle layer
-        # behind action_new_chat/action_clear_chat/on_chat_selected. `None`
-        # until the first real (agent_session-bearing) backend is bound;
-        # stays `None` for a backend double with no `.agent_session` (the
-        # same tolerance every other backend-capability read in this class
-        # already has — see `_rebind_after_session_swap`).
         self._session_runtime: Optional[AgentSessionRuntime] = None
 
     def _apply_cli_overrides(self, overrides: dict) -> None:
@@ -6842,11 +257,6 @@ class Parley(App):
             self.config["default_model"] = overrides["default_model"]
         if "system_prompt" in overrides:
             self.config["system_prompt"] = overrides["system_prompt"]
-        # ``--theme`` (docs/PLAN-0.9.4.md §6). It rides the same in-memory config
-        # the other overrides do, which is exactly what makes it a ONE-RUN choice:
-        # ``action_set_theme``'s ``update_config`` re-reads the file rather than
-        # writing ``self.config`` back, so switching themes in a ``--theme latte``
-        # session saves the theme the user picked and not the one the flag set.
         if THEME_CONFIG_KEY in overrides:
             self.config[THEME_CONFIG_KEY] = overrides[THEME_CONFIG_KEY]
 
@@ -6860,10 +270,6 @@ class Parley(App):
         """
         self.config = bootstrap_config()
         self.log(f"Loaded config with {len(self.config.get('models', {}))} models")
-
-    # ------------------------------------------------------------------
-    # Colour themes (docs/PLAN-0.9.4.md §6)
-    # ------------------------------------------------------------------
 
     def _configured_theme_name(self) -> str:
         """The theme this run asks for — ``--theme``, else config.json, else the default.
@@ -6903,7 +309,7 @@ class Parley(App):
 
         Derived from :attr:`config` on every read rather than cached in
         ``__init__``, so a config the app was handed after construction — every
-        sandboxed app, since ``testing.sandbox.build_parley`` assigns
+        sandboxed app, since ``testing.sandbox.build_tau_app`` assigns
         ``app.config`` once the app exists — is the one that decides. ``__init__``
         still calls :meth:`_configured_steering_strategy` for the startup check.
         """
@@ -7036,7 +442,7 @@ class Parley(App):
         """Make *name* the live theme, at construction time or mid-session.
 
         Delegates to :func:`~tau_coding_agent.themes.install_themes`, which is
-        also what the bare-``App`` harnesses that load ``parley.tcss`` outside
+        also what the bare-``App`` harnesses that load ``tau.tcss`` outside
         this class call — one implementation of "make this app wear this theme",
         so a harness cannot drift into a half-registered palette.
 
@@ -7081,7 +487,7 @@ class Parley(App):
         command opens a second palette over ``App.available_themes`` and assigns
         ``app.theme`` directly, and every theme there is now selectable
         (``themes.textual_themes`` gives Textual's 21 the ``$tau-*`` palette
-        ``parley.tcss`` needs). Persisting from the action alone would mean two
+        ``tau.tcss`` needs). Persisting from the action alone would mean two
         theme lists in one palette where one sticks and one is forgotten at the
         next launch, which is worse than either behaviour on its own.
 
@@ -7097,12 +503,10 @@ class Parley(App):
             return
         if self.config.get(THEME_CONFIG_KEY) == theme_name:
             return
-        # Keep the in-memory config in step with the file, so a later read of
-        # ``self.config`` sees what disk says.
         self.config[THEME_CONFIG_KEY] = theme_name
         update_config(THEME_CONFIG_KEY, theme_name)
 
-    def _session_facts(self) -> SessionFacts:
+    def _session_facts(self) -> transcript.SessionFacts:
         """The configuration the empty chat pane states (handoff §4.4).
 
         Read fresh on every show — :class:`ChatDisplay` holds this method, not its
@@ -7121,24 +525,21 @@ class Parley(App):
         name = self.config.get("default_model", "local-llm")
         entry = self.config.get("models", {}).get(name)
         if entry is None:
-            return SessionFacts(
+            return transcript.SessionFacts(
                 tagline=self._tagline,
                 model=f"{name} — not in config.json",
                 endpoint="unusable until this is fixed",
-                cwd=_display_path(self._cwd),
+                cwd=transcript._display_path(self._cwd),
                 tools="",
                 store=self._store_name,
             )
         resolved = self._apply_run_config(entry)
-        return SessionFacts(
+        return transcript.SessionFacts(
             tagline=self._tagline,
             model=str(resolved.get("model", name)),
-            # A model entry addressing a first-party API (anthropic, gemini) has no
-            # base_url of its own; naming the backend is the true answer there, and
-            # a blank row would read as "nowhere".
             endpoint=str(resolved.get("base_url") or resolved.get("backend", "")),
-            cwd=_display_path(self._cwd),
-            tools=_tools_row(resolved),
+            cwd=transcript._display_path(self._cwd),
+            tools=transcript._tools_row(resolved),
             store=self._store_name,
         )
 
@@ -7150,91 +551,39 @@ class Parley(App):
             yield ChatSidebar(self.session_catalog)
 
             with Vertical(id="main-area"):
-                yield ChatDisplay(self._session_facts)
-                # Between the transcript and the editor, because that is where
-                # what-you-typed-but-has-not-been-sent belongs: it is no longer
-                # in the box and not yet in the conversation. Hides itself when
-                # empty, so an ordinary turn looks exactly as it did.
-                yield PendingInput()
-                # Directly above the editor, because it describes the draft that
-                # is still in it: the ``@file`` words in the box, resolved. Hides
-                # itself when the draft attaches nothing.
-                yield AttachmentBar()
+                yield transcript.ChatDisplay(self._session_facts)
+                yield editor_widgets.PendingInput()
+                yield editor_widgets.AttachmentBar()
                 yield ChatInput(id="chat-input")
-                # Under the editor, so the eye travels down from the half-typed
-                # line into the list of what it could become — which is where
-                # every shell and every editor puts one. Hides itself when the
-                # line is not a ``/…``, so an ordinary turn looks as it did.
-                yield CommandPopup()
+                yield editor_widgets.CommandPopup()
 
-            # The extension panel host (E10 §6 / S68) sits to the right of the main
-            # area; it hides itself until an extension opens a panel.
-            yield ExtensionPanelHost()
+            yield extension_ui.ExtensionPanelHost()
 
-        # The foreign-lane strip (B3-b) and the extension status strip (E10 §6 /
-        # S67) sit in the vertical flow just above the docked Footer; each hides
-        # itself until it has something live to say.
-        yield LaneStrip()
-        yield ExtensionStatusBar()
+        yield editor_widgets.LaneStrip()
+        yield extension_ui.ExtensionStatusBar()
         yield Footer()
 
     def on_mount(self):
         """Set up the application on mount."""
-        # title/sub_title are now class-level TITLE/SUB_TITLE — see the comment
-        # there for why they cannot wait until mount.
 
         # Focus input
         chat_input = self.query_one("#chat-input", ChatInput)
         chat_input.focus()
-        # Up on an empty editor takes back whatever is waiting to be steered
-        # (docs/TUI-STEERING.md §4). Wired here rather than in ``compose`` so the
-        # editor exists and the app owns the buffer it hands back.
         chat_input.reclaim_pending = self._reclaim_pending_steer
-        # Whether Enter sends or breaks the line (docs/ENTER-KEY.md). The property
-        # is passed, not its value, so a mid-session ``/config`` edit takes effect
-        # on the next keystroke rather than at the next restart.
         chat_input.enter_key_mode = lambda: self._enter_key_mode
-        # The candidate commands Tab cycles through (docs/SLASH-COMMANDS.md). The
-        # app supplies them because half the vocabulary is registered by
-        # extensions on the backend, which the widget must not reach for.
         chat_input.command_completions = self._command_completions
-        # The candidate PATHS Tab cycles through (docs/FILE-ATTACHMENTS.md §3).
-        # The app supplies them for the same reason: the working directory and the
-        # inline limit are the app's, not the widget's.
+        chat_input.argument_completions = self._argument_completions
         chat_input.attachment_completions = self._attachment_completions
 
-        # Where the live window reads the transcript it cuts from, and where
-        # "show them" mounts it back from (ChatDisplay.set_transcript_source).
-        # A lambda over the attribute, not the list: ``self.messages`` is REBOUND
-        # after every turn, so a display handed today's list object would trim
-        # against a conversation that stopped growing at the last reload.
-        self.query_one(ChatDisplay).set_transcript_source(lambda: self.messages)
+        self.query_one(transcript.ChatDisplay).set_transcript_source(lambda: self.messages)
 
-        # The first frame is a layout decision like any later one: an app started at
-        # 80x24 with a panel already open must not render the starved chat once
-        # before a resize corrects it.
         self._apply_side_columns()
 
-        # Theme load failures collected in __init__ (docs/PLAN-0.9.4.md §6).
-        # Reported here rather than there because ``notify`` needs a screen: the
-        # toasts are mounted on it, and __init__ runs before there is one. One
-        # toast per failure, each naming its own file, because two broken themes
-        # are two things to fix. The timeout is long: this is the only notice the
-        # user gets that the colours they are looking at are not the ones they
-        # asked for.
         for message in self._theme_errors:
             self.notify(message, title="Theme", severity="error", timeout=10)
 
-        # ``tau --resume`` (§7): open the picker over the first frame. After the
-        # refresh, not during mount — ``action_resume_session`` pushes a screen,
-        # and a screen pushed before the base screen has laid out is placed
-        # against a geometry that does not exist yet.
         if self._resume_on_start:
             self.call_after_refresh(self.action_resume_session)
-
-    # ------------------------------------------------------------------
-    # Side columns
-    # ------------------------------------------------------------------
 
     def _apply_side_columns(self) -> None:
         """Show or hide the sidebar for the current ``_sidebar_open``.
@@ -7257,8 +606,6 @@ class Parley(App):
             return
         sidebar.display = visible
         if visible:
-            # A refresh may have landed and been deferred (_apply_sessions) while
-            # this was collapsed — catch it up now that it's visible.
             sidebar.ensure_rendered()
 
     def set_extension_status(self, key: str, text: str | None) -> None:
@@ -7271,7 +618,7 @@ class Parley(App):
         unconditionally, so it is present for the whole app lifetime; the delegate is
         only bound after mount, so no pre-mount call can reach here.
         """
-        self.query_one(ExtensionStatusBar).set_slot(key, text)
+        self.query_one(extension_ui.ExtensionStatusBar).set_slot(key, text)
 
     def set_extension_panel(self, key: str, spec: dict[str, Any] | None) -> None:
         """Mount, update, or clear one keyed extension panel (E10 §6 / S68).
@@ -7283,9 +630,97 @@ class Parley(App):
         host is composed unconditionally, so it is present for the whole app lifetime;
         the delegate is only bound after mount, so no pre-mount call can reach here.
         """
-        self.query_one(ExtensionPanelHost).set_panel(key, spec)
+        self.query_one(extension_ui.ExtensionPanelHost).set_panel(key, spec)
 
-    async def on_extension_panel_action(self, message: ExtensionPanel.Action) -> None:
+    async def _reload_transcript(self, *, open_ask: bool = False) -> None:
+        """Rebuild the transcript from ``self.messages``, then redraw the request row.
+
+        Every reload site goes through here so the row cannot be forgotten at one
+        of them: a reload happens exactly when the cursor moved, and the row is a
+        view of the cursor (docs/EXTENSION-LOCKS.md §9).
+
+        Args:
+            open_ask: Passed to :meth:`refresh_extension_request` — true only for
+                a session being resumed or switched into, which is where §9 says
+                an ask opens by itself.
+        """
+        await self.query_one(transcript.ChatDisplay).reload_messages(self.messages)
+        self.refresh_extension_request(open_ask=open_ask)
+
+    def pending_extension_request(self) -> "ExtensionRequest | None":
+        """The extension request at the cursor, read from the live backend.
+
+        docs/EXTENSION-LOCKS.md §2: one reader, so what the transcript draws, what
+        the editor bounces against and what ``submit`` refuses are the same entry.
+        ``None`` with no backend — there is no session to be locked.
+        """
+        backend = self.current_backend
+        if backend is None:
+            return None
+        request: "ExtensionRequest | None" = getattr(backend, "pending_request", None)
+        return request
+
+    def refresh_extension_request(self, *, open_ask: bool = False) -> None:
+        """Redraw the transcript's request row, and optionally open its ask (§9).
+
+        Called at every point the cursor can have moved — a turn ending, a
+        reload, an answer, an extension being disabled — because the row shows
+        the CURSOR's request and nothing narrower would keep it honest.
+
+        Args:
+            open_ask: Also push the modal, for the two moments §9 says it opens
+                by itself: a resumed session whose cursor is an ask, and a fresh
+                request arriving while the user is watching. Only when the ask's
+                actions resolve to registered commands — render always, auto-open
+                only when the buttons would do something.
+        """
+        request = self.pending_extension_request()
+        display = self.query_one(transcript.ChatDisplay)
+        display.set_extension_request(request)
+        if not open_ask or request is None or request.ask is None:
+            return
+        known = set(self._extension_command_names())
+        if all(action["command"] in known for action in request.ask["actions"]):
+            self._open_extension_ask(request)
+
+    @work
+    async def _open_extension_ask(self, request: "ExtensionRequest") -> None:
+        """Push the ask modal and, on an action, answer through the core (§8).
+
+        A worker because ``push_screen_wait`` requires one. A dismissal (``Esc``)
+        answers nothing and leaves the lock exactly as it was — the row is how it
+        comes back.
+        """
+        answer = await self.push_screen_wait(extension_ui.ExtensionAskScreen(request))
+        if answer is None:
+            return
+        action, values = answer
+        answer_request = getattr(self.current_backend, "answer_request", None)
+        if answer_request is None:
+            return
+        try:
+            result = await answer_request(request.entry_id, action, values)
+        except Exception as e:
+            self.notify(f"Answering {request.extension_name} failed: {e}", severity="error")
+            self.log.error(f"answer_request failed: {e}", exc_info=True)
+            return
+        if not result.handled:
+            self.notify(
+                f"{request.extension_name} is not loaded, so nothing ran — "
+                "the request is answered and the session is unlocked.",
+                severity="warning",
+            )
+        else:
+            self._render_command_output(result)
+        self.refresh_extension_request()
+
+    def on_extension_request_box_reopen(
+        self, message: extension_ui.ExtensionRequestBox.Reopen
+    ) -> None:
+        """The transcript row was clicked: put the ask back on screen (§9)."""
+        self._open_extension_ask(message.request)
+
+    async def on_extension_panel_action(self, message: extension_ui.ExtensionPanel.Action) -> None:
         """Dispatch a panel action's command back into the extension (E10 §6 / S68).
 
         A :class:`ExtensionPanel.Action` bubbles here when a user presses a panel
@@ -7392,9 +827,6 @@ class Parley(App):
         materialisation, the working-list append and the rendered user turn stay
         here too, now gated on the peek.
         """
-        # ChatInput is the app's only Input.Submitted source (it posts
-        # Input.Submitted(self, ...)), so the submitting widget is always the
-        # #chat-input ChatInput.
         input_widget = self.query_one("#chat-input", ChatInput)
 
         message = event.value.strip()
@@ -7402,22 +834,8 @@ class Parley(App):
         if not message:
             return
 
-        # Peek: will this dispatch as a command instead of starting a turn? Pure —
-        # it runs nothing. ``submit()`` remains the authority and resolves again on
-        # the post-``input``-hook text; this only decides whether to render a user
-        # turn. An unknown "/…" resolves to None and falls through to the model
-        # exactly as it always has.
         is_command = resolve_command(message, self._extension_command_names()) is not None
 
-        # Typed during a turn (docs/TUI-STEERING.md §2).
-        #
-        # Prose is held for the steering strategy to deliver. A COMMAND is
-        # refused and left in the editor instead: ``/compact`` and ``/fork``
-        # rewrite the very context the running turn is being answered from, and
-        # steering delivers through the same door that dispatches them, so
-        # queueing one would run it mid-turn. Left in the editor rather than
-        # dropped — pressing Enter again once the turn ends is the whole fix, and
-        # the notice says so.
         if self.is_generating:
             if is_command:
                 self.notify(
@@ -7431,13 +849,12 @@ class Parley(App):
             self._queue_pending_steer(message)
             return
 
+        if not is_command and self._bounce_if_locked():
+            return
+
         input_widget.add_to_history(message)
         input_widget.clear_input()
 
-        # ``@file`` references become the blocks that actually go to the model
-        # (docs/FILE-ATTACHMENTS.md §2). Gated on the peek, because a command is
-        # not a prompt: ``/fork`` attaches nothing, and expanding anyway would
-        # read files for a line no model will ever see.
         text, images = (message, None) if is_command else self._expand_attachments(message)
 
         # The submission record. See the docstring for every field's reason.
@@ -7452,14 +869,6 @@ class Parley(App):
             allow_user_input=True,
         )
 
-        # Session materialisation — the spec's submit() step 4, which that method's
-        # own docstring assigns to the FRONTEND ("e.g. the TUI's action_new_chat").
-        # It happens for a command as well as a prompt, and before either: ``submit()``
-        # is a method ON an AgentSession, so with no session there is no door to admit
-        # anything through. The visible consequence is that typing "/extensions" as the
-        # very first thing starts a chat — which is what the app was one keystroke away
-        # from doing anyway, and is preferable to a second, session-less command path
-        # that would quietly diverge from this one.
         if self.current_session is None:
             await self.action_new_chat()
         assert self.current_session is not None  # action_new_chat sets current_session
@@ -7469,6 +878,26 @@ class Parley(App):
             return
 
         self._start_turn(submission)
+
+    def _bounce_if_locked(self) -> bool:
+        """Refuse a prompt while an extension holds the session, and say why (§9).
+
+        Read here rather than after the fact because the editor clears on
+        ADMISSION: :meth:`AgentSession.submit` refuses the same submission for the
+        same reason, but by then :meth:`_start_turn` has already emptied the
+        editor and put the text in the working list. The core's refusal is what
+        every OTHER head sees; this is the same fact read one step earlier so the
+        typed line stays where the user left it.
+
+        Returns whether the prompt was bounced. Re-opens the ask when there is
+        one, so the toast is not the only thing on screen that can be acted on.
+        """
+        request = self.pending_extension_request()
+        if request is None or not request.lock:
+            return False
+        self.notify(refusal_reason(request), severity="warning", timeout=8)
+        self.refresh_extension_request(open_ask=True)
+        return True
 
     def _start_turn(self, submission: Submission) -> None:
         """Put ``submission``'s text in the working list and run it in a worker.
@@ -7483,29 +912,8 @@ class Parley(App):
                 appends a user turn to the working list and a command produces
                 none.
         """
-        # Add the user turn to the working list so it is part of the context sent
-        # to the model this turn. Do NOT persist it here: the AgentSession (bound to
-        # this live Session, E3-ctx / D3) is the sole persister — it records the user
-        # turn when the loop runs. The working list is reconciled back to the
-        # authoritative log at turn-end (``self.messages = session.context``).
         self.messages.append({"role": "user", "content": submission.text})
 
-        # The user BUBBLE is NOT rendered here any more (B3-a). It is rendered from
-        # the ``lane_start`` this submission produces, like every other source's,
-        # which is Jupyter re-broadcasting ``execute_input``: *the submission
-        # itself* goes out on the wire so every client shows it. Two things follow.
-        # The text shown is the POST-``input``-hook text — what actually reached the
-        # model, rather than what was typed at something that rewrote it. And a
-        # queued second prompt's bubble appears when its turn starts rather than
-        # stranded above a still-running exchange. Rendering it here as well would
-        # be the half-migrated renderer: one source drawn by the frontend that
-        # submitted it, every other drawn by the bus.
-
-        # Run the turn in a worker so the event loop stays free while the model
-        # streams — that is what lets Esc-to-cancel be processed mid-response
-        # (a direct `await` here parked the App message pump for the whole turn).
-        # The input is NOT disabled: typing during a turn is how a steering
-        # message gets written (docs/TUI-STEERING.md §1).
         self._submissions_in_flight += 1
         self.is_generating = True
         self.sub_title = "Thinking… (Esc to cancel)"
@@ -7545,7 +953,7 @@ class Parley(App):
 
     def _refresh_pending_input(self) -> None:
         """Redraw the pending-input widget from the buffer."""
-        self.query_one(PendingInput).show(self._pending_steer, self._steering_note())
+        self.query_one(editor_widgets.PendingInput).show(self._pending_steer, self._steering_note())
 
     def on_reclaim_pending(self, message: ReclaimPending) -> None:
         """alt+up in the editor: hand the pending buffer back (pi's dequeue key)."""
@@ -7620,12 +1028,6 @@ class Parley(App):
         raw = "\n\n".join(self._pending_steer)
         self._pending_steer.clear()
         self._refresh_pending_input()
-        # A steering message attaches files exactly as a typed prompt does
-        # (docs/FILE-ATTACHMENTS.md §5). Expanded HERE rather than when the line
-        # was queued, so the file is read at the moment it is delivered, and so
-        # several queued lines that each attach something arrive as one message
-        # carrying all of them — which is what the core's own steer path builds
-        # (``AgentSession._queued_content_to_user``).
         text, images = self._expand_attachments(raw)
         submission = Submission(
             text=text,
@@ -7634,13 +1036,6 @@ class Parley(App):
             submitter="human",
             submission_id=uuid4().hex,
             multitask_strategy="steer" if at_tool_call else "enqueue",
-            # A steering message is prose aimed at the model, and the door it
-            # goes through is the one that dispatches commands. A line that
-            # resolved to one was refused at :meth:`on_input_submitted` rather
-            # than queued, so nothing here should resolve to a command — but the
-            # `input` hook chain runs on this text too and could rewrite it into
-            # one, and running ``/compact`` inside a live turn is exactly what
-            # this flag being False prevents.
             expand_commands=False,
             allow_user_input=True,
         )
@@ -7677,12 +1072,6 @@ class Parley(App):
                 again exactly once.
         """
         if self.current_backend is None:
-            # The backend went away between the flush and this worker starting.
-            # The text is in hand and must not evaporate, so it goes back on the
-            # buffer, which the next delivery point or an Up press empties. The
-            # RAW text goes back, not the submission's: the buffer holds what the
-            # human typed, and re-queueing the expanded form would attach every
-            # ``@file`` a second time at the next delivery point.
             self._queue_pending_steer(raw_text)
             return
         self._submissions_in_flight += 1
@@ -7695,8 +1084,6 @@ class Parley(App):
                 )
                 return
             if result.messages:
-                # The fall-through above: this ran a turn. Reconcile the working
-                # list against what the session actually recorded.
                 async with self._working_list_lock:
                     if self.current_session is not None:
                         self.messages = list(self.current_session.context)
@@ -7720,6 +1107,8 @@ class Parley(App):
         self._submissions_in_flight = 0
         self.is_generating = False
         self.query_one("#chat-input", ChatInput).focus()
+        # A hook may have appended a request during the turn; the turn edge is when it lands.
+        self.refresh_extension_request(open_ask=True)
         self._flush_pending_steer(at_tool_call=False)
 
     def _extension_command_names(self) -> list[str]:
@@ -7752,6 +1141,56 @@ class Parley(App):
         """Candidate commands for ``text``, for the editor's Tab cycle and popup."""
         return complete_command(text, self._extension_command_table())
 
+    def _vocabulary(self) -> Vocabulary:
+        """τ's flow registry, plus whatever this session's extensions declared.
+
+        Read off the live session on every use rather than held, because a
+        ``/reload_extension`` changes it and a held copy would go on offering a
+        gesture whose handler is gone. Falls back to :data:`BUILTIN` before a
+        backend exists — the same first-frame case
+        :meth:`_extension_command_table` answers with an empty dict.
+        """
+        session = getattr(self.current_backend, "agent_session", None)
+        return getattr(session, "vocabulary", BUILTIN)
+
+    def _argument_completions(self, text: str) -> ArgumentCompletions | None:
+        """Legal values for the command argument being typed, for the Tab cycle and popup.
+
+        The head half of argument completion: the core says WHICH argument and over
+        what span (:func:`~tau_agent_core.commands.complete_command_argument`,
+        pure), and this enumerates it against the live session — the same two calls
+        and the same two objects :meth:`_select_options` uses to fill a flow form,
+        so a value offered here and a value offered in the modal cannot differ.
+
+        A domain that cannot be enumerated is carried back as ``error`` rather than
+        raised: this runs on every keystroke, and the popup showing why there are no
+        models is the Fail-Early answer where a traceback and an empty list are both
+        wrong.
+
+        Args:
+            text: The editor's contents as typed.
+
+        Returns:
+            The values and the span they fill, or ``None`` when nothing is being
+            asked for.
+        """
+        vocabulary = self._vocabulary()
+        slot = complete_command_argument(text, vocabulary)
+        if slot is None:
+            return None
+        try:
+            found = enumerate_domain(
+                slot.domain.name,
+                session=getattr(self.current_backend, "agent_session", None),
+                runtime=self._session_runtime,
+                scope=slot.argument.scope,
+                query=slot.query,
+                vocabulary=vocabulary,
+            )
+        except ValueError as exc:
+            return ArgumentCompletions(slot=slot, matches=(), total=0, error=str(exc))
+        return ArgumentCompletions(slot=slot, matches=found.values, total=found.total)
+
     def _attachment_completions(self, text: str, cursor: int) -> AttachmentCompletions | None:
         """Candidate paths for the ``@…`` at ``cursor``, for the Tab cycle and popup."""
         return complete_attachment(text, cursor, cwd=Path.cwd())
@@ -7769,8 +1208,9 @@ class Parley(App):
         where the cursor is, and an arrow key into an existing ``@…`` moves the
         cursor without changing a character.
 
-        The two vocabularies are asked in the same order :meth:`ChatInput._complete`
-        asks them — attachment first, decided by the cursor — so what the popup
+        The three vocabularies are asked in the same order
+        :meth:`ChatInput._complete` asks them — attachment first, decided by the
+        cursor, then the argument value, then the command word — so what the popup
         offers and what Tab inserts cannot disagree.
 
         The Tab cycle's selection is read back off the editor rather than tracked
@@ -7778,10 +1218,14 @@ class Parley(App):
         replacement is what posts the message that runs this.
         """
         editor = self.query_one("#chat-input", ChatInput)
-        popup = self.query_one("#command-popup", CommandPopup)
+        popup = self.query_one("#command-popup", editor_widgets.CommandPopup)
         files = self._attachment_completions(editor.text, editor.cursor_offset)
         if files is not None:
             popup.show_files(files, editor.completion_index)
+            return
+        values = self._argument_completions(editor.text)
+        if values is not None:
+            popup.show_values(values, editor.completion_index)
             return
         popup.show(self._command_completions(editor.text), editor.completion_index)
 
@@ -7795,14 +1239,14 @@ class Parley(App):
         filesystem scan, and only the popup needs the cursor.
         """
         editor = self.query_one("#chat-input", ChatInput)
-        self.query_one(AttachmentBar).show(self._scan_attachments(editor.text))
+        self.query_one(editor_widgets.AttachmentBar).show(self._scan_attachments(editor.text))
 
     def _scan_attachments(self, text: str) -> tuple[Attachment, ...]:
         """The ``@file`` references in ``text``, resolved against the working directory."""
         return scan_attachments(text, cwd=Path.cwd(), inline_limit=self._attachment_inline_limit)
 
-    @on(AttachmentBar.Remove)
-    def _remove_attachment(self, message: AttachmentBar.Remove) -> None:
+    @on(editor_widgets.AttachmentBar.Remove)
+    def _remove_attachment(self, message: editor_widgets.AttachmentBar.Remove) -> None:
         """A bar row was clicked: delete its ``@…`` word from the editor.
 
         The text is the single source of truth for what is attached, so removal is
@@ -7831,7 +1275,7 @@ class Parley(App):
         docs/SUBMISSION-LIFECYCLE.md phase 3. The submission goes through
         ``AgentSession.submit`` exactly like a prompt does — same admission, same
         ``input`` hook chain, same provenance stamp — and comes back with a typed
-        :class:`~tau_agent_core.commands.CommandOutcome` instead of messages.
+        :class:`~tau_agent_core.flows.Dispatched` instead of messages.
 
         No worker and no ``is_generating``: a dispatched command runs no model call,
         so there is nothing to stream, nothing to cancel with Esc, and no reason to
@@ -7840,10 +1284,14 @@ class Parley(App):
         lock for a turn that will not happen would leave an empty collapsible box in
         the transcript.
 
-        Three outcomes, all of which say something rather than nothing:
+        Four outcomes, all of which say something rather than nothing:
 
         - a backend with no :meth:`submit_command` (a test double, a future backend)
           RAISES — the user typed a command and there is no door to send it through.
+        - a refusal the CORE raised — a word the argument's domain does not declare
+          (``/autocompact yes``), or an ``/extensions`` verb that names no flow — is
+          shown as an error notice. The core is right to raise rather than guess, and
+          a reader is right to see one line instead of a traceback.
         - ``result.accepted is False`` surfaces the ``rejection_reason`` verbatim.
         - ``result.command is None`` means ``submit()`` ran a TURN instead: an
           ``input`` hook rewrote the text between this app's peek and the core's own
@@ -7861,7 +1309,11 @@ class Parley(App):
                 "sending the text to the model instead would be the silent fallback "
                 "this lifecycle removes."
             )
-        result = await submit_command(submission)
+        try:
+            result = await submit_command(submission)
+        except (ValueError, UnsupportedCommandError) as exc:
+            self.notify(str(exc), severity="error")
+            return
         if not result.accepted:
             self.notify(
                 result.rejection_reason or f"{submission.text} was refused",
@@ -7876,68 +1328,227 @@ class Parley(App):
                 "rendered; reload the transcript. Fix the hook, or stop it from "
                 "rewriting text that resolves to a command."
             )
+        self._resync_working_list()
         await self._perform_command_outcome(result.command)
+        self.refresh_extension_request()
 
-    async def _perform_command_outcome(self, outcome: CommandOutcome) -> None:
+    async def _perform_command_outcome(self, dispatched: Dispatched) -> None:
         """Do the half of a dispatched command only a frontend can do (B2-b).
 
-        The other side of :mod:`tau_agent_core.commands`' split. ``performer="core"``
-        means the session already ran it (an extension-registered command) and the
-        only thing left is to show what it returned, as the same display-only
-        ``system`` box :meth:`_render_command_output` mounts — never into
-        ``self.messages``, so a command's report cannot leak into model input (E5 §1
-        tree-as-truth).
+        The other side of :mod:`tau_agent_core.commands`' split, and it routes on
+        WHICH ARM came back rather than on a flag saying who should have run it:
 
-        ``performer="frontend"`` is a built-in the core deliberately did not run
-        because it needs a screen: ``/compact`` re-renders the transcript, ``/tree``
-        and ``/fork`` open the browser, ``/resume`` opens the session picker, and
-        ``/extensions`` paints a panel or runs a runtime management action. Each
-        lands on the identical action the keybinding and the palette already call,
-        so there is one implementation of each command and this method only routes.
+        - a :class:`~tau_agent_core.flows.Performed` is an extension-registered
+          command the session already ran, and the only thing left is to show what it
+          returned — the same display-only ``system`` box
+          :meth:`_render_command_output` mounts, never into ``self.messages``, so a
+          command's report cannot leak into model input (E5 §1 tree-as-truth).
+        - a :class:`~tau_agent_core.flows.FlowStep` is a missing argument, rendered by
+          :meth:`_render_flow_step` — the session picker for a ``session_id``, a
+          listing of the domain otherwise.
+        - a :class:`~tau_agent_core.flows.Ready` is performed by
+          :meth:`_perform_ready`.
+        - a :class:`~tau_agent_core.flows.View` opens the surface of that name.
 
-        Fail-Early: an outcome naming a built-in this app has no branch for RAISES.
-        That is the whole point of the seam — the core is allowed to resolve
-        commands a given frontend cannot perform, and the contract is that such a
-        frontend says so out loud instead of returning as though it had. A silent
-        ``else: pass`` here would make :data:`FRONTEND_COMMANDS` a list of things
-        that may or may not work depending on where you typed them.
+        Fail-Early: an arm naming something this app has no branch for RAISES. That is
+        the whole point of the seam — the core is allowed to resolve commands a given
+        frontend cannot perform, and the contract is that such a frontend says so out
+        loud instead of returning as though it had. A silent ``else: pass`` here would
+        make :data:`FRONTEND_COMMANDS` a list of things that may or may not work
+        depending on where you typed them.
         """
-        if outcome.performer == "core":
-            self._render_command_output(ExtensionCommandResult(handled=True, output=outcome.output))
+        if isinstance(dispatched, Performed):
+            self._render_command_output(
+                ExtensionCommandResult(handled=True, output=dispatched.data.get("output"))
+            )
             return
-
-        if outcome.name == "compact":
-            await self.action_compact()
+        if isinstance(dispatched, FlowStep):
+            self._render_flow_step(dispatched)
             return
-        if outcome.name in ("tree", "fork"):
-            # pi aliases the two (keybindings.ts:252-253) — both open the browser.
+        if isinstance(dispatched, Ready):
+            await self._perform_ready(dispatched)
+            return
+        if dispatched.name == "tree":
             self.action_browse_tree()
             return
-        if outcome.name == "resume":
-            # §7's third surface. Bare ``/resume`` opens the picker — the SAME
-            # ``action_resume_session`` the palette entry and ``--resume`` call.
-            # ``/resume <ref>`` skips the picker and names the session directly.
-            # Both end at the one ``ChatSelected`` loader, which resolves the ref
-            # through ``SessionCatalog.resolve_ref`` — the same path/id/id-prefix
-            # grammar ``--session REF`` uses headlessly (§7: one grammar). A ref
-            # that resolves to nothing fails there with its own message rather
-            # than silently degrading into "the picker opened instead".
-            if outcome.args:
-                self.post_message(ChatSelected(outcome.args))
-                return
+        if dispatched.name == "extensions":
+            self.action_show_extensions()
+            return
+        raise UnsupportedCommandError(
+            unsupported_command_message(dispatched.name, "the TauApp TUI")
+        )
+
+    def _select_options(self, step: FlowStep) -> dict[str, dict[str, str]]:
+        """Enumerate every argument of ``step``'s flow that renders as a select.
+
+        Returns a ``{argument: {label: value}}`` mapping rather than a bare list,
+        because two of the three select domains label a value with something other
+        than the value — ``extension_name`` reads ``"ext.py (enabled)"`` and
+        ``session_id`` reads the session's name — and a form hands back the string
+        it displayed. The head owns this translation: the form spec's ``options``
+        are display strings (docs/TUI-STYLE-GUIDE.md §3 records the limitation).
+
+        Args:
+            step: The step whose flow is being asked about.
+
+        Returns:
+            One entry per select-rendered argument still unbound.
+
+        Raises:
+            ValueError: A domain could not be enumerated, or two of its values share
+                a label — which would make the answer ambiguous rather than wrong in
+                a way anyone could see.
+        """
+        vocabulary = self._vocabulary()
+        options: dict[str, dict[str, str]] = {}
+        for argument in flow_arguments(step.flow, vocabulary):
+            if argument.required and argument.name in step.bound:
+                continue
+            domain = vocabulary.domains[argument.domain]
+            if domain.field_kind != "select":
+                continue
+            found = enumerate_domain(
+                domain.name,
+                session=getattr(self.current_backend, "agent_session", None),
+                runtime=self._session_runtime,
+                scope=argument.scope,
+                cursor=step.cursor,
+                vocabulary=vocabulary,
+            )
+            by_label = {value.label: value.value for value in found.values}
+            if len(by_label) != len(found.values):
+                raise ValueError(
+                    f"domain {domain.name!r} returned two values with the same label; "
+                    "the form would not be able to say which was chosen"
+                )
+            options[argument.name] = by_label
+        return options
+
+    @work(group="flow-step")
+    async def _render_flow_step(self, step: FlowStep) -> None:
+        """Ask for the arguments a flow still needs, in one form.
+
+        The generic renderer: it reads the STEP and the registry, never the flow's
+        name, so a flow nobody wrote a branch for is still askable — and asked for in
+        the same modal an extension's own ``ui.form`` gets, because
+        :func:`~tau_agent_core.flows.flow_form_spec` puts both on one spec.
+
+        The one head-local case is the session picker. ``session_id`` renders as
+        ``text`` because a person may have hundreds of sessions, and this app has a
+        filtered picker for exactly that — the substitution
+        :attr:`~tau_agent_core.capabilities.Domain.field_kind` permits, richer than
+        the kind names rather than poorer.
+
+        Args:
+            step: The step ``next_step`` returned.
+        """
+        if step.domain.name == "session_id":
             self.action_resume_session()
             return
-        if outcome.name == "extensions":
-            if not outcome.args:
-                self.action_show_extensions()
-                return
-            parts = outcome.args.split(None, 1)
-            verb = parts[0]
-            target = parts[1].strip() if len(parts) > 1 else ""
-            await self.action_manage_extensions(verb, target)
+        try:
+            options = self._select_options(step)
+            spec = flow_form_spec(
+                step.flow,
+                step.bound,
+                options={n: list(m) for n, m in options.items()},
+                vocabulary=self._vocabulary(),
+            )
+        except (ValueError, KeyError) as exc:
+            self.notify(f"/{step.flow}: {exc}", severity="error")
+            return
+        if not spec:
+            self.notify(f"/{step.flow} needs {step.argument.name}", severity="warning")
+            return
+        answers = await self.push_screen_wait(modals.ExtensionFormScreen(spec))
+        if answers is None:
+            return
+        bound = dict(step.bound)
+        for name, value in answers.items():
+            bound[name] = options[name][value] if name in options else value
+        outcome = next_step(step.flow, bound, cursor=step.cursor, vocabulary=self._vocabulary())
+        if isinstance(outcome, Ready):
+            await self._perform_ready(outcome)
+            return
+        # next_step asked for something the form was built from; the two disagree.
+        raise UnsupportedCommandError(
+            f"/{step.flow} still needs {outcome.argument.name!r} after its form was answered"
+        )
+
+    async def _perform_ready(self, ready: Ready) -> None:
+        """Perform a bound flow, and report what came back.
+
+        Three mutations are performed by a SCREEN rather than by a backend method —
+        ``compact`` re-renders the transcript, ``fork`` and ``switch_session`` move the
+        app onto another session — so they keep the actions the keybinding and the
+        palette already call. Everything else goes through the backend method the
+        capability names and reports its :class:`~tau_agent_core.flows.Performed`.
+
+        This is the arm that does NOT fully converge across heads, and the reason is
+        the one docs/REMOTE-CONTROL.md §6 states: a terminal, a pipe and a socket
+        differ in what they can open.
+
+        A flow an extension DECLARED is performed by its own handler rather than by a
+        backend method, because that is what an extension's mutation is
+        (docs/EXTENSION-FLOWS.md). It reports through the same
+        :meth:`_dispatch_extension_command` an undeclared command uses, so the two
+        render identically.
+
+        Two mutations change a surface the toast does not reach, so they redraw it:
+        the extension panel, and the sidebar's session list after a rename.
+
+        Args:
+            ready: The bound flow ``next_step`` returned.
+
+        Raises:
+            UnsupportedCommandError: The bound backend has no method for the mutation,
+                or answered with something other than a ``Performed``.
+        """
+        if ready.mutation == "compact":
+            await self.action_compact(ready.arguments.get("custom_instructions", ""))
+            return
+        if ready.mutation == "fork":
+            await self.action_fork_session()
+            return
+        if ready.mutation == "switch_session":
+            self.post_message(ChatSelected(ready.arguments["session_id"]))
+            return
+        if ready.mutation == "set_model":
+            self.action_set_model(ready.arguments["name"])
             return
 
-        raise UnsupportedCommandError(unsupported_command_message(outcome, "the Parley TUI"))
+        if ready.flow in self._vocabulary().extension_flows:
+            bound = " ".join(str(value) for value in ready.arguments.values())
+            await self._dispatch_extension_command(ready.flow, bound)
+            return
+
+        action = getattr(self.current_backend, ready.mutation, None)
+        if action is None:
+            raise UnsupportedCommandError(
+                f"/{ready.flow} performs {ready.mutation!r}, which this backend does not offer"
+            )
+        try:
+            result = action(**ready.arguments)
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception as exc:
+            self.notify(f"/{ready.flow} failed: {exc}", severity="error")
+            self.log.error(f"/{ready.flow} failed: {exc}", exc_info=True)
+            return
+        if not isinstance(result, Performed):
+            raise UnsupportedCommandError(
+                f"/{ready.flow} performs {ready.mutation!r}, which this backend answered with "
+                f"{type(result).__name__} rather than a Performed. Every mutation reports "
+                "the one record; stringifying whatever came back is what showed a reader "
+                "'set_auto_compaction: True'."
+            )
+        ok = result.data.get("ok", True)
+        self.notify(result.summary(), severity="information" if ok else "warning")
+        if ready.mutation.endswith("_extension"):
+            # Disabling can move the cursor off that extension's lock (EXTENSION-LOCKS §6).
+            self.refresh_extension_request()
+            self.action_show_extensions()
+        if ready.mutation == "set_session_name":
+            self.query_one(ChatSidebar).refresh_chats()
 
     @work(group="generation")
     async def _generate_response(self, submission: Submission) -> None:
@@ -7968,17 +1579,13 @@ class Parley(App):
             self.notify(f"Error: {str(e)}", severity="error")
             self.log.error(f"Error getting response: {e}")
             self.log.error(traceback.format_exc())
-            # A traceback is verbatim by definition — its line breaks ARE the
-            # stack frames, and this box is the only place the user sees them.
-            self.query_one(ChatDisplay).add_message(
+            self.query_one(transcript.ChatDisplay).add_message(
                 "system",
                 f"**Error occurred:**\n```\n{str(e)}\n{traceback.format_exc()}\n```",
                 source="verbatim",
             )
         finally:
             self._settle_submission()
-            # Show the running conversation rollup (tools · tokens) next to the
-            # model, refreshed now that this exchange has been appended + saved.
             self._refresh_subtitle()
 
     def action_cancel_generation(self) -> None:
@@ -8000,19 +1607,11 @@ class Parley(App):
         if not self.is_generating or self.current_backend is None:
             return
         self.current_backend.abort()
-        # A steering message aimed at the turn being cancelled must not become the
-        # turn that runs next (docs/TUI-STEERING.md §4). pi does the same on
-        # interrupt — ``clearAllQueues()`` and refill the editor
-        # (``interactive-mode.ts:4350``).
         self._return_pending_to_the_editor()
         self.sub_title = "Cancelling…"
 
     # -- "press it again": two keys that ask before doing something big -------
 
-    #: How long a standing "press it again" offer lasts. Long enough to read the
-    #: status bar and act, short enough that an unrelated later press of the same
-    #: key is a fresh first press rather than a confirmation of something the
-    #: reader has forgotten about.
     CONFIRM_SECONDS = 3.0
 
     def _offer_again(self, name: str, message: str) -> bool:
@@ -8232,14 +1831,14 @@ class Parley(App):
                 severity="warning",
             )
             return
-        # Bound up front: it survives the intervening ``await``s (unlike a
-        # hasattr-narrowed local) and is ``None`` for a backend that lacks it.
         rollback_turn = getattr(self.current_backend, "rollback_turn", None)
         if rollback_turn is None:
             self.notify("This backend does not support rollback", severity="warning")
             return
 
-        text = await self.push_screen_wait(RollbackPromptModal(self._last_user_text(self.messages)))
+        text = await self.push_screen_wait(
+            modals.RollbackPromptModal(self._last_user_text(self.messages))
+        )
         if text is None:
             return
         text = text.strip()
@@ -8278,13 +1877,9 @@ class Parley(App):
             self._refresh_subtitle()
             return
 
-        # Same re-render seam as action_compact / action_browse_tree / the elide flow:
-        # the session is the authority (the AgentSession persisted this turn through
-        # the bound live log), so read the post-rollback context back rather than
-        # patching the working list.
         assert self.current_session is not None  # is_generating implies a session
         self.messages = list(self.current_session.context)
-        await self.query_one(ChatDisplay).reload_messages(self.messages)
+        await self._reload_transcript()
         self._refresh_subtitle()
         self.notify("Rolled back and re-ran from before the aborted turn")
 
@@ -8312,53 +1907,19 @@ class Parley(App):
         more — another lane streams into the display while this is held.
         """
         assert self.current_session is not None  # set before a turn runs
-        # Same idiom, newly load-bearing: annotating ``submission`` makes this a
-        # TYPED function, so mypy now checks the body it previously skipped.
         assert self.current_backend is not None  # a turn cannot start without one
         async with self._working_list_lock:
-            # THE one door, awaited without a second subscription: the persistent
-            # renderer has already drawn every delta this turn produced, so asking
-            # for them again (``stream_submission``) would mean rendering twice.
             result = await self.current_backend.submit_turn(submission, self.messages)
 
-            # A typed in-band refusal (LSP ``ApplyWorkspaceEditResult``) is SHOWN,
-            # never swallowed — a refusal the UI hides is the silent drop the whole
-            # lifecycle exists to prevent. ``enqueue`` waits rather than refusing, so
-            # this is not reachable today; it is here because the strategy is a field
-            # on the record and the value at the call site is one line from changing
-            # (decision 1's Alt+Enter / phase 4's steer).
             if not result.accepted:
                 self.notify(result.rejection_reason or "The turn was refused", severity="warning")
 
-            # An `input` hook rewrote this prompt into a command AFTER the app
-            # resolved it as ordinary text (:meth:`on_input_submitted`'s peek), so
-            # ``submit()`` dispatched instead of running a turn. Perform the outcome
-            # rather than showing an empty answer — the user's input WAS acted on.
-            # No exchange or user bubble was drawn for it either, because a
-            # dispatched submission emits no ``submission_start``.
             if result.command is not None:
                 await self._perform_command_outcome(result.command)
 
-            # Rebuild the working list as a VIEW over the authoritative session
-            # (E3-ctx / D3, pi ``rebuildChatFromMessages``). The AgentSession — bound to
-            # this live Session — already persisted this turn's user + assistant/tool
-            # messages as the loop ran; there is one write path, so the app no longer
-            # appends them itself (that was the double-write). Reading ``session.context``
-            # back reconciles the working list (which carried a transient copy of the
-            # user turn) with what was actually recorded, applying any compaction/branch
-            # splice. This is a data rebuild only — the incremental streaming render
-            # already mounted this turn's widgets, so the display is left untouched.
             self.messages = list(self.current_session.context)
 
-            # Refresh sidebar. Starts a thread worker and returns immediately
-            # (see ChatSidebar.refresh_chats) — nothing after this point in
-            # this turn depends on the listing having landed, so ending the
-            # turn does not wait on it.
             self.query_one(ChatSidebar).refresh_chats()
-
-    # ------------------------------------------------------------------
-    # The renderer: one persistent bus subscription, many lanes (B3-a)
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _lane_label(source: object, submitter: object) -> str | None:
@@ -8393,32 +1954,65 @@ class Parley(App):
         text = str(source or "").strip()
         return text or "unknown"
 
-    def _report_truncation(self, display: ChatDisplay) -> None:
+    def _report_cache_miss(self, display: transcript.ChatDisplay, reason: str | None) -> None:
+        """Say that the prompt cache should have been read this turn and was not.
+
+        Reference: docs/PROMPT-CACHING.md §7. ``reason`` is the router's
+        :class:`~tau_agent_core.prompt_cache.PromptCacheObserver` verdict, reached
+        from the completions' RESULTS — the misconfiguration worth catching is a
+        gateway that drops ``cache_control`` on its way to an Anthropic model, and
+        such a model has nothing declared to gate on.
+
+        The evidence gates are the observer's. This adds the one gate that is a
+        display decision rather than a reading: **once per model per session**,
+        because a line repeated every turn is one a reader stops seeing.
+        """
+        if not reason:
+            return
+        model = str(self.current_session.model) if self.current_session else "?"
+        if model in self._cache_warned_models:
+            return
+        self._cache_warned_models.add(model)
+        display.add_message(
+            "system",
+            "**This server has a prompt cache and nothing was read from it.**\n\n"
+            f"{reason} A prompt this size should be read back rather than re-sent, "
+            "and on an Anthropic model the repeated part then costs roughly a "
+            "tenth of what it costs here.\n\n"
+            f"If `{model}` reaches an Anthropic model through an OpenAI-compatible "
+            "gateway (LiteLLM or similar), set `models.<name>.prompt_cache_dialect` "
+            'to `"anthropic"` in `~/.tau/config.json` — τ cannot tell from a base '
+            "URL which dialect an endpoint speaks, so it has to be declared.\n\n"
+            "Said once per model per session. See `docs/PROMPT-CACHING.md`.",
+            source="markdown",
+        )
+        self.notify(f"No prompt-cache reads for {model}", severity="warning")
+
+    def _report_truncation(self, display: transcript.ChatDisplay, dropped: int) -> None:
         """Say that the last completion stopped at the output cap, not at an answer.
 
-        Reference: docs/TRUNCATED-TOOL-CALLS.md §3.
+        Reference: docs/TRUNCATED-TOOL-CALLS.md §3. The sentence is
+        :func:`~tau_agent_core.truncation.truncation_notice`'s, so print mode and an
+        RPC host report the same completion the same way; this adds the cap it
+        quotes and the advice, which are the head's.
 
-        ``stop_reason="length"`` is the one stop reason an operator has to act on,
-        and until this it was visible only in ``--mode json``: on screen a
-        completion the server cut off mid-sentence looked exactly like one that
-        finished. When the cut lands inside a tool call's ``arguments`` the
-        provider drops the call (it is a prefix, not a payload — see
-        ``_build_final_message``), so the turn simply ends with nothing run, which
-        is the version of this that reads as the model losing interest.
+        ``stop_reason="length"`` is the one stop reason an operator has to act on.
+        When the cut lands inside a tool call's ``arguments`` the provider drops the
+        call (it is a prefix, not a payload — see ``_build_final_message``), so the
+        turn ends with nothing run, which reads as the model losing interest.
 
         A durable box rather than only a toast, for the same reason the error path
         mounts one: a toast that has faded cannot be scrolled back to.
         """
         cap = self._configured_max_tokens()
         cap_text = "unknown" if cap is None else str(cap)
+        notice = truncation_notice(Truncation(1, dropped), max_tokens=cap)
         display.add_message(
             "system",
             "**The model stopped at its output cap, not at the end of an answer.**\n\n"
-            f"The server reported `stop_reason: length` for this completion, at "
-            f"`max_tokens = {cap_text}`. Anything it was still writing — including a "
-            "tool call, which is dropped rather than run on a truncated argument "
-            "list — is missing from the turn above.\n\n"
-            "Raise `max_tokens` for this model in `~/.tau/config.json`, or lower the "
+            f"{notice}\n\n"
+            "Anything it was still writing is missing from the turn above. Raise "
+            "`max_tokens` for this model in `~/.tau/config.json`, or lower the "
             "reasoning budget so the answer fits under the cap.",
             source="markdown",
         )
@@ -8449,27 +2043,12 @@ class Parley(App):
         bus driver's submission, and a ``fork``'s second agent — because the
         subscription is attached to the session rather than to a call.
         """
-        display = self.query_one(ChatDisplay)
+        display = self.query_one(transcript.ChatDisplay)
         kind = event.get("kind")
         lane = event.get("lane") or DEFAULT_LANE
         if kind == "lane_start":
             label = self._lane_label(event.get("source"), event.get("submitter"))
-            # The submission itself, rendered — Jupyter's ``execute_input``
-            # re-broadcast. A foreign lane's bubble is badged with its origin so
-            # "the agent just said something I did not ask for" is legible rather
-            # than mysterious, AND typed as its source (B3-b) so the border reads
-            # "Timer" rather than "User" over text no user typed.
             role = "user" if label is None else self._lane_role(event.get("source"))
-            # The submission text verbatim: whoever (or whatever) submitted it
-            # typed lines, not markdown, and this bubble is the record of what
-            # was actually sent.
-            #
-            # With ONE display fold: an inlined ``@file`` body is replaced by a
-            # line saying how much of it is not shown (docs/FILE-ATTACHMENTS.md
-            # §6). A 10 KB file pasted into a bubble pushes the conversation off
-            # the screen, and the elision is visible rather than silent — the
-            # block keeps its header, and the wire and the session log keep the
-            # whole thing.
             bubble = display.add_message(
                 role,
                 elide_attachment_bodies(event.get("text", "")),
@@ -8477,21 +2056,13 @@ class Parley(App):
                 source="verbatim",
             )
             if label is not None:
-                bubble.add_class(LANE_FOREIGN_CLASS)
-            self._lane_started[lane] = time.time()
-            self.query_one(LaneStrip).open_lane(lane, label)
+                bubble.add_class(transcript.LANE_FOREIGN_CLASS)
+            self.query_one(editor_widgets.LaneStrip).open_lane(lane, label)
             await display.begin_exchange(lane, label=label)
             return
         if kind == "lane_end":
-            self.query_one(LaneStrip).close_lane(lane)
-            started = self._lane_started.pop(lane, None)
-            # Fail-Early: an unknown start time is reported as unknown (the summary
-            # omits the duration) rather than as a fabricated 0.0 second turn.
-            elapsed = None if started is None else time.time() - started
-            # The G4 telemetry rides the LAST completion's usage.extra (t/s /
-            # forced-share are per-completion, not aggregates); format_telemetry
-            # returns None on a provider that reported nothing, so the summary then
-            # reads exactly as it did pre-G4.
+            self.query_one(editor_widgets.LaneStrip).close_lane(lane)
+            elapsed = event.get("seconds")
             telemetry = format_telemetry(event.get("extra") or {})
             await display.finalize_exchange(
                 context=int(event.get("context", 0) or 0),
@@ -8500,24 +2071,14 @@ class Parley(App):
                 telemetry=telemetry,
                 lane=lane,
             )
-            # Reconcile the working list against the session that just recorded
-            # this turn. :meth:`_get_assistant_response` does this too, and for its
-            # own turn this is the earlier (pre-drain) half of the same read — but
-            # a turn nobody here submitted has NO awaiting caller to do it, and a
-            # rendered turn the model-input list does not know about is exactly the
-            # divergence that makes the next typed prompt contradict the screen.
             if self.current_session is not None:
                 self.messages = list(self.current_session.context)
+            self._report_cache_miss(display, event.get("cache_notice"))
             self._refresh_subtitle()
             return
         if kind == "completion_end" and event.get("stop_reason") == "length":
-            self._report_truncation(display)
+            self._report_truncation(display, int(event.get("dropped_tool_calls", 0) or 0))
         if kind == "tool_call":
-            # The ``"steer"`` strategy's delivery point (docs/TUI-STEERING.md §2).
-            # A tool call means this turn will make at least one more call to the
-            # model, which is where the core delivers a steering message — so this
-            # is the last moment at which handing it over still lands it inside
-            # THIS turn rather than after it.
             self._flush_pending_steer(at_tool_call=True)
         await display.handle_stream_event(event)
 
@@ -8540,11 +2101,7 @@ class Parley(App):
         if self._render_router is not None:
             self._render_router.detach()
             self._render_router = None
-        self._lane_started = {}
-        # The strip reports what is live; lanes abandoned with the old router are
-        # not, so it is cleared with the clocks rather than left advertising a fork
-        # whose events can no longer arrive.
-        self.query_one(LaneStrip).clear_lanes()
+        self.query_one(editor_widgets.LaneStrip).clear_lanes()
         subscribe_render = getattr(self.current_backend, "subscribe_render", None)
         if subscribe_render is None:
             return
@@ -8607,35 +2164,18 @@ class Parley(App):
         taking them as parameters — both callers above have ALREADY updated
         them before this runs.
         """
-        # Seam-3 → extension bus (S21 / §E3c.4): route this backend's session
-        # lifecycle events onto its AgentSession's EventBus so extension handlers
-        # (api.on("session_before_compact", …)) fire. Rebind on every current-session
-        # change, dropping the previous backend's subscription first so a swapped
-        # backend's dead bus stops receiving events (single live listener, no leak).
         if self._session_event_unsub is not None:
             self._session_event_unsub()
             self._session_event_unsub = None
         agent_session = getattr(self.current_backend, "agent_session", None)
         if agent_session is not None:
             self._session_event_unsub = subscribe_session_events(agent_session.route_session_event)
-            # Bind the model-name resolver (S45) so an extension's ctx.set_model(name)
-            # resolves NAME through the same config "models" map --model uses. Guarded
-            # by getattr so a non-TauBackend / test double is a no-op, not an error.
             binder = getattr(agent_session, "set_model_resolver", None)
             if binder is not None:
                 binder(make_model_resolver(self.config.get("models", {})))
 
-        # B3-a: (re)attach the persistent renderer, alongside — and for the same
-        # lifetime as — the extension-bus bridge above. Rendering is no longer
-        # something a turn brings with it, so it has to be bound where the backend
-        # is, not where a prompt is.
         self._bind_render_subscription()
 
-        # A pending steering message belongs to the conversation it was typed
-        # into, and this method is every way a session is replaced (new chat,
-        # clear, resume, model swap). Delivering it after the swap would put a
-        # line written about one conversation into another; it goes back to the
-        # editor instead (docs/TUI-STEERING.md §4).
         self._return_pending_to_the_editor()
 
     def _build_session_runtime(
@@ -8677,24 +2217,10 @@ class Parley(App):
         whichever model entry the switch selected, instead of having been baked
         into the one entry the process started on.
         """
-        # Fold the top-level ``reasoning_replay`` default into this entry when the
-        # entry doesn't set its own (per-model wins; else the global default; else
-        # build_model_from_config's "turn"). Done here so both create_backend sites
-        # (new-chat, resume) inherit it.
         global_replay = self.config.get("reasoning_replay")
         inject_replay = global_replay is not None and "reasoning_replay" not in model_config
-        # The system prompt follows reasoning_replay's rule — a model entry that
-        # names its own wins, else the top-level default — and lands on the ENTRY
-        # so ``TauBackend`` receives it as ``custom_prompt`` and composes it with
-        # the project context files and the tool list. It used to be written
-        # straight into the session's first message instead, which took
-        # precedence over the built prompt and threw that composition away.
         base_prompt = model_config.get("system_prompt") or self.config.get("system_prompt")
         inject_prompt = bool(base_prompt) and "system_prompt" not in model_config
-        # The turn ceiling resolves like ``reasoning_replay``, with ``--max-turns``
-        # ahead of both: the flag, else the entry's own key, else the top-level
-        # config default, else nothing — and nothing means no ceiling, which is
-        # ``AgentLoopConfig``'s default and pi's behaviour.
         global_max_turns = self.config.get("max_turns")
         resolved_max_turns: Optional[int] = None
         if self._max_turns is not None:
@@ -8714,10 +2240,6 @@ class Parley(App):
         ):
             return model_config
         mc = dict(model_config)
-        # Allowlist first, suppression second: --no-tools is the stronger claim and
-        # must win when both are given, matching resolve_model_config's own
-        # if/elif on the headless path. Writing them the other way round would let
-        # -t hand back tools that -nt had just withheld.
         if self._tool_allowlist is not None:
             mc["tools"] = list(self._tool_allowlist)
         if self._no_tools:
@@ -8728,22 +2250,12 @@ class Parley(App):
         if inject_prompt:
             mc["system_prompt"] = base_prompt
         if self._append_system_prompt:
-            # Carried as its own key rather than folded in here: ``TauBackend``
-            # applies it to whichever base text it resolves, so the sections
-            # augment the base rather than the composed whole, and one code path
-            # decides that for every frontend.
             mc["append_system_prompt"] = list(self._append_system_prompt)
         if inject_replay:
             mc["reasoning_replay"] = global_replay
         if self._bus_available:
-            # Only ever set TRUE here: ``--bus`` grants the capability, and a
-            # model entry may grant it on its own (``"bus_available": true``).
-            # Writing False would let the absence of a flag REVOKE what the
-            # config file deliberately allowed.
             mc["bus_available"] = True
         if self._no_context_files:
-            # Only ever set TRUE, like ``bus_available``: -nc's absence must not
-            # revoke a ``"no_context_files": true`` the config file set.
             mc["no_context_files"] = True
         if resolved_max_turns is not None:
             mc["max_turns"] = resolved_max_turns
@@ -8771,56 +2283,30 @@ class Parley(App):
         ``getattr`` so a backend without the seam (a test double, a non-``TauBackend``)
         is a no-op.
         """
-        # Route extension api.notify(...) to this TUI (E5 §4 / S33). Set on every
-        # backend that supports it, right after it is created, so a loaded
-        # extension's notify paints on-screen instead of the headless stderr sink.
-        # Guarded by getattr so a non-TauBackend test double is a no-op.
         set_delegate = getattr(self.current_backend, "set_ui_delegate", None)
         if set_delegate is not None:
-            set_delegate(_ExtensionUIDelegate(self))
-
-        # Reset first so a backend swap never leaves the /extensions listing (S34)
-        # showing the previous backend's extensions if this load fails or no-ops.
-        self._extension_load_result = LoadExtensionsResult()
+            set_delegate(extension_ui._ExtensionUIDelegate(self))
 
         loader = getattr(self.current_backend, "load_extensions", None)
         if loader is None:
             return
-        # Resolve per-extension config (S40): config.json ``"extensions"`` slices +
-        # the parsed ``--ext-config`` overrides (CLI > config.json), sliced per
-        # extension by file stem inside the session and handed to ``api.config``.
         extensions_config = resolve_extensions_config(self.config, self._ext_config_overrides)
         try:
             result = await loader(
                 self._extension_paths or None,
                 discover=self._discover_extensions,
                 extensions_config=extensions_config,
-                # collect_explicit_errors: a launched TUI can't cleanly abort
-                # mid-load, so an explicit ``-e`` failure is demoted to a collected
-                # error (same as a discovered one) instead of raising. This keeps the
-                # extensions that DID load bound AND returned — without it the loader
-                # raised past the partial result and left the /extensions listing
-                # empty while the good extensions' tools/commands kept working
-                # (split-brain fix, docs/EXTENSIONS-DEMO-ROADMAP.md).
                 collect_explicit_errors=True,
             )
         except Exception as e:
             self.notify(f"Extension failed to load: {e}", severity="error")
             self.log.error(f"Extension load failed: {e}", exc_info=True)
             return
-        # Keep the result for the /extensions palette listing (E5 §5 / S34).
-        self._extension_load_result = result
         for err in result.errors:
             self.notify(f"Extension error ({err.path}): {err.error}", severity="warning")
         if result.extensions:
             self.log(f"Loaded {len(result.extensions)} extension(s)")
 
-        # Fire the notify-grade ``session_start`` lifecycle hook (E6 §2 / S41) now
-        # that the just-loaded extensions' handlers are registered — so a
-        # ``session_start`` handler can reconstruct state from ``ctx.entries()`` /
-        # install watchers. getattr-guarded so a non-``TauBackend`` test double is a
-        # no-op (same pattern as ``set_ui_delegate``/``load_extensions``). The
-        # teardown counterpart fires from :meth:`on_unmount` on TUI quit.
         emit_start = getattr(self.current_backend, "emit_session_start", None)
         if emit_start is not None:
             await emit_start("startup")
@@ -8848,26 +2334,7 @@ class Parley(App):
             self.log.error(f"Backend creation failed: {e}", exc_info=True)
             return
 
-        # Create new session (writes the header + system message; append-only).
-        #
-        # The stored message is the prompt the backend BUILT — base text, project
-        # context files, tool list — because that message is what goes on the
-        # wire: it takes precedence over ``AgentSession``'s own prompt, so
-        # anything composed and not stored here is silently discarded. This line
-        # used to compose its own string from ``config["system_prompt"]``, with
-        # ``"You are a helpful assistant."`` when the key was absent. That
-        # fallback meant the message was NEVER absent, so on the TUI path the
-        # built prompt was never used: no AGENTS.md context and no
-        # ``Available tools:`` list ever reached a model, and a default install
-        # was told it was a helpful assistant rather than a coding agent.
-        # ``--append-system-prompt`` and a configured prompt now ride the model
-        # entry into that build (see ``_apply_run_config``); a resumed session
-        # keeps its own stored prompt, unchanged.
         system_prompt = getattr(self.current_backend, "system_prompt", "") or ""
-        # AgentSessionRuntime (H1, phase 3): the runtime performs the
-        # session_log bind, the H2 veto check, and the H3 reset (a no-op
-        # here — this AgentSession was just constructed, so there is
-        # nothing dirty to reset) — see _build_session_runtime.
         self._session_runtime = self._build_session_runtime(
             self.current_backend, model, model_config["backend"]
         )
@@ -8876,8 +2343,6 @@ class Parley(App):
                 persist=True, system_prompt=system_prompt or None
             )
             if result.get("blocked"):
-                # Finding 1 (phase-3 review): the in-flight turn did not stop
-                # within the runtime's bounded wait — nothing was touched.
                 self.notify(result["reason"], severity="warning")
                 return
             if result["cancelled"]:
@@ -8885,8 +2350,6 @@ class Parley(App):
                 return
             self.current_session = result["session"]
         else:
-            # No real AgentSession on this backend (test double / non-TauBackend)
-            # — same tolerance _bind_backend_session's own getattr guards have.
             self.current_session = self.session_catalog.create(
                 os.getcwd(),
                 model,
@@ -8898,20 +2361,13 @@ class Parley(App):
         self.messages = list(self.current_session.context)
 
         # Clear display
-        display = self.query_one(ChatDisplay)
+        display = self.query_one(transcript.ChatDisplay)
         await display.clear_messages()
 
         # Update UI
         self.sub_title = f"{model}"
         self.notify(f"Started new chat with {model}")
 
-        # Refresh sidebar. Starts a thread worker and returns immediately (see
-        # ChatSidebar.refresh_chats); this is the last thing the action does,
-        # so nothing here waits on the listing. The new session is already
-        # current — it just won't show up in the sidebar list until the
-        # worker lands, same as any other session created elsewhere while
-        # this one is open. Callers that need it to have landed (tests) can
-        # ``await app.workers.wait_for_complete()``.
         self.query_one(ChatSidebar).refresh_chats()
 
     def action_toggle_sidebar(self):
@@ -8950,35 +2406,37 @@ class Parley(App):
         conversation was never truncated — :meth:`ChatDisplay.reload_messages`
         bounds what is MOUNTED, and this lifts that bound for the current view.
         """
-        display = self.query_one(ChatDisplay)
+        display = self.query_one(transcript.ChatDisplay)
         hidden = display.hidden_count
         if not hidden:
             self.notify("The whole conversation is already on screen.")
             return
-        # hidden_count, not elided_count: a reader who slid the window back to the
-        # top has everything hidden BELOW them, and reporting 0 there would read
-        # as "nothing to do" on the one gesture that had plenty to do.
         self.notify(f"Mounting {hidden} messages…")
         await display.show_all_messages()
 
     def action_show_extensions(self) -> None:
-        """List loaded extensions + load errors in the transcript (E5 §5 / S34).
+        """The ``/extensions`` view: two reads, composed and rendered (E5 §5 / S34).
 
-        Reads the last ``_load_backend_extensions`` result — the now-populated
-        registry/runner via :func:`summarize_extensions` — annotated with each
-        extension's live enabled/disabled state (E10 §6 / S70), and renders it as a
-        display-only ``system`` box. This is UI chrome, NOT a conversation node: it is
-        neither appended to the working message list nor persisted, so the durable-hook
-        invariant (the model's input = system prompt + the linear active path) is
-        untouched — runtime management lifts the D-E5-6 read-only stance without
-        touching that invariant (the actions run on the runner, not the tree).
+        ``get_extension_state`` says what is loaded and what failed; the separate
+        ``list_managed_extensions`` says which are enabled. Composing two reads and
+        holding no mutation is what makes this a view rather than a flow, and it is why
+        the listing shows files that failed to import — those can never be a legal
+        ``extension_name``, so no domain would ever offer them.
+
+        It reads LIVE rather than from the load-time result the app used to cache, which
+        went stale on reload: an extension whose registered tools changed showed its old
+        list until the app was restarted.
+
+        Display-only chrome, NOT a conversation node — neither appended to the working
+        message list nor persisted, so the model's input stays system prompt plus the
+        linear active path (D-E5-6 is lifted without touching that invariant).
         """
-        listing = self._format_extensions_listing(
-            self._extension_load_result, self._disabled_extension_paths()
-        )
-        # τ authors this string as markdown (see _format_extensions_listing) —
-        # headings and bullet lists it wrote on purpose, not captured output.
-        self.query_one(ChatDisplay).add_message("system", listing, source="markdown")
+        reader = getattr(self.current_backend, "get_extension_state", None)
+        if reader is None:
+            self.notify("Extension state is unavailable here", severity="warning")
+            return
+        listing = self._format_extensions_listing(reader(), self._disabled_extension_paths())
+        self.query_one(transcript.ChatDisplay).add_message("system", listing, source="markdown")
 
     def _disabled_extension_paths(self) -> set[str]:
         """The set of currently runtime-disabled extension paths (E10 §6 / S70).
@@ -8992,39 +2450,58 @@ class Parley(App):
         return {path for path, enabled in lister() if not enabled}
 
     async def action_manage_extensions(self, verb: str, target: str) -> None:
-        """Run a runtime ``/extensions`` action (enable/disable/reload) — E10 §6 / S70.
+        """The ``/extensions <verb> <name>`` shorthand — E10 §6 / S70.
 
-        Lifts the D-E5-6 read-only stance: dispatches to the live backend's
-        ``disable_extension`` / ``enable_extension`` / ``reload_extension`` (each fires
-        the S41 ``session_shutdown`` / ``session_start`` lifecycle hooks for clean
-        teardown/bring-up), then re-renders the listing so the outcome is visible. All
-        output is display-only chrome — never a conversation node, so the tree-as-truth
-        invariant holds. A bad verb, an empty target, or a broken reload is surfaced as
-        an error notice (Fail-Early: reported, never swallowed or faked).
+        Head-local sugar over the three extension flows, kept because it is what
+        readers already type. The verb table is derived from :data:`_EXTENSION_FLOWS`
+        rather than written here, so the view cannot offer a verb the registry does not
+        declare; an unknown verb is reported, never guessed at (Fail-Early).
         """
-        actions = {"enable", "disable", "reload"}
-        if verb not in actions:
+        flow = _EXTENSION_FLOWS.get(verb)
+        if flow is None:
+            legal = " | ".join(sorted(_EXTENSION_FLOWS))
             self.notify(
-                f"Unknown /extensions action {verb!r} (use: enable | disable | reload)",
+                f"Unknown /extensions action {verb!r} (use: {legal})",
                 severity="error",
             )
             return
-        if not target:
-            self.notify(f"/extensions {verb} needs an extension name", severity="error")
-            return
-        action = getattr(self.current_backend, f"{verb}_extension", None)
-        if action is None:
-            self.notify("Runtime extension management is unavailable here", severity="warning")
-            return
+        await self.action_run_extension_flow(flow, target)
+
+    async def action_run_session_flow(self, flow: str, raw: str = "") -> None:
+        """Run a declared flow from the text typed after its slash command.
+
+        The generic performer, kept as a named action because the palette and the
+        ``/extensions`` verb sugar both reach it. It steps the flow through the core
+        and then hands whichever arm came back to the same two renderers dispatch
+        uses, so a flow driven from here and one typed as a slash line cannot come to
+        behave differently.
+
+        Args:
+            flow: A declared flow name.
+            raw: Everything the reader typed after the command word.
+        """
+        vocabulary = self._vocabulary()
         try:
-            result = await action(target)
-        except Exception as e:
-            self.notify(f"/extensions {verb} {target} failed: {e}", severity="error")
-            self.log.error(f"/extensions {verb} {target} failed: {e}", exc_info=True)
+            bound = bind_command_args(flow, raw, vocabulary)
+        except ValueError as exc:
+            self.notify(str(exc), severity="error")
             return
-        self.notify(result.message, severity="information" if result.ok else "warning")
-        # Re-render the listing so the enabled/disabled column reflects the action.
-        self.action_show_extensions()
+        session = getattr(self.current_backend, "agent_session", None)
+        log = getattr(session, "session_log", None)
+        outcome = next_step(flow, bound, cursor=getattr(log, "cursor", None), vocabulary=vocabulary)
+        if isinstance(outcome, Ready):
+            await self._perform_ready(outcome)
+            return
+        self._render_flow_step(outcome)
+
+    async def action_run_extension_flow(self, flow: str, path: str = "") -> None:
+        """Run one extension flow. The same generic path, under the name it had.
+
+        Args:
+            flow: A declared flow name — one of :data:`_EXTENSION_FLOWS`'s values.
+            path: The extension to act on. Empty offers the loaded ones.
+        """
+        await self.action_run_session_flow(flow, path)
 
     async def _dispatch_extension_command(self, name: str, args: str = "") -> None:
         """Run an extension-registered command from the palette (E5 §5 / S35).
@@ -9047,7 +2524,10 @@ class Parley(App):
             self.notify(f"Command /{name} failed: {e}", severity="error")
             self.log.error(f"Extension command /{name} failed: {e}", exc_info=True)
             return
+        self._resync_working_list()
         self._render_command_output(result)
+        # A command is how a lock is released, and how a new one arrives (EXTENSION-LOCKS §6).
+        self.refresh_extension_request()
 
     @work
     async def _prompt_command_args(self, name: str, placeholder: str) -> None:
@@ -9065,11 +2545,26 @@ class Parley(App):
         never confirmed. An entered (possibly empty) value dispatches as typed.
         """
         collected = await self.push_screen_wait(
-            ExtensionInputModal(f"/{name} {placeholder}".rstrip())
+            modals.ExtensionInputModal(f"/{name} {placeholder}".rstrip())
         )
         if collected is None:
             return
         await self._dispatch_extension_command(name, collected)
+
+    def _resync_working_list(self) -> None:
+        """Re-read the session's context after a command ran (§9.1).
+
+        A turn rebuilds :attr:`messages` when it ends; a command never did, so a
+        message an extension appended from a handler existed on the tree and in
+        no list this app reads — mounted by the ``custom_message`` channel, then
+        gone at the next window rebuild, and back again only after a restart. A
+        command is the second place the path can grow, so it re-reads too.
+
+        No :attr:`_working_list_lock`: a dispatched command runs no turn, so
+        there is no turn holding the lock and nothing to serialise against.
+        """
+        if self.current_session is not None:
+            self.messages = list(self.current_session.context)
 
     def _render_command_output(self, result: ExtensionCommandResult) -> None:
         """Render a command's returned value as a display-only ``system`` box (S46).
@@ -9084,12 +2579,7 @@ class Parley(App):
         text = result.output_text()
         if text is None:
             return
-        # Command output, and τ did not write it: an extension handler may return
-        # a markdown report, but it may equally return a value that
-        # ``output_text`` stringified, whose line breaks are all the structure it
-        # has. Verbatim keeps those; the cost on a markdown report is blank lines,
-        # which is the cheaper of the two mistakes.
-        self.query_one(ChatDisplay).add_message("system", text, source="verbatim")
+        self.query_one(transcript.ChatDisplay).add_message("system", text, source="verbatim")
 
     @staticmethod
     def _format_extensions_listing(
@@ -9173,14 +2663,8 @@ class Parley(App):
             key: sum(int(u.get(key, 0) or 0) for u in usages)
             for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
         }
-        # The LAST completion's prompt is the conversation's current size. Not a
-        # sum — the prompts nest, so summing them counts the same text repeatedly.
         context = prompt_tokens(usages[-1]) if usages else 0
         parts = [f"{tools} tool" + ("" if tools == 1 else "s")] if tools else []
-        # Each arrow is dropped when its count is 0 (pi does the same): a provider
-        # that reports no caching should not show an empty R/W, and a fresh chat
-        # should not show a row of zeroes. The four share one ``·`` part — they are
-        # one reading of the same meter, not four separate stats.
         arrows = " ".join(
             f"{prefix}{format_tokens(totals[key])}"
             for prefix, key in (
@@ -9223,6 +2707,57 @@ class Parley(App):
         """
         self.action_focus_and_send()
 
+    def _builtin_vocabulary_commands(self):
+        """One palette entry per built-in slash command, read off the core's table.
+
+        The palette used to hand-write an entry per built-in, which is how it
+        drifted: ``/fork`` had no entry at all, and ``Resume session…`` /
+        ``Compact Conversation`` were second spellings of the same two things the
+        editor already offered. Both surfaces now project
+        :data:`~tau_agent_core.commands.FRONTEND_COMMANDS`, so a flow added to the
+        core's table appears here without an edit to this file, and a flow removed
+        from it disappears from both at once.
+
+        Each entry routes through :meth:`_perform_command_outcome` rather than
+        calling an action directly, which is the same door the slash command uses —
+        so there is one implementation per command and this only chooses the door.
+
+        Yields:
+            A :class:`SystemCommand` per built-in, titled ``/name`` the way the
+            extension-command entries below already are.
+        """
+        for name, description in FRONTEND_COMMANDS.items():
+            yield SystemCommand(
+                f"/{name}",
+                description,
+                lambda n=name: self._perform_builtin_command(n),
+            )
+
+    @work
+    async def _perform_builtin_command(self, name: str) -> None:
+        """Run a built-in slash command from the palette, with no arguments.
+
+        A worker because :meth:`_dispatch_command_submission` is a coroutine and
+        ``SystemCommand``'s callback is not awaited — the palette calls it and
+        returns. It goes through the SAME door a typed line goes through rather than
+        building an arm here: which arm ``/resume`` is depends on what the core
+        resolves, and a head that decided that for itself is the drift the union
+        removes. The absent argument is what makes a palette entry the *first step*
+        of a flow rather than a whole one: ``/resume`` with nothing bound opens the
+        picker, exactly as typing it does.
+        """
+        await self._dispatch_command_submission(
+            Submission(
+                text=f"/{name}",
+                source="interactive",
+                submitter="human",
+                submission_id=uuid4().hex,
+                multitask_strategy="enqueue",
+                expand_commands=True,
+                allow_user_input=True,
+            )
+        )
+
     def get_system_commands(self, screen):
         """Provide commands for the command palette."""
         yield from super().get_system_commands(screen)
@@ -9238,34 +2773,12 @@ class Parley(App):
                 lambda m=model_name: self.run_action(f'new_chat("{m}")'),
             )
 
-        # General commands
-        yield SystemCommand(
-            "Resume session…",
-            "Pick a saved session from this directory (Tab: every directory)",
-            self.action_resume_session,
-        )
+        yield from self._builtin_vocabulary_commands()
 
         yield SystemCommand("Clear Chat", "Clear current conversation", self.action_clear_chat)
 
         yield SystemCommand("Export Chat", "Export chat to markdown", self.action_export_chat)
 
-        yield SystemCommand(
-            "Compact Conversation",
-            "Summarize older messages into a checkpoint to free up context",
-            self.action_compact,
-        )
-
-        yield SystemCommand(
-            "Browse conversation tree…",
-            "Navigate to an earlier node; optionally summarize the abandoned branch",
-            self.action_browse_tree,
-        )
-
-        # The rollback affordance's second discovery path (the first is the Footer
-        # label, which appears while a turn runs). Listed unconditionally: the
-        # palette is built once per invocation and an entry that vanishes is harder
-        # to find than one that explains why it did nothing — the action says
-        # "nothing is generating" when there is no turn to roll back.
         yield SystemCommand(
             "Roll back the in-flight turn…",
             "Abort the running turn, drop it off the active path, and run another "
@@ -9279,10 +2792,6 @@ class Parley(App):
             self.action_edit_system_prompt,
         )
 
-        # The keyboard half of the "⋯ N earlier" row's gesture (the row itself is
-        # clickable). Listed unconditionally, like the rollback entry above and
-        # for the same reason: an entry that appears only sometimes is harder to
-        # find than one that explains it had nothing to do.
         yield SystemCommand(
             "Show earlier messages",
             "Mount the whole conversation, not just the last few turns. Slow on a long one.",
@@ -9301,29 +2810,6 @@ class Parley(App):
             self.action_toggle_tools,
         )
 
-        yield SystemCommand(
-            "Extensions",
-            "List loaded extensions (name/path/tools/commands/hooks) and load errors",
-            self.action_show_extensions,
-        )
-
-        # Themes (docs/PLAN-0.9.4.md §6). One entry per theme rather than one
-        # "Theme…" entry opening a second chooser: the palette IS a chooser and
-        # it already filters by substring, so 24 entries sharing a "Theme: "
-        # prefix cost one word of typing rather than a second screen.
-        # The active one is marked rather than hidden — an entry that disappears
-        # when you pick it makes the list a different length every time you open
-        # it, and "which one am I on" is the question a theme list is asked most.
-        #
-        # The list is the whole registry, which since ``themes.textual_themes``
-        # includes Textual's own 21 themes adapted to τ's palette. Textual's
-        # separate "Theme" command opens a second palette over the same set;
-        # these entries save a keystroke and report the switch by toast, and
-        # ``watch_theme`` makes both routes persist the choice.
-        #
-        # ``run_action`` rather than a bound lambda, so the palette entry, a
-        # keybinding and ``app.run_action("set_theme('latte')")`` from a test all
-        # land on the same one action.
         for theme_name in sorted(self._theme_registry):
             active = " (active)" if theme_name == self.theme else ""
             yield SystemCommand(
@@ -9332,17 +2818,10 @@ class Parley(App):
                 lambda t=theme_name: self.run_action(f'set_theme("{t}")'),
             )
 
-        # Extension-registered slash commands (E5 §5 / S35): list each so it is BOTH
-        # visible here and runnable (dispatch mirrors this in on_input_submitted).
-        # Read from the live backend's session registry; getattr-guarded so a
-        # non-TauBackend test double is a no-op, matching set_ui_delegate/load_extensions.
         get_commands = getattr(self.current_backend, "get_extension_commands", None)
         get_args = getattr(self.current_backend, "get_extension_command_args", None)
         if get_commands is not None:
             for cmd_name, cmd_desc in get_commands():
-                # S51: a command declaring ``"args"`` collects that string via the
-                # S47 input modal (worker-context) before dispatch; one without args
-                # dispatches directly (the palette has no argument line).
                 help_text = cmd_desc or f"Run extension command /{cmd_name}"
                 placeholder = get_args(cmd_name) if get_args is not None else None
                 if placeholder:
@@ -9358,10 +2837,6 @@ class Parley(App):
                         lambda n=cmd_name: self._dispatch_extension_command(n),
                     )
 
-        # Extension-registered key shortcuts (E10 §6 / S69): list each chord so it is
-        # palette-DISCOVERABLE (the guard's second discovery path alongside the ctrl+e
-        # menu) and runnable — the palette entry dispatches the shortcut's command
-        # through the SAME path as the chord and a typed /command.
         get_shortcuts = getattr(self.current_backend, "get_extension_shortcuts", None)
         if get_shortcuts is not None:
             for key, command, args, desc in get_shortcuts():
@@ -9388,22 +2863,11 @@ class Parley(App):
             if system_msg and isinstance(system_msg.get("content"), str)
             else None
         )
-        # AgentSessionRuntime (H1, phase 3): the SAME backend/AgentSession as
-        # before — reuse the runtime already bound to it (constructed by
-        # whichever of action_new_chat/on_chat_selected last set
-        # current_backend) rather than building a new one. This is the one
-        # call site where H3's reset set is NOT a no-op: unlike a freshly
-        # constructed AgentSession, this one may carry usage/queued-message/
-        # deferred-op state from the conversation being cleared, and
-        # new_session() is what actually clears it — action_clear_chat had no
-        # such cleanup before this phase.
         if self._session_runtime is not None:
             result = await self._session_runtime.new_session(
                 persist=True, system_prompt=system_prompt
             )
             if result.get("blocked"):
-                # Finding 1 (phase-3 review): the in-flight turn did not stop
-                # within the runtime's bounded wait — nothing was touched.
                 self.notify(result["reason"], severity="warning")
                 return
             if result["cancelled"]:
@@ -9421,15 +2885,86 @@ class Parley(App):
         self.messages = list(self.current_session.context)
 
         # Clear display
-        display = self.query_one(ChatDisplay)
+        display = self.query_one(transcript.ChatDisplay)
         await display.clear_messages()
-        # Starts a thread worker and returns immediately (see
-        # ChatSidebar.refresh_chats). The notify below doesn't depend on it,
-        # and the new session is already current regardless of when the
-        # sidebar list itself catches up.
         self.query_one(ChatSidebar).refresh_chats()
 
         self.notify("Chat cleared")
+
+    def action_set_model(self, name: str = "") -> None:
+        """Switch the active model, or say which names are legal when none was given.
+
+        The acceptance test for the capability/flow model (§11 step 6): a command τ
+        did not have, added as one registry row plus a backend passthrough, with no
+        new modal and no new completion path. An empty ``name`` is the flow's first
+        STEP, so it reports the domain's values instead of failing — which is the
+        same answer ``next_step`` + ``enumerate_domain`` give a host over the wire,
+        rendered for a terminal.
+
+        Args:
+            name: A config model name. Empty offers the legal ones.
+        """
+        set_model = getattr(self.current_backend, "set_model", None)
+        if set_model is None:
+            self.notify("This backend cannot switch models", severity="warning")
+            return
+
+        session = getattr(self.current_backend, "agent_session", None)
+        if not name:
+            try:
+                found = enumerate_domain("model_name", session=session)
+            except ValueError as exc:
+                self.notify(str(exc), severity="error")
+                return
+            self.notify("Models: " + ", ".join(v.value for v in found.values))
+            return
+
+        try:
+            performed = set_model(name)
+        except (KeyError, ValueError, RuntimeError) as exc:
+            self.notify(f"Cannot switch model: {exc}", severity="error")
+            return
+        self._refresh_subtitle()
+        model = performed.data["model"]
+        self.notify(f"Model is now {model.get('name', name)} (from the next turn)")
+
+    async def action_fork_session(self):
+        """Branch this session's active path into a new one and continue on it.
+
+        The TUI half of the ``fork`` capability, which the RPC verb of that name
+        has exposed since phase 3 and no head could reach. Delegates to
+        :meth:`AgentSessionRuntime.fork`, which snapshots AFTER the turn lock so a
+        fork never captures a half-written turn, and leaves the SOURCE session
+        untouched — only this runtime moves onto the copy.
+
+        The three outcomes ``fork()`` can report are each surfaced rather than
+        collapsed: ``blocked`` (a turn is running), ``cancelled`` (an extension's
+        ``session_before_switch`` hook vetoed), and success. Without a runtime
+        there is no catalog to fork through, and this says so instead of appearing
+        to work — the same refusal ``fork()`` itself makes for a session the
+        catalog cannot address.
+        """
+        if self._session_runtime is None:
+            self.notify("Forking needs a persistent session", severity="warning")
+            return
+        try:
+            result = await self._session_runtime.fork()
+        except RuntimeError as exc:
+            self.notify(f"Cannot fork: {exc}", severity="error")
+            return
+        if result.get("blocked"):
+            self.notify(result["reason"], severity="warning")
+            return
+        if result["cancelled"]:
+            self.notify("Fork cancelled by an extension", severity="warning")
+            return
+
+        self.current_session = result["session"]
+        self.messages = list(self.current_session.context)
+        await self._reload_transcript()
+        self.query_one(ChatSidebar).refresh_chats()
+        self._refresh_subtitle()
+        self.notify(f"Forked into: {self.current_session.display_title()}")
 
     async def action_export_chat(self):
         """Export current session to markdown."""
@@ -9446,8 +2981,6 @@ class Parley(App):
 
         for msg in self.messages:
             role = msg["role"].capitalize()
-            # Persisted assistant/tool messages store content as a block list;
-            # flatten to readable text rather than dumping a Python list repr.
             content = _join_text_blocks(msg.get("content", ""))
             lines.append(f"## {role}\n\n{content}\n")
 
@@ -9461,7 +2994,7 @@ class Parley(App):
 
         self.notify(f"Exported to {file_path}")
 
-    async def action_compact(self):
+    async def action_compact(self, custom_instructions: str = "") -> None:
         """Compact the current conversation into a summary checkpoint.
 
         Summarizes the older messages via the model and replaces them with a
@@ -9470,21 +3003,39 @@ class Parley(App):
         re-renders. The session file keeps the full transcript (append-only, no
         rewrite); compaction is a runtime context optimization on the working
         list, so a resumed session still has its complete history.
+
+        Args:
+            custom_instructions: Extra focus for the summary — everything the
+                reader typed after ``/compact``. Empty (the keybinding and the
+                palette, which pass nothing) becomes ``None`` at the backend
+                call, because the summarizer's prompt distinguishes "no extra
+                focus" from an empty focus line.
+
+        The ``compact`` flow declares this argument as optional and
+        :meth:`_perform_command_outcome` now hands it over; before that it called
+        this method with no arguments and ``/compact focus on the auth bug``
+        summarized without the focus (docs/SLASH-COMMANDS.md §4).
         """
         if not self.current_session:
             self.notify("No chat to compact", severity="warning")
             return
 
         backend = self.current_backend
+        if backend is None:
+            self.notify("No chat to compact", severity="warning")
+            return
         if not hasattr(backend, "compact_messages"):
             self.notify("This backend does not support compaction", severity="warning")
             return
 
-        self.notify("Compacting conversation…")
+        focus = custom_instructions.strip() or None
+        self.notify(
+            f"Compacting conversation, focus: {focus}…" if focus else "Compacting conversation…"
+        )
         self.sub_title = "Compacting…"
         before = len(self.messages)
         try:
-            new_messages = await backend.compact_messages(self.messages)
+            new_messages = await backend.compact_messages(self.messages, focus)
         except Exception as e:
             self.notify(f"Compaction failed: {e}", severity="error")
             self.log.error(f"Compaction failed: {e}")
@@ -9499,7 +3050,7 @@ class Parley(App):
 
         self.messages = new_messages
         # reload_messages lives on the ChatDisplay widget, not the app.
-        await self.query_one(ChatDisplay).reload_messages(self.messages)
+        await self._reload_transcript()
         self._refresh_subtitle()
         self.notify(f"Compacted {before} → {len(new_messages)} messages")
 
@@ -9551,8 +3102,6 @@ class Parley(App):
         if session is None:
             self.notify("No conversation to browse", severity="warning")
             return
-        # Bind the method up front: it survives the intervening ``await``s (unlike a
-        # hasattr-narrowed local) and is ``None`` for a backend that lacks it.
         navigate_tree = getattr(self.current_backend, "navigate_tree", None)
         if navigate_tree is None:
             self.notify("This backend does not support tree navigation", severity="warning")
@@ -9566,19 +3115,10 @@ class Parley(App):
                 self.notify("Conversation tree is empty", severity="warning")
                 return
 
-            # The modal returns an INTENT, not a bare id (§5.3 / §11.1). ``sole_id``
-            # is the node the reader pointed at under either single-node action, and
-            # it raises rather than silently taking ids[0] now that three of the five
-            # actions answer with more.
-            intent = await self.push_screen_wait(SessionTreeModal(tree, copied=copied))
+            intent = await self.push_screen_wait(tree_browser.SessionTreeModal(tree, copied=copied))
             if intent is None:
                 return
             if intent.action == "elide":
-                # Both ends already, and already checked against the same rules
-                # ``elide_span`` will apply (``SessionTreeModal._elide_plan``). No
-                # mode chooser: "elide" was never one of the three branch modes, and
-                # the second browse it used to need is the key that produced this
-                # intent.
                 anchor_id, first_kept_id = intent.ids
                 await self._elide_span_flow(session, anchor_id, first_kept_id)
                 return
@@ -9594,19 +3134,12 @@ class Parley(App):
             break
 
         picked_id = intent.sole_id
-        # ``revise``: the reader named a USER message, which means fork from its
-        # PARENT and hand the old text back to edit (PLAN-0.9.4 §4, item 2).
-        # Navigating to the message itself would make the next turn its child —
-        # two user turns in a row, the one shape a conversation cannot have.
         prefill: Optional[str] = None
         target_id = picked_id
         if intent.action == "revise":
             revised = tree.entry(picked_id)
             parent_id = revised.get("parentId")
             if parent_id is None:
-                # The first message in the session has nothing to fork FROM. Say
-                # so rather than silently falling back to navigating onto it,
-                # which is the gesture this action exists to stop doing.
                 self.notify(
                     "That is the first message — there is no earlier point to fork from.",
                     severity="warning",
@@ -9615,22 +3148,19 @@ class Parley(App):
             target_id = str(parent_id)
             prefill = tree.message_text(picked_id)
 
-        mode = await self.push_screen_wait(TreeModeModal())
+        mode = await self.push_screen_wait(tree_browser.TreeModeModal())
         if mode is None:
             return
 
         if target_id == session.cursor:
-            # Checked AFTER the mode pick, not before: it is a statement about
-            # *branching*, which is what all three remaining modes do. The elide
-            # returned above without reaching it — an anchor that is already the
-            # cursor is the NORMAL elide ("fold the history behind where I am and
-            # keep going"), not a no-op.
             self.notify("Already at that node")
             return
 
         custom_instructions: Optional[str] = None
         if mode == "custom":
-            custom_instructions = await self.push_screen_wait(TreeCustomInstructionsModal())
+            custom_instructions = await self.push_screen_wait(
+                tree_browser.TreeCustomInstructionsModal()
+            )
             if custom_instructions is None:
                 return
 
@@ -9651,17 +3181,13 @@ class Parley(App):
             return
 
         self.messages = new_messages
-        await self.query_one(ChatDisplay).reload_messages(self.messages)
+        await self._reload_transcript()
         self._refresh_subtitle()
         if prefill is None:
             self.notify(
                 "Summarized and moved to selected node" if summarize else "Moved to selected node"
             )
             return
-        # ``revise``: the old text goes back in the input, selected end-first so
-        # typing replaces it and the cursor is where an edit starts. Written AFTER
-        # the navigation, not before, so a failed one leaves the input alone rather
-        # than staging a message against a conversation that did not move.
         editor = self.query_one("#chat-input", ChatInput)
         editor.text = prefill
         editor.move_cursor(editor.document.end)
@@ -9694,7 +3220,7 @@ class Parley(App):
             self.notify("This backend does not support branching", severity="warning")
             return
 
-        mode = await self.push_screen_wait(BranchModeModal())
+        mode = await self.push_screen_wait(tree_browser.BranchModeModal())
         if mode is None:
             return
         drop_context = mode == "only"
@@ -9718,7 +3244,7 @@ class Parley(App):
 
         # The same re-render seam every other tree operation uses (§3.4).
         self.messages = new_messages
-        await self.query_one(ChatDisplay).reload_messages(self.messages)
+        await self._reload_transcript()
         self._refresh_subtitle()
         copied = f"{plan.mints} copied" if plan.mints else "nothing copied"
         folded = f", {plan.hidden} entries folded away" if plan.elide_from else ""
@@ -9747,10 +3273,6 @@ class Parley(App):
             return False
 
         try:
-            # Planned against the live session, like the branch above: this runs
-            # straight off the browser's dismissal, but the plan and the commit
-            # reading the same entries is what makes the reported count the one that
-            # was written.
             plan = plan_paste(
                 ConversationTree(session.entries(), session.cursor), source_id, target_id
             )
@@ -9810,10 +3332,8 @@ class Parley(App):
             self._refresh_subtitle()
             return
 
-        # Same re-render seam as action_compact / action_browse_tree (§3.4): swap the
-        # working list, reload the display, refresh the rollup.
         self.messages = new_messages
-        await self.query_one(ChatDisplay).reload_messages(self.messages)
+        await self._reload_transcript()
         self._refresh_subtitle()
         self.notify(f"Elided {before} → {len(new_messages)} messages")
 
@@ -9863,7 +3383,7 @@ class Parley(App):
             command, args = chosen
             self.run_worker(self._dispatch_extension_command(command, args))
 
-        await self.push_screen(ExtensionChordScreen(shortcuts), _dispatch_chosen)
+        await self.push_screen(modals.ExtensionChordScreen(shortcuts), _dispatch_chosen)
 
     async def action_edit_system_prompt(self):
         """Edit the system prompt.
@@ -9879,15 +3399,11 @@ class Parley(App):
 
         def handle_result(new_prompt: str | None):
             if new_prompt is not None:
-                # Read-modify-write the ON-DISK config, not ``self.config``: the
-                # latter has CLI overrides merged into it (_apply_cli_overrides), so
-                # writing it back would persist a one-run --model/--system-prompt
-                # flag as the permanent default.
                 update_config("system_prompt", new_prompt)
                 self.config["system_prompt"] = new_prompt
                 self.notify("System prompt updated")
 
-        await self.push_screen(SystemPromptEditor(current_prompt), handle_result)
+        await self.push_screen(modals.SystemPromptEditor(current_prompt), handle_result)
 
     async def on_chat_selected(self, message: ChatSelected):
         """Load a session the sidebar, the picker, or ``/resume <ref>`` named.
@@ -9902,8 +3418,6 @@ class Parley(App):
         about what a ref is.
         """
         try:
-            # Resolve the selected session — needed to learn its model, which
-            # decides what backend to build BEFORE a runtime can switch onto it.
             session = self.session_catalog.resolve_ref(message.chat_ref, cwd=os.getcwd())
 
             # Get model config and create backend
@@ -9913,21 +3427,12 @@ class Parley(App):
                 return
 
             self.current_backend = create_backend(self._apply_run_config(model_config))
-            # AgentSessionRuntime (H1, phase 3): switch_session() re-resolves
-            # message.chat_ref through the catalog — one extra load beyond the
-            # one above, needed regardless since the target's model has to be
-            # known before a backend for it can even be built — and performs
-            # the H2 veto / H3 reset (a no-op on this brand-new AgentSession)
-            # before binding.
             self._session_runtime = self._build_session_runtime(
                 self.current_backend, session.model, model_config["backend"]
             )
             if self._session_runtime is not None:
                 result = await self._session_runtime.switch_session(message.chat_ref)
                 if result.get("blocked"):
-                    # Finding 1 (phase-3 review): the in-flight turn did not
-                    # stop within the runtime's bounded wait — nothing was
-                    # touched.
                     self.notify(result["reason"], severity="warning")
                     return
                 if result["cancelled"]:
@@ -9939,16 +3444,9 @@ class Parley(App):
                 self.current_session = session
                 self._bind_backend_session()
             await self._load_backend_extensions()
-            # Seed from the active-path context (cursor + compaction/branch splices),
-            # NOT the raw linear fold — else a resumed compacted/branched session
-            # would render its dropped history and hide the summary (§2.6).
             self.messages = list(session.context)
 
-            # Reload the display, reconstructing exchanges from the persisted
-            # flat message list so a reloaded session looks like a freshly-streamed
-            # one (collapsed exchanges, folded tool boxes, promoted final answer).
-            display = self.query_one(ChatDisplay)
-            await display.reload_messages(self.messages)
+            await self._reload_transcript(open_ask=True)
 
             # Update UI — model + the reloaded conversation's rollup.
             self._refresh_subtitle()
@@ -9960,5 +3458,5 @@ class Parley(App):
 
 
 if __name__ == "__main__":
-    app = Parley()
+    app = TauApp()
     app.run()

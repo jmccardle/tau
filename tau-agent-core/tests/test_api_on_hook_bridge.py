@@ -36,6 +36,9 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 # ── loop harness (a faked network boundary; everything else is real) ──────────
 
 
@@ -46,7 +49,7 @@ def _text_assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -58,7 +61,7 @@ def _tool_call_assistant(call_id: str, name: str, args: dict[str, Any]) -> Assis
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(),
     )
 
@@ -184,8 +187,6 @@ async def test_public_api_on_tool_call_veto_blocks_execution() -> None:
         # PUBLIC surface — this is exactly what 22_gatekeeper does.
         api.on("tool_call", lambda event, ctx: {"block": True, "reason": "denied by policy"})
 
-    # Loaded via the real extensions= path: the load loop hands ext a bucket-bound
-    # api, so api.on("tool_call") must reach the ExtensionRunner the loop reads.
     session = _make_session(ext)
 
     # The bridge populated the runner — the call-site's has_handlers gate is live.

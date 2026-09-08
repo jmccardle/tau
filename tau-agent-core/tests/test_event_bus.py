@@ -172,12 +172,8 @@ class TestEmitSpecificChannel:
         received: list[str] = []
         bus.on("custom_channel", lambda e: received.append(e.type))
 
-        # Emit a valid event — it won't match "custom_channel" since
-        # AgentEvent only accepts the defined Literal types.
         await bus.emit(_make_event())
 
-        # The custom channel listener only fires if we emit with type="custom_channel"
-        # which is not a valid AgentEvent. So with valid events, nothing fires.
         assert len(received) == 0
 
 
@@ -661,13 +657,9 @@ class TestEventBusEdgeCases:
         bus.on("all", error_handler)
         bus.on("all", counter_handler)
 
-        # Each emit fires counter_handler twice (two subscribers to "all"),
-        # error_handler raises, but doesn't prevent other handlers.
         await bus.emit(AgentEvent(type="agent_start", timestamp=_now_ms()))
         await bus.emit(AgentEvent(type="agent_end", timestamp=_now_ms()))
 
-        # counter_handler called 4 times total (2 per emit × 2 emits)
-        # error handler's failure doesn't affect counter
         assert call_count["n"] == 4
 
     @pytest.mark.asyncio
@@ -688,8 +680,6 @@ class TestEventBusEdgeCases:
         await bus.emit(AgentEvent(type="agent_start", timestamp=_now_ms()))
         elapsed = time.monotonic() - start
 
-        # Since sync handlers are called directly, emit() should take at least
-        # the time spent in the slow handler
         assert elapsed >= 0.005  # some tolerance for overhead
         assert received == ["agent_start"]
 

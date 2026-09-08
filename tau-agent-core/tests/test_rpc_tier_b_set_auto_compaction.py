@@ -44,6 +44,9 @@ from tau_agent_core.rpc import RPCHandler, commands
 from tau_agent_core.rpc.dialect import TURN_STILL_RUNNING
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 def _model(*, context_window: int = 1000) -> Model:
     return Model(
@@ -78,7 +81,7 @@ def _assistant(text: str, *, total_tokens: int = 2) -> AssistantMessage:
         provider="openai",
         model="m",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=1, output_tokens=1, total_tokens=total_tokens),
     )
 
@@ -120,7 +123,7 @@ async def _summary_response(model: Any, context: Any, options: Any = None) -> As
         provider="openai",
         model="m",
         stop_reason="stop",  # type: ignore[arg-type]
-        timestamp=0,
+        timestamp=_TS,
     )
 
 
@@ -184,10 +187,6 @@ async def test_set_auto_compaction_enables_and_returns_the_effective_state(
     real_handler: RPCHandler, real_session: AgentSession
 ) -> None:
     assert real_session._compaction_settings.enabled is False
-    # `cursor` is E5's tier-wide answer, not this verb's own idea (see
-    # commands.py "E5 in Tier B"). Already non-None on a session that has run
-    # nothing: AgentSession records an `agent_spec` customEntry at
-    # construction (W2), and this verb appends nothing on top of it.
     tip = real_session.session_log.cursor
     assert tip is not None
     await real_handler._handle_request(
@@ -217,8 +216,6 @@ async def test_set_auto_compaction_disables_and_is_idempotent(
             }
         )
     responses = {item["id"]: item for item in await _drain(real_handler)}
-    # Idempotent in the cursor too (E5): neither call appends anything, so
-    # both report the same unchanged tip.
     expected = {"enabled": False, "cursor": tip, "method": "set_auto_compaction"}
     assert responses[1]["result"] == expected
     assert responses[2]["result"] == expected
@@ -251,8 +248,6 @@ async def test_set_auto_compaction_returns_the_live_tip_although_it_moves_nothin
 
     (response,) = [item for item in await _drain(real_handler) if item.get("id") == 1]
     assert response["result"]["cursor"] == tip
-    # Unchanged because nothing was written: the log holds exactly the
-    # entries it held before the call.
     assert real_session.session_log.cursor == tip
     assert len(real_session.session_log.entries()) == entries_before
 
@@ -384,17 +379,10 @@ async def test_enabling_over_the_wire_makes_a_real_turn_actually_compact(
     (enable_response,) = [item for item in await _drain(real_handler) if item.get("id") == 1]
     assert enable_response["result"] == {
         "enabled": True,
-        # E5: the tip at the moment the setting took effect — the seeded log's
-        # own leaf, since enabling appends nothing (commands.py "E5 in Tier B").
         "cursor": pre_turn_cursor,
         "method": "set_auto_compaction",
     }
 
-    # A big, honest Usage.total_tokens (5000) against context_window=1000,
-    # reserve_tokens=100 — should_compact's threshold (context_window -
-    # reserve_tokens = 900) is comfortably exceeded by the turn's OWN
-    # reported usage, the only thing estimate_context_tokens anchors on once
-    # this turn's assistant message lands (see `_assistant`'s docstring).
     async def _fast_stream_simple(model: Any, context: Any, options: Any = None) -> _Stream:
         return _Stream("turn reply", total_tokens=5000)
 
@@ -412,10 +400,6 @@ async def test_enabling_over_the_wire_makes_a_real_turn_actually_compact(
 
         items = await _drain_until_two_agent_ends(real_handler)
 
-    # A genuine compaction happened — not just the event brackets around a
-    # no-op (§1.2's "consulted, never obeyed-if-convenient" for a POLICY does
-    # not apply here at all — D-4: no RPC session ever carries one — but the
-    # SAME discipline of proving the real effect, not just the signal, does).
     compactions = [e for e in log.entries() if e.get("type") == "compaction"]
     assert len(compactions) == 1
 
@@ -431,40 +415,12 @@ async def test_enabling_over_the_wire_makes_a_real_turn_actually_compact(
     assert turn_start["params"]["submission_id"] == submission_id
     assert turn_end["params"]["submission_id"] == submission_id
 
-    # _maybe_auto_compact's pair (agent_session.py:3286-3291) goes straight
-    # through `self._events.emit`, not `_emit_stamped` — D-4's documented
-    # gap: a host correlating events to submission_id sees an ORPHAN pair it
-    # cannot attribute to anything it asked for.
     assert orphan_start["params"]["submission_id"] is None
     assert orphan_end["params"]["submission_id"] is None
 
-    # Stamp both agent_ends the way the real transport does, at DEQUEUE
-    # (RPCHandler.prepare_outbound / _stamp_agent_end_cursor) — raw queue
-    # items carry `_cursor_log`, not yet a `cursor` field, until this runs.
-    # Both items are stamped here, together, well after the whole background
-    # turn (including the auto-compaction it triggered) has already finished
-    # — unlike the real writer, which calls `prepare_outbound` on each item
-    # as it is individually dequeued, interleaved with the still-running
-    # turn. That timing difference is why this test does NOT assert
-    # `orphan_end`'s cursor differs from `turn_end`'s (both would read the
-    # SAME final value here, deterministically, which is a fact about when
-    # THIS test chose to stamp them, not about the mechanism); the
-    # dequeue-time / interleaved-with-a-live-turn half of `_stamp_agent_end
-    # _cursor`'s contract is already `test_agent_end_wire_event_carries_the
-    # _post_persistence_cursor` (test_rpc.py) — B1, phase-2 review — and is
-    # not re-proven here.
     real_handler.prepare_outbound(turn_end)
     real_handler.prepare_outbound(orphan_end)
 
-    # Despite carrying no submission_id, the orphan agent_end DOES carry a
-    # cursor (every agent_end is stamped at dequeue regardless of
-    # provenance) — F3: a host that never caches "the tip" and instead reads
-    # cursor off every agent_end stays correct across a compaction it never
-    # explicitly asked for, even though submission_id alone cannot explain
-    # why its context just shrank. Compared against the cursor from BEFORE
-    # this whole exchange started (deterministic, unlike comparing it to
-    # `turn_end`'s — see above) to prove it really moved, past both the
-    # turn's own persistence AND the compaction's.
     assert orphan_end["params"]["cursor"] is not None
     assert orphan_end["params"]["cursor"] == log.cursor
     assert orphan_end["params"]["cursor"] != pre_turn_cursor

@@ -35,8 +35,8 @@ mkdir -p "$DEST"
 # Functional-only source: the three src/ trees, minus compiled __pycache__.
 #
 # NOT just *.py. The installed package reads two data files at runtime —
-# tau_default_config.json (first-run config bootstrap) and parley.tcss (the
-# TUI's stylesheet, resolved by Parley.CSS_PATH). A tarball of .py files alone
+# tau_default_config.json (first-run config bootstrap) and tau.tcss (the
+# TUI's stylesheet, resolved by TauApp.CSS_PATH). A tarball of .py files alone
 # installs cleanly and then dies on first run, which is the worst kind of
 # release. Every extension here must also be declared in the owning package's
 # [tool.setuptools.package-data]; tests/test_packaging.py holds the two lists

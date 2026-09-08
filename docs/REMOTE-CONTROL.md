@@ -649,6 +649,139 @@ the tax. It is also the mechanism by which the capability document acquires its
 most valuable content, so it is being paid either way — the only question is
 whether it is paid deliberately or discovered by a host.
 
+### Revised 2026-09-03: the params half is generated, from the registry
+
+The recommendation above still holds against the proposal it was written about.
+It was written before `tau_agent_core.capabilities` existed, and that table
+changes what "generate" can mean.
+
+Rescored against generating from `CAPABILITIES` rather than from decorated
+`AgentSession` methods:
+
+| | Survives? | Why |
+|---|---|---|
+| A1 layer inversion | no | `capabilities.py` is core vocabulary the core declares for its own use, not wire metadata hung on a session method. |
+| A2 the mapping is not 1:1 | **yes** | 19 of 23 live verbs are capability-backed; the other four — `prompt`, `get_capabilities`, `next_step`, `enumerate_domain` — keep hand-written literals. |
+| A3 signature stability | no | Nothing reads `inspect.signature`. An `Argument.name` IS the wire name, declared for that purpose; renaming a Python kwarg changes nothing. |
+| A4 "capability" is mostly what does NOT work | **yes** | `decline(...)` and its `declined_because` are hand-written and unchanged. |
+| A5 it evaporates under mypy | partly | Only the schema dict is derived; handlers stay typed functions registered by `@command`. |
+| A6 import-order registries | no | `CAPABILITIES` is a module-level tuple with `_check_registry()` at import. Extensions do not contribute to it. |
+
+**What was built** (`tau_agent_core/rpc/schema.py`): `params_schema_for(name,
+overrides=...)` builds a verb's params schema from its capability's `arguments`.
+Structure — property names, wire types, requiredness, `additionalProperties` — is
+derived. Prose is not: `Argument.description` is a form label and the wire's
+description is reference documentation for a second implementer, which is a
+different register at a different length. `overrides` also carries the schema
+keywords a domain has no field for (`complete_path`'s `minimum`).
+
+**The evidence it preserved the wire**: `docs/RPC-PROTOCOL.md` regenerated
+byte-identical across the change.
+
+**What is still hand-written, and will stay so**: every `result_schema`. Nothing
+in the core declares what a capability gives back, so there is no declaration to
+derive one from — and that half is where most of the table's schema lines live
+(575 of 872, measured).
+
+**Where the domain-to-JSON-type table lives**: in the RPC layer, not on `Domain`.
+A domain says how its values are FOUND; what one looks like on a wire is the
+wire's question. `_check_domain_types()` runs at import, so a new domain with no
+entry is a startup failure rather than a verb that accepts anything.
+
+### Revised 2026-09-03 (same day, second pass): every capability is on the wire
+
+The table above said 19 of 23 live verbs were capability-backed. Read the other
+way, that count was the finding: eleven declared capabilities had no verb, and
+`docs/VSCODE-HEAD.md` §6 had already measured what that cost — 20 live verbs,
+**none of which read or wrote tree structure**, so τ's differentiating feature was
+reachable only from inside the Textual head.
+
+The eleven, and where each one's implementation already was:
+
+| Verb | Kind | Performs |
+|---|---|---|
+| `navigate`, `summarize_and_navigate`, `elide_span`, `commit_branch`, `paste_subtree` | mutation | `tau_agent_core.tree_ops`, already pure functions over a `SessionLog` |
+| `enable_extension`, `disable_extension`, `reload_extension` | mutation | `AgentSession` methods of the same names |
+| `complete_message_id` | read | `ConversationTree.complete_message_id` |
+| `list_managed_extensions`, `get_extension_state` | read | `AgentSession` methods of the same names |
+
+Not one of them needed a behaviour written. The cost was the wire prose, the
+result schemas and the guards — which is what "1:1" buys and what the capability
+registry was for.
+
+**E5 and D-7 are answered by the same two mechanisms, not by a second rule.** The
+five tree mutations append, so all five go through `tree_mutation_guard`
+(`rpc/commands.py`): D-1's `turn_safety_guard`, D-7 rule 1's
+`require_durable_session`, a `require_log_appender` per appender the operation
+will call, and one conversion of `tree_ops`' `ValueError` to `INVALID_PARAMS`. The
+three extension mutations append nothing, so they take D-1 and refuse nothing on
+durability — the line `set_auto_compaction` already drew in Tier B. All eight
+carry `cursor`; none of the three reads does.
+
+**Two counts that changed, and what they mean.** Live verbs with a capability:
+19 → 30. Capabilities with no verb: 11 → **0**. The second is now asserted
+(`test_capabilities.py::test_every_capability_is_on_the_wire`) rather than
+observed, because a capability landing here with no verb should be a decision
+someone writes down, not a default.
+
+**One Fail-Early gap was found and closed on the way.**
+`tree_ops.summarize_and_navigate` did not check `target_id`, and
+`ConversationTree.subtree_text` answers `""` for an unknown id — so the operation
+would have spent a completion summarizing nothing and appended the result. It now
+refuses first, the way `navigate` already did.
+
+**What is still not on the wire**: `side_usage`, so the tokens
+`summarize_and_navigate` spends are banked and not itemised in its response; and
+the reverse channel (§7.1), which is what a head still needs before it can host a
+permission prompt.
+
+### Revised 2026-09-04: the result half is generated too
+
+The section above says, twice, that every `result_schema` is hand-written and
+will stay so, "because nothing in the core declares what a capability gives
+BACK". **That is reversed.** `capabilities.Capability.returns` declares it, for
+all thirty, and `rpc.schema.result_schema_for` derives the table's half from it —
+the same move `params_schema_for` made a day earlier.
+
+**Why it was worth reversing.** The measurement was not on the wire at all: τ
+reports the same four mutations three ways. `TauBackend.set_model` returns
+`dict[str, Any]`, `set_session_name` a `str`, `set_auto_compaction` a `bool`,
+`enable_extension` an `ExtensionActionResult`; the TUI stringified whichever it
+got, so a reader saw `set_auto_compaction: True`. Only the wire said whether the
+conversation had changed. A second head could not have been written against any
+of the other two.
+
+**`returns` covers reads as well as mutations.** The alternative was thirteen
+read-shaped exceptions kept in the RPC table, and it loses on measurement —
+`get_messages` is 189 bytes, the second-smallest schema in the table, and no read
+is structurally harder than a mutation — and on the point of the exercise: a rule
+with thirteen exceptions is a rule a head author learns twice.
+
+**The two halves are deliberately asymmetric.** Parameters are declared as
+`Argument` records over the domain vocabulary, because a head has to RENDER a
+form for them and a domain says which field to draw. A result is read, never
+rendered blind, so `returns` is the JSON Schema itself and there is no second
+vocabulary to keep in step. A1 therefore does not reach this half either: the
+schema is what the core declares for its own use, and `_check_registry` refuses a
+capability that declares none.
+
+**What standardizing surfaced, that relocating would not.** Three reads declared
+`array` and put the element shape in the property's English — `get_messages`,
+`get_tools`, `get_commands`. Nobody could disagree with those sentences because
+nothing read them. All three now carry `items`, which meant teaching
+`_assert_supported_schema` and `validate_params` the keyword rather than adding
+one they ignore: an ignored keyword is exactly the silent acceptance that
+function exists to refuse. `test_rpc_result_schemas.py` validates a real result
+of each of the three against its own published schema.
+
+**Evidence the wire did not move on the way**: `docs/RPC-PROTOCOL.md` regenerated
+byte-identical across the relocation, and grew only the three item shapes when
+they were added.
+
+**One thing this does NOT do**: `prompt`, `get_capabilities`, `next_step` and
+`enumerate_domain` have no capability behind them and keep hand-written literals
+on both halves. A2 still holds, on both halves, for the same four verbs.
+
 ---
 
 ## 7. Forward compatibility

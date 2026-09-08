@@ -56,11 +56,6 @@ class FindTool:
             },
         },
     }
-    # Annotated rather than left to inference (B1/tau-004): unannotated,
-    # `execution_mode = "parallel"` infers `str`, and `ToolDefinition`
-    # declares it `Literal["sequential", "parallel"]`. `sdk._resolve_tools`
-    # copies this value into a ToolDefinition, so without the annotation mypy
-    # cannot check that copy — which is the blindness B1 exists to remove.
     execution_mode: Literal["sequential", "parallel"] = "parallel"
 
     def __init__(self, cwd: str = ".") -> None:
@@ -115,10 +110,6 @@ class FindTool:
                     tool_call_id=tool_call_id,
                 ).model_dump()
 
-        # The walk runs in a worker thread, for the reason given in
-        # ``GrepTool.execute``: it is `os.walk` with no await inside it, and on
-        # the TUI's event loop it froze painting and input for its whole duration
-        # (docs/PLAN-0.9.4.md §8).
         try:
             results = await asyncio.to_thread(
                 self._collect, search_path, name_pattern, regex_compiled, type_filter, signal

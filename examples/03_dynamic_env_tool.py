@@ -63,17 +63,11 @@ from __future__ import annotations
 import os
 from typing import Any
 
-#: Substrings that mark a variable NAME as carrying a credential. Matched against
-#: the upper-cased name — see the module docstring on why this is a courtesy.
 SENSITIVE_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD")
 
 #: What a redacted value is replaced with.
 REDACTED = "*" * 8
 
-#: How many variables one call may report. A developer machine can carry several
-#: hundred, and every one of them would land in the model's context and stay
-#: there for the rest of the session. The tool says how many it withheld, so the
-#: model can narrow the request with ``prefix`` rather than assume it saw all.
 MAX_REPORTED = 20
 
 
@@ -123,9 +117,6 @@ def env_vars_execute(
     return {"content": [{"type": "text", "text": read_env(params.get("prefix", ""))}]}
 
 
-#: The definition handed to ``api.register_tool``. ``execute`` is a required key:
-#: leaving it out raises at registration rather than producing a tool the model
-#: can call and that does nothing.
 ENV_VAR_TOOL: dict[str, Any] = {
     "name": "env_vars",
     "label": "Environment Variables",
@@ -162,8 +153,4 @@ def dynamic_env_tool_extension(api: Any) -> None:
     api.register_tool(ENV_VAR_TOOL)
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/03_dynamic_env_tool.py`` → ``getattr(module, "register")``), so the
-#: demo is loadable through the public ``-e`` surface, not only by importing
-#: ``dynamic_env_tool_extension`` directly.
 register = dynamic_env_tool_extension

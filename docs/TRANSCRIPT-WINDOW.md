@@ -148,7 +148,7 @@ simply stops shrinking while they are up there.
 
 ### 4.3 One transcript attribute, re-read at every turn edge
 
-`set_transcript_source(lambda: self.messages)`, wired once in `Parley.on_mount`.
+`set_transcript_source(lambda: self.messages)`, wired once in `TauApp.on_mount`.
 
 A callable and not a list, for the same reason `_facts_source` is one. The app
 **rebinds** its working list after every turn
@@ -614,3 +614,121 @@ question is above the fold. Raising the cap was chosen instead, so this stands.
 on four short turns. The difference is the content, not the mechanism: the step
 is rebuilding 88 messages with 48 tool boxes. §7.6's incremental slide is the
 answer if that becomes worth building.
+
+## 10. One turn of 60 tool calls
+
+Reported 2026-09-05: a research task that calls 60+ tools in a single turn lags
+while it streams, and giving the terminal focus again locks the app up for a
+moment. Two things were asked for — apply the live window when a new turn
+starts, and stop populating a collapsed tool section with widgets until it is
+opened. Both were built. The investigation also found that §4.2's deferral had
+turned into an unbounded transcript, which is a third thing and the reason the
+first ask looked unimplemented.
+
+### 10.1 What was already true
+
+The live window does run at a turn edge, and it does bound consecutive big
+turns. Measured over four 60-tool live turns, with the transcript growing
+122 → 488 messages:
+
+| after live turn | messages | mounted widgets | top-level boxes |
+|---|---|---|---|
+| 0 | 122 | 553 | 2 |
+| 1 | 244 | 554 | 2 |
+| 2 | 366 | 554 | 2 |
+| 3 | 488 | 554 | 2 |
+
+So `RENDER_CAP_MESSAGES` reaches across turns exactly as §9 intended. What it
+cannot reach is inside one: `render_cap_start` returns a user-message index and
+`trim_to_cap` finds the matching top-level user `MessageBox` (§4.1), so one turn
+is the floor. On the 122-message single turn above, `render_cap_start` returns 0
+and `trim_to_cap` removes nothing. §9.3 named this and did not take it; it is
+still not taken, and §10.4 says what would.
+
+`full_map` is not the cost this time. Measured with gc disabled, it is 0.2 ms
+median over 555 widgets — §2's diagnosis was about a delta invalidating a cache
+on a 3961-widget tree and does not transfer to 550.
+
+### 10.2 The deferral had become unbounded
+
+§4.2 holds a trim while the reader is away from the tail, and `watch_scroll_y`
+is the only thing that releases it. That watcher returns early while any lane is
+open, so it cannot fire during a turn. A reader who scrolls up once and then
+keeps prompting therefore never released it. Measured, releasing the tail once
+before turn 1 and never scrolling back, five 40-tool turns:
+
+| turn | messages | widgets | top boxes | `_trim_deferred` |
+|---|---|---|---|---|
+| 0 | 82 | 372 | 2 | False |
+| 1 | 164 | 744 | 4 | True |
+| 2 | 246 | 1116 | 6 | True |
+| 3 | 328 | 1488 | 8 | True |
+| 4 | 410 | 1860 | 10 | True |
+
+That is §4's defect back, reached by a different route, and a reader watching 60
+tool calls scroll past is precisely the person who scrolls up.
+
+`begin_exchange` now calls `_claim_tail_for_trim` and then `_maybe_trim`, both
+before the lane is registered — `_maybe_trim` declines to evict while any lane is
+open and this one is about to be. The claim is taken ONLY when a trim is being
+held, so an ordinary turn moves nobody; when it is taken, submitting pulls the
+reader back to the tail. That is the trade `snap_window_to_tail` already makes on
+the line above it (§7.4): a turn beginning is the present changing.
+
+The shape this produces is one turn of grace. The turn a reader scrolls up
+*during* completes without a row moving under them — which is docs/TUI-STEERING.md
+§1, and the guarantee worth keeping. The turn they start *next* runs the trim.
+The same five turns, after:
+
+| turn | messages | widgets | top boxes | `_trim_deferred` |
+|---|---|---|---|---|
+| 0 | 82 | 132 | 2 | False |
+| 1 | 164 | 264 | 4 | True |
+| 2 | 246 | 133 | 2 | False |
+| 3 | 328 | 133 | 2 | False |
+| 4 | 410 | 133 | 2 | False |
+
+### 10.3 A collapsed tool call cost nine widgets
+
+`ToolBox.__init__` built both markdown bodies and handed them to
+`Collapsible.__init__`, so they composed whether or not anyone opened the box:
+`ToolBox` + `CollapsibleTitle` + `Contents` + two `Markdown`, each carrying a
+`MarkdownFence` and a `Label`. Collapsing sets `Contents.display = False`, which
+hides them and removes nothing — and Textual arranges hidden widgets anyway
+(`_arrange_root(..., visible_only=False)`, verified in 8.2.7).
+
+The bodies are now mounted on first expand, which is what `ReasoningRegion`
+already did with its buffered text (§8.2's `QuietCollapsible` is the shared
+base). `_write_result_body` holds the markdown and writes it into the widget only
+when the widget exists, which subsumes the old pre-mount `_pending_result` buffer
+rather than adding a second one. `result_markdown` is the text for a caller that
+wants the content rather than the widget.
+
+Measured on one live turn of N tool calls, before and after:
+
+| tools | widgets before | after | 200 deltas before | after | repaint before | after |
+|---|---|---|---|---|---|---|
+| 20 | 192 | 72 | 1.84 s | 1.43 s | 48.3 ms | 48.1 ms |
+| 60 | 552 | 192 | 2.24 s | 1.66 s | 85.3 ms | 43.2 ms |
+| 100 | 786 | 312 | 3.33 s | 2.16 s | 124.6 ms | 58.4 ms |
+
+The repaint column is the reported focus lock-up: regaining focus posts a repaint
+and, in most multiplexers, a resize, and both scale with the mounted tree. A
+100-tool turn now costs about what a 33-tool turn used to.
+
+### 10.4 What is still absent
+
+**No cap on tool calls within one exchange.** The third candidate, and the only
+one that would put a bound on a single turn rather than making it cheaper: the
+tool boxes in an `ExchangeBox` are a homogeneous list in one
+`Collapsible.Contents`, so a "keep the last N, `⋯ N earlier tool calls` above
+them" cap is local and does not touch `render_cap_start`. It was not built
+because it needs a second window vocabulary — its own count, its own fold row,
+its own interaction with `move_window` — and §10.3 alone brings a 60-tool turn to
+192 widgets, below where 20 tool calls used to sit. Build it if turns get an
+order of magnitude longer, not before.
+
+**A body, once built, is never released.** Opening every tool call in a long turn
+and then collapsing them again leaves the widgets mounted. The one-way build is
+deliberate: a reader who opened a box is the reader most likely to open it again,
+and freeing on collapse would make the same box cost its parse repeatedly.

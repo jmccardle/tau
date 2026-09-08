@@ -269,8 +269,6 @@ class TestRegisterAndQueryTools:
                 }
             )
 
-        # The FIRST registration survives intact -- the refusal must not corrupt
-        # or half-apply the existing entry.
         tools = reg.get_all_tools()
         assert len(tools) == 1
         assert tools[0].description == "first"
@@ -402,8 +400,6 @@ class TestActiveToolFiltering:
         active = reg.get_active_tools()
         assert isinstance(active, dict)
         assert "tool" in active
-        # Attribute, not subscript: the registry stores ExtensionToolDefinition
-        # models rather than raw dicts, so the shape has a schema.
         assert active["tool"].name == "tool"
         assert isinstance(active["tool"], ExtensionToolDefinition)
 

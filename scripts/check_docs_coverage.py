@@ -58,9 +58,6 @@ def main() -> int:
     report = coverage(objects, warnings)
 
     if report.total == 0:
-        # Not a pass. An empty marked set means the marker was removed, the
-        # packages moved, or griffe stopped resolving the decorator -- and the
-        # check would report 100% for all three.
         print("docs coverage: no @agent_facing objects found at all.", file=sys.stderr)
         print(f"docs coverage: searched {', '.join(PACKAGES)}.", file=sys.stderr)
         return 1

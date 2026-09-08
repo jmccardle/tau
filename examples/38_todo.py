@@ -73,9 +73,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# ``ext_kit`` lives alongside the numbered examples, not inside an installed
-# package — add ``examples/`` to the path the same way the other ext_kit-using
-# demos (e.g. 20/21/24, S59) do when run standalone.
 _EXAMPLES_DIR = str(Path(__file__).resolve().parent)
 if _EXAMPLES_DIR not in sys.path:
     sys.path.insert(0, _EXAMPLES_DIR)
@@ -85,8 +82,6 @@ from ext_kit.state import TreeStore  # noqa: E402  (path insertion must precede 
 #: The ``customEntry`` type this demo's records live under (S39/S56).
 TODO_CUSTOM_TYPE = "todo"
 
-#: Report truncation for ``/todos`` when the list is long (pi parity: the
-#: non-expanded ``ctx.ui.custom`` view showed 5 before "... N more").
 _REPORT_PREVIEW_COUNT = 5
 
 
@@ -268,6 +263,4 @@ def todo_extension(api: Any) -> None:
     )
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/38_todo.py`` → ``getattr(module, "register")``).
 register = todo_extension

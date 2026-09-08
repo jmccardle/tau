@@ -60,8 +60,6 @@ class Grammar(str):
         return obj
 
 
-# Lark string literals are double-quoted. Backslash and the quote itself must be
-# escaped, and NO literal control character may appear raw in the grammar source.
 _ESCAPES = {
     "\\": "\\\\",
     '"': '\\"',

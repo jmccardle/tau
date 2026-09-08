@@ -31,13 +31,10 @@ from tau_agent_core.session_log import (
     InMemorySessionLog,
     SessionLog,
     agent_spec_in_force,
+    normalize_loaded_entries,
     open_branch,
 )
 
-# TREE-BROWSER-AS-EDITOR.md §8/§11.3: ``append_compaction`` now requires the
-# summary's provenance as keyword-only arguments with no defaults. These tests are
-# about something else, so they name plausible values once here rather than at every
-# call — the point of the required keywords is that a REAL caller cannot skip them.
 _PROV = {
     "summarizer_model_id": "test-summarizer",
     "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
@@ -90,9 +87,7 @@ class TestInMemorySessionLog:
     def test_append_compaction_writes_camelcase_shape(self):
         log = InMemorySessionLog()
         first = log.append_message(_um("keep"))
-        log.append_compaction(
-            summary="recap", first_kept_id=first, tokens_before=123, **_PROV
-        )
+        log.append_compaction(summary="recap", first_kept_id=first, tokens_before=123, **_PROV)
         comp = log.entries()[-1]
         assert comp["type"] == "compaction"
         assert comp["summary"] == "recap"
@@ -104,8 +99,6 @@ class TestInMemorySessionLog:
         a = log.append_message(_um("a"))
         log.append_message(_um("b"))
         nav_id = log.append_navigate(a)
-        # The navigate entry parents at the previous leaf, but the cursor lands on
-        # the target (not the navigate entry itself).
         assert log.cursor == a
         assert log.entries()[-1]["id"] == nav_id
         assert log.entries()[-1]["targetId"] == a
@@ -133,15 +126,6 @@ class TestInMemorySessionLog:
 
     def test_satisfies_sessionlog_protocol(self):
         assert isinstance(InMemorySessionLog(), SessionLog)
-
-
-# ── §8 anchor provenance: agent_spec_in_force and the branch wrapper ─────────
-#
-# The round trip through each store is the contract suite's job
-# (testing/session_log_contract.py). What is pinned here is the piece that is NOT
-# a per-store obligation: the shared ancestry rule the call sites use to name
-# ``agent_spec_id``, and the branch wrapper, which is the one SessionLog
-# implementation with no store of its own.
 
 
 class TestAgentSpecInForce:
@@ -255,9 +239,7 @@ class TestConversationTreeOverLog:
         log = InMemorySessionLog()
         log.append_message(_um("old"))
         keep = log.append_message(_um("keep me"))
-        log.append_compaction(
-            summary="SUM", first_kept_id=keep, tokens_before=10, **_PROV
-        )
+        log.append_compaction(summary="SUM", first_kept_id=keep, tokens_before=10, **_PROV)
         session = AgentSession(session_log=log, model=_model())
         texts = [m["content"][0]["text"] for m in session.messages]
         assert texts == ["[[Compaction summary: SUM]]", "keep me"]
@@ -278,10 +260,6 @@ class TestSdkDefaultPathPersistsAndReads:
         session = create_agent_session(model="gpt-4o", session_log=log)
         asyncio.run(session.prompt("hello"))
 
-        # The turn was appended to the injected log (persist path), and context is
-        # rebuilt from it via ConversationTree (read path). The leading entry is
-        # construction's own non-authoritative `agent_spec` provenance record (W2,
-        # NODE-ADDRESSABLE-AGENTS.md); the turn itself is plain `message` entries.
         kinds = [e["type"] for e in log.entries()]
         assert kinds[0] == "customEntry"
         assert kinds[1:] and all(k == "message" for k in kinds[1:])
@@ -302,3 +280,54 @@ class TestSdkDefaultPathPersistsAndReads:
         log = InMemorySessionLog()
         session = create_agent_session(model="gpt-4o", session_log=log)
         assert session.state.session_id == log.id
+
+
+class TestEntryTimestampIsTheEventTime:
+    """An entry's ``timestamp`` says when the event happened, not when the log
+    was written — a whole turn persists in one pass, so the write time collapses
+    every completion onto one millisecond (docs/MESSAGE-TIMESTAMPS.md §1)."""
+
+    def test_message_timestamp_drives_the_entry(self):
+        log = InMemorySessionLog()
+        log.append_message({"role": "user", "content": "hi", "timestamp": 1_700_000_000_000})
+        entry = log.entries()[-1]
+        assert entry["timestamp"] == "2023-11-14T22:13:20.000Z"
+
+    def test_one_turn_persisted_at_once_keeps_distinct_entry_times(self):
+        """The defect this fixes: four completions written in one pass used to
+        share a millisecond, so nothing downstream could order or time them."""
+        log = InMemorySessionLog()
+        stamps = [1_700_000_000_000, 1_700_000_004_000, 1_700_000_009_000]
+        for stamp in stamps:
+            log.append_message({"role": "assistant", "content": [], "timestamp": stamp})
+        written = [e["timestamp"] for e in log.entries()]
+        assert len(set(written)) == 3
+        assert written == sorted(written)
+
+    def test_an_entry_with_no_event_clock_takes_the_write_time(self):
+        """A navigate has no event of its own; so does a message carrying None."""
+        log = InMemorySessionLog()
+        log.append_message({"role": "assistant", "content": [], "timestamp": None})
+        assert log.entries()[-1]["timestamp"].endswith("Z")
+
+
+class TestNormalizeLoadedEntries:
+    """The ONE place a stored 0 is interpreted (docs/MESSAGE-TIMESTAMPS.md §2)."""
+
+    def test_legacy_assistant_zero_becomes_none(self):
+        entries = [{"type": "message", "message": {"role": "assistant", "timestamp": 0}}]
+        assert normalize_loaded_entries(entries)[0]["message"]["timestamp"] is None
+
+    def test_real_timestamps_are_untouched(self):
+        entries = [{"type": "message", "message": {"role": "assistant", "timestamp": 1699999999999}}]
+        assert normalize_loaded_entries(entries)[0]["message"]["timestamp"] == 1699999999999
+
+    def test_a_user_zero_is_left_alone(self):
+        """Only ``openai-completions`` fabricated a zero, and only on assistant
+        messages; rewriting any other role would invent a claim about the data."""
+        entries = [{"type": "message", "message": {"role": "user", "timestamp": 0}}]
+        assert normalize_loaded_entries(entries)[0]["message"]["timestamp"] == 0
+
+    def test_a_non_message_entry_is_left_alone(self):
+        entries = [{"type": "navigate", "timestamp": "2026-01-01T00:00:00.000Z"}]
+        assert normalize_loaded_entries(entries)[0]["timestamp"] == "2026-01-01T00:00:00.000Z"

@@ -13,15 +13,18 @@ Reference: docs/SESSION-UX-REDESIGN.md §6, §5.7, §5.8.
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+
+from tau_agent_core.commands import FRONTEND_COMMANDS
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Input, Static
 
 from tau_agent_core.session_catalog import SessionInfo
-from tau_coding_agent.app import ChatInput, Parley
+from tau_coding_agent.app import TauApp
 from tau_coding_agent.backends import create_backend
 from tau_coding_agent.session_picker import (
     SCOPE_ALL,
@@ -30,27 +33,22 @@ from tau_coding_agent.session_picker import (
     elide_start,
     format_age,
     home_relative,
+    matches_query,
     search_text,
 )
+from tau_coding_agent import chat_widgets
 
-#: A directory this process is definitely not running in, so a session written
-#: for it must NOT appear in the cwd-scoped listing. It never has to exist: the
-#: cwd is an on-disk *directory name* under the session base (§5.1), not a path
-#: the picker resolves.
 OTHER_CWD = "/nowhere/another-project"
 
 
 @pytest.fixture
-def app(make_app) -> Parley:
-    # Sandboxing, config and an injected file catalog come from ``make_app``
-    # (tests/conftest.py). No real backend is ever built: ``on_chat_selected``
-    # only needs ``create_backend`` to return something.
+def app(make_app) -> TauApp:
     return make_app(create_backend=lambda cfg: object())
 
 
 @pytest.fixture
-def dispatch_app(make_app) -> Parley:
-    """A Parley on REAL ``TauBackend``s, for the ``/resume`` surface.
+def dispatch_app(make_app) -> TauApp:
+    """A TauApp on REAL ``TauBackend``s, for the ``/resume`` surface.
 
     A slash command is resolved inside ``AgentSession.submit`` and comes back as
     a ``CommandOutcome``, so a backend that is a bare ``object()`` cannot dispatch
@@ -61,13 +59,13 @@ def dispatch_app(make_app) -> Parley:
     return make_app(create_backend=create_backend)
 
 
-async def submit(app: Parley, text: str):
+async def submit(app: TauApp, text: str):
     """Type *text* into the chat input and submit it, exactly as a human would."""
-    chat_input = app.query_one("#chat-input", ChatInput)
+    chat_input = app.query_one("#chat-input", chat_widgets.ChatInput)
     return await app.on_input_submitted(Input.Submitted(chat_input, text))
 
 
-def seed(app: Parley, cwd: str, name: str, *, turns: int = 1):
+def seed(app: TauApp, cwd: str, name: str, *, turns: int = 1):
     """Write one named session for *cwd* through the app's own catalog."""
     session = app.session_catalog.create(cwd, "m", "openai", system_prompt="sys", name=name)
     for index in range(turns):
@@ -76,7 +74,7 @@ def seed(app: Parley, cwd: str, name: str, *, turns: int = 1):
     return session
 
 
-async def open_picker(app: Parley, pilot) -> SessionPickerModal:
+async def open_picker(app: TauApp, pilot) -> SessionPickerModal:
     """Run the resume action and wait until the modal has its rows."""
     app.action_resume_session()
     for _ in range(40):
@@ -106,11 +104,6 @@ def refs(modal: SessionPickerModal) -> list[str]:
     return [str(key.value) for key in table.rows]
 
 
-# ---------------------------------------------------------------------------
-# Pure helpers — the SessionInfo → row reading
-# ---------------------------------------------------------------------------
-
-
 NOW = datetime(2026, 8, 21, 12, 0, 0, tzinfo=timezone.utc)
 
 
@@ -130,7 +123,7 @@ NOW = datetime(2026, 8, 21, 12, 0, 0, tzinfo=timezone.utc)
     ],
 )
 def test_format_age_uses_the_largest_whole_unit(delta: timedelta, expected: str) -> None:
-    """"5m", "2d" — the scan metric §6 asks for, one unit, always truncating down."""
+    """ "5m", "2d" — the scan metric §6 asks for, one unit, always truncating down."""
     assert format_age(NOW - delta, NOW) == expected
 
 
@@ -183,6 +176,53 @@ def test_search_text_survives_an_unnamed_session() -> None:
     assert search_text(info(first_message="hello")).strip() == "hello"
 
 
+class TestTheFilterIsBounded:
+    """Regression: ``textual.fuzzy.Matcher`` OOM-killed the picker.
+
+    ``FuzzySearch._match`` collects EVERY strictly-increasing placement of the
+    query's letters over the candidate into one list (``fuzzy.py:122-146``).
+    Textual matches command names, which are short; this filter matches whole
+    conversation text, which is not. Measured against a 528-character haystack,
+    the query ``what is`` exhausted a 2 GB address space —
+    docs/SESSION-UX-REDESIGN.md §6.1.
+    """
+
+    def test_every_term_must_appear(self) -> None:
+        hay = "add a NATS bus extension so a webhook can start a turn"
+        assert matches_query("nats webhook", hay) is True
+        assert matches_query("nats compaction", hay) is False
+
+    def test_terms_may_be_in_any_order(self) -> None:
+        """A person remembers two things about a conversation, not their order."""
+        assert matches_query("webhook nats", "add a NATS bus extension for a webhook")
+
+    def test_matching_is_case_insensitive(self) -> None:
+        assert matches_query("NATS", "add a nats bus extension")
+
+    def test_an_empty_query_admits_everything(self) -> None:
+        assert matches_query("   ", "anything at all")
+
+    def test_a_phrase_that_used_to_be_unbounded_now_returns(self) -> None:
+        """The reported line, against a haystack far past where the old matcher
+        died. What is held is that it answers at all, and quickly."""
+        hay = (
+            "the user asked what the harness does and how the loop is wired "
+            "together and then we went through the streaming events "
+        ) * 40
+        started = time.perf_counter()
+        assert matches_query("what is", hay) is True
+        assert matches_query("what compaction", hay) is False
+        assert time.perf_counter() - started < 0.5
+
+    def test_a_query_may_span_the_three_fields(self) -> None:
+        """What ``search_text``'s one-string haystack is for: the name and the
+        first message are different fields and one query reaches both."""
+        haystack = search_text(
+            info(name="compaction anchor", first_message="it read session_manager")
+        )
+        assert matches_query("compaction session_manager", haystack)
+
+
 def test_elide_start_cuts_the_front_and_marks_it() -> None:
     """The opposite end from ``app._elide``: a path's identity is its tail."""
     cut = elide_start("/home/john/Development/agent-harness-py", 20)
@@ -205,11 +245,6 @@ def test_home_relative_folds_only_an_exact_home_prefix() -> None:
     assert home_relative(f"{home}/Development/tau") == "~/Development/tau"
     assert home_relative(f"{home}ny/Development") == f"{home}ny/Development"
     assert home_relative("/srv/work") == "/srv/work"
-
-
-# ---------------------------------------------------------------------------
-# The modal, driven through the real app
-# ---------------------------------------------------------------------------
 
 
 async def test_picker_lists_only_this_directorys_sessions(app) -> None:
@@ -248,8 +283,6 @@ async def test_tab_widens_the_scope_to_every_directory(app) -> None:
             "elsewhere: unrelated work",
             "here: fix the accumulator",
         ]
-        # The directory column exists only in all-scope: in cwd scope every row
-        # would carry the same value.
         assert [str(column.label) for column in modal.query_one(DataTable).columns.values()] == [
             "Session",
             "Updated",
@@ -367,7 +400,7 @@ async def test_an_empty_directory_says_so_rather_than_showing_nothing(app) -> No
 
 
 async def test_the_status_line_counts_the_filtered_rows(app) -> None:
-    """"1 of 2" while filtering, "2" when not — the count says which it is."""
+    """ "1 of 2" while filtering, "2" when not — the count says which it is."""
     async with app.run_test() as pilot:
         await pilot.pause()
         seed(app, os.getcwd(), "port the compaction anchor from pi")
@@ -423,32 +456,36 @@ async def test_a_long_title_is_elided_rather_than_wrapped(app) -> None:
         assert table.get_row_height(next(iter(table.rows))) == 1
 
 
-# ---------------------------------------------------------------------------
-# §7 — one action, three surfaces. The palette entry, the ``/resume`` slash
-# command and ``--resume`` are three BINDINGS to ``action_resume_session``, not
-# three implementations: what each of these tests pins is the binding, and
-# ``test_the_three_surfaces_are_one_handler`` pins that there is only one thing
-# behind them. (The CLI end of the third — ``args.resume`` reaching
-# ``Parley(resume=…)`` — is tests/test_cli.py's, where the parser lives.)
-# ---------------------------------------------------------------------------
-
-
 async def test_the_palette_offers_resume(app) -> None:
-    """Ctrl+P → "Resume session…" is how the picker is reachable at all today.
+    """Ctrl+P → "/resume" is how the picker is reachable at all today.
 
     Read off ``get_system_commands`` rather than driven through the palette
-    widget: what this pins is that the entry EXISTS and calls the action, which
-    is the part a later edit to that long generator can drop by accident.
+    widget: what this pins is that the entry EXISTS, which is the part a later
+    edit to that long generator can drop by accident. The title is the slash
+    command's own name because the palette now projects the core's vocabulary
+    instead of spelling each built-in a second way.
     """
     async with app.run_test() as pilot:
         await pilot.pause()
         commands = {command.title: command for command in app.get_system_commands(app.screen)}
-        assert "Resume session…" in commands
-        assert commands["Resume session…"].callback == app.action_resume_session
+        assert "/resume" in commands
+        assert commands["/resume"].help == FRONTEND_COMMANDS["resume"]
+
+
+async def test_the_palette_offers_every_built_in(app) -> None:
+    """The projection, asserted as one: a flow in the core's table is in the palette.
+
+    This is what stops the two vocabularies drifting — before it, ``/fork`` had no
+    palette entry at all and nothing said so.
+    """
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        titles = {command.title for command in app.get_system_commands(app.screen)}
+        assert {f"/{name}" for name in FRONTEND_COMMANDS} <= titles
 
 
 async def test_resume_true_opens_the_picker_over_the_first_frame(make_app) -> None:
-    """``Parley(resume=True)`` — the seam ``tau --resume`` needs from cli.py.
+    """``TauApp(resume=True)`` — the seam ``tau --resume`` needs from cli.py.
 
     Deferred to ``call_after_refresh``: a screen pushed during ``on_mount`` is
     placed against a base screen that has not laid out yet.
@@ -544,16 +581,12 @@ async def test_the_three_surfaces_are_one_handler(dispatch_app) -> None:
 
         # Surface 1 — the command palette.
         commands = {c.title: c for c in dispatch_app.get_system_commands(dispatch_app.screen)}
-        commands["Resume session…"].callback()
+        commands["/resume"].callback()
 
         # Surface 2 — the slash command.
         await submit(dispatch_app, "/resume")
         await pilot.pause()
 
-        # Surface 3 — ``--resume``, which is read once in ``on_mount``. Calling
-        # the action the same way the mount hook does keeps this a test of the
-        # BINDING; that the flag reaches it is
-        # ``test_resume_true_opens_the_picker_over_the_first_frame``'s job.
         dispatch_app._resume_on_start = True
         dispatch_app.on_mount()
         for _ in range(20):
@@ -562,14 +595,6 @@ async def test_the_three_surfaces_are_one_handler(dispatch_app) -> None:
                 break
 
         assert calls == ["resume", "resume", "resume"]
-
-
-# ---------------------------------------------------------------------------
-# The dialog's geometry — the rules test_tui_appearance applies to every scene,
-# applied here instead. The picker is deliberately NOT a scene: its Updated
-# column is a live clock, and scenes.py's "no live data" rule is what makes the
-# scene set snapshotable.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("size", [(120, 40), (80, 24)], ids=lambda s: f"{s[0]}x{s[1]}")

@@ -13,7 +13,7 @@ than omitting it. A manual that skips the unfinished parts teaches the reader
 that a gesture is broken when it is only unbuilt.
 
 Everything here was read out of `tau-coding-agent/src/tau_coding_agent/app.py`
-(`SessionTreeModal`, `ZoneTree`, `TreeDetailPane`, `Parley.action_browse_tree`)
+(`SessionTreeModal`, `ZoneTree`, `TreeDetailPane`, `TauApp.action_browse_tree`)
 and `tau-agent-core/src/tau_agent_core/conversation_tree.py`. It has not been
 checked against a running terminal.
 

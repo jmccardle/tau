@@ -30,12 +30,6 @@ from tau_agent_core.sdk import (
     _load_extensions,
 )
 
-# ---------------------------------------------------------------------------
-# Extension source fixtures
-# ---------------------------------------------------------------------------
-
-# A sync register() that registers a uniquely-named tool. Presence of the tool
-# on the loaded extension's api proves register(api) was actually invoked.
 _SYNC_EXT = """
 async def _exec(tool_call_id, params, signal, on_update, ctx):
     return {"content": [{"type": "text", "text": "ok"}]}
@@ -75,11 +69,6 @@ def _write(path: Path, name: str, template: str = _SYNC_EXT) -> Path:
 
 def _tool_names(loaded: LoadedExtension) -> list[str]:
     return [t.name for t in loaded.api.get_all_tools()]
-
-
-# ---------------------------------------------------------------------------
-# register(api) is invoked (not returned un-called)
-# ---------------------------------------------------------------------------
 
 
 class TestRegisterInvoked:
@@ -128,11 +117,6 @@ class TestRegisterInvoked:
         assert made[0] is not made[1]
         # The factory is path-aware (S24): each api is keyed by its file path.
         assert paths == [str(ext_a), str(ext_b)]
-
-
-# ---------------------------------------------------------------------------
-# Discovery vs explicit; -ne suppresses discovery but keeps -e
-# ---------------------------------------------------------------------------
 
 
 class TestDiscoveryAndExplicit:
@@ -194,11 +178,6 @@ class TestDiscoveryAndExplicit:
         assert "pkg_tool" in _tool_names(result.extensions[0])
 
 
-# ---------------------------------------------------------------------------
-# Error policy: broken discovered collected, broken explicit raises
-# ---------------------------------------------------------------------------
-
-
 class TestErrorPolicy:
     async def test_broken_discovered_collected_others_load(self, tmp_path):
         """A broken discovered ext -> errors[]; the good ones still load."""
@@ -249,9 +228,6 @@ class TestErrorPolicy:
         with pytest.raises(FileNotFoundError):
             await _load_extensions([str(tmp_path / "nope.py")], discover=False)
 
-    # collect_explicit_errors: the TUI can't abort mid-load, so an explicit failure
-    # is demoted to a collected error (same as a discovered one) and the good ones
-    # stay loaded — closing the /extensions split-brain (docs/EXTENSIONS-DEMO-ROADMAP.md).
     async def test_broken_explicit_collected_when_opted_in(self, tmp_path):
         """collect_explicit_errors: a broken -e -> errors[]; the good -e still loads."""
         good = _write(tmp_path / "good.py", "good_tool")
@@ -277,11 +253,6 @@ class TestErrorPolicy:
         assert result.extensions == []
         assert len(result.errors) == 1
         assert result.errors[0].path.endswith("noreg.py")
-
-
-# ---------------------------------------------------------------------------
-# Dedup by resolved path, first-wins
-# ---------------------------------------------------------------------------
 
 
 class TestDedup:
@@ -310,11 +281,6 @@ class TestDedup:
         result = await _load_extensions([str(ext), weird], discover=False)
 
         assert len(result.extensions) == 1
-
-
-# ---------------------------------------------------------------------------
-# Result shape + discovery helper
-# ---------------------------------------------------------------------------
 
 
 class TestResultShape:

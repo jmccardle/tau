@@ -53,18 +53,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Generic, Protocol, TypeVar, cast
 
-#: One durable record. ``customEntry.data`` is a JSON object, so a record is a
-#: dict by default; a typed :class:`TreeStore` maps it to/from ``T`` via
-#: ``encode`` / ``decode``.
 T = TypeVar("T")
 
-#: The tree entry KIND :class:`TreeStore` records live in (S39). Kept in sync
-#: with ``SessionLog.append_custom_entry`` / ``ConversationTree``.
 CUSTOM_ENTRY_KIND = "customEntry"
 
-#: Cross-session file-store root (``FileStore``). Resolved lazily via
-#: :func:`_default_state_dir` so tests can redirect ``$HOME`` and never touch a
-#: real ``~/.tau``.
 STATE_DIR_NAME = "ext-state"
 
 
@@ -265,8 +257,6 @@ def _default_state_dir() -> Path:
     return Path.home() / ".tau" / STATE_DIR_NAME
 
 
-#: Sentinel for :meth:`FileStore.load` — distinguishes "no default supplied"
-#: (raise on a missing file) from an explicit ``default=None``.
 _UNSET: Any = object()
 
 

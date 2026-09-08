@@ -116,8 +116,6 @@ async def test_agent_plays_a_full_legal_game_through_the_loop() -> None:
     assert record.ply_evals[0].side == WHITE
     if len(record.ply_evals) > 1:
         assert record.ply_evals[1].side == BLACK
-    # One agent move-phase per White ply; the fake submitted a legal move each time
-    # (play_move validated it, so reaching here means no illegal move slipped through).
     white_plies = sum(1 for pe in record.ply_evals if pe.side == WHITE)
     assert len(record.move_tool_calls) == white_plies
     assert calls["n"] == white_plies

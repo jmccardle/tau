@@ -56,10 +56,6 @@ def _model(name: str, provider: str = "openai", context_window: int = 8192) -> M
     )
 
 
-#: Deliberately NOT in sorted order, and with three distinguishing traits per
-#: entry (id != config key, differing providers, differing context windows):
-#: a verb that echoed the config key as the id, or the ACTIVE model's
-#: provider/window for every row, would pass against a uniform fixture.
 _MODELS: dict[str, Model] = {
     "zeta": _model("zeta", "anthropic", 200000),
     "alpha": _model("alpha", "openai", 8192),
@@ -142,10 +138,7 @@ def test_get_models_is_a_tier_b_read_with_schemas() -> None:
     assert entry.declined_because is None
     assert entry.result_schema is not None
     assert entry.result_schema["required"] == ["models"]
-    # A read takes no params at all (the same NO_PARAMS_SCHEMA object every
-    # other read on the table uses, so an unexpected param is refused by
-    # `validate_params` before the handler runs).
-    assert entry.params_schema is commands.NO_PARAMS_SCHEMA
+    assert entry.params_schema == commands.NO_PARAMS_SCHEMA
 
 
 async def test_an_unexpected_param_is_refused(handler: RPCHandler) -> None:

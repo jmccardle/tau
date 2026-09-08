@@ -39,10 +39,6 @@ async def main():
     second_turn = await session.prompt("Read hello.txt")
     print(f"Second turn produced {len(second_turn)} message(s)")
 
-    # 5. prompt() returns only THIS turn's messages, not the whole conversation.
-    #    session.messages is the running transcript, so this total is larger than
-    #    either turn above. Mixing the two up is the usual way a caller ends up
-    #    re-sending history the session already holds.
     print("\nDone!")
     print(f"Total messages in the session: {len(session.messages)}")
 

@@ -114,8 +114,6 @@ def main() -> int:
                     t = tallies[key]
                     t["n"] += 1
                     if r_new is None or r_old is None:
-                        # Both live under the same root and limit spans the haystack,
-                        # so this should be unreachable. Count it rather than assume.
                         t["missing"] += 1
                         continue
                     if r_new < r_old:

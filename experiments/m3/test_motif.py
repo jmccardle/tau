@@ -75,8 +75,6 @@ def test_prompt_contains_rendered_position() -> None:
     payload = captured["payload"]
     assert isinstance(payload, dict)
     prompt = payload["messages"][0]["content"]
-    # The ASCII rendering of the position is present (rank labels + the initial
-    # back-rank pieces), so the model is keying off the actual board.
     assert "R N Q K N R" in prompt
     assert "a b c d e f" in prompt
     # No grammar is sent: this is free-form analysis, not a constrained move.
@@ -84,10 +82,6 @@ def test_prompt_contains_rendered_position() -> None:
 
 
 def test_prompt_does_not_ship_a_motif_taxonomy() -> None:
-    # The §4.6 anti-goal, asserted mechanically: the prompt must not hand the
-    # model a fixed menu of motif names to choose from — the vocabulary is the
-    # model's. Guard against both an enumerated "choose from: ..." list and the
-    # specific motif NAMES a taxonomy would smuggle in.
     board = Board()
     captured: dict[str, object] = {}
     extractor = MotifExtractor("http://test.invalid", client=_fake_client("ok", captured))
@@ -125,8 +119,6 @@ def test_dump_descriptors_one_per_position() -> None:
 
 
 def test_dump_descriptors_preserves_distinct_positions() -> None:
-    # Distinct positions must yield distinct provenance keys (the review pass
-    # relies on being able to trace a descriptor back to its position).
     boards = [
         Board(),
         Board.from_piece_map({"a1": "K", "f6": "k"}, side=WHITE),

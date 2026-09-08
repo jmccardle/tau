@@ -21,20 +21,15 @@ import pytest
 
 from textual.app import App, ComposeResult
 
-from tau_coding_agent.app import ChatDisplay, _ExtensionUIDelegate
 from tau_coding_agent.backends import create_backend
 from tau_coding_agent.chat_widgets import ToolBox
+from tau_coding_agent import extension_ui, transcript
 
 
 @pytest.fixture
 def app(make_app):
-    """A Parley wired to REAL TauBackends (TauBackend has no network in __init__)."""
+    """A TauApp wired to REAL TauBackends (TauBackend has no network in __init__)."""
     return make_app(create_backend=create_backend)
-
-
-# ---------------------------------------------------------------------------
-# 1. api.notify is wired into the TUI
-# ---------------------------------------------------------------------------
 
 
 async def test_new_chat_calls_set_ui_delegate(app, monkeypatch):
@@ -59,10 +54,10 @@ async def test_new_chat_calls_set_ui_delegate(app, monkeypatch):
 
         # set_ui_delegate was called with the app's notify delegate...
         assert len(seen) == 1
-        assert isinstance(seen[0], _ExtensionUIDelegate)
-        # ...and the effect landed: the shared ExtensionUI is in TUI mode.
+        assert isinstance(seen[0], extension_ui._ExtensionUIDelegate)
+        # ...and the effect landed: the shared ExtensionUI has a live surface.
         ctx = app.current_backend.agent_session._extension_api.context
-        assert ctx._ui._mode == "tui"
+        assert ctx._ui.interactive is True
 
 
 async def test_extension_notify_paints_via_app_notify(app, monkeypatch):
@@ -97,14 +92,9 @@ async def test_extension_notify_paints_via_app_notify(app, monkeypatch):
     assert ("all good", "information") in painted
 
 
-# ---------------------------------------------------------------------------
-# 2. A veto renders as a visibly-blocked line
-# ---------------------------------------------------------------------------
-
-
 class _Harness(App):
     def compose(self) -> ComposeResult:
-        yield ChatDisplay()
+        yield transcript.ChatDisplay()
 
 
 async def test_veto_renders_as_blocked_toolbox():
@@ -112,14 +102,12 @@ async def test_veto_renders_as_blocked_toolbox():
     ToolBox: box-error class, ✗ mark, and the reason in the body."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
 
         display.add_message("user", "write outside scope", source="verbatim")
         await display.begin_exchange()
         await display.handle_stream_event({"kind": "turn_start", "turn_index": 0})
         await pilot.pause()
-        # These are exactly the events a veto now emits (tool_execution_start ->
-        # tool_execution_end(is_error=True)), normalized by TauBackend.stream_chat.
         await display.handle_stream_event(
             {"kind": "tool_call", "id": "c1", "name": "write", "arguments": {"path": "/etc/x"}}
         )
@@ -142,7 +130,7 @@ async def test_veto_renders_as_blocked_toolbox():
         assert box.has_result is True
         assert box.has_class("box-error")
         assert box.title.startswith("✗")
-        assert "denied by policy" in box._result_md._markdown
+        assert "denied by policy" in box.result_markdown
 
 
 async def test_extension_veto_renders_blocked_by_extension():
@@ -155,7 +143,7 @@ async def test_extension_veto_renders_blocked_by_extension():
     AgentEvent's new markers (S50)."""
     async with _Harness().run_test() as pilot:
         await pilot.pause()
-        display = pilot.app.query_one(ChatDisplay)
+        display = pilot.app.query_one(transcript.ChatDisplay)
 
         display.add_message("user", "write outside scope", source="verbatim")
         await display.begin_exchange()
@@ -187,5 +175,5 @@ async def test_extension_veto_renders_blocked_by_extension():
         assert not box.has_class("box-error")
         assert box.title.startswith("⛔")
         # The body reads "blocked by <ext-stem>: <reason>".
-        body = box._result_md._markdown
+        body = box.result_markdown
         assert "blocked by 30_permission_gate: denied by policy" in body

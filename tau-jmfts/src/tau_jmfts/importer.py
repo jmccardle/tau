@@ -61,25 +61,6 @@ from tau_jmfts.store import (
 )
 from tau_jmfts.store import JmftsSessionLog
 
-# Cross-reference fields that name ANOTHER entry by id (Sec2.3) -- these must
-# be remapped id-for-id as new JMFTS documents are created. Deliberately
-# FIELD-keyed, not kind-keyed: ``store._remap_cross_refs`` (fork's own
-# remapper) already matches this way and is the single source of truth, so a
-# future splice-anchor kind that reuses ``firstKeptId`` -- as ``elide`` (W3,
-# NODE-ADDRESSABLE-AGENTS.md) already does -- is covered without this module
-# being told its name. A kind-keyed dict here once mapped only
-# ``navigate``/``compaction``/``branch_summary`` and silently forwarded
-# ``elide``'s ``firstKeptId`` unremapped, copying a stale file-store id into
-# the JMFTS tree; ``ConversationTree`` still finds the anchor (its kind is in
-# ``_SPLICE_ANCHOR_KINDS``) but the forward scan for the dangling id never
-# matches, so every ancestor of the anchor silently drops out of
-# ``context_for`` -- no exception, exactly the corruption ``append_elide``'s
-# own ValueError exists to prevent. Every other kind (message, customMessage,
-# customEntry, model_change, thinking_change, session_info, and any future/
-# unknown kind) simply has none of these fields and is copied verbatim -- the
-# whole point of tolerating unknown kinds (plan Sec1 research note: "unknown
-# entry types are already tolerated").
-
 
 def _read_jsonl(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Stream a file-store ``.jsonl`` session: header (line 1) + entries."""
@@ -169,11 +150,6 @@ def import_session(
             old_ref = payload[field]
             payload[field] = old_to_new[old_ref] if old_ref is not None else None
         for field in _PROVENANCE_REF_FIELDS:
-            # Remapped when the source came in with the file (the ordinary case for
-            # a whole-log import), kept as it was when it did not. Unlike a splice
-            # anchor, ``copiedFrom`` is history rather than structure: nothing folds
-            # on it, so an id this import cannot resolve costs a hop of provenance
-            # and not a region of context. See ``store._PROVENANCE_REF_FIELDS``.
             old_ref = payload.get(field)
             if old_ref is not None and old_ref in old_to_new:
                 payload[field] = old_to_new[old_ref]

@@ -31,9 +31,6 @@ import dataclasses
 
 from tau_coding_agent.cli import CLIArgs
 
-#: Rejected by ``cli.py``'s ``--mode rpc`` block: passing one is exit code 2
-#: with a message naming the wire verb that replaces it. Pinned by
-#: ``test_cli.py``/``test_session_dir_flag.py``, not here.
 REJECTED_UNDER_RPC = {
     "print_mode",
     "messages",
@@ -45,9 +42,6 @@ REJECTED_UNDER_RPC = {
     "store",
 }
 
-#: Read by ``rpc_mode.run_rpc`` (directly or through the shared
-#: ``resolve_model_config``/``create_backend``/``load_extensions`` path it
-#: takes with ``--print``) and changing what the run does.
 HONORED_UNDER_RPC = {
     "mode",
     "model",
@@ -63,59 +57,24 @@ HONORED_UNDER_RPC = {
     "ui_defaults",
     "system_prompt",
     "append_system_prompt",
-    # -nc rides the same `resolve_model_config` -> `create_backend` path: it
-    # lands on the model config as `no_context_files`, and `TauBackend` passes
-    # it to `_build_system_prompt`, so an RPC run really does start with no
-    # AGENTS.md/CLAUDE.md in its prompt. Checked against rpc_mode.py:226,248.
     "no_context_files",
     "thinking",
     "session_dir",
-    # --max-turns rides the same `resolve_model_config` -> `create_backend` path
-    # as -nc: it lands on the model config as `max_turns`, `TauBackend` forwards
-    # it to `AgentSession`, and `AgentSession._turn_cap` puts it in the
-    # `AgentLoopConfig`. Checked against rpc_mode.py:225,249.
     "max_turns",
-    # The field this file exists because of. `--mode rpc` selects
-    # `session_catalog.create_ephemeral` for the startup session when it is
-    # set, which is what `--print` has always done on the same seam.
     "no_session",
 }
 
-#: Accepted and genuinely global — they do not describe the run's shape, so
-#: "ignored by RPC mode" is not a thing they could be.
 GLOBAL_UNDER_RPC = {
     "verbose",
 }
 
-#: One-shot commands that ``cli.py`` dispatches and exits from BEFORE the
-#: ``--mode rpc`` branch is reached, and that already refuse every mode-shaped
-#: flag combination in their own validation block. ``--mode rpc`` never sees
-#: them because there is no run left to configure.
 TERMINAL_BEFORE_RPC = {
     "import_session",
     "export_session",
 }
 
-#: Flags that configure the interactive TUI's appearance and reach no run at all.
-#: ``--mode rpc`` and ``--print`` render no TUI, so there is nothing for these to
-#: be ignored *by* — the surface they address does not exist in those modes.
-#:
-#: This is a distinct disposition from :data:`GLOBAL_UNDER_RPC`, not a softer
-#: spelling of it: a global flag still does something in RPC mode, and one of
-#: these provably cannot. It is also distinct from :data:`REJECTED_UNDER_RPC`,
-#: where ``--resume`` sits — that flag names a workflow ``--mode rpc`` replaces
-#: with a wire verb, so passing it means the caller misunderstood the mode.
-#: Passing ``--fun`` to an RPC server means nothing of the sort, and exiting 2
-#: over a tagline would be a worse answer than doing nothing.
 TUI_ONLY = {
-    # tau_coding_agent.tagline: picks the startup tagline at random. Reaches one
-    # string on one widget on the empty chat pane, and stops there.
     "fun",
-    # tau_coding_agent.themes: the TUI colour theme for this run. Read in exactly
-    # one place — ``_launch_tui`` puts it in ``cli_overrides`` — and ``rpc_mode.py``
-    # never mentions it. Checked: ``grep -n theme cli.py`` is the flag definition,
-    # the ``CLIArgs`` field, the ``parse_cli_args`` line and the ``_launch_tui``
-    # block, and nothing else.
     "theme",
 }
 

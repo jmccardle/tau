@@ -37,13 +37,6 @@ from los_alamos import (
     square_to_coord,
 )
 
-# --- Variant FEN (6x6, no bishops) ------------------------------------------
-#
-# Standard FEN generalises cleanly: ranks are listed from the top (rank 6) down
-# to rank 1, '/'-separated, each rank a run of piece letters and empty-run
-# digits; then side to move. The variant has no castling or en-passant, so those
-# fields are always '-'. Files a-f, ranks 1-6.
-
 
 def board_to_fen(board: Board) -> str:
     """Serialise a position to variant FEN, e.g. the start position is
@@ -106,13 +99,6 @@ def board_from_fen(fen: str) -> Board:
     return board
 
 
-# --- Attacker enumeration (the engine only exposes a boolean) ----------------
-#
-# `Board.is_square_attacked` returns whether ANY piece of a colour hits a square;
-# the tools need the *list* of attackers/defenders. This mirrors that method's
-# exact geometry (pawn direction, knight L, king adjacency, orthogonal rook/queen,
-# diagonal queen-only) but collects source squares instead of returning early.
-
 _KNIGHT_DELTAS = ((1, 2), (2, 1), (2, -1), (1, -2), (-1, -2), (-2, -1), (-2, 1), (-1, 2))
 _KING_DELTAS = ((1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1))
 _ROOK_DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
@@ -125,8 +111,6 @@ def attackers_of(board: Board, sq: int, by_white: bool) -> list[int]:
     sqs = board.squares
     out: list[int] = []
 
-    # Pawn: a white pawn attacks diagonally upward, so `sq` is hit by a white
-    # pawn one rank below diagonally (and mirror for black).
     pawn_char = "P" if by_white else "p"
     pawn_rank = r - 1 if by_white else r + 1
     if 0 <= pawn_rank < BOARD_SIZE:
@@ -234,8 +218,6 @@ def piece_info(board: Board, coord: str) -> dict:
             square_to_coord(s) for s in attackers_of(board, src, by_white=white) if s != src
         ],
     }
-    # Move targets only make sense for the side to move; report the self-check
-    # split (reachable-but-illegal) that the user specifically asked for.
     if board.side == color:
         pseudo = {m.to_sq for m in board._pseudo_legal_moves() if m.from_sq == src}
         legal = {m.to_sq for m in board.legal_moves() if m.from_sq == src}

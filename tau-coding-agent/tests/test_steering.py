@@ -16,9 +16,10 @@ from typing import Any
 
 import pytest
 from tau_agent_core.submission import SubmissionResult
-from tau_coding_agent.app import ChatDisplay, ChatInput, Parley, PendingInput
+from tau_coding_agent.app import TauApp
 from tau_coding_agent.backends import TurnStream
 from tau_coding_agent.config import ConfigError
+from tau_coding_agent import chat_widgets, editor_widgets, transcript
 
 
 class _Submit:
@@ -64,8 +65,6 @@ class _SteerBackend:
     async def submit_turn(self, submission, context) -> SubmissionResult:
         self.submissions.append(submission)
         if submission.multitask_strategy == "steer":
-            # The core queues a steer against the running loop and returns
-            # immediately with no messages — it starts no turn of its own.
             return SubmissionResult(accepted=True, submission_id=submission.submission_id)
         await self._released.wait()
         self._released.clear()
@@ -89,7 +88,7 @@ def app(make_app):
 def steer_app(make_app):
     """A running app whose turns block until the test releases them."""
 
-    def _build(strategy: str = "steer") -> tuple[Parley, _SteerBackend]:
+    def _build(strategy: str = "steer") -> tuple[TauApp, _SteerBackend]:
         backend = _SteerBackend()
         app = make_app(
             create_backend=lambda cfg: backend,
@@ -124,23 +123,16 @@ async def _settle(app, backend, pilot, tries: int = 200) -> None:
     raise AssertionError("the app never went idle")
 
 
-# ---------------------------------------------------------------------------
-# §1 — the scroll lock
-# ---------------------------------------------------------------------------
-
-
 class TestFollowingTheTail:
     async def test_new_content_scrolls_down_while_the_reader_is_at_the_bottom(self, app):
         async with app.run_test() as pilot:
             await pilot.pause()
-            display = app.query_one(ChatDisplay)
+            display = app.query_one(transcript.ChatDisplay)
             for i in range(40):
                 display.add_message("user", f"line {i}", source="verbatim")
             await pilot.pause()
 
             assert display._follow_tail is True
-            # Pumped rather than asserted outright: the scroll lands after the
-            # layout that the mounts queued, not in the same frame as the call.
             await _until(pilot, lambda: display.is_vertical_scroll_end)
 
     async def test_scrolling_up_stops_the_view_being_dragged_back_down(self, app):
@@ -148,7 +140,7 @@ class TestFollowingTheTail:
         must not yank the view back to the bottom on every delta."""
         async with app.run_test() as pilot:
             await pilot.pause()
-            display = app.query_one(ChatDisplay)
+            display = app.query_one(transcript.ChatDisplay)
             for i in range(60):
                 display.add_message("user", f"line {i}", source="verbatim")
             await pilot.pause()
@@ -167,7 +159,7 @@ class TestFollowingTheTail:
         """No separate gesture to learn: being at the bottom IS following."""
         async with app.run_test() as pilot:
             await pilot.pause()
-            display = app.query_one(ChatDisplay)
+            display = app.query_one(transcript.ChatDisplay)
             for i in range(60):
                 display.add_message("user", f"line {i}", source="verbatim")
             await pilot.pause()
@@ -185,7 +177,7 @@ class TestFollowingTheTail:
         document does not describe a place in the new one."""
         async with app.run_test() as pilot:
             await pilot.pause()
-            display = app.query_one(ChatDisplay)
+            display = app.query_one(transcript.ChatDisplay)
             for i in range(60):
                 display.add_message("user", f"line {i}", source="verbatim")
             await pilot.pause()
@@ -199,11 +191,6 @@ class TestFollowingTheTail:
             assert display._follow_tail is True
 
 
-# ---------------------------------------------------------------------------
-# §2 — where a mid-turn line goes
-# ---------------------------------------------------------------------------
-
-
 class TestThePendingBuffer:
     async def test_the_editor_stays_usable_during_a_turn(self, steer_app):
         app, backend = steer_app()
@@ -213,7 +200,7 @@ class TestThePendingBuffer:
             await pilot.pause()
 
             assert app.is_generating is True
-            assert app.query_one("#chat-input", ChatInput).disabled is False
+            assert app.query_one("#chat-input", chat_widgets.ChatInput).disabled is False
 
             await _settle(app, backend, pilot)
 
@@ -230,7 +217,7 @@ class TestThePendingBuffer:
             assert app._pending_steer == ["actually, use ripgrep"]
             assert backend.turn_texts == ["go"]
             assert backend.steer_texts == []
-            pending = app.query_one(PendingInput)
+            pending = app.query_one(editor_widgets.PendingInput)
             assert pending.display is True
             assert "actually, use ripgrep" in pending.text
 
@@ -260,7 +247,7 @@ class TestThePendingBuffer:
         app, backend = steer_app()
         async with app.run_test() as pilot:
             await pilot.pause()
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await app.on_input_submitted(_Submit("go"))
             await pilot.pause()
 
@@ -288,7 +275,7 @@ class TestThePendingBuffer:
             assert backend.turn_texts == ["go", "and then tidy up"]
             assert backend.steer_texts == []
             assert app._pending_steer == []
-            assert app.query_one(PendingInput).display is False
+            assert app.query_one(editor_widgets.PendingInput).display is False
             await _settle(app, backend, pilot)
 
     async def test_enqueue_does_not_deliver_at_a_tool_call(self, steer_app):
@@ -325,12 +312,10 @@ class TestThePendingBuffer:
             await _until(pilot, lambda: backend.steer_texts == ["use ripgrep instead"])
 
             assert app._pending_steer == []
-            assert app.query_one(PendingInput).display is False
+            assert app.query_one(editor_widgets.PendingInput).display is False
             steered = [s for s in backend.submissions if s.multitask_strategy == "steer"][0]
             assert steered.source == "interactive"
             assert steered.submitter == "human"
-            # An `input` hook could rewrite prose into a command, and running
-            # ``/compact`` inside a live turn is what this flag prevents.
             assert steered.expand_commands is False
 
             await _settle(app, backend, pilot)
@@ -354,17 +339,12 @@ class TestThePendingBuffer:
             await _settle(app, backend, pilot)
 
 
-# ---------------------------------------------------------------------------
-# §4 — reclaim
-# ---------------------------------------------------------------------------
-
-
 class TestReclaim:
     async def test_up_on_an_empty_editor_takes_the_buffer_back(self, steer_app):
         app, backend = steer_app()
         async with app.run_test() as pilot:
             await pilot.pause()
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await app.on_input_submitted(_Submit("go"))
             await pilot.pause()
             await app.on_input_submitted(_Submit("wait"))
@@ -376,7 +356,7 @@ class TestReclaim:
 
             assert editor.text == "wait\n\nno, this"
             assert app._pending_steer == []
-            assert app.query_one(PendingInput).display is False
+            assert app.query_one(editor_widgets.PendingInput).display is False
 
             await _settle(app, backend, pilot)
 
@@ -386,7 +366,7 @@ class TestReclaim:
         app, backend = steer_app()
         async with app.run_test() as pilot:
             await pilot.pause()
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await app.on_input_submitted(_Submit("go"))
             await pilot.pause()
             await app.on_input_submitted(_Submit("no, stop"))
@@ -405,7 +385,7 @@ class TestReclaim:
         app, backend = steer_app()
         async with app.run_test() as pilot:
             await pilot.pause()
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await app.on_input_submitted(_Submit("go"))
             await pilot.pause()
             await app.on_input_submitted(_Submit("pending"))
@@ -423,7 +403,7 @@ class TestReclaim:
         app, backend = steer_app()
         async with app.run_test() as pilot:
             await pilot.pause()
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await app.on_input_submitted(_Submit("go"))
             await pilot.pause()
             await app.on_input_submitted(_Submit("pending"))
@@ -446,14 +426,12 @@ class TestReclaim:
         app, backend = steer_app()
         async with app.run_test() as pilot:
             await pilot.pause()
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await app.on_input_submitted(_Submit("go"))
             await pilot.pause()
             await app.on_input_submitted(_Submit("about the old chat"))
             await pilot.pause()
 
-            # Every session swap the app can do — new chat, clear, resume, model
-            # swap — arrives here.
             app._rebind_after_session_swap()
             await pilot.pause()
 
@@ -468,7 +446,7 @@ class TestReclaim:
         app, backend = steer_app()
         async with app.run_test() as pilot:
             await pilot.pause()
-            editor = app.query_one("#chat-input", ChatInput)
+            editor = app.query_one("#chat-input", chat_widgets.ChatInput)
             await app.on_input_submitted(_Submit("go"))
             await pilot.pause()
             await app.on_input_submitted(_Submit("pending line"))
@@ -479,8 +457,6 @@ class TestReclaim:
             await pilot.press("up")
             await pilot.pause()
 
-            # History, not the buffer: "go" and "pending line" were both added to
-            # it, so Up walks back to the newest of them.
             assert editor.text == "pending line"
             assert app._pending_steer == ["pending line"]
 
@@ -489,11 +465,6 @@ class TestReclaim:
     def test_reclaim_with_nothing_pending_reports_nothing(self, make_app):
         app = make_app()
         assert app._reclaim_pending_steer() is None
-
-
-# ---------------------------------------------------------------------------
-# §2 — the setting
-# ---------------------------------------------------------------------------
 
 
 class TestTheSetting:
@@ -520,7 +491,7 @@ class TestTheSetting:
             json.dumps({"models": {}, "steering_strategy": "nope"})
         )
         with pytest.raises(ConfigError, match="steering_strategy"):
-            Parley(session_catalog=FileSessionCatalog(tau_home / "sessions"))
+            TauApp(session_catalog=FileSessionCatalog(tau_home / "sessions"))
 
     def test_the_packaged_default_config_names_a_real_strategy(self):
         import json
@@ -530,11 +501,6 @@ class TestTheSetting:
 
         template = json.loads(DEFAULT_CONFIG_TEMPLATE.read_text())
         assert template[STEERING_CONFIG_KEY] in STEERING_STRATEGIES
-
-
-# ---------------------------------------------------------------------------
-# §5 — showing a delivered steering message
-# ---------------------------------------------------------------------------
 
 
 class _Event:
@@ -580,7 +546,7 @@ class TestRenderingADeliveredSteer:
         exchange, so hoisting it out would put it above content that preceded it."""
         async with app.run_test() as pilot:
             await pilot.pause()
-            display = app.query_one(ChatDisplay)
+            display = app.query_one(transcript.ChatDisplay)
             await display.begin_exchange("lane-1", label=None)
             await pilot.pause()
 
@@ -600,7 +566,7 @@ class TestRenderingADeliveredSteer:
         person's own words as the model's reply."""
         async with app.run_test() as pilot:
             await pilot.pause()
-            display = app.query_one(ChatDisplay)
+            display = app.query_one(transcript.ChatDisplay)
             await display.begin_exchange("lane-1", label=None)
             await display.handle_stream_event({"kind": "turn_start", "lane": "lane-1"})
             await display.handle_stream_event(
@@ -626,10 +592,6 @@ class TestRenderingADeliveredSteer:
             await display.finalize_exchange(context=1, output=1, seconds=1.0, lane="lane-1")
             await pilot.pause()
 
-            # Nothing is promoted here — the last ASSISTANT step still holds a
-            # tool box, which is the pre-existing "no clean final answer" case.
-            # The defect was that the steering message, having no tool box,
-            # looked like one.
             top_level = [w._content for w in display.query("MessageBox") if w.parent is display]
             assert "stop, use ripgrep" not in top_level
 
@@ -638,7 +600,7 @@ class TestRenderingADeliveredSteer:
         middle of an exchange leaves the model's last step promotable."""
         async with app.run_test() as pilot:
             await pilot.pause()
-            display = app.query_one(ChatDisplay)
+            display = app.query_one(transcript.ChatDisplay)
             await display.begin_exchange("lane-1", label=None)
             await display.handle_stream_event({"kind": "turn_start", "lane": "lane-1"})
             await display.handle_stream_event(

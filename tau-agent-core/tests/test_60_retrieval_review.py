@@ -30,6 +30,9 @@ from tau_llm.types import AssistantMessage, Model, TextContent
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_log import InMemorySessionLog
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PATH = _REPO_ROOT / "examples" / "60_retrieval_review.py"
 _spec = importlib.util.spec_from_file_location("retrieval_review_60_example", _PATH)
@@ -52,11 +55,6 @@ def _model() -> Model:
     )
 
 
-# Candidate documents, shaped as JMFTS search hits. Since W15 the demo RETRIEVES its
-# candidates instead of reading a literal list, so retrieval is now network — and is
-# faked here exactly like `complete_simple` is, for the same reason: these tests are
-# about the constrained fan-out, not about JMFTS. Retrieval itself is covered live in
-# tau-jmfts/tests/test_enrich_jmfts.py and test_tools_jmfts.py.
 HITS = [
     (1, "Guide: rotating TLS certs on the edge gateway, incl. cert-manager and ACME."),
     (2, "Recipe: sourdough starter maintenance in cold climates."),
@@ -73,10 +71,6 @@ def session_and_calls(monkeypatch):
     session = AgentSession(session_log=InMemorySessionLog(), model=_model(), api_key="k")
     calls: list[dict[str, Any]] = []
 
-    # Patch the CLASS, not this module's `_retrieve`: load_extensions imports the example
-    # afresh by path, so it gets a different module object than the one imported at the
-    # top of this file — patching that one would silently miss. `JmftsClient` is resolved
-    # from sys.modules by both, so it is the seam they actually share.
     from tau_jmfts.client import JmftsClient
 
     def fake_search(self, query, **kwargs):
@@ -87,8 +81,6 @@ def session_and_calls(monkeypatch):
     async def fake_complete_simple(model, context, options=None):
         opts = options or {}
         calls.append({"messages": context["messages"], "constraints": opts.get("constraints")})
-        # Answer "include" for anything cert/TLS/gateway-ish, else "exclude" — enough
-        # to make the verdict split meaningful without pretending to be a judge.
         doc = context["messages"][-1]["content"].lower()
         verdict = "include" if ("cert" in doc or "tls" in doc) else "exclude"
         return AssistantMessage(
@@ -97,7 +89,7 @@ def session_and_calls(monkeypatch):
             provider="openai",
             model="local-llm",
             stop_reason="stop",
-            timestamp=0,
+            timestamp=_TS,
         )
 
     monkeypatch.setattr("tau_llm.client.complete_simple", fake_complete_simple)

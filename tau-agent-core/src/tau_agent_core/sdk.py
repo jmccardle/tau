@@ -97,9 +97,6 @@ def resolve_model(
         if base_url:
             m.base_url = base_url
         return m
-    # Not a known default — build a generic model from the provider/base_url.
-    # (No provider implements a resolve_model() hook; pi resolves via a
-    # module-level getModel() lookup, so there is no registry path here.)
     return Model(
         id=model,
         name=model,
@@ -111,23 +108,6 @@ def resolve_model(
     )
 
 
-# The seven built-in tool classes, imported statically and mapped by name.
-#
-# This replaced a `{name: (module_name, class_name)}` table walked with
-# `getattr(tools_pkg, …)` + `__import__` (B1). The dynamic form bought nothing at
-# runtime — `tau_agent_core.tools.__init__` already imports all seven eagerly, so
-# both arms resolved the same already-loaded classes — while costing the whole
-# point of this task: `getattr` returns `Any`, so mypy could not see what
-# `_resolve_tools` was building and could not check its own return annotation.
-# Measured, not assumed: with the dynamic form in place, reverting the AgentTool
-# wrap below to a bare `tool_objs.append(tool_obj)` left the gate reporting
-# "Success: no issues found in 68 source files". Static imports make that
-# reversion an error, which is the difference between an annotation mypy enforces
-# and one it merely records.
-#
-# The union type is spelled out rather than hidden behind `type` or a Protocol so
-# the checked edge is a real one: `dict[str, type]` re-erases to `Any` and puts us
-# back where we started.
 _BuiltinToolClass = (
     type[ReadTool]
     | type[WriteTool]
@@ -253,39 +233,13 @@ def _resolve_tools(
     return tool_objs
 
 
-# ─── The single extension loader (E0/S1) ────────────────────────────
-#
-# Verb: ``register(api)``. One loader — file-path importlib, awaits async
-# factories, discovery = global ``~/.tau/extensions`` + explicit paths only
-# (NO project-local dir, NO importlib.metadata entry_points; deferred to the
-# Tier-8 trust gate). Paths are deduped by resolved path, first-wins.
-#
-# Error policy (Fail-Early): a *discovered* extension that fails to load is
-# collected into ``errors`` + logged to stderr and skipped; an *explicit*
-# ``-e`` extension that fails **raises** — the user named it, so silently
-# skipping it is the anti-pattern.
-#
-# Reference: pi loader.ts (discoverAndLoadExtensions / loadExtensions /
-# loadExtension) — coding-agent/src/core/extensions/loader.ts; the returned
-# struct ports pi's LoadExtensionsResult (agent/../types.ts:1590, minus the
-# ``runtime`` field, which lands with the API binding in E1/S3).
-# docs/EXTENSIONS-IMPLEMENTATION.md E0.1.
-
 _GLOBAL_EXTENSIONS_DIR = "~/.tau/extensions"
 
-# Monotonic counter so each load gets a unique synthetic module name (extensions
-# may be re-loaded; distinct names avoid clobbering sys.modules entries).
 _ext_load_counter = 0
 
-#: The two module-level attributes an extension file uses to declare itself
-#: bus-touching (H7/H8, SIM_SPEC_v2 §16.6/§16.10). Deliberately module-level
-#: rather than an ``api.declare_subjects(...)`` call made from inside
-#: ``register(api)``: H8 requires the capability be checked BEFORE the
-#: extension runs, and the only thing readable before ``register(api)`` is
-#: invoked is what the module set at import time — mirroring how ``register``
-#: itself is already a required module-level attribute this loader checks.
 _TOUCHES_BUS_ATTR = "TOUCHES_BUS"
 _SUBJECTS_ATTR = "SUBJECTS"
+_CONFIG_SCHEMA_ATTR = "CONFIG_SCHEMA"
 
 
 @agent_facing(topic="extensions")
@@ -305,6 +259,9 @@ class ExtensionCapabilityError(Exception):
       (``bus_available=False``) — a declared capability the session cannot
       back, refused rather than loaded and left to fail silently the first
       time a handler reaches for a bus it does not have.
+    - the module declares ``CONFIG_SCHEMA`` and it is not a valid form spec.
+      Same discipline: a schema nobody can render is a load error, not a
+      settings screen that comes up empty.
     """
 
 
@@ -316,6 +273,12 @@ class LoadedExtension:
     Narrowed port of pi's ``Extension`` record (coding-agent types.ts:1577) to
     what S1 needs: the source ``path``, the module-level ``register`` factory
     that was invoked, and the ``ExtensionAPI`` it registered against.
+
+    ``config_schema`` is the extension's own ``CONFIG_SCHEMA`` module attribute,
+    normalized by :func:`~tau_agent_core.extension_types.validate_form_spec` at
+    load — the declaration that lets a head render a settings screen for keys
+    only the extension knows. ``None`` means the module declared none, which is
+    every extension written before the attribute existed.
 
     ``content_hash``, ``subjects`` and ``touches_bus`` are H7/H8's addition
     (SIM_SPEC_v2 §16.6/§16.10): the file's identity at load time, and its
@@ -334,6 +297,7 @@ class LoadedExtension:
     content_hash: str = ""
     subjects: tuple[str, ...] = ()
     touches_bus: bool = False
+    config_schema: dict[str, Any] | None = None
 
 
 @agent_facing(topic="extensions")
@@ -490,9 +454,15 @@ async def _load_one_extension(
     and neither calls ``register`` — "refuse rather than discover" means the
     extension's side effects never begin.
 
+    ``CONFIG_SCHEMA`` is read at the same point and for the same reason: it is
+    set at import time, so it can be validated before ``register`` runs. It is a
+    ``ui.form`` spec naming the keys ``api.config`` will hold, and an invalid one
+    raises :class:`ExtensionCapabilityError` too.
+
     Raises on any failure (missing file/spec, missing or non-callable
-    ``register``, an unmet H7/H8 declaration, or an exception raised by
-    ``register``); the caller applies the explicit-vs-discovered error policy.
+    ``register``, an unmet H7/H8 declaration, an invalid ``CONFIG_SCHEMA``, or an
+    exception raised by ``register``); the caller applies the
+    explicit-vs-discovered error policy.
     """
     global _ext_load_counter
 
@@ -517,16 +487,6 @@ async def _load_one_extension(
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     try:
-        # Compile the source FRESH rather than ``spec.loader.exec_module`` — the
-        # default loader reuses a ``__pycache__`` ``.pyc`` keyed by the SOURCE path
-        # (not our unique module name), validated only against the source's mtime
-        # truncated to whole seconds. A runtime ``/extensions reload`` (E10 §6 / S70)
-        # of a file just edited within the same second (especially a same-length
-        # edit) would then re-run the STALE bytecode — the reload silently would not
-        # take effect. ``module_from_spec`` has already set ``__file__`` / ``__path__``
-        # / ``__package__`` on the module (so relative imports inside a package
-        # extension still resolve), so exec'ing the freshly compiled code into it is
-        # equivalent to ``exec_module`` minus the stale-pyc trap.
         source = module_file.read_bytes()
         code = compile(source, str(module_file), "exec")
         exec(code, module.__dict__)
@@ -535,15 +495,8 @@ async def _load_one_extension(
         sys.modules.pop(module_name, None)
         raise
 
-    # Content identity (H7): a sha256 of the exact bytes just compiled, so a
-    # reload of the same path after an on-disk edit is provably a different
-    # condition rather than the same label reused (see LoadedExtension).
     content_hash = hashlib.sha256(source).hexdigest()
 
-    # The declared-capability preflight (H7/H8), BEFORE register is even looked
-    # up — see the docstring. sys.modules is cleaned up on refusal for the same
-    # reason the except above cleans it up: don't leave a half-admitted module
-    # behind for a later import to trip over.
     touches_bus = bool(getattr(module, _TOUCHES_BUS_ATTR, False))
     raw_subjects = getattr(module, _SUBJECTS_ATTR, ())
     subjects: tuple[str, ...] = ()
@@ -566,6 +519,22 @@ async def _load_one_extension(
                 "extension whose declared capability the session cannot back (H8)."
             )
 
+    raw_schema = getattr(module, _CONFIG_SCHEMA_ATTR, None)
+    config_schema: dict[str, Any] | None = None
+    if raw_schema is not None:
+        from tau_agent_core.extension_types import validate_form_spec
+
+        try:
+            title, fields = validate_form_spec(raw_schema)
+        except ValueError as err:
+            sys.modules.pop(module_name, None)
+            raise ExtensionCapabilityError(
+                f"{path} declares {_CONFIG_SCHEMA_ATTR} but it is not a valid form "
+                f"spec: {err}. A schema a head cannot render is a load error, not a "
+                "settings screen that silently comes up empty."
+            ) from err
+        config_schema = {"title": title, "fields": fields}
+
     register = getattr(module, "register", None)
     if register is None:
         sys.modules.pop(module_name, None)
@@ -574,8 +543,6 @@ async def _load_one_extension(
         sys.modules.pop(module_name, None)
         raise TypeError(f"{path} register is not callable")
 
-    # Path-aware (S24): the factory keys each extension's api to its real file
-    # path so a session-bound factory can bind it to a fresh runner bucket.
     api = api_factory(str(path))
     outcome = register(api)
     if inspect.isawaitable(outcome):
@@ -588,6 +555,7 @@ async def _load_one_extension(
         content_hash=content_hash,
         subjects=subjects,
         touches_bus=touches_bus,
+        config_schema=config_schema,
     )
 
 
@@ -675,18 +643,7 @@ async def _load_extensions(
             loaded = await _load_one_extension(path, api_factory, bus_available=bus_available)
         except Exception as exc:
             if is_explicit and not collect_explicit_errors:
-                # Fail-Early: the user named this path — surfacing it silently
-                # is the anti-pattern, so re-raise. The TUI opts out via
-                # collect_explicit_errors (it can't abort mid-load); headless
-                # keeps this raise so an explicit failure aborts the run.
                 raise
-            # Discovered (or explicit under collect_explicit_errors): collect and
-            # keep loading the rest. The error is RETURNED (never swallowed, and the
-            # extensions that already loaded stay bound) for the caller to surface —
-            # headless prints discovered errors to
-            # stderr, the TUI shows a notice. The loader deliberately does NOT
-            # print here: a stderr write during a live Textual render corrupts the
-            # screen, and structured errors[] is the honest channel anyway (E5 §2.1).
             result.errors.append(ExtensionLoadError(path=str(path), error=str(exc)))
             continue
         result.extensions.append(loaded)
@@ -694,23 +651,6 @@ async def _load_extensions(
     return result
 
 
-#: τ's default system prompt.
-#:
-#: Short on purpose. It buys context window on every single call, so each line
-#: has to earn its place, and a model told to be terse by a wordy prompt has
-#: already been shown which one to believe.
-#:
-#: The last line is where τ's voice lives. It is stated unconditionally and is
-#: NOT wired to ``--fun``: that flag's entire blast radius is
-#: ``tau_coding_agent.tagline`` by design, it belongs to the TUI rather than to
-#: this package, and a joke that can change a turn's behaviour is not the same
-#: kind of joke as a random tagline.
-#: τ's default voice, and a worked example of the ``{{field}}`` slots
-#: :func:`_build_system_prompt` fills. The two section slots at the bottom are in
-#: the positions the builder would have appended them to anyway, so writing them
-#: out changes nothing about the composition — it makes the composition legible
-#: to anyone who copies this text into ``config.json`` as a starting point, and
-#: movable by anyone who wants the tool list somewhere else.
 BASE_SYSTEM_PROMPT = """\
 You are Tau, a coding agent. Use tools to accomplish the user's goals. Write for \
 a competent engineer who reads English as a second language. Optimize for \
@@ -785,18 +725,8 @@ Style: Sardonic, dry, brief.
 {{tools}}"""
 
 
-#: τ's agent directory — the home of the *global* context file, the one that
-#: applies wherever τ is run from. pi's ``agentDir`` (``~/.pi``); τ's own
-#: ``~/.tau``, the same directory ``_GLOBAL_EXTENSIONS_DIR`` lives under.
-#: A string rather than a ``Path`` so tests (and a caller with a different
-#: home) can pass their own, matching this module's existing convention.
 _AGENT_DIR = "~/.tau"
 
-#: The per-directory context-file candidates, in precedence order — pi
-#: ``resource-loader.ts:72`` at ``5cd93f688``. A directory contributes **at most
-#: one** file: the first of these that exists there wins, and the rest are not
-#: read. ``AGENTS.override.md`` is first so a developer can shadow a checked-in
-#: ``AGENTS.md`` without editing it.
 CONTEXT_FILE_NAMES: tuple[str, ...] = (
     "AGENTS.override.md",
     "AGENTS.md",
@@ -805,15 +735,6 @@ CONTEXT_FILE_NAMES: tuple[str, ...] = (
     "CLAUDE.MD",
 )
 
-#: τ's own context file, and deliberately **not** a member of
-#: :data:`CONTEXT_FILE_NAMES`.
-#:
-#: Putting it in that tuple would make it *compete* with ``AGENTS.md`` under the
-#: one-file-per-directory rule, so a project carrying both would silently lose
-#: one — a regression for every τ user who already has this file, since τ has
-#: always read it *alongside* ``AGENTS.md``. It is instead its own slot, read
-#: from cwd only and appended last, i.e. as the most specific instruction in the
-#: prompt. It is still a context file, so ``--no-context-files`` suppresses it.
 TAU_SYSTEM_FILE = "SYSTEM.md"
 
 
@@ -881,11 +802,6 @@ def _find_context_file_in_dir(directory: Path) -> Path | None:
             if candidate.is_file():
                 return candidate
         except OSError:
-            # An unreadable *directory* is not a found file — `is_file()` on an
-            # unstattable path is the question "is there one here", answered no.
-            # A file we DID find and cannot READ still raises, in
-            # `_read_context_file`. This is not a fallback: nothing is
-            # substituted, the search simply continues.
             continue
     return None
 
@@ -958,12 +874,8 @@ def _find_shadowed_context_file(cwd: Path) -> Path | None:
     worktree_root = _canonicalize(git_paths[0])
     common_git_dir = _canonicalize(git_paths[1])
     main_repo_root = common_git_dir.parent
-    # Strictly *nested*: equal roots mean an ordinary repo, and a root that is
-    # not below the main one means a sibling worktree. Neither shadows anything.
     if worktree_root == main_repo_root or not worktree_root.is_relative_to(main_repo_root):
         return None
-    # The parent of the common git dir is the main worktree root only when that
-    # directory is itself checked out from the same repository.
     if _canonicalize(main_repo_root / ".git") != common_git_dir:
         return None
     worktree_context_file = _find_context_file_in_dir(worktree_root)
@@ -1028,8 +940,6 @@ def load_project_context_files(
         if found is not None and _canonicalize(found) != shadowed:
             taken = _take(found)
             if taken is not None:
-                # Root-most first: each ancestor goes in FRONT of the ones
-                # already collected, so the nearest file ends up last.
                 ancestors.insert(0, taken)
         parent = directory.parent
         if parent == directory:
@@ -1078,15 +988,8 @@ class SystemPromptFieldError(ValueError):
     """
 
 
-#: A system-prompt placeholder. Deliberately narrow — lowercase name, optional
-#: inner spaces — so ordinary prose using braces (JSON examples, f-string
-#: snippets, ``{{ anything With Caps }}``) passes through untouched and only a
-#: thing that really looks like a field is held to the field list.
 _PROMPT_FIELD = re.compile(r"\{\{\s*([a-z][a-z0-9_]*)\s*\}\}")
 
-#: A placeholder that is the whole line. Such a line is a SECTION slot, and when
-#: the section is empty the line — and the blank line separating it from what
-#: came before — would otherwise survive as vertical whitespace in the prompt.
 _LONE_PROMPT_FIELD_LINE = re.compile(r"^[ \t]*\{\{\s*([a-z][a-z0-9_]*)\s*\}\}[ \t]*$")
 
 
@@ -1250,8 +1153,6 @@ def _build_system_prompt(
     """
     cwd = cwd or os.getcwd()
 
-    # Both movable sections are rendered up front, because a placeholder decides
-    # only WHERE they go — not whether they are built.
     context_block = "" if no_context_files else _render_project_context(cwd, agent_dir)
     tools_block = _render_tool_list(tools)
 
@@ -1263,15 +1164,8 @@ def _build_system_prompt(
         "model": model or "",
     }
 
-    # τ's default voice, and the ONLY copy of it — the shipped
-    # tau_default_config.json deliberately carries no ``system_prompt`` key, so a
-    # default install reaches this text and its context files instead of a config
-    # string that would shadow both. Rendered first so ``{{base_prompt}}`` hands a
-    # custom prompt the finished text rather than a template it cannot expand.
     base_text, base_used = _render_prompt_fields(BASE_SYSTEM_PROMPT, fields)
 
-    # A user who sets ``system_prompt`` is overriding on purpose — and overrides
-    # exactly this much: the sections below still compose around it.
     if custom_prompt:
         text, used = _render_prompt_fields(custom_prompt, {**fields, "base_prompt": base_text})
         if "base_prompt" in used:
@@ -1430,29 +1324,10 @@ def create_agent_session(
     if isinstance(model, str):
         model = resolve_model(model, provider=provider, base_url=base_url)
 
-    # A non-"off" thinking level asserts the model is reasoning-capable (pi
-    # model-resolver.ts:496 sets `reasoning: true` on an ad-hoc model when a
-    # non-off level is requested). Without this the provider would clamp the
-    # level to "off" and never send `reasoning_effort`.
     reasoning_arg = thinking_level if thinking_level != "off" else None
     if reasoning_arg is not None:
         model.reasoning = True
 
-    # 2. Discover and create tools
-    #
-    # ``no_tools`` with a non-empty ``tools`` is a CONTRADICTORY request — "offer
-    # `read`" and "offer no built-ins" — so it is refused rather than settled by
-    # precedence. Neither parameter outranks the other at a call site, and picking a
-    # silent winner is how a caller ends up with a session that quietly ignores half
-    # of what it asked for. The CLI boundary never has to answer this because argv
-    # cannot express both: ``--tools`` and ``--no-tools`` each write
-    # ``config["tools"]``, and ``headless.resolve_no_tools`` collapses the flags
-    # before ``backends.resolve_tool_names`` reads the result.
-    #
-    # ``tools=None`` (the default) and ``tools=[]`` both stay legal. Neither asks for
-    # a built-in, so neither contradicts a suppression — and ``no_tools="all"`` is
-    # MEANINGFUL on top of them, because it also withholds extension-registered
-    # tools, which ``tools=`` cannot speak about at all.
     if no_tools is not None and tools:
         raise ValueError(
             f"create_agent_session() got tools={tools!r} together with "
@@ -1460,45 +1335,18 @@ def create_agent_session(
             "and no built-in tools. Drop `tools=` to suppress the built-ins, or drop "
             "`no_tools=` to offer them."
         )
-    #
-    # The empty list is set HERE rather than left to the caller, because
-    # ``AgentSession._build_turn_tools`` documents the invariant it relies on — both
-    # policies "arrive here with ``self._tools == []``" — and reads only
-    # ``no_tools == "all"`` itself. Until this factory took the parameter, that
-    # emptying existed solely at the coding-agent's argv boundary, so an SDK caller
-    # who forwarded ``no_tools="builtin"`` alone got a label with no behaviour behind
-    # it. The raise above already guarantees ``tools`` is falsy on this path; assigning
-    # the empty list states the invariant rather than inferring it from that.
-    #
-    # An INVALID ``no_tools`` value is not checked here. ``AgentSession.__init__``
-    # raises on one, and it stays the single validator — a second copy of the literal
-    # list is a second thing to keep current.
     tool_objs: list[AgentTool] = [] if no_tools is not None else _resolve_tools(tools, tool_options)
 
-    # 3. Extensions: inline factory callables are invoked by AgentSession at
-    #    construction (pi's loadExtensionFromFactory analog). File-path discovery
-    #    + loading is handled by the single async loader (_load_extensions),
-    #    wired into the CLI/headless run path (E0/S2).
     ext_factories = list(extensions) if extensions else []
 
-    # 4. Build system prompt. ``system_prompt`` is passed IN rather than short-
-    #    circuiting the builder: it replaces the base text and nothing else, so a
-    #    caller who sets it still gets the project's context files instead of
-    #    silently turning discovery off (see :func:`_build_system_prompt`).
     sys_prompt = _build_system_prompt(
         cwd,
         tool_objs,
         custom_prompt=system_prompt,
         no_context_files=no_context_files,
-        # ``{{model}}`` gets the id that goes on the wire, which after resolution
-        # is ``Model.id`` — not the string the caller passed, which may have been
-        # a config-entry name or a ``provider/id`` shorthand.
         model=model.id,
     )
 
-    # 5. Default to an in-memory session log when the caller injects none. The
-    #    live paths (TUI/headless) inject the coding-agent's file Session; the
-    #    SDK default persists in RAM only (§2.6, Decision 4 option B).
     if session_log is None:
         session_log = InMemorySessionLog()
 

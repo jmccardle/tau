@@ -7,9 +7,7 @@ Providers: Provider ABC
 Client: stream_simple() / complete_simple() / aclose_providers()
 """
 
-# This distribution's version, read at build time by pyproject.toml's
-# [tool.setuptools.dynamic]. Kept in lockstep with the other three packages.
-__version__ = "0.9.7"
+__version__ = "0.10.0"
 
 from tau_llm.types import (
     UserMessage,
@@ -59,16 +57,10 @@ __all__ = [
     "clamp_thinking_level",
     "get_supported_thinking_levels",
     "is_valid_thinking_level",
-    # Endpoint wire quirks. `tau_llm.catalog` is deliberately NOT re-exported
-    # here: it imports httpx on use and is an operator tool rather than part of
-    # the request path, so `import tau_llm` should not pull it in.
     "Compat",
     "ResolvedCompat",
     "detect_compat",
     "resolve_compat",
-    # Tools — ToolDefinition is what define_tool returns, and the package
-    # docstring has always named it; it was missing from __all__ only because
-    # define_tool was a stub nobody could call.
     "ToolDefinition",
     "define_tool",
     "ToolSpec",

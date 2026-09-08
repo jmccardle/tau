@@ -58,8 +58,6 @@ def summarize(lines: list[str]) -> tuple[Counter, int, int]:
         if isinstance(content, list):
             types = sorted({str(b.get("type")) for b in content if isinstance(b, dict)})
         elif isinstance(content, str):
-            # A plain-string body is legal and carries no blocks, so it can never
-            # carry reasoning. Named rather than counted as "no content".
             types = ["<plain string>"]
         else:
             types = []

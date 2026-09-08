@@ -3,18 +3,18 @@
 # bump-version.sh — set the τ monorepo's release version.
 #
 # The five distributions release in lockstep: one number, five wheels. That
-# number is written in thirteen places, and tau-coding-agent/tests/test_packaging.py
-# fails until all thirteen agree — so nothing drifts silently, but a release means
-# thirteen hand edits. This script is those thirteen edits.
+# number is written in fifteen places, and tau-coding-agent/tests/test_packaging.py
+# fails until all fifteen agree — so nothing drifts silently, but a release means
+# fifteen hand edits. This script is those fifteen edits.
 #
-# The thirteen:
+# The fifteen:
 #   * five ``__version__`` literals, one per package __init__.py. These are what
 #     setuptools reads for [tool.setuptools.dynamic], so they ARE the wheels'
 #     versions — NEVER add a ``version = "..."`` literal back to a package
 #     pyproject.toml to "fix" a mismatch; a test forbids the second copy.
 #   * one literal in the repo-root pyproject.toml, which is config rather than a
 #     distribution and so has no package to read from.
-#   * seven ``ffwf-tau…==<version>`` pins on in-repo requirements. A requirement
+#   * nine ``ffwf-tau…==<version>`` pins on in-repo requirements. A requirement
 #     string has nowhere to read a version from, so these are the copies this
 #     repo cannot make dynamic — and the ones a manual bump forgets.
 #

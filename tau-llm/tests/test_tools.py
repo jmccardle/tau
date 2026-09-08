@@ -60,8 +60,6 @@ class TestToolDefinitionFields:
 
     def test_tool_name_is_unique_constraint_documented(self):
         """Tool names must be globally unique (documented contract)."""
-        # This test documents the constraint from SUBPHASE-0.0.md
-        # Implementation: registry enforces uniqueness at registration time
         pass  # Will be tested when registry exists
 
 
@@ -85,8 +83,6 @@ class TestValidateToolArguments:
 
     def test_validate_raises_value_error_on_invalid_args(self):
         """validate_tool_arguments should raise ValueError on invalid args."""
-        # Will be tested when full implementation exists
-        # For now, verify the function signature accepts the right types
         pass
 
 

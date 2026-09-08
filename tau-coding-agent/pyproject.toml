@@ -16,12 +16,12 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
 dependencies = [
-    "ffwf-tau-agent-core==0.9.7",
+    "ffwf-tau-agent-core==0.10.0",
 ]
 
 [project.optional-dependencies]
 # The interface. `tau -p` (cli.py -> headless.py) never imports textual: the only
-# entry into the Textual app is a lazy `from tau_coding_agent.app import Parley`
+# entry into the Textual app is a lazy `from tau_coding_agent.app import TauApp`
 # inside cli._launch_tui, so a headless install runs a full turn -- extensions and
 # all -- with neither library present. Measured: 15 packages / 13 MB without this
 # extra, 27 packages / 31 MB with it.
@@ -38,9 +38,9 @@ tui = [
 # extra is only a convenience spelling for it. store_factory.py imports it lazily
 # and converts a missing package into a StoreError that names this extra, so
 # `--store jmfts` without it fails with an instruction rather than a traceback.
-jmfts = ["ffwf-tau-jmfts==0.9.7"]
+jmfts = ["ffwf-tau-jmfts==0.10.0"]
 dev = [
-    "ffwf-tau-coding-agent[tui,jmfts]==0.9.7",
+    "ffwf-tau-coding-agent[tui,jmfts]==0.10.0",
     "pytest",
     "pytest-asyncio",
     "ruff",
@@ -84,11 +84,11 @@ version = { attr = "tau_coding_agent.__version__" }
 # Non-.py files the installed package reads at runtime. Both are load-bearing:
 # bootstrap_config() reads tau_default_config.json out of the installed package on
 # first run (without it, `pip install tau-coding-agent` ships a τ that dies with
-# FileNotFoundError before it can print a prompt), and Parley.CSS_PATH resolves
-# parley.tcss next to app.py (without it, the TUI raises on startup with no
+# FileNotFoundError before it can print a prompt), and TauApp.CSS_PATH resolves
+# tau.tcss next to app.py (without it, the TUI raises on startup with no
 # stylesheet). Covered by tests/test_packaging.py.
 [tool.setuptools.package-data]
-tau_coding_agent = ["tau_default_config.json", "parley.tcss"]
+tau_coding_agent = ["tau_default_config.json", "tau.tcss"]
 
 # Two names for one entry point, not a symlink. A wheel cannot portably express a
 # symlink, and pip generates each console script as an independent wrapper it owns

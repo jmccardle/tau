@@ -42,8 +42,6 @@ from typing import Any, TypeAlias, Union
 
 # ── reminder bank ────────────────────────────────────────────────────────────
 
-#: The wrapper tag every reminder body rides in — the marker the model is trained
-#: to treat as an out-of-band instruction (pi / τ ``<system-reminder>`` parity).
 REMINDER_OPEN = "<system-reminder>"
 REMINDER_CLOSE = "</system-reminder>"
 
@@ -282,22 +280,12 @@ class TurnDebouncer:
 
 # ── tool wrapping (the pi tool-override pattern) ─────────────────────────────
 
-#: A tool result / arguments dict (the ``AgentToolResult.model_dump`` shape:
-#: ``{"content": [...], "is_error": bool, ...}``). Kept loose — an extension may
-#: hand back any content-block dict the loop accepts.
 ToolResult: TypeAlias = dict[str, Any]
 
-#: ``before(params, ctx)`` — inspect/mutate ``params`` in place, or return a
-#: result dict to SHORT-CIRCUIT (a veto / canned reply; the original tool is not
-#: called). Return ``None`` to proceed. May be sync or async.
 BeforeHook: TypeAlias = Callable[..., Union[ToolResult, None, Awaitable["ToolResult | None"]]]
 
-#: ``after(result, params, ctx)`` — return a replacement result dict, or ``None``
-#: to pass the original result through unchanged. May be sync or async.
 AfterHook: TypeAlias = Callable[..., Union[ToolResult, None, Awaitable["ToolResult | None"]]]
 
-#: name -> the built-in tool class :func:`wrap_tool` shadows. Kept in sync with
-#: ``sdk._resolve_tools``; wrap_tool builds the instance to delegate to.
 _BUILTIN_TOOLS: dict[str, str] = {
     "read": "ReadTool",
     "write": "WriteTool",

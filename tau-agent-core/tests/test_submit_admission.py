@@ -38,6 +38,10 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.submission import MAX_SUBMISSION_DEPTH, Submission
+from tau_agent_core.flows import Performed, Ready
+
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
 
 
 def _model() -> Model:
@@ -70,7 +74,7 @@ def _assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="m",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
 
@@ -306,10 +310,9 @@ class TestOnAdmittedTiming:
 
         assert fired == []
         assert result.accepted is True
-        assert result.command is not None
-        assert result.command.name == "ledger"
-        assert result.command.performer == "core"
-        assert result.command.output == "42"
+        assert isinstance(result.command, Performed)
+        assert result.command.mutation == "ledger"
+        assert result.command.data["output"] == "42"
 
     async def test_on_admitted_does_not_fire_when_an_input_hook_consumes_the_submission(self):
         def my_ext(api):

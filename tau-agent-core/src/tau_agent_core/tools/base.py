@@ -205,6 +205,11 @@ class AgentToolResult(BaseModel):
         tool_name: Name of the executed tool
         tool_call_id: ID of the tool call
         content: List of content blocks (mirrors Message content)
+        details: Structured facts about the execution that are NOT part of what
+            the model reads — a path, a line range, a match count, a diff. Every
+            built-in tool sets it; it rides the ``toolResult`` message and the
+            ``tool_execution_end`` event so a head can render more than the text
+            block. ``None`` means the tool declared none, never "dropped".
         is_error: Whether the execution failed
         error_message: Error description (if is_error=True)
         terminate: Whether the agent loop should terminate after this tool
@@ -213,6 +218,7 @@ class AgentToolResult(BaseModel):
     tool_name: str
     tool_call_id: str | None = None
     content: list[dict[str, Any]] = Field(default_factory=list)
+    details: dict[str, Any] | None = None
     is_error: bool = False
     error_message: str | None = None
     terminate: bool = False

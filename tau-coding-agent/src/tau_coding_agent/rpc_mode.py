@@ -216,20 +216,10 @@ async def run_rpc(args: "CLIArgs", config: dict[str, Any]) -> int:
     silently ignored here (``--print``, positional messages, session
     continuation) — see its ``--mode rpc`` validation block.
     """
-    # T2: see module docstring. Balanced by the `finally` below; RPCHandler
-    # .run() takes its own (nested) claim and releases it before this one is
-    # released, so `sys.stdout` is never restored while setup could still be
-    # running.
     transport._take_over_stdout()
     try:
         model_name, model_config = resolve_model_config(config, args)
 
-        # System prompt: folded directly into the model config, the TUI's
-        # convention (`cli.py:_launch_tui`'s `overrides["system_prompt"]`) —
-        # NOT headless.py's "store it as the session's first message" scheme,
-        # which exists only because that path has a SessionCatalog persisting
-        # the session; RPC mode has no such layer yet (H1, phase 3), so the
-        # backend's own `system_prompt` is the sole place it can live.
         base_system_prompt = (
             args.system_prompt
             if args.system_prompt is not None
@@ -237,13 +227,7 @@ async def run_rpc(args: "CLIArgs", config: dict[str, Any]) -> int:
         )
         if base_system_prompt:
             model_config["system_prompt"] = base_system_prompt
-        # ``append_system_prompt`` is left on the entry for ``TauBackend`` to
-        # apply. Folding it in here would append it twice now that the backend
-        # does the same thing for every frontend.
 
-        # Imported lazily, matching headless.py's own comment: keeps a bare
-        # `import tau_coding_agent.rpc_mode` free of the backend/agent-core
-        # import chain until a run actually happens.
         from tau_coding_agent.backends import create_backend, make_model_resolver
 
         backend = create_backend(model_config)
@@ -252,31 +236,11 @@ async def run_rpc(args: "CLIArgs", config: dict[str, Any]) -> int:
         if agent_session is not None and hasattr(agent_session, "set_model_resolver"):
             agent_session.set_model_resolver(make_model_resolver(config.get("models", {})))
 
-        # AgentSessionRuntime (phase 3, H1): the session-lifecycle layer behind
-        # the new_session/fork/switch_session verbs. `cli.py`'s --mode rpc
-        # validation still rejects --store/--session/etc at STARTUP (a
-        # separate, not-yet-relaxed restriction — every run still starts
-        # fresh), so `args.store` is always None here and
-        # `build_session_catalog` resolves the same default every other mode
-        # falls back to with no --store flag. Built and bound BEFORE
-        # extensions load (matching app.py's own ordering: _bind_backend_session
-        # precedes _load_backend_extensions) — which session_log is bound does
-        # not affect extension registration, only persistence.
         from tau_agent_core.agent_session_runtime import AgentSessionRuntime
         from tau_coding_agent.store_factory import build_session_catalog, resolve_backend_name
 
         store_name = resolve_backend_name(config, args.store)
         session_dir = _resolve_rpc_session_dir(args.session_dir, store_name)
-        # `persist=not args.no_session` — the same scoping `run_print` applies,
-        # and it means something WEAKER here, deliberately. In print mode an
-        # ephemeral run can never reach the store at all. Over the wire it can:
-        # `list_sessions`, `switch_session`, `fork` and `new_session {"persist":
-        # true}` stay reachable under `--no-session`, which is why the catalog
-        # is still built rather than skipped. What `persist=False` drops is the
-        # startup CONTACT (JMFTS's `GET /`), so a `--no-session` host that never
-        # asks for any of those four never needs the server up — and one that
-        # does ask meets the failure as an error response to that request,
-        # rather than as an exit-2 the host cannot distinguish from a bad flag.
         session_catalog = build_session_catalog(
             config, args.store, session_dir, persist=not args.no_session
         )
@@ -284,34 +248,6 @@ async def run_rpc(args: "CLIArgs", config: dict[str, Any]) -> int:
         backend_name = model_config.get("backend", "")
         runtime: "AgentSessionRuntime | None" = None
         if agent_session is not None:
-            # Establishes the invariant AgentSessionRuntime.fork() depends on:
-            # session_log is ALWAYS a catalog-produced ConversationSession from
-            # this point on, never the bare scratch InMemorySessionLog
-            # TauBackend.__init__ constructs (see agent_session_runtime.py's
-            # fork() docstring for what breaks if this invariant is skipped).
-            # PERSISTED BY DEFAULT (`create`) — Blocker 2 of the Tier B
-            # review, see this module's docstring: still fresh, but with a
-            # location, so the entries set_model (D-2) and set_session_name
-            # append to the startup session outlive the process instead of
-            # landing in a list nobody writes.
-            #
-            # `--no-session` selects `create_ephemeral` instead. Two properties
-            # make that a one-line change rather than a new mode: every
-            # SessionCatalog must implement `create_ephemeral` (it is on the
-            # ABC, and the contract suite exercises it), and both shipped
-            # stores answer it honestly — the file store with a `path`-less
-            # Session whose `_persist_*` are no-ops, JMFTS with
-            # `_EphemeralConversationSession` rather than a silent write to the
-            # document server. Nothing downstream needs to know which it got:
-            # `session_log_is_addressable` reads the same declared-location
-            # attributes D-7 checks, so the refusals and `get_state`'s
-            # `addressable` follow from the object itself.
-            #
-            # `run_print` makes the same choice on the same seam
-            # (`headless.py`: `catalog.create_ephemeral if args.no_session else
-            # catalog.create`), and this is deliberately the identical shape —
-            # the flag meant one thing in `--print` and nothing at all here,
-            # which is the defect being closed.
             create_session = (
                 session_catalog.create_ephemeral if args.no_session else session_catalog.create
             )
@@ -323,12 +259,6 @@ async def run_rpc(args: "CLIArgs", config: dict[str, Any]) -> int:
                 agent_session, session_catalog, cwd, model_name, backend_name, store_name
             )
 
-        # Headless dialog policy (same seam run_print uses). RC3's v1 policy
-        # for an extension-opened UI method is "fail fast, never hang"; with
-        # no `--ui-defaults`/config "ui_defaults" policy that fail-fast IS a
-        # raise (HeadlessDialogError), which is the correct default for a
-        # process with no reverse channel (§7.1, deferred) to ask a host
-        # through.
         set_ui_defaults = getattr(backend, "set_headless_ui_defaults", None)
         if set_ui_defaults is not None:
             ui_defaults = resolve_ui_defaults(config, parse_ui_defaults(args.ui_defaults))
@@ -337,10 +267,6 @@ async def run_rpc(args: "CLIArgs", config: dict[str, Any]) -> int:
             except ValueError as exc:
                 raise CLIError(str(exc)) from exc
 
-        # Extensions: identical call to run_print's (explicit -e paths +
-        # discovery toggle + per-extension config overrides). A discovered
-        # load failure goes to stderr (T4 bullet 1); an explicit -e failure
-        # raises out of load_extensions (Fail-Early — the operator named it).
         explicit_extensions = model_config.get("extensions") or None
         discover_extensions = not model_config.get("no_extensions", False)
         extensions_config = resolve_extensions_config(
@@ -369,11 +295,6 @@ async def run_rpc(args: "CLIArgs", config: dict[str, Any]) -> int:
         try:
             await handler.run()
         finally:
-            # AgentSessionRuntime.dispose() (H1) — the SAME session_shutdown
-            # ("quit") firing every other frontend's own teardown already
-            # does, routed through the runtime for symmetry with
-            # new_session/fork/switch_session rather than reaching past it
-            # to backend.emit_session_shutdown directly.
             if runtime is not None:
                 await runtime.dispose()
             else:
@@ -381,12 +302,6 @@ async def run_rpc(args: "CLIArgs", config: dict[str, Any]) -> int:
                 if emit_session_shutdown is not None:
                     await emit_session_shutdown("quit")
 
-            # Close the pooled τ-llm providers' HTTP clients for this loop
-            # (docs/PROVIDER-LIFETIME.md §6.3), same placement/reasoning as
-            # run_print's own finally: after session_shutdown (a handler may
-            # itself make a final LLM call), inside the same asyncio.run()
-            # that drove the server, the last point the loop is guaranteed
-            # still alive to close on.
             from tau_llm.client import aclose_providers
 
             await aclose_providers()

@@ -19,6 +19,9 @@ from tau_agent_core.extension_types import ExtensionContext
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_llm.types import AssistantMessage, Model, TextContent
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 def _model(name: str = "primary") -> Model:
     return Model(
@@ -39,7 +42,7 @@ def _reply(text: str, model: str = "primary") -> AssistantMessage:
         provider="openai",
         model=model,
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
     )
 
 
@@ -110,10 +113,6 @@ class TestStatelessness:
     async def test_concurrent_fan_out(self, ctx_and_log):
         """The retrieval-review shape: N concurrent completions over one session."""
         ctx, log, calls = ctx_and_log
-        # Baseline, not `== []`: construction already wrote its own non-authoritative
-        # `agent_spec` provenance record (W2, NODE-ADDRESSABLE-AGENTS.md) — the
-        # property under test is that ctx.complete() writes nothing FURTHER, not
-        # that the log is pristine.
         before = log.entries()
 
         results = await asyncio.gather(
@@ -139,7 +138,7 @@ class TestFailEarly:
                 model="primary",
                 stop_reason="error",
                 error_message="upstream exploded",
-                timestamp=0,
+                timestamp=_TS,
             )
 
         monkeypatch.setattr("tau_llm.client.complete_simple", erroring)
@@ -226,7 +225,7 @@ class TestConstraintsEcho:
         it emits nothing — the "no placeholder" invariant is local to the emitter."""
         from tau_agent_core.extension_types import ExtensionUI
 
-        ui = ExtensionUI(mode="headless")
+        ui = ExtensionUI()
         records: list[dict] = []
         ui.set_record_sink(records.append)
 

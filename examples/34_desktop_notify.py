@@ -66,10 +66,6 @@ from __future__ import annotations
 import sys
 from typing import Any
 
-#: OSC 777 desktop-notification escape sequence: ``ESC ] 777 ; notify ; <title> ; <body> BEL``
-#: (pi parity: ``notifyOSC777`` in ``notify.ts``). Supported by Ghostty, iTerm2,
-#: WezTerm, and rxvt-unicode; a terminal that doesn't understand OSC 777 simply
-#: ignores the bytes.
 _OSC777_TEMPLATE = "\x1b]777;notify;{title};{body}\x07"
 
 
@@ -96,6 +92,4 @@ def desktop_notify_extension(api: Any) -> None:
     api.on("agent_end", on_agent_end)
 
 
-#: Module-level ``register`` the file-path loader looks up (``tau -e
-#: examples/34_desktop_notify.py`` → ``getattr(module, "register")``).
 register = desktop_notify_extension

@@ -32,21 +32,22 @@ from pathlib import Path
 
 import pytest
 
-from tau_coding_agent.app import ChatDisplay, ChatPlaceholder, MessageBox, Parley
+from tau_coding_agent.app import TauApp
 from tau_coding_agent.backends import DEFAULT_TOOL_NAMES, resolve_tool_names
 from tau_coding_agent.tagline import FUN_DEFAULT, TAGLINES, pick_tagline
+from tau_coding_agent import chat_widgets, transcript
 
 # --- helpers ----------------------------------------------------------------
 
 
-def _pane_text(app: Parley) -> str:
+def _pane_text(app: TauApp) -> str:
     """The placeholder's rendered text, as one string."""
-    placeholder = app.query_one(ChatPlaceholder)
+    placeholder = app.query_one(transcript.ChatPlaceholder)
     return placeholder.render().plain  # type: ignore[union-attr]
 
 
-def _visible(app: Parley) -> bool:
-    return bool(app.query_one(ChatPlaceholder).display)
+def _visible(app: TauApp) -> bool:
+    return bool(app.query_one(transcript.ChatPlaceholder).display)
 
 
 # --- what the pane says -----------------------------------------------------
@@ -200,7 +201,7 @@ async def test_pane_is_visible_on_a_fresh_app(make_app):
 async def test_pane_hides_when_a_message_is_added(make_app):
     app = make_app()
     async with app.run_test() as pilot:
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         display.add_message("user", "hello", source="verbatim")
         await pilot.pause()
         assert not _visible(app)
@@ -209,7 +210,7 @@ async def test_pane_hides_when_a_message_is_added(make_app):
 async def test_pane_hides_when_a_persisted_message_is_rendered(make_app):
     app = make_app()
     async with app.run_test() as pilot:
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         display.add_persisted_message({"role": "user", "content": "hi"})
         await pilot.pause()
         assert not _visible(app)
@@ -219,7 +220,7 @@ async def test_pane_hides_when_an_exchange_opens(make_app):
     """The streaming path mounts an ExchangeBox, not a MessageBox."""
     app = make_app()
     async with app.run_test() as pilot:
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
         await pilot.pause()
         assert not _visible(app)
@@ -229,7 +230,7 @@ async def test_pane_returns_after_the_display_is_cleared(make_app):
     """``ctrl+n`` / clear-chat land here. The pane coming back IS the empty state."""
     app = make_app()
     async with app.run_test() as pilot:
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         display.add_message("user", "hello", source="verbatim")
         await pilot.pause()
         assert not _visible(app)
@@ -237,7 +238,7 @@ async def test_pane_returns_after_the_display_is_cleared(make_app):
         await display.clear_messages()
         await pilot.pause()
         assert _visible(app)
-        assert not app.query(MessageBox)
+        assert not app.query(chat_widgets.MessageBox)
 
 
 async def test_facts_are_re_read_when_the_pane_reappears(make_app):
@@ -258,7 +259,7 @@ async def test_facts_are_re_read_when_the_pane_reappears(make_app):
     async with app.run_test() as pilot:
         assert "first" in _pane_text(app)
 
-        display = app.query_one(ChatDisplay)
+        display = app.query_one(transcript.ChatDisplay)
         display.add_message("user", "hello", source="verbatim")
         await pilot.pause()
         app.config["default_model"] = "two"
@@ -278,10 +279,10 @@ async def test_a_display_built_without_facts_composes_no_pane():
 
     class _Bare(App):
         def compose(self) -> ComposeResult:
-            yield ChatDisplay()
+            yield transcript.ChatDisplay()
 
     async with _Bare().run_test() as pilot:
-        assert not pilot.app.query(ChatPlaceholder)
+        assert not pilot.app.query(transcript.ChatPlaceholder)
 
 
 # --- --fun ------------------------------------------------------------------
@@ -331,20 +332,20 @@ def test_no_build_path_rewrites_the_fun_default():
 
 
 def test_deterministic_surfaces_name_their_own_fun_rather_than_inheriting_it():
-    """``Parley``'s default is the literal ``False``, not :data:`FUN_DEFAULT`.
+    """``TauApp``'s default is the literal ``False``, not :data:`FUN_DEFAULT`.
 
     The snapshot suite, ``testing.scenes`` and ``devshot`` all construct a
-    ``Parley`` without saying ``fun``, so this signature IS their determinism.
+    ``TauApp`` without saying ``fun``, so this signature IS their determinism.
     Wiring it to ``FUN_DEFAULT`` would make every rendered scene a coin flip.
     """
     import inspect
 
-    default = inspect.signature(Parley.__init__).parameters["fun"].default
+    default = inspect.signature(TauApp.__init__).parameters["fun"].default
     assert default is False
 
 
 async def test_parley_defaults_to_the_deterministic_tagline_regardless_of_packaging(make_app):
-    """``Parley()`` takes ``fun=False``, NOT ``tagline.FUN_DEFAULT``.
+    """``TauApp()`` takes ``fun=False``, NOT ``tagline.FUN_DEFAULT``.
 
     Only ``cli.py`` passes the packaged default through, so a test or a scene
     built in a packaged tree renders the same as one built here.
@@ -356,10 +357,10 @@ async def test_parley_defaults_to_the_deterministic_tagline_regardless_of_packag
 
 async def test_fun_true_reaches_the_pane_and_nothing_else(tau_home, monkeypatch):
     """The flag's entire observable effect: one string on one widget."""
-    from tau_coding_agent.testing.sandbox import build_parley
+    from tau_coding_agent.testing.sandbox import build_tau_app
 
     monkeypatch.setattr(random, "choice", lambda seq: seq[3])
-    app = build_parley(tau_home, fun=True)
+    app = build_tau_app(tau_home, fun=True)
     async with app.run_test():
         assert TAGLINES[3] in _pane_text(app)
         # Nothing downstream can branch on it — the app keeps a string, not a flag.

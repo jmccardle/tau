@@ -131,28 +131,10 @@ class SessionInfo:
     first_message: str
     last_message: str
     parent: str | None
-    # Why the session's ENTRIES could not be read, or None if they were.
-    #
-    # A listing is built from two sources: cheap per-session metadata (id, cwd,
-    # name, created — a store can always produce these) and the entries themselves
-    # (message_count, first/last_message, modified). The second half can fail on a
-    # session the first half describes perfectly well: a corrupt tree, a broken
-    # integrity invariant, a truncated file.
-    #
-    # The choice at that point is NOT "raise or skip". Raising lets one bad session
-    # brick the whole picker, so the user cannot reach the twenty good ones. Skipping
-    # makes the session VANISH — the user sees a picker missing a conversation they
-    # remember having, with no signal that anything is wrong, which is precisely the
-    # silent failure that persisting a session was supposed to make impossible.
-    #
-    # So the row stays, and it says what happened. ``display_title`` marks it; the
-    # store's ``load()`` still raises with the real reason when it is opened.
     error: str | None = None
 
     def display_title(self) -> str:
         if self.error:
-            # A corrupt session's own name/first_message may be missing or nonsense
-            # (that is what "corrupt" means), so the ref is what identifies the row.
             return f"⚠ unreadable session ({self.ref}) — {self.error}"
         if self.name:
             return self.name

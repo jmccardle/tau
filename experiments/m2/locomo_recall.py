@@ -41,8 +41,6 @@ OUT = "/fast/datasets/m2/locomo_results.json"
 ROOT_USETYPE = "locomo_conv"
 TURN_USETYPE = "locomo_turn"
 
-# (recency alpha, half-life days, importance beta). alpha=beta=0 is the baseline: the
-# rerank is skipped entirely and this is plain vector search.
 GRID = [
     (0.0, None, 0.0),
     # recency leg
@@ -148,10 +146,6 @@ def ingest(corpus, factory):
 
 def evaluate(manifest, factory):
     tallies = defaultdict(lambda: defaultdict(float))
-    # Same tallies, split by LoCoMo question category. The STALE breakdown showed the
-    # recency trade tracks QUERY TYPE, not corpus, so the equivalent split here is the
-    # check on whether that generalises: if some LoCoMo category also rewards recency,
-    # "recency is bad for recall" is really "recency is bad for most recall questions".
     by_cat = defaultdict(lambda: defaultdict(float))
     with factory() as db:
         repo = SearchRepository(db)

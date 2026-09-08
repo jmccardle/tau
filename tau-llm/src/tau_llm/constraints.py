@@ -57,17 +57,11 @@ class DecodeConstraints(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    # SkipValidation, not a bare `str | None`: pydantic would coerce a
-    # tau_llm.grammar.Grammar (a str subclass carrying its own output checker) down to a
-    # plain str and DROP the checker — silently turning every helper-built grammar into
-    # an "unverifiable" one. The field still accepts a plain str; it just is not rebuilt.
     grammar: SkipValidation[str | None] = None
     json_schema: dict[str, Any] | None = None
     choices: list[str] | None = None
     tool_choice: str | dict[str, Any] | None = None
     extra_body: dict[str, Any] = Field(default_factory=dict)
-    # The escape hatch for raw grammars, which admit no general check. Also the
-    # explicit "I know what I'm doing" opt-out: pass ``verify=lambda _: True``.
     verify: Callable[[str], bool] | None = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
@@ -90,16 +84,6 @@ class DecodeConstraints(BaseModel):
         if self.choices is not None and not self.choices:
             raise ValueError("DecodeConstraints.choices must be non-empty")
 
-        # A raw grammar τ cannot check, with no verify() to check it, is an
-        # UNVERIFIABLE constraint — and an unverifiable constraint is the exact thing
-        # this class exists to refuse. The old behaviour (accept it, assert only that
-        # the output is non-empty) was verification in name only: with the grammar
-        # silently dropped server-side, a `start: "include" | "exclude"` constraint
-        # returned {"verdict": "no"} and sailed through.
-        #
-        # grammar.choice()/fixed()/regex()/sequence() return a Grammar carrying its own
-        # checker, so they need nothing extra. A hand-written grammar string does not,
-        # and the caller must say how to check it.
         if self.grammar is not None and self.verify is None:
             checker = getattr(self.grammar, "check", None)
             if checker is None:
@@ -171,9 +155,6 @@ class DecodeConstraints(BaseModel):
                 ) from exc
             return
 
-        # Grammar. The validator guarantees we get here only with a checker available
-        # (a tau_llm.grammar Grammar) or with verify= set (handled above) — so there is
-        # no unverified path left, and no "non-empty is the floor" pretence.
         checker = getattr(self.grammar, "check", None)
         if checker is None:  # pragma: no cover - _exactly_one_constraint forbids it
             raise AssertionError(

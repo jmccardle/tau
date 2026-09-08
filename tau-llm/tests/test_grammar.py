@@ -24,8 +24,6 @@ class TestEscape:
             ("line\nbreak", "line\\nbreak"),
             ("tab\there", "tab\\there"),
             ("carriage\rreturn", "carriage\\rreturn"),
-            # The nasty one: a backslash already followed by a quote must not be
-            # double-substituted into something that re-opens the literal.
             ('esc\\"seq', 'esc\\\\\\"seq'),
         ],
     )

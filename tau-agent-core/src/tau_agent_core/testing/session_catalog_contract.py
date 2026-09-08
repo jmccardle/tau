@@ -95,8 +95,6 @@ class SessionCatalogContractTests:
         """
         return "0f5a1c4e-0000-4000-8000-000000000000"
 
-    #: What :meth:`SessionCatalog.load` raises for :meth:`unknown_ref`. Tightened by
-    #: subclasses; the contract itself only requires that it raises at all.
     missing_ref_error: type[BaseException] = Exception
 
     @pytest.fixture
@@ -294,8 +292,6 @@ class SessionCatalogContractTests:
         by_id = {i.id: i for i in catalog.list(cwd)}
         assert forked.id in by_id
         assert catalog.load(by_id[forked.id].ref).id == forked.id
-        # Lineage is recorded, not inferred: the tree browser draws the fork under
-        # its source from this field alone, and an unset one orphans the branch.
         assert by_id[forked.id].parent == source.id
         assert by_id[source.id].parent is None
 

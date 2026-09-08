@@ -34,26 +34,8 @@ from pydantic import BaseModel, Field
 from tau_agent_core.submission import SubmissionSource
 from tau_llm.docs import agent_facing
 
-#: A notify-bus error listener. Called ``listener(exc, channel)`` when a
-#: subscribed handler raises — the S44 surface that replaces the old silent
-#: ``except Exception: pass``. ``channel`` is the event type / channel the
-#: handler was dispatched on, so the listener can attribute the failure.
 ErrorListener = Callable[[BaseException, str], None]
 
-#: Why an ``agent_end`` closed. Carried on ``AgentEvent.end_reason``, and set on
-#: every ``agent_end``.
-#:
-#: * ``"done"`` — the model answered with no tool calls. The natural end.
-#: * ``"terminate"`` — a tool set ``terminate`` and asked the loop to stop.
-#: * ``"aborted"`` — the abort signal was raised between turns.
-#: * ``"max_turns"`` — the configured ``max_turns`` ceiling was reached. The run
-#:   is TRUNCATED: the model had more to say and was not allowed to say it.
-#: * ``"repeat_tool_calls"`` — the loop stopped itself because the model repeated
-#:   an identical, wholly-failing batch of tool calls. Also truncated, and the one
-#:   reason that means the run was going nowhere rather than somewhere it did not
-#:   reach. See ``AgentLoopConfig.repeat_tool_call_limit``.
-#: * ``"error"`` — the loop raised. The only reason paired with ``is_error=True``
-#:   and a non-``None`` ``error``.
 AgentEndReason = Literal[
     "done",
     "terminate",
@@ -80,6 +62,11 @@ class AgentEvent(BaseModel):
         tool_name: Tool name (tool_*)
         args: Tool execution arguments (tool_execution_start)
         result: Tool execution result (tool_execution_*)
+        details: A tool's structured facts about its own execution on
+            ``tool_execution_end`` — the path it read, the line range, the match
+            count, the diff. What ``result`` holds is what the MODEL reads; this
+            is what a head can render beside it. ``None`` when the tool declared
+            none, and on every other event type.
         is_error: Whether this event represents an error
         blocked: Whether a ``tool_execution_end`` is an extension VETO (S50) —
             distinct from a generic errored result, so a front-end can render
@@ -138,33 +125,15 @@ class AgentEvent(BaseModel):
     tool_name: str | None = None
     args: dict[str, Any] | None = None
     result: Any | None = None
+    details: dict[str, Any] | None = None
     is_error: bool = False
-    # S50 (roadmap §3, anchor G11): a vetoed tool call is a DISTINCT presentation
-    # from a generic errored result. ``blocked`` marks a ``tool_execution_end`` that
-    # a `tool_call` extension hook vetoed; ``blocked_by`` names the extension. The
-    # ``type`` Literal stays closed (S49) — these are data fields, like ``is_error``.
     blocked: bool = False
     blocked_by: str | None = None
     tool_results: list[dict[str, Any]] | None = None
     messages: list[dict[str, Any]] | None = None
-    # Set on an ``agent_end`` that closes a loop which RAISED, alongside
-    # ``is_error=True``; ``None`` on a normal close. Data field, not a new ``type``
-    # (S49) — same pattern as ``blocked``/``blocked_by``. Without it "the agent
-    # finished" and "the agent died mid-turn" are the same event.
     error: str | None = None
-    # Set on EVERY ``agent_end``, and only there. ``error`` already said whether
-    # the loop raised; this says how it stopped when it did not. Data field, not a
-    # new ``type`` (S49). The two are consistent by construction:
-    # ``end_reason="error"`` is exactly the case that carries ``is_error=True``.
     end_reason: AgentEndReason | None = None
 
-    # Provenance (docs/SUBMISSION-LIFECYCLE.md "Provenance on events", phase 2):
-    # stamped by AgentSession.submit() onto every event a submission-driven turn
-    # emits (agent_session._stamp_event). All four are ``None`` together — there is
-    # no partial-provenance state — and stay ``None`` for events from a call that
-    # never went through submit() (continue_conversation()). NOT filtering
-    # anything at the bus: a frontend reads these to decide how to RENDER a turn,
-    # never to drop one — see the spec's "Jupyter's rule, not the obvious one".
     submission_id: str | None = None
     source: SubmissionSource | None = None
     submitter: str | None = None
@@ -215,12 +184,6 @@ class EventBus:
             "tool_execution_update": [],
             "tool_execution_end": [],
         }
-        # S44 (roadmap §2, anchor G3): a subscribed handler that raises must NOT
-        # vanish silently. When set, these listeners receive ``(exc, channel)`` and
-        # route the failure to the same on_error surface as the ExtensionRunner
-        # (the session installs one that paints a TUI warning / prints a structured
-        # headless stderr line). With NO listener the bus still refuses the silent
-        # drop and writes to stderr — Fail-Early, never the old ``pass``.
         self._error_listeners: list[ErrorListener] = []
 
     def on(self, channel: str, handler: Callable) -> Callable[[], None]:
@@ -308,6 +271,22 @@ class EventBus:
             except ValueError:
                 pass  # Handler not found on this channel
 
+    def has_listeners(self, channel: str) -> bool:
+        """Whether anyone is subscribed to ``channel``.
+
+        For a caller deciding whether an un-deliverable emit is a problem: a
+        synchronous appender with no running loop cannot dispatch, and that is
+        only a lost event if something was waiting for it.
+
+        Args:
+            channel: Channel name. ``"all"`` subscribers are not counted — they
+                take :meth:`emit`'s ``AgentEvent`` stream, not a named channel.
+
+        Returns:
+            True if at least one handler is registered on ``channel``.
+        """
+        return bool(self._listeners.get(channel))
+
     async def emit(self, event: AgentEvent) -> None:
         """Emit an event to all matching handlers.
 
@@ -326,8 +305,6 @@ class EventBus:
                 if asyncio.iscoroutine(result):
                     await result
             except Exception as err:  # noqa: BLE001 — surfaced (S44), not swallowed
-                # Fire-and-forget for the SIBLINGS (they must still run), but the
-                # failure itself is surfaced through on_error, never dropped.
                 self._surface_handler_error(err, event.type)
 
         # Call handlers subscribed to 'all'

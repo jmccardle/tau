@@ -52,9 +52,6 @@ RUBRIC_GA = (
     "poignancy of the following piece of memory.\nMemory: {memory}\nRating:"
 )
 
-# Ours. Measures retrievability — how much durable, specific fact is in here that a later
-# question could need. This is what the recall task actually rewards, and it is a different
-# question from poignancy.
 RUBRIC_RETRIEVAL = (
     "Rate on a scale of 1 to 10 how much durable, specific, factual information this "
     "message contains about the speaker's life — the kind a question asked months later "
@@ -75,8 +72,6 @@ def score_one(client: httpx.Client, prompt: str, thinking: bool) -> int:
         "messages": [{"role": "user", "content": prompt}],
         "grammar": GRAMMAR,
         "temperature": 0,
-        # Thinking needs headroom: truncated reasoning never reaches the grammar-bound
-        # answer and returns content='', which int() then refuses — loudly, by design.
         "max_tokens": 3000 if thinking else 4,
     }
     if not thinking:

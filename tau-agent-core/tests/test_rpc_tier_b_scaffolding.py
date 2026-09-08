@@ -49,7 +49,7 @@ from tau_agent_core.rpc.commands import (
     COMMAND_TABLE,
     COMPACT_RESULT_SCHEMA,
     COMPACTION_END_PARAMS_SCHEMA,
-    _DURABLE_LOCATION_ATTRS,
+    DURABLE_LOCATION_ATTRS,
     RPCError,
     require_durable_session,
     require_log_appender,
@@ -253,7 +253,7 @@ def test_require_durable_session_raises_when_nothing_is_declared(
 ) -> None:
     """``InMemorySessionLog`` declares no location at all. Unknown
     durability REFUSES rather than assumes — the asymmetry
-    ``_DURABLE_LOCATION_ATTRS``' note argues for ("unknown means no, not
+    ``DURABLE_LOCATION_ATTRS``' note argues for ("unknown means no, not
     yes"), and the reason a future store cannot silently inherit a promise
     it does not keep."""
     with pytest.raises(RPCError, match="declares no durable location") as refusal:
@@ -262,7 +262,7 @@ def test_require_durable_session_raises_when_nothing_is_declared(
 
 
 def test_durable_location_attrs_still_name_the_shipped_stores() -> None:
-    """The coupling ``_DURABLE_LOCATION_ATTRS`` prices, pinned so the bill
+    """The coupling ``DURABLE_LOCATION_ATTRS`` prices, pinned so the bill
     arrives at the right desk: if a store renames the attribute it declares
     its location with, the RPC layer starts refusing ``set_model``/
     ``set_session_name`` on that store — loudly, but far from the rename.
@@ -277,27 +277,17 @@ def test_durable_location_attrs_still_name_the_shipped_stores() -> None:
     from tau_jmfts.catalog import _EphemeralConversationSession
     from tau_jmfts.store import JmftsSessionLog
 
-    assert "root_doc_id" in _DURABLE_LOCATION_ATTRS
+    assert "root_doc_id" in DURABLE_LOCATION_ATTRS
     assert hasattr(JmftsSessionLog, "root_doc_id")
     # The ephemeral product declares nothing — the case that must be refused.
-    assert not any(hasattr(_EphemeralConversationSession, a) for a in _DURABLE_LOCATION_ATTRS)
+    assert not any(hasattr(_EphemeralConversationSession, a) for a in DURABLE_LOCATION_ATTRS)
 
 
 # ── E5, answered ONE way across the tier (finding 5) ────────────────────
 
 
-#: The four MUTATING Tier B verbs, exactly as docs/RPC-TIER-B.md D-1 names
-#: them ("Every mutating Tier B verb uses it: set_model, compact,
-#: set_auto_compaction, set_session_name").
 _TIER_B_MUTATORS = frozenset({"compact", "set_auto_compaction", "set_model", "set_session_name"})
 
-#: The rest of the tier: D-1's own sentence "get_session_stats and
-#: get_last_assistant_text are reads and take no guard", plus B5's second
-#: verb ("Also expose the read (get_session_name) in the same unit"),
-#: `get_models`, the read finding 7 of the Tier B review added so a host can
-#: discover the config NAMES `set_model` accepts (G1), and `list_sessions`,
-#: the read finding 8 added for the identical reason one param over — the
-#: session IDS `switch_session` accepts.
 _TIER_B_READS = frozenset(
     {
         "get_last_assistant_text",
@@ -356,8 +346,6 @@ def test_e5_is_answered_one_way_across_tier_b() -> None:
             "tier's way of saying 'nothing moved' (E5 rule 3)"
         )
 
-    # compact's ACKNOWLEDGEMENT is the one Tier B mutator response that must
-    # not carry one: the mutation has not happened when it is built.
     assert "cursor" not in COMPACT_RESULT_SCHEMA["properties"]
 
     for name in sorted(_TIER_B_READS):
@@ -372,14 +360,8 @@ def test_e5_is_answered_one_way_across_tier_b() -> None:
 # ── D-7, answered ONE way across the tier (finding 6) ───────────────────
 
 
-#: The Tier B verbs that APPEND a session-log entry, i.e. the ones D-7 rule 1
-#: makes take ``require_durable_session``: ``set_model``'s `model_change`,
-#: ``set_session_name``'s `session_info`, ``compact``'s `compaction`.
 _TIER_B_APPENDERS = frozenset({"compact", "set_model", "set_session_name"})
 
-#: The rest. ``set_auto_compaction`` is the interesting member: a MUTATOR
-#: (D-1-guarded, E5-cursor-carrying) that still appends nothing, which is
-#: what keeps D-7 from collapsing into "mutators refuse".
 _TIER_B_NON_APPENDERS = frozenset(
     {
         "get_last_assistant_text",
@@ -527,31 +509,20 @@ def _tier_b_prose_enumerations() -> list[tuple[str, str, frozenset[str]]]:
     enough to satisfy a whole-block search. A slice that a neighbouring
     sentence can satisfy pins nothing.
     """
-    source = inspect.getsource(commands_module)
-    e5 = source.index("# E5 in Tier B")
-    rule1 = source.index("#   1. A MUTATING verb", e5)
-    rule2 = source.index("#   2. A READ never carries one.", e5)
-    rule3 = source.index("#   3. Absence is never a signal.", e5)
+    source = commands_module.__doc__
+    assert source is not None
+    e5 = source.index("E5 in Tier B")
+    rule1 = source.index("  1. A MUTATING verb", e5)
+    rule2 = source.index("  2. A READ never carries one.", e5)
+    rule3 = source.index("  3. Absence is never a signal.", e5)
 
-    # The D-7 block beside it, sliced the same way and for the same reason:
-    # its two rules are the only place the appends/does-not-append split is
-    # written out by name.
-    d7 = source.index("# DURABILITY in Tier B")
-    d7_rule1 = source.index("#   1. A verb that APPENDS", d7)
-    d7_rule2 = source.index("#   2. A verb that appends NOTHING", d7)
-    d7_rule3 = source.index("#   3. It is the SESSION's durability", d7)
+    d7 = source.index("DURABILITY in Tier B")
+    d7_rule1 = source.index("  1. A verb that APPENDS", d7)
+    d7_rule2 = source.index("  2. A verb that appends NOTHING", d7)
+    d7_rule3 = source.index("  3. It is the SESSION's durability", d7)
 
-    module_doc = commands_module.__doc__
+    module_doc = source
     assert module_doc is not None
-    # Just the **Tier B** SENTENCE that lists the verbs — not the whole
-    # docstring (Tier A's own list must not satisfy this) and not even the
-    # whole paragraph: the same measurement as above caught that too. The
-    # paragraph's trailing parenthetical explains where `get_models` came
-    # from, so deleting `get_models` from the LIST left the paragraph still
-    # naming it and the assertion still green. The list ends where "All of
-    # them are wired" begins; if that anchor is ever reworded this raises
-    # ValueError and the test errors loudly rather than degrading to a
-    # weaker check.
     tier_b_para = module_doc[module_doc.index("**Tier B**") : module_doc.index("**Tier C**")]
     tier_b_list = tier_b_para[: tier_b_para.index("All of them are wired")]
 

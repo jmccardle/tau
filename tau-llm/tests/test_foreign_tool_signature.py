@@ -33,6 +33,9 @@ from tau_llm.providers import openai as openai_provider
 from tau_llm.providers.openai import OpenAICompletionsProvider
 from tau_llm.types import AssistantMessage, ToolCall
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 GOOGLE_SIGNATURE = {"google": {"thought_signature": "Cs4BAdHtim9nOtc"}}
 
 
@@ -60,7 +63,7 @@ def _assistant(blocks: list[Any]) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
     )
 
 
@@ -77,11 +80,6 @@ def _tool_call(**overrides: Any) -> ToolCall:
 def _convert(message: AssistantMessage, *, strict: bool = False) -> dict[str, Any]:
     converted = _provider()._convert_messages_to_openai([message], "turn", strict)
     return dict(converted[0])
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# The default: no signature at all
-# ──────────────────────────────────────────────────────────────────────────
 
 
 def test_a_tool_call_without_a_signature_is_unchanged() -> None:
@@ -112,11 +110,6 @@ def test_an_empty_signature_does_not_warn(caplog: pytest.LogCaptureFixture) -> N
 
     assert "tool call carries" not in caplog.text
     assert not openai_provider._WARNED_FOREIGN_TOOL_SIGNATURES
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# A foreign signature: the call survives, the signature does not
-# ──────────────────────────────────────────────────────────────────────────
 
 
 def test_the_tool_call_still_replays() -> None:
@@ -176,11 +169,6 @@ def test_a_dict_block_carrying_a_signature_is_guarded_too() -> None:
     assert result["tool_calls"][0]["id"] == "call_1"
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Warning and strict behaviour
-# ──────────────────────────────────────────────────────────────────────────
-
-
 def test_it_warns_naming_the_namespace(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING):
         _convert(_assistant([_tool_call(provider_signature=GOOGLE_SIGNATURE)]))
@@ -225,11 +213,6 @@ def test_strict_does_not_raise_without_a_signature() -> None:
     result = _convert(_assistant([_tool_call()]), strict=True)
 
     assert result["tool_calls"][0]["id"] == "call_1"
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# Persistence — the reason the field is on the block and not on the message
-# ──────────────────────────────────────────────────────────────────────────
 
 
 def test_the_signature_survives_a_model_dump_round_trip() -> None:

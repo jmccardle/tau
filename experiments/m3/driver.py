@@ -112,8 +112,6 @@ class EngineAgent:
         return board.best_move(self.depth)
 
 
-# The prompt the LLM sees. The grammar — not the prose — is what makes the output
-# a legal move; the prose gives the model the position and the reasoning target.
 _SYSTEM_PREFACE = (
     "You are playing Los Alamos chess: a 6x6 variant on files a-f, ranks 1-6. "
     "There are NO bishops. The queen keeps full orthogonal+diagonal movement; "
@@ -176,10 +174,6 @@ class LLMAgent:
         return "\n".join(parts)
 
     def choose(self, board: Board) -> Move:
-        # A terminal position has no move to choose; do not call the model.
-        # (grammar_for_position also raises on no legal moves, but a draw-terminal
-        # position such as insufficient material still HAS legal moves, so guard
-        # explicitly on the game-over predicate.)
         if board.is_game_over():
             raise ValueError("cannot choose a move: position is terminal")
         grammar = grammar_for_position(board)
@@ -199,8 +193,6 @@ class LLMAgent:
                 client.close()
         content = (data["choices"][0]["message"]["content"] or "").strip()
         if not content:
-            # Fail-Early: a truncated-before-answer completion is not a move. Do
-            # NOT fabricate one — that would poison the very trajectory we record.
             raise RuntimeError(
                 "LLM returned empty content — reasoning likely ran past max_tokens "
                 "before emitting a grammar-bound move"

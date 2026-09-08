@@ -35,79 +35,10 @@ if TYPE_CHECKING:
     from tau_agent_core.rpc.handler import RPCHandler
 
 
-# =============================================================================
-# T7 — the inbound request-line bound
-# =============================================================================
-#
-# Tier B review, finding 9. `_read_stdin` used to build a bare
-# `asyncio.StreamReader()` and inherit the stdlib's 64 KiB `_limit`, which
-# `readline()` enforces by RAISING `ValueError: Separator is found, but chunk
-# is longer than limit`. Nothing caught it: one `prompt` carrying a pasted
-# file, a stack trace or a diff took the whole process down — no JSON-RPC
-# error, no T4 stderr line, exit 1, and every later request on that
-# connection lost with it. Measured end to end against a real child: a 100 KB
-# prompt produced "NO RESPONSE: stdout closed".
-#
-# The fix is deliberately BOTH halves, because either alone is a defect:
-#
-# - **The bound is raised**, from 64 KiB to `MAX_REQUEST_LINE_BYTES`. 64 KiB
-#   is below what an ordinary host legitimately sends; a limit that a correct
-#   host trips over in normal use is not a limit, it is a bug with a number
-#   attached.
-# - **The bound is enforced, loudly, and survivably.** Fail Early: a silently
-#   bigger number is the same defect one order of magnitude later. An
-#   over-long line is refused with `REQUEST_TOO_LARGE`, announced on stderr
-#   (T4), and DISCARDED THROUGH ITS NEXT LF so the connection resynchronizes
-#   on real framing instead of parsing the tail of a rejected request as a
-#   fresh one. The process does not die and the next well-formed line is
-#   served normally.
-#
-# And the bound is DISCOVERABLE, in three places, so no host has to learn it
-# by failing: `get_capabilities` publishes it as
-# `limits.max_request_line_bytes` (K1 — the §10-open-question-4 shape: "an
-# advertised max the host is obliged to respect"), `docs/RPC-PROTOCOL.md`
-# renders it from that same value, and the refusal itself carries it in
-# `error.data`.
-#
-# WHY 8 MiB. It is far above anything a correct host sends — 8 MiB of prose
-# is on the order of two million tokens, an order of magnitude past any
-# context window a request could usefully fill — and still small enough that
-# the worst case is bounded and boring: the reader holds at most one
-# partial line, so a hostile peer streaming an endless line costs
-# `MAX_REQUEST_LINE_BYTES` plus one chunk of RSS and no more, forever. It is
-# a round number that can be stated in a document, not a tuning parameter.
-#
-# Measured in BYTES of the line's own content: the terminating LF is framing
-# and does not count, a tolerated trailing CR does (it is inside the line as
-# far as this reader is concerned). A line of exactly this many bytes is
-# accepted; one byte more is refused.
 MAX_REQUEST_LINE_BYTES = 8 * 1024 * 1024
 
-#: How many bytes `_read_stdin` pulls off the pipe per read. Framing is done
-#: on the buffer this fills (see `_read_stdin`), so this is a syscall-batching
-#: number and nothing else — it bounds neither a line nor the reader's memory
-#: (`MAX_REQUEST_LINE_BYTES` does both). 64 KiB matches the stdlib
-#: `StreamReader`'s own default buffer granularity.
 _READ_CHUNK_BYTES = 64 * 1024
 
-
-# =============================================================================
-# stdout takeover (T2)
-# =============================================================================
-#
-# Any print() from a tool, an extension, or a library shares fd 1 with the
-# JSON-RPC protocol stream by default, and a single stray line is enough to
-# corrupt it for the client. We claim stdout exclusively for the protocol
-# writer for as long as an RPCHandler is running: `sys.stdout` is rebound to
-# `sys.stderr` so every *other* writer in the process lands there instead,
-# and the real stdout is kept as a private handle that only the protocol
-# writer (`RPCHandler._write_line`) uses.
-#
-# This is process-global state (there is exactly one `sys.stdout`), so it is
-# reference-counted rather than a plain boolean: nested/concurrent callers —
-# two RPCHandler instances in the same process, or a handler whose run() is
-# entered while another hasn't stopped yet — each register a claim, and the
-# real stdout is only restored once every claim has been released.
 
 _stdout_takeover_depth = 0
 _real_stdout: TextIO | None = None
@@ -154,10 +85,6 @@ def is_stdout_taken_over() -> bool:
     """True while at least one RPCHandler holds the stdout claim."""
     return _stdout_takeover_depth > 0
 
-
-# =============================================================================
-# Signal shutdown (P1)
-# =============================================================================
 
 _SIGNAL_EXIT_CODES: dict[str, int] = {"SIGTERM": 143, "SIGHUP": 129}
 
@@ -275,45 +202,16 @@ async def _read_stdin(self: "RPCHandler") -> None:
     reader = asyncio.StreamReader()
     protocol = asyncio.StreamReaderProtocol(reader)
     transport, _ = await loop.connect_read_pipe(lambda: protocol, sys.stdin.buffer)
-    # The bytes of the line currently being assembled, never more than one
-    # line's worth (T7): complete lines are dispatched and removed below, and
-    # an over-long one is refused and cleared rather than kept.
     pending = bytearray()
-    # T7: True while the remains of an already-refused over-long line are
-    # still arriving. Everything up to and including that line's LF is
-    # discarded, and exactly one error was already sent for it.
     discarding = False
     try:
         while True:
-            # Finding 4 (phase-4 review): race the next line against
-            # `self._shutdown_signal` (set by `_observe_shutdown_after_
-            # background_task`, handler.py) rather than a bare `await
-            # reader.readline()`. Without this, an extension that requests
-            # shutdown from a hook running INSIDE a background turn (C3) —
-            # the common case, since `submit`/`prompt` return their
-            # acceptance response at admission and let the turn run on —
-            # sets `AgentSession.shutdown_requested` while this coroutine is
-            # already parked here waiting for a next line that may never
-            # come, and nothing was ever checking the flag again. Not a
-            # poll: `self._shutdown_signal` is only ever set once, by that
-            # one done-callback, and this `asyncio.wait` is the only place
-            # that ever awaits it — it does not re-check anything on a
-            # timer. The existing after-dispatch check just below this loop
-            # body is UNCHANGED and still the primary path for a shutdown
-            # requested synchronously inside a dispatched command's own
-            # handling.
             read_task = asyncio.ensure_future(reader.read(_READ_CHUNK_BYTES))
             shutdown_task = asyncio.ensure_future(self._shutdown_signal.wait())
             done, _pending = await asyncio.wait(
                 {read_task, shutdown_task}, return_when=asyncio.FIRST_COMPLETED
             )
             if read_task not in done:
-                # The shutdown signal fired while genuinely idle here (no
-                # line in flight to finish parsing/dispatching) -- take the
-                # exact same clean-shutdown path as EOF/the after-dispatch
-                # check below. The abandoned read() is cancelled rather
-                # than left to resolve later against a `transport` this
-                # method's own `finally` is about to close.
                 read_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await read_task
@@ -325,27 +223,12 @@ async def _read_stdin(self: "RPCHandler") -> None:
             chunk = read_task.result()
             eof = not chunk
             if eof:
-                # EOF: a clean shutdown trigger (P4), handled by run(). What
-                # is still in `pending` is a final line the peer never
-                # terminated — a request like any other (T1), dispatched by
-                # giving it the LF the peer did not send.
-                #
-                # A stream that ends mid-discard needs no case of its own,
-                # and deliberately does not get one: `pending` is cleared
-                # when a line is refused and nothing is appended to it while
-                # `discarding` (the branch below drops those bytes outright),
-                # so `discarding` here implies `not pending` and the refused
-                # line cannot be resurrected by an EOF. Stated rather than
-                # re-tested, because a condition that can never be false is a
-                # branch no test can fail on.
                 if not pending:
                     break
                 pending += b"\n"
             elif discarding:
                 offset = chunk.find(b"\n")
                 if offset < 0:
-                    # Still inside the refused line. Drop the bytes; the
-                    # error for them was sent when the bound was crossed.
                     continue
                 discarding = False
                 chunk = chunk[offset + 1 :]
@@ -357,67 +240,27 @@ async def _read_stdin(self: "RPCHandler") -> None:
             while True:
                 offset = pending.find(b"\n")
                 if offset < 0:
-                    # An incomplete line. T7: refuse it the moment it crosses
-                    # the bound rather than when it finally ends — a peer that
-                    # never sends an LF would otherwise be an unbounded
-                    # buffer, and telling the host NOW is what lets it stop.
                     if len(pending) > MAX_REQUEST_LINE_BYTES:
                         await _refuse_oversized_request(self, len(pending), line_complete=False)
                         pending.clear()
                         discarding = True
                     break
                 if offset > MAX_REQUEST_LINE_BYTES:
-                    # A complete line, whole in the buffer, over the bound.
-                    # Refused unparsed and dropped through its own LF; the
-                    # loop continues on the next line rather than resyncing,
-                    # because there is nothing left of this one to resync on.
                     await _refuse_oversized_request(self, offset, line_complete=True)
                     del pending[: offset + 1]
                     continue
                 raw = bytes(pending[:offset])
-                # The buffer advances BEFORE the decode, unconditionally: an
-                # undecodable line is consumed exactly like a decodable one,
-                # which is what makes the refusal below a resync rather than a
-                # loop on the same bytes.
                 del pending[: offset + 1]
                 try:
                     line = raw.decode("utf-8")
                 except UnicodeDecodeError as exc:
-                    # T7's sibling defect (Tier B review, finding 9's blockers
-                    # #4): two hostile bytes on stdin used to kill the child
-                    # here — `UnicodeDecodeError` escaped `_read_stdin`, out of
-                    # `handler.run()`, and every request behind them was lost
-                    # with the process. Same availability failure as an
-                    # over-long line, same answer: refuse the one line, keep
-                    # serving the connection.
                     await _refuse_undecodable_request(self, exc, len(raw))
                     continue
                 if line.endswith("\r"):
                     line = line[:-1]
                 if not line.strip():
-                    # A blank or whitespace-only line is framing, not a request:
-                    # skip it rather than answering with an "Invalid JSON" error.
-                    # Emptiness is tested on the STRIPPED form, but the original
-                    # line is what gets parsed — the reader must not strip the
-                    # content itself (T1: no splitlines, no eating a U+2028 or a
-                    # meaningful character the framing does not own).
                     continue
                 await self._handle_line(line)
-                # P3 (docs/REMOTE-CONTROL.md §4[7]): "extensions can request
-                # shutdown, checked after each command rather than polled" —
-                # this IS that check, placed exactly where the spec's wording
-                # says: right after a command's own dispatch, not on a separate
-                # timer/poll loop, and never for a skipped blank line (that is
-                # not a command). `AgentSession.shutdown_requested` reads the one
-                # `ExtensionContext` every bound extension shares, so any
-                # extension's `ctx.shutdown()` — called from a hook or a tool
-                # this command's dispatch just ran — is visible here immediately.
-                # Breaking out of this loop takes the exact same clean-shutdown
-                # path `run()` already gives stdin EOF (drain the writer, remove
-                # signal handlers, release stdout) — no new exit code, no signal.
-                # It also abandons any FURTHER lines already sitting in
-                # `pending`, which is the same promise as before: once shutdown
-                # is requested the next line is never even parsed.
                 if self._session.shutdown_requested:
                     stop = True
                     break
@@ -688,113 +531,27 @@ async def _write_stdout(self: "RPCHandler") -> None:
             try:
                 item = await asyncio.wait_for(self._output_queue.get(), timeout=0.5)
             except asyncio.TimeoutError:
-                # Finding 3 (Tier B review), second half. The queue clause is
-                # load-bearing, not belt-and-braces: without it this `break`
-                # CONTRADICTS the `while` condition one line above, which
-                # keeps writing precisely while "`_running`, OR the queue is
-                # non-empty". `asyncio.wait_for` raising here proves only
-                # that the queue was empty for the last 0.5s — it says
-                # nothing about right now, and `put_nowait` landing in the
-                # same event-loop iteration as the timer loses the race:
-                # the getter it woke is cancelled, the item stays queued,
-                # and this handler runs with items waiting.
-                #
-                # Reachable, and measured, once `run()` reaps background
-                # tasks before draining the writer (handler.py): a task
-                # finishing 0.5s into that reap queued its last two items,
-                # `run()` cleared `_running`, and this `break` threw both
-                # away — the child exited rc 0 with an empty stderr and the
-                # host was never told what had happened. Deciding to stop on
-                # `_running` ALONE is what made a queued item droppable; the
-                # loop condition was right all along. (Stated without naming
-                # what those items MEANT: X1 — block [1] frames and orders
-                # bytes, and test_rpc.py greps this file for leaked event
-                # vocabulary to keep it that way.)
                 if not self._running and self._output_queue.empty():
                     break
                 continue
-            # T3/G4: this item's event-credit (if it holds one — see
-            # `_forward_event`/`_acquire_event_credit`), released once the
-            # write below has actually drained (see the docstring above for
-            # why post-drain, not dequeue-time). A response/ack item (C3's
-            # `_on_admitted`, `_send_response`, `_send_error`) never had one
-            # (`_credited` absent, `pop` defaults to False) and this is a
-            # no-op for it.
             credited = item.pop("_credited", False)
-            # Hand the item back to the layer that knows what it MEANS before framing
-            # it (X1: block [1] frames and orders bytes; it does not read event types).
             self.prepare_outbound(item)
             line = json.dumps(item, separators=(",", ":"))
             self._write_line(writer, line)
-            # AWAIT is load-bearing — see the class docstring above (T6/T3).
-            #
-            # Deliberately uncaught. stdout is not logging here, it is the protocol's
-            # only outbound channel: if the write fails the peer is gone, and every
-            # response after it would be queued into a void. A `except Exception:
-            # pass` here made a broken pipe indistinguishable from a delivered
-            # message. Let it raise and take run() down with it.
             await writer.drain()
-            # The peer accepted this item's bytes. Only observed by `run()`'s
-            # post-EOF flush deadline (handler.py,
-            # `_SHUTDOWN_FLUSH_NO_PROGRESS_TIMEOUT_S`) to distinguish "the
-            # host is reading slowly" from "the host stopped reading".
             self._drain_progress += 1
             if credited:
                 self._event_credits.release()
     finally:
-        # Teardown of THIS writer's own transport/fd (see
-        # `_connect_stdout_writer`'s docstring for why it is a duplicate,
-        # not `self._real_stdout`'s own fd). AWAITED via `wait_closed()`
-        # (`_WriterClosedProtocol`), not fire-and-forget: `close()` only
-        # SCHEDULES the fd's closure on the event loop, and without
-        # waiting for it a caller that reads the peer pipe to EOF
-        # immediately after this coroutine returns can race that closure
-        # and hang — measured directly (phase-4 review) as a flaky test
-        # failure once the writer swap landed.
         unwinding = sys.exc_info()[0]
         if unwinding is asyncio.CancelledError:
-            # This coroutine is being stopped DELIBERATELY, by one of the two
-            # paths that cancel the writer: SIGTERM (P1) and the post-EOF
-            # flush deadline (`RPCHandler._flush_stdout_with_deadline`). Both
-            # fire for the same underlying reason — the peer is not taking
-            # bytes — so `close()` alone is not enough here: it waits for the
-            # transport's buffer to reach the OS before it completes, which
-            # is precisely the wait that cannot finish, and `wait_closed()`
-            # below would then park for its whole timeout and hand the
-            # unkillable process straight back. Those bytes are already lost;
-            # `abort()` discards them and tears the transport down now.
-            # Deliberately NOT done on the broken-pipe path (T5/T6): there
-            # `connection_lost` has already run, the transport has dropped
-            # its loop reference, and calling `abort()` on it raises an
-            # asyncio-internal `AttributeError` that would replace the real
-            # failure — measured, as two broken-pipe tests failing.
             writer.transport.abort()
         writer.close()
         if unwinding is None:
-            # Nothing is already propagating out of this coroutine — a
-            # close failure HERE is new information, and Fail Early says
-            # surface it (bounded, not silent) rather than swallow it.
             await asyncio.wait_for(writer.wait_closed(), timeout=5.0)
         else:
-            # An exception is already unwinding this coroutine — the SAME
-            # connection failure `drain()` raised above (T5/T6), or the
-            # `CancelledError` handled just above. Give the transport a
-            # moment to finish tearing down so the fd is genuinely gone
-            # before returning, but do not let a redundant close-time echo
-            # of the failure already in flight REPLACE it, and do not hang
-            # on it either.
             with contextlib.suppress(Exception, asyncio.TimeoutError):
                 await asyncio.wait_for(writer.wait_closed(), timeout=5.0)
-        # See `_connect_stdout_writer`'s docstring: the duplicate fd's
-        # transport put the SHARED open file description into non-blocking
-        # mode. Restore blocking mode on the ORIGINAL fd now that the
-        # duplicate is gone, so `self._real_stdout` — handed back to
-        # `sys.stdout` by `transport._release_stdout()` right after this
-        # method returns — behaves exactly as a caller of a normal,
-        # blocking file object expects. `contextlib.suppress(OSError)`:
-        # the original fd may already be invalid (e.g. a genuinely broken
-        # pipe, T5/T6) — that failure was already handled above, and an fd
-        # that is gone cannot leak a blocking-mode footgun either.
         with contextlib.suppress(OSError):
             os.set_blocking(original_fd, True)
 

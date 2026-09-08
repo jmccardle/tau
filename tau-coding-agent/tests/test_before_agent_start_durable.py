@@ -35,6 +35,9 @@ from tau_agent_core.conversation_tree import ConversationTree, TreeNode
 from tau_agent_core.messages import convert_to_llm
 from tau_coding_agent.session_store import Session
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 def _model() -> Model:
     return Model(
@@ -55,7 +58,7 @@ def _assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
 
@@ -144,8 +147,6 @@ def _injecting_extension(api: Any) -> None:
 
 
 async def test_before_agent_start_message_is_a_durable_node(tmp_path) -> None:
-    # A real ON-DISK session (so we can reload it from bytes below) is the
-    # AgentSession's SessionLog on the live path.
     store = Session.create("/tmp", "gpt-4o", "openai", base_dir=tmp_path)
     session = AgentSession(
         session_log=store,
@@ -161,10 +162,6 @@ async def test_before_agent_start_message_is_a_durable_node(tmp_path) -> None:
     ):
         returned = await session.prompt("hello")
 
-    # ── (d) WIRE — the message the provider actually received is custom→user ──
-    # The captured wire messages are post-serialization (agent_loop convert_to_llm),
-    # so the injected text rides on a `user` message and NO `custom` role leaks to
-    # the provider (which would reject it).
     wire = captured["messages"]
     assert "custom" not in [_role(m) for m in wire]
     assert "INJECTED" in _texts_for_role(wire, "user")
@@ -179,8 +176,6 @@ async def test_before_agent_start_message_is_a_durable_node(tmp_path) -> None:
     assert node_entry["customType"] == "reminder"
     assert node_entry["message"]["role"] == "custom"
     assert node_entry["message"]["content"] == [{"type": "text", "text": "INJECTED"}]
-    # It sits on the active path (parentId chain), between the user turn and the
-    # assistant reply — a real node, not an out-of-band channel.
     tree = ConversationTree(entries, store.cursor)
     custom_nodes = [n for n in _flatten(tree.tree()) if n.kind == "customMessage"]
     assert len(custom_nodes) == 1
@@ -199,18 +194,12 @@ async def test_before_agent_start_message_is_a_durable_node(tmp_path) -> None:
     reloaded = Session.load(store.path)
     # The raw entries round-trip through the JSONL bytes unchanged.
     assert reloaded.entries() == before_entries
-    # Exactly ONE custom node after reload — the fork this step closes would show
-    # up as a duplicate (model-saw copy + disk copy) or a missing node.
     assert sum(1 for e in reloaded.entries() if e.get("type") == "customMessage") == 1
     after_ctx = ConversationTree(reloaded.entries(), reloaded.cursor).context_for()
     assert after_ctx == before_ctx
     # The reconstructed context keeps the extension-origin role (render view)…
     assert "custom" in [_role(m) for m in after_ctx]
 
-    # ── (d, reload) the RELOADED node still serializes to an accepted role ────
-    # Push the reloaded active path through the same custom→user wire mapping and
-    # then the REAL provider conversion: every role is OpenAI-acceptable (no
-    # "custom"), and the injected text survives as a user message.
     wire_after_reload = convert_to_llm(after_ctx)
     assert "custom" not in [_role(m) for m in wire_after_reload]
     provider = OpenAICompletionsProvider(api_key="test-key")

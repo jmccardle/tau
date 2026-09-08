@@ -27,6 +27,9 @@ from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 def _model(model_id: str = "model-a") -> Model:
     return Model(
@@ -225,7 +228,7 @@ def test_a_non_dict_payload_is_reported_rather_than_crashing_the_browser():
             "type": "customEntry",
             "customType": "agent_spec",
             "data": "not a dict",
-            "timestamp": 0,
+            "timestamp": _TS,
         }
     ]
     assert ConversationTree(entries, "e1").tree()[0].preview == "agent_spec: no frame recorded"

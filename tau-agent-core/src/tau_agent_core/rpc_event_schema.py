@@ -30,10 +30,24 @@ adding an internal field must not change the wire without a version bump."*
 So this module does not call ``AgentEvent.model_json_schema()`` and hand the
 result out — that would make every future internal field on ``AgentEvent`` a
 silent wire change. It declares :class:`WireEvent`, an explicit,
-independently reviewable field list — see the comment above the class for
-the field-by-field justification, including the fields (``delta``,
+independently reviewable field list, including the fields (``delta``,
 ``block_type``, ``replace``, ``message_count``) that E1/E2 require as
 *replacements* for excluded unbounded fields, not merely deletions of them.
+
+Excluded from :class:`WireEvent`, each because it is unbounded on a stream a
+host cannot backpressure — ``message``, ``args``, ``result``,
+``tool_results``, ``messages``, ``details``. All of them are reachable by
+PULL instead: ``get_messages`` returns whole message dicts, and a
+``toolResult`` message carries the same ``details`` value the
+``tool_execution_end`` event does. ``details`` is on this list rather than on
+the wire because ``edit`` puts a whole diff in it.
+
+Two BOUNDED facts are lifted out of the excluded ``message`` and given fields
+of their own: ``stop_reason`` and ``dropped_tool_calls``. Excluding a whole
+message is about size, and a closed enum and a small integer are neither
+unbounded nor pullable in time to matter — a host that learns from
+``get_messages`` that the answer it already rendered was a truncated prefix
+learns it too late.
 
 E3 (additive and versioned): every field below is optional/defaulted and
 :class:`WireEvent` does not set ``model_config["extra"] = "forbid"`` — a
@@ -55,151 +69,6 @@ from pydantic import BaseModel, Field
 
 from tau_agent_core.events import AgentEndReason, AgentEvent
 from tau_agent_core.submission import SubmissionSource
-
-# ---------------------------------------------------------------------------
-# WireEvent field-by-field justification, checked against AgentEvent
-# (tau_agent_core/events.py). This lives here, as a source comment, rather
-# than in WireEvent's docstring, because a pydantic model's docstring is
-# copied verbatim into its JSON Schema's "description" — and that schema is
-# wire payload (K1/K3), not contributor documentation. Keep this comment in
-# sync with the field list below; it is not machine-checked.
-#
-# INCLUDED, 1:1 with AgentEvent —
-#
-# - type — the event discriminator; the entire reason a capability document
-#   enumerates events[] (K1). Bounded: one of ten literal strings. This
-#   Literal is a deliberate, hand-maintained *copy* of AgentEvent.type, not a
-#   re-export of the same annotation object — see the anti-drift test suite
-#   (tests/test_rpc_event_schema.py) for why that duplication is the point.
-# - timestamp — ordering/observability a remote host cannot reconstruct
-#   locally. Bounded: an int.
-# - turn_index — which turn an event belongs to. Bounded: an int or None.
-# - tool_call_id — correlates tool_execution_* events to the call that
-#   produced them. Bounded: a string or None.
-# - tool_name — names the tool a tool_execution_* event concerns. Bounded: a
-#   string or None.
-# - is_error — bounded boolean a host renders on.
-# - error — WHY an agent_end closed when the loop raised rather than
-#   finishing (AgentEvent's own docstring: "Without it 'the agent finished'
-#   and 'the agent died mid-turn' are the same event"). Bounded: a string or
-#   None, always paired with is_error=True when set. Phase-2 review B3: this
-#   field existed on AgentEvent since before this module was written but was
-#   never added here — neither projected nor declared EXCLUDED — so it fell
-#   through both classifications this comment otherwise accounts for every
-#   field by. See tests/test_rpc_event_schema.py's TestNoFieldSilentlyDropped
-#   for the anti-drift check that closes the hole that let this happen once.
-# - end_reason — HOW an agent_end closed when the loop did NOT raise: 'done',
-#   'terminate', 'aborted', 'max_turns', 'repeat_tool_calls' or 'error'.
-#   Bounded: one of six literal strings, or None on every other event type.
-#   `error` above answers "did it raise"; this answers "and if not, why did it
-#   stop", which is the only way a host can tell a TRUNCATED answer (a ceiling
-#   was hit, or the loop gave up on a model repeating a failing call) from a
-#   finished one. Reuses `AgentEndReason` from tau_agent_core.events verbatim
-#   rather than a hand-copied Literal — like `source` and unlike `type`, this
-#   is a value vocabulary the loop owns, and the loop gaining a new way to stop
-#   without the wire saying so is the failure worth avoiding here.
-# - blocked — the S50 extension-veto flag, a *distinct* presentation from a
-#   generic error per the events.py docstring. Bounded boolean.
-# - blocked_by — names the vetoing extension, paired with blocked. Bounded:
-#   a string or None.
-# - submission_id, source, submitter, correlation — E4's provenance quad
-#   (docs/REMOTE-CONTROL.md §4[4] E4, §2 G6): "every event carries the
-#   submission provenance quad when a submission drove it, and null when
-#   none did." Copied straight through from AgentEvent, never defaulted or
-#   synthesized on this side — events.py:62-77 already states the rule this
-#   projection must not weaken ("an honest 'no submission', never a
-#   fabricated id"), and AgentEvent itself guarantees the four stay None
-#   together. `source` reuses `SubmissionSource` (tau_agent_core.submission)
-#   verbatim rather than a hand-copied Literal — unlike `type` above, this
-#   is a value vocabulary the submission layer owns, not a wire-specific
-#   commitment worth a second, driftable copy.
-#
-# EXCLUDED, with reason —
-#
-# - args — tool-call arguments are shaped by the *tool's* own schema, not
-#   AgentEvent's contract, and unbounded in the general case (G3). Excluded
-#   rather than guessed at. No replacement declared; there is no bounded
-#   summary of "what arguments were" the way a delta or a count summarizes
-#   text or a list.
-# - result — Any-typed tool result: unbounded and untyped by construction,
-#   no honest JSON Schema can describe Any. Excluded (G3).
-# - tool_results — "list of tool result messages (turn_end)": an unbounded
-#   list, the same shape E2 rules out for agent_end's messages. E2's text
-#   names agent_end specifically ("agent_end announces completion and
-#   carries counts"); it does not say turn_end's tool_results gets a count
-#   too. Excluded with NO replacement declared here, on purpose — inventing
-#   a `tool_result_count` would be guessing at a requirement REMOTE-CONTROL.md
-#   does not state, which this module's own contract (declare only what is
-#   asked for, or say you can't) rules out. Flagged for a future unit to
-#   raise with the doc's owner if turn_end truly needs one.
-#
-# EXCLUDED, but REPLACED by a bounded field (E1/E2) —
-#
-# - message — a whole-message content block, unbounded in the general case
-#   (a long assistant turn). E1: "message_update carries a delta, never the
-#   cumulative message ... The prefix-diff tau's TUI already runs
-#   (backends.py:192-199) MOVES INTO THE PROJECTION." So the *whole message*
-#   is excluded, and `delta`/`block_type`/`replace` (below) are declared in
-#   its place. `rpc/wire_events.py` (unit 2B) is the stateful, per-connection
-#   transform that computes their VALUES for a live event — this module
-#   stays pure and only declares the shape.
-#   - delta — the diffable block's incremental suffix (or, when `replace` is
-#     True, its entire new value — see `replace` below). Only set on
-#     `message_update`, and only for a DIFFABLE block (`text`/`thinking`,
-#     tau_agent_core.event_projection._DIFFABLE_FIELD); a non-diffable block
-#     change (e.g. `toolCall`) produces no wire event at all (see
-#     `rpc/wire_events.py`'s module docstring for why — G3, the same
-#     unbounded-passthrough problem `args`/`result` above are excluded for).
-#     None for every other event type.
-#   - block_type — which diffable content-block kind `delta` belongs to,
-#     mirroring `event_projection.BlockDelta.type` restricted to the kinds
-#     that ever populate `delta`. A hand-copied Literal, not a shared alias
-#     (`event_projection._DIFFABLE_FIELD`'s key set is a plain dict, not a
-#     `typing.Literal`, so there is nothing to import) — kept in sync by
-#     `TestBlockTypeMatchesDiffableFields` in tests/test_rpc_event_schema.py,
-#     the same anti-drift idiom `type` uses against `AgentEvent.type`.
-#     Without this a client cannot tell an answer-text delta from a
-#     reasoning delta, which matters for R-T6: concatenating deltas of BOTH
-#     kinds without discriminating would corrupt "the final assistant text."
-#   - replace — mirrors `event_projection.BlockDelta.replace` exactly: False
-#     (default) means `delta` is a suffix to append; True means the provider
-#     replaced rather than extended the block and `delta` is the block's
-#     WHOLE new value, so the receiver must reset its accumulator instead of
-#     appending. Declaring `delta` without this flag would silently corrupt
-#     reconstruction on the one path `event_projection`'s own docstring calls
-#     out as "the defensive case" — see BlockDelta.replace's docstring.
-# - messages — "list of messages produced (agent_end)": E2 by name — "the
-#   message array is *pulled* via get_messages", not pushed. Excluded, and
-#   `message_count` (below) is declared in its place, per E2's "agent_end
-#   announces completion and carries counts." `rpc/wire_events.py` sets it
-#   to `len(event.messages)` on `agent_end` (event.messages is never None on
-#   that path — AgentLoop._emit_agent_end always passes a list, possibly
-#   empty); None for every other event type.
-#
-# ADDED, not a projection of any AgentEvent field —
-#
-# - cursor — E5/F3 (docs/REMOTE-CONTROL.md §4[4] E5, §7.2 F3: "no host may
-#   cache 'the tip'"), added by phase-2 review B1. AgentEvent carries no
-#   cursor at all (the session log is AgentSession's concern, not the loop's);
-#   this field exists so a MUTATING verb's result — `abort`, `submit`,
-#   `prompt` — has a place to learn the resulting cursor from once the
-#   mutation has genuinely happened, rather than a response built at signal
-#   time guessing at a tip that has not moved yet. Only ever set on
-#   `agent_end` (the one point every turn a submission may run — including
-#   one `abort()` cut short — has finished unwinding and persisting), and
-#   ONLY there: `rpc/transport.py`'s writer fills it in immediately before
-#   serializing the `agent_end` line, not `rpc/wire_events.py` at event-
-#   projection time (see that module's docstring for why "at projection
-#   time" is exactly the same stale-tip bug `abort`'s old cursor had —
-#   persistence happens strictly AFTER `agent_end` fires, not before). None
-#   for every other event type.
-#
-# Per E3, fields may be *added* to this projection later without breaking
-# existing clients (clients MUST ignore unknown fields); this model does not
-# set model_config["extra"] = "forbid" for that reason — an absent/renamed
-# field is a wire break to catch by test, an *added* one is supposed to be
-# safe to ignore.
-# ---------------------------------------------------------------------------
 
 
 class WireEvent(BaseModel):
@@ -301,6 +170,37 @@ class WireEvent(BaseModel):
         default=None,
         description="Count of messages produced this turn, on agent_end (E2). "
         "The messages themselves are pulled via get_messages, never pushed. "
+        "None for all other event types.",
+    )
+    stop_reason: Literal["stop", "length", "toolUse", "error", "aborted"] | None = Field(
+        default=None,
+        description="Why the model stopped this completion, on the message_end "
+        "that carries usage. 'length' means the output cap ended it, so the "
+        "content is a PREFIX and not an answer — the one value an operator has "
+        "to act on. None on the content-only duplicate message_end (which "
+        "carries no usage either) and on every other event type. This rides a "
+        "field of its own because the message it belongs to is excluded from "
+        "the wire; it is a closed enum, not unbounded content. See "
+        "docs/TRUNCATED-TOOL-CALLS.md.",
+    )
+    dropped_tool_calls: int | None = Field(
+        default=None,
+        description="How many tool calls this completion lost because the "
+        "stream ended mid-argument, on message_end. A truncated or aborted "
+        "arguments buffer is a prefix, so the provider drops the call rather "
+        "than running it on a repaired or empty payload, and this is the only "
+        "record that it existed. Null rather than 0 when none were dropped, so "
+        "'none lost' and 'not reported' stay distinguishable. None for all "
+        "other event types.",
+    )
+    cache_notice: str | None = Field(
+        default=None,
+        description="One sentence saying this turn's prompt cache should have "
+        "been read and was not, on agent_end. Null is the normal case and says "
+        "nothing was observed: the cache was read, the server accounts for no "
+        "cache, the prompt is under the minimum cacheable prefix, or a read "
+        "earlier in this session already proved caching is on. A host renders "
+        "it as a warning; see docs/PROMPT-CACHING.md §7 for the three gates. "
         "None for all other event types.",
     )
     cursor: str | None = Field(

@@ -135,8 +135,6 @@ def test_the_planned_messages_are_what_the_model_would_see() -> None:
     tree = _tree(_linear())
     plan = plan_branch(tree, ["e02", "e05"], drop_context=True)
     texts = [m["content"][0]["text"] for m in planned_messages(tree, plan)]
-    # The system prompt survives the planned elide, exactly as it survives a real
-    # one (conversation_tree.is_system_message); u1 is kept; a2 is the copy.
     assert texts == ["sys", "u1", "a2"]
 
 
@@ -231,12 +229,8 @@ def test_the_system_prompt_cannot_be_copied_into_the_middle_of_a_branch() -> Non
     different thing — the branch hangs off it — and stays legal."""
     tree = _tree(_linear())
     reason = branch_refusal_reason(tree, ["e02", "e01"], drop_context=False)
-    # e01 is the system prompt and e02 is its child, so ordering puts e01 first and
-    # this selection is contiguous: both are keeps, and it is allowed.
     assert reason is None
 
-    # Here e01 lands among the copies: e04 is not its child, so the chain breaks at
-    # e02 and everything after is minted.
     entries = _linear()
     entries.append(_msg("e07", "e06", "system", "a second system message"))
     tree = _tree(entries, cursor="e07")

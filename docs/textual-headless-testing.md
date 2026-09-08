@@ -1,6 +1,6 @@
 # Looking at τ's TUI Without Attaching It to a Terminal
 
-How to see, measure, and test `tau_coding_agent.app.Parley` — the Textual TUI —
+How to see, measure, and test `tau_coding_agent.app.TauApp` — the Textual TUI —
 without ever handing it a real terminal, plus the live [Textual](https://textual.textualize.io)
 devtools a human uses when they *do* have one.
 
@@ -8,8 +8,8 @@ devtools a human uses when they *do* have one.
 >
 > | | Loop | Tool |
 > |---|---|---|
-> | **Agent** | render a named scene → *look at the PNG* → edit `parley.tcss` → re-render | `python -m tau_coding_agent.devshot` (§3) |
-> | **Human** | run the app live → save `parley.tcss` → the running app restyles itself | `textual run --dev` (§6) |
+> | **Agent** | render a named scene → *look at the PNG* → edit `tau.tcss` → re-render | `python -m tau_coding_agent.devshot` (§3) |
+> | **Human** | run the app live → save `tau.tcss` → the running app restyles itself | `textual run --dev` (§6) |
 >
 > The screenshot loop is the agent's; live CSS editing is the human's. Neither
 > replaces the other: the agent's loop is reproducible and assertable, the human's
@@ -46,7 +46,7 @@ That is safe inside an agent shell, a subprocess, or CI with no PTY at all.
 ### 1a. Structural prerequisite (already satisfied here)
 
 The `App` subclass must be importable without launching the UI. In τ,
-`tau_coding_agent.app.Parley` is a plain class and `.run()` happens in
+`tau_coding_agent.app.TauApp` is a plain class and `.run()` happens in
 `tau_coding_agent.cli`, so importing `app.py` never takes over the terminal.
 Keep it that way.
 
@@ -59,25 +59,25 @@ TUI counterpart of `tau_agent_core.testing` (contract suites for stores). Three
 modules, each usable on its own, plus one CLI on top.
 
 ```
-testing/sandbox.py   build a Parley whose every ~/.tau read/write lands in a temp dir
+testing/sandbox.py   build a TauApp whose every ~/.tau read/write lands in a temp dir
 testing/scenes.py    named app states  +  open_scene(): the one place a scene becomes an app
 testing/render.py    a running app -> text grid | SVG | PNG | measured layout dump
 devshot.py           CLI: scenes x sizes -> files on disk
 ```
 
-### 2.1 `testing/sandbox.py` — a hermetic `Parley`
+### 2.1 `testing/sandbox.py` — a hermetic `TauApp`
 
-`build_parley(tau_home, *, config=None, discover_extensions=False, extension_paths=(), **kwargs)`
-constructs a `Parley` that cannot touch the developer's real `~/.tau`, and
+`build_tau_app(tau_home, *, config=None, discover_extensions=False, extension_paths=(), **kwargs)`
+constructs a `TauApp` that cannot touch the developer's real `~/.tau`, and
 `sandbox_tau_home(root)` is the context manager that redirects it. There are
-exactly three moves that isolate a `Parley`, and the long explanation of *why
+exactly three moves that isolate a `TauApp`, and the long explanation of *why
 these three and no others* is the docstring of `tau-coding-agent/tests/conftest.py`:
 
 1. `config.CONFIG_PATH` — the only name `bootstrap_config` actually reads.
    (`config.TAU_DIR` is **not**: `CONFIG_PATH` is computed from it at import time,
    so rebinding `TAU_DIR` afterwards cannot move it.)
 2. `session_store.TAU_DIR` — where the file store roots its `sessions/` dir.
-3. An **injected** `session_catalog`. `Parley.__init__` documents that an injected
+3. An **injected** `session_catalog`. `TauApp.__init__` documents that an injected
    catalog always wins over resolving one, so the config-driven
    `build_session_catalog` branch — and its live network health check — never runs.
 
@@ -94,7 +94,7 @@ picks up whatever happens to be in the developer's extensions dir.
 
 ### 2.2 `testing/scenes.py` — the scene registry
 
-A **scene** puts a sandboxed `Parley` into ONE known, settled state and nothing
+A **scene** puts a sandboxed `TauApp` into ONE known, settled state and nothing
 more. Rendering it is `render.py`'s job; deciding what to do with the result is
 `devshot`'s or a test's.
 
@@ -124,7 +124,7 @@ async def open_scene(scene: Scene, size: tuple[int, int] = (120, 40)) -> AsyncIt
 ```
 
 It makes a temp `~/.tau`, enters `sandbox_tau_home`, runs `scene.seed`, builds the
-app with `build_parley`, enters `app.run_test(size=size)`, pauses, runs
+app with `build_tau_app`, enters `app.run_test(size=size)`, pauses, runs
 `scene.arrange`, pauses again, and yields. On exit it removes the temp dir.
 
 **This is the one place a scene becomes a running app, and it is shared
@@ -146,10 +146,10 @@ async with open_scene(get_scene("tree-modal"), (80, 24)) as (app, pilot):
 
 #### Rule: host modals in the real app
 
-**A modal composed inside a throwaway `App` loses `CSS_PATH = "parley.tcss"` and
+**A modal composed inside a throwaway `App` loses `CSS_PATH = "tau.tcss"` and
 renders full-screen.** A screenshot taken that way flatly contradicts what a user
 sees — which makes it worse than no screenshot, because it looks authoritative.
-So the modal scenes push the real screen onto the real `Parley`:
+So the modal scenes push the real screen onto the real `TauApp`:
 
 ```python
 async def _open_tree_modal(app, pilot):
@@ -244,7 +244,7 @@ The iteration loop it exists for:
 
 1. `python -m tau_coding_agent.devshot --scene tools --size 120x40`
 2. Look at `shots/tools@120x40.png`.
-3. Edit `parley.tcss`.
+3. Edit `tau.tcss`.
 4. Repeat step 1.
 
 Nothing it does touches a real terminal, a real `~/.tau`, or the network.
@@ -368,7 +368,8 @@ Two useful patterns from that file:
 
 - **Whole-registry invariants.** Parametrizing over `SCENES` × `SIZES` means a new
   scene is automatically held to every rule (no row wider than the terminal; the
-  rendered screen never says "parley", the fork's name, even though the class may).
+  rendered screen never says "parley", the fork's name — which the class no longer
+  carries either, since the 2026-09-04 rename to `TauApp`).
 - **Measure, don't eyeball.** Density and geometry rules assert on
   `widget.region`, `widget.styles.padding`, `content_size` — e.g. "a collapsed
   collapsible is exactly one row", "the chat text loses at most N columns of chrome
@@ -396,7 +397,7 @@ snap_compare(
 ) -> bool                                     # assert the result
 ```
 
-Passing an **`App` instance** is the right call here, since a `Parley` worth
+Passing an **`App` instance** is the right call here, since a `TauApp` worth
 snapshotting is a sandboxed one — build it through `testing.sandbox`, not by
 pointing the fixture at `app.py`.
 
@@ -455,7 +456,7 @@ question is genuinely "does this look right".
   no clocks, no random ids, no absolute paths, no hostnames, no usernames.
 - **Animations off.** `TEXTUAL_ANIMATIONS=none` (`none` | `basic` | `full`;
   default `full`), and it must be set *before* textual is imported (§3.2).
-- **Go through `testing.sandbox`.** A `Parley` that reads the developer's real
+- **Go through `testing.sandbox`.** A `TauApp` that reads the developer's real
   `~/.tau` renders that developer's sessions into the baseline.
 
 ---
@@ -469,7 +470,7 @@ question is genuinely "does this look right".
 > devtools documentation and from `textual --help` / `textual run --help` /
 > `textual console --help` / `textual serve --help` in the repo venv — so the
 > *flags* below are read off the installed `textual-dev`, but the *behavior* on
-> `Parley` specifically is unconfirmed. Treat a surprise here as a bug in this
+> `TauApp` specifically is unconfirmed. Treat a surprise here as a bug in this
 > section, and fix the section.
 >
 > Verified only: `textual-dev` is installed in the repo venv and exposes the
@@ -484,12 +485,12 @@ pip install -e './tau-coding-agent[dev]'
 ### 6.1 `textual run --dev` — live CSS editing (the human's primary loop)
 
 ```bash
-textual run --dev tau_coding_agent.app:Parley
+textual run --dev tau_coding_agent.app:TauApp
 ```
 
 `textual run` accepts a Python import path, and `:Name` selects an app instance or
 class other than a module-level `app`. `--dev` enables development mode, whose
-headline feature is that **saving `parley.tcss` restyles the running app a few
+headline feature is that **saving `tau.tcss` restyles the running app a few
 milliseconds later, with no restart** — you keep your session, your scroll
 position, and the modal you had open.
 
@@ -504,7 +505,7 @@ the result in as a scene and an appearance rule so it stays tuned.
 
 ```bash
 textual console                       # terminal 1
-textual run --dev tau_coding_agent.app:Parley   # terminal 2
+textual run --dev tau_coding_agent.app:TauApp   # terminal 2
 ```
 
 The console receives the app's `self.log(...)`, its events, and its `print()`
@@ -524,7 +525,7 @@ running elsewhere.
 ### 6.3 `textual serve` — the TUI in a browser
 
 ```bash
-textual serve tau_coding_agent.app:Parley
+textual serve tau_coding_agent.app:TauApp
 textual serve --dev -c "tau"        # -c/--command: serve whatever that command launches
 ```
 
@@ -661,12 +662,12 @@ the debugger's stdout.
 ## 9. Anti-patterns
 
 - ❌ **Spawn τ in a PTY and screen-scrape stdout.** You will parse escape
-  sequences and corrupt the terminal. Import `Parley`; use `run_test()` (§1).
+  sequences and corrupt the terminal. Import `TauApp`; use `run_test()` (§1).
 - ❌ **`run_test(headless=False)`, or `App.run()` in a test.** Both attach to the
   real terminal.
 - ❌ **Compose a modal inside a throwaway `App` for a screenshot.** It loses
   `CSS_PATH` and renders full-screen — an authoritative-looking lie (§2.2).
-- ❌ **Hand-roll a second `Parley` sandbox.** Use `testing.sandbox`; a private copy
+- ❌ **Hand-roll a second `TauApp` sandbox.** Use `testing.sandbox`; a private copy
   is how the tool and the tests drift apart (§2.1). Patching
   `tau_coding_agent.app.TAU_DIR` or `tau_coding_agent.config.TAU_DIR` is a
   **no-op** — see `tests/conftest.py`.
@@ -728,7 +729,7 @@ pytest tau-coding-agent/tests/ --snapshot-update        # re-record visual basel
 
 # --- tune it live (human loop, UNVERIFIED here) ---
 textual console -x EVENT                                 # terminal 1
-textual run --dev tau_coding_agent.app:Parley            # terminal 2; save parley.tcss to restyle live
+textual run --dev tau_coding_agent.app:TauApp            # terminal 2; save tau.tcss to restyle live
 textual diagnose                                         # paste into bug reports
 ```
 
@@ -747,6 +748,6 @@ async with open_scene(get_scene("tree-modal"), (80, 24)) as (app, pilot):
 
 **Golden rules:** never attach τ to a terminal you control · every scene becomes
 an app through `open_scene`, so the screenshot and the assertion see one frame ·
-host modals in the real `Parley` · no live data in a scene · look at the `.png`,
+host modals in the real `TauApp` · no live data in a scene · look at the `.png`,
 grep the `.txt`, measure with `.layout.txt` · agents screenshot, humans
 live-edit CSS.

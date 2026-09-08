@@ -26,6 +26,9 @@ from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.submission import Submission
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 
 def _model() -> Model:
     return Model(
@@ -57,7 +60,7 @@ def _assistant(text: str) -> AssistantMessage:
         provider="openai",
         model="m",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
 
@@ -83,27 +86,18 @@ class _Stream:
         pass
 
 
-# =============================================================================
-# fork: the admission check
-# =============================================================================
-
-
 class TestForkAdmission:
     async def test_fork_rejects_a_turn_incomplete_point(self):
         """The concrete admission check the spec requires: an assistant message
         with a dangling toolCall must not become a fork point."""
         log = InMemorySessionLog()
         log.append_message({"role": "user", "content": [{"type": "text", "text": "go"}]})
-        # append_message (not the explicit-parent append_at) so the log's own
-        # cursor actually moves here — this is what fork's admission reads.
         log.append_message(
             {
                 "role": "assistant",
                 "content": [{"type": "toolCall", "id": "call_1", "name": "read", "arguments": {}}],
             }
         )
-        # NOTE: no toolResult appended — a crash-truncated turn, or (as here) a
-        # log built to look like one.
         session = AgentSession(session_log=log, model=_model(), tools=[])
 
         result = await session.submit(_sub("continue", "fork-1", multitask_strategy="fork"))
@@ -186,8 +180,6 @@ class TestForkAdmission:
     async def test_fork_does_not_move_or_touch_the_primary_cursor(self, monkeypatch):
         log = InMemorySessionLog()
         log.append_message({"role": "user", "content": [{"type": "text", "text": "hi"}]})
-        # tip is captured AFTER construction: __init__ itself appends the W2
-        # agent_spec provenance node (a customEntry, moving the cursor).
         session = AgentSession(session_log=log, model=_model(), tools=[])
         tip = log.cursor
 
@@ -205,8 +197,6 @@ class TestForkAdmission:
 
         assert log.cursor == tip, "fork must never move the primary cursor"
         assert "BRANCH ONLY" in str(log.entries()), "the branch's work IS in the log"
-        # ...and is kept out of the primary context by the tree shape alone: it hangs
-        # off the fork point, so it is never an ancestor of the primary leaf.
         primary = ConversationTree(log.entries(), log.cursor).context_for()
         assert "BRANCH ONLY" not in str(primary)
 
@@ -221,11 +211,6 @@ class TestForkAdmission:
         monkeypatch.setattr(AgentSession, "prompt", _work)
         result = await session.submit(_sub("go", "fork-4", multitask_strategy="fork"))
         assert result.accepted is True
-
-
-# =============================================================================
-# fork: the supervised task registry
-# =============================================================================
 
 
 class TestForkTaskRegistry:
@@ -301,11 +286,6 @@ class TestForkTaskRegistry:
         assert "blew up" in surfaced[0].error
 
 
-# =============================================================================
-# rollback
-# =============================================================================
-
-
 class TestRollback:
     async def test_rollback_with_nothing_in_flight_is_a_plain_admission(self):
         """No turn running -> nothing to discard: no navigate entry, the new
@@ -358,8 +338,6 @@ class TestRollback:
         assert result_a.accepted is True
         assert result_b.accepted is True
 
-        # Decision 7 / T5: entries() stays total. A's abandoned user+assistant
-        # nodes (and the navigate marker rollback wrote) are still present.
         entries = log.entries()
         a_user = [
             e
@@ -371,8 +349,6 @@ class TestRollback:
         assert a_user, "A's user message must still be in entries() — nothing was un-said"
         assert any(e.get("type") == "navigate" for e in entries), "rollback's marker is on-disk"
 
-        # But it is off the ACTIVE path: B's turn is parented at pre_a_leaf, not
-        # at anything A appended.
         active = ConversationTree(entries, log.cursor).context_for()
         assert "turn A" not in str(active)
         assert "A's reply" not in str(active)
@@ -487,9 +463,6 @@ class TestRollback:
 
             gate_a.set()  # let A's stream_simple call return; A unwinds and releases the lock
             await asyncio.wait_for(task_a, timeout=1.0)
-            # Drain the loop so B (granted the lock next, per FIFO) reaches ITS
-            # OWN stream_simple call and blocks there — deterministic because
-            # nothing else is runnable in between.
             for _ in range(10):
                 await asyncio.sleep(0)
             gate_b.set()

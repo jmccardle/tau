@@ -1,9 +1,10 @@
 # Slash commands in the editor
 
-**Built 2026-08-29.** τ's chat editor now says whether a `/…` you are typing is a
-command it knows, and Tab completes it. This document records what the popup
-shows and when, why Tab is the only key it responds to, and what a command does
-with text it was not expecting.
+**Built 2026-08-29; argument values added 2026-09-05.** τ's chat editor says
+whether a `/…` you are typing is a command it knows, and Tab completes it — the
+command word first, then the values that command's argument accepts. This document
+records what the popup shows and when, why Tab is the only key it responds to, and
+what a command does with text it was not expecting.
 
 ---
 
@@ -56,7 +57,7 @@ offering it would advertise a command the user cannot run.
 
 `FRONTEND_COMMANDS` is τ's own and needs nothing loaded. Extension commands come
 from `AgentSession.get_extension_commands`, through the backend — and
-`Parley.current_backend` is built by `action_new_chat`, which the app runs lazily
+`TauApp.current_backend` is built by `action_new_chat`, which the app runs lazily
 at the first submit.
 
 So before any chat has started there are no extension commands, and the popup
@@ -65,10 +66,66 @@ says `/todo is not a command`. That is accurate rather than a gap:
 really would go to the model. The popup is the first visible sign of a blind spot
 that was always there.
 
+### The second vocabulary: argument values
+
+Built 2026-09-05, from a report that `/model ` gave no models. Once a space
+follows a word that names a command, the command word is settled and the popup
+switches to the values that command's argument accepts:
+
+| The line | The popup |
+|---|---|
+| `/mo` | `/model — switch the active model…` |
+| `/model ` | every configured model |
+| `/model loc` | `local-llm`, `logan` |
+| `/model zzz` | `no model_name matches 'zzz' — /model will refuse it` |
+| `/name my session` | `/name — give this session a display name…` |
+
+The split is the same one `resolve_command` / `complete_command` already use.
+**`complete_command_argument` is pure and says only which argument is being typed
+and over what span**; listing the values is `enumerate_domain`, which needs a live
+session and therefore cannot be answered in the core's pure half. The head calls
+both — `TauApp._argument_completions` — and it is the same pair
+`TauApp._select_options` uses to fill a flow form, so a value offered in the
+editor and a value offered in the modal cannot differ.
+
+Nothing about the vocabulary is written in the head. The argument, its domain and
+its description come from `FLOWS` and `DOMAINS`; a flow added to the registry gets
+completion with no edit here. Five cases return `None` and offer nothing, and they
+are different cases rather than one: the name is still being typed; the word is an
+extension command that did not declare what it takes (`api.register_flow`,
+docs/EXTENSION-FLOWS.md — one that DID completes exactly like a built-in); the
+command is a view; the flow takes no argument; or the domain is `free`, where any
+text is legal and a candidate list would misstate what is accepted. `/name` and
+`/compact` are the `free` case, which is why the table's last row still shows the
+command's own description.
+
+`/extensions disable <name>` completes too, by the rewrite `dispatch_builtin`
+already performs: the verb names a flow (`EXTENSION_VIEW_VERBS`), so the argument
+being completed belongs to `disable_extension` rather than to the view that was
+typed. The **verb itself** is not completed — it is not a `Domain`, and inventing
+one to hold three words would put a vocabulary in the registry that no flow
+declares.
+
+A domain that cannot be enumerated at all — `/model ` with no model resolver bound
+— puts `enumerate_domain`'s own refusal in the popup rather than raising. This
+redraws on every keystroke, so raising is not available; and an empty list would
+say "there are no models" for a question that was never asked, which is the
+distinction `enumerate_domain` exists to keep.
+
 ## 3. Tab, and only Tab
 
 Tab inserts the selected command with a trailing space. Pressing it again
 replaces that with the next candidate, and wraps at the end of the list.
+
+Tab reads the same three vocabularies in the same order the popup does — the
+`@…` the cursor is inside, then the argument value, then the command word — so
+what is offered and what is inserted cannot disagree. An argument value replaces
+**the span the core named**, not the whole line, which is what makes
+`/mo` Tab `loc` Tab arrive at `/model local-llm `.
+
+Completing the command word used to rewrite the whole editor, which meant a Tab
+on `/nam my session` silently discarded `my session`. It now replaces the first
+word only and keeps the rest verbatim.
 
 The cycle needs no mode and no escape key. It is identified by the editor still
 holding exactly what the last Tab wrote (`ChatInput._complete`), so typing any
@@ -134,6 +191,40 @@ declared placeholder — the shape extension commands already have, through
 `AgentSession.get_extension_command_args` — is the fix, and it changes a type
 other repositories may read. §6 keeps it as a decision, not a plan.
 
+**Revised 2026-09-03: the metadata now exists, for the flows.**
+`tau_agent_core.capabilities.FLOWS` carries an `Argument` tuple per flow, keyed by
+the same names `FRONTEND_COMMANDS` uses, so `/model`, `/resume`, `/name`,
+`/autocompact` and the three extension flows can each say what they take without
+changing `FRONTEND_COMMANDS`' type. `TauApp.action_run_session_flow` already reads
+it, which is why `/autocompact` with no argument answers "needs enabled: true,
+false" rather than guessing.
+
+One case is still unfixed, and one was. `/tree` and `/extensions` are VIEWS, and
+`VIEW_COMMANDS` is a `dict[str, str]` with nowhere to say a view takes nothing —
+so `/tree extra words` still discards them silently, which is what §6 records.
+
+`/compact` was the worse of the two and is fixed. The `compact` flow DECLARES an
+optional `custom_instructions` argument; `_perform_command_outcome` called
+`self.action_compact()`, which took no parameters, so `/compact focus on the auth
+bug` ran a compaction that never saw the focus — the registry said what the
+command took and the head did not read it.
+
+**Fixed 2026-09-04**, by threading the argument down the path the core had
+already built for it: `action_compact(custom_instructions="")` →
+`TauBackend.compact_messages(messages, custom_instructions)` →
+`AgentSession.compact_messages(messages, custom_instructions)`, which has taken
+the parameter since the compaction port and hands it to the summarizer's system
+prompt (`compaction.py:497`). Nothing in the core changed. The keybinding and the
+palette pass nothing and get the default; empty becomes `None` at the backend
+call rather than `""`, because the summarizer appends an "Additional focus"
+paragraph for any truthy value and an empty one would be a paragraph saying
+nothing.
+
+The two cases were never one bug, which is why only one of them closed here:
+`/compact`'s argument was declared and dropped, so the fix is wiring. `/tree`'s
+is not declared at all, so the fix is a type change in another package's
+vocabulary.
+
 **A second line makes the first word unknown.** `parse_command` splits on the
 first SPACE, so `/tree` followed by a newline yields the name `tree\nmore`, which
 matches nothing and goes to the model. The popup is the only place this is
@@ -157,16 +248,17 @@ command's business, and no part of τ inspects it until a handler does.
   never meant, one Tab away from replacing what they typed. Worth revisiting on
   its own, once the prefix version has been lived with.
 
-- **No argument completion.** `/resume <ref>` completing session refs is the
-  genuinely useful one and `/extensions enable <name>` the second. Both need a
-  per-command completer callback — pi's `getArgumentCompletions`
-  (`tui/src/autocomplete.ts:339-357`) — which is the piece that grows this to
-  pi's size.
+- ~~**No argument completion.**~~ Built 2026-09-05; see §2's second vocabulary.
+  It cost no per-command completer callback — pi's `getArgumentCompletions`
+  (`tui/src/autocomplete.ts:339-357`) — because `FLOWS` and `DOMAINS` already say
+  what each command takes and `enumerate_domain` already lists it.
 
-- **No `@file` completion.** `@file` is expanded only in the headless argv path
-  (`headless.py:assemble_prompt`). In the TUI it is literal prose, and a
-  completion for it would need a filesystem walk on every keystroke. pi merges
-  the two into one provider; τ has not, because only one of them exists.
+- **No completion of an `/extensions` verb.** The three words are not a `Domain`,
+  and the target after a recognised verb completes without them being one.
+
+- ~~**No `@file` completion.**~~ Built; see docs/FILE-ATTACHMENTS.md §3. The three
+  vocabularies are asked in one order by one function rather than merged into pi's
+  single provider.
 
 - **No highlighting inside the editor.** Textual's `TextArea` colours text
   through a tree-sitter highlight map, and injecting a synthetic span means
@@ -182,11 +274,13 @@ command's business, and no part of τ inspects it until a handler does.
 | Piece | Where |
 |---|---|
 | the candidate list, pure | `tau_agent_core/commands.py` → `complete_command` |
-| the Tab cycle | `tau_coding_agent/app.py` → `ChatInput._complete`, `ChatInput.on_key` |
-| the widget | `tau_coding_agent/app.py` → `CommandPopup` |
-| the redraw | `Parley._refresh_command_popup`, on `TextArea.Changed` |
-| the merged vocabulary | `Parley._extension_command_table` + `FRONTEND_COMMANDS` |
-| styling | `parley.tcss` → `#command-popup` |
+| which argument is being typed, pure | `tau_agent_core/commands.py` → `complete_command_argument` |
+| the values it accepts, live | `tau_agent_core/flows.py` → `enumerate_domain`, called by `TauApp._argument_completions` |
+| the Tab cycle | `tau_coding_agent/chat_widgets.py` → `ChatInput._complete`, `ChatInput.on_key` |
+| the widget | `tau_coding_agent/editor_widgets.py` → `CommandPopup` |
+| the redraw | `TauApp._refresh_command_popup`, on `TextArea.Changed` |
+| the merged vocabulary | `TauApp._extension_command_table` + `FRONTEND_COMMANDS` |
+| styling | `tau.tcss` → `#command-popup` |
 | tests | `tau-agent-core/tests/test_command_completion.py`, `tau-coding-agent/tests/test_slash_command_popup.py` |
 
 `complete_command` lives in the core beside `resolve_command` for the same reason

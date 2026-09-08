@@ -86,9 +86,8 @@ from tau_agent_core.events import AgentEvent
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
 
-# ---------------------------------------------------------------------------
-# Shared fixtures
-# ---------------------------------------------------------------------------
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
 
 
 def _model():
@@ -116,7 +115,7 @@ def _assistant_text(text: str) -> AssistantMessage:
         provider="openai",
         model="gpt-4o",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
 
@@ -128,7 +127,7 @@ def _assistant_tool_call(call_id: str, name: str, args: dict) -> AssistantMessag
         provider="openai",
         model="gpt-4o",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
         usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
 
@@ -253,11 +252,6 @@ def _succeeding_tool(name: str, result: str = "tool ok", ran: list | None = None
     )
 
 
-# ---------------------------------------------------------------------------
-# The matrix: three SOURCES, three different contracts
-# ---------------------------------------------------------------------------
-
-
 def _case_provider():
     patcher = patch(
         "tau_agent_core.agent_loop.stream_simple", side_effect=_error_stream_simple("provider boom")
@@ -313,11 +307,6 @@ def test_the_three_error_sources_have_different_contracts(make_case, expectation
         else:
             messages = asyncio.run(session.prompt("hello"))
             assert len(messages) > 0
-
-
-# ---------------------------------------------------------------------------
-# Provider error — agent_loop.py's ErrorEvent branch, in depth
-# ---------------------------------------------------------------------------
 
 
 def test_provider_error_event_paints_the_turn_then_raises_with_the_bracket_closed():
@@ -408,8 +397,6 @@ def test_an_empty_provider_error_message_still_raises_something_attributable():
     assert raised.strip()
     assert "empty message" in raised
     assert "gpt-4o" in raised
-    # The rendered bubble and the raise must agree — one of them going blank is
-    # the same defect on a different surface.
     message_ends = [e for e in events if e.type == "message_end"]
     assert message_ends[-1].message["content"][0]["text"] == f"Error: {raised}"
 
@@ -508,11 +495,6 @@ def test_provider_error_propagates_uncaught_through_session_prompt():
         assert roles == ["user"]
 
 
-# ---------------------------------------------------------------------------
-# Tool error — caught, wrapped, and actually sent back to the model
-# ---------------------------------------------------------------------------
-
-
 def test_tool_error_result_is_the_exact_payload_the_next_llm_call_receives():
     """Closes the "sent to the LLM" half of the claim ``test_agent_loop.py`` left open.
 
@@ -538,8 +520,6 @@ def test_tool_error_result_is_the_exact_payload_the_next_llm_call_receives():
 
     assert len(captured) == 2  # the tool-call turn, then the follow-up turn
     second_call_messages = captured[1]["messages"]
-    # Context messages are a mix of dicts (tool results, already-converted) and
-    # pydantic models (the original UserMessage) — only dicts have `.get`.
     tool_result_messages = [
         m for m in second_call_messages if isinstance(m, dict) and m.get("role") == "toolResult"
     ]
@@ -571,11 +551,6 @@ def test_failing_tool_result_is_persisted_to_the_session_log_as_an_error():
     # And it is durably on the session, not just in the return value.
     persisted_tool_results = [m for m in session.messages if m.get("role") == "toolResult"]
     assert persisted_tool_results == tool_results
-
-
-# ---------------------------------------------------------------------------
-# Extension error — two DIFFERENT hooks, two DIFFERENT failure policies
-# ---------------------------------------------------------------------------
 
 
 def test_a_raising_tool_call_hook_blocks_the_call_fail_closed():

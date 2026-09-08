@@ -28,10 +28,6 @@ from __future__ import annotations
 
 from typing import Any
 
-# The Usage fields τ carries end to end (tau_llm.types.Usage). ``total_tokens`` is
-# provider-reported and NOT recomputed from the others: providers differ on whether
-# cache reads count toward the input total, and second-guessing them here would
-# fabricate a number that disagrees with the bill.
 USAGE_FIELDS = (
     "input_tokens",
     "output_tokens",

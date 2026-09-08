@@ -22,9 +22,52 @@ from __future__ import annotations
 
 from typing import Any
 
-# The agent-level role an extension-injected custom node carries in the tree /
-# render (pi ``CustomMessage.role``). Serialized to ``"user"`` on the wire.
+from tau_llm.docs import agent_facing
+
 CUSTOM_ROLE = "custom"
+
+
+@agent_facing(topic="sessions")
+def last_assistant_text(messages: list[dict[str, Any]]) -> str | None:
+    """The most recent assistant message's text in ``messages``, or ``None``.
+
+    A pure function over a message list, so a caller holding a transcript can ask
+    without holding a session. :meth:`~tau_agent_core.agent_session.AgentSession
+    .get_last_assistant_text` is this applied to the session's active path, and is
+    what the ``get_last_assistant_text`` capability performs.
+
+    Two rules the shape is not obvious about.
+
+    A message that was aborted before it produced a single block —
+    ``stop_reason == "aborted"`` AND empty ``content`` — is skipped as though it
+    never happened, so an abort-and-retry does not hide the last real answer. An
+    aborted message that DID say something is not skipped; its text still counts.
+
+    Only ``type == "text"`` blocks contribute, concatenated in order with no
+    separator. A thinking block is not the answer, and a tool-call block has no
+    text to give.
+
+    Args:
+        messages: The transcript, oldest first.
+
+    Returns:
+        The concatenated text, stripped, or ``None``. ``None`` covers both "no
+        assistant message yet" and "the last one carried no text" (a pure
+        tool-call turn); the two are deliberately not distinguished, and a caller
+        that must tell them apart looks at ``messages`` itself.
+    """
+    for message in reversed(messages):
+        if message.get("role") != "assistant":
+            continue
+        if message.get("stop_reason") == "aborted" and not message.get("content"):
+            continue
+        text = "".join(
+            block.get("text", "")
+            for block in message.get("content", [])
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+        return text.strip() or None
+    return None
 
 
 def _content_to_blocks(content: Any) -> list[dict[str, Any]]:

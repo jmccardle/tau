@@ -67,6 +67,9 @@ from tau_llm import AssistantMessage, Model, Usage, UserMessage
 from tau_llm.tools import validate_tool_arguments
 from tau_llm.types import ImageContent, TextContent, ThinkingContent, ToolCall, ToolResultMessage
 
+#: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
+_TS = 1_700_000_000_000
+
 # ── message round trips ─────────────────────────────────────────────────────
 
 
@@ -171,12 +174,6 @@ def test_thinking_content_cached_tokens_defaults_to_zero():
     assert ThinkingContent(thinking="reasoning").cached_tokens == 0
 
 
-# ── AssistantMessage.get_tool_calls() ───────────────────────────────────────
-#
-# Untested before this file existed (types.py line 129) despite being the only
-# method on the class.
-
-
 def test_get_tool_calls_extracts_only_toolcall_blocks_in_order():
     msg = AssistantMessage(
         content=[
@@ -189,7 +186,7 @@ def test_get_tool_calls_extracts_only_toolcall_blocks_in_order():
         provider="openai",
         model="gpt-4",
         stop_reason="toolUse",
-        timestamp=0,
+        timestamp=_TS,
     )
     calls = msg.get_tool_calls()
     assert [c.id for c in calls] == ["c1", "c2"]
@@ -203,15 +200,10 @@ def test_get_tool_calls_is_empty_when_there_are_none():
         provider="openai",
         model="gpt-4",
         stop_reason="stop",
-        timestamp=0,
+        timestamp=_TS,
     )
     assert msg.get_tool_calls() == []
 
-
-# ── tool argument validation ────────────────────────────────────────────────
-#
-# The only functioning coverage of ``validate_tool_arguments`` in the tree —
-# test_tools.py's equivalent tests are stub `pass` bodies that assert nothing.
 
 SCHEMA_NAME_REQUIRED = {
     "type": "object",

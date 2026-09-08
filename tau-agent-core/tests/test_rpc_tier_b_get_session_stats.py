@@ -22,15 +22,10 @@ import pytest
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.rpc import commands
-from tau_agent_core.rpc.commands import _last_compaction_state
 from tau_agent_core.rpc.handler import RPCHandler
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_llm.types import Model
 
-# TREE-BROWSER-AS-EDITOR.md §8/§11.3: ``append_compaction`` now requires the
-# summary's provenance as keyword-only arguments with no defaults. These tests are
-# about something else, so they name plausible values once here rather than at every
-# call — the point of the required keywords is that a REAL caller cannot skip them.
 _PROV = {
     "summarizer_model_id": "test-summarizer",
     "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
@@ -123,10 +118,10 @@ async def test_result_has_every_required_field(handler: RPCHandler) -> None:
 
 
 async def test_get_session_stats_takes_no_params(handler: RPCHandler) -> None:
-    """params_schema is NO_PARAMS_SCHEMA (read-only, D-3) — an unexpected
+    """params_schema is the empty one (read-only, D-3) — an unexpected
     param is rejected exactly like any other verb's schema violation."""
     entry = commands.COMMAND_TABLE["get_session_stats"]
-    assert entry.params_schema is commands.NO_PARAMS_SCHEMA
+    assert entry.params_schema == commands.NO_PARAMS_SCHEMA
 
 
 # ── it is genuinely more than get_state (D-3's ship condition) ────────────
@@ -269,10 +264,6 @@ async def test_a_session_with_no_assistant_usage_is_estimated_end_to_end() -> No
     assert context["tokens"] == context["trailing_tokens"]
 
 
-# ── compaction_settings — also §1.1's "how a host discovers auto-compaction
-# is off" ────────────────────────────────────────────────────────────────
-
-
 async def test_compaction_settings_reflects_the_bound_session_settings(
     handler: RPCHandler,
 ) -> None:
@@ -395,10 +386,10 @@ async def test_last_compaction_carries_the_entry_id_and_timestamp(
 
 
 def test_last_compaction_state_helper_directly() -> None:
-    """`_last_compaction_state` in isolation (the handler-level tests above
-    exercise it through the wire; this pins its own contract).
+    """`AgentSession.get_last_compaction` in isolation (the handler-level
+    tests above exercise it through the wire; this pins its own contract).
 
-    MUTATION TARGET 3: change `reversed(session.session_log.entries())` to
+    MUTATION TARGET 3: change `reversed(self._session_log.entries())` to
     a forward scan (drop `reversed`). This test goes red — it would then
     return the FIRST compaction entry ("old"), not the newest ("new")."""
     session = _session()
@@ -411,15 +402,15 @@ def test_last_compaction_state_helper_directly() -> None:
         summary="new", first_kept_id=second_id, tokens_before=2, **_PROV
     )
 
-    state = _last_compaction_state(session)
+    state = session.get_last_compaction()
 
     assert state is not None
-    assert state["summary"] == "new"
-    assert state["first_kept_id"] == second_id
+    assert state.summary == "new"
+    assert state.first_kept_id == second_id
 
 
 def test_last_compaction_state_helper_on_an_empty_log() -> None:
-    assert _last_compaction_state(_session()) is None
+    assert _session().get_last_compaction() is None
 
 
 # ── usage ────────────────────────────────────────────────────────────────

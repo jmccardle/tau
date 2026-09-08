@@ -219,12 +219,8 @@ def test_aclose_providers_closes_client_and_empties_pool_then_rebuilds_cleanly()
         await aclose_providers()
 
         assert first_client.closed is True
-        # The pool's entry for this loop is gone entirely (not just emptied),
-        # matching aclose_providers' contract ("close and DROP").
         assert loop not in _POOL or len(_POOL[loop]) == 0
 
-        # A subsequent call must rebuild cleanly — a fresh provider, a fresh
-        # (unclosed) client — not raise or hand back the closed one.
         await _drive(model, "sk-x")
         assert len(_RecordingClient.instances) == 2
         second_client = _RecordingClient.instances[1]
@@ -254,20 +250,6 @@ def test_two_event_loops_do_not_share_a_client():
     asyncio.run(_drive(model, "sk-loop"))
     assert len(_RecordingClient.instances) == 2
 
-    # A pool-size assertion used to sit here (``len(_POOL) <= 1``), reasoning
-    # that the first loop is dead so its entry should be gone. It measured the
-    # wrong thing: not what this pool retains, but how soon CPython frees a
-    # finished loop — and that changed underneath us. Measured on this tree,
-    # after two ``asyncio.run()`` calls: 3.11 leaves 0 loops alive (refcounting
-    # frees each one the instant ``run()`` returns), 3.13 leaves 1, and 3.14
-    # leaves 2 until a gc pass. Under pytest both survive even a forced
-    # ``gc.collect()``, held from C. So the assertion failed on 3.13 and 3.14
-    # while the pool was behaving perfectly correctly.
-    #
-    # The guarantee itself — that the pool cannot keep a dead loop alive — is
-    # asserted below, where the test holds the only reference and the timing is
-    # ours to control.
-
 
 def test_the_pool_cannot_keep_a_dead_loop_alive():
     """The pool is keyed weakly, so a loop's entry goes away with the loop.
@@ -289,9 +271,6 @@ def test_the_pool_cannot_keep_a_dead_loop_alive():
     del loop
     gc.collect()
 
-    # Checked first: if the loop were still alive, the entry surviving would
-    # prove nothing about weak keying, and the assertion below would pass for
-    # the wrong reason.
     assert gone() is None, "the loop outlived the test's own reference"
     assert len(_POOL) == before
 
@@ -316,9 +295,6 @@ def test_pool_key_hashes_the_api_key_never_stores_it_raw():
         providers = _POOL[loop]
         assert len(providers) == 1
         (key,) = providers.keys()
-        # Four elements since dispatch landed: ``api`` selects the provider
-        # CLASS, so it varies what gets constructed and belongs in the key
-        # alongside the vendor, the endpoint and the credential.
         provider_name, api, base_url, key_hash = key
         assert provider_name == "openai"
         assert api == "openai-completions"

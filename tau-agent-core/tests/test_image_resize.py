@@ -135,9 +135,7 @@ class TestResizeImage:
 
 
 class TestPillowIsOptional:
-    def test_a_missing_pillow_names_the_extra_rather_than_sending_the_image(
-        self, monkeypatch
-    ):
+    def test_a_missing_pillow_names_the_extra_rather_than_sending_the_image(self, monkeypatch):
         """The Fail-Early shape. Without Pillow the cap cannot be enforced, and
         the alternative -- send it unresized -- reports a bound that is not
         there. The error has to be actionable, so it names the extra."""
