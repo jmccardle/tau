@@ -328,7 +328,7 @@ def assemble_prompt(messages: list[str]) -> str:
     return "\n".join(parts).strip()
 
 
-def _select_session(args: "CLIArgs", catalog: SessionCatalog) -> ConversationSession | None:
+def select_session(args: "CLIArgs", catalog: SessionCatalog) -> ConversationSession | None:
     """Resolve the continuation flags to a loaded source session, or None.
 
     ``--continue`` selects the most recent session in the current cwd
@@ -338,6 +338,10 @@ def _select_session(args: "CLIArgs", catalog: SessionCatalog) -> ConversationSes
     are mutually exclusive at the argparse layer, so at most one is set. Returns
     None for a fresh run. For ``--fork`` this is the *source* — the caller forks
     it.
+
+    Public because two heads select a session the same way: print mode and the
+    REPL (docs/REPL-HEAD.md §3 step 2), which differ only in that the REPL also
+    offers ``--resume``.
     """
     if args.continue_session:
         session = catalog.most_recent(os.getcwd())
@@ -392,6 +396,39 @@ def _emit_command_output(mode: str, command: str, text: str | None) -> None:
         sys.stdout.flush()
 
 
+TRUNCATION_ADVICE = (
+    "Raise max_tokens for this model in ~/.tau/config.json, or lower the "
+    "reasoning budget so the answer fits under the cap. "
+    "See docs/TRUNCATED-TOOL-CALLS.md."
+)
+"""What to DO about a truncated answer, said in one sentence.
+
+Beside :func:`report_truncation` rather than inside it because a head that
+renders the notice itself — the REPL prints it in the scrollback, where print
+mode writes stderr — must give the same advice rather than a second wording of
+it (docs/REPL-HEAD.md §4).
+"""
+
+
+def cache_dialect_advice(model_name: str) -> str:
+    """What to DO about a prompt cache that read nothing, in one sentence.
+
+    Extracted from :func:`report_cache_miss` for the reason
+    :data:`TRUNCATION_ADVICE` is: two heads, one sentence.
+
+    Args:
+        model_name: The config model name, since the fix is a key under it.
+
+    Returns:
+        The advice line, without the ``[τ]`` marker each head adds its own way.
+    """
+    return (
+        f"If '{model_name}' reaches an Anthropic model through an OpenAI-compatible "
+        'gateway, set models.<name>.prompt_cache_dialect to "anthropic" in '
+        "~/.tau/config.json. See docs/PROMPT-CACHING.md."
+    )
+
+
 def report_cache_miss(messages: list[dict[str, Any]], model_name: str) -> str | None:
     """Say on stderr that this run's prompt cache should have been read and was not.
 
@@ -417,12 +454,7 @@ def report_cache_miss(messages: list[dict[str, Any]], model_name: str) -> str | 
     if reason is None:
         return None
     print(f"[τ] {reason}", file=sys.stderr)
-    print(
-        f"[τ] If '{model_name}' reaches an Anthropic model through an OpenAI-compatible "
-        'gateway, set models.<name>.prompt_cache_dialect to "anthropic" in '
-        "~/.tau/config.json. See docs/PROMPT-CACHING.md.",
-        file=sys.stderr,
-    )
+    print(f"[τ] {cache_dialect_advice(model_name)}", file=sys.stderr)
     return reason
 
 
@@ -452,12 +484,7 @@ def report_truncation(messages: list[dict[str, Any]], max_tokens: int | None) ->
     if notice is None:
         return None
     print(f"[τ] {notice}", file=sys.stderr)
-    print(
-        "[τ] Raise max_tokens for this model in ~/.tau/config.json, or lower the "
-        "reasoning budget so the answer fits under the cap. "
-        "See docs/TRUNCATED-TOOL-CALLS.md.",
-        file=sys.stderr,
-    )
+    print(f"[τ] {TRUNCATION_ADVICE}", file=sys.stderr)
     return notice
 
 
@@ -536,7 +563,7 @@ def build_print_submission(prompt_text: str) -> Submission:
     )
 
 
-def _extension_command_names(backend: Any) -> list[str]:
+def extension_command_names(backend: Any) -> list[str]:
     """The names extensions registered as slash commands, for the pre-submission peek.
 
     ``getattr``-guarded exactly like the app's counterpart
@@ -603,39 +630,42 @@ def _perform_command_outcome(dispatched: Dispatched, mode: str) -> None:
     """Do the half of a dispatched command only this frontend can do (B2-b).
 
     A :class:`~tau_agent_core.flows.Performed` is the one arm print mode can report:
-    the session already ran an extension-registered command and all that is left is to
-    show what it returned, on the S46 channel this module already had — stdout text, or
-    one ``command_output`` record under ``--mode json``.
+    the session already ran the command and all that is left is to show what it
+    returned, on the S46 channel — stdout text, or one ``command_output`` record
+    under ``--mode json``. :func:`refuse_unperformable` raises for the other three.
 
-    The other three arms are things only a screen does, and print mode has none of
-    them:
+    ``/compact`` is the one that looks performable and is not: ``run_print`` does
+    NOT bind its :class:`ConversationSession` as the AgentSession's log (unlike the
+    TUI and the REPL — it owns persistence itself and appends produced messages by
+    hand), so ``compact_messages`` would summarize a working list this process
+    discards milliseconds later.
+    """
+    performed = refuse_unperformable(dispatched, "print mode (tau -p)")
+    _emit_command_output(mode, performed.mutation, performed.data.get("output"))
 
-    - a :class:`~tau_agent_core.flows.View` — ``/tree`` opens a modal browser and
-      ``/extensions`` paints a panel; there is no screen to push either onto, and the
-      second would be a runtime toggle in a process about to exit.
-    - a :class:`~tau_agent_core.flows.FlowStep` — ``/resume`` with no reference wants
-      the session picker, and the flag that would open it (``--resume``) is refused
-      under ``--print`` in ``cli.main`` for the same reason. A print run names its
-      session with ``--continue``/``--session REF`` instead.
-    - a :class:`~tau_agent_core.flows.Ready` — including ``/compact``, the one that
-      looks performable and is not, for a specific reason worth writing down:
-      ``run_print`` does NOT bind its ``ConversationSession`` as the AgentSession's log
-      (unlike the TUI, E3-ctx / D3 — it owns persistence itself and appends produced
-      messages by hand), so ``compact_messages`` would summarize a working list this
-      process discards milliseconds later. That is an LLM call whose only result is
-      thrown away — strictly worse than saying it cannot be done.
 
-    So this raises :class:`~tau_agent_core.commands.UnsupportedCommandError`, which is
-    the seam's designed answer and not a gap: the core is allowed to resolve commands
-    a given frontend cannot perform, and the contract is that such a frontend says so
-    out loud. The visible change is that ``tau -p "/compact"`` raises instead of
-    sending the eight characters to a model that will be confused by them.
+def refuse_unperformable(dispatched: Dispatched, frontend: str) -> Performed:
+    """Narrow a dispatched outcome to the one arm a text frontend can report.
+
+    The arm test both text heads make: print mode and the REPL
+    (docs/REPL-HEAD.md §6) can show what a capability RETURNED and can open no
+    view, ask no flow field and perform no ``Ready``, so both narrow here and both
+    raise the one wording every head raises with.
+
+    Args:
+        dispatched: The outcome ``SubmissionResult.command`` carried.
+        frontend: What could not perform the other arms, named in the message.
+
+    Returns:
+        The :class:`~tau_agent_core.flows.Performed`.
+
+    Raises:
+        UnsupportedCommandError: For every other arm.
     """
     if isinstance(dispatched, Performed):
-        _emit_command_output(mode, dispatched.mutation, dispatched.data.get("output"))
-        return
+        return dispatched
     name = dispatched.name if isinstance(dispatched, View) else dispatched.flow
-    raise UnsupportedCommandError(unsupported_command_message(name, "print mode (tau -p)"))
+    raise UnsupportedCommandError(unsupported_command_message(name, frontend))
 
 
 async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | None = None) -> int:
@@ -693,7 +723,7 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
         )
 
     # Resolve a source session to continue/fork (None for a fresh run).
-    prior = _select_session(args, catalog)
+    prior = select_session(args, catalog)
 
     if prior is not None and args.system_prompt is not None:
         raise CLIError(
@@ -791,7 +821,7 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
 
         submission = build_print_submission(prompt_text)
 
-        if resolve_command(prompt_text, _extension_command_names(backend)) is not None:
+        if resolve_command(prompt_text, extension_command_names(backend)) is not None:
             await _dispatch_command_submission(backend, submission, args.mode)
             return 0
 

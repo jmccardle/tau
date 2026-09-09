@@ -52,10 +52,26 @@ def test_set_auto_compaction_reports_the_effective_state(backend: TauBackend) ->
 
 
 def test_set_model_reports_the_model_it_switched_to(backend: TauBackend, monkeypatch) -> None:
+    """And RECORDS it: a runtime-only switch resumes on the old model."""
     switched = {"id": "gpt-4o", "provider": "openai", "context_window": 128000}
+    recorded: list[tuple[str, str]] = []
     monkeypatch.setattr(backend.agent_session, "set_model", lambda name: switched)
+    monkeypatch.setattr(
+        backend.agent_session.session_log,
+        "append_model_change",
+        lambda name, provider: recorded.append((name, provider)),
+        raising=False,
+    )
     performed = _check(backend.set_model("fast"), "set_model")
     assert performed.data["model"] == switched
+    assert recorded == [("fast", "openai")]
+
+
+def test_set_model_refuses_a_log_that_cannot_record_the_change(backend: TauBackend) -> None:
+    """The refusal comes BEFORE the switch, so the live model still matches the record."""
+    with pytest.raises(RuntimeError, match="append_model_change"):
+        backend.set_model("fast")
+    assert backend.agent_session.get_model()["id"] == "m"
 
 
 async def test_an_extension_action_reports_a_performed(backend: TauBackend, monkeypatch) -> None:

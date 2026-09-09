@@ -468,7 +468,11 @@ def test_the_table_has_exactly_the_2a_2c_phase3_and_tier_b_verbs():
     with the three reads that make their arguments discoverable — plus the
     extension-config pair, `get_extension_config` and `set_extension_config`,
     which put the `CONFIG_SCHEMA` declaration and the slice it describes on the
-    wire — no more, no less."""
+    wire — plus the tree-READ pair, `get_tree` and `get_entry`, without which the
+    five tree mutations were callable and undrawable (docs/VSCODE-HEAD.md §6) —
+    plus the extension-request pair, `get_pending_request` and `answer_request`,
+    without which an RPC host could be refused by a lock it had no verb to
+    release — no more, no less."""
     assert set(commands.COMMAND_TABLE) == {
         "get_extension_config",
         "set_extension_config",
@@ -513,6 +517,10 @@ def test_the_table_has_exactly_the_2a_2c_phase3_and_tier_b_verbs():
         "complete_message_id",
         "list_managed_extensions",
         "get_extension_state",
+        "get_tree",
+        "get_entry",
+        "get_pending_request",
+        "answer_request",
     }
 
 
@@ -658,7 +666,7 @@ def _entry(schema: dict) -> commands.CommandEntry:
         ),
         (
             {"type": "object", "properties": {"a": {"type": "array", "items": {}}}},
-            "not an object schema",
+            "items declare no `type`",
         ),
         (
             {
@@ -666,6 +674,17 @@ def _entry(schema: dict) -> commands.CommandEntry:
                 "properties": {"a": {"type": "array", "items": {"type": "object", "oneOf": []}}},
             },
             "unsupported schema keyword",
+        ),
+        (
+            {"type": "object", "properties": {"a": {"type": "array", "items": {"type": "strng"}}}},
+            "items declare unsupported type",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"a": {"type": "array", "items": {"type": "string", "oneOf": []}}},
+            },
+            "items use unsupported keyword",
         ),
     ],
     ids=[
@@ -675,8 +694,10 @@ def _entry(schema: dict) -> commands.CommandEntry:
         "typo-type",
         "required-not-declared",
         "items-on-a-non-array",
-        "items-that-is-not-an-object-schema",
+        "items-that-declare-no-type",
         "items-whose-own-schema-is-unsupported",
+        "scalar-items-with-a-typo-type",
+        "scalar-items-with-an-unsupported-keyword",
     ],
 )
 def test_unsupported_schema_vocabulary_is_rejected_at_construction(schema, expected):

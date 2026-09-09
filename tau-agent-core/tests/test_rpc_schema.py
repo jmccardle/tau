@@ -63,8 +63,10 @@ class TestTheDerivationIsTotal:
         and the three that describe the PROTOCOL rather than the session —
         `get_capabilities`, `next_step`, `enumerate_domain`.
 
-        Thirty-two: thirty when 0.9.8 put the eleven off-wire capabilities on
-        the wire, plus the extension-config pair. The number is asserted rather than derived so that a verb added
+        Thirty-six: thirty when 0.9.8 put the eleven off-wire capabilities on
+        the wire, plus the extension-config pair, the tree-read pair (`get_tree`,
+        `get_entry`) and the extension-request pair (`get_pending_request`,
+        `answer_request`). The number is asserted rather than derived so that a verb added
         without a capability, or a capability added without a verb, has to be
         stated here — which is the same thing `test_the_wire_flag_matches_the_
         command_table` asks from the other side.
@@ -76,7 +78,7 @@ class TestTheDerivationIsTotal:
             "next_step",
             "prompt",
         ]
-        assert len(live & set(CAPABILITIES)) == 32
+        assert len(live & set(CAPABILITIES)) == 36
 
     def test_no_declined_verb_names_a_capability(self):
         """§6 A4 survives: `declined_because` is prose no declaration produces."""

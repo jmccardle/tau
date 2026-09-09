@@ -50,7 +50,7 @@ class CLIArgs:
 
     messages: list[str] = field(default_factory=list)
     print_mode: bool = False
-    mode: str = "text"  # text | json
+    mode: str = "text"  # text | json | rpc | repl
     model: str | None = None
     provider: str | None = None
     theme: str | None = None
@@ -130,10 +130,12 @@ def build_parser() -> argparse.ArgumentParser:
             "  tau --export-session 42 x.jsonl     # copy JMFTS doc 42 to a file\n"
             "  tau --mode rpc --model gpt-4o       # JSON-RPC 2.0 server over stdio\n"
             "\n"
-            "--resume opens the interactive session picker, so it is TUI only; a\n"
-            "headless run names its session with --continue or --session REF.\n"
-            "--mode rpc runs a persistent protocol server (docs/REMOTE-CONTROL.md); "
-            "it does not combine with --print."
+            "--resume opens the interactive session picker, so it needs a prompt\n"
+            "(the TUI or --mode repl); a headless run names its session with\n"
+            "--continue or --session REF.\n"
+            "--mode rpc runs a persistent protocol server (docs/REMOTE-CONTROL.md) "
+            "and --mode repl an interactive prompt loop (docs/REPL-HEAD.md); "
+            "neither combines with --print."
         ),
     )
     parser.add_argument("--version", "-v", action="version", version=f"tau {_version()}")
@@ -151,12 +153,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mode",
-        choices=["text", "json", "rpc"],
+        choices=["text", "json", "rpc", "repl"],
         default="text",
         help=(
             "headless output format: text transcript (default) or JSONL events; "
             "'rpc' runs a persistent JSON-RPC 2.0 server over stdio instead "
-            "(docs/REMOTE-CONTROL.md) and does not combine with --print"
+            "(docs/REMOTE-CONTROL.md) and does not combine with --print; "
+            "'repl' runs an interactive prompt loop in the terminal's own "
+            "scrollback (docs/REPL-HEAD.md), also without --print"
         ),
     )
     parser.add_argument(
@@ -265,7 +269,8 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="METHOD=ANSWER,...",
         help="headless dialog auto-answers, else a headless dialog raises "
         "(e.g. confirm=yes,select=first,input=default); over config.json "
-        '"ui_defaults". Headless (--print) only',
+        '"ui_defaults". --print and --mode rpc only — the TUI and --mode repl '
+        "have a human to ask",
     )
     parser.add_argument(
         "--append-system-prompt",
@@ -301,8 +306,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--resume",
         "-r",
         action="store_true",
-        help="open the interactive session picker at startup (TUI only — a "
-        "headless run has no picker; use --continue or --session REF there)",
+        help="open the interactive session picker at startup (TUI and --mode "
+        "repl — a headless run has no picker; use --continue or --session REF there)",
     )
     sess.add_argument(
         "--session",
@@ -600,6 +605,43 @@ def main(argv: list[str] | None = None) -> int:
             from tau_coding_agent.rpc_mode import run_rpc
 
             return asyncio.run(run_rpc(args, config))
+
+        if args.mode == "repl":
+            if args.print_mode:
+                raise CLIError(
+                    "--mode repl is an interactive prompt loop; -p/--print runs "
+                    "one headless turn and exits. Drop -p, or use --mode "
+                    "text/json for a headless run."
+                )
+            if args.messages:
+                raise CLIError(
+                    "--mode repl reads prompts from its own prompt line, not "
+                    "positional arguments; drop the trailing message text."
+                )
+            if args.ui_defaults is not None:
+                raise CLIError(
+                    "--ui-defaults auto-answers extension dialogs when no human is "
+                    "present; --mode repl has one at the prompt, so a form is asked "
+                    'there. Drop --ui-defaults (config.json "ui_defaults" is ignored '
+                    "by this mode too)."
+                )
+            if args.theme is not None:
+                raise CLIError(
+                    "--theme selects a TUI stylesheet; --mode repl renders with "
+                    "rich in the terminal's own colours."
+                )
+            config = load_config()
+            try:
+                from tau_coding_agent.repl import run_repl
+            except ModuleNotFoundError as exc:
+                if exc.name not in {"rich", "prompt_toolkit"}:
+                    raise
+                raise CLIError(
+                    f"--mode repl needs the 'repl' extra ({exc.name} is missing): "
+                    "pip install 'ffwf-tau-coding-agent[repl]'"
+                ) from exc
+
+            return asyncio.run(run_repl(args, config))
 
         if args.resume and args.print_mode:
             raise CLIError(

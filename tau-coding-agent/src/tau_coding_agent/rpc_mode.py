@@ -74,7 +74,7 @@ immediately and unconditionally, so "every RPC run leaves a session file
 behind" (D-6's stated cost) turned out to mean *in* ``~/.tau/sessions``, one
 per spawn, including a child that asks ``get_capabilities`` and exits — which
 silently destroys ``tau -p -c`` for the human working in the same directory
-(``headless._select_session`` is exactly ``catalog.most_recent(cwd)``) and
+(``headless.select_session`` is exactly ``catalog.most_recent(cwd)``) and
 fills the TUI picker with nameless 0-message rows. The fix separates the
 LOCATION per mode rather than filtering the listing: ``--mode rpc``'s DEFAULT
 session base is ``<tmp>/.tau-<uid>/sessions`` (``session_store

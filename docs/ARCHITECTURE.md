@@ -49,7 +49,20 @@ afterwards.
 | `extension_ui.py` | 260 | the `ExtensionUI` delegate, its status bar and its panel |
 | `dialogs.py` | 202 | `TauDialog`/`ChoiceDialog`/`TextDialog` — the frame, title, centering and cancel every modal inherits |
 
-`backends.py` (1855) is the seam onto the core and did not move.
+`backends.py` (1958) is the seam onto the core and did not move.
+
+Four more modules in this package are a head and are **not** TUI modules: they
+import no Textual — `test_repl_theme.py` imports `repl.py` in a fresh interpreter
+and asserts `textual` never reached `sys.modules`.
+They are listed here because the table above is where a reader looks for "what is
+in `tau-coding-agent`", and a head that appears nowhere in it reads as absent.
+
+| Module | Lines | Owns |
+|---|---:|---|
+| `repl.py` | 2404 | `run_repl`, `ReplLoop`, `ReplRenderer`, `ReplDelegate`, `ReplCompleter` — the REPL head (`tau --mode repl`, docs/REPL-HEAD.md) |
+| `repl_input.py` | 494 | `LineReader` and its two implementations; the only module that imports `prompt_toolkit` |
+| `repl_theme.py` | 113 | the REPL's one palette: a style and a glyph per role, and the foreign-lane badge |
+| `steering.py` | 139 | `SteeringBuffer` and the `steering_strategy` config values, shared by the REPL and asserted equal to `app.py`'s copies |
 
 Import edges among the eight, measured with `grimp`:
 

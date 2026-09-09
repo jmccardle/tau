@@ -20,6 +20,7 @@ own extras — a headless install is 15 packages, the TUI install is 27:
 
 ```bash
 pip install ffwf-tau-coding-agent                  # headless: the CLI, `tau -p`, `--mode rpc`
+pip install 'ffwf-tau-coding-agent[repl]'          # the prompt-line head, `tau --mode repl`
 pip install 'ffwf-tau-coding-agent[tui,jmfts]'     # TUI plus the JMFTS session store
 ```
 
@@ -70,6 +71,7 @@ If `tau --version` does not report τ, `ffwf-tau --version` will.
 
 ```bash
 tau                                 # interactive TUI
+tau --mode repl                     # interactive prompt line: streamed answers in the scrollback
 tau -p "list the files here"        # headless: prints a transcript, exits
 tau -p --mode json "..."            # headless: JSONL lifecycle events instead of text
 tau --mode rpc                      # headless: drive τ as a subprocess over stdio (ndjson)

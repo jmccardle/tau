@@ -664,3 +664,118 @@ class TestDescendantsOf:
 
     def test_none_is_the_whole_tree(self) -> None:
         assert len(ConversationTree(_branched(), cursor="e05").descendants_of(None)) == 7
+
+
+# --- browse() ---------------------------------------------------------------
+
+
+class TestBrowse:
+    """The projection an out-of-process head draws and COLOURS a row from.
+
+    `tree()` is the shape; this adds the facts a head cannot recover from the
+    shape — the fold's boundary, the tool pairing, the copyable kinds — because
+    each is read out of the raw entry and no RPC verb hands a raw entry over.
+    """
+
+    def test_the_order_is_the_order_tree_draws(self) -> None:
+        """Preorder, so a subtree is contiguous and a fork's branches do not interleave."""
+        nodes = ConversationTree(_branched(), cursor="e07").browse()
+        assert [n.entry_id for n in nodes] == ["e01", "e02", "e03", "e04", "e05", "e06", "e07"]
+
+    def test_every_entry_gets_a_node_including_the_undrawn_kinds(self) -> None:
+        """Filtering is the reader's rule, not the log's.
+
+        A `navigate` with one child is hidden by the TUI's browser and is still
+        on the ancestry; a projection that dropped it would hand a head a tree
+        whose parent links do not resolve.
+        """
+        entries = _branched() + [
+            {
+                "id": "e08",
+                "type": "navigate",
+                "parentId": "e07",
+                "timestamp": "x",
+                "targetId": "e03",
+            }
+        ]
+        nodes = ConversationTree(entries, cursor="e08").browse()
+        assert len(nodes) == len(entries)
+        assert [n.entry_id for n in nodes if n.kind == "navigate"] == ["e08"]
+
+    def test_a_splice_anchor_carries_its_boundary(self) -> None:
+        nodes = {
+            n.entry_id: n for n in ConversationTree(_single_compaction(), cursor="e07").browse()
+        }
+        assert nodes["e08"].kind == "compaction"
+        assert nodes["e08"].first_kept_id == "e05"
+        assert nodes["e02"].first_kept_id is None
+
+    def test_a_branch_summary_carries_the_line_it_is_about(self) -> None:
+        entries = [
+            _msg("e01", None, "user", "q"),
+            _msg("e02", "e01", "assistant", "abandoned"),
+            _branch_summary("e03", "e01", "e02", "what that branch tried"),
+        ]
+        nodes = {n.entry_id: n for n in ConversationTree(entries, cursor="e03").browse()}
+        assert nodes["e03"].from_id == "e02"
+        assert nodes["e02"].from_id is None
+
+    def test_the_system_prompt_says_so(self) -> None:
+        """A fold carries it across, so a head computing the folded span excludes it."""
+        nodes = {n.entry_id: n for n in ConversationTree(_branched(), cursor="e07").browse()}
+        assert nodes["e01"].is_system is True
+        assert nodes["e02"].is_system is False
+
+    def test_the_tool_pairing_is_reported_from_both_ends(self) -> None:
+        entries = [
+            _msg("e01", None, "user", "go"),
+            {
+                "id": "e02",
+                "type": "message",
+                "parentId": "e01",
+                "timestamp": "2026-07-03T00:00:02Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "toolCall", "id": "c1", "name": "ls", "arguments": {}},
+                        {"type": "toolCall", "id": "c2", "name": "cat", "arguments": {}},
+                    ],
+                },
+            },
+            {
+                "id": "e03",
+                "type": "message",
+                "parentId": "e02",
+                "timestamp": "2026-07-03T00:00:03Z",
+                "message": {"role": "toolResult", "tool_call_id": "c1", "content": []},
+            },
+        ]
+        nodes = {n.entry_id: n for n in ConversationTree(entries, cursor="e03").browse()}
+        assert nodes["e02"].tool_call_ids == ("c1", "c2")
+        assert nodes["e02"].tool_call_id is None
+        assert nodes["e03"].tool_call_id == "c1"
+        assert nodes["e03"].tool_call_ids == ()
+
+    def test_copyable_follows_the_paste_source_rule(self) -> None:
+        nodes = {
+            n.entry_id: n for n in ConversationTree(_single_compaction(), cursor="e07").browse()
+        }
+        assert nodes["e02"].copyable is True
+        assert nodes["e08"].copyable is False
+
+    def test_exactly_the_cursor_is_flagged(self) -> None:
+        nodes = ConversationTree(_branched(), cursor="e05").browse()
+        assert [n.entry_id for n in nodes if n.is_cursor] == ["e05"]
+
+    def test_an_orphan_is_a_root_here_too(self) -> None:
+        """browse() walks tree(), so a broken parent chain does not lose entries."""
+        entries = [
+            _msg("e01", None, "system", "sys"),
+            _msg("e09", "missing", "assistant", "orphan"),
+        ]
+        nodes = ConversationTree(entries, cursor="e01").browse()
+        assert {n.entry_id for n in nodes} == {"e01", "e09"}
+        assert {n.entry_id: n.parent_id for n in nodes}["e09"] == "missing"
+
+    def test_an_empty_log_browses_to_nothing(self) -> None:
+        assert ConversationTree([], cursor=None).browse() == ()

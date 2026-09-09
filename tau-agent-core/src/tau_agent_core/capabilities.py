@@ -995,6 +995,257 @@ _COMPLETE_MESSAGE_ID_RETURNS: dict[str, Any] = {
     "required": ["matches", "total"],
 }
 
+_GET_TREE_RETURNS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "nodes": {
+            "type": "array",
+            "description": (
+                "Every entry in the log, in the order a browser draws them — "
+                "preorder over the parent/child tree, roots in load order, children "
+                "oldest first. FLAT, with `parent_id` carrying the shape: a nested "
+                "projection of a long linear conversation is one nesting level per "
+                "message, which is a serializer's recursion limit rather than a tree "
+                "anyone wanted. Nothing is filtered out — which rows a browser "
+                "declines to draw (a `navigate` with one child) is the reader's rule, "
+                "not the log's."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "entry_id": {
+                        "type": "string",
+                        "description": (
+                            "The entry's id — the value every `message_id` argument "
+                            "takes (navigate, elide_span, commit_branch, "
+                            "paste_subtree, summarize_and_navigate)."
+                        ),
+                    },
+                    "parent_id": {
+                        "type": ["string", "null"],
+                        "description": "The entry this one hangs from; null for a root.",
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": (
+                            "The entry's type: 'message', 'customMessage', "
+                            "'compaction', 'elide', 'branch_summary', 'navigate', "
+                            "'customEntry', 'model_change'. Not a closed enum — a kind "
+                            "added later reaches a host as a row it can draw and does "
+                            "not recognise, rather than as a gap."
+                        ),
+                    },
+                    "role": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "'user', 'assistant', 'toolResult' or 'system' on a message "
+                            "entry; null on every bookkeeping kind."
+                        ),
+                    },
+                    "preview": {
+                        "type": "string",
+                        "description": (
+                            "The entry's first line, uncut — a host elides it to its "
+                            "own width. Empty for an entry carrying no text."
+                        ),
+                    },
+                    "is_cursor": {
+                        "type": "boolean",
+                        "description": (
+                            "Whether this entry is the session's cursor — where the "
+                            "next submission lands. Exactly one node carries true, or "
+                            "none on a session whose cursor names no entry."
+                        ),
+                    },
+                    "timestamp": {
+                        "type": ["integer", "null"],
+                        "description": (
+                            "Epoch milliseconds, or null when no clock applies "
+                            "(docs/MESSAGE-TIMESTAMPS.md). This is the key children are "
+                            "sorted by, so re-sorting on it reproduces `nodes`."
+                        ),
+                    },
+                    "first_kept_id": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "On a splice anchor ('compaction' or 'elide'), the oldest "
+                            "entry the fold keeps; null on every other kind. This is "
+                            "the fold's whole boundary: the entries a host paints as "
+                            "folded are the ones on the cursor's ancestor chain that "
+                            "sit before this id, with a system message carried across "
+                            "(docs/SYSTEM-PROMPT-IN-THE-FOLD.md). Sent because a host "
+                            "holding only the shape would have to guess at it."
+                        ),
+                    },
+                    "from_id": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "On a 'branch_summary', the head of the branch it "
+                            "summarizes — the pair a browser draws as a summary and the "
+                            "line it is about. Display metadata, never a splice "
+                            "boundary. Null on every other kind."
+                        ),
+                    },
+                    "is_system": {
+                        "type": "boolean",
+                        "description": (
+                            "Whether this entry is the system prompt. A fold carries it "
+                            "across rather than dropping it, so a host computing the "
+                            "folded span excludes it."
+                        ),
+                    },
+                    "tool_call_ids": {
+                        "type": "array",
+                        "description": (
+                            "The toolCall block ids an assistant message declares; "
+                            "empty on every other entry. With `tool_call_id` this is "
+                            "the whole of the pairing rule a mark expands over: to "
+                            "every provider a call and its result are one unit, and a "
+                            "branch carrying one without the other is a prefix the API "
+                            "rejects (docs/TREE-EDITOR-MANUAL.md §6)."
+                        ),
+                        "items": {"type": "string"},
+                    },
+                    "tool_call_id": {
+                        "type": ["string", "null"],
+                        "description": "The call a 'toolResult' answers; null elsewhere.",
+                    },
+                    "copyable": {
+                        "type": "boolean",
+                        "description": (
+                            "Whether paste_subtree will take this entry as a source "
+                            "root — conversation_tree.COPYABLE_KINDS, reported per node "
+                            "so a host greys the illegal source rather than holding a "
+                            "second copy of the tuple."
+                        ),
+                    },
+                    "estimated_tokens": {
+                        "type": "integer",
+                        "description": (
+                            "compaction.estimate_tokens over this entry's message, 0 "
+                            "for an entry carrying none. An ESTIMATE — a "
+                            "4-chars-per-token heuristic — and the only token figure "
+                            "available for an arbitrary set of entries, because the one "
+                            "measured figure in a session is usage.input_tokens on a "
+                            "finished assistant message and that measures one request. "
+                            "A host totalling these says 'estimate' beside the number, "
+                            "as the TUI's browser does."
+                        ),
+                    },
+                },
+                "required": [
+                    "entry_id",
+                    "parent_id",
+                    "kind",
+                    "role",
+                    "preview",
+                    "is_cursor",
+                    "timestamp",
+                    "first_kept_id",
+                    "from_id",
+                    "is_system",
+                    "tool_call_ids",
+                    "tool_call_id",
+                    "copyable",
+                    "estimated_tokens",
+                ],
+            },
+        },
+        "cursor": {
+            "type": ["string", "null"],
+            "description": (
+                "session_log.cursor at the moment of the read, duplicated out of "
+                "`nodes` so a host finds it without scanning. Null on a session whose "
+                "cursor names no entry, which is also the one case in which no node "
+                "carries is_cursor: true."
+            ),
+        },
+        "count": {
+            "type": "integer",
+            "description": (
+                "len(nodes). Present so a host can check it read a whole tree rather "
+                "than a truncated one: this read is UNBOUNDED by design — the shape IS "
+                "the answer and a bounded shape is a different tree — which is why it "
+                "is a pull and is never pushed (G3)."
+            ),
+        },
+    },
+    "required": ["nodes", "cursor", "count"],
+}
+
+_GET_PENDING_REQUEST_RETURNS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "request": {
+            "type": ["object", "null"],
+            "description": (
+                "The extension request AT THE CURSOR, or null when there is none. "
+                "The cursor only, never an ancestry walk: the thing a user is "
+                "looking at and the thing that refused their submission are one "
+                "entry. {entry_id, extension, extension_name, sentence, label, "
+                "lock, ask, release} — `label` is τ's own framing of the four "
+                "states over `lock` and `ask`, `sentence` is the extension's own "
+                "line, `ask` is a validated `ui.form` spec ({title, fields, "
+                "actions}) or null, and `release` names a command that clears the "
+                "lock (advisory: commands are exempt from a lock by placement, "
+                "not by name). A host renders all four states; three of them draw "
+                "something and the fourth is this verb answering null."
+            ),
+        },
+    },
+    "required": ["request"],
+}
+
+_ANSWER_REQUEST_RETURNS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "handled": {
+            "type": "boolean",
+            "description": (
+                "Whether the extension that raised the request was loaded and ran "
+                "its action. FALSE still means the response was appended and the "
+                "lock released — a lock whose owner cannot answer must not become "
+                "a session nobody can continue — so a host reports it as a warning "
+                "and carries on, rather than as a failure to retry."
+            ),
+        },
+        "output": {
+            "type": ["string", "null"],
+            "description": "What the dispatched command produced, or null.",
+        },
+        "cursor": {
+            "type": ["string", "null"],
+            "description": (
+                "session_log.cursor after the response was appended (E5 rule 1). "
+                "The append is what RELEASES the lock — appending moves the cursor "
+                "and a lock is read at the cursor — so this value is the evidence "
+                "the session is answerable again."
+            ),
+        },
+    },
+    "required": ["handled", "output", "cursor"],
+}
+
+_GET_ENTRY_RETURNS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "entry": {
+            "type": "object",
+            "description": (
+                "The raw session-log entry, as stored: camelCase `parentId` / "
+                "`firstKeptId` / `fromId`, a `type`, and whatever payload that type "
+                "carries — a `message` for the message kinds, a `summary` for a "
+                "compaction or a branch_summary. Handed over whole rather than "
+                "projected, because the caller is a detail pane rendering ONE node and "
+                "a projection would be a second message shape to keep in step with "
+                "get_messages'. One node per call: get_tree carries a one-line preview "
+                "per row precisely so a browser does not pull bodies it is not showing."
+            ),
+        },
+    },
+    "required": ["entry"],
+}
+
 _LIST_MANAGED_EXTENSIONS_RETURNS: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -1268,6 +1519,45 @@ CAPABILITIES: dict[str, Capability] = {
                 Argument("limit", "integer", "How many to return at most.", required=False),
             ),
             returns=_COMPLETE_MESSAGE_ID_RETURNS,
+        ),
+        Capability(
+            "get_tree",
+            "read",
+            "The whole conversation tree: every entry, its parent, and the facts a "
+            "browser colours a row with. The read the tree-editing mutations were "
+            "uncallable without — a head could navigate, elide, branch and paste, "
+            "and had no way to show anyone what it would be doing it to.",
+            on_wire=True,
+            returns=_GET_TREE_RETURNS,
+        ),
+        Capability(
+            "get_entry",
+            "read",
+            "One entry's full body, by id. What a detail pane draws beside the tree, "
+            "and the reason get_tree carries previews rather than messages.",
+            on_wire=True,
+            arguments=(Argument("entry_id", "message_id", "Which entry to read."),),
+            returns=_GET_ENTRY_RETURNS,
+        ),
+        Capability(
+            "get_pending_request",
+            "read",
+            "The extension request at the cursor — a lock, an ask, or both — or "
+            "nothing. The read a head polls at every cursor move to decide what to "
+            "draw, and the one that tells an out-of-process head WHY submit refused.",
+            on_wire=True,
+            returns=_GET_PENDING_REQUEST_RETURNS,
+        ),
+        Capability(
+            "answer_request",
+            "mutation",
+            "Answer an extension's ask: append the response, which releases the "
+            "lock, then dispatch the pressed action. In that order, so the handler "
+            "runs on a session that is already unlocked and may submit a turn of "
+            "its own.",
+            on_wire=True,
+            arguments=None,
+            returns=_ANSWER_REQUEST_RETURNS,
         ),
         Capability(
             "list_managed_extensions",

@@ -13,7 +13,7 @@ durable, listable, 0-message session in ``~/.tau/sessions/<dashed-cwd>/`` —
     most_recent now -> 2026-08-06T02-32-52-003Z_798fc4a7….jsonl
     IS IT THE REAL ONE? False
 
-``headless._select_session`` makes ``--continue`` exactly
+``headless.select_session`` makes ``--continue`` exactly
 ``catalog.most_recent(os.getcwd())``, so ``tau -p -c "and then?"`` in a
 directory where any RPC host ran more recently resumed an EMPTY conversation
 instead of the human's work, and the TUI picker filled with nameless 0-message

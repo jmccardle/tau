@@ -45,6 +45,14 @@ BY_GESTURE: dict[str, str] = {
     "elide_span": "the tree browser: the elide chord — `TauBackend.elide_span`",
     "commit_branch": "the tree browser: ctrl+B on marked rows — `TauBackend.commit_branch`",
     "paste_subtree": "the tree browser: v — `TauBackend.paste_subtree`",
+    "answer_request": (
+        "the extension request row: click it to open the ask, fill it and press one "
+        "of its actions — `TauApp._open_extension_ask` into "
+        "`TauBackend.answer_request`, and `ReplDelegate`'s numbered answer in the "
+        "REPL. Not a Flow, for `set_extension_config`'s "
+        "reason: the fields are whatever the raising extension declared, which the "
+        "Argument vocabulary cannot say"
+    ),
 }
 
 NOT_REACHABLE: dict[str, str] = {

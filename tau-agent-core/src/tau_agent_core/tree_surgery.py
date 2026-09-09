@@ -44,13 +44,12 @@ from typing import Any, Iterable
 from tau_llm.docs import agent_facing
 
 from tau_agent_core.conversation_tree import (
+    COPYABLE_KINDS,
     ConversationTree,
     TreeNode,
     entries_to_messages,
     is_system_message,
 )
-
-COPYABLE_KINDS = ("message", "customMessage", "branch_summary")
 
 
 @agent_facing(topic="sessions", since="0.9.7")

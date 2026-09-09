@@ -9,7 +9,12 @@ from textual.geometry import Size
 from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Static
-from tau_coding_agent.backends import DEFAULT_LANE, prompt_tokens, resolve_tool_names
+from tau_coding_agent.backends import (
+    DEFAULT_LANE,
+    prompt_tokens,
+    resolve_tool_names,
+    span_seconds,
+)
 from tau_coding_agent.chat_widgets import (
     ExchangeBox,
     ToolBox,
@@ -71,35 +76,6 @@ class _LaneRender:
         self.started: float | None = None
         self.measured_output: int = 0
         self.chunks: int = 0
-
-
-def span_seconds(span: list[dict]) -> float | None:
-    """Wall-clock span of one user→answer exchange, from its message timestamps.
-
-    The reload-path counterpart of ``TurnStream.elapsed_seconds``, reading the
-    same clock: every message the agent loop produced carries epoch ms for the
-    moment it happened, so first-to-last over the span is the number the live
-    path reported (docs/MESSAGE-TIMESTAMPS.md §3).
-
-    ``None`` means the span carries no usable pair — one timestamped message, or
-    a session written before τ stamped assistant messages, where the store mapped
-    the legacy zeros to ``None`` on load. Never 0.0 for an unknown.
-
-    Args:
-        span: One exchange's messages, in order, as plain dicts.
-
-    Returns:
-        Seconds from the first stamped message to the last, or None.
-    """
-    stamps = [
-        m["timestamp"]
-        for m in span
-        if isinstance(m.get("timestamp"), int) and not isinstance(m.get("timestamp"), bool)
-    ]
-    if len(stamps) < 2:
-        return None
-    first, last = min(stamps), max(stamps)
-    return (last - first) / 1000 if last > first else None
 
 
 def _display_path(path: Path) -> str:

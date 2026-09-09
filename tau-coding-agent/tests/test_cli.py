@@ -463,13 +463,14 @@ def test_resume_help_and_behaviour_tell_the_same_story():
     """A regression guard on the contradiction itself, not on either wording.
 
     Before Phase C the flag could not succeed anywhere, and the two places that
-    said so disagreed (help: "TUI only"; error: "not available headlessly").
-    Now "TUI only" is TRUE — ``_launch_tui`` reads it — so the help may say it,
-    and must no longer claim the picker is missing.
+    said so disagreed (help: "TUI only"; error: "not available headlessly"). The
+    help must name every surface that reads it and claim no picker is missing —
+    which is now two surfaces, since ``--mode repl`` picks at its prompt
+    (docs/REPL-HEAD.md §3 step 2).
     """
-    help_text = cli.build_parser().format_help()
-    assert "NOT IMPLEMENTED" not in help_text
-    assert "TUI only" in help_text
+    assert "NOT IMPLEMENTED" not in cli.build_parser().format_help()
+    actions = {action.dest: action for action in cli.build_parser()._actions}
+    assert "TUI and --mode repl" in (actions["resume"].help or "")
 
 
 def test_resume_reaches_the_tui(monkeypatch):

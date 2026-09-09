@@ -11,7 +11,7 @@ AgentSession runs against a scratch InMemorySessionLog, caller owns persistence)
 import re
 import sys
 from abc import ABC, abstractmethod
-from typing import Any, Awaitable, Callable, Literal, Sequence, cast
+from typing import Any, Awaitable, Callable, Iterator, Literal, Sequence, cast
 from uuid import uuid4
 from tau_llm.compat import Compat
 from tau_llm.models import EXTENDED_THINKING_LEVELS, is_valid_thinking_level
@@ -23,8 +23,10 @@ from tau_agent_core.agent_session import (
     ExtensionCommandResult,
 )
 from tau_agent_core import tree_ops
+from tau_agent_core.attachments import elide_attachment_bodies, human_size
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.extension_locks import ExtensionRequest
+from tau_agent_core.messages import CUSTOM_ROLE
 from tau_agent_core.event_projection import MessageDeltaProjector
 from tau_agent_core.flows import Performed
 from tau_agent_core.events import AgentEvent
@@ -602,6 +604,194 @@ class RenderRouter:
             self._on_orphan(reason)
 
 
+#: The lane a REPLAYED transcript is tagged with; never a live submission's id.
+REPLAY_LANE = "replay"
+
+
+def span_seconds(span: list[dict[str, Any]]) -> float | None:
+    """Wall-clock span of one user→answer exchange, from its message timestamps.
+
+    The reload-path counterpart of ``TurnStream.elapsed_seconds``, reading the
+    same clock: every message the agent loop produced carries epoch ms for the
+    moment it happened, so first-to-last over the span is the number the live
+    path reported (docs/MESSAGE-TIMESTAMPS.md §3).
+
+    ``None`` means the span carries no usable pair — one timestamped message, or
+    a session written before τ stamped assistant messages, where the store mapped
+    the legacy zeros to ``None`` on load. Never 0.0 for an unknown.
+
+    Args:
+        span: One exchange's messages, in order, as plain dicts.
+
+    Returns:
+        Seconds from the first stamped message to the last, or None.
+    """
+    stamps = [
+        m["timestamp"]
+        for m in span
+        if isinstance(m.get("timestamp"), int) and not isinstance(m.get("timestamp"), bool)
+    ]
+    if len(stamps) < 2:
+        return None
+    first, last = min(stamps), max(stamps)
+    return (last - first) / 1000 if last > first else None
+
+
+def replay_render_events(
+    messages: Sequence[dict[str, Any]], *, lane: str = REPLAY_LANE
+) -> Iterator[dict[str, Any]]:
+    """Project persisted messages onto the render-event vocabulary (§4, "Replay").
+
+    Reference: docs/REPL-HEAD.md §4. A resumed session is a list of stored
+    messages and a head renders lane-tagged render events, so this is what lets
+    ONE handler draw a reloaded transcript and a live one — a second renderer for
+    saved conversations would be a second answer to what the session said.
+
+    One user message opens a lane and the next one closes it, so an exchange
+    replays as the turn it was: ``lane_end`` carries :func:`span_seconds` over the
+    span's own timestamps and the last completion's ``usage``. Two keys mark what
+    a live stream would not carry — ``replay`` on ``lane_start`` (the user's line
+    is not in this scrollback, so it must be echoed) and ``system_prompt``, which
+    has no live counterpart because no event announces the prompt.
+
+    Args:
+        messages: ``ConversationSession.context`` — the folded active path.
+        lane: What to tag every event with.
+
+    Yields:
+        Render events in the §4 vocabulary, each ``lane_start`` closed by a
+        ``lane_end``.
+    """
+    span: list[dict[str, Any]] = []
+    state: dict[str, Any] = {"open": False, "turn": 0, "output": 0, "context": 0, "extra": {}}
+
+    def close() -> Iterator[dict[str, Any]]:
+        if not state["open"]:
+            return
+        yield {
+            "kind": "lane_end",
+            "lane": lane,
+            "source": "interactive",
+            "submitter": "human",
+            "context": state["context"],
+            "output": state["output"],
+            "seconds": span_seconds(span),
+            "cache_notice": None,
+            "extra": dict(state["extra"]),
+        }
+        state.update(open=False, turn=0, output=0, context=0, extra={})
+
+    def open_lane(text: str) -> dict[str, Any]:
+        state.update(open=True, turn=0, output=0, context=0, extra={})
+        span.clear()
+        return {
+            "kind": "lane_start",
+            "lane": lane,
+            "source": "interactive",
+            "submitter": "human",
+            "correlation": {},
+            "text": text,
+            "replay": True,
+        }
+
+    for message in messages:
+        role = message.get("role")
+        if role == "system":
+            yield {"kind": "system_prompt", "lane": lane, "chars": len(_replay_text(message))}
+            continue
+        if role == "user":
+            yield from close()
+            yield open_lane(elide_attachment_bodies(_replay_text(message)))
+        elif not state["open"]:
+            # A path can start mid-exchange (a fork, a compaction summary): open one anyway.
+            yield open_lane("")
+        span.append(message)
+        if role == "assistant":
+            yield from _replay_completion(message, lane, state)
+        elif role == "toolResult":
+            yield {
+                "kind": "tool_result",
+                "lane": lane,
+                "id": message.get("toolCallId", ""),
+                "name": message.get("tool_name", ""),
+                "result": _replay_text(message),
+                "is_error": bool(message.get("is_error", False)),
+                "blocked": bool(message.get("blocked", False)),
+                "blocked_by": message.get("blocked_by"),
+            }
+        elif role == CUSTOM_ROLE:
+            yield {
+                "kind": "custom_message",
+                "lane": lane,
+                "entry_id": str(message.get("id", "")),
+                "message": message,
+            }
+    yield from close()
+
+
+def _replay_completion(
+    message: dict[str, Any], lane: str, state: dict[str, Any]
+) -> Iterator[dict[str, Any]]:
+    """One persisted assistant message as the events its completion emitted."""
+    yield {"kind": "turn_start", "lane": lane, "turn_index": state["turn"]}
+    state["turn"] += 1
+    content = message.get("content", "")
+    for block in content if isinstance(content, list) else [{"type": "text", "text": content}]:
+        if not isinstance(block, dict):
+            continue
+        kind = block.get("type")
+        if kind == "thinking":
+            yield {"kind": "reasoning_delta", "lane": lane, "delta": block.get("thinking", "")}
+        elif kind == "text":
+            yield {"kind": "text_delta", "lane": lane, "delta": block.get("text", "")}
+        elif kind == "image":
+            yield {"kind": "text_delta", "lane": lane, "delta": _image_line(block)}
+        elif kind == "toolCall":
+            yield {
+                "kind": "tool_call",
+                "lane": lane,
+                "id": block.get("id", ""),
+                "name": block.get("name", ""),
+                "arguments": block.get("arguments", {}),
+            }
+    usage = message.get("usage")
+    if isinstance(usage, dict):
+        state["output"] += int(usage.get("output_tokens", 0) or 0)
+        state["context"] = prompt_tokens(usage)
+        extra = usage.get("extra")
+        state["extra"] = extra if isinstance(extra, dict) else {}
+    yield {
+        "kind": "completion_end",
+        "lane": lane,
+        "output": state["output"],
+        "context": state["context"],
+        "stop_reason": message.get("stop_reason"),
+        "dropped_tool_calls": dropped_tool_calls(usage) if isinstance(usage, dict) else 0,
+    }
+
+
+def _replay_text(message: dict[str, Any]) -> str:
+    """The text of one persisted message, images named as the one line §6 specifies."""
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for block in content if isinstance(content, list) else []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text":
+            parts.append(str(block.get("text", "")))
+        elif block.get("type") == "image":
+            parts.append(_image_line(block))
+    return "".join(parts)
+
+
+def _image_line(block: dict[str, Any]) -> str:
+    """``[mime, size]`` — what a transcript shows in place of an image it cannot draw."""
+    encoded = str(block.get("data", ""))
+    return f"[{block.get('mime_type', 'image')}, {human_size(len(encoded) * 3 // 4)}]"
+
+
 def compute_cost_usd(
     cost: dict[str, Any] | None,
     *,
@@ -956,8 +1146,15 @@ class Backend(ABC):
         """
 
     @abstractmethod
-    async def submit_turn(self, submission: Submission, context: list[dict]) -> SubmissionResult:
+    async def submit_turn(
+        self, submission: Submission, context: list[dict] | None
+    ) -> SubmissionResult:
         """Admit ``submission`` through the one door and AWAIT the turn — no stream.
+
+        ``context`` is the caller's own working message list, or ``None`` for "the
+        bound log's ``context_for``" — which is what a head that BINDS its session
+        log passes, since a second copy of the context would be a second opinion
+        about what the model sees (docs/REPL-HEAD.md §3, "bind, do not append").
 
         Reference: docs/SUBMISSION-LIFECYCLE.md phase 3 (B3-a). The counterpart of
         :meth:`subscribe_render`, and the reason the two exist as a pair: a
@@ -992,9 +1189,10 @@ class Backend(ABC):
         rather than one unsubscribe callable because they are different decisions
         — a screen being torn down wants the first without the second.
 
-        ``handler`` receives :class:`RenderRouter`'s lane-tagged render events —
-        ``lane_start``, :class:`TurnStream`'s ``turn_start`` / ``text_delta`` /
-        ``reasoning_delta`` / ``tool_call`` / ``tool_result``, and ``lane_end`` —
+        ``handler`` receives all TEN of :class:`RenderRouter`'s render events —
+        ``lane_start``, :class:`TurnStream`'s ``turn_start`` / ``steer_message`` /
+        ``text_delta`` / ``reasoning_delta`` / ``tool_call`` / ``tool_result`` /
+        ``completion_end``, ``lane_end``, and the lane-less ``custom_message`` —
         for **every** turn this session runs, not only the one the caller happens
         to be awaiting. That is the whole difference: a ``fork`` submission's
         second agent and a turn originated by a bus, timer or extension have no
@@ -1365,16 +1563,71 @@ class TauBackend(Backend):
         name ``--model NAME`` accepts headlessly and the same one ``get_models``
         publishes.
 
+        The switch is RUNTIME-only in the core (``AgentSession.set_model``'s own
+        docstring), so this records it too: without the append the live model and
+        the log disagree, and the next ``--continue`` resumes on the old one
+        (``resolve_model_config``'s ``fallback_model``). The log is checked BEFORE
+        the switch, the way the RPC verb checks it, so a refusal leaves the session
+        running on the model its record still names.
+
         Args:
             name: The config model name.
 
         Returns:
             A :class:`~tau_agent_core.flows.Performed` whose ``data`` is
             ``{model, cursor}``, as ``set_model``'s ``returns`` declares.
+
+        Raises:
+            RuntimeError: The bound log cannot record the change
+                (:meth:`record_model_change`).
         """
-        return self.agent_session.performed(
-            "set_model", {"model": self.agent_session.set_model(name)}
-        )
+        self._model_change_log(name)
+        model = self.agent_session.set_model(name)
+        self.record_model_change(name)
+        return self.agent_session.performed("set_model", {"model": model})
+
+    def record_model_change(self, name: str) -> None:
+        """Persist "this session now runs on *name*" without switching anything.
+
+        The append half of :meth:`set_model`, callable on its own because a resume
+        can start on a model the stored session does not name (``tau --mode repl
+        --continue --model other``): the backend was already BUILT from that model's
+        config, so switching again would rebuild it and drop ``--thinking`` on the
+        way (docs/REPL-HEAD.md §3 step 9). The provider is this backend's own, which
+        is the one the session is about to run on.
+
+        Args:
+            name: The config model name, as ``--model NAME`` spells it.
+
+        Raises:
+            RuntimeError: The bound log has no ``append_model_change`` — an
+                in-memory log has nowhere durable for the entry, and recording it
+                nowhere is the silent switch this method exists to prevent.
+        """
+        log = self._model_change_log(name)
+        getattr(log, "append_model_change")(name, self.config.get("backend", ""))
+
+    def _model_change_log(self, name: str) -> Any:
+        """The bound log, refused when it cannot record a model change.
+
+        Args:
+            name: The config model name, quoted by the refusal.
+
+        Returns:
+            The bound session log.
+
+        Raises:
+            RuntimeError: It has no ``append_model_change``.
+        """
+        log = self.agent_session.session_log
+        if not hasattr(log, "append_model_change"):
+            raise RuntimeError(
+                f"record_model_change({name!r}): the bound log has no "
+                "append_model_change, so the switch would run with the record "
+                "still naming the old model — and the next --continue would "
+                "resume on it (headless.resolve_model_config's fallback_model)."
+            )
+        return log
 
     def set_session_name(self, name: str) -> Performed:
         """Give the live session a display name, persisted to its log.
@@ -1591,7 +1844,9 @@ class TauBackend(Backend):
             )
         )
 
-    async def submit_turn(self, submission: Submission, context: list[dict]) -> SubmissionResult:
+    async def submit_turn(
+        self, submission: Submission, context: list[dict] | None
+    ) -> SubmissionResult:
         """Admit ``submission`` through :meth:`AgentSession.submit` and await the turn.
 
         A four-line delegation, like :meth:`rollback_turn` and

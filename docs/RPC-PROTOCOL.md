@@ -16,7 +16,7 @@
 
 ## Version negotiation
 
-- **Protocol version:** `1.4`
+- **Protocol version:** `1.5`
 - **Dialect:** `jsonrpc-2.0`
 
 Call get_capabilities (no params) first on every new connection, before any mutating command. Compare protocol_version's MAJOR component against what this host was built against; refuse to send anything else on a mismatch rather than discovering it on the first failing request.
@@ -35,7 +35,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 122,070 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 136,312 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -1128,6 +1128,71 @@ what rides on top of this on every response):
 
 ### Tier C
 
+#### `answer_request`
+
+*Since 0.10.1.* AgentSession.answer_request, projected — the write half of the pair get_pending_request reads. Without it an RPC host could SEE a lock and not release one, which makes a locked session a session that host can never continue; the TUI and the REPL both had the release and this wire did not. The append happens BEFORE the dispatch, which is what releases the lock first: the handler then runs on a session that is already unlocked and may submit a turn of its own. `handled: false` is a WARNING and not a failure — the extension was not loaded, the response was appended anyway and the lock is gone. TWO GUARDS THIS DOES NOT TAKE, both stated rather than omitted. It takes no D-1 turn_safety_guard, for two reasons that compound: a request is very often RAISED by a tool_call hook inside a turn (docs/EXTENSION-LOCKS.md), so answering mid-turn is the designed case and not a race — and the dispatched action may itself submit, which under a held turn_lock would deadlock against the lock this verb was holding. The TUI and the REPL call the same method with no lock. It takes no D-7 require_durable_session either, which is the one deliberate exception to 'the verb that appends refuses': the append's product here is a RELEASED LOCK in this process, and refusing would leave an unpersisted session locked with no way out at all — strictly worse than the promise D-7 exists to stop being made, and the same reasoning `handled: false` already applies to an absent extension. Refuses with INVALID_PARAMS, before any append: an unknown request id, a request carrying no ask (a bare lock is cleared by navigating or by its own command, not answered), an action label the ask does not declare, or values its fields reject.
+
+**Params schema:**
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "description": "The pressed action's `label` \u2014 one of the labels in the ask's `actions`. The label, not the command it names: the label is what a person chose and what the ask's own table is keyed by.",
+      "type": "string"
+    },
+    "request_id": {
+      "description": "The request's `entry_id`, as get_pending_request reported it or as a SUBMISSION_REJECTED refusal carried it.",
+      "type": "string"
+    },
+    "values": {
+      "description": "The filled fields, keyed by field name. Omitted is the empty dict, which is what an ask declaring no fields takes. Checked against the ask's declared fields before anything is appended: nothing is coerced and no partial answer is persisted.",
+      "type": "object"
+    }
+  },
+  "required": [
+    "request_id",
+    "action"
+  ],
+  "type": "object"
+}
+```
+
+**Result schema** (see [Response envelope](#response-envelope) for
+what rides on top of this on every response):
+
+```json
+{
+  "properties": {
+    "cursor": {
+      "description": "session_log.cursor after the response was appended (E5 rule 1). The append is what RELEASES the lock \u2014 appending moves the cursor and a lock is read at the cursor \u2014 so this value is the evidence the session is answerable again.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "handled": {
+      "description": "Whether the extension that raised the request was loaded and ran its action. FALSE still means the response was appended and the lock released \u2014 a lock whose owner cannot answer must not become a session nobody can continue \u2014 so a host reports it as a warning and carries on, rather than as a failure to retry.",
+      "type": "boolean"
+    },
+    "output": {
+      "description": "What the dispatched command produced, or null.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "handled",
+    "output",
+    "cursor"
+  ],
+  "type": "object"
+}
+```
+
 #### `commit_branch`
 
 *Since 0.9.8.* tau_agent_core.tree_ops.commit_branch, projected. Builds a branch out of a set of marked entries and continues on it (docs/TREE-BROWSER-AS-EDITOR.md §6). The copies are minted with append_at, which does NOT move the leaf, and the leaf moves onto the last minted entry afterwards — so the commit is atomic from the cursor's point of view and a mint that fails partway leaves orphans hanging off the attach point rather than a half-moved conversation. Refuses, all INVALID_PARAMS and all before the first append: an empty selection, an unknown id, an entry no branch can carry, or a selection composing a path that is not turn-complete. D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: it APPENDS, so require_durable_session refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `cursor`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
@@ -1511,6 +1576,46 @@ what rides on top of this on every response):
 }
 ```
 
+#### `get_entry`
+
+*Since 0.10.1.* ConversationTree.entry(entry_id) — one node's full body, which is what a detail pane beside a tree draws and the reason get_tree carries a one-line `preview` per row instead of a message. The pair is the same one the TUI's own browser makes: `tree()` for the rows, `entry` for the node it is showing (tree_browser.py's `_resolve_entry`). get_messages does not serve this — it answers for the ACTIVE PATH, and the node a reader has moved the browser's cursor onto is very often not on it. The entry is handed over RAW, in its stored camelCase shape, rather than projected: the caller is rendering one node, and a projection would be a second message shape to keep in step with get_messages'. Bounded by the caller: one id, one entry, and a host that wants ten asks ten times — the alternative, an ids array, buys nothing over stdio and invites a host to pull a whole tree's bodies in one line. Read-only: no D-1 turn_safety_guard, no E5 cursor (rule 2), no require_durable_session (D-7 rule 2).
+
+**Params schema:**
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "entry_id": {
+      "description": "The entry to read \u2014 an `entry_id` from get_tree or complete_message_id. An id naming no entry is INVALID_PARAMS, never a null entry.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "entry_id"
+  ],
+  "type": "object"
+}
+```
+
+**Result schema** (see [Response envelope](#response-envelope) for
+what rides on top of this on every response):
+
+```json
+{
+  "properties": {
+    "entry": {
+      "description": "The raw session-log entry, as stored: camelCase `parentId` / `firstKeptId` / `fromId`, a `type`, and whatever payload that type carries \u2014 a `message` for the message kinds, a `summary` for a compaction or a branch_summary. Handed over whole rather than projected, because the caller is a detail pane rendering ONE node and a projection would be a second message shape to keep in step with get_messages'. One node per call: get_tree carries a one-line preview per row precisely so a browser does not pull bodies it is not showing.",
+      "type": "object"
+    }
+  },
+  "required": [
+    "entry"
+  ],
+  "type": "object"
+}
+```
+
 #### `get_extension_config`
 
 *Since 0.9.8.* AgentSession.get_extension_config(), projected. The read a settings screen is built from: `schema` is the extension's own CONFIG_SCHEMA module attribute, validated at load into the {title, fields} shape ui.form takes, and `values` is the live slice api.config returns for it. A null `schema` is the honest answer for an extension that declares none — a host renders no settings screen rather than an empty one. Read: no cursor (E5 rule 2), no turn guard. Fail-Early: an unresolvable `path` RAISES here rather than returning a null row, because unlike the enable/disable/reload verbs there is no ok=false channel on a read.
@@ -1593,6 +1698,184 @@ what rides on top of this on every response):
   "required": [
     "extensions",
     "errors"
+  ],
+  "type": "object"
+}
+```
+
+#### `get_pending_request`
+
+*Since 0.10.1.* AgentSession.pending_request, projected. 0.10.0 replaced ui.confirm / ui.select / ui.input with one persisted `extension_request` entry and said every head renders all four of its states — and the state was reachable over THIS wire only as `SUBMISSION_REJECTED` data, which means an RPC host learned about a lock by being refused by it and could not see one that had not refused it yet. A head polls this at every cursor move: after a turn ends, after a command, on a resume, on a session switch. Null is the ordinary answer and is not a failure. Read-only: no D-1 turn_safety_guard (a request raised by a tool_call hook is exactly the case a host wants to see mid-turn), no E5 cursor (rule 2), no require_durable_session (D-7 rule 2).
+
+**Params schema:**
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+```
+
+**Result schema** (see [Response envelope](#response-envelope) for
+what rides on top of this on every response):
+
+```json
+{
+  "properties": {
+    "request": {
+      "description": "The extension request AT THE CURSOR, or null when there is none. The cursor only, never an ancestry walk: the thing a user is looking at and the thing that refused their submission are one entry. {entry_id, extension, extension_name, sentence, label, lock, ask, release} \u2014 `label` is \u03c4's own framing of the four states over `lock` and `ask`, `sentence` is the extension's own line, `ask` is a validated `ui.form` spec ({title, fields, actions}) or null, and `release` names a command that clears the lock (advisory: commands are exempt from a lock by placement, not by name). A host renders all four states; three of them draw something and the fourth is this verb answering null.",
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "request"
+  ],
+  "type": "object"
+}
+```
+
+#### `get_tree`
+
+*Since 0.10.1.* ConversationTree.browse() over the session's live entries and cursor — the shape half of the tree, and the read the five tree MUTATIONS were uncallable without. docs/VSCODE-HEAD.md §6 measured that gap and named this verb as what closes it: 0.9.8 put navigate, elide_span, commit_branch, paste_subtree and summarize_and_navigate on the wire, and complete_message_id returns a flat list of (entry_id, preview) pairs with no parent links — a picker, not a browser. A host could edit a tree it had no way to draw. Every node carries the facts a browser COLOURS a row with as well as the ones it draws it from, because each of them is read out of the raw entry and no other verb hands a raw entry over: `first_kept_id` is the fold's boundary, `tool_call_ids`/`tool_call_id` the pairing a mark expands over, `copyable` the paste source rule, `from_id` the branch-summary pair. Without them an out-of-process head would recompute each from a second reading of the log's shape, which is the drift the capability registry exists to make impossible. FLAT with `parent_id`, not nested: a five-hundred-message linear conversation nests five hundred deep, and json.dumps has a recursion limit where a tree does not. UNBOUNDED, deliberately, and this is the one place G3 is argued rather than applied: G3 forbids pushing something unbounded, and this is a PULL — the shape IS the answer, and a bounded shape is a different tree. `count` is there so a host can say it read a whole one. Read-only: no D-1 turn_safety_guard (it mutates nothing, so it answers mid-turn — a browser opened while a turn streams shows the tree as it stands), no `cursor` in the E5 sense (the `cursor` key here is the tip this READ observed, not a mutation's product), and no require_durable_session (D-7 rule 2: it appends nothing, and an unpersisted session has a tree like any other). The `/tree` VIEW command still carries `unavailable_because` rather than state: resolve_command is pure and holds no session, so a head opens the view from THIS read — which is what that sentence has said since 0.9.8 and what it can now mean.
+
+**Params schema:**
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+```
+
+**Result schema** (see [Response envelope](#response-envelope) for
+what rides on top of this on every response):
+
+```json
+{
+  "properties": {
+    "count": {
+      "description": "len(nodes). Present so a host can check it read a whole tree rather than a truncated one: this read is UNBOUNDED by design \u2014 the shape IS the answer and a bounded shape is a different tree \u2014 which is why it is a pull and is never pushed (G3).",
+      "type": "integer"
+    },
+    "cursor": {
+      "description": "session_log.cursor at the moment of the read, duplicated out of `nodes` so a host finds it without scanning. Null on a session whose cursor names no entry, which is also the one case in which no node carries is_cursor: true.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "nodes": {
+      "description": "Every entry in the log, in the order a browser draws them \u2014 preorder over the parent/child tree, roots in load order, children oldest first. FLAT, with `parent_id` carrying the shape: a nested projection of a long linear conversation is one nesting level per message, which is a serializer's recursion limit rather than a tree anyone wanted. Nothing is filtered out \u2014 which rows a browser declines to draw (a `navigate` with one child) is the reader's rule, not the log's.",
+      "items": {
+        "properties": {
+          "copyable": {
+            "description": "Whether paste_subtree will take this entry as a source root \u2014 conversation_tree.COPYABLE_KINDS, reported per node so a host greys the illegal source rather than holding a second copy of the tuple.",
+            "type": "boolean"
+          },
+          "entry_id": {
+            "description": "The entry's id \u2014 the value every `message_id` argument takes (navigate, elide_span, commit_branch, paste_subtree, summarize_and_navigate).",
+            "type": "string"
+          },
+          "estimated_tokens": {
+            "description": "compaction.estimate_tokens over this entry's message, 0 for an entry carrying none. An ESTIMATE \u2014 a 4-chars-per-token heuristic \u2014 and the only token figure available for an arbitrary set of entries, because the one measured figure in a session is usage.input_tokens on a finished assistant message and that measures one request. A host totalling these says 'estimate' beside the number, as the TUI's browser does.",
+            "type": "integer"
+          },
+          "first_kept_id": {
+            "description": "On a splice anchor ('compaction' or 'elide'), the oldest entry the fold keeps; null on every other kind. This is the fold's whole boundary: the entries a host paints as folded are the ones on the cursor's ancestor chain that sit before this id, with a system message carried across (docs/SYSTEM-PROMPT-IN-THE-FOLD.md). Sent because a host holding only the shape would have to guess at it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from_id": {
+            "description": "On a 'branch_summary', the head of the branch it summarizes \u2014 the pair a browser draws as a summary and the line it is about. Display metadata, never a splice boundary. Null on every other kind.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_cursor": {
+            "description": "Whether this entry is the session's cursor \u2014 where the next submission lands. Exactly one node carries true, or none on a session whose cursor names no entry.",
+            "type": "boolean"
+          },
+          "is_system": {
+            "description": "Whether this entry is the system prompt. A fold carries it across rather than dropping it, so a host computing the folded span excludes it.",
+            "type": "boolean"
+          },
+          "kind": {
+            "description": "The entry's type: 'message', 'customMessage', 'compaction', 'elide', 'branch_summary', 'navigate', 'customEntry', 'model_change'. Not a closed enum \u2014 a kind added later reaches a host as a row it can draw and does not recognise, rather than as a gap.",
+            "type": "string"
+          },
+          "parent_id": {
+            "description": "The entry this one hangs from; null for a root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "preview": {
+            "description": "The entry's first line, uncut \u2014 a host elides it to its own width. Empty for an entry carrying no text.",
+            "type": "string"
+          },
+          "role": {
+            "description": "'user', 'assistant', 'toolResult' or 'system' on a message entry; null on every bookkeeping kind.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timestamp": {
+            "description": "Epoch milliseconds, or null when no clock applies (docs/MESSAGE-TIMESTAMPS.md). This is the key children are sorted by, so re-sorting on it reproduces `nodes`.",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tool_call_id": {
+            "description": "The call a 'toolResult' answers; null elsewhere.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tool_call_ids": {
+            "description": "The toolCall block ids an assistant message declares; empty on every other entry. With `tool_call_id` this is the whole of the pairing rule a mark expands over: to every provider a call and its result are one unit, and a branch carrying one without the other is a prefix the API rejects (docs/TREE-EDITOR-MANUAL.md \u00a76).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "entry_id",
+          "parent_id",
+          "kind",
+          "role",
+          "preview",
+          "is_cursor",
+          "timestamp",
+          "first_kept_id",
+          "from_id",
+          "is_system",
+          "tool_call_ids",
+          "tool_call_id",
+          "copyable",
+          "estimated_tokens"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "nodes",
+    "cursor",
+    "count"
   ],
   "type": "object"
 }

@@ -1947,6 +1947,46 @@ entries() -> list[dict[str, Any]]
 The UNDERLYING session's id — a branch is a lane in one conversation, not a
 second conversation. (Its own identity is :attr:`lane`.)
 
+## BrowseNode
+<!-- agent: yes -->
+
+```python
+class BrowseNode(entry_id: str, parent_id: str | None, kind: str, role: str | None, preview: str, is_cursor: bool, timestamp: int | None, first_kept_id: str | None, from_id: str | None, is_system: bool, tool_call_ids: tuple[str, ...], tool_call_id: str | None, copyable: bool, estimated_tokens: int)
+```
+
+`tau_agent_core.conversation_tree.BrowseNode`
+
+One row of the browsable tree, with the facts a head's zone rules read.
+
+:class:`TreeNode` is the shape and nothing else, which is enough to DRAW a tree
+and not enough to colour one. A head outside this process cannot recover the
+rest — the fold's boundary, the tool pairing, the copyable kinds — because each
+of them is read out of the raw entry, and no verb hands a raw entry over. This
+record is what :meth:`ConversationTree.browse` adds so that an out-of-process
+head computes the same zones the TUI's browser computes in-process, from the
+same facts, rather than from a second reading of the log's shape.
+
+Bounded on purpose: ``preview`` is one line, and no message body rides along.
+A body is fetched per node, the way the TUI's detail pane calls
+:meth:`ConversationTree.entry` for the one node it is showing.
+
+**Constructor parameters**
+
+- `entry_id: str` — The entry's id — the value every ``message_id`` argument takes.
+- `parent_id: str | None` — The id this entry hangs from; ``None`` for a root.
+- `kind: str` — The entry's ``type`` — ``message``, ``compaction``, ``elide``, ``branch_summary``, ``navigate``, ``customEntry`` and the rest.
+- `role: str | None` — ``user`` / ``assistant`` / ``toolResult`` / ``system`` on a message entry, ``None`` on every bookkeeping kind.
+- `preview: str` — The entry's first line, cut nowhere — the caller elides to width.
+- `is_cursor: bool` — Whether this entry is the session's current cursor.
+- `timestamp: int | None` — Epoch milliseconds, or ``None`` when no clock applies. This is the key children are sorted by, so a caller re-sorting gets this order.
+- `first_kept_id: str | None` — On a splice anchor (``compaction`` / ``elide``), the oldest entry the fold keeps. ``None`` on every other kind, and on an anchor that names none. The fold's whole boundary, so a head computes the folded span rather than guessing at it.
+- `from_id: str | None` — On a ``branch_summary``, the head of the branch it summarizes.
+- `is_system: bool` — Whether this entry is the system prompt, which a fold carries across rather than dropping (docs/SYSTEM-PROMPT-IN-THE-FOLD.md).
+- `tool_call_ids: tuple[str, ...]` — The ``toolCall`` block ids an assistant message declares. Empty on every other entry.
+- `tool_call_id: str | None` — The call a ``toolResult`` answers; ``None`` elsewhere. With ``tool_call_ids`` this is the whole of the pairing rule a mark expands over (docs/TREE-EDITOR-MANUAL.md §6).
+- `copyable: bool` — Whether ``paste_subtree`` can take this entry as a source root.
+- `estimated_tokens: int` — ``compaction.estimate_tokens`` over this entry's message, or 0 for an entry carrying none. An ESTIMATE — a 4-chars-per-token heuristic — and the only token figure available for an arbitrary set of entries, so a caller showing a total says "estimate" beside it.
+
 ## Capability
 <!-- agent: yes -->
 
@@ -2209,6 +2249,29 @@ log is never mutated — ``navigate`` only moves the in-memory cursor.
 
 - `entries: list[dict[str, Any]]` — *(no description)*
 - `cursor: str | None` — *(no description)*
+
+### browse
+
+```python
+browse() -> tuple[BrowseNode, ...]
+```
+
+`tau_agent_core.conversation_tree.ConversationTree.browse`
+
+Every entry as a :class:`BrowseNode`, in the order a browser draws them.
+
+Preorder over :meth:`tree` — roots in load order, children oldest first —
+which is the same walk ``tree_surgery`` orders a selection by, so a caller
+rendering this list top to bottom draws the rows the TUI's browser draws.
+
+FLAT, and deep-tree safe both here and at the far end: ``parent_id`` carries
+the shape. A nested projection of a five-hundred-message linear conversation
+is five hundred levels of nesting, which is a serializer's recursion limit
+rather than a tree anybody wanted.
+
+**Returns**
+
+One node per entry, including the kinds a browser then declines to draw (a ``navigate`` with one child). Which rows are hidden is the reader's rule, not the log's, so nothing is filtered out here.
 
 ### children_of
 

@@ -407,8 +407,10 @@ def _validate_value(schema: dict[str, Any], value: Any, path: str) -> str | None
         return f"{path!r} must be >= {minimum}, got {value!r}"
     items = schema.get("items")
     if items is not None and isinstance(value, list):
+        # An element schema is checked as an object or as a scalar, by its own `type`.
+        check = _validate_object if items.get("type") == "object" else _validate_value
         for index, element in enumerate(value):
-            violation = _validate_object(items, element, f"{path}[{index}]")
+            violation = check(items, element, f"{path}[{index}]")
             if violation is not None:
                 return violation
     return None
@@ -515,9 +517,21 @@ def _assert_supported_schema(schema: dict[str, Any], where: str) -> None:
         if items is not None:
             if prop_schema.get("type") != "array":
                 fail(f"property {prop_name!r} declares `items` without type 'array'")
-            if not isinstance(items, dict) or items.get("type") != "object":
-                fail(f"property {prop_name!r} declares `items` that is not an object schema")
-            _assert_supported_schema(items, f"{where}.{prop_name}[]")
+            if not isinstance(items, dict):
+                fail(f"property {prop_name!r} declares `items` that is not a schema")
+            if items.get("type") == "object":
+                _assert_supported_schema(items, f"{where}.{prop_name}[]")
+            else:
+                unknown = sorted(set(items) - _SUPPORTED_VALUE_KEYWORDS)
+                if unknown:
+                    fail(f"property {prop_name!r} items use unsupported keyword(s) {unknown}")
+                declared_items = items.get("type")
+                if declared_items is None:
+                    fail(f"property {prop_name!r} items declare no `type`")
+                names = declared_items if isinstance(declared_items, list) else [declared_items]
+                bad = sorted(str(n) for n in names if n not in _SUPPORTED_TYPES)
+                if bad:
+                    fail(f"property {prop_name!r} items declare unsupported type(s) {bad}")
         declared = prop_schema.get("type")
         if declared is None:
             continue
@@ -3287,6 +3301,281 @@ async def _handle_complete_message_id(
 
 
 ### end tier-c:complete_message_id
+
+### begin tier-c:get_tree
+
+GET_TREE_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_tree")
+
+
+@command(
+    "get_tree",
+    tier="C",
+    since="0.10.1",
+    notes=(
+        "ConversationTree.browse() over the session's live entries and cursor — the "
+        "shape half of the tree, and the read the five tree MUTATIONS were "
+        "uncallable without. docs/VSCODE-HEAD.md §6 measured that gap and named "
+        "this verb as what closes it: 0.9.8 put navigate, elide_span, "
+        "commit_branch, paste_subtree and summarize_and_navigate on the wire, and "
+        "complete_message_id returns a flat list of (entry_id, preview) pairs with "
+        "no parent links — a picker, not a browser. A host could edit a tree it had "
+        "no way to draw. Every node carries the facts a browser COLOURS a row with "
+        "as well as the ones it draws it from, because each of them is read out of "
+        "the raw entry and no other verb hands a raw entry over: `first_kept_id` is "
+        "the fold's boundary, `tool_call_ids`/`tool_call_id` the pairing a mark "
+        "expands over, `copyable` the paste source rule, `from_id` the "
+        "branch-summary pair. Without them an out-of-process head would recompute "
+        "each from a second reading of the log's shape, which is the drift the "
+        "capability registry exists to make impossible. FLAT with `parent_id`, not "
+        "nested: a five-hundred-message linear conversation nests five hundred "
+        "deep, and json.dumps has a recursion limit where a tree does not. "
+        "UNBOUNDED, deliberately, and this is the one place G3 is argued rather "
+        "than applied: G3 forbids pushing something unbounded, and this is a PULL — "
+        "the shape IS the answer, and a bounded shape is a different tree. `count` "
+        "is there so a host can say it read a whole one. Read-only: no D-1 "
+        "turn_safety_guard (it mutates nothing, so it answers mid-turn — a browser "
+        "opened while a turn streams shows the tree as it stands), no `cursor` in "
+        "the E5 sense (the `cursor` key here is the tip this READ observed, not a "
+        "mutation's product), and no require_durable_session (D-7 rule 2: it "
+        "appends nothing, and an unpersisted session has a tree like any other). "
+        "The `/tree` VIEW command still carries `unavailable_because` rather than "
+        "state: resolve_command is pure and holds no session, so a head opens the "
+        "view from THIS read — which is what that sentence has said since 0.9.8 and "
+        "what it can now mean."
+    ),
+    params_schema=params_schema_for("get_tree"),
+    result_schema=GET_TREE_RESULT_SCHEMA,
+)
+async def _handle_get_tree(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    from tau_agent_core.conversation_tree import ConversationTree
+
+    log = handler.session.session_log
+    tree = ConversationTree(log.entries(), log.cursor)
+    nodes = [
+        {
+            "entry_id": node.entry_id,
+            "parent_id": node.parent_id,
+            "kind": node.kind,
+            "role": node.role,
+            "preview": node.preview,
+            "is_cursor": node.is_cursor,
+            "timestamp": node.timestamp,
+            "first_kept_id": node.first_kept_id,
+            "from_id": node.from_id,
+            "is_system": node.is_system,
+            "tool_call_ids": list(node.tool_call_ids),
+            "tool_call_id": node.tool_call_id,
+            "copyable": node.copyable,
+            "estimated_tokens": node.estimated_tokens,
+        }
+        for node in tree.browse()
+    ]
+    return {"nodes": nodes, "cursor": log.cursor, "count": len(nodes)}
+
+
+### end tier-c:get_tree
+
+### begin tier-c:get_entry
+
+GET_ENTRY_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
+    "get_entry",
+    overrides={
+        "entry_id": {
+            "description": (
+                "The entry to read — an `entry_id` from get_tree or "
+                "complete_message_id. An id naming no entry is INVALID_PARAMS, "
+                "never a null entry."
+            ),
+        },
+    },
+)
+
+GET_ENTRY_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_entry")
+
+
+@command(
+    "get_entry",
+    tier="C",
+    since="0.10.1",
+    notes=(
+        "ConversationTree.entry(entry_id) — one node's full body, which is what a "
+        "detail pane beside a tree draws and the reason get_tree carries a one-line "
+        "`preview` per row instead of a message. The pair is the same one the TUI's "
+        "own browser makes: `tree()` for the rows, `entry` for the node it is "
+        "showing (tree_browser.py's `_resolve_entry`). get_messages does not serve "
+        "this — it answers for the ACTIVE PATH, and the node a reader has moved the "
+        "browser's cursor onto is very often not on it. The entry is handed over "
+        "RAW, in its stored camelCase shape, rather than projected: the caller is "
+        "rendering one node, and a projection would be a second message shape to "
+        "keep in step with get_messages'. Bounded by the caller: one id, one entry, "
+        "and a host that wants ten asks ten times — the alternative, an ids array, "
+        "buys nothing over stdio and invites a host to pull a whole tree's bodies "
+        "in one line. Read-only: no D-1 turn_safety_guard, no E5 cursor (rule 2), "
+        "no require_durable_session (D-7 rule 2)."
+    ),
+    params_schema=GET_ENTRY_PARAMS_SCHEMA,
+    result_schema=GET_ENTRY_RESULT_SCHEMA,
+)
+async def _handle_get_entry(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    from tau_agent_core.conversation_tree import ConversationTree
+
+    log = handler.session.session_log
+    tree = ConversationTree(log.entries(), log.cursor)
+    entry_id = params["entry_id"]
+    try:
+        entry = tree.entry(entry_id)
+    except KeyError as exc:
+        raise RPCError(INVALID_PARAMS, f"no entry with id {entry_id!r}", data=dict(params)) from exc
+    return {"entry": entry}
+
+
+### end tier-c:get_entry
+
+### begin tier-c:get_pending_request
+
+GET_PENDING_REQUEST_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_pending_request")
+
+
+def _request_payload(request: Any) -> dict[str, Any]:
+    """One :class:`ExtensionRequest`, projected onto the wire.
+
+    `label` and `extension_name` are properties rather than fields, and both are
+    sent: a host recomputing τ's four-state framing line from `lock` and `ask`
+    would be a second copy of the one table `docs/EXTENSION-LOCKS.md` §9 owns.
+    """
+    return {
+        "entry_id": request.entry_id,
+        "extension": request.extension,
+        "extension_name": request.extension_name,
+        "sentence": request.sentence,
+        "label": request.label,
+        "lock": request.lock,
+        "ask": request.ask,
+        "release": request.release,
+    }
+
+
+@command(
+    "get_pending_request",
+    tier="C",
+    since="0.10.1",
+    notes=(
+        "AgentSession.pending_request, projected. 0.10.0 replaced ui.confirm / "
+        "ui.select / ui.input with one persisted `extension_request` entry and "
+        "said every head renders all four of its states — and the state was "
+        "reachable over THIS wire only as `SUBMISSION_REJECTED` data, which means "
+        "an RPC host learned about a lock by being refused by it and could not "
+        "see one that had not refused it yet. A head polls this at every cursor "
+        "move: after a turn ends, after a command, on a resume, on a session "
+        "switch. Null is the ordinary answer and is not a failure. Read-only: no "
+        "D-1 turn_safety_guard (a request raised by a tool_call hook is exactly "
+        "the case a host wants to see mid-turn), no E5 cursor (rule 2), no "
+        "require_durable_session (D-7 rule 2)."
+    ),
+    params_schema=params_schema_for("get_pending_request"),
+    result_schema=GET_PENDING_REQUEST_RESULT_SCHEMA,
+)
+async def _handle_get_pending_request(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    request = handler.session.pending_request
+    return {"request": None if request is None else _request_payload(request)}
+
+
+### end tier-c:get_pending_request
+
+### begin tier-c:answer_request
+
+ANSWER_REQUEST_PARAMS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "request_id": {
+            "type": "string",
+            "description": (
+                "The request's `entry_id`, as get_pending_request reported it or as "
+                "a SUBMISSION_REJECTED refusal carried it."
+            ),
+        },
+        "action": {
+            "type": "string",
+            "description": (
+                "The pressed action's `label` — one of the labels in the ask's "
+                "`actions`. The label, not the command it names: the label is what "
+                "a person chose and what the ask's own table is keyed by."
+            ),
+        },
+        "values": {
+            "type": "object",
+            "description": (
+                "The filled fields, keyed by field name. Omitted is the empty dict, "
+                "which is what an ask declaring no fields takes. Checked against "
+                "the ask's declared fields before anything is appended: nothing is "
+                "coerced and no partial answer is persisted."
+            ),
+        },
+    },
+    "additionalProperties": False,
+    "required": ["request_id", "action"],
+}
+
+ANSWER_REQUEST_RESULT_SCHEMA: dict[str, Any] = result_schema_for("answer_request")
+
+
+@command(
+    "answer_request",
+    tier="C",
+    since="0.10.1",
+    notes=(
+        "AgentSession.answer_request, projected — the write half of the pair "
+        "get_pending_request reads. Without it an RPC host could SEE a lock and "
+        "not release one, which makes a locked session a session that host can "
+        "never continue; the TUI and the REPL both had the release and this wire "
+        "did not. The append happens BEFORE the dispatch, which is what releases "
+        "the lock first: the handler then runs on a session that is already "
+        "unlocked and may submit a turn of its own. `handled: false` is a WARNING "
+        "and not a failure — the extension was not loaded, the response was "
+        "appended anyway and the lock is gone. TWO GUARDS THIS DOES NOT TAKE, both "
+        "stated rather than omitted. It takes no D-1 turn_safety_guard, for two "
+        "reasons that compound: a request is very often RAISED by a tool_call hook "
+        "inside a turn (docs/EXTENSION-LOCKS.md), so answering mid-turn is the "
+        "designed case and not a race — and the dispatched action may itself "
+        "submit, which under a held turn_lock would deadlock against the lock this "
+        "verb was holding. The TUI and the REPL call the same method with no lock. "
+        "It takes no D-7 require_durable_session either, which is the one "
+        "deliberate exception to 'the verb that appends refuses': the append's "
+        "product here is a RELEASED LOCK in this process, and refusing would leave "
+        "an unpersisted session locked with no way out at all — strictly worse "
+        "than the promise D-7 exists to stop being made, and the same reasoning "
+        "`handled: false` already applies to an absent extension. Refuses with "
+        "INVALID_PARAMS, before any append: an unknown request id, a request "
+        "carrying no ask (a bare lock is cleared by navigating or by its own "
+        "command, not answered), an action label the ask does not declare, or "
+        "values its fields reject."
+    ),
+    params_schema=ANSWER_REQUEST_PARAMS_SCHEMA,
+    result_schema=ANSWER_REQUEST_RESULT_SCHEMA,
+)
+async def _handle_answer_request(
+    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    try:
+        result = await handler.session.answer_request(
+            params["request_id"], params["action"], params.get("values")
+        )
+    except ValueError as exc:
+        raise RPCError(INVALID_PARAMS, str(exc), data=dict(params)) from exc
+    return {
+        "handled": result.handled,
+        "output": result.output,
+        "cursor": handler.session.session_log.cursor,
+    }
+
+
+### end tier-c:answer_request
 
 LIST_MANAGED_EXTENSIONS_RESULT_SCHEMA: dict[str, Any] = result_schema_for("list_managed_extensions")
 

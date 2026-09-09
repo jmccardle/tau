@@ -55,7 +55,7 @@ def test_every_capability_declares_what_it_returns() -> None:
 
 
 def test_every_capability_backed_verb_publishes_its_capabilitys_returns() -> None:
-    """The table's `result_schema` IS the capability's `returns`, for all thirty-two.
+    """The table's `result_schema` IS the capability's `returns`, for all thirty-six.
 
     The four verbs with no capability behind them — `prompt`, `get_capabilities`,
     `next_step`, `enumerate_domain` — are exempt, which is §6 A2 holding.
@@ -68,7 +68,7 @@ def test_every_capability_backed_verb_publishes_its_capabilitys_returns() -> Non
         assert name in CAPABILITIES, f"{name} has a result schema but no capability"
         assert entry.result_schema == result_schema_for(name), name
         checked += 1
-    assert checked == 32
+    assert checked == 36
 
 
 def test_result_schema_for_hands_back_a_copy() -> None:

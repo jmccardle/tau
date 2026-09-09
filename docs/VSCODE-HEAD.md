@@ -389,6 +389,37 @@ This is the real cost column, and none of it is extension work.
    picker, not a `TreeView`. `ConversationTree.tree()` returns `TreeNode`s and has
    no verb. That is one read to add, and it is now the only structural gap
    between here and Option C.
+
+   **Closed 2026-09-09, and it was two reads rather than one.** `get_tree`
+   projects `ConversationTree.browse()` — a new method beside `tree()` — flat,
+   in draw order, with `parent_id` carrying the shape. `get_entry` hands back one
+   raw entry by id, which is what a detail pane draws and the reason the tree
+   carries a one-line `preview` per row instead of a message. The pair is the
+   pair the TUI's own browser makes: `tree()` for the rows and `entry` for the
+   node it is showing (`tree_browser.py`'s `_resolve_entry`).
+
+   The read that was predicted is not quite the read that was needed, and the
+   difference is the finding. `TreeNode` is the shape and nothing else, which is
+   enough to DRAW a tree and not enough to COLOUR one. Every zone in
+   `docs/TREE-EDITOR-MANUAL.md` §7 reads a fact off the raw entry — `firstKeptId`
+   for the fold, the `toolCall` ids for the pairing a mark expands over, the
+   copyable kinds for a paste source, `fromId` for the branch-summary pair — and
+   an out-of-process head can reach none of them. `BrowseNode` adds exactly
+   those, so a second head computes the same zones from the same facts rather
+   than from a second reading of the log's shape.
+
+   Two more the same pass found, because a head hits them immediately after:
+   `get_pending_request` and `answer_request`. 0.10.0 said every head renders all
+   four states of an `extension_request`, and over THIS wire the state was
+   reachable only as `SUBMISSION_REJECTED` data — a host learned about a lock by
+   being refused by one, and had no verb to release it, so a locked session was a
+   session an out-of-process head could never continue.
+
+   Option C's own trade is unchanged and now measurable against a built
+   alternative: `ffwf-tau-code` 0.4.0 draws the browser in the WEBVIEW, which
+   keeps the zone colours a `TreeItem` label cannot reproduce and gives the same
+   viewer to its standalone web client. A native `TreeView` is still the cheaper
+   half of §4's Option C, and still loses the colours.
 5. **File-change records. τ computes them and throws them away.** This is §6.1
    below, and it is the second blocking item.
 6. **A transcript window policy for the webview.** `docs/TRANSCRIPT-WINDOW.md`

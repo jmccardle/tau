@@ -42,6 +42,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Literal
+from tau_agent_core.compaction import estimate_tokens
 from tau_llm.docs import agent_facing
 
 MessageIdScope = Literal["in_session", "ancestors_of_cursor", "descendants_of_cursor"]
@@ -53,6 +54,14 @@ _SUMMARY_KINDS = ("compaction", "branch_summary")
 _SPLICE_ANCHOR_KINDS = ("compaction", "elide")
 
 _SPLICE_VERBS = {"compaction": "folds", "elide": "hides"}
+
+COPYABLE_KINDS = ("message", "customMessage", "branch_summary")
+"""The entry kinds ``paste_subtree`` will take as a copy source.
+
+Lives here rather than in ``tree_surgery`` — which re-exports it — because
+:meth:`ConversationTree.browse` reports it per node, and an out-of-process head
+that learned the tuple any other way would be holding a second copy of it.
+"""
 
 
 def is_system_message(entry: dict[str, Any]) -> bool:
@@ -219,6 +228,69 @@ class TreeNode:
     preview: str  # first line of text (browser row)
     is_leaf: bool  # == the current cursor
     children: list[TreeNode] = field(default_factory=list)
+
+
+@agent_facing(topic="sessions")
+@dataclass(frozen=True)
+class BrowseNode:
+    """One row of the browsable tree, with the facts a head's zone rules read.
+
+    :class:`TreeNode` is the shape and nothing else, which is enough to DRAW a tree
+    and not enough to colour one. A head outside this process cannot recover the
+    rest — the fold's boundary, the tool pairing, the copyable kinds — because each
+    of them is read out of the raw entry, and no verb hands a raw entry over. This
+    record is what :meth:`ConversationTree.browse` adds so that an out-of-process
+    head computes the same zones the TUI's browser computes in-process, from the
+    same facts, rather than from a second reading of the log's shape.
+
+    Bounded on purpose: ``preview`` is one line, and no message body rides along.
+    A body is fetched per node, the way the TUI's detail pane calls
+    :meth:`ConversationTree.entry` for the one node it is showing.
+
+    Attributes:
+        entry_id: The entry's id — the value every ``message_id`` argument takes.
+        parent_id: The id this entry hangs from; ``None`` for a root.
+        kind: The entry's ``type`` — ``message``, ``compaction``, ``elide``,
+            ``branch_summary``, ``navigate``, ``customEntry`` and the rest.
+        role: ``user`` / ``assistant`` / ``toolResult`` / ``system`` on a message
+            entry, ``None`` on every bookkeeping kind.
+        preview: The entry's first line, cut nowhere — the caller elides to width.
+        is_cursor: Whether this entry is the session's current cursor.
+        timestamp: Epoch milliseconds, or ``None`` when no clock applies. This is
+            the key children are sorted by, so a caller re-sorting gets this order.
+        first_kept_id: On a splice anchor (``compaction`` / ``elide``), the oldest
+            entry the fold keeps. ``None`` on every other kind, and on an anchor
+            that names none. The fold's whole boundary, so a head computes the
+            folded span rather than guessing at it.
+        from_id: On a ``branch_summary``, the head of the branch it summarizes.
+        is_system: Whether this entry is the system prompt, which a fold carries
+            across rather than dropping (docs/SYSTEM-PROMPT-IN-THE-FOLD.md).
+        tool_call_ids: The ``toolCall`` block ids an assistant message declares.
+            Empty on every other entry.
+        tool_call_id: The call a ``toolResult`` answers; ``None`` elsewhere. With
+            ``tool_call_ids`` this is the whole of the pairing rule a mark expands
+            over (docs/TREE-EDITOR-MANUAL.md §6).
+        copyable: Whether ``paste_subtree`` can take this entry as a source root.
+        estimated_tokens: ``compaction.estimate_tokens`` over this entry's message,
+            or 0 for an entry carrying none. An ESTIMATE — a 4-chars-per-token
+            heuristic — and the only token figure available for an arbitrary set of
+            entries, so a caller showing a total says "estimate" beside it.
+    """
+
+    entry_id: str
+    parent_id: str | None
+    kind: str
+    role: str | None
+    preview: str
+    is_cursor: bool
+    timestamp: int | None
+    first_kept_id: str | None
+    from_id: str | None
+    is_system: bool
+    tool_call_ids: tuple[str, ...]
+    tool_call_id: str | None
+    copyable: bool
+    estimated_tokens: int
 
 
 @agent_facing(topic="sessions")
@@ -636,6 +708,66 @@ class ConversationTree:
             node.children.sort(key=self._timestamp_key)
             stack.extend(node.children)
         return roots
+
+    def browse(self) -> tuple[BrowseNode, ...]:
+        """Every entry as a :class:`BrowseNode`, in the order a browser draws them.
+
+        Preorder over :meth:`tree` — roots in load order, children oldest first —
+        which is the same walk ``tree_surgery`` orders a selection by, so a caller
+        rendering this list top to bottom draws the rows the TUI's browser draws.
+
+        FLAT, and deep-tree safe both here and at the far end: ``parent_id`` carries
+        the shape. A nested projection of a five-hundred-message linear conversation
+        is five hundred levels of nesting, which is a serializer's recursion limit
+        rather than a tree anybody wanted.
+
+        Returns:
+            One node per entry, including the kinds a browser then declines to draw
+            (a ``navigate`` with one child). Which rows are hidden is the reader's
+            rule, not the log's, so nothing is filtered out here.
+        """
+        order: list[TreeNode] = []
+        stack: list[TreeNode] = list(reversed(self.tree()))
+        while stack:
+            node = stack.pop()
+            order.append(node)
+            stack.extend(reversed(node.children))
+        return tuple(self._browse_node(node) for node in order)
+
+    def _browse_node(self, node: TreeNode) -> BrowseNode:
+        entry = self._by_id[node.id]
+        message = entry.get("message")
+        message = message if isinstance(message, dict) else {}
+        content = message.get("content")
+        calls = (
+            tuple(
+                str(block["id"])
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "toolCall" and "id" in block
+            )
+            if message.get("role") == "assistant" and isinstance(content, list)
+            else ()
+        )
+        answered = message.get("tool_call_id") if message.get("role") == "toolResult" else None
+        first_kept = entry.get("firstKeptId")
+        from_id = entry.get("fromId")
+        timestamp = entry.get("timestamp")
+        return BrowseNode(
+            entry_id=node.id,
+            parent_id=node.parent_id,
+            kind=node.kind,
+            role=node.role,
+            preview=node.preview,
+            is_cursor=node.is_leaf,
+            timestamp=int(timestamp) if isinstance(timestamp, (int, float)) else None,
+            first_kept_id=str(first_kept) if first_kept is not None else None,
+            from_id=str(from_id) if from_id is not None else None,
+            is_system=is_system_message(entry),
+            tool_call_ids=calls,
+            tool_call_id=str(answered) if answered is not None else None,
+            copyable=node.kind in COPYABLE_KINDS,
+            estimated_tokens=estimate_tokens(message) if message else 0,
+        )
 
     def _timestamp_key(self, node: TreeNode) -> Any:
         entry = self._by_id.get(node.id, {})
