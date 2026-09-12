@@ -441,6 +441,26 @@ async def _load_one_extension(
     the module-level ``register`` callable, invokes ``register(api)``, and
     awaits the result when ``register`` is a coroutine function.
 
+    The module's own directory is on ``sys.path`` for the duration of the
+    ``exec`` and popped afterwards, so a single-file extension can
+    ``import helper`` for a module sitting beside it. Before this it could not:
+    a console script puts its own ``bin/`` directory on ``sys.path[0]``, never
+    the working directory, so the sibling was unreachable from ``tau`` no matter
+    where the user stood. A directory extension was unaffected either way —
+    ``submodule_search_locations`` already made ``from .helper import x`` work —
+    and it now reaches its own submodules absolutely as well.
+
+    The window is the ``exec`` and nothing else, which is narrower than it could
+    be and deliberately so. It holds no ``await``, so no other load can splice
+    its directory in while this one is open; extending it over ``register(api)``
+    would open exactly that hole, because that call is awaited and two sessions
+    load in one process. The cost is that an import deferred into ``register``
+    or into a hook still fails — loudly, with ``ModuleNotFoundError``, which is
+    the state every such import is in today. The entry is PREPENDED, matching
+    what Python does for a script: a name beside the extension beats an
+    installed one, which is the surprise the author can see rather than the one
+    they cannot.
+
     H7/H8 (SIM_SPEC_v2 §16.6/§16.10) run BEFORE ``register`` is looked up: an
     extension declares itself bus-touching via two module-level attributes,
     ``TOUCHES_BUS = True`` and ``SUBJECTS = (...)`` — checkable at this point
@@ -486,6 +506,10 @@ async def _load_one_extension(
 
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
+    sibling_dir = str(module_file.parent)
+    borrowed = sibling_dir not in sys.path
+    if borrowed:
+        sys.path.insert(0, sibling_dir)
     try:
         source = module_file.read_bytes()
         code = compile(source, str(module_file), "exec")
@@ -494,6 +518,9 @@ async def _load_one_extension(
         # Don't leave a half-initialized module in the import cache.
         sys.modules.pop(module_name, None)
         raise
+    finally:
+        if borrowed and sibling_dir in sys.path:
+            sys.path.remove(sibling_dir)
 
     content_hash = hashlib.sha256(source).hexdigest()
 

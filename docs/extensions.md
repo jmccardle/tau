@@ -38,12 +38,24 @@ directory — dependency management is the operator's own venv; a missing
 import surfaces as a load error (raises for an explicit `-e` path,
 collected into an errors list for a discovered one).
 
+An extension can import the modules sitting **beside** it: the loader puts
+the extension's own directory on `sys.path` for the length of the import
+and pops it afterwards, so `helpers.py` next to `myext.py` is reachable as
+`import helpers`, and a package's `inner.py` as either `import inner` or
+`from .inner import x`. Two limits follow from where that window opens and
+closes. The window covers the module body only, so an import deferred into
+`register(api)` or into a hook still raises `ModuleNotFoundError` — put
+sibling imports at the top of the file. And the directory is *prepended*,
+so a module beside the extension beats an installed distribution of the
+same name; avoid naming a helper after something on PyPI.
+
 Collision handling differs by what's colliding, and is not "later wins"
 uniformly:
 
 - **Tools** — a duplicate name **raises** `ValueError` at load time
   (a deliberate divergence: silent first-wins was pi's answer, τ's is not).
-- **Commands** — silent last-write-wins.
+- **Commands** — first-wins on the typed name, and the loser keeps
+  `ext:<extension>.<command>`; see `docs/EXTENSION-NAMESPACE.md`.
 - **Shortcuts** — last-write-wins, with a logged warning.
 - **Hook chains** — first `block: True` wins for `tool_call`; `before_agent_start`'s
   `system_prompt` contribution is last-wins.

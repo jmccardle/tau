@@ -17,6 +17,7 @@ Reference: pi loader.ts; LoadExtensionsResult = pi types.ts:1590.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,20 @@ async def register(api):
 _BROKEN_EXT = "raise RuntimeError('boom during import')\n"
 
 _NO_REGISTER_EXT = "def something_else(api):\n    pass\n"
+
+# Names its tool from a module beside it, so the tool name IS the import's result.
+_SIBLING_EXT = """
+async def _exec(tool_call_id, params, signal, on_update, ctx):
+    return {"content": [{"type": "text", "text": "ok"}]}
+
+def register(api):
+    api.register_tool({
+        "name": %s.TOOL_NAME,
+        "description": "sibling tool",
+        "parameters": {"type": "object", "properties": {}},
+        "execute": _exec,
+    })
+"""
 
 
 def _write(path: Path, name: str, template: str = _SYNC_EXT) -> Path:
@@ -176,6 +191,72 @@ class TestDiscoveryAndExplicit:
 
         assert len(result.extensions) == 1
         assert "pkg_tool" in _tool_names(result.extensions[0])
+
+
+class TestSiblingImports:
+    """An extension can import the modules sitting beside it.
+
+    The loader puts the module's own directory on ``sys.path`` for the length of
+    the ``exec`` and pops it after. These tests never chdir into that directory
+    and assert it is absent from ``sys.path`` beforehand, because the behaviour
+    under test is the loader's and a cwd coincidence would pass just as green.
+    """
+
+    async def test_single_file_extension_imports_its_sibling(self, tmp_path):
+        home = tmp_path / "proj"
+        home.mkdir()
+        (home / "helper.py").write_text("TOOL_NAME = 'sibling_reached'\n")
+        (home / "ext.py").write_text("import helper\n" + _SIBLING_EXT % "helper")
+        assert str(home) not in sys.path, "the test would pass without the loader doing anything"
+
+        result = await _load_extensions([str(home / "ext.py")], discover=False)
+
+        assert "sibling_reached" in _tool_names(result.extensions[0])
+
+    async def test_a_package_reaches_its_own_submodule_absolutely(self, tmp_path):
+        """``from .inner`` already worked; ``import inner`` now works too."""
+        pkg = tmp_path / "mypkg"
+        pkg.mkdir()
+        (pkg / "inner.py").write_text("TOOL_NAME = 'inner_reached'\n")
+        (pkg / "__init__.py").write_text("import inner\n" + _SIBLING_EXT % "inner")
+
+        result = await _load_extensions([str(pkg)], discover=False)
+
+        assert "inner_reached" in _tool_names(result.extensions[0])
+
+    async def test_the_directory_does_not_outlive_the_import(self, tmp_path):
+        before = list(sys.path)
+        ext = _write(tmp_path / "ext.py", "tool_a")
+
+        await _load_extensions([str(ext)], discover=False)
+
+        assert sys.path == before
+
+    async def test_the_directory_does_not_outlive_a_failed_import(self, tmp_path):
+        """The pop is in a ``finally``: a raising import must not leak the entry."""
+        before = list(sys.path)
+        ext = tmp_path / "boom.py"
+        ext.write_text(_BROKEN_EXT)
+
+        with pytest.raises(RuntimeError):
+            await _load_extensions([str(ext)], discover=False)
+
+        assert sys.path == before
+
+    async def test_an_import_deferred_into_register_still_fails(self, tmp_path):
+        """The window is the import and not the whole load — stated, so it is checked.
+
+        Widening it over ``register(api)`` would put an ``await`` inside the
+        window, and two sessions load extensions in one process.
+        """
+        home = tmp_path / "proj"
+        home.mkdir()
+        (home / "late.py").write_text("VALUE = 'late'\n")
+        ext = home / "ext.py"
+        ext.write_text("def register(api):\n    import late\n")
+
+        with pytest.raises(ModuleNotFoundError, match="late"):
+            await _load_extensions([str(ext)], discover=False)
 
 
 class TestErrorPolicy:
