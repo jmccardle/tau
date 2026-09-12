@@ -145,7 +145,7 @@ class TestFollowingTheTail:
                 display.add_message("user", f"line {i}", source="verbatim")
             await pilot.pause()
 
-            display.scroll_to(y=0, animate=False)
+            display.scroll_to(y=0, animate=False, immediate=True)
             await pilot.pause()
             assert display._follow_tail is False
 
@@ -164,11 +164,11 @@ class TestFollowingTheTail:
                 display.add_message("user", f"line {i}", source="verbatim")
             await pilot.pause()
 
-            display.scroll_to(y=0, animate=False)
+            display.scroll_to(y=0, animate=False, immediate=True)
             await pilot.pause()
             assert display._follow_tail is False
 
-            display.scroll_end(animate=False)
+            display.scroll_end(animate=False, immediate=True)
             await pilot.pause()
             assert display._follow_tail is True
 
@@ -181,7 +181,7 @@ class TestFollowingTheTail:
             for i in range(60):
                 display.add_message("user", f"line {i}", source="verbatim")
             await pilot.pause()
-            display.scroll_to(y=0, animate=False)
+            display.scroll_to(y=0, animate=False, immediate=True)
             await pilot.pause()
             assert display._follow_tail is False
 

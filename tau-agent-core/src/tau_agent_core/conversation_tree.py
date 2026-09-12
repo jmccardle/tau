@@ -43,6 +43,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 from tau_agent_core.compaction import estimate_tokens
+from tau_agent_core.extension_locks import REQUEST_ENTRY_TYPE, read_request
 from tau_llm.docs import agent_facing
 
 MessageIdScope = Literal["in_session", "ancestors_of_cursor", "descendants_of_cursor"]
@@ -173,6 +174,95 @@ def _message_text(message: dict[str, Any]) -> str:
                 parts.append("[image]")
         return "".join(parts)
     return ""
+
+
+_PREVIEW_VALUE_CHARS = 40
+"""How much of one payload value a browser row shows before it is cut."""
+
+_PREVIEW_FIELDS = 4
+"""How many payload fields a browser row names before it counts the rest."""
+
+
+def _value_phrase(key: str, value: Any) -> str:
+    """``key=value`` for a browser row: a scalar cut to length, a container counted.
+
+    Bounded on purpose. :meth:`ConversationTree._preview_of` keeps only the first
+    line and the browser then elides the row to width, so an unbounded value would
+    push every later field off the end of a row that has several.
+    """
+    if isinstance(value, dict):
+        return f"{key}={{{len(value)} keys}}"
+    if isinstance(value, list):
+        return f"{key}=[{len(value)}]"
+    text = str(value).strip().split("\n", 1)[0]
+    if len(text) > _PREVIEW_VALUE_CHARS:
+        text = text[: _PREVIEW_VALUE_CHARS - 1] + "…"
+    return f"{key}={text}"
+
+
+def _payload_summary(data: Any) -> str:
+    """One bounded line describing a ``customEntry``'s payload.
+
+    Names the first :data:`_PREVIEW_FIELDS` fields and counts the rest, so a row
+    says what the entry HOLDS rather than only what kind it is. An empty or
+    non-dict payload says so; it is never rendered as ``{}`` or ``None``, which
+    read like values an extension wrote on purpose.
+    """
+    if isinstance(data, dict):
+        if not data:
+            return "no data"
+        keys = list(data)
+        shown = ", ".join(_value_phrase(k, data[k]) for k in keys[:_PREVIEW_FIELDS])
+        remaining = len(keys) - _PREVIEW_FIELDS
+        return f"{shown}, +{remaining} more" if remaining > 0 else shown
+    if isinstance(data, list):
+        return f"{len(data)} items"
+    if data is None:
+        return "no data"
+    return _value_phrase("value", data)
+
+
+def _custom_message_preview(message: dict[str, Any]) -> str:
+    """Row text for a ``customMessage``: WHO wrote it, whether the transcript shows
+    it, and what it says.
+
+    Composed the way :meth:`ConversationTree._splice_anchor_preview` is — the
+    bounded part first, the unbounded text after a colon — because the row is cut
+    to width and the bounded part is the half a reader cannot reconstruct.
+
+    ``customType`` leads because it is the only place an extension's own name for
+    the node is rendered at all: it is stored on every such node and, until this,
+    had no reader outside the write path. A node the extension marked
+    ``display: False`` is marked ``hidden`` rather than dropped — the transcript
+    obeys the flag and the tree is where it stays visible
+    (docs/EXTENSION-MESSAGES.md §2, §3).
+    """
+    custom_type = str(message.get("customType", "") or "custom")
+    mark = " (hidden)" if message.get("display", True) is False else ""
+    text = _message_text(message).strip().split("\n", 1)[0]
+    if not text:
+        text = _payload_summary(message.get("details")) if "details" in message else "no content"
+    return f"{custom_type}{mark}: {text}"
+
+
+def _custom_entry_preview(entry: dict[str, Any]) -> str:
+    """Row text for a ``customEntry`` that is not an ``agent_spec``.
+
+    Until this, every one of them rendered as ``customEntry: <customType>`` — the
+    loss :meth:`ConversationTree._agent_spec_preview` already fixed for one kind,
+    with a label on it. A reserved ``extension_request`` is read back into an
+    :class:`~tau_agent_core.extension_locks.ExtensionRequest` and rendered as τ's
+    own framing line plus the extension's sentence, so the four states
+    (docs/EXTENSION-LOCKS.md §3) are legible from the row. Everything else is
+    backplane state (E6 §2 / S39) whose shape τ does not know, so the row names
+    the type and summarizes the payload.
+    """
+    custom_type = str(entry.get("customType", "") or "")
+    if custom_type == REQUEST_ENTRY_TYPE:
+        request = read_request(entry)
+        if request is not None:
+            return f"{request.label}: {request.sentence}"
+    return f"{custom_type or 'customEntry'} — {_payload_summary(entry.get('data'))}"
 
 
 def _spec_model_id(data: dict[str, Any]) -> str:
@@ -781,8 +871,10 @@ class ConversationTree:
 
     def _preview_of(self, entry: dict[str, Any]) -> str:
         kind = entry.get("type")
-        if kind in ("message", "customMessage"):
+        if kind == "message":
             text = _message_text(entry.get("message", {}))
+        elif kind == "customMessage":
+            text = _custom_message_preview(entry.get("message", {}))
         elif kind in _SPLICE_ANCHOR_KINDS:
             text = self._splice_anchor_preview(entry)
         elif kind in _SUMMARY_KINDS:
@@ -791,8 +883,7 @@ class ConversationTree:
             if entry.get("customType") == "agent_spec":
                 text = self._agent_spec_preview(entry)
             else:
-                # Backplane state (E6 §2 / S39): label the browser row by its customType.
-                text = f"customEntry: {entry.get('customType', '')}"
+                text = _custom_entry_preview(entry)
         else:
             text = ""
         stripped = text.strip()

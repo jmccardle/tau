@@ -48,6 +48,7 @@ EXPOSED: dict[str, str] = {
     "get_model": "get_state",
     "get_usage": "get_state",
     "get_extension_commands": "get_commands",
+    "get_qualified_commands": "get_commands",
     # AgentSessionRuntime (phase 3, H1) — one verb per method, 1:1.
     "new_session": "new_session",
     "fork": "fork",

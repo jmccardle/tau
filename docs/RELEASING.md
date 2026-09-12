@@ -159,11 +159,76 @@ it. A gate that can say "something broke" but not "what broke" cannot be acted
 on — the releaser's only remaining move is to run it again and hope, which is
 how an intermittent failure gets rationalised into a pass.
 
-#### The unnamed 3.14 failure of 0.9.7, recorded rather than explained
+#### The 3.14 failure of 0.9.7, named and fixed at 0.10.2
 
-It is not resolved, and this section exists so the next person does not
-rediscover it as a surprise. Measured on the 0.9.7 release tree — the bumped
-tree, plus one full matrix on the same source at 0.9.6 version literals:
+**Resolved 2026-09-12.** It sat here unexplained for three releases, reappeared
+on the 0.10.2 matrix, and the `-rf --tb=line` that this section asked for is what
+finally printed a name:
+
+```
+FAILED tau-coding-agent/tests/test_app_actions.py::test_clicking_the_earlier_row_mounts_the_rest
+/usr/local/lib/python3.14/site-packages/textual/pilot.py:442:
+textual.pilot.OutOfBounds: Target offset is outside of currently-visible screen region.
+```
+
+**It is not a 3.14 defect, and it never was.** Eight isolated runs of that test
+in a `python:3.14-bookworm` container on the release tarball passed, textual
+8.2.8. What the four versions differ in is how long the other 6186 tests take to
+arrive, so the failure needs the suite's load and 3.14 is merely where it landed.
+Everything below about the wall clock was pointing in the right direction and at
+the wrong evidence: no test sleeps here.
+
+**The first diagnosis was wrong, and the second matrix is what said so.** It
+blamed the `immediate: bool = False` default that `scroll_home`, `scroll_to`,
+`scroll_end` and `scroll_to_widget` all carry — real, and not the mechanism.
+With `immediate=True` in place the test failed again, on **3.11**, which also
+disposed of "3.14 under load". Worth keeping as a method note: the fix was
+plausible, passed locally, and was refuted only by running the gate again.
+
+The cause is that **`reload_messages` returns before the transcript has
+landed**, and the test acted in the gap. `_render_window` ends with
+`call_after_refresh(self._finish_build)`; `_finish_build` clears `_building`
+and then calls `scroll_to_tail`, whose `scroll_end` is *itself* deferred. So
+after the await returns there are two more refreshes in which the position
+moves under the caller.
+
+Constructed deterministically — scroll immediately after the await, then pause
+once:
+
+```
+_building right after reload_messages returns = True
+scroll_y after scroll_home(immediate=True)    = 0.0
+after one pause: scroll_y=20  row=Region(x=2, y=-18, width=72, height=3)
+```
+
+The screen is `Region(x=0, y=0, width=80, height=24)`, so the row the test
+wanted to click is eighteen rows above it. `pilot.click` resolves a widget to a
+screen offset, so a click is a question about geometry and the build had not
+finished answering it.
+
+Settling on `_building` alone is **not** enough, and this was measured too: the
+flag clears one refresh before the deferred `scroll_end` runs, so a test that
+waits for it still scrolls into the gap. The condition is both — the build
+finished and the position stopped changing.
+
+Four things changed. `ChatDisplay.is_building` exposes the flag, which until now
+was written twice and read by nothing — the fault `docs/AGENT-DOCS.md` and three
+release notes already name, found here by accident. `_settle_transcript` in
+`test_app_actions.py` waits for build-done plus a stable `scroll_y`, and raises
+rather than giving up quietly. The failing test asserts the row is inside
+`screen.region` before clicking, so a recurrence names a position instead of
+raising from inside Textual — and that guard was checked against the off-screen
+state before being trusted, because an assertion nobody has watched fail is a
+decoration. The 15 scroll calls keep `immediate=True`: it is not the fix, but a
+test's programmatic scroll has no reason to be deferred.
+
+No retry was added, and no re-run was read as a refutation of the failure.
+
+The 0.9.7 measurement is kept below, because it is what made the diagnosis
+possible: it is the record that four clean runs do not clear a test.
+
+Measured on the 0.9.7 release tree — the bumped tree, plus one full matrix on
+the same source at 0.9.6 version literals:
 
 | Python | runs on the release tree | result |
 |---|---|---|
@@ -185,10 +250,12 @@ the comfortable answer. A second matrix was running on the same host that
 afternoon, but it finished at 13:00 and the failing 3.14 run was 13:15–13:22 —
 so the one run that failed was not the one under contention.
 
-If a `1 failed` appears again on any version, the command above now prints
+If a `1 failed` appears again on any version, the command above prints
 `FAILED <nodeid>` and one line of traceback. Record it here, then fix the test —
 do not add a retry, and do not read a re-run's pass as a refutation of the
-failure.
+failure. That instruction is the reason this section could be written: it was
+added at 0.9.7 by someone who could not name their own failure, and it cost one
+matrix to pay off.
 
 #### The four that used to fail here, and no longer do
 

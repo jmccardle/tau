@@ -20,6 +20,12 @@ from typing import TYPE_CHECKING, Any, Callable, Literal
 from uuid import uuid4
 
 from tau_agent_core.capabilities import BUILTIN, Argument, Domain, Flow, FlowDeclaration
+from tau_agent_core.commands import (
+    extension_owner,
+    is_qualified_command,
+    qualified_command,
+    split_qualified_command,
+)
 from tau_agent_core.compaction import estimate_context_tokens
 from tau_agent_core.extension_locks import REQUEST_ENTRY_TYPE, build_request_data
 from tau_agent_core.tools.base import ExtensionToolDefinition
@@ -2093,11 +2099,109 @@ class ExtensionAPI:
         """Enable/disable tools by name (forwards to the registry)."""
         self._registry.set_active_tools(names)
 
-    def register_command(self, name: str, command: dict) -> None:
-        """Register a slash command (forwards to the registry)."""
-        self._registry.register_command(name, command)
-        if self._hook_handlers is not None:
-            self._hook_handlers.commands.append(name)
+    @property
+    def extension_name(self) -> str:
+        """This extension's identity (docs/EXTENSION-NAMESPACE.md).
+
+        The owner half of every qualified command name, normalized by
+        :func:`~tau_agent_core.commands.extension_owner` — a file extension's stem,
+        an inline factory's own name.
+
+        Raises:
+            RuntimeError: This api is not bound to a runner bucket, so it has no
+                identity to qualify a name with. Fail-Early, and the same refusal
+                :meth:`on` makes for the same reason (S24).
+        """
+        if self._hook_handlers is None:
+            raise RuntimeError(
+                "this ExtensionAPI is not bound to a loaded extension, so it has no name. "
+                "Commands are registered under ext:<extension>.<command>, which needs one. "
+                "Construct it with hook_handlers=ExtensionHandlers(path=…)."
+            )
+        return extension_owner(self._hook_handlers.path)
+
+    def register_command(self, name: str, command: dict) -> str | None:
+        """Register a slash command, and try to claim ``name`` for it.
+
+        Two registrations, because there are two names (docs/EXTENSION-NAMESPACE.md).
+        The command is installed in the private registry at
+        ``ext:<extension>.<name>``, where nothing can displace it, and then ``name``
+        itself is claimed. Claiming is first-wins: if another extension already holds
+        it, or a human pinned it elsewhere, this one keeps only its qualified name.
+
+        Args:
+            name: The command word a reader types after the ``/``.
+            command: ``{"description": str, "handler": callable, "args": str?}``.
+
+        Returns:
+            ``None`` when ``/name`` now runs this command. Otherwise the qualified name
+            that holds it instead — pass it to :meth:`run_command` to wrap, chain or
+            defer to whatever got there first.
+        """
+        qualified = qualified_command(self.extension_name, name)
+        assert self._hook_handlers is not None  # extension_name raised otherwise
+        self._registry.register_command(qualified, command, owner=self._hook_handlers.path)
+        self._hook_handlers.commands.append(qualified)
+        return self._registry.bind_command(name, qualified)
+
+    def get_command(self, name: str) -> dict | None:
+        """The command dict ``name`` resolves to, or ``None``.
+
+        Accepts either name a command answers to. Read it to decide whether to claim a
+        typed name at all, or to see whose handler is behind one before calling it.
+        """
+        return self._registry.get_command(name)
+
+    def unregister_command(self, name: str) -> None:
+        """Withdraw one of THIS extension's commands, and any typed name bound to it.
+
+        Args:
+            name: Either the typed name passed to :meth:`register_command` or the
+                qualified one it returned.
+
+        Raises:
+            ValueError: ``name`` resolves to a command this extension does not own.
+                Fail-Early: the alternative is one extension quietly deleting
+                another's, which is the failure this namespace exists to remove.
+        """
+        qualified = (
+            name if is_qualified_command(name) else qualified_command(self.extension_name, name)
+        )
+        owner = split_qualified_command(qualified)
+        if owner is None or owner[0] != self.extension_name:
+            raise ValueError(
+                f"{self.extension_name!r} cannot unregister {qualified!r}, which belongs to "
+                f"another extension. Only the typed NAME is shared; the command is not."
+            )
+        self._registry.unregister_command(qualified)
+
+    async def run_command(self, name: str, args: str = "") -> Any:
+        """Run a registered command by either of its names and return its output.
+
+        The composition seam. An extension that was refused a typed name, or that
+        wants to extend another's behaviour, calls the qualified name — resolved HERE,
+        at call time, so a disabled extension is a name that no longer answers rather
+        than a captured callable that still runs.
+
+        Args:
+            name: A typed or qualified command name.
+            args: The argument string, exactly as a reader would have typed it.
+
+        Returns:
+            Whatever the command's handler returned.
+
+        Raises:
+            RuntimeError: No api session, or ``name`` resolves to no command.
+        """
+        if self._session is None:
+            raise RuntimeError("run_command needs a session; this ExtensionAPI has none.")
+        result = await self._session.run_extension_command(name, args)
+        if not result.handled:
+            raise RuntimeError(
+                f"no command named {name!r}. Qualified names are ext:<extension>.<command>; "
+                "a typed name only resolves while some extension holds it."
+            )
+        return result.output
 
     def register_flow(
         self,
@@ -2108,7 +2212,7 @@ class ExtensionAPI:
         argument: Argument | None = None,
         domain: Domain | None = None,
         values: Any = None,
-    ) -> None:
+    ) -> str | None:
         """Register a slash command AND say what it takes (docs/EXTENSION-FLOWS.md).
 
         :meth:`register_command` gives a command a name and a handler, and nothing
@@ -2149,6 +2253,11 @@ class ExtensionAPI:
                 domain with an enumerator was declared with no ``values`` callable.
                 The last one is Fail-Early: the flow would reach a step that offers
                 nothing and read as an empty set rather than a missing registration.
+
+        Returns:
+            What :meth:`register_command` returns — ``None`` when ``/name`` is this
+            flow, else the qualified name that holds it. The flow itself is always
+            reachable at ``ext:<extension>.<name>``.
         """
         if not isinstance(name, str) or not name:
             raise ValueError("register_flow: 'name' must be a non-empty string")
@@ -2183,15 +2292,22 @@ class ExtensionAPI:
                     "them to. A built-in domain is enumerated by τ, not by an extension."
                 )
 
-        self.register_command(name, {"description": description, "handler": handler})
+        claimed = self.register_command(name, {"description": description, "handler": handler})
+        qualified = qualified_command(self.extension_name, name)
         self._registry.register_flow(
-            name,
+            qualified,
             FlowDeclaration(
-                flow=Flow(name=name, description=description, mutation=name, arguments=arguments),
+                flow=Flow(
+                    name=qualified,
+                    description=description,
+                    mutation=qualified,
+                    arguments=arguments,
+                ),
                 domain=domain,
                 enumerator=values,
             ),
         )
+        return claimed
 
     def register_shortcut(
         self,

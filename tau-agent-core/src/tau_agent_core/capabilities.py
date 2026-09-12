@@ -600,8 +600,20 @@ _GET_COMMANDS_RETURNS: dict[str, Any] = {
                             "`register_flow` (docs/EXTENSION-FLOWS.md)."
                         ),
                     },
+                    "hidden": {
+                        "type": "boolean",
+                        "description": (
+                            "True for a private-registry name — `ext:<extension>.<command>`, "
+                            "which every extension command always has and which nothing can "
+                            "take from it (docs/EXTENSION-NAMESPACE.md). It resolves exactly "
+                            "like any other name; it is marked because offering both halves "
+                            "of the same command in one completion list is noise. Show these "
+                            "only once the reader has typed `ext:`. False for every name a "
+                            "reader would type unprompted."
+                        ),
+                    },
                 },
-                "required": ["name", "description", "origin", "flow"],
+                "required": ["name", "description", "origin", "flow", "hidden"],
             },
         },
     },
@@ -2046,13 +2058,29 @@ class Vocabulary:
     views: Mapping[str, str]
     enumerators: Mapping[str, Any] = field(default_factory=dict)
     extension_flows: frozenset[str] = frozenset()
+    aliases: Mapping[str, str] = field(default_factory=dict)
 
     def flow(self, name: str) -> Flow | None:
-        """The flow of that name, or ``None``."""
+        """The flow of that name, or ``None``.
+
+        A typed name goes through :attr:`aliases` first, so ``/speak`` finds the flow
+        declared as ``ext:pirate.speak`` while it is bound there, and stops finding it
+        the moment the binding moves — which is what keeps one extension's argument
+        form from being rendered for another's handler.
+        """
+        wanted = self.aliases.get(name, name)
         for declared in self.flows:
-            if declared.name == name:
+            if declared.name == wanted:
                 return declared
         return None
+
+    def is_extension_flow(self, name: str) -> bool:
+        """Whether ``name`` — typed or qualified — is a flow an extension declared.
+
+        The alias-resolving counterpart of reading :attr:`extension_flows` directly,
+        which only ever holds qualified names.
+        """
+        return self.aliases.get(name, name) in self.extension_flows
 
     def extension_vocabulary(self) -> dict[str, str]:
         """What extensions added, as command name to description.
@@ -2070,6 +2098,7 @@ class Vocabulary:
         *,
         domains: Mapping[str, Domain] | None = None,
         enumerators: Mapping[str, Any] | None = None,
+        aliases: Mapping[str, str] | None = None,
     ) -> Vocabulary:
         """This vocabulary plus what an extension declared, cross-checked as one.
 
@@ -2084,6 +2113,11 @@ class Vocabulary:
             domains: Domains the added flows name, beyond the ones already here.
             enumerators: Domain name to the callable listing its values, for the
                 added domains that compute them.
+            aliases: Typed command name to the qualified flow name it resolves to
+                (docs/EXTENSION-NAMESPACE.md). One naming a built-in gesture is
+                dropped rather than refused: ``resolve_command`` gives the built-in to
+                a collision, so honouring it would make :meth:`flow` disagree with
+                what actually runs.
 
         Returns:
             A new :class:`Vocabulary`. This one is unchanged.
@@ -2125,6 +2159,16 @@ class Vocabulary:
 
         combined = (*self.flows, *flows)
         merged_enumerators = {**self.enumerators, **(enumerators or {})}
+        added = {flow.name for flow in flows}
+        builtin_names = {flow.name for flow in self.flows} | set(self.views)
+        merged_aliases = {
+            **self.aliases,
+            **{
+                typed: target
+                for typed, target in (aliases or {}).items()
+                if typed not in builtin_names and target in added
+            },
+        }
         _check_registry(
             merged_domains, merged_capabilities, combined, self.views, merged_enumerators
         )
@@ -2134,7 +2178,8 @@ class Vocabulary:
             flows=combined,
             views=self.views,
             enumerators=merged_enumerators,
-            extension_flows=self.extension_flows | {flow.name for flow in flows},
+            extension_flows=self.extension_flows | added,
+            aliases=merged_aliases,
         )
 
 

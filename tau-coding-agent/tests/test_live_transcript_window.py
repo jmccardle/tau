@@ -131,7 +131,7 @@ async def test_nothing_is_evicted_while_the_reader_is_scrolled_up(transcript):
             await _live_turn(display, pilot, index)
         trimmed = len(_content_children(display))
 
-        display.scroll_to(y=max(1, display.max_scroll_y - 5), animate=False)
+        display.scroll_to(y=max(1, display.max_scroll_y - 5), animate=False, immediate=True)
         await pilot.pause()
         assert not display._follow_tail
         assert display.scroll_offset.y > 0
@@ -144,7 +144,7 @@ async def test_nothing_is_evicted_while_the_reader_is_scrolled_up(transcript):
         assert display._trim_deferred
 
         # Returning to the tail is what releases it.
-        display.scroll_end(animate=False)
+        display.scroll_end(animate=False, immediate=True)
         await pilot.pause()
         await pilot.pause()
 
@@ -172,7 +172,7 @@ async def test_a_second_turn_runs_the_trim_the_first_one_held(transcript):
             await _live_turn(display, pilot, index)
         trimmed = len(_content_children(display))
 
-        display.scroll_to(y=max(1, display.max_scroll_y - 5), animate=False)
+        display.scroll_to(y=max(1, display.max_scroll_y - 5), animate=False, immediate=True)
         await pilot.pause()
         assert not display._follow_tail
 

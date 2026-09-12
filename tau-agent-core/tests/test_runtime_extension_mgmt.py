@@ -142,7 +142,7 @@ async def test_disable_unregisters_tools_and_commands(tmp_path):
     await session.load_extensions([str(ext)], discover=False)
 
     assert "probe" in session._registry.get_active_tools()
-    assert "pcmd" in session._registry.get_commands()
+    assert "ext:probe_ext.pcmd" in session._registry.get_commands()
 
     await session.disable_extension("probe_ext")
 
@@ -167,7 +167,7 @@ async def test_enable_rebinds_hook_and_registry(tmp_path):
     assert session._extension_runner.has_handlers("tool_result") is True
     assert await _fire_tool_result(session) == "base +MARK"
     assert "probe" in session._registry.get_active_tools()
-    assert "pcmd" in session._registry.get_commands()
+    assert "ext:probe_ext.pcmd" in session._registry.get_commands()
     # Bring-up fired session_start with reason "enable".
     assert up.read_text() == "enable"
 

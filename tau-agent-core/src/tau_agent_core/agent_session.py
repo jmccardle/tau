@@ -1958,7 +1958,7 @@ class AgentSession:
         :func:`~tau_agent_core.commands.resolve_command` for the ordering rule
         (built-ins win) and for why an unknown ``/…`` falls through to the model.
         """
-        return resolve_command(text, self._registry.get_commands().keys())
+        return resolve_command(text, self._registry.command_names())
 
     async def _perform_command(self, invocation: CommandInvocation) -> Dispatched:
         """Do the half of a resolved command the CORE can do, and report the rest.
@@ -3858,6 +3858,7 @@ class AgentSession:
                     for entry in declared
                     if entry.domain is not None and entry.enumerator is not None
                 },
+                aliases=self._registry.get_bindings(),
             )
             self._vocabulary = built
             self._vocabulary_revision = revision
@@ -3896,12 +3897,29 @@ class AgentSession:
         )
 
     def get_extension_commands(self) -> list[tuple[str, str]]:
-        """List extension-registered slash commands (E5 §5 / S35).
+        """List the TYPED extension commands — what a reader can write after a ``/``.
 
-        Returns ``(name, description)`` for every command an extension registered
-        via ``api.register_command`` — the palette (:meth:`TauApp.get_system_commands`)
-        reads this to LIST them. Description falls back to the empty string when a
-        command omitted one (listing is best-effort chrome, not a durable node).
+        Returns ``(name, description)`` for every typed name currently bound to a
+        command (docs/EXTENSION-NAMESPACE.md), which is what the palette
+        (:meth:`TauApp.get_system_commands`) and the completion popup list. An
+        extension that lost a contested name is absent here and present in
+        :meth:`get_qualified_commands`; it is reachable either way. Description falls
+        back to the empty string when a command omitted one (listing is best-effort
+        chrome, not a durable node).
+        """
+        out: list[tuple[str, str]] = []
+        for typed, qualified in self._registry.get_bindings().items():
+            command = self._registry.get_command(qualified)
+            if command is not None:
+                out.append((typed, str(command.get("description", ""))))
+        return out
+
+    def get_qualified_commands(self) -> list[tuple[str, str]]:
+        """List the PRIVATE registry — every command at its ``ext:…`` name.
+
+        One entry per command an extension registered, contested or not. Heads keep
+        these out of ordinary completion and offer them under the ``ext:`` prefix, so
+        a command that lost its typed name is still findable and still runnable.
         """
         return [
             (name, str(command.get("description", "")))

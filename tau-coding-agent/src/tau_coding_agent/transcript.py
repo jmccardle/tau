@@ -29,6 +29,7 @@ from tau_coding_agent.chat_widgets import (
 )
 from tau_agent_core.conversation_tree import TreeNode
 from tau_agent_core.extension_locks import ExtensionRequest
+from tau_agent_core.messages import is_displayed
 from tau_coding_agent import extension_ui
 from dataclasses import dataclass
 from textual.containers import VerticalScroll
@@ -865,8 +866,13 @@ class ChatDisplay(MessageList):
         at top level rather than into an open lane's exchange: it belongs to no
         completion, and the exchange closes above it, which leaves it after the
         turn it was appended during.
+
+        A node the extension marked ``display: False`` is skipped here and not in
+        :meth:`add_persisted_message`, because the tree browser's detail pane calls
+        that method too and a hidden node is hidden from the TRANSCRIPT only
+        (docs/EXTENSION-MESSAGES.md §2).
         """
-        if not message:
+        if not message or not is_displayed(message):
             return
         self.add_persisted_message(message)
 
@@ -1448,7 +1454,9 @@ class ChatDisplay(MessageList):
                     i += 1
                 span: list[dict] = []
                 while i < end and messages[i].get("role") not in ("user", "system"):
-                    span.append(messages[i])
+                    # Filtered HERE so a span of only hidden nodes mounts no empty exchange.
+                    if is_displayed(messages[i]):
+                        span.append(messages[i])
                     i += 1
                 if span:
                     await self._reload_exchange(span)
@@ -1598,6 +1606,24 @@ class ChatDisplay(MessageList):
         await self._render_window(messages, start, end)
         self._follow_tail = True
         self.scroll_to_tail()
+
+    @property
+    def is_building(self) -> bool:
+        """Whether a window build is still in flight.
+
+        :meth:`reload_messages` and :meth:`move_window` return when the build has
+        been SCHEDULED, not when it has landed: the last thing ``_render_window``
+        does is ``call_after_refresh(self._finish_build)``, and that callback
+        re-asserts the scroll position. Anything that measures geometry before
+        then is racing it.
+
+        False is necessary but not sufficient for "the transcript has landed":
+        :meth:`_finish_build` clears this flag and then calls
+        :meth:`scroll_to_tail`, whose ``scroll_end`` is itself deferred, so the
+        position moves once more after this reads False. A caller that needs the
+        final position waits for this AND for ``scroll_y`` to stop changing.
+        """
+        return self._building
 
     @property
     def elided_count(self) -> int:

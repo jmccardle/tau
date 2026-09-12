@@ -309,6 +309,41 @@ runs on one. Deferring twice landed the jump a frame after the content it
 belonged to, and left the `_follow_tail` decision on the next line reading a
 position that was about to change. `immediate=True` is required.
 
+**The default is on the whole family, not on that one method** (2026-09-12).
+`scroll_home`, `scroll_to` and `scroll_end` take the same `immediate: bool =
+False`, and `scroll_to_tail` above is one of the callers that leaves it unset.
+Fifteen scroll calls in the test suite now pass `immediate=True` — which is
+correct and was **not** the fix for the failure that found it.
+
+### 8.3 `reload_messages` returns before the transcript lands
+
+A release gate found this at 0.10.2, from the test side. `_render_window` ends
+with `call_after_refresh(self._finish_build)`; `_finish_build` clears
+`_building` and then calls `scroll_to_tail`, whose `scroll_end` is deferred in
+turn. So `await display.reload_messages(...)` means the build is *scheduled*,
+and the position moves twice more afterwards:
+
+```
+_building right after reload_messages returns = True
+scroll_y after scroll_home(immediate=True)    = 0.0
+after one pause: scroll_y=20  row=Region(x=2, y=-18, width=72, height=3)
+```
+
+Anything that measures geometry in that gap is racing the callback. A test did,
+and its click raised `OutOfBounds` from inside Textual's pilot.
+
+Two consequences worth carrying. `_building` had been written twice and read by
+nothing since the window was built — the "written and read by nobody" shape this
+repo keeps finding — and is now `ChatDisplay.is_building`. And it is
+**necessary but not sufficient**: it clears one refresh before the deferred
+`scroll_end`, so settling on it alone still scrolls into the gap. The condition
+is the flag AND a `scroll_y` that has stopped changing.
+
+Not built: making `reload_messages` await its own settle, which is the fix that
+would remove the gap rather than document it. It changes what completion means
+for every caller and for the live TUI's landing position, and a release gate is
+the wrong moment. `docs/RELEASING.md` §2 has the measurement.
+
 ### 7.3 Two claims, and why both are needed
 
 A move is decided synchronously in `watch_scroll_y` and runs a tick later. Two

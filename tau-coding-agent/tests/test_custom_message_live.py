@@ -22,6 +22,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from tau_agent_core.conversation_tree import ConversationTree
 from tau_coding_agent import extension_ui, transcript
 
 _EXAMPLE = str(Path(__file__).resolve().parents[2] / "examples" / "45_holy_grail.py")
@@ -143,6 +144,75 @@ async def test_the_ni_command_leaves_exactly_one_box(
         await pilot.pause()
 
         assert _roles(app) == ["custom"]
+
+
+_HIDDEN_NOTE = """
+def register(api):
+    async def quiet(args, ctx):
+        api.send_message(
+            {"customType": "probe", "content": "not for the transcript", "display": False}
+        )
+    api.register_command("quiet", {"description": "append a hidden note", "handler": quiet})
+"""
+
+
+async def test_a_hidden_note_is_on_the_tree_and_not_in_the_transcript(
+    make_app: Any, wait_for_workers_settled: Any, tmp_path: Path
+) -> None:
+    """``display: False`` is obeyed by the transcript and by nothing else.
+
+    Reference: docs/EXTENSION-MESSAGES.md §2. The key was stored and read by
+    nobody, so an extension asking for a node the reader should not see got one
+    the reader saw. The node stays on the tree, stays in ``app.messages``, and
+    stays hidden across a window rebuild.
+    """
+    ext = tmp_path / "quiet_ext.py"
+    ext.write_text(_HIDDEN_NOTE)
+    app = make_app(extension_paths=[str(ext)])
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+        await wait_for_workers_settled(app)
+
+        await app._dispatch_extension_command("quiet", "")
+        await pilot.pause()
+
+        assert _roles(app) == [], "a hidden note must mount no transcript box"
+        assert [m.get("role") for m in app.messages] == ["system", "custom"]
+
+        await app._reload_transcript()
+        await pilot.pause()
+        assert _roles(app) == [], "and must stay hidden through a window rebuild"
+        assert list(app.query(transcript.ExchangeBox)) == [], (
+            "a span of only hidden nodes must not leave an empty exchange behind"
+        )
+
+
+async def test_the_tree_browser_still_draws_a_hidden_note(
+    make_app: Any, wait_for_workers_settled: Any, tmp_path: Path
+) -> None:
+    """The guard is at the transcript's call sites, not in add_persisted_message.
+
+    ``TreeDetailPane._render_entry`` calls that same method, so a guard inside it
+    would have hidden the node from the one surface that must keep showing it.
+    """
+    ext = tmp_path / "quiet_ext.py"
+    ext.write_text(_HIDDEN_NOTE)
+    app = make_app(extension_paths=[str(ext)])
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+        await wait_for_workers_settled(app)
+
+        await app._dispatch_extension_command("quiet", "")
+        await pilot.pause()
+
+        session = app.current_session
+        tree = ConversationTree(session.entries(), session.cursor)
+        rows = [node.preview for node in tree.browse() if node.kind == "customMessage"]
+        assert rows == ["probe (hidden): not for the transcript"]
 
 
 async def test_bracketed_text_is_not_eaten_by_rich_markup(

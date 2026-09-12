@@ -251,9 +251,14 @@ def test_the_preview_changes_nothing_about_the_fold():
     assert len(_previews(session.session_log)) == 2
 
 
-def test_other_custom_entries_keep_their_old_row():
-    """The preview is agent_spec-specific; extension backplane state is untouched."""
+def test_other_custom_entries_name_their_type_and_summarize_their_payload():
+    """The agent_spec row stays agent_spec-specific; the rest say what they hold.
+
+    Until docs/EXTENSION-MESSAGES.md §3 this asserted ``customEntry: todo_state`` —
+    the kind with a label on it, which is the loss ``_agent_spec_preview`` was
+    written to fix for one kind and left in place for every other.
+    """
     log = InMemorySessionLog()
     log.append_custom_entry("todo_state", {"items": []})
     tree = ConversationTree(log.entries(), log.cursor)
-    assert tree.tree()[0].preview == "customEntry: todo_state"
+    assert tree.tree()[0].preview == "todo_state — items=[0]"

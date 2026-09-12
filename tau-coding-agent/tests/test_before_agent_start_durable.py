@@ -180,7 +180,8 @@ async def test_before_agent_start_message_is_a_durable_node(tmp_path) -> None:
     custom_nodes = [n for n in _flatten(tree.tree()) if n.kind == "customMessage"]
     assert len(custom_nodes) == 1
     assert custom_nodes[0].role == "custom"  # tree browser tags it distinctly
-    assert custom_nodes[0].preview == "INJECTED"
+    # The row names the injecting customType too (docs/EXTENSION-MESSAGES.md §3).
+    assert custom_nodes[0].preview == "reminder: INJECTED"
 
     # ── (b) TRANSCRIPT — the durable node is in prompt()'s returned messages ──
     transcript_customs = [m for m in returned if _role(m) == "custom"]

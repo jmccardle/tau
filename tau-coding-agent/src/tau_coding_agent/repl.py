@@ -60,6 +60,7 @@ from tau_agent_core.commands import (
 )
 from tau_agent_core.compaction import estimate_tokens
 from tau_agent_core.extension_locks import ExtensionRequest, refusal_reason
+from tau_agent_core.messages import is_displayed
 from tau_agent_core.flows import (
     Dispatched,
     FlowStep,
@@ -588,6 +589,8 @@ class ReplRenderer:
 
     def _on_custom_message(self, event: dict[str, Any]) -> None:
         message = event.get("message") or {}
+        if not is_displayed(message):
+            return
         self.line("extension", EXTENSION_LABEL)
         self.line("extension", _message_text(message))
 

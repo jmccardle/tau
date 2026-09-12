@@ -16,7 +16,7 @@
 
 ## Version negotiation
 
-- **Protocol version:** `1.5`
+- **Protocol version:** `1.6`
 - **Dialect:** `jsonrpc-2.0`
 
 Call get_capabilities (no params) first on every new connection, before any mutating command. Compare protocol_version's MAJOR component against what this host was built against; refuse to send anything else on a mismatch rather than discovering it on the first failing request.
@@ -35,7 +35,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 136,312 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 136,780 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -232,6 +232,10 @@ what rides on top of this on every response):
             "description": "Whether this command DECLARES what it takes. True means `next_step` will step it and `enumerate_domain` will list its argument's values, so a host can build a form or a completion list for it; false means the command takes one opaque line and there is nothing to ask about. Every built-in flow is true and the two view commands are false; an extension command is true only if it used `register_flow` (docs/EXTENSION-FLOWS.md).",
             "type": "boolean"
           },
+          "hidden": {
+            "description": "True for a private-registry name \u2014 `ext:<extension>.<command>`, which every extension command always has and which nothing can take from it (docs/EXTENSION-NAMESPACE.md). It resolves exactly like any other name; it is marked because offering both halves of the same command in one completion list is noise. Show these only once the reader has typed `ext:`. False for every name a reader would type unprompted.",
+            "type": "boolean"
+          },
           "name": {
             "description": "The command word, with no leading '/'.",
             "type": "string"
@@ -249,7 +253,8 @@ what rides on top of this on every response):
           "name",
           "description",
           "origin",
-          "flow"
+          "flow",
+          "hidden"
         ],
         "type": "object"
       },

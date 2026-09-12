@@ -108,7 +108,10 @@ class TestTheLayerIsAdditiveAndIsolated:
         assert session.vocabulary is BUILTIN
         _register_todo(session, [])
         assert session.vocabulary is not BUILTIN
-        assert "done" in session.vocabulary.extension_flows
+        # The flow is declared under its qualified name and reached by the typed one
+        # (docs/EXTENSION-NAMESPACE.md).
+        assert "ext:todo.done" in session.vocabulary.extension_flows
+        assert session.vocabulary.is_extension_flow("done")
 
     def test_unregistering_the_command_drops_the_flow(self):
         """A disabled extension must not leave a flow a head can step and nothing
@@ -220,7 +223,7 @@ class TestTheFlowLoopRunsIt:
         calls: list[str] = []
         _register_todo(session, calls)
 
-        invocation = resolve_command("/done t1", session._registry.get_commands().keys())
+        invocation = resolve_command("/done t1", session._registry.command_names())
         outcome = await session._perform_command(invocation)
 
         assert calls == ["t1"]
@@ -234,7 +237,7 @@ class TestTheFlowLoopRunsIt:
         calls: list[str] = []
         _register_todo(session, calls)
 
-        invocation = resolve_command("/done", session._registry.get_commands().keys())
+        invocation = resolve_command("/done", session._registry.command_names())
         outcome = await session._perform_command(invocation)
 
         assert isinstance(outcome, FlowStep)
@@ -250,7 +253,7 @@ class TestTheFlowLoopRunsIt:
             "note", {"description": "jot", "handler": lambda args, ctx: seen.append(args)}
         )
 
-        invocation = resolve_command("/note buy milk", session._registry.get_commands().keys())
+        invocation = resolve_command("/note buy milk", session._registry.command_names())
         outcome = await session._perform_command(invocation)
 
         assert seen == ["buy milk"]
@@ -273,7 +276,7 @@ class TestCompletionSeesIt:
         slot = complete_command_argument(text, session.vocabulary)
         chosen = text[: slot.start] + "t1" + text[slot.end :]
 
-        invocation = resolve_command(chosen, session._registry.get_commands().keys())
+        invocation = resolve_command(chosen, session._registry.command_names())
         assert (invocation.name, invocation.args) == ("done", "t1")
 
     def test_an_undeclared_command_offers_nothing(self):

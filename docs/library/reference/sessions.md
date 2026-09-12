@@ -350,12 +350,15 @@ get_extension_commands() -> list[tuple[str, str]]
 
 `tau_agent_core.agent_session.AgentSession.get_extension_commands`
 
-List extension-registered slash commands (E5 §5 / S35).
+List the TYPED extension commands — what a reader can write after a ``/``.
 
-Returns ``(name, description)`` for every command an extension registered
-via ``api.register_command`` — the palette (:meth:`TauApp.get_system_commands`)
-reads this to LIST them. Description falls back to the empty string when a
-command omitted one (listing is best-effort chrome, not a durable node).
+Returns ``(name, description)`` for every typed name currently bound to a
+command (docs/EXTENSION-NAMESPACE.md), which is what the palette
+(:meth:`TauApp.get_system_commands`) and the completion popup list. An
+extension that lost a contested name is absent here and present in
+:meth:`get_qualified_commands`; it is reachable either way. Description falls
+back to the empty string when a command omitted one (listing is best-effort
+chrome, not a durable node).
 
 ### get_extension_config
 
@@ -483,6 +486,20 @@ A small, stable projection of the loop's ``Model`` (pi returns the whole
 price, or gauge a context window — keeping the extension API decoupled from
 the full model schema). Read at call time, so it reflects a prior
 :meth:`set_model`.
+
+### get_qualified_commands
+
+```python
+get_qualified_commands() -> list[tuple[str, str]]
+```
+
+`tau_agent_core.agent_session.AgentSession.get_qualified_commands`
+
+List the PRIVATE registry — every command at its ``ext:…`` name.
+
+One entry per command an extension registered, contested or not. Heads keep
+these out of ordinary completion and offer them under the ``ext:`` prefix, so
+a command that lost its typed name is still findable and still runnable.
 
 ### get_session_name
 

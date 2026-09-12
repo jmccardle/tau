@@ -64,8 +64,10 @@ is not.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 from typing import Literal
 
@@ -96,6 +98,98 @@ about the NAME, and the fact a head actually wants: a palette groups built-ins a
 from what an extension registered, and ``resolve_command`` resolves built-ins first
 so an extension cannot shadow ``/compact``.
 """
+
+NAMESPACE_PREFIX = "ext:"
+"""What every private-registry command name begins with (docs/EXTENSION-NAMESPACE.md).
+
+``ext:pirate.speak`` is the pirate extension's ``speak``, and no other extension can
+register it — which is the whole point: a typed name like ``/speak`` is contested and
+a qualified one is not. Completion hides these until the reader types the prefix.
+"""
+
+
+_UNSAFE_IN_OWNER = re.compile(r"[^0-9A-Za-z_-]")
+
+
+def extension_owner(label: str) -> str:
+    """The owner token for an extension, from the path label its bucket carries.
+
+    A file extension's label is its path, so the token is the file stem — the same
+    one ``/extensions`` and ``resolve_extension_target`` match on. An inline factory
+    has no path and carries ``module:qualname`` instead
+    (``AgentSession._extension_factory_label``), whose last segment is the factory's
+    own name. Both are then reduced to word characters, because the result is typed
+    after a ``/`` and ``.`` in particular is the separator
+    :func:`split_qualified_command` splits on.
+
+    Raises:
+        ValueError: Nothing usable is left. Fail-Early: the alternative is an
+            extension whose commands are named after the empty string.
+    """
+    stem = (
+        Path(label).stem if label.endswith(".py") else label.rsplit(":", 1)[-1].rsplit(".", 1)[-1]
+    )
+    owner = _UNSAFE_IN_OWNER.sub("_", stem).strip("_")
+    if not owner:
+        raise ValueError(
+            f"extension label {label!r} yields no usable name to qualify commands with"
+        )
+    return owner
+
+
+def qualified_command(owner: str, name: str) -> str:
+    """The private-registry name for command ``name`` of extension ``owner``.
+
+    Args:
+        owner: The extension's identity — its file stem, the same token
+            ``/extensions`` and ``resolve_extension_target`` already use.
+        name: The command as the extension registered it.
+
+    Returns:
+        ``ext:<owner>.<name>``.
+
+    Raises:
+        ValueError: ``name`` contains a ``.`` (which would make the split ambiguous
+            against an owner stem that also contains one), or either part is empty or
+            contains a space. Fail-Early: an unparseable qualified name is a command
+            nobody can type and every head would list.
+    """
+    if not owner or not name:
+        raise ValueError(
+            f"qualified_command needs both an owner and a name, got {owner!r}/{name!r}"
+        )
+    if "." in name:
+        raise ValueError(
+            f"command name {name!r} contains a '.', which is the separator "
+            f"{NAMESPACE_PREFIX}<extension>.<command> splits on. Rename the command."
+        )
+    if " " in owner or " " in name:
+        raise ValueError(
+            f"{owner!r}/{name!r} contains a space; a command name is the first word of a "
+            "line, so a space in it makes the rest read as arguments."
+        )
+    return f"{NAMESPACE_PREFIX}{owner}.{name}"
+
+
+def split_qualified_command(name: str) -> tuple[str, str] | None:
+    """``(owner, command)`` for a private-registry name, else ``None``.
+
+    Splits on the LAST ``.`` so an owner stem containing one (``my.ext.py``) still
+    parses; :func:`qualified_command` is what keeps the command half free of dots.
+    """
+    if not name.startswith(NAMESPACE_PREFIX):
+        return None
+    body = name[len(NAMESPACE_PREFIX) :]
+    dot = body.rfind(".")
+    if dot <= 0 or dot == len(body) - 1:
+        return None
+    return body[:dot], body[dot + 1 :]
+
+
+def is_qualified_command(name: str) -> bool:
+    """Whether ``name`` is a well-formed private-registry name."""
+    return split_qualified_command(name) is not None
+
 
 EXTENSION_VIEW_VERBS: dict[str, str] = {
     flow.name.removesuffix("_extension"): flow.name
@@ -234,7 +328,8 @@ def dispatch_builtin(
         :class:`~tau_agent_core.flows.Ready` the flow is at.
 
     Raises:
-        UnsupportedCommandError: ``/extensions`` was given a verb that names no flow.
+        UnsupportedCommandError: ``/extensions`` was given a verb that names no flow,
+            or a view was given an argument it has nowhere to put.
         UnknownFlowError: ``name`` is neither a view nor a declared flow.
         ValueError: ``args`` is not a value of the flow argument's domain.
     """
@@ -250,6 +345,13 @@ def dispatch_builtin(
         name, args = flow, target.strip()
 
     if name in vocabulary.views:
+        if args.strip():
+            raise UnsupportedCommandError(
+                f"/{name} takes no arguments, so {args.strip()!r} would be discarded. "
+                "A view is a surface a head opens; it carries no argument string for a "
+                "head to read. Refusing rather than opening it and dropping what was "
+                "typed (docs/SLASH-COMMANDS.md §4)."
+            )
         return View(
             name=name,
             unavailable_because=(

@@ -85,6 +85,23 @@ def test_bare_extensions_is_still_the_view() -> None:
     assert isinstance(dispatch_builtin("extensions", ""), View)
 
 
+def test_a_view_given_an_argument_is_refused_not_discarded() -> None:
+    """``/tree extra words`` raises rather than opening the browser (§4).
+
+    A view carries no argument string, so anything typed after it has nowhere to
+    go. It ran and discarded them silently until docs/SLASH-COMMANDS.md §4's
+    "still unfixed" case was fixed — the same refusal ``/extensions frobnicate``
+    already made, on the other half of the view table.
+    """
+    with pytest.raises(UnsupportedCommandError, match="takes no arguments"):
+        dispatch_builtin("tree", "extra words")
+
+
+def test_whitespace_after_a_view_is_not_an_argument() -> None:
+    """``parse_command`` strips, so trailing spaces must not trip the refusal."""
+    assert isinstance(dispatch_builtin("tree", "   "), View)
+
+
 def test_a_scoped_cursor_rides_the_step_to_the_head() -> None:
     step = dispatch_builtin("resume", "", cursor="entry-7")
     assert isinstance(step, FlowStep)

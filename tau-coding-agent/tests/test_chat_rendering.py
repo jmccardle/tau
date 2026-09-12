@@ -1420,7 +1420,7 @@ async def test_content_growing_under_a_reader_who_scrolled_away_does_not_move_th
         for _ in range(3):
             await pilot.pause()
 
-        display.scroll_to(y=10, animate=False)
+        display.scroll_to(y=10, animate=False, immediate=True)
         await pilot.pause()
         assert display._follow_tail is False
 
@@ -1447,7 +1447,7 @@ async def test_a_box_folding_itself_shut_does_not_move_a_reader_who_scrolled_bac
         for _ in range(3):
             await pilot.pause()
 
-        display.scroll_to(y=12, animate=False)
+        display.scroll_to(y=12, animate=False, immediate=True)
         await pilot.pause()
         assert display._follow_tail is False
 

@@ -133,7 +133,7 @@ class TestSubjectsIsRequiredForABusTouchingExtension:
         infos = summarize_extensions(result)
 
         assert infos[0].subjects == ()
-        assert infos[0].commands == ["hello"]
+        assert infos[0].commands == ["ext:plain_ext.hello"]
 
 
 class TestCapabilityPreflightRefusesAtTheFactory:
@@ -231,7 +231,7 @@ class TestManifestEmitsExtensionsBesideHarness:
                     "events.workspace.demo.in.>",
                 ],
                 "tools": [],
-                "commands": ["speak"],
+                "commands": ["ext:bus_ext.speak"],
                 "shortcuts": [],
                 "hooks": [],
             }

@@ -129,6 +129,20 @@ bus on_error path (S44), never swallowed.
 - `ValueError` — if ``topic`` is not a non-empty string.
 - `RuntimeError` — if this api is not bound to a runner bucket (no extension identity to namespace under) — Fail-Early, via :meth:`_emitting_extension_name`.
 
+### extension_name
+
+`tau_agent_core.extension_types.ExtensionAPI.extension_name: str`
+
+This extension's identity (docs/EXTENSION-NAMESPACE.md).
+
+The owner half of every qualified command name, normalized by
+:func:`~tau_agent_core.commands.extension_owner` — a file extension's stem,
+an inline factory's own name.
+
+**Raises**
+
+- `RuntimeError` — This api is not bound to a runner bucket, so it has no identity to qualify a name with. Fail-Early, and the same refusal :meth:`on` makes for the same reason (S24).
+
 ### get_all_tools
 
 ```python
@@ -142,6 +156,23 @@ Get all registered tools.
 **Returns**
 
 List of tool info from the registry.
+
+### get_command
+
+```python
+get_command(name: str) -> dict | None
+```
+
+`tau_agent_core.extension_types.ExtensionAPI.get_command`
+
+The command dict ``name`` resolves to, or ``None``.
+
+Accepts either name a command answers to. Read it to decide whether to claim a
+typed name at all, or to see whose handler is behind one before calling it.
+
+**Parameters**
+
+- `name: str` — *(no description)*
 
 ### get_session_name
 
@@ -222,22 +253,32 @@ An unsubscribe function.
 ### register_command
 
 ```python
-register_command(name: str, command: dict) -> None
+register_command(name: str, command: dict) -> str | None
 ```
 
 `tau_agent_core.extension_types.ExtensionAPI.register_command`
 
-Register a slash command (forwards to the registry).
+Register a slash command, and try to claim ``name`` for it.
+
+Two registrations, because there are two names (docs/EXTENSION-NAMESPACE.md).
+The command is installed in the private registry at
+``ext:<extension>.<name>``, where nothing can displace it, and then ``name``
+itself is claimed. Claiming is first-wins: if another extension already holds
+it, or a human pinned it elsewhere, this one keeps only its qualified name.
 
 **Parameters**
 
-- `name: str` — *(no description)*
-- `command: dict` — *(no description)*
+- `name: str` — The command word a reader types after the ``/``.
+- `command: dict` — ``{"description": str, "handler": callable, "args": str?}``.
+
+**Returns**
+
+``None`` when ``/name`` now runs this command. Otherwise the qualified name that holds it instead — pass it to :meth:`run_command` to wrap, chain or defer to whatever got there first.
 
 ### register_flow
 
 ```python
-register_flow(name: str, description: str, handler: Any, *, argument: Argument | None = None, domain: Domain | None = None, values: Any = None) -> None
+register_flow(name: str, description: str, handler: Any, *, argument: Argument | None = None, domain: Domain | None = None, values: Any = None) -> str | None
 ```
 
 `tau_agent_core.extension_types.ExtensionAPI.register_flow`
@@ -270,6 +311,10 @@ built-ins. A gesture needing several fields drives ``ui.form`` itself.
 - `argument: Argument | None = None` — What the command takes, or ``None`` for one that takes nothing.
 - `domain: Domain | None = None` — The argument's domain, when it is not one τ already declares. Its ``name`` must be what ``argument.domain`` says.
 - `values: Any = None` — How ``domain``'s values are found, when it names an enumerator: a callable ``(query, limit) -> [(value, label)]``. Not needed for a domain that is ``free`` or has fixed ``values``.
+
+**Returns**
+
+meth:`register_command` returns — ``None`` when ``/name`` is this flow, else the qualified name that holds it. The flow itself is always reachable at ``ext:<extension>.<name>``.
 
 **Raises**
 
@@ -386,6 +431,34 @@ The appended entry's id — the request id an action is dispatched with, and wha
 
 - `RuntimeError` — this api is bound to no runner bucket, so it has no extension identity to append under (Fail-Early: the identity is stored in the entry, and the case this exists for is a reload where nobody can be asked for it).
 - `ValueError` — from :func:`validate_ask_spec` on a malformed ask, or from :func:`~tau_agent_core.extension_locks.build_request_data` on an entry that neither locks nor asks.
+
+### run_command
+
+```python
+run_command(name: str, args: str = '') -> Any
+```
+
+`tau_agent_core.extension_types.ExtensionAPI.run_command`
+
+Run a registered command by either of its names and return its output.
+
+The composition seam. An extension that was refused a typed name, or that
+wants to extend another's behaviour, calls the qualified name — resolved HERE,
+at call time, so a disabled extension is a name that no longer answers rather
+than a captured callable that still runs.
+
+**Parameters**
+
+- `name: str` — A typed or qualified command name.
+- `args: str = ''` — The argument string, exactly as a reader would have typed it.
+
+**Returns**
+
+Whatever the command's handler returned.
+
+**Raises**
+
+- `RuntimeError` — No api session, or ``name`` resolves to no command.
 
 ### send_message
 
@@ -606,6 +679,24 @@ UI methods (TUI-only, no-ops in headless mode).
 **Returns**
 
 The ExtensionUI instance from the context.
+
+### unregister_command
+
+```python
+unregister_command(name: str) -> None
+```
+
+`tau_agent_core.extension_types.ExtensionAPI.unregister_command`
+
+Withdraw one of THIS extension's commands, and any typed name bound to it.
+
+**Parameters**
+
+- `name: str` — Either the typed name passed to :meth:`register_command` or the qualified one it returned.
+
+**Raises**
+
+- `ValueError` — ``name`` resolves to a command this extension does not own. Fail-Early: the alternative is one extension quietly deleting another's, which is the failure this namespace exists to remove.
 
 ## ExtensionCapabilityError
 <!-- agent: yes -->

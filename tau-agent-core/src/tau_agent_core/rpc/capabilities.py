@@ -28,7 +28,7 @@ from typing import Any
 
 from tau_agent_core import rpc_event_schema
 
-PROTOCOL_VERSION = "1.5"
+PROTOCOL_VERSION = "1.6"
 
 DIALECT = "jsonrpc-2.0"
 

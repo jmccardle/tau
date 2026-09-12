@@ -77,7 +77,7 @@ async def test_summarize_reports_name_path_tools_commands_hooks(tmp_path):
     assert info.name == "full_ext"
     assert info.path == str(ext)
     assert info.tools == ["probe"]
-    assert info.commands == ["hello"]
+    assert info.commands == ["ext:full_ext.hello"]  # the private name it OWNS (EXTENSION-NAMESPACE.md)
     assert info.shortcuts == ["g"]
     # Hooks are sorted for a stable listing.
     assert info.hooks == ["tool_call", "tool_result"]

@@ -183,7 +183,7 @@ async def test_arriving_at_the_top_does_not_slide(loaded):
     display, pilot, _ = loaded
     before = display._window_start
 
-    display.scroll_home(animate=False)
+    display.scroll_home(animate=False, immediate=True)
     await pilot.pause()
     await pilot.pause()
 
@@ -195,7 +195,7 @@ async def test_arriving_at_the_top_does_not_slide(loaded):
 
 async def test_scrolling_against_the_top_slides_the_window(loaded):
     display, pilot, _ = loaded
-    display.scroll_home(animate=False)
+    display.scroll_home(animate=False, immediate=True)
     await pilot.pause()
 
     # A second scroll, with nowhere left to go, is the gesture.
@@ -214,7 +214,7 @@ async def test_scrolling_against_the_bottom_slides_it_back(loaded):
         await pilot.pause()
     before = display._window_start
 
-    display.scroll_end(animate=False)
+    display.scroll_end(animate=False, immediate=True)
     await pilot.pause()
     display.action_scroll_down()
     await pilot.pause()
@@ -228,7 +228,7 @@ async def test_one_gesture_moves_one_turn(loaded):
     """The claim is taken in the handler, not the coroutine: one flick of a wheel
     is several events, each arriving before any scheduled call runs."""
     display, pilot, _ = loaded
-    display.scroll_home(animate=False)
+    display.scroll_home(animate=False, immediate=True)
     await pilot.pause()
     before = display._window_start
 
@@ -267,7 +267,7 @@ async def test_the_window_does_not_move_while_a_lane_streams(loaded):
     start = display._window_start
 
     assert not await display.move_window(-1)
-    display.scroll_home(animate=False)
+    display.scroll_home(animate=False, immediate=True)
     await pilot.pause()
     await pilot.pause()
 

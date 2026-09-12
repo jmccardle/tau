@@ -118,6 +118,34 @@ def create_custom_message(
     return message
 
 
+@agent_facing(topic="messages")
+def is_displayed(message: dict[str, Any]) -> bool:
+    """Whether a head should draw this message in its TRANSCRIPT.
+
+    The reader of the ``display`` key :func:`create_custom_message` writes and
+    ``api.send_message`` accepts. Until this existed the key was stored and read by
+    nobody, so an extension that asked for a hidden node got a visible one — the
+    silent-success failure the repo's Fail-Early rule names.
+
+    Scope is the transcript alone. A hidden node is still on the tree, still on the
+    active path, still reaches the model when ``visibleToModel`` says so, and the
+    tree browser still draws its row and its detail pane — ``display`` says "do not
+    put this in the running conversation a reader is following", not "conceal it".
+    See ``docs/EXTENSION-MESSAGES.md`` §2.
+
+    Args:
+        message: A stored message dict. Any role; only ``custom`` carries the key.
+
+    Returns:
+        ``False`` only for a ``custom`` message whose ``display`` is literally
+        ``False``. A message with no key, or any other role, is displayed — an
+        older node predates the key and never meant to be hidden.
+    """
+    if message.get("role") != CUSTOM_ROLE:
+        return True
+    return message.get("display", True) is not False
+
+
 def convert_to_llm(messages: list[Any]) -> list[Any]:
     """Map every ``custom`` message to a ``user`` message; pass the rest through.
 

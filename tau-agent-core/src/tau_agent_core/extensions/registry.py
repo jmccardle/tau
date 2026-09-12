@@ -15,9 +15,13 @@ Contract:
         def get_all_tools(self) -> list[ToolInfo]: ...
         def set_active_tools(self, names: list[str]) -> None: ...
         def get_active_tools(self) -> dict[str, dict]: ...
-        def register_command(self, name: str, command: dict) -> None: ...
+        def register_command(self, name: str, command: dict, *, owner: str) -> None: ...
+        def bind_command(self, typed: str, qualified: str) -> str | None: ...
+        def pin_command(self, typed: str, qualified: str) -> None: ...
         def get_command(self, name: str) -> dict | None: ...
         def get_commands(self) -> dict[str, dict]: ...
+        def get_bindings(self) -> dict[str, str]: ...
+        def command_names(self) -> set[str]: ...
         def register_shortcut(self, key: str, shortcut: dict) -> None: ...
         def get_shortcut(self, key: str) -> dict | None: ...
         def get_shortcuts(self) -> dict[str, dict]: ...
@@ -65,10 +69,13 @@ class ExtensionRegistry:
     def __init__(self) -> None:
         """Initialize the registry with empty collections."""
         self._tools: dict[str, ExtensionToolDefinition] = {}  # name -> definition
-        self._commands: dict[str, dict] = {}  # name -> command def
+        self._commands: dict[str, dict] = {}  # QUALIFIED name -> command def
+        self._bindings: dict[str, str] = {}  # typed name -> qualified name
+        self._pinned: dict[str, str] = {}  # typed name -> the qualified name a human chose
+        self._command_owners: dict[str, str] = {}  # qualified name -> registering path
         self._shortcuts: dict[str, dict] = {}  # chord-tail key -> shortcut def
         self._active_tools: set[str] | None = None  # None = all active
-        self._flows: dict[str, FlowDeclaration] = {}  # command name -> what it takes
+        self._flows: dict[str, FlowDeclaration] = {}  # QUALIFIED name -> what it takes
         self._flows_revision = 0
 
     def register_tool(self, definition: dict | ExtensionToolDefinition) -> None:
@@ -158,18 +165,105 @@ class ExtensionRegistry:
         """
         self._tools.pop(name, None)
 
-    def register_command(self, name: str, command: dict) -> None:
-        """Register a slash command."""
+    def register_command(self, name: str, command: dict, *, owner: str | None = None) -> None:
+        """Install a command in the PRIVATE registry, under its qualified name.
+
+        ``name`` is an ``ext:<extension>.<command>`` name (docs/EXTENSION-NAMESPACE.md);
+        :meth:`ExtensionAPI.register_command` is what mints it, so an extension never
+        spells one itself. The typed name is the contested one, and that is
+        :meth:`bind_command`.
+
+        Any flow previously declared for ``name`` is dropped. ``ExtensionAPI.register_flow``
+        calls this and then :meth:`register_flow`, so the order is load-bearing: a
+        reload that no longer declares a flow must not keep the old declaration, which
+        is how a head came to render one extension's argument form for another's handler.
+
+        Args:
+            name: The qualified name.
+            command: ``{"description": str, "handler": callable, "args": str?}``.
+            owner: The registering extension's path, which is what makes the one
+                possible collision detectable. A reload passes the same path and
+                replaces in place, because ``_unregister_bucket`` has already run.
+
+        Raises:
+            ValueError: ``name`` is held by a DIFFERENT path — two extension files
+                sharing a stem. Fail-Early, and for :meth:`register_tool`'s reason:
+                which one survived would be decided by load order, silently.
+        """
+        held_by = self._command_owners.get(name)
+        if owner is not None and held_by is not None and held_by != owner:
+            raise ValueError(
+                f"{name!r} is already registered by {held_by!r}. Two extension files share "
+                f"the stem that names it, so one would silently replace the other's commands. "
+                "Rename one of the files."
+            )
+        if self._flows.pop(name, None) is not None:
+            self._flows_revision += 1
         self._commands[name] = command
+        if owner is not None:
+            self._command_owners[name] = owner
+
+    def bind_command(self, typed: str, qualified: str) -> str | None:
+        """Point a typeable name at a private-registry entry. FIRST-wins.
+
+        The only contested table. An unpinned name goes to whoever asks first, because
+        the alternative — last-wins — hands it to whichever extension file happens to
+        sort later, so renaming a file silently changes what ``/speak`` does. A refused
+        caller loses nothing: it is still reachable at its qualified name, and a human
+        can re-point ``typed`` with :meth:`pin_command`.
+
+        Args:
+            typed: What a reader types after the ``/``.
+            qualified: The private-registry name it should resolve to.
+
+        Returns:
+            ``None`` when ``typed`` now resolves to ``qualified``. Otherwise the
+            qualified name that holds it instead — a name the caller can call, which is
+            what makes wrapping possible without capturing anyone's handler.
+        """
+        pinned = self._pinned.get(typed)
+        if pinned is not None:
+            if pinned != qualified:
+                return pinned
+        else:
+            held = self._bindings.get(typed)
+            if held is not None and held != qualified:
+                return held
+        if self._bindings.get(typed) != qualified:
+            self._bindings[typed] = qualified
+            self._flows_revision += 1
+        return None
+
+    def pin_command(self, typed: str, qualified: str) -> None:
+        """Record a human's choice of what ``typed`` means, beating every registration.
+
+        A pin is a preference rather than session state (docs/EXTENSION-NAMESPACE.md),
+        so it is set from config at startup and by the binding UI. Pinning a target that
+        is not loaded leaves ``typed`` unbound rather than bound to nothing: the pinned
+        extension claims it whenever it registers, and no other extension can take it in
+        the meantime.
+        """
+        self._pinned[typed] = qualified
+        if qualified in self._commands:
+            self._bindings[typed] = qualified
+        else:
+            self._bindings.pop(typed, None)
+        self._flows_revision += 1
 
     def unregister_command(self, name: str) -> None:
-        """Remove a registered slash command by name (E10 §6 / S70). Idempotent.
+        """Remove an entry, its flow, and every binding pointing at it (S70).
 
-        Drops the command's flow declaration with it, so a disabled extension cannot
-        leave behind a flow a head can step and nothing can perform.
+        Takes either name the command answers to, the way :meth:`get_command` does.
+        Idempotent. A pin survives, so re-enabling the extension restores what the
+        human chose and no other extension takes the typed name while it is away.
         """
+        name = self._bindings.get(name, name)
         self._commands.pop(name, None)
+        self._command_owners.pop(name, None)
         if self._flows.pop(name, None) is not None:
+            self._flows_revision += 1
+        for typed in [t for t, q in self._bindings.items() if q == name]:
+            del self._bindings[typed]
             self._flows_revision += 1
 
     def register_flow(self, name: str, declaration: FlowDeclaration) -> None:
@@ -181,34 +275,63 @@ class ExtensionRegistry:
         reads to build a form, a completion list or a palette argument.
 
         Args:
-            name: The command this describes. This does not create the command —
-                ``ExtensionAPI.register_flow`` registers both, so a declaration
-                without a handler is not reachable.
+            name: The QUALIFIED command this describes. This does not create the
+                command — ``ExtensionAPI.register_flow`` registers both, so a
+                declaration without a handler is not reachable. Keying by the
+                qualified name is what stops a shadowed flow from being rendered for
+                the shadowing extension's handler.
             declaration: The flow, with the domain and enumerator it needs.
         """
         self._flows[name] = declaration
         self._flows_revision += 1
 
     def get_flows(self) -> dict[str, FlowDeclaration]:
-        """Every declared extension flow, by command name."""
+        """Every declared extension flow, by qualified command name."""
         return dict(self._flows)
 
     @property
     def flows_revision(self) -> int:
-        """Bumped by every flow registration and removal.
+        """Bumped by every change to the flow table OR the bindings over it.
 
         What ``AgentSession.vocabulary`` caches on: rebuilding the layered registry
-        runs the whole cross-check, and a head asks for it on every keystroke.
+        runs the whole cross-check, and a head asks for it on every keystroke. A
+        binding counts because the vocabulary carries the aliases that resolve a typed
+        name to its flow, so a re-binding that left the cache alone would keep
+        completing the previous extension's argument.
         """
         return self._flows_revision
 
     def get_command(self, name: str) -> dict | None:
-        """Look up a registered slash command by name (``None`` if unknown)."""
-        return self._commands.get(name)
+        """Look up a command by either name it answers to (``None`` if unknown).
+
+        A typed name resolves through :meth:`get_bindings` first, so ``speak`` and
+        ``ext:pirate.speak`` reach the same dict while ``speak`` is bound there.
+        """
+        return self._commands.get(self._bindings.get(name, name))
 
     def get_commands(self) -> dict[str, dict]:
-        """Get all registered slash commands (name -> command def)."""
+        """The private registry: qualified name to command def.
+
+        What an extension OWNS, not what a reader types — :meth:`get_bindings` is the
+        second half. Use :meth:`command_names` for the set a line is resolved against.
+        """
         return dict(self._commands)
+
+    def get_bindings(self) -> dict[str, str]:
+        """Typed command name to the qualified name it resolves to."""
+        return dict(self._bindings)
+
+    def get_pins(self) -> dict[str, str]:
+        """Typed command name to the qualified name a human pinned it to."""
+        return dict(self._pinned)
+
+    def command_names(self) -> set[str]:
+        """Every name that resolves — bound typed names and qualified names alike.
+
+        What ``resolve_command`` is handed, which is why ``/ext:pirate.speak`` works
+        whether or not ``/speak`` is bound to it.
+        """
+        return set(self._bindings) | set(self._commands)
 
     def register_shortcut(self, key: str, shortcut: dict) -> None:
         """Register an extension key binding (E10 §6 / S69).

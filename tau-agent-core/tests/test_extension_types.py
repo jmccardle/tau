@@ -208,31 +208,84 @@ class TestExtensionAPITools:
         assert len(api.get_all_tools()) == 5
 
 
-class TestExtensionAPICommands:
-    """Tests for ExtensionAPI command registration via registry."""
+def _bound_api(stem: str, registry=None) -> ExtensionAPI:
+    """An ExtensionAPI bound to a bucket, which is what gives it a name to qualify with."""
+    from tau_agent_core.extensions.registry import ExtensionRegistry
+    from tau_agent_core.extensions.runner import ExtensionHandlers
 
-    def test_register_command(self):
-        """ExtensionAPI.register_command() stores a command in the registry."""
-        api = ExtensionAPI()
+    return ExtensionAPI(
+        registry=registry or ExtensionRegistry(),
+        hook_handlers=ExtensionHandlers(path=f"/x/{stem}.py"),
+    )
+
+
+class TestExtensionAPICommands:
+    """Registration writes TWO names: the private one, and a claim on the typed one.
+
+    Reference: docs/EXTENSION-NAMESPACE.md.
+    """
+
+    def test_register_command_installs_under_the_qualified_name(self):
+        api = _bound_api("helper")
         cmd = {"action": "help"}
-        api.register_command("help", cmd)
-        assert "help" in api._registry._commands
-        assert api._registry._commands["help"] == cmd
+        assert api.register_command("help", cmd) is None, "nothing held it, so it is claimed"
+        assert api._registry.get_commands() == {"ext:helper.help": cmd}
+        assert api._registry.get_bindings() == {"help": "ext:helper.help"}
+        assert api.get_command("help") is cmd
+        assert api.get_command("ext:helper.help") is cmd
 
     def test_register_multiple_commands(self):
-        """ExtensionAPI.register_command() can register multiple commands."""
-        api = ExtensionAPI()
+        api = _bound_api("helper")
         api.register_command("help", {"action": "help"})
         api.register_command("status", {"action": "status"})
-        assert "help" in api._registry._commands
-        assert "status" in api._registry._commands
+        assert sorted(api._registry.get_commands()) == ["ext:helper.help", "ext:helper.status"]
 
-    def test_register_command_overwrites(self):
-        """ExtensionAPI.register_command() overwrites existing command."""
-        api = ExtensionAPI()
+    def test_re_registering_the_same_name_replaces_in_place(self):
+        """A reload re-registers; it is the same owner, so there is no contest."""
+        api = _bound_api("helper")
         api.register_command("help", {"action": "old"})
-        api.register_command("help", {"action": "new"})
-        assert api._registry._commands["help"]["action"] == "new"
+        assert api.register_command("help", {"action": "new"}) is None
+        assert api.get_command("help") == {"action": "new"}
+
+    def test_a_second_extension_keeps_its_own_name_and_is_told_who_won(self):
+        """First-wins, and the loser is handed a name it can call."""
+        from tau_agent_core.extensions.registry import ExtensionRegistry
+
+        registry = ExtensionRegistry()
+        first = _bound_api("alpha", registry)
+        second = _bound_api("beta", registry)
+        first.register_command("note", {"action": "a"})
+
+        assert second.register_command("note", {"action": "b"}) == "ext:alpha.note"
+        assert registry.get_bindings() == {"note": "ext:alpha.note"}
+        assert registry.get_command("ext:beta.note") == {"action": "b"}
+        assert registry.command_names() == {"note", "ext:alpha.note", "ext:beta.note"}
+
+    def test_a_pin_beats_a_registration(self):
+        from tau_agent_core.extensions.registry import ExtensionRegistry
+
+        registry = ExtensionRegistry()
+        registry.pin_command("note", "ext:beta.note")
+        first = _bound_api("alpha", registry)
+        second = _bound_api("beta", registry)
+
+        assert first.register_command("note", {"action": "a"}) == "ext:beta.note"
+        assert registry.get_bindings() == {}, "the pinned target is not loaded yet"
+        assert second.register_command("note", {"action": "b"}) is None
+        assert registry.get_bindings() == {"note": "ext:beta.note"}
+
+    def test_an_unbound_api_cannot_register_a_command(self):
+        """Fail-Early: no bucket means no identity, and every command needs one."""
+        with pytest.raises(RuntimeError, match="not bound to a loaded extension"):
+            ExtensionAPI().register_command("help", {"action": "help"})
+
+    def test_an_extension_cannot_unregister_another_s_command(self):
+        from tau_agent_core.extensions.registry import ExtensionRegistry
+
+        registry = ExtensionRegistry()
+        _bound_api("alpha", registry).register_command("note", {"action": "a"})
+        with pytest.raises(ValueError, match="belongs to another extension"):
+            _bound_api("beta", registry).unregister_command("ext:alpha.note")
 
 
 class TestExtensionAPIShortcuts:

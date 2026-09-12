@@ -1248,6 +1248,7 @@ async def _handle_get_commands(
             "description": description,
             "origin": "builtin",
             "flow": name not in vocabulary.views,
+            "hidden": False,
         }
         for name, description in FRONTEND_COMMANDS.items()
     ]
@@ -1259,7 +1260,18 @@ async def _handle_get_commands(
                 "name": name,
                 "description": description,
                 "origin": "extension",
-                "flow": name in vocabulary.extension_flows,
+                "flow": vocabulary.is_extension_flow(name),
+                "hidden": False,
+            }
+        )
+    for name, description in handler.session.get_qualified_commands():
+        listed.append(
+            {
+                "name": name,
+                "description": description,
+                "origin": "extension",
+                "flow": vocabulary.is_extension_flow(name),
+                "hidden": True,
             }
         )
     return {"commands": listed}

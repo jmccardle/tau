@@ -171,7 +171,7 @@ Measured against `parse_command`:
 ```
 '/tree'                        ('tree', '')            -> runs
 '  /tree  '                    ('tree', '')            -> runs
-'/tree extra words'            ('tree', 'extra words') -> runs, args discarded
+'/tree extra words'            ('tree', 'extra words') -> refused (see below)
 '/tree\nmore'                  ('tree\nmore', '')      -> prose
 '/usr/bin/env is on my PATH'   ('usr/bin/env', '…')    -> prose
 '/'                            ('', '')                -> prose
@@ -181,10 +181,11 @@ Measured against `parse_command`:
 
 Two of these are worth knowing.
 
-**Arguments to a command that takes none are silently discarded.** `/tree extra
-words` opens the browser and `action_browse_tree` ignores `args`. Same for
-`/compact` and `/fork`. This is a Fail-Early violation and it is **not fixed
-here**: naming it needs per-command argument metadata, and `FRONTEND_COMMANDS` is
+**Arguments to a command that takes none were silently discarded.** `/tree extra
+words` opened the browser and `action_browse_tree` ignored `args`. Same for
+`/compact` and `/fork`. This is a Fail-Early violation and it was **not fixed
+here** — both halves of it are fixed now, below and further down: naming it needs
+per-command argument metadata, and `FRONTEND_COMMANDS` is
 a `dict[str, str]` whose values are prose descriptions read by
 `unsupported_command_message` and by the `get_commands` RPC verb. Giving it a
 declared placeholder — the shape extension commands already have, through
@@ -199,9 +200,22 @@ changing `FRONTEND_COMMANDS`' type. `TauApp.action_run_session_flow` already rea
 it, which is why `/autocompact` with no argument answers "needs enabled: true,
 false" rather than guessing.
 
-One case is still unfixed, and one was. `/tree` and `/extensions` are VIEWS, and
-`VIEW_COMMANDS` is a `dict[str, str]` with nowhere to say a view takes nothing —
-so `/tree extra words` still discards them silently, which is what §6 records.
+Both cases are now fixed, by two different mechanisms.
+
+**Fixed 2026-09-11: a view refuses an argument rather than discarding it.**
+`/tree` and `/extensions` are VIEWS, and `VIEW_COMMANDS` is a `dict[str, str]`
+with nowhere to say a view takes nothing — which is why this was carried as
+unfixed through five worklogs. The fix does not change that type and does not
+need to: a view carries **no** argument string in any case, so the declaration
+that would have gone in the table is a constant. `dispatch_builtin` raises
+`UnsupportedCommandError` naming what would have been dropped, which is the same
+refusal `/extensions frobnicate` already made two lines above it, and the same
+one every head already renders — an error toast in the TUI (`app.py`'s
+`except (ValueError, UnsupportedCommandError)`), a line on stderr in print mode,
+an `error` line in the REPL, an error response over RPC. No head changed.
+
+Whitespace is not an argument: `parse_command` strips, so `/tree   ` still opens
+the browser.
 
 `/compact` was the worse of the two and is fixed. The `compact` flow DECLARES an
 optional `custom_instructions` argument; `_perform_command_outcome` called
@@ -266,8 +280,9 @@ command's business, and no part of τ inspects it until a handler does.
   popup carries more than a validity colour could — the description — and touches
   no private API.
 
-- **No argument metadata on the built-ins**, and therefore no warning that
-  `/tree extra` will discard `extra`. See §4.
+- **No argument metadata on the built-ins**, and therefore no warning *while
+  typing* that `/tree extra` takes no `extra`. Submitting it is refused rather
+  than discarded (§4, fixed 2026-09-11); the popup still says nothing until then.
 
 ## 7. Where the pieces are
 
