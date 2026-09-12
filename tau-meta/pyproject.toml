@@ -38,9 +38,9 @@ authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
 # that pulls one in by default would be answering a question nobody asked. That is
 # the line: this name installs everything that works on its own.
 dependencies = [
-    "ffwf-tau-coding-agent[tui]==0.10.2",
-    "ffwf-tau-agent-core[images]==0.10.2",
-    "ffwf-tau-llm[anthropic,google]==0.10.2",
+    "ffwf-tau-coding-agent[tui]==0.10.3",
+    "ffwf-tau-agent-core[images]==0.10.3",
+    "ffwf-tau-llm[anthropic,google]==0.10.3",
 ]
 
 # The PUBLIC repository only. This tree has a second, private git remote whose

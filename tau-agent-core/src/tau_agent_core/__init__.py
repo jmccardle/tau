@@ -10,7 +10,7 @@ Public API:
 Reference: SUBPHASE-0.0.md
 """
 
-__version__ = "0.10.2"
+__version__ = "0.10.3"
 
 from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.session import (
