@@ -392,8 +392,23 @@ for the other one — not the reverse.
 
 Build to a directory outside the repository. `dist/` is gitignored as of 0.9.3,
 so a build inside the tree no longer leaves an untracked directory behind — but
-outside is still better, because `$DIST` also collects the `package.sh` tarball
-and the two are easier to keep straight when neither is in the working tree.
+outside is still better, because it keeps the ten wheels and sdists out of a
+working tree that concurrent sessions share.
+
+**`package.sh` does not honour `$DIST`, and this document said it did through
+0.10.2.** The script `cd`s to its own directory (line 17) and writes
+`tau-<version>.tar.gz` beside itself (line 75); it takes no output directory. So
+the tarball lands in the repository root, where `.gitignore`'s `tau-*.tar.gz`
+covers it — harmless to a commit, and still ~800 KB of untracked artifact in a
+tree other sessions are working in. Move it after building:
+
+```bash
+mv tau-<version>.tar.gz "$DIST"/
+```
+
+The consequence for the upload glob is unchanged and is the reason this matters:
+`twine upload "$DIST"/ffwf_*` is written that way because `$DIST` ends up holding
+the tarball, which carries no PyPI metadata and is not a distribution.
 
 Then install the wheels into a throwaway venv and run them. `twine check` reads
 metadata; it does not tell you the package works:
@@ -613,13 +628,45 @@ shape, so it happened there too and nobody wrote it down. Only `v0.9.3` carries 
 
 Do **not** `--force` past this. The remote tag names the right commit, the
 workflow has already run from it, and replacing it would move a published release
-ref to make two objects agree about a commit they already agree about. Leave the
-annotated tag local; it is the internal record, alongside `vX.Y.Z-fullhistory`.
+ref to make two objects agree about a commit they already agree about. Do not
+make a local annotated tag either — since 0.10.3 there is nothing for it to
+record that the remote tag does not already name. `vX.Y.Z-fullhistory`, which it
+used to sit alongside, retired with the squash (see §"The two repositories").
 
 A PyPI version number cannot be reused, and `skip-existing` is deliberately left
 off, so a second attempt at the same version fails rather than quietly doing
 nothing. Re-releasing means a new version.
 
-`on: push: tags: v*` also matches `v0.9.3-fullhistory`. That tag is internal and
-is never pushed to GitHub; if one ever were, the build job's tag-versus-package
-comparison fails before any publish job runs.
+`on: push: tags: v*` matches more than a release number — it would fire on
+`v0.9.3-fullhistory` or on `oldmaster-0.10.2`'s successor if one were ever
+pushed to GitHub. No such tag is, and if one were, the build job's
+tag-versus-package comparison fails before any publish job runs.
+
+## What 0.10.3 learned
+
+**The first release cut end to end under the shared history**, and the procedure
+held. Step 4 is one `git push` where it used to be forty lines, and the three
+refs agreed on the first read. Nothing in §"The two repositories" needed
+amending.
+
+Three things are worth keeping.
+
+**The build can run before the push.** It depends on the committed tree, not on
+the remote, so building and smoke-installing while the matrix is still running
+costs nothing and takes ~20 minutes off the wall clock. The only rule it must
+obey is that the tree stays clean between the archive and the build, which
+`git status --porcelain` answers in one line.
+
+**The tag targets the gated sha explicitly, and master may move past it.** The
+doc commit you are reading was made *after* the draft was created, so
+`--target bcb73c0…` pins the tag to the tree the matrix ran against. Committing
+prose first would have reintroduced, for documentation, exactly the
+gated-versus-shipped gap the pivot removed — small, but the pivot's whole claim
+is that the gap is now zero by construction.
+
+**Smoke-test the release's own headline.** The three venvs in §5 prove the
+packaging; they say nothing about whether the change anyone is waiting for
+survived it. 0.10.3's fix lets a single-file extension import a sibling, so the
+check was to load one from the *installed* wheel, from an unrelated working
+directory, under `python -I`. That is a different claim from "the suite passed",
+because the suite runs against the checkout.
