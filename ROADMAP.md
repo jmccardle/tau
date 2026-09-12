@@ -19,14 +19,19 @@ M4/M5, two flags (`--list-models`, `--session-id`), and the `docs/PLAN-0.9.4.md`
 §8 debt list. Suite: 4951 passed, 144 skipped, 0 failed. Docs coverage:
 316/758 (41.7%), 0 drift.
 
-**Release state (2026-08-28).** `v0.9.4` is public: the tag resolves to
-`c5fff1f` on the `github` remote, matching the local tag. **`origin` (the
-private development host) carries no tags at all** — `git ls-remote --tags origin`
-returns empty and exits 0, so the release tags live on `github` and in the local
-clone only. That is consistent with `docs/RELEASING.md`'s two-repository split
-but is worth stating, because an empty tag listing reads like an unreachable
-remote and is not one. `origin/master` is at `947918b`, which is behind local
-master. I did not check PyPI.
+**Release state (2026-08-28, corrected 2026-09-12).** `v0.9.4` is public: the tag
+resolves to `c5fff1f` on the `github` remote, matching the local tag. `origin`
+(the private development host) carried **no tags at all** — `git ls-remote --tags
+origin` returned empty and exited 0, so the release tags lived on `github` and in
+the local clone only. Worth stating, because an empty tag listing reads like an
+unreachable remote and is not one. `origin/master` is at `947918b`, which is
+behind local master. I did not check PyPI.
+
+That last claim stopped being true on 2026-09-12: `origin` now carries exactly
+one tag, `oldmaster-0.10.2`, which is what holds the 611 commits of private
+development history after `master` was reset onto the public 0.10.2 squash. The
+release tags still live on `github` only. See `docs/RELEASING.md` §"The two
+repositories".
 
 **Three commits sit past that release with no release notes and no plan doc.**
 `docs/RELEASE-NOTES-0.9.4.md` was extended once after the tag, by `cf3920a`, so

@@ -10,14 +10,19 @@ Two scopes, because two things are published and the risk differs.
 against ``LEAKS``. This is what a user installs or copies out of, so a LAN
 address there is a bug in the software.
 
-**Prose** — ``docs/``, ``ROADMAP.md`` and ``README.md``, held against
-``PROSE_LEAKS``, which drops the LAN pattern and adds the private git host.
-`docs/RELEASING.md` §"The two repositories" publishes this whole tree verbatim
-to GitHub, so prose is disclosure rather than breakage: a home directory names
-the author and the private remote names infrastructure, while a measured
-192.168 address is the *record of a run* and rewriting it falsifies the
-measurement. ``docs/probe-results/`` and ``experiments/`` are that kind of
-record end to end and are exempt from both scans.
+**Prose** — ``docs/``, ``ROADMAP.md``, ``README.md`` and ``CLAUDE.md``, held
+against ``PROSE_LEAKS``, which drops the LAN pattern and adds the private git
+host. `docs/RELEASING.md` §"The two repositories" publishes this whole tree to
+GitHub — every commit, since 0.10.3 — so prose is disclosure rather than
+breakage: a home directory names the author and the private remote names
+infrastructure, while a measured 192.168 address is the *record of a run* and
+rewriting it falsifies the measurement. ``docs/probe-results/`` and
+``experiments/`` are that kind of record end to end and are exempt from both
+scans.
+
+``CLAUDE.md`` joined this scope at 0.10.3. Through 0.10.2 it was the one tracked
+file the public tree never received, so it was the one tracked file that could
+hold a private address safely. It cannot now.
 
 Known remainder, deliberately not covered: ``tau-*/tests/`` still carries
 ``/home/john`` fixture strings and 192.168 addresses in conformance records.
@@ -51,7 +56,7 @@ SHIPPED = (
 )
 
 #: Files GitHub gets verbatim that nobody installs from.
-PROSE = ("docs/", "ROADMAP.md", "README.md")
+PROSE = ("docs/", "ROADMAP.md", "README.md", "CLAUDE.md")
 
 #: Dated records of runs against one machine; the address there is the data.
 PROSE_EXEMPT = ("docs/probe-results/",)
@@ -148,7 +153,7 @@ def test_published_prose_names_no_person_and_no_private_remote():
 def test_the_prose_scan_reaches_the_docs_tree():
     found = _prose_files()
     assert len(found) > 50, f"the prose walk found only {len(found)} files"
-    for expected in ("docs/RELEASING.md", "ROADMAP.md", "README.md"):
+    for expected in ("docs/RELEASING.md", "ROADMAP.md", "README.md", "CLAUDE.md"):
         assert expected in found, f"{expected} is published and the scan missed it"
     assert not [p for p in found if p.startswith("docs/probe-results/")]
 

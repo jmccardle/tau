@@ -10,36 +10,57 @@ removed — publishing the draft already creates that tag.
 
 ## The two repositories
 
-| | remote | history | what it holds |
-|---|---|---|---|
-| `agent-harness-py` | `origin` → the private git host | full, unfiltered | development |
-| `tau_public` | `origin` → `github.com/jmccardle/tau.git` | one commit per release | what the world sees |
+| remote | points at | what it holds |
+|---|---|---|
+| `origin` | the private git host | every commit, pushed as it is made |
+| `github` | `github.com/jmccardle/tau.git` | the same commits |
 
-The public repository is **not** a mirror with a filtered history. It is a
-squash: each release replaces its whole tree in a single commit whose subject is
-`vX.Y.Z - <headline>`. `git log` there is three commits long after 0.9.2.
+**Since 0.10.3 these are one history.** A commit goes to both remotes as it is
+made, and a release is a tag on one of them. There is one working tree.
 
-The internal repository can see both, because it also has a `github` remote. It
-carries two tags per release:
+That changed on 2026-09-12, and it is the largest thing this document records.
+Through 0.10.2 the public repository was a **squash**: each release replaced its
+whole tree in one commit whose subject was `vX.Y.Z - <headline>`, `git log` there
+was eleven commits long, development history was never published, and `CLAUDE.md`
+was the one tracked file the public tree did not get. At `v0.10.2` the internal
+`master` was reset onto that release's squash commit and force-pushed, so the 611
+commits made between 2026-06-18 and 2026-09-12 are reachable only from the
+`oldmaster-0.10.2` tag — which is on `origin` and on no other remote, and is the
+only thing standing between that history and a garbage collection.
 
-* `vX.Y.Z` — the public squashed commit.
-* `vX.Y.Z-fullhistory` — the internal commit that release was cut from.
+Five things left the procedure with it:
 
-Neither tag is pushed to `origin`; `git ls-remote --tags origin` is empty.
+* the `tau_public` checkout, and step 4's tree replacement and blob-hash
+  verification. A release now pushes the branch it was cut from;
+* `vX.Y.Z-fullhistory`, which named the internal commit a squash was cut from and
+  now has nothing to distinguish it from `vX.Y.Z`;
+* the rule that `CLAUDE.md` is withheld. It is published, and
+  `test_no_host_addresses.py` scans it as prose;
+* the gap between what was gated and what shipped. §2's matrix runs against
+  `git archive master`, which carried `CLAUDE.md` while the published tree did
+  not — so for eight releases those two file sets differed by one file. It could
+  not affect a test result, which is why nobody noticed. It is now zero by
+  construction;
+* `git push --force` as a way to unsay something. A pushed commit is public.
 
-`CLAUDE.md` is the one tracked file the public tree does not get. That has been
-true since v0.9.0. Everything else in internal `master` is published verbatim —
-verified by comparing blob hashes, not filenames.
+One thing did **not** leave, and its reason changed.
 
 ### A test may not assume the history it runs against
 
-CI runs in the **public** repository, so it sees three commits. `test_e5_status_
-doc.py` resolved commit shas cited in a doc via `git show -s`, passed here, and
-failed all nine of its cases there — blocking the pipeline, because `publish`
-needs `test`. It was retired at 0.9.2 rather than made conditional.
+The old reason was that CI ran against an eleven-commit squash. It no longer
+does. Two reasons replace it, and either alone is sufficient:
 
-Before adding a test that shells out to `git`, ask whether the commits it names
-exist in a three-commit checkout. They will not.
+* §2's matrix unpacks a `git archive`, which has **no `.git` at all**. This is
+  the stronger of the two, because it holds whatever any remote contains.
+* The public history **starts at `28aa30f`**, the 0.10.2 squash. A test naming a
+  commit older than that fails in the public repository and — since the reset —
+  in this one too. The pivot did not lengthen the history a test can rely on; it
+  froze the same short one and started growing it forward.
+
+`test_e5_status_doc.py` resolved commit shas cited in a doc via `git show -s`,
+passed locally, and failed all nine of its cases in CI — blocking the pipeline,
+because `publish` needs `test`. It was retired at 0.9.2 rather than made
+conditional.
 
 The rule is about **history**, not about `git` itself — 0.9.2's blanket "no test
 runs `git`" was wrong when it was written. Several tests build a throwaway repo
@@ -53,6 +74,14 @@ which has no `.git` at all, and both tests raised there on every Python version
 for four releases. They walk the filesystem now (2026-09-02). The suite runs
 against an unpacked tarball, and adding a test that needs a work tree would
 undo that.
+
+### There is still no CI on push
+
+`.github/workflows/publish.yml` triggers on `push: tags: v*` and
+`workflow_dispatch`, and it is the only workflow. Publishing the development
+history did not add a per-commit gate — **step 2's local run and the matrix
+remain the only gates a release passes.** The one advantage of that arrangement
+is that there is no green badge to misread.
 
 ## Steps
 
@@ -89,13 +118,13 @@ on `.`.
 
 #### The leakage check is inside `pytest`, not a separate step
 
-Step 4 replaces the public tree with `git archive master`, so **everything
-tracked except `CLAUDE.md` is published verbatim** — `docs/` and `ROADMAP.md`
-included, not just the installable packages.
+Every tracked file is published, `docs/` and `ROADMAP.md` included and not just
+the installable packages — and since 0.10.3 every *commit* is too, so this check
+is no longer about a release. It is about a push.
 `tau-coding-agent/tests/test_no_host_addresses.py` holds both scopes: `LEAKS`
 over the five `src` trees plus `examples/` and `scripts/`, and `PROSE_LEAKS`
 (home directories and the private remote's hostname, but not LAN addresses) over
-`docs/`, `ROADMAP.md` and `README.md`. `test_packaging.py` covers the third
+`docs/`, `ROADMAP.md`, `README.md` and `CLAUDE.md`. `test_packaging.py` covers the third
 surface, the READMEs and pyprojects that become PyPI metadata; its `PRIVATE_HOST`
 constant is where that hostname is written down, and this file must not repeat
 it — a document describing the pattern is still a document containing it.
@@ -301,7 +330,7 @@ because both are shapes a 3.11-only gate cannot see:
   caller wakes. How many loop iterations separate the two is the scheduler's
   business, and it changed.
 
-### 3. Merge and push internally
+### 3. Merge and push
 
 ```bash
 git checkout master
@@ -309,47 +338,27 @@ git merge --ff-only <branch>
 git push origin master
 ```
 
-### 4. Replace the public tree
-
-From a clean `tau_public` checkout that matches `origin/master`:
+### 4. Push the public remote
 
 ```bash
-cd ~/Development/tau_public
-git ls-files -z | xargs -0 rm -f
-find . -mindepth 1 -depth -type d -not -path "./.git*" -empty -delete
-git -C ~/Development/agent-harness-py archive master | tar -x -C .
-rm -f CLAUDE.md
-git add -A
+git push github master
 ```
 
-Deleting every tracked file first is what makes a rename or a deletion land;
-extracting over the old tree would leave the removed files behind. Then confirm
-the result is the internal tree and nothing else:
+That is the whole step. It used to be forty lines: a separate `tau_public`
+checkout, `git ls-files -z | xargs -0 rm -f` to make a rename or a deletion
+land, an extraction of `git archive master` over the emptied tree, `rm -f
+CLAUDE.md`, and a verification comparing blob hashes rather than filenames —
+because a filename cannot detect a stale file with the right name.
 
-```bash
-git ls-files -s | awk '{print $2, $4}' | sort > /tmp/pub
-git -C ~/Development/agent-harness-py ls-tree -r master | awk '{print $3, $4}' \
-  | grep -v " CLAUDE.md$" | sort > /tmp/int
-diff /tmp/int /tmp/pub
-```
+None of it applies to a shared history. What that verification proved, that the
+public tree is the internal tree and nothing else, is now true by construction,
+and the one exclusion it enforced is gone.
 
-Commit and tag with the same message, then push the branch:
+`git push github master` is a fast-forward. A refusal as non-fast-forward means
+something rewrote public history: stop and find out what, rather than reaching
+for `--force`.
 
-```bash
-git commit -F <notes>
-git tag -a v0.9.3 -F <notes>
-git push origin master
-```
-
-**Do not push the tag yet.** See step 6.
-
-Back in the internal repository:
-
-```bash
-git fetch github
-git tag -a v0.9.3 -m "..." <public commit>
-git tag -a v0.9.3-fullhistory -m "..." <internal master commit>
-```
+**Do not push a tag here.** Publishing the GitHub release in step 7 creates it.
 
 ### 5. Build and check
 
