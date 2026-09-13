@@ -1,8 +1,34 @@
 # τ Roadmap
 
 Living schedule of open work. Each item cites the evidence (file:line, doc, or
-test) it came from so it can be audited against the source of truth (pi) and the
-"Fail Early" rule.
+test) it came from, so a reader can check it against the code rather than against
+this file. Older entries cite pi as "the source of truth"; that stopped being the
+arrangement on 2026-09-03 (`CLAUDE.md`, "Parity with pi is not an objective") and
+those citations are provenance now.
+
+**State (2026-09-13):** re-audited against code after **seven releases this file
+never mentioned** — 0.9.5 through 0.10.3, 2026-08-30 to 09-12. Its own top two
+priorities are both in the first of them. Repeat-tool-call detection is
+`AgentLoopConfig.repeat_tool_call_limit`, default 3 (`agent_loop_types.py:83`,
+enforced at `agent_loop.py:322`), and five tools moved their file I/O off the
+paint loop (`to_thread` in `read`/`write`/`edit`/`grep`/`find`). A third carried
+debt went with them: `max_turns` no longer ends a run silently, because
+`"max_turns"` and `"repeat_tool_calls"` are `end_reason` values on the wire
+(`events.py:43`, `rpc_event_schema.py:110-111`). **Still open, re-verified
+today:** the trust gate, Tier 9, Tier 10's templates and skills legs, Tier 11
+M4/M5, `--list-models`, `--session-id`, and the last of the three blocking call
+sites — `_persist_loop_messages` is still a plain `def` (`agent_session.py:3402`)
+called from three synchronous sites. Docs coverage **514/955 marked objects
+(53.8%), 0 drift**, up from 316/758 (41.7%); the denominator grew by 197, so the
+percentage rose while 441 objects remain incomplete.
+
+**This file can no longer measure its drift in commits.** Every state header
+above opens with "drifted N commits behind master". `master` is **17 commits**
+long (`git rev-list --count master`), because 0.10.3's pivot re-pointed it onto
+the public squash chain instead of merging onto it — `git merge-base
+--is-ancestor` says the two chains are disjoint. The 611 private commits hang off
+`oldmaster-0.10.2` and are ancestors of nothing on `master`. Releases are the
+unit here from now on.
 
 **State (2026-08-28):** this file was last edited at `1968e6a` (2026-08-21) and
 had drifted 51 commits behind master. Two releases landed in that window: 0.9.3
@@ -27,11 +53,27 @@ the local clone only. Worth stating, because an empty tag listing reads like an
 unreachable remote and is not one. `origin/master` is at `947918b`, which is
 behind local master. I did not check PyPI.
 
-That last claim stopped being true on 2026-09-12: `origin` now carries exactly
-one tag, `oldmaster-0.10.2`, which is what holds the 611 commits of private
-development history after `master` was reset onto the public 0.10.2 squash. The
-release tags still live on `github` only. See `docs/RELEASING.md` §"The two
-repositories".
+Both of those claims are now wrong, and the 2026-09-12 correction that replaced
+them was wrong too — it said `origin` carried exactly one tag. Measured
+2026-09-13 with `git ls-remote --tags`:
+
+- `origin`: 21 tags — `oldmaster-0.10.2`, `v0.9.0`–`v0.10.1`, and ten
+  `-fullhistory` tags.
+- `github`: 12 tags — `v0.9.0`–`v0.10.3`, no `-fullhistory`.
+- local: 22 — everything on `origin` plus `v0.10.2`, and **not** `v0.10.3`.
+
+Where a version tag exists on both remotes it resolves to the same commit
+(checked for `v0.9.7`, `v0.10.0`, `v0.10.1` — `379230c`, `f77a0e6`, `0a6700a`,
+all on the public squash chain). The `-fullhistory` tags are what still name
+commits in the private chain; they are on `origin` and in the local clone, never
+on `github`. `v0.10.3` exists on `github` alone because publishing the release
+draft created it and the release procedure forbids pushing a local tag —
+`docs/RELEASING.md` §"The two repositories" and `.claude/skills/release/SKILL.md`
+step 7.
+
+**Released:** 0.10.3 is on PyPI — all five distributions (`ffwf-tau`,
+`ffwf-tau-llm`, `ffwf-tau-agent-core`, `ffwf-tau-coding-agent`,
+`ffwf-tau-jmfts`), published by `publish.yml` off the `v0.10.3` tag at `bcb73c0`.
 
 **Three commits sit past that release with no release notes and no plan doc.**
 `docs/RELEASE-NOTES-0.9.4.md` was extended once after the tag, by `cf3920a`, so
@@ -295,15 +337,48 @@ booleans collapse into one resolved `no_tools` at the argv boundary,
 still mark several of these ❌ against its own prose and the code — needs a
 resync pass (see "Doc hygiene" below).
 
+### 0.9.5 through 0.10.3 — seven releases, added 2026-09-13
+
+One line per release, pointing at its own note. Each `docs/RELEASE-NOTES-*.md`
+holds the measurements; this is the index, not a summary of them.
+
+- **0.9.5** (2026-08-30) — *two vendors, a frozen screen, and a loop that could
+  not stop.* Closes three entries in "Debts carried out of the 0.9.4 cycle":
+  repeat-tool-call detection, the `grep`/`find` blocking sites (five tools, not
+  two), and the silent `max_turns` ceiling. Also the two post-0.9.4 provider
+  fixes this file listed as having no release note, the Textual-themes crash,
+  and the agent-facing reference.
+- **0.9.6** — *the image arrives, and the TUI stops locking.* Image path,
+  editor, two fixes.
+- **0.9.7** — *the tree becomes an editor, and the transcript stops growing.*
+  `docs/TREE-BROWSER-AS-EDITOR.md` steps 1–7 and `docs/TRANSCRIPT-WINDOW.md`.
+  This is what closed most of the "Tree browser steps not started" debt below.
+- **0.10.0** — *one declaration of what τ can do, and a cache that was never
+  asked for.* The capability registry and `docs/PROMPT-CACHING.md`. Has a
+  breaking-changes section.
+- **0.10.1** — *the tree a second head can draw, and the lock it can release.*
+  Puts tree structure on the RPC wire — the largest blocker
+  `docs/VSCODE-HEAD.md` §6 named. Adds `tau --mode repl`, a fourth head.
+- **0.10.2** — *shadowing stops being destructive, and three silent no-ops start
+  working.* `docs/EXTENSION-NAMESPACE.md`, `docs/EXTENSION-MESSAGES.md`. §"A
+  fourth of the same shape, found by the release gate" is the one the gate
+  caught rather than the audit.
+- **0.10.3** (2026-09-12) — *an extension can import the module beside it, and
+  this history is public.* 9 code lines in `sdk.py`, and the repository pivot
+  recorded above.
+
 ---
 
 ## Open work
 
 Confirmed still-unbuilt by direct code inspection (not doc-trusting) on
-2026-08-09, and re-checked 2026-08-21 and 2026-08-28.
+2026-08-09, and re-checked 2026-08-21, 2026-08-28 and **2026-09-13**. The
+2026-09-13 pass re-grepped each item below and found **no change to this list
+across seven releases** — none of them targeted these.
 
-The 2026-08-28 check enumerated every `"--flag"` literal in `cli.py`. The 32
-flags that exist are: `--append-system-prompt`, `--bus`, `--continue`,
+The flag enumeration is re-run each pass over every `"--flag"` literal in
+`cli.py`; it is still the same 32 flags on 2026-09-13, with no additions and no
+removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
 `--exclude-tools`, `--export-session`, `--ext-config`, `--extension`, `--fork`,
 `--fun`, `--import-session`, `--max-turns`, `--mode`, `--model`, `--name`,
 `--no-builtin-tools`, `--no-context-files`, `--no-extensions`, `--no-session`,
@@ -353,37 +428,56 @@ to learn they exist. The mypy entry in that list is closed — the 52 findings
 were a measurement artifact of running mypy without the project's dependencies
 visible, not a real debt.
 
-- **Three synchronous call sites block the UI event loop.** The agent loop runs
-  as an async Textual worker on the app's own event loop, so anything
-  synchronous freezes painting and input. `grep` and `find` do a synchronous
-  `os.walk` with no `to_thread`; `read`/`write`/`edit` do synchronous file I/O;
-  worst, `_persist_loop_messages` is a plain sync method at turn end, so with
-  the JMFTS store a ten-tool turn issues about 21 blocking HTTP round-trips on
-  the UI thread. The last one gets worse as turns get longer.
-- **No repeat-tool-call detection in `agent_loop.py`** (0.9.3 §4.2). This got
-  worse in 0.9.4, not better: `max_turns` now defaults to `None`, so the
-  50-turn ceiling that used to bound a model calling one tool forever is gone.
+- **One synchronous call site still blocks the UI event loop**, down from three
+  (0.9.5 fixed the other two). The agent loop runs as an async Textual worker on
+  the app's own event loop, so anything synchronous freezes painting and input.
+  `_persist_loop_messages` is still a plain `def` (`agent_session.py:3402`) with
+  three synchronous call sites (`:2861`, `:2868`, `:3051`), so with the JMFTS
+  store a ten-tool turn issues about 21 blocking HTTP round-trips on the UI
+  thread. This is the one that gets worse as turns get longer, and it is now the
+  whole of this debt. ~~`grep`/`find`~~ and ~~`read`/`write`/`edit`~~ — **fixed
+  in 0.9.5**, `to_thread` in all five.
+- ~~**No repeat-tool-call detection in `agent_loop.py`**~~ (0.9.3 §4.2) —
+  **fixed in 0.9.5.** `AgentLoopConfig.repeat_tool_call_limit`, default 3, `ge=2`
+  (`agent_loop_types.py:83`), enforced at `agent_loop.py:322`.
 - **No retry or backoff anywhere in `tau-llm`** (0.9.3 §4.3). The seven-backend
   probe found UnoRouter 429s that name their own retry interval, so the
-  information is on the wire and unused.
-- **A stated `--max-turns` ceiling is still reached silently** — nothing in the
-  event stream distinguishes a truncated run from a finished one.
+  information is on the wire and unused. **Re-checked 2026-09-13: still open**,
+  and now the oldest item on this list.
+- ~~**A stated `--max-turns` ceiling is still reached silently**~~ — **fixed in
+  0.9.5.** `"max_turns"` and `"repeat_tool_calls"` are `end_reason` values
+  (`events.py:43`), set at `agent_loop.py:331` and `:483`, and documented on the
+  RPC wire at `rpc_event_schema.py:110-111`.
 - **Two docs describe a pipeline that no longer exists.**
-  `docs/TOOL-CALL-PIPELINE.md` and `docs/tau-coding-agent.md` still describe
-  `TauBackend.stream_chat` with a `callback(delta)` and a 30 Hz render throttle.
-  The TUI has used `subscribe_render`/`RenderRouter` since B3-a and the throttle
-  was deliberately removed. **`CLAUDE.md`'s architecture section inherits the
-  same wrong description** — step 5 and step 6 of its pipeline walkthrough.
+  `docs/TOOL-CALL-PIPELINE.md:37,43` draws `message_update → text delta →
+  callback(delta)` and "stream text into a ChatMessage at 30 Hz";
+  `docs/tau-coding-agent.md:14` calls the 30 Hz throttle "carried forward as-is;
+  still the right" choice. The TUI has used `subscribe_render`/`RenderRouter`
+  since B3-a and the throttle was deliberately removed. **The `CLAUDE.md` half
+  is closed** (2026-09-13) — the whole pipeline walkthrough was deleted in the
+  overhaul rather than corrected, because it was implementation detail in a file
+  that should carry layout, and `docs/TOOL-CALL-PIPELINE.md` is where it belongs
+  once that file is right.
 - **58 ruff findings outside the gate's scope** (tests, `run_agent_loop.py`,
   `experiments/m2`), three rules, none a defect. The `src` trees are clean.
   Recorded because "ruff is clean" is said often enough here to be worth
   qualifying.
 - **`docs/TECTUM-NO-TOOLS-MIGRATION.md`** — six sites, still the Tectum owner's
   call.
-- **Tree browser steps not started** — `docs/TREE-BROWSER-AS-EDITOR.md` §10
-  item 4d (the compaction fold header, parked because it rewrites row order so
-  vertical position stops meaning time), step 7 (the plan buffer and commit
-  algorithm), and the archive gesture.
+- **Tree browser: the fold header and the archive gesture.** Step 7 (the plan
+  buffer and commit algorithm) **shipped in 0.9.7**; what remains of
+  `docs/TREE-BROWSER-AS-EDITOR.md` §10 is item 4d (the compaction fold header,
+  parked because it rewrites row order so vertical position stops meaning time)
+  and the archive gesture.
+- **Test trees are outside both leakage scans** (added 2026-09-13, from
+  `docs/RELEASE-NOTES-0.10.3.md` and the worklog's §24). `tau-*/tests/` is in
+  neither the SHIPPED roots nor the PROSE roots of
+  `test_no_host_addresses.py`, and still carries hard-coded home-directory
+  fixture strings and LAN addresses. That was defensible while a commit stayed
+  private until a release squashed it; since 0.10.3 a push publishes it. The
+  scan's own failure message names offending lines, so start by widening the
+  roots and reading what it reports — this entry deliberately names no value,
+  per `CLAUDE.md`'s one-constant rule.
 
 ---
 
@@ -443,32 +537,49 @@ broader docs-overhaul plan already agreed (see memory
 
 ## Suggested order
 
-Highest-value remaining items, roughly by dependency. Revised 2026-08-28: the
-old items 1 and 2 are both built.
+Highest-value remaining items, roughly by dependency. Revised 2026-09-13: the
+2026-08-28 items 1 and 2 both shipped in 0.9.5, so the list has been renumbered
+and two items promoted out of the debt list.
 
-1. **Repeat-tool-call detection** (`docs/PLAN-0.9.4.md` §8) — promoted from an
-   unscheduled debt because 0.9.4 removed the ceiling that was covering for it.
-   `max_turns` now defaults to `None`, so a model calling one tool forever has
-   nothing to stop it and nothing to report it.
-2. **The three blocking call sites** (`docs/PLAN-0.9.4.md` §8) — `grep`/`find`
-   need `to_thread`, and `_persist_loop_messages` blocks the UI thread for
-   about 21 HTTP round-trips at the end of a ten-tool turn.
-3. **Trust gate** (Tier 8) — security-ordered; Tier 10's skills leg and
+1. **`docs/TOOL-CALL-PIPELINE.md` and `docs/tau-coding-agent.md` describe a
+   render path that was removed.** The `CLAUDE.md` copy of this description is
+   gone as of 2026-09-13, which makes these two the only remaining statements of
+   it — and with the walkthrough deleted, `docs/INDEX.md`'s Findings entry is the
+   only route to a description of the pipeline at all, so these two now carry
+   weight they did not carry while `CLAUDE.md` restated them.
+2. **`_persist_loop_messages` blocks the UI thread** (`agent_session.py:3402`) —
+   about 21 HTTP round-trips at the end of a ten-tool turn with the JMFTS store,
+   and the only one of the original three still standing.
+3. **Widen the leakage scan to `tau-*/tests/`** — the one surface a push now
+   publishes that nothing walks.
+4. **Trust gate** (Tier 8) — security-ordered; Tier 10's skills leg and
    project-local extensions are gated behind it per the original plan.
-4. **Tier 9** — `--export` HTML, pi-faithful `--mode json`. Both seams
+5. **Tier 9** — `--export` HTML, pi-faithful `--mode json`. Both seams
    (`entries()`/`header`) are already in place, and `export.py` already defines
-   the HTML format types.
-5. **Tier 10's remaining legs** — shared resource loader, templates, skills.
-   Themes shipped 2026-08-24 and did not need the shared loader, so that
-   abstraction is still unwritten and still unproven.
-6. **Docstring coverage** — 442 of 758 marked objects are incomplete. The gate
-   cannot enter the pre-commit hook until this moves.
-7. **Tier 11 M4/M5** — `registerProvider`, package manager. Lowest priority;
+   the HTML format types. Re-checked 2026-09-13: no HTML exporter is reachable
+   from `cli.py`.
+6. **Tier 10's remaining legs** — shared resource loader, templates, skills. No
+   `PromptTemplate` type, no `$ARGUMENTS` handling, no `SKILL.md` loader exists
+   in any `src` tree (re-grepped 2026-09-13). Themes shipped 2026-08-24 and did
+   not need the shared loader, so that abstraction is still unwritten and still
+   unproven.
+7. **Docstring coverage** — 441 of 955 marked objects are incomplete (53.8%
+   complete, up from 41.7% on 08-28). The gate cannot enter the pre-commit hook
+   until this moves.
+8. **Retry/backoff in `tau-llm`** (0.9.3 §4.3) — unscheduled since 2026-08-21
+   and the oldest open item on this file.
+9. **Tier 11 M4/M5** — `registerProvider`, package manager. Lowest priority;
    deliberately deferred, no user demand signal yet.
-8. ~~A doc for tau-006/tau-007~~ — **done 2026-08-10**, `docs/NATS-BUS-EXTENSION.md`.
-9. ~~Wire or remove the AGENTS.md loader~~ — **done 2026-08-21** (`db98524`);
-   the diagnosis was wrong, the fix was precedence, not plumbing.
-10. ~~Session UX Phase B + C~~ — **done**; see "Shipped" above.
+Closed items from earlier orderings, kept so a reader can tell a finished item
+from one that was quietly dropped:
+
+- ~~A doc for tau-006/tau-007~~ — **done 2026-08-10**, `docs/NATS-BUS-EXTENSION.md`.
+- ~~Wire or remove the AGENTS.md loader~~ — **done 2026-08-21** (`db98524`);
+  the diagnosis was wrong, the fix was precedence, not plumbing.
+- ~~Session UX Phase B + C~~ — **done**; see "Shipped" above.
+- ~~Repeat-tool-call detection~~ and ~~the `grep`/`find` blocking sites~~ —
+  **done in 0.9.5**, 2026-08-30. These were items 1 and 2 of the 2026-08-28
+  ordering and stood at the top of this list for a fortnight after they shipped.
 
 G7 (jump-forward branch hints) stays blocked on the llama.cpp fork server
 work (`turboquant_experiments`), tracked in `docs/WORKSTREAM-CROSSWALK.md`,

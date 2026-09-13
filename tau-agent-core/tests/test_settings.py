@@ -16,7 +16,7 @@ SANDBOXING: every test here patches ``pathlib.Path.home`` (via
 ``monkeypatch.setattr(Path, "home", ...)``) to a directory under ``tmp_path``
 *before* calling ``Settings.load()``, so none of them can read the developer's
 real ``~/.tau/settings.json`` — the same class of bug the repo owner already
-fixed elsewhere (see CLAUDE.md's ``KNOWN-DEFECTS.md`` reference for the
+fixed elsewhere (see ``docs/INDEX.md``'s ``KNOWN-DEFECTS.md`` entry for the
 sibling case in JMFTS). This was true of the tests carried over from the old
 file too; verified during this split rather than found broken.
 
