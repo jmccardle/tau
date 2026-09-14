@@ -436,7 +436,19 @@ visible, not a real debt.
   store a ten-tool turn issues about 21 blocking HTTP round-trips on the UI
   thread. This is the one that gets worse as turns get longer, and it is now the
   whole of this debt. ~~`grep`/`find`~~ and ~~`read`/`write`/`edit`~~ — **fixed
-  in 0.9.5**, `to_thread` in all five.
+  in 0.9.5**, `to_thread` in all five. **The same `to_thread` move does not work
+  here** and was reverted on 2026-09-13 — see "Suggested order" item 2 and
+  `docs/BLOCKING-PERSISTENCE.md`, which rejected it in 2026-08 for a reason this
+  entry never carried.
+- **The RPC cursor-ordering invariant is documented but not gated** (added
+  2026-09-13). `rpc/handler.py:579-587` states that no `await` may appear between
+  `_forward_event`'s `put_nowait` and `_persist_loop_messages`, and names
+  `test_agent_end_wire_event_carries_the_post_persistence_cursor` as the test
+  that pins it. That test passes with the invariant broken: appends in the test
+  double return fast enough that the writer task never wins the race. The full
+  suite reported 6216 passed / 0 failed on a tree that had the regression in it.
+  A gate that cannot fail is not a gate — the fix is a slow-append double, which
+  is what the reverted attempt's own verifier used to reproduce the defect.
 - ~~**No repeat-tool-call detection in `agent_loop.py`**~~ (0.9.3 §4.2) —
   **fixed in 0.9.5.** `AgentLoopConfig.repeat_tool_call_limit`, default 3, `ge=2`
   (`agent_loop_types.py:83`), enforced at `agent_loop.py:322`.
@@ -448,8 +460,10 @@ visible, not a real debt.
   0.9.5.** `"max_turns"` and `"repeat_tool_calls"` are `end_reason` values
   (`events.py:43`), set at `agent_loop.py:331` and `:483`, and documented on the
   RPC wire at `rpc_event_schema.py:110-111`.
-- **Two docs describe a pipeline that no longer exists.**
-  `docs/TOOL-CALL-PIPELINE.md:37,43` draws `message_update → text delta →
+- ~~**Two docs describe a pipeline that no longer exists.**~~ — **fully closed
+  2026-09-13** (`3cae472`); the history below is kept because the correction
+  found three further wrong claims, one of them in its own first draft.
+  `docs/TOOL-CALL-PIPELINE.md:37,43` drew `message_update → text delta →
   callback(delta)` and "stream text into a ChatMessage at 30 Hz";
   `docs/tau-coding-agent.md:14` calls the 30 Hz throttle "carried forward as-is;
   still the right" choice. The TUI has used `subscribe_render`/`RenderRouter`
@@ -477,7 +491,7 @@ visible, not a real debt.
   private until a release squashed it; since 0.10.3 a push publishes it. The
   scan's own failure message names offending lines, so start by widening the
   roots and reading what it reports — this entry deliberately names no value,
-  per `CLAUDE.md`'s one-constant rule.
+  per `CLAUDE.md`'s rule. **Closed 2026-09-13** (`bbb9e90`).
 
 ---
 
@@ -541,17 +555,38 @@ Highest-value remaining items, roughly by dependency. Revised 2026-09-13: the
 2026-08-28 items 1 and 2 both shipped in 0.9.5, so the list has been renumbered
 and two items promoted out of the debt list.
 
-1. **`docs/TOOL-CALL-PIPELINE.md` and `docs/tau-coding-agent.md` describe a
-   render path that was removed.** The `CLAUDE.md` copy of this description is
-   gone as of 2026-09-13, which makes these two the only remaining statements of
-   it — and with the walkthrough deleted, `docs/INDEX.md`'s Findings entry is the
-   only route to a description of the pipeline at all, so these two now carry
-   weight they did not carry while `CLAUDE.md` restated them.
+1. ~~**`docs/TOOL-CALL-PIPELINE.md` and `docs/tau-coding-agent.md` describe a
+   render path that was removed.**~~ — **done 2026-09-13** (`3cae472`).
+   Re-derived from the code, not reworded. Three claims the first pass made were
+   themselves wrong and were caught by an adversarial re-read: `message_end` does
+   produce a render event (`completion_end`), `custom_message` is deliberately
+   the one render dict with no lane, and "a head renders the third vocabulary and
+   never the second" is true of the TUI only — `tau -p --mode json` and
+   `tau --mode rpc` both read `AgentEvent`s directly.
 2. **`_persist_loop_messages` blocks the UI thread** (`agent_session.py:3402`) —
-   about 21 HTTP round-trips at the end of a ten-tool turn with the JMFTS store,
-   and the only one of the original three still standing.
-3. **Widen the leakage scan to `tau-*/tests/`** — the one surface a push now
-   publishes that nothing walks.
+   **attempted 2026-09-13, reverted, and it is not the small item this list said
+   it was.** Two things were missed when it was scheduled. First,
+   `docs/BLOCKING-PERSISTENCE.md` (2026-08-28) is the record that owns this
+   decision, and it already priced exactly this fix — "Option A — `to_thread` the
+   call sites. ~6 lines. Rejected" — in favour of Option B, an async `SessionLog`
+   protocol, which is a contract change other people implement. Second, the
+   `to_thread` version introduces a **confirmed `tau --mode rpc` regression**:
+   `RPCHandler._stamp_agent_end_cursor` (`rpc/handler.py:566`) depends on there
+   being no `await` between `_forward_event`'s `put_nowait` and
+   `_persist_loop_messages`, and its docstring at `:579-587` states that
+   invariant and predicts its own falsification in terms. Adding the `await`
+   lets the writer task dequeue and stamp the pre-persistence cursor — the
+   stale-tip failure E5/F3 exist to prevent. **The suite does not catch it**: the
+   full run passed 6216/0, and the regression only appears once appends are slow
+   enough to lose the race. So this item now depends on Option B, or on moving
+   the cursor stamp, and either needs a design record first.
+3. ~~**Widen the leakage scan to `tau-*/tests/`**~~ — **done 2026-09-13**
+   (`bbb9e90`). Third scope, `TESTS`, held against the strict pattern; ten lines
+   in six files cleaned; `tau-jmfts/tests/conftest.py` now requires
+   `JMFTS_TEST_URL` instead of defaulting to a live LAN instance, so 117 jmfts
+   tests skip until it is set. `CLAUDE.md`'s "exactly one place" claim was false
+   and is corrected — two test constants hold the value, and both exist to forbid
+   it elsewhere.
 4. **Trust gate** (Tier 8) — security-ordered; Tier 10's skills leg and
    project-local extensions are gated behind it per the original plan.
 5. **Tier 9** — `--export` HTML, pi-faithful `--mode json`. Both seams
