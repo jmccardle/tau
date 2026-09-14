@@ -41,8 +41,8 @@ _PROV = {
 }
 
 
-CWD = "/home/john/proj"
-OTHER_CWD = "/home/john/other"
+CWD = "/srv/work/proj"
+OTHER_CWD = "/srv/work/other"
 
 
 def _create(base_dir, *, cwd=CWD, model="local-llm", **kwargs) -> Session:
@@ -53,8 +53,8 @@ def _create(base_dir, *, cwd=CWD, model="local-llm", **kwargs) -> Session:
 
 
 def test_cwd_dir_encoding(tmp_path):
-    directory = session_dir_for_cwd("/home/john/Development/agent-harness-py", tmp_path)
-    assert directory == tmp_path / "--home-john-Development-agent-harness-py--"
+    directory = session_dir_for_cwd("/srv/work/Development/agent-harness-py", tmp_path)
+    assert directory == tmp_path / "--srv-work-Development-agent-harness-py--"
 
 
 def test_filename_is_timestamp_then_uuid(tmp_path):

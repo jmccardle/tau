@@ -223,23 +223,25 @@ class TestTheFilterIsBounded:
         assert matches_query("compaction session_manager", haystack)
 
 
-def test_elide_start_cuts_the_front_and_marks_it() -> None:
+def test_elide_start_cuts_the_front_and_marks_it(tmp_path) -> None:
     """The opposite end from ``app._elide``: a path's identity is its tail."""
-    cut = elide_start("/home/john/Development/agent-harness-py", 20)
+    cut = elide_start(str(tmp_path / "Development/agent-harness-py"), 20)
     assert cut == "…nt/agent-harness-py"
     assert len(cut) == 20
     assert elide_start("/short", 20) == "/short"
 
 
-def test_elide_start_leaves_text_alone_when_there_is_no_room_for_the_marker() -> None:
+def test_elide_start_leaves_text_alone_when_there_is_no_room_for_the_marker(tmp_path) -> None:
     """Matching ``_elide``: a label cut to nothing says less than one that
     overflows where the reader can see it."""
-    assert elide_start("/home/john/x", 1) == "/home/john/x"
+    long_path = str(tmp_path / "x")
+    assert elide_start(long_path, 1) == long_path
 
 
 def test_home_relative_folds_only_an_exact_home_prefix() -> None:
-    """``/home/johnny`` is not inside ``/home/john`` and must not be rewritten
-    as though it were — a wrong path in the status line is worse than a long one."""
+    """A sibling that merely *starts* with ``$HOME`` is not inside it, and must
+    not be rewritten as though it were — a wrong path in the status line is
+    worse than a long one."""
     home = str(Path.home())
     assert home_relative(home) == "~"
     assert home_relative(f"{home}/Development/tau") == "~/Development/tau"

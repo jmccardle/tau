@@ -4,7 +4,7 @@
 or a home directory baked into the shipped trees is a defect: it makes the
 package work in exactly one place and fail quietly everywhere else.
 
-Two scopes, because two things are published and the risk differs.
+Three scopes, because three things are published and the risk differs.
 
 **Strict** — the five ``src/`` trees plus ``examples/`` and ``scripts/``, held
 against ``LEAKS``. This is what a user installs or copies out of, so a LAN
@@ -24,9 +24,14 @@ scans.
 file the public tree never received, so it was the one tracked file that could
 hold a private address safely. It cannot now.
 
-Known remainder, deliberately not covered: ``tau-*/tests/`` still carries
-``/home/john`` fixture strings and 192.168 addresses in conformance records.
-They publish too. Bringing them under the prose scope is a separate change.
+**Tests** — the four ``tau-*/tests/`` trees, held against the *strict* ``LEAKS``.
+They publish exactly as prose does, but a fork also RUNS them, so both halves of
+the risk land here: a home directory names the author, and a LAN default makes a
+suite that passes on one machine skip on every other. Holding them against
+``PROSE_LEAKS`` was the alternative and is rejected for dropping the LAN pattern,
+which is the half a test tree actually executes. ``PROSE_LEAKS``' other half, the
+private remote, is left to prose: the one test naming that host names it in order
+to forbid it in published metadata.
 
 The file list is walked, not asked of ``git``. See ``_shipped_files`` for why:
 the release matrix tests a ``git archive`` export, which has no ``.git``.
@@ -61,7 +66,15 @@ PROSE = ("docs/", "ROADMAP.md", "README.md", "CLAUDE.md")
 #: Dated records of runs against one machine; the address there is the data.
 PROSE_EXEMPT = ("docs/probe-results/",)
 
-#: This file names the patterns it forbids.
+#: Published verbatim like prose, and run by every fork like shipped code.
+TESTS = (
+    "tau-llm/tests",
+    "tau-agent-core/tests",
+    "tau-coding-agent/tests",
+    "tau-jmfts/tests",
+)
+
+#: The ONE exempt file in any scope — this one, which must name what it forbids.
 ALLOWED = {"tau-coding-agent/tests/test_no_host_addresses.py"}
 
 #: File types whose text a person reads or a program parses.
@@ -91,6 +104,16 @@ def _shipped_files() -> list[str]:
 def _prose_files() -> list[str]:
     """Every file GitHub gets that nobody installs from, minus the run records."""
     return _walk(PROSE, exempt=PROSE_EXEMPT)
+
+
+def _test_files() -> list[str]:
+    """Every test file, minus this one.
+
+    The exemption is a single path in ``ALLOWED``, not a directory: the rest of
+    ``tau-coding-agent/tests/`` is scanned like any other test tree, and
+    ``test_the_tests_scope_exempts_one_file_not_its_directory`` holds that open.
+    """
+    return _walk(TESTS, exempt=())
 
 
 def _walk(roots: tuple[str, ...], *, exempt: tuple[str, ...]) -> list[str]:
@@ -148,6 +171,55 @@ def test_published_prose_names_no_person_and_no_private_remote():
         "published prose names a person's home directory or the private "
         "remote:\n" + "\n".join(offenders)
     )
+
+
+def test_no_host_addresses_in_the_test_trees():
+    """A fork runs these files, and GitHub gets them at push time either way.
+
+    Held against the strict `LEAKS`, not `PROSE_LEAKS` — see the module
+    docstring. The fix is a `tmp_path` for a home directory and a documentation
+    address (RFC 5737 192.0.2.0/24, or an `.invalid` name) for a host.
+    """
+    offenders: list[str] = []
+    for rel in _test_files():
+        path = REPO / rel
+        for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if LEAKS.search(line):
+                offenders.append(f"{rel}:{lineno}: {line.strip()}")
+    assert not offenders, (
+        "host-specific addresses in a test tree — these publish at push time "
+        "and a fork runs them; use tmp_path or a documentation address:\n" + "\n".join(offenders)
+    )
+
+
+def test_the_tests_scope_exempts_one_file_not_its_directory():
+    """`ALLOWED` is a path, and a reader must be able to see that it is.
+
+    Exempting `tau-coding-agent/tests/` wholesale would turn the largest test
+    tree off while still reporting a pass, so this names a sibling that has to
+    stay in the walk.
+    """
+    found = _test_files()
+    assert "tau-coding-agent/tests/test_no_host_addresses.py" not in found
+    assert "tau-coding-agent/tests/test_packaging.py" in found
+
+
+def test_the_scan_reaches_every_test_tree():
+    """Same guard as ``test_the_scan_actually_reaches_the_shipped_trees``.
+
+    One file per tree is named, so a rename that empties a tree fails HERE,
+    saying which — rather than passing on an empty list.
+    """
+    found = _test_files()
+    assert len(found) > 100, f"the test walk found only {len(found)} files"
+
+    for expected in (
+        "tau-llm/tests/test_llama_conformance.py",
+        "tau-agent-core/tests/test_agent_loop.py",
+        "tau-coding-agent/tests/test_session_store.py",
+        "tau-jmfts/tests/conftest.py",
+    ):
+        assert expected in found, f"{expected} is published and the scan missed it"
 
 
 def test_the_prose_scan_reaches_the_docs_tree():

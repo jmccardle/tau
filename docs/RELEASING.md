@@ -121,10 +121,12 @@ on `.`.
 Every tracked file is published, `docs/` and `ROADMAP.md` included and not just
 the installable packages — and since 0.10.3 every *commit* is too, so this check
 is no longer about a release. It is about a push.
-`tau-coding-agent/tests/test_no_host_addresses.py` holds both scopes: `LEAKS`
-over the five `src` trees plus `examples/` and `scripts/`, and `PROSE_LEAKS`
-(home directories and the private remote's hostname, but not LAN addresses) over
-`docs/`, `ROADMAP.md`, `README.md` and `CLAUDE.md`. `test_packaging.py` covers the third
+`tau-coding-agent/tests/test_no_host_addresses.py` holds three scopes: `LEAKS`
+over the five `src` trees plus `examples/` and `scripts/`; `PROSE_LEAKS` (home
+directories and the private remote's hostname, but not LAN addresses) over
+`docs/`, `ROADMAP.md`, `README.md` and `CLAUDE.md`; and, since 2026-09-13, the
+strict `LEAKS` again over the four `tau-*/tests` trees, which a fork both reads
+and runs. `test_packaging.py` covers the fourth
 surface, the READMEs and pyprojects that become PyPI metadata; its `PRIVATE_HOST`
 constant is where that hostname is written down, and this file must not repeat
 it — a document describing the pattern is still a document containing it.
@@ -314,9 +316,9 @@ protect: dead is the right answer, not a concession to the harness.
 Walking rather than asking `git` is also the stricter question. `git ls-files`
 sees TRACKED files, and a host address or a bad install hint is just as baked in
 while the file is still untracked — which is the state every one of those files
-passes through. Both tests now carry a companion that asserts the walk actually
-reached the trees, because an enumeration that silently returns nothing passes a
-scan-for-offenders test with the same green dot as a real pass.
+passes through. All three scopes now carry a companion that asserts the walk
+actually reached the trees, because an enumeration that silently returns nothing
+passes a scan-for-offenders test with the same green dot as a real pass.
 
 The two failures that actually cost 0.9.3 its first tag are worth knowing,
 because both are shapes a 3.11-only gate cannot see:

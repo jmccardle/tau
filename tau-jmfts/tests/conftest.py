@@ -1,8 +1,11 @@
 """tau-jmfts test fixtures.
 
 The live-integration tests (marker ``jmfts``) talk to a real JMFTS server.
-Target URL: ``$JMFTS_TEST_URL`` if set, else the LAN dev instance used during
-W11 development. Auth: the server now requires a bearer token, read from
+Target URL: ``$JMFTS_TEST_URL``, and there is no default — a baked-in LAN
+address is one machine's address shipped to everyone, which
+``tau-coding-agent/tests/test_no_host_addresses.py`` forbids; unset means skip,
+the same contract ``scripts/llama_conformance_probe.py`` already uses. Auth: the
+server requires a bearer token, read from
 ``$JMFTS_API_TOKEN`` (never hardcoded here) and threaded into every live client
 via the ``jmfts_token`` fixture.
 
@@ -20,7 +23,7 @@ import os
 import httpx
 import pytest
 
-JMFTS_TEST_URL = os.environ.get("JMFTS_TEST_URL", "http://192.168.1.100:8100")
+JMFTS_TEST_URL = os.environ.get("JMFTS_TEST_URL", "")
 JMFTS_API_TOKEN = os.environ.get("JMFTS_API_TOKEN")
 
 TEST_PREFIX = "tau-jmfts-test"
@@ -54,11 +57,12 @@ def jmfts_token() -> str | None:
 
 @pytest.fixture(scope="session")
 def jmfts_url() -> str:
+    """The live server's base URL, or a skip saying which variable is missing."""
+    if not JMFTS_TEST_URL:
+        pytest.skip("no JMFTS server configured -- set JMFTS_TEST_URL to a live instance")
     status = _probe_server(JMFTS_TEST_URL, JMFTS_API_TOKEN)
     if status == "unreachable":
-        pytest.skip(
-            f"JMFTS server unreachable at {JMFTS_TEST_URL} (set JMFTS_TEST_URL to override)"
-        )
+        pytest.skip(f"JMFTS server unreachable at {JMFTS_TEST_URL} ($JMFTS_TEST_URL points there)")
     if status == "unauthorized":
         pytest.skip(
             f"JMFTS server at {JMFTS_TEST_URL} rejected the token with 401/403 -- "

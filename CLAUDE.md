@@ -129,14 +129,19 @@ docstring and a `docs/` file are all public the moment they are pushed, and
 `git push --force` is no longer a way to unsay something.
 
 `tau-coding-agent/tests/test_no_host_addresses.py` enforces the consequence over
-two surfaces. The five `src` trees plus `examples/` and `scripts/` reject a LAN
+three surfaces. The five `src` trees plus `examples/` and `scripts/` reject a LAN
 address and a home directory, because a user installs or copies out of them. The
 prose that ships — `docs/`, `README.md`, `ROADMAP.md`, `CLAUDE.md` — rejects a
 home directory and the private git host, because there the problem is disclosure
-rather than breakage.
+rather than breakage. The four `tau-*/tests` trees take the strict pattern, added
+2026-09-13: they are published like prose, but a fork also *runs* them, so both
+halves of the risk land there.
 
-The private host's address appears in **exactly one place**, that test's own
-constant. A document describing the leak pattern must not repeat the value.
+The private host's address is written down in **two test constants and nowhere
+else** — that file's `PROSE_LEAKS` and `test_packaging.py`'s `PRIVATE_HOST`,
+which gates the PyPI metadata. Both exist to forbid the value elsewhere. Nothing
+else may contain it, and a document describing the leak pattern must not repeat
+it.
 
 ## Writing code here
 

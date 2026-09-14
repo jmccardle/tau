@@ -108,7 +108,7 @@ def test_a_realistic_local_llm_entry():
         {
             "backend": "openai",
             "model": "qwen3-8b",
-            "base_url": "http://192.168.1.100:8080/v1",
+            "base_url": "http://192.0.2.10:8080/v1",
             "grammar": "llguidance",
             "extra_body": {"cache_prompt": True},
             "server_features": ["jump_forward"],

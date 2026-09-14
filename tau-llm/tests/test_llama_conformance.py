@@ -3,8 +3,10 @@
 Deselected by default (``addopts = ["-m", "not llama"]`` in the root
 ``pyproject.toml``). Run with::
 
-    pytest -m llama                       # the LAN default, or $TAU_LLAMA_TEST_URL
-    TAU_LLAMA_TEST_URL=http://h:8080 pytest -m llama
+    TAU_LLAMA_TEST_URL=http://host:8080 pytest -m llama
+
+There is no default endpoint: with the variable unset the probe reports itself
+unreachable and this module skips.
 
 Re-run this ONLY for changes that touch the LLM provider interfaces — the
 ``tau_llm.providers`` modules, the ``Model`` fields that reach the request body
@@ -14,8 +16,8 @@ session, RPC, extension or docs change cannot alter what an endpoint honors, and
 the default ``pytest`` run is the gate for those.
 
 **These assertions encode MEASUREMENTS, not desired behavior.** Each one records
-what ``http://192.168.1.100:8080`` (Qwen3-35B IQ4_XS) did on 2026-08-08; the full
-report is ``docs/probe-results/llama-2026-08-08.json``. A failure here is
+what one llama.cpp build (Qwen3-35B IQ4_XS) did on 2026-08-08; that run's endpoint
+and full report are ``docs/probe-results/llama-2026-08-08.json``. A failure here is
 therefore ambiguous by design, and the ambiguity is the point: it means the
 endpoint changed, and the change may be llama.cpp being FIXED. Check the server
 build before changing τ. Each assertion below names what its own failure would

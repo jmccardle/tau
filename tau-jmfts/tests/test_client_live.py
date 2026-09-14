@@ -57,7 +57,7 @@ def test_create_read_topology_and_delete_cascade(client: JmftsClient) -> None:
         "version": 1,
         "id": f"{TEST_PREFIX}-session-{run_id}",
         "timestamp": "2026-07-12T00:00:00+00:00",
-        "cwd": "/home/john/Development/agent-harness-py",
+        "cwd": "/srv/work/agent-harness-py",
         "hostname": "test-harness",
         "parent": None,
         "nested": {"list": [1, 2, 3], "unicode": "τ agent — café", "flag": True},
