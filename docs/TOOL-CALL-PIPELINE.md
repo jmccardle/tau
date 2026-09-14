@@ -1,15 +1,16 @@
 # Reference: The Tool-Call Streaming Pipeline
 
-How a single user turn travels from HTTP bytes to a rendered tool call/result, across the three packages. This is the subsystem most worth understanding because it crosses **two event vocabularies** and transforms a "tool call" four times.
+Re-derived from the code 2026-09-13. How a single user turn travels from HTTP bytes to a rendered tool call/result, across the three packages. This is the subsystem most worth understanding because it crosses **three event vocabularies** and transforms a "tool call" four times.
 
-## Two event vocabularies
+## Three event vocabularies
 
 | Vocabulary | Defined in | Producer | Examples |
 |---|---|---|---|
 | **τ-llm streaming events** | `tau_llm/streaming.py` | the provider (`openai.py`) | `TextDeltaEvent`, `ToolCallDeltaEvent`, `DoneEvent`, `ErrorEvent` |
 | **τ-agent-core AgentEvents** | `tau_agent_core/events.py` | the agent loop / event bus | `agent_start`, `turn_start`, `message_start`, `message_update`, `message_end`, `tool_execution_start`, `tool_execution_end`, `turn_end`, `agent_end` |
+| **render events** | `tau_coding_agent/backends.py` | `TurnStream` / `RenderRouter` | ten dicts keyed by `"kind"`: `lane_start`, `turn_start`, `steer_message`, `text_delta`, `reasoning_delta`, `tool_call`, `tool_result`, `completion_end`, `lane_end`, `custom_message`. Nine carry a lane; `custom_message` deliberately does not (`RenderRouter.on_custom_message`), because a message `api.send_message` sent with no turn in flight belongs to the transcript rather than to a completion |
 
-The agent loop **consumes** the first and **emits** the second. `TauBackend` subscribes to the second to drive the TUI. Do not confuse them — both have a notion of "message" and "delta," but they are different shapes.
+The agent loop **consumes** the first and **emits** the second. `RenderRouter` subscribes to the second — once, for the life of the session, via `Backend.subscribe_render` — and normalizes it into the third, one `TurnStream` per lane. **The TUI** renders the third and never the second; the other two heads do read the second directly — `tau -p --mode json` maps each raw `AgentEvent` to pi's shape (`headless.py`, `tau_event_to_pi_event`) and `tau --mode rpc` ships `AgentEvent`s on the wire. Do not confuse them: all three have a notion of "message" or "delta," and they are different shapes.
 
 ## End-to-end flow
 
@@ -32,17 +33,21 @@ HTTP SSE  ──►  OpenAICompletionsProvider.stream_chat   (tau-llm/providers/
                  • emit tool_execution_start / tool_execution_end
                  • append toolResult messages, loop until no tool calls or max_turns
                         │
-                        ▼  (event bus subscription)
-            TauBackend.stream_chat / capture_event       (tau-coding-agent/backends.py)
-                 • message_update → text delta → callback(delta)
-                 • message_end   → collect {"type":"toolCall"} blocks into tool_calls_info
-                 • tool_execution_end → attach result text to the matching tool call
+                        ▼  (persistent subscribe_render subscription)
+            RenderRouter → TurnStream.feed               (tau-coding-agent/backends.py)
+                 • message_update → MessageDeltaProjector → {"kind": "text_delta"/"reasoning_delta"}
+                 • tool_execution_start / _end → {"kind": "tool_call"} / {"kind": "tool_result"}
+                 • message_end → {"kind": "completion_end"}: usage, stop_reason, dropped_tool_calls
+                 •                tool widgets come off tool_execution_*, never off message_end
                         │
                         ▼
-            TauApp._get_assistant_response               (tau-coding-agent/app.py)
-                 • stream text into a ChatMessage at 30 Hz
-                 • display.add_tool_call(name, arguments) / add_tool_result(...)
+            TauApp._on_render_event                      (tau-coding-agent/app.py)
+                 • await ChatDisplay.handle_stream_event(event) — every delta, no throttle
+                 • text_delta → MessageBox.append_content_delta → MarkdownStream.write
+                 • tool_call → MessageBox.add_tool_call(...) → ToolBox; tool_result folds in
 ```
+
+`_on_render_event` is attached to the SESSION, not to a call: it draws every lane the session runs, including a forked sub-agent's and a turn a bus, timer or extension submitted, which is why `TauApp._get_assistant_response` now only awaits its own submission and renders nothing. The `callback(delta)` shape the TUI used before B3-a still exists one layer down — `TauBackend.stream_submission` feeds the same `TurnStream` and calls `callback` per text delta — but only `tau -p` and the SDK-shaped callers use it; a head that subscribed as well would draw every token twice.
 
 ## The four shapes of a "tool call"
 
@@ -50,8 +55,8 @@ A tool call is re-encoded at every boundary. When debugging, follow `arguments` 
 
 1. **Provider** — `tau_llm.types.ToolCall` (pydantic): `{type:"toolCall", id, name, arguments: dict}`. Built in `_build_final_message` from the accumulated `arguments_parts`.
 2. **Loop / event** — converted to a plain dict via `model_dump()` at the loop boundary: `{"type":"toolCall","id":...,"name":...,"arguments": {...}}`, carried inside `AgentEvent.message["content"]`.
-3. **Backend** — flattened into `tool_calls_info`: `{"id","name","arguments", "result"?, "error"?}`.
-4. **TUI** — `arguments` is `json.dumps`-ed into a Markdown code block by `ChatDisplay.add_tool_call`.
+3. **Render event** — `TurnStream.feed` emits `{"kind":"tool_call","lane",…,"id","name","arguments"}` off `tool_execution_start`, and a matching `{"kind":"tool_result",…,"result","is_error","blocked"}` off `tool_execution_end`. The `message_end` toolCall blocks are harvested separately (deduped by id) into `TurnStream.tool_calls` for chat persistence — `stream_submission` returns that list as `tool_calls_info` — and are never rendered, because the loop emits `message_end` twice per tool-bearing turn.
+4. **TUI** — `arguments` is `json.dumps`-ed into a Markdown code block by `ToolBox._args_block`, which mounts on the box's first expand.
 
 The **authoritative** arguments — the ones actually validated and executed — are the ones on the `AssistantMessage` returned by `_stream_response` (shape #1, from `DoneEvent.final`). The `message_update` partials (shape #2 mid-stream) are display-only and may legitimately be incomplete during streaming.
 
@@ -74,4 +79,5 @@ Correct accumulation therefore keys each in-progress call by the `index` field (
 | Did the loop see tool calls? | `assistant.get_tool_calls()` in `agent_loop.run` |
 | Did validation reject them? | `_prepare_tool_call` → `validate_tool_arguments` (`tau_llm/tools.py`) |
 | Did the tool receive correct args? | `_execute_tool` in `agent_loop.py` |
-| Did the TUI get them? | `capture_event`'s `message_end` branch in `backends.py` |
+| Did the TUI get them? | `TurnStream.feed`'s `tool_execution_start` branch (`backends.py`), then `TauApp._on_render_event` → `ChatDisplay._on_tool_call` |
+| Did the text reach the screen? | `TurnStream._feed_message_update` (`backends.py`), then `ChatDisplay._on_text_delta` → `MessageBox.append_content_delta` |

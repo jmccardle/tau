@@ -1,5 +1,9 @@
 # τ-coding-agent Design — TUI (fork of Parley)
 
+Per-package design record. The render path below was re-derived from the code
+2026-09-13; nothing else here was re-checked that day, and the CLI table says
+the same about itself.
+
 ## Scope
 
 τ-coding-agent is the interactive terminal interface, plus the `tau` CLI
@@ -11,8 +15,6 @@ this one, about where the code came from.
 
 ## What's genuinely still Parley
 
-- **30Hz streaming throttle** — carried forward as-is; still the right
-  answer for not thrashing the terminal on token-by-token deltas.
 - **Catppuccin Mocha palette** — still the default look, and byte-identical to
   Parley's (`#1e1e2e` base, `#89dceb` on user-message borders, `#f38ba8` on
   errors). The hex is no longer in the stylesheet: 0.9.4 moved it into the
@@ -75,6 +77,16 @@ input source uses) → a persistent render subscription
 (`subscribe_render`/`RenderRouter`) turns backend events into widget
 updates. The shape an earlier sketch drew (submit → agent loop → event
 handler → widget) still holds; only the exact names changed.
+`docs/TOOL-CALL-PIPELINE.md` is the end-to-end path, hop by hop.
+
+Parley's 30 Hz render throttle is **gone**, and this doc claimed otherwise
+until 2026-09-13. Every delta is now applied as it arrives —
+`ChatDisplay._on_text_delta` → `MessageBox.append_content_delta` →
+`MarkdownStream.write` — because the throttle was a gate on
+`Markdown.update()`, which the streaming redesign replaced outright; at that
+point the cost was never Markdown (0.7% of a profile) but Textual layout, and
+skipping writes only risked dropping the final delta. `docs/PLAN-0.9.4.md` §2
+has the measurements.
 
 ## Modes
 
