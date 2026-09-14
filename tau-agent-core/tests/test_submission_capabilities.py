@@ -209,7 +209,7 @@ class TestAllowUserInputGatesBlockingDialogs:
         left: list = []
 
         async def handler(event, ctx):
-            left.append(api.request_user_action("Deploy?", lock=True))
+            left.append(await api.request_user_action("Deploy?", lock=True))
             return {"handled": True}
 
         api.on("input", handler)

@@ -144,6 +144,8 @@ class TestConfigNotPersisted:
         out = tmp_path / "captured.json"
         ext = _write_capture_ext(tmp_path / "budget.py", out)
         session = _make_session()
+        # Flush the queued agent_spec; this test counts entries and reads entries[0].
+        await session.start()
 
         await session.load_extensions(
             [str(ext)], discover=False, extensions_config={"budget": {"ceiling": 5.0}}

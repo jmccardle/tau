@@ -106,7 +106,7 @@ class SessionLogContractTests:
         """
         assert log.cursor == resolve_cursor(log.entries())
 
-    def test_the_first_entry_is_root_level(self, log):
+    async def test_the_first_entry_is_root_level(self, log):
         """``parentId is None`` means ROOT-LEVEL, not "the one and only root".
 
         A store MAY seed entries (the file ``Session`` records model/backend at
@@ -117,7 +117,7 @@ class SessionLogContractTests:
         That is legal and load-bearing; see
         :meth:`test_navigate_to_none_starts_a_new_root_level_branch`.
         """
-        log.append_message(_msg("user", "hello"))
+        await log.append_message(_msg("user", "hello"))
         entries = log.entries()
         ids = {e["id"] for e in entries}
         roots = [e for e in entries if e["parentId"] is None]
@@ -127,7 +127,7 @@ class SessionLogContractTests:
             "no parentId may dangle: every non-root parent names a real entry"
         )
 
-    def test_navigate_to_none_starts_a_new_root_level_branch(self, log):
+    async def test_navigate_to_none_starts_a_new_root_level_branch(self, log):
         """``navigate(None)`` = "cursor before the root"; the next append is root-level.
 
         Pinned as a CONTRACT, not left to each store, because the three implementations
@@ -143,12 +143,12 @@ class SessionLogContractTests:
         ``extension_types.py`` → ``log.append_navigate(None)``), so it is a real code
         path, not a theoretical one.
         """
-        log.append_message(_msg("user", "on the first branch"))
+        await log.append_message(_msg("user", "on the first branch"))
 
-        log.append_navigate(None)
+        await log.append_navigate(None)
         assert log.cursor is None, "navigate(None) puts the cursor before the root"
 
-        second = log.append_message(_msg("user", "on a second, sibling branch"))
+        second = await log.append_message(_msg("user", "on a second, sibling branch"))
 
         by_id = {e["id"]: e for e in log.entries()}
         assert by_id[second]["parentId"] is None, "the post-navigate append is root-level"
@@ -159,12 +159,12 @@ class SessionLogContractTests:
 
     # ------------------------------------------------------------ parentId chain
 
-    def test_appends_chain_off_the_leaf(self, log):
+    async def test_appends_chain_off_the_leaf(self, log):
         parent_before = log.cursor  # may be non-None if the store seeded entries
 
-        a = log.append_message(_msg("user", "one"))
-        b = log.append_message(_msg("assistant", "two"))
-        c = log.append_message(_msg("user", "three"))
+        a = await log.append_message(_msg("user", "one"))
+        b = await log.append_message(_msg("assistant", "two"))
+        c = await log.append_message(_msg("user", "three"))
 
         by_id = {e["id"]: e for e in log.entries()}
         assert by_id[a]["parentId"] == parent_before
@@ -172,10 +172,10 @@ class SessionLogContractTests:
         assert by_id[c]["parentId"] == b
         assert log.cursor == c
 
-    def test_every_entry_has_id_type_parentid_timestamp(self, log):
+    async def test_every_entry_has_id_type_parentid_timestamp(self, log):
         """The only hard per-entry requirements the tree fold relies on."""
-        log.append_message(_msg("user", "x"))
-        log.append_custom_entry("note", {"k": "v"})
+        await log.append_message(_msg("user", "x"))
+        await log.append_custom_entry("note", {"k": "v"})
 
         for entry in log.entries():
             assert isinstance(entry["id"], str)
@@ -183,11 +183,11 @@ class SessionLogContractTests:
             assert "parentId" in entry
             assert entry["timestamp"]
 
-    def test_entry_ids_are_unique(self, log):
-        ids = [log.append_message(_msg("user", str(i))) for i in range(25)]
+    async def test_entry_ids_are_unique(self, log):
+        ids = [await log.append_message(_msg("user", str(i))) for i in range(25)]
         assert len(set(ids)) == 25
 
-    def test_entries_returns_a_deep_copy(self, log):
+    async def test_entries_returns_a_deep_copy(self, log):
         """A caller mutating the returned list, an entry, or a NESTED payload must not
         corrupt the log.
 
@@ -199,7 +199,7 @@ class SessionLogContractTests:
         ``ctx.entries()`` documents itself as returning a read-only copy; this is the
         test that makes that true.
         """
-        log.append_message(_msg("user", "original"))
+        await log.append_message(_msg("user", "original"))
         before = len(log.entries())
 
         entries = log.entries()
@@ -213,89 +213,89 @@ class SessionLogContractTests:
         assert all(e["type"] != "tampered" for e in log.entries())
         assert "TAMPERED" not in _texts(ConversationTree(log.entries(), log.cursor).context_for())
 
-    def test_entries_preserves_append_order(self, log):
+    async def test_entries_preserves_append_order(self, log):
         """``resolve_cursor`` reads ``entries[-1]``, so order is load-bearing. A store
         that returns rows ``ORDER BY id`` (or unordered) would resolve the wrong cursor.
         """
-        ids = [log.append_message(_msg("user", str(i))) for i in range(6)]
+        ids = [await log.append_message(_msg("user", str(i))) for i in range(6)]
         listed = [e["id"] for e in log.entries()]
 
         assert [i for i in listed if i in set(ids)] == ids
 
     # ------------------------------------------------------------------ cursor
 
-    def test_navigate_moves_the_cursor_to_its_target(self, log):
-        a = log.append_message(_msg("user", "one"))
-        log.append_message(_msg("assistant", "two"))
+    async def test_navigate_moves_the_cursor_to_its_target(self, log):
+        a = await log.append_message(_msg("user", "one"))
+        await log.append_message(_msg("assistant", "two"))
 
-        log.append_navigate(a)
+        await log.append_navigate(a)
 
         assert log.cursor == a
 
-    def test_navigate_to_unknown_target_raises(self, log):
+    async def test_navigate_to_unknown_target_raises(self, log):
         """Fail-Early: a dangling cursor would silently truncate the context fold."""
-        log.append_message(_msg("user", "one"))
+        await log.append_message(_msg("user", "one"))
         with pytest.raises(ValueError):
-            log.append_navigate("does-not-exist")
+            await log.append_navigate("does-not-exist")
 
-    def test_appending_after_navigate_branches(self, log):
+    async def test_appending_after_navigate_branches(self, log):
         """navigate + append IS the branch mechanism — no separate branch entry kind."""
-        a = log.append_message(_msg("user", "one"))
-        b = log.append_message(_msg("assistant", "original"))
-        log.append_navigate(a)
-        c = log.append_message(_msg("assistant", "alternative"))
+        a = await log.append_message(_msg("user", "one"))
+        b = await log.append_message(_msg("assistant", "original"))
+        await log.append_navigate(a)
+        c = await log.append_message(_msg("assistant", "alternative"))
 
         by_id = {e["id"]: e for e in log.entries()}
         assert by_id[b]["parentId"] == a
         assert by_id[c]["parentId"] == a  # sibling of b, not its child
         assert log.cursor == c
 
-    def test_resolve_cursor_agrees_with_the_live_cursor(self, log):
+    async def test_resolve_cursor_agrees_with_the_live_cursor(self, log):
         """Reload-invariance: the cursor rebuilt from entries == the in-memory cursor."""
-        log.append_message(_msg("user", "one"))
-        a = log.append_message(_msg("assistant", "two"))
-        log.append_message(_msg("user", "three"))
-        log.append_navigate(a)
+        await log.append_message(_msg("user", "one"))
+        a = await log.append_message(_msg("assistant", "two"))
+        await log.append_message(_msg("user", "three"))
+        await log.append_navigate(a)
 
         assert resolve_cursor(log.entries()) == log.cursor == a
 
     # -------------------------------------------------------------- context fold
 
-    def test_context_follows_the_active_path_only(self, log):
+    async def test_context_follows_the_active_path_only(self, log):
         """The abandoned branch stays on disk but drops out of model input."""
-        a = log.append_message(_msg("user", "question"))
-        log.append_message(_msg("assistant", "abandoned answer"))
-        log.append_navigate(a)
-        log.append_message(_msg("assistant", "kept answer"))
+        a = await log.append_message(_msg("user", "question"))
+        await log.append_message(_msg("assistant", "abandoned answer"))
+        await log.append_navigate(a)
+        await log.append_message(_msg("assistant", "kept answer"))
 
         context = ConversationTree(log.entries(), log.cursor).context_for()
 
         assert _texts(context) == ["question", "kept answer"]
 
-    def test_custom_message_reaches_the_context(self, log):
-        log.append_message(_msg("user", "hi"))
-        log.append_custom_message({"role": "custom", "content": "injected"}, "myext")
+    async def test_custom_message_reaches_the_context(self, log):
+        await log.append_message(_msg("user", "hi"))
+        await log.append_custom_message({"role": "custom", "content": "injected"}, "myext")
 
         context = ConversationTree(log.entries(), log.cursor).context_for()
 
         assert len(context) == 2
 
-    def test_custom_entry_is_durable_but_never_model_input(self, log):
+    async def test_custom_entry_is_durable_but_never_model_input(self, log):
         """Tree-as-backplane state: on the path, readable, excluded from the fold."""
-        log.append_message(_msg("user", "hi"))
-        log.append_custom_entry("bookmark", {"note": "remember"})
-        log.append_message(_msg("assistant", "yo"))
+        await log.append_message(_msg("user", "hi"))
+        await log.append_custom_entry("bookmark", {"note": "remember"})
+        await log.append_message(_msg("assistant", "yo"))
 
         context = ConversationTree(log.entries(), log.cursor).context_for()
 
         assert _texts(context) == ["hi", "yo"]
         assert any(e["type"] == "customEntry" for e in log.entries())
 
-    def test_unknown_entry_kinds_are_walked_through_not_crashed_on(self, log):
+    async def test_unknown_entry_kinds_are_walked_through_not_crashed_on(self, log):
         """Foreign nodes (e.g. a JMFTS RAPTOR summary) must cost nothing and break nothing."""
-        log.append_message(_msg("user", "hi"))
-        log.append_custom_entry("jmfts:document", {"docId": "42"})
-        log.append_message(_msg("assistant", "yo"))
+        await log.append_message(_msg("user", "hi"))
+        await log.append_custom_entry("jmfts:document", {"docId": "42"})
+        await log.append_message(_msg("assistant", "yo"))
 
         tree = ConversationTree(log.entries(), log.cursor)
 
@@ -304,11 +304,11 @@ class SessionLogContractTests:
 
     # ------------------------------------------------------------- compaction
 
-    def test_compaction_splices_the_context(self, log):
-        log.append_message(_msg("user", "old one"))
-        log.append_message(_msg("assistant", "old two"))
-        keep = log.append_message(_msg("user", "recent"))
-        log.append_compaction("SUMMARY", keep, 1234, **_compaction_provenance())
+    async def test_compaction_splices_the_context(self, log):
+        await log.append_message(_msg("user", "old one"))
+        await log.append_message(_msg("assistant", "old two"))
+        keep = await log.append_message(_msg("user", "recent"))
+        await log.append_compaction("SUMMARY", keep, 1234, **_compaction_provenance())
 
         context = ConversationTree(log.entries(), log.cursor).context_for()
         texts = _texts(context)
@@ -317,19 +317,19 @@ class SessionLogContractTests:
         assert "recent" in texts
         assert "old one" not in texts  # spliced out
 
-    def test_compaction_is_append_only(self, log):
+    async def test_compaction_is_append_only(self, log):
         """Nothing is ever rewritten: the pre-compaction entries survive verbatim."""
-        a = log.append_message(_msg("user", "old"))
-        keep = log.append_message(_msg("user", "recent"))
+        a = await log.append_message(_msg("user", "old"))
+        keep = await log.append_message(_msg("user", "recent"))
         before = log.entries()
 
-        log.append_compaction("SUMMARY", keep, 10, **_compaction_provenance())
+        await log.append_compaction("SUMMARY", keep, 10, **_compaction_provenance())
         after = log.entries()
 
         assert after[: len(before)] == before
         assert any(e["id"] == a for e in after)
 
-    def test_compaction_from_unknown_first_kept_id_raises(self, log):
+    async def test_compaction_from_unknown_first_kept_id_raises(self, log):
         """Fail-Early, and the most damaging of the three unknown-id cases.
 
         ``navigate`` and ``branch_summary`` both raise on an unknown id; ``compaction``
@@ -342,40 +342,40 @@ class SessionLogContractTests:
         The suite previously asserted the two cases that already raised and omitted the
         one that did not — matching the implementation instead of the algebra.
         """
-        log.append_message(_msg("user", "one"))
-        log.append_message(_msg("user", "recent"))
+        await log.append_message(_msg("user", "one"))
+        await log.append_message(_msg("user", "recent"))
 
         with pytest.raises(ValueError):
-            log.append_compaction("SUMMARY", "does-not-exist", 10, **_compaction_provenance())
+            await log.append_compaction("SUMMARY", "does-not-exist", 10, **_compaction_provenance())
 
-    def test_last_compaction_wins(self, log):
-        log.append_message(_msg("user", "one"))
-        k1 = log.append_message(_msg("user", "two"))
-        log.append_compaction("FIRST", k1, 10, **_compaction_provenance())
-        k2 = log.append_message(_msg("user", "three"))
-        log.append_compaction("SECOND", k2, 20, **_compaction_provenance())
+    async def test_last_compaction_wins(self, log):
+        await log.append_message(_msg("user", "one"))
+        k1 = await log.append_message(_msg("user", "two"))
+        await log.append_compaction("FIRST", k1, 10, **_compaction_provenance())
+        k2 = await log.append_message(_msg("user", "three"))
+        await log.append_compaction("SECOND", k2, 20, **_compaction_provenance())
 
         texts = _texts(ConversationTree(log.entries(), log.cursor).context_for())
 
         assert any("SECOND" in t for t in texts)
         assert not any("FIRST" in t for t in texts)
 
-    def test_elide_splices_the_context_with_no_summary(self, log):
+    async def test_elide_splices_the_context_with_no_summary(self, log):
         """T3 -- an anchor with no summary. The excluded span disappears from
         ``context_for`` exactly as it does for ``compaction``, but NO placeholder
         message takes its place: elide contributes literally nothing, which is
         the whole point of generalizing the anchor instead of special-casing it."""
-        log.append_message(_msg("user", "old one"))
-        log.append_message(_msg("assistant", "old two"))
-        keep = log.append_message(_msg("user", "recent"))
-        log.append_elide(keep, **_elide_provenance())
+        await log.append_message(_msg("user", "old one"))
+        await log.append_message(_msg("assistant", "old two"))
+        keep = await log.append_message(_msg("user", "recent"))
+        await log.append_elide(keep, **_elide_provenance())
 
         texts = _texts(ConversationTree(log.entries(), log.cursor).context_for())
 
         assert texts == ["recent"], "the anchor renders nothing; only the kept region remains"
         assert "old one" not in texts and "old two" not in texts  # spliced out
 
-    def test_elide_whose_boundary_is_the_root_elides_nothing(self, log):
+    async def test_elide_whose_boundary_is_the_root_elides_nothing(self, log):
         """T3 -- an anchor whose boundary IS a root-level entry (``parentId is
         None``): the degenerate case where the excluded span is EMPTY. Nothing
         precedes the boundary in the leaf→root walk, so the boundary is found on
@@ -384,26 +384,26 @@ class SessionLogContractTests:
         is missing. Pins that the boundary search does not need a non-empty
         prefix to work correctly.
         """
-        log.append_navigate(None)  # cursor before any root -- next append is root-level
-        root = log.append_message(_msg("user", "root message"))
-        log.append_message(_msg("assistant", "middle"))
-        log.append_elide(root, **_elide_provenance())
+        await log.append_navigate(None)  # cursor before any root -- next append is root-level
+        root = await log.append_message(_msg("user", "root message"))
+        await log.append_message(_msg("assistant", "middle"))
+        await log.append_elide(root, **_elide_provenance())
 
         texts = _texts(ConversationTree(log.entries(), log.cursor).context_for())
 
         assert texts == ["root message", "middle"]
 
-    def test_elide_from_unknown_first_kept_id_raises(self, log):
+    async def test_elide_from_unknown_first_kept_id_raises(self, log):
         """Fail-Early on an unknown anchor, exactly as ``compaction`` requires --
         the same forward-scan hazard (an anchor matching nothing is never found,
         so the whole kept region silently drops from the fold) applies unchanged."""
-        log.append_message(_msg("user", "one"))
-        log.append_message(_msg("user", "recent"))
+        await log.append_message(_msg("user", "one"))
+        await log.append_message(_msg("user", "recent"))
 
         with pytest.raises(ValueError):
-            log.append_elide("does-not-exist", **_elide_provenance())
+            await log.append_elide("does-not-exist", **_elide_provenance())
 
-    def test_branch_rooted_inside_an_elided_span_is_unaffected(self, log):
+    async def test_branch_rooted_inside_an_elided_span_is_unaffected(self, log):
         """T3 -- a branch rooted INSIDE a later elided span. ``b`` sits in the
         region the PRIMARY's own elide (appended after the branch already exists)
         will hide from ITS OWN ``context_for`` -- but the branch's ancestor chain
@@ -413,16 +413,16 @@ class SessionLogContractTests:
         exclusion lives in tree SHAPE, so a walker that never reaches the anchor
         cannot be affected by it -- no flag was there to forget to check.
         """
-        log.append_message(_msg("user", "early"))
-        b = log.append_message(_msg("assistant", "branch point"))
+        await log.append_message(_msg("user", "early"))
+        b = await log.append_message(_msg("assistant", "branch point"))
 
         # A branch forked off `b`, BEFORE the primary elides past it.
         branch = open_branch(log, b, label="reviewer")
-        branch_leaf = branch.append_message(_msg("user", "branch content"))
+        branch_leaf = await branch.append_message(_msg("user", "branch content"))
         before = ConversationTree(log.entries(), log.cursor).context_for(branch_leaf)
 
-        keep = log.append_message(_msg("user", "kept on primary"))
-        log.append_elide(keep, **_elide_provenance())
+        keep = await log.append_message(_msg("user", "kept on primary"))
+        await log.append_elide(keep, **_elide_provenance())
 
         primary_texts = _texts(ConversationTree(log.entries(), log.cursor).context_for())
         assert "early" not in primary_texts and "branch point" not in primary_texts
@@ -431,7 +431,7 @@ class SessionLogContractTests:
         assert after == before, "an elide on another path must not perturb the branch's context"
         assert "branch point" in _texts(after) and "branch content" in _texts(after)
 
-    def test_compaction_records_its_provenance(self, log):
+    async def test_compaction_records_its_provenance(self, log):
         """§8.1 — which model wrote this summary, what it cost, what it folded.
 
         The point of the test is the round trip through ``entries()``, so the values
@@ -442,12 +442,12 @@ class SessionLogContractTests:
         entry's on-disk shape is part of the algebra (§4.5: same entries, same tree),
         not each store's choice.
         """
-        log.append_message(_msg("user", "old one"))
-        log.append_message(_msg("assistant", "old two"))
-        keep = log.append_message(_msg("user", "recent"))
-        spec = log.append_custom_entry("agent_spec", {"model": {"id": "conversation-model"}})
+        await log.append_message(_msg("user", "old one"))
+        await log.append_message(_msg("assistant", "old two"))
+        keep = await log.append_message(_msg("user", "recent"))
+        spec = await log.append_custom_entry("agent_spec", {"model": {"id": "conversation-model"}})
 
-        anchor_id = log.append_compaction(
+        anchor_id = await log.append_compaction(
             "SUMMARY",
             keep,
             1234,
@@ -478,7 +478,7 @@ class SessionLogContractTests:
             return  # in-memory store: no durable form to re-read (see reload())
         check(reloaded.entries(), "after a reload")
 
-    def test_elide_records_its_span_provenance(self, log):
+    async def test_elide_records_its_span_provenance(self, log):
         """§8.2 — an elide recorded no size at all, where a compaction had
         ``tokensBefore``.
 
@@ -487,10 +487,12 @@ class SessionLogContractTests:
         recomputable one keeps the recorded pair self-consistent, and the other is
         the only record that will ever exist of what the span cost.
         """
-        log.append_message(_msg("user", "old one"))
-        keep = log.append_message(_msg("user", "recent"))
+        await log.append_message(_msg("user", "old one"))
+        keep = await log.append_message(_msg("user", "recent"))
 
-        anchor_id = log.append_elide(keep, covered_entries=1, covered_tokens=57, agent_spec_id=None)
+        anchor_id = await log.append_elide(
+            keep, covered_entries=1, covered_tokens=57, agent_spec_id=None
+        )
 
         def check(entries: list[dict[str, Any]], where: str) -> None:
             anchor = next(e for e in entries if e["id"] == anchor_id)
@@ -509,15 +511,15 @@ class SessionLogContractTests:
             return
         check(reloaded.entries(), "after a reload")
 
-    def test_anchor_provenance_does_not_leak_into_the_fold(self, log):
+    async def test_anchor_provenance_does_not_leak_into_the_fold(self, log):
         """The §8 fields are a RECORD, not context. Adding them must not put a token
         in front of the model, and must not perturb the splice they annotate — §8
         called the change additive on the payload, and this is what makes that
         claim checkable rather than assumed.
         """
-        log.append_message(_msg("user", "old one"))
-        keep = log.append_message(_msg("user", "recent"))
-        log.append_compaction("SUMMARY", keep, 10, **_compaction_provenance())
+        await log.append_message(_msg("user", "old one"))
+        keep = await log.append_message(_msg("user", "recent"))
+        await log.append_compaction("SUMMARY", keep, 10, **_compaction_provenance())
 
         texts = _texts(ConversationTree(log.entries(), log.cursor).context_for())
 
@@ -525,7 +527,7 @@ class SessionLogContractTests:
 
     # ------------------------------------------------------ branch lanes (C2/W14)
 
-    def test_append_at_writes_to_an_explicit_parent_without_moving_the_leaf(self, log):
+    async def test_append_at_writes_to_an_explicit_parent_without_moving_the_leaf(self, log):
         """``append_at`` is the C2 branch primitive: a SECOND cursor writing to one log.
 
         The two halves are equally load-bearing. It must parent where it is TOLD (not at
@@ -533,16 +535,16 @@ class SessionLogContractTests:
         own leaf here would drag the spawning conversation into the sub-agent's branch on
         the very next append, which no test of the branch's own context would catch.
         """
-        anchor = log.append_message(_msg("user", "the branch point"))
-        tip = log.append_message(_msg("assistant", "the tip"))
+        anchor = await log.append_message(_msg("user", "the branch point"))
+        tip = await log.append_message(_msg("assistant", "the tip"))
 
-        branched = log.append_at(anchor, "message", {"message": _msg("user", "in a branch")})
+        branched = await log.append_at(anchor, "message", {"message": _msg("user", "in a branch")})
 
         by_id = {e["id"]: e for e in log.entries()}
         assert by_id[branched]["parentId"] == anchor, "parented where told, not at the leaf"
         assert log.cursor == tip, "the leaf did NOT move"
 
-    def test_a_copied_message_keeps_its_provenance_and_folds_like_any_other(self, log):
+    async def test_a_copied_message_keeps_its_provenance_and_folds_like_any_other(self, log):
         """``copiedFrom`` survives the round trip, and changes nothing about the fold.
 
         TREE-BROWSER-AS-EDITOR.md §7.1: a copy is written as an ordinary ``message``
@@ -559,8 +561,8 @@ class SessionLogContractTests:
         anchor's ``firstKeptId`` nothing folds on it: a dangling one costs a reader
         one hop of history, not a region of context.
         """
-        source = log.append_message(_msg("user", "the original"))
-        copy_id = log.append_at(
+        source = await log.append_message(_msg("user", "the original"))
+        copy_id = await log.append_at(
             log.cursor,
             "message",
             {"message": _msg("user", "the original"), "copiedFrom": source},
@@ -570,7 +572,7 @@ class SessionLogContractTests:
         assert by_id[copy_id]["copiedFrom"] == source
         assert by_id[copy_id]["type"] == "message", "a copy is not a kind of its own"
 
-        log.append_navigate(copy_id)
+        await log.append_navigate(copy_id)
         context = ConversationTree(log.entries(), log.cursor).context_for()
         assert _texts(context) == ["the original", "the original"], (
             "the copy folds into the context as an ordinary message"
@@ -581,7 +583,7 @@ class SessionLogContractTests:
             return
         assert {e["id"]: e for e in reloaded.entries()}[copy_id]["copiedFrom"] == source
 
-    def test_the_cursor_is_the_last_entry_whoever_wrote_it(self, log):
+    async def test_the_cursor_is_the_last_entry_whoever_wrote_it(self, log):
         """``resolve_cursor`` is pi's rule: last entry wins, with no notion of which
         cursor produced it (session-manager.ts:855-859).
 
@@ -593,8 +595,10 @@ class SessionLogContractTests:
         NOT reintroduce a filter here — two stores disagreeing about which entry is
         the cursor is a divergence no fold can repair.
         """
-        tip = log.append_message(_msg("user", "the tip"))
-        landed_last = log.append_at(tip, "message", {"message": _msg("assistant", "landed last")})
+        tip = await log.append_message(_msg("user", "the tip"))
+        landed_last = await log.append_at(
+            tip, "message", {"message": _msg("assistant", "landed last")}
+        )
 
         entries = log.entries()
         assert entries[-1]["id"] == landed_last, "precondition: the branch write really is last"
@@ -607,7 +611,7 @@ class SessionLogContractTests:
             pytest.skip("no durable form")
         assert reloaded.cursor == landed_last, "a reload re-resolves it, and agrees"
 
-    def test_branch_entries_never_reach_another_cursors_context(self, log):
+    async def test_branch_entries_never_reach_another_cursors_context(self, log):
         """Isolation is STRUCTURAL, and this is now the only thing providing it.
 
         A branch entry is never an ANCESTOR of the other cursor's leaf, so the leaf→root
@@ -618,9 +622,9 @@ class SessionLogContractTests:
         for a user's fork of the same shape. A store that reconstructs ``parentId``
         wrongly on reload breaks context isolation itself, not merely an ordering.
         """
-        anchor = log.append_message(_msg("user", "shared prefix"))
-        log.append_message(_msg("assistant", "own work"))
-        log.append_at(anchor, "message", {"message": _msg("user", "BRANCH ONLY")})
+        anchor = await log.append_message(_msg("user", "shared prefix"))
+        await log.append_message(_msg("assistant", "own work"))
+        await log.append_at(anchor, "message", {"message": _msg("user", "BRANCH ONLY")})
 
         leaf = log.cursor
         texts = _texts(ConversationTree(log.entries(), leaf).context_for(leaf))
@@ -629,13 +633,13 @@ class SessionLogContractTests:
 
     # --------------------------------------------------------- branch summary
 
-    def test_branch_summary_reparents_to_the_branch_point(self, log):
+    async def test_branch_summary_reparents_to_the_branch_point(self, log):
         """The summary parents at the branch point, so the abandoned subtree becomes a
         sibling and drops out of the fold. Appending off the *current* leaf instead
         would leave the abandoned branch on the active path."""
-        a = log.append_message(_msg("user", "question"))
-        log.append_message(_msg("assistant", "abandoned"))
-        sid = log.append_branch_summary("BRANCH SUMMARY", a)
+        a = await log.append_message(_msg("user", "question"))
+        await log.append_message(_msg("assistant", "abandoned"))
+        sid = await log.append_branch_summary("BRANCH SUMMARY", a)
 
         by_id = {e["id"]: e for e in log.entries()}
         assert by_id[sid]["parentId"] == a
@@ -644,14 +648,14 @@ class SessionLogContractTests:
         assert any("BRANCH SUMMARY" in t for t in texts)
         assert "abandoned" not in texts
 
-    def test_branch_summary_from_unknown_id_raises(self, log):
-        log.append_message(_msg("user", "x"))
+    async def test_branch_summary_from_unknown_id_raises(self, log):
+        await log.append_message(_msg("user", "x"))
         with pytest.raises(ValueError):
-            log.append_branch_summary("s", "nope")
+            await log.append_branch_summary("s", "nope")
 
     # ------------------------------------------------------------ round-trip
 
-    def test_a_reloaded_log_yields_the_same_tree(self, log):
+    async def test_a_reloaded_log_yields_the_same_tree(self, log):
         """Reload-invariance, over a log with a BRANCH and a COMPACTION in it — the two
         shapes whose ordering and anchoring a store can get subtly wrong.
         """
@@ -659,11 +663,11 @@ class SessionLogContractTests:
         if reloaded is None:
             pytest.skip("store has no durable form (in-memory)")
 
-        a = log.append_message(_msg("user", "question"))
-        log.append_message(_msg("assistant", "abandoned"))
-        log.append_navigate(a)
-        keep = log.append_message(_msg("assistant", "kept"))
-        log.append_compaction("SUMMARY", keep, 99, **_compaction_provenance())
+        a = await log.append_message(_msg("user", "question"))
+        await log.append_message(_msg("assistant", "abandoned"))
+        await log.append_navigate(a)
+        keep = await log.append_message(_msg("assistant", "kept"))
+        await log.append_compaction("SUMMARY", keep, 99, **_compaction_provenance())
 
         expected_entries, expected_cursor = log.entries(), log.cursor
         expected_context = ConversationTree(expected_entries, expected_cursor).context_for()
@@ -677,13 +681,13 @@ class SessionLogContractTests:
             ConversationTree(reloaded.entries(), reloaded.cursor).context_for() == expected_context
         )
 
-    def test_same_entries_same_tree(self, log):
+    async def test_same_entries_same_tree(self, log):
         """The invariant the whole design rests on: the fold is a pure function of
         (entries, cursor), so any store producing these entries produces this tree."""
-        a = log.append_message(_msg("user", "one"))
-        log.append_message(_msg("assistant", "two"))
-        log.append_navigate(a)
-        log.append_message(_msg("assistant", "alt"))
+        a = await log.append_message(_msg("user", "one"))
+        await log.append_message(_msg("assistant", "two"))
+        await log.append_navigate(a)
+        await log.append_message(_msg("assistant", "alt"))
 
         entries, cursor = log.entries(), log.cursor
         first = ConversationTree(entries, cursor).context_for()
@@ -691,7 +695,7 @@ class SessionLogContractTests:
 
         assert first == second
 
-    def test_context_for_a_leaf_is_immutable_under_unrelated_appends(self, log):
+    async def test_context_for_a_leaf_is_immutable_under_unrelated_appends(self, log):
         """T1 -- I1 as a conformance test. Per the spec, "the single most valuable
         test in this document": every concurrent reader (BranchView, a second
         agent parked at a node) depends on ``context_for(L)`` never changing once
@@ -711,25 +715,27 @@ class SessionLogContractTests:
         cannot itself be what keeps the assertion trivially true.
         """
         root = log.cursor  # may be None (blank log) or a seeded entry (file/JMFTS)
-        a = log.append_message(_msg("user", "shared question"))
-        leaf = log.append_message(_msg("assistant", "the answer at L"))
+        a = await log.append_message(_msg("user", "shared question"))
+        leaf = await log.append_message(_msg("assistant", "the answer at L"))
 
         before = ConversationTree(log.entries(), log.cursor).context_for(leaf)
 
         # 1. a lane rooted at `a` -- a concurrent writer, never an ancestor of `leaf`.
         branch = open_branch(log, a, label="reviewer")
-        branch.append_message(_msg("user", "lane-only content"))
+        await branch.append_message(_msg("user", "lane-only content"))
         assert ConversationTree(log.entries(), log.cursor).context_for(leaf) == before
 
-        log.append_navigate(root)
-        log.append_message(_msg("user", "an unrelated sibling subtree"))
+        await log.append_navigate(root)
+        await log.append_message(_msg("user", "an unrelated sibling subtree"))
         assert ConversationTree(log.entries(), log.cursor).context_for(leaf) == before
 
-        keep = log.append_message(_msg("user", "kept on the other path"))
-        log.append_compaction("SUMMARY ON THE OTHER PATH", keep, 10, **_compaction_provenance())
+        keep = await log.append_message(_msg("user", "kept on the other path"))
+        await log.append_compaction(
+            "SUMMARY ON THE OTHER PATH", keep, 10, **_compaction_provenance()
+        )
         assert ConversationTree(log.entries(), log.cursor).context_for(leaf) == before
 
-    def test_no_pre_existing_entry_is_mutated_by_any_later_append(self, log):
+    async def test_no_pre_existing_entry_is_mutated_by_any_later_append(self, log):
         """T2 -- the no-mutation property T1 rests on. After any append, every
         PRE-EXISTING entry dict is unchanged: id, parentId, and payload. Cheap,
         and it pins the premise that makes I1 true at all -- if an append could
@@ -742,19 +748,19 @@ class SessionLogContractTests:
         just plain messages -- those are exactly the shapes a store could get
         subtly wrong while still passing a message-only version of this test.
         """
-        a = log.append_message(_msg("user", "one"))
-        b = log.append_message(_msg("assistant", "two"))
+        a = await log.append_message(_msg("user", "one"))
+        b = await log.append_message(_msg("assistant", "two"))
         before = copy.deepcopy(log.entries())
 
-        log.append_message(_msg("user", "three"))
-        log.append_custom_entry("note", {"k": "v"})
-        log.append_navigate(a)
-        log.append_message(_msg("assistant", "branch"))
-        log.append_branch_summary("summary", a)
-        c = log.append_message(_msg("user", "for compaction"))
-        log.append_compaction("SUMMARY", c, 10, **_compaction_provenance())
+        await log.append_message(_msg("user", "three"))
+        await log.append_custom_entry("note", {"k": "v"})
+        await log.append_navigate(a)
+        await log.append_message(_msg("assistant", "branch"))
+        await log.append_branch_summary("summary", a)
+        c = await log.append_message(_msg("user", "for compaction"))
+        await log.append_compaction("SUMMARY", c, 10, **_compaction_provenance())
         branch = open_branch(log, b, label="lane")
-        branch.append_message(_msg("user", "lane content"))
+        await branch.append_message(_msg("user", "lane content"))
 
         after_by_id = {e["id"]: e for e in log.entries()}
         for entry in before:
@@ -762,7 +768,7 @@ class SessionLogContractTests:
                 f"pre-existing entry {entry['id']!r} was mutated by a later append"
             )
 
-    def test_agent_spec_survives_reload_and_still_contributes_nothing_to_context(self, log):
+    async def test_agent_spec_survives_reload_and_still_contributes_nothing_to_context(self, log):
         """T4 -- reload-invariance of the ``agent_spec`` provenance node (W2,
         NODE-ADDRESSABLE-AGENTS.md). ``agent_spec`` is a plain ``customEntry`` --
         already proven durable and context-excluded by
@@ -773,8 +779,8 @@ class SessionLogContractTests:
         not just an in-RAM re-fold, the same bar T1's sibling tests hold every
         other splice/lane mechanism to.
         """
-        log.append_message(_msg("user", "hi"))
-        spec_id = log.append_custom_entry(
+        await log.append_message(_msg("user", "hi"))
+        spec_id = await log.append_custom_entry(
             "agent_spec",
             {
                 "model": {"id": "local-llm", "provider": "openai", "context_window": 8192},
@@ -784,7 +790,7 @@ class SessionLogContractTests:
                 "cwd": "/srv/project",
             },
         )
-        log.append_message(_msg("assistant", "yo"))
+        await log.append_message(_msg("assistant", "yo"))
 
         context = ConversationTree(log.entries(), log.cursor).context_for()
         assert _texts(context) == ["hi", "yo"], "agent_spec must never reach model input"
@@ -805,7 +811,7 @@ class SessionLogContractTests:
             "agent_spec contributes nothing to context_for even after a reload"
         )
 
-    def test_entries_is_total_across_every_exclusion_operation(self, log):
+    async def test_entries_is_total_across_every_exclusion_operation(self, log):
         """T5 -- Decision 7: entries() is total. Every filtering mechanism --
         ``context_for``, a lane, a branch-summary re-parent, a compaction, an
         elide -- is a FOLD OVER ``entries()``; none of them may be the only way to
@@ -817,28 +823,28 @@ class SessionLogContractTests:
         """
         minted: list[str] = []
 
-        a = log.append_message(_msg("user", "one"))
+        a = await log.append_message(_msg("user", "one"))
         minted.append(a)
-        b = log.append_message(_msg("assistant", "two"))
+        b = await log.append_message(_msg("assistant", "two"))
         minted.append(b)
 
         # 1. open a lane -- lands in entries() but is excluded from context_for.
         branch = open_branch(log, a, label="lane")
-        lane_entry = branch.append_message(_msg("user", "lane content"))
+        lane_entry = await branch.append_message(_msg("user", "lane content"))
         minted.append(lane_entry)
 
-        summary_id = log.append_branch_summary("BRANCH SUMMARY", a)
+        summary_id = await log.append_branch_summary("BRANCH SUMMARY", a)
         minted.append(summary_id)
 
         # 3. compact -- the pre-boundary region is spliced OUT of context_for.
-        keep = log.append_message(_msg("user", "kept"))
+        keep = await log.append_message(_msg("user", "kept"))
         minted.append(keep)
-        compaction_id = log.append_compaction("SUMMARY", keep, 10, **_compaction_provenance())
+        compaction_id = await log.append_compaction("SUMMARY", keep, 10, **_compaction_provenance())
         minted.append(compaction_id)
 
-        keep2 = log.append_message(_msg("user", "kept again"))
+        keep2 = await log.append_message(_msg("user", "kept again"))
         minted.append(keep2)
-        elide_id = log.append_elide(keep2, **_elide_provenance())
+        elide_id = await log.append_elide(keep2, **_elide_provenance())
         minted.append(elide_id)
 
         present = {e["id"] for e in log.entries()}

@@ -49,6 +49,18 @@ class SessionLog(Protocol):
     them (the TUI/headless call those on the concrete ``Session`` directly), so
     keeping them off the Protocol avoids an unused-method contract (Fail-Early).
 
+    **Every appender is ``async``; ``id``/``cursor``/``entries()`` are not.**
+    docs/BLOCKING-PERSISTENCE.md: the agent loop runs on the head's own event
+    loop, so a store that does network I/O per append froze the screen for the
+    length of a turn's persistence. The rejected cheap fix was to call this
+    Protocol from a worker thread, which would have made thread-safety a new,
+    unstated requirement of every implementor. Saying ``async`` says the same
+    thing out loud and leaves each store to meet it its own way: a RAM or
+    file-backed store awaits nothing, and the JMFTS store thread-hops behind a
+    client it owns. The three reads stay synchronous because they are already in
+    memory in every shipped store, and making them ``async`` would push ``await``
+    into ``ConversationTree`` and every caller that merely inspects a session.
+
     **Precondition: a conversation has exactly one writing process**
     (NODE-ADDRESSABLE-AGENTS.md Decision 6). Concurrency *inside* a conversation is
     lanes — open a :class:`BranchView`, which is a second cursor over the same
@@ -90,13 +102,13 @@ class SessionLog(Protocol):
         """The ordered, append-only raw entries (all kinds), in load order."""
         ...
 
-    def append_message(self, message: dict[str, Any]) -> str: ...
+    async def append_message(self, message: dict[str, Any]) -> str: ...
 
-    def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str: ...
+    async def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str: ...
 
-    def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str: ...
+    async def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str: ...
 
-    def append_compaction(
+    async def append_compaction(
         self,
         summary: str,
         first_kept_id: str,
@@ -152,7 +164,7 @@ class SessionLog(Protocol):
         """
         ...
 
-    def append_elide(
+    async def append_elide(
         self,
         first_kept_id: str,
         *,
@@ -193,11 +205,11 @@ class SessionLog(Protocol):
         """
         ...
 
-    def append_navigate(self, target_id: str | None) -> str: ...
+    async def append_navigate(self, target_id: str | None) -> str: ...
 
-    def append_branch_summary(self, summary: str, from_id: str | None) -> str: ...
+    async def append_branch_summary(self, summary: str, from_id: str | None) -> str: ...
 
-    def append_at(
+    async def append_at(
         self,
         parent_id: str | None,
         entry_type: str,
@@ -482,10 +494,10 @@ class InMemorySessionLog:
     def entries(self) -> list[dict[str, Any]]:
         return copy.deepcopy(self._entries)
 
-    def append_message(self, message: dict[str, Any]) -> str:
-        return self._append("message", message=message)
+    async def append_message(self, message: dict[str, Any]) -> str:
+        return self._append_now("message", message=message)
 
-    def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
+    async def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
         """Persist an extension-injected custom message as a ``customMessage`` node.
 
         The durable form of a ``before_agent_start`` injection (E5 §3.1 / S29):
@@ -495,9 +507,9 @@ class InMemorySessionLog:
         ``message`` entry (it is not a splice anchor) and the wire remaps
         custom→user, so the injected content reaches the model and survives a
         reload byte-identically."""
-        return self._append("customMessage", customType=custom_type, message=message)
+        return self._append_now("customMessage", customType=custom_type, message=message)
 
-    def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
+    async def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
         """Persist a durable, NON-message ``customEntry`` node (E6 §2 / S39).
 
         The reloadable backing for ``api.append_entry`` (formerly the RAM-only
@@ -510,9 +522,9 @@ class InMemorySessionLog:
         like any node (it advances the leaf); the exclusion is that ``context_for``
         emits no message for it (conversation_tree.py). The foundation S56's
         ``TreeStore`` reconstructs from ``ctx.entries()`` on reload."""
-        return self._append("customEntry", customType=custom_type, data=data)
+        return self._append_now("customEntry", customType=custom_type, data=data)
 
-    def append_compaction(
+    async def append_compaction(
         self,
         summary: str,
         first_kept_id: str,
@@ -540,7 +552,7 @@ class InMemorySessionLog:
                 "must name a real entry, or the whole kept region silently drops out of "
                 "the context fold"
             )
-        return self._append(
+        return self._append_now(
             "compaction",
             summary=summary,
             firstKeptId=first_kept_id,
@@ -552,7 +564,7 @@ class InMemorySessionLog:
             agentSpecId=agent_spec_id,
         )
 
-    def append_elide(
+    async def append_elide(
         self,
         first_kept_id: str,
         *,
@@ -575,7 +587,7 @@ class InMemorySessionLog:
                 "must name a real entry, or the whole kept region silently drops out of "
                 "the context fold"
             )
-        return self._append(
+        return self._append_now(
             "elide",
             firstKeptId=first_kept_id,
             coveredEntries=covered_entries,
@@ -583,17 +595,17 @@ class InMemorySessionLog:
             agentSpecId=agent_spec_id,
         )
 
-    def append_navigate(self, target_id: str | None) -> str:
+    async def append_navigate(self, target_id: str | None) -> str:
         """Persist a cursor move; the leaf advances to ``target_id`` (not to the
         navigate entry itself), mirroring ``Session.append_navigate``. Fail-Early:
         a non-``None`` target must name a real entry."""
         if target_id is not None and target_id not in self._ids:
             raise ValueError(f"navigate target {target_id!r} not found")
-        entry_id = self._append("navigate", targetId=target_id)
+        entry_id = self._append_now("navigate", targetId=target_id)
         self._leaf_id = target_id
         return entry_id
 
-    def append_branch_summary(self, summary: str, from_id: str | None) -> str:
+    async def append_branch_summary(self, summary: str, from_id: str | None) -> str:
         """Move the leaf to ``from_id`` (the branch point) then append, mirroring
         ``Session.append_branch_summary`` (session_store.py:433) and pi
         ``branchWithSummary`` (session-manager.ts:1272): the summary parents at the
@@ -608,9 +620,9 @@ class InMemorySessionLog:
         if from_id is not None and from_id not in self._ids:
             raise ValueError(f"branch_summary from {from_id!r} not found")
         self._leaf_id = from_id  # branch point, not the current leaf (pi :1272)
-        return self._append("branch_summary", summary=summary, fromId=from_id)
+        return self._append_now("branch_summary", summary=summary, fromId=from_id)
 
-    def append_at(
+    async def append_at(
         self,
         parent_id: str | None,
         entry_type: str,
@@ -625,6 +637,17 @@ class InMemorySessionLog:
         message when that message carries one, and falls back to now for an entry
         with no event of its own — a system message, a navigate, a compaction.
         """
+        return self._append_at_now(parent_id, entry_type, payload)
+
+    def _append_at_now(
+        self, parent_id: str | None, entry_type: str, payload: dict[str, Any]
+    ) -> str:
+        """The synchronous write :meth:`append_at` exposes as a coroutine.
+
+        A RAM-only store has nothing to await, so the two are the same work. The
+        split exists so a caller that has no event loop — a store's own
+        construction-time state — can still write; see ``Session._init_state``.
+        """
         if parent_id is not None and parent_id not in self._ids:
             raise ValueError(f"append parent {parent_id!r} not found")
         entry: dict[str, Any] = {
@@ -638,9 +661,9 @@ class InMemorySessionLog:
         self._ids.add(entry["id"])
         return str(entry["id"])
 
-    def _append(self, kind: str, **payload: Any) -> str:
-        """The ordinary append: ``append_at`` the current leaf, then move the leaf."""
-        entry_id = self.append_at(self._leaf_id, kind, payload)
+    def _append_now(self, kind: str, **payload: Any) -> str:
+        """The ordinary append: write at the current leaf, then move the leaf."""
+        entry_id = self._append_at_now(self._leaf_id, kind, payload)
         self._leaf_id = entry_id
         return entry_id
 
@@ -719,30 +742,30 @@ class BranchView:
     def _ids(self) -> set[str]:
         return {str(e["id"]) for e in self._log.entries()}
 
-    def append_at(
+    async def append_at(
         self,
         parent_id: str | None,
         entry_type: str,
         payload: dict[str, Any],
     ) -> str:
         """Pass through to the underlying log — a branch adds nothing to the entry."""
-        return self._log.append_at(parent_id, entry_type, payload)
+        return await self._log.append_at(parent_id, entry_type, payload)
 
-    def _append(self, entry_type: str, **payload: Any) -> str:
-        entry_id = self.append_at(self._leaf_id, entry_type, payload)
+    async def _append(self, entry_type: str, **payload: Any) -> str:
+        entry_id = await self.append_at(self._leaf_id, entry_type, payload)
         self._leaf_id = entry_id
         return entry_id
 
-    def append_message(self, message: dict[str, Any]) -> str:
-        return self._append("message", message=message)
+    async def append_message(self, message: dict[str, Any]) -> str:
+        return await self._append("message", message=message)
 
-    def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
-        return self._append("customMessage", customType=custom_type, message=message)
+    async def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
+        return await self._append("customMessage", customType=custom_type, message=message)
 
-    def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
-        return self._append("customEntry", customType=custom_type, data=data)
+    async def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
+        return await self._append("customEntry", customType=custom_type, data=data)
 
-    def append_compaction(
+    async def append_compaction(
         self,
         summary: str,
         first_kept_id: str,
@@ -767,7 +790,7 @@ class BranchView:
                 "must name a real entry, or the whole kept region silently drops out of "
                 "the context fold"
             )
-        return self._append(
+        return await self._append(
             "compaction",
             summary=summary,
             firstKeptId=first_kept_id,
@@ -779,7 +802,7 @@ class BranchView:
             agentSpecId=agent_spec_id,
         )
 
-    def append_elide(
+    async def append_elide(
         self,
         first_kept_id: str,
         *,
@@ -796,7 +819,7 @@ class BranchView:
                 "must name a real entry, or the whole kept region silently drops out of "
                 "the context fold"
             )
-        return self._append(
+        return await self._append(
             "elide",
             firstKeptId=first_kept_id,
             coveredEntries=covered_entries,
@@ -804,20 +827,20 @@ class BranchView:
             agentSpecId=agent_spec_id,
         )
 
-    def append_navigate(self, target_id: str | None) -> str:
+    async def append_navigate(self, target_id: str | None) -> str:
         """Move THIS branch's leaf. The primary cursor is untouched."""
         if target_id is not None and target_id not in self._ids():
             raise ValueError(f"navigate target {target_id!r} not found")
-        entry_id = self._append("navigate", targetId=target_id)
+        entry_id = await self._append("navigate", targetId=target_id)
         self._leaf_id = target_id
         return entry_id
 
-    def append_branch_summary(self, summary: str, from_id: str | None) -> str:
+    async def append_branch_summary(self, summary: str, from_id: str | None) -> str:
         """Re-parent to the branch point before appending (pi ``branchWithSummary``)."""
         if from_id is not None and from_id not in self._ids():
             raise ValueError(f"branch_summary from {from_id!r} not found")
         self._leaf_id = from_id
-        return self._append("branch_summary", summary=summary, fromId=from_id)
+        return await self._append("branch_summary", summary=summary, fromId=from_id)
 
 
 @agent_facing(topic="sessions")

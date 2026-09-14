@@ -167,14 +167,14 @@ def empty_session() -> AgentSession:
     return AgentSession(session_log=_PersistedLog(), model=_model(), tools=[])
 
 
-def _multi_turn_session(settings: CompactionSettings) -> AgentSession:
+async def _multi_turn_session(settings: CompactionSettings) -> AgentSession:
     """Three real log entries (two turns) — enough for `prepare_compaction`
     to find a cut point once `keep_recent_tokens` forces one (same recipe as
     test_compaction_engine.py's module-local `_session`)."""
     log = _PersistedLog()
-    log.append_message(_msg("user", "old question"))
-    log.append_message(_msg("assistant", "old answer", stop_reason="stop"))
-    log.append_message(_msg("user", "current"))
+    await log.append_message(_msg("user", "old question"))
+    await log.append_message(_msg("assistant", "old answer", stop_reason="stop"))
+    await log.append_message(_msg("user", "current"))
     return AgentSession(
         session_log=log, model=_model(), api_key="sk-test", compaction_settings=settings
     )
@@ -399,7 +399,7 @@ async def test_compact_under_the_shipped_settings_reports_performed_false(
         raise AssertionError("a compaction that removes nothing must not spend a completion")
 
     monkeypatch.setattr("tau_agent_core.compaction.complete_simple", _boom)
-    session = _multi_turn_session(CompactionSettings())  # the SHIPPED settings
+    session = await _multi_turn_session(CompactionSettings())  # the SHIPPED settings
     handler = RPCHandler(session)
     cursor_before = session.session_log.cursor
     entries_before = list(session.session_log.entries())
@@ -422,7 +422,7 @@ async def test_compact_performed_true_reports_full_result_and_new_cursor(
     monkeypatch.setattr(
         "tau_agent_core.compaction.complete_simple", _fake_complete_simple("## Goal\nrecap")
     )
-    session = _multi_turn_session(CompactionSettings(keep_recent_tokens=1))
+    session = await _multi_turn_session(CompactionSettings(keep_recent_tokens=1))
     handler = RPCHandler(session)
     cursor_before = session.session_log.cursor
 
@@ -844,7 +844,7 @@ async def test_an_aborted_compaction_writes_nothing(
         raise AssertionError("unreachable")  # pragma: no cover
 
     monkeypatch.setattr("tau_agent_core.compaction.complete_simple", _never_answers)
-    session = _multi_turn_session(CompactionSettings(keep_recent_tokens=1))
+    session = await _multi_turn_session(CompactionSettings(keep_recent_tokens=1))
     handler = RPCHandler(session)
     entries_before = list(session.session_log.entries())
     cursor_before = session.session_log.cursor
@@ -990,7 +990,7 @@ async def test_every_other_outcome_reports_cancelled_false(
     monkeypatch.setattr(
         "tau_agent_core.compaction.complete_simple", _fake_complete_simple("## Goal\nrecap")
     )
-    performed_session = _multi_turn_session(CompactionSettings(keep_recent_tokens=1))
+    performed_session = await _multi_turn_session(CompactionSettings(keep_recent_tokens=1))
     _ack, end = await _compact(RPCHandler(performed_session))  # performed=True
     assert end["cancelled"] is False
 

@@ -121,9 +121,9 @@ class SessionCatalogContractTests:
 
     # ---------------------------------------------------------- create / load
 
-    def test_create_then_load_round_trips(self, catalog, cwd):
+    async def test_create_then_load_round_trips(self, catalog, cwd):
         created = catalog.create(cwd, MODEL, BACKEND, system_prompt="sys", name="Title")
-        created.append_message(_msg("user", "hi"))
+        await created.append_message(_msg("user", "hi"))
 
         loaded = catalog.load(catalog.list(cwd)[0].ref)
         assert loaded.id == created.id
@@ -136,7 +136,7 @@ class SessionCatalogContractTests:
         with pytest.raises(self.missing_ref_error):
             catalog.load(self.unknown_ref())
 
-    def test_every_listed_ref_loads(self, catalog, cwd):
+    async def test_every_listed_ref_loads(self, catalog, cwd):
         """The keystone: a ref handed out by ``list()`` is accepted by ``load()``.
 
         ``SessionInfo.ref`` is the *only* handle a frontend gets from a picker row,
@@ -145,7 +145,7 @@ class SessionCatalogContractTests:
         """
         made = [catalog.create(cwd, MODEL, BACKEND, name=f"s{n}") for n in range(3)]
         for m in made:
-            m.append_message(_msg("user", "x"))
+            await m.append_message(_msg("user", "x"))
 
         infos = catalog.list(cwd)
         assert {i.id for i in infos} == {m.id for m in made}
@@ -154,10 +154,10 @@ class SessionCatalogContractTests:
 
     # ------------------------------------------------------------ durability
 
-    def test_appends_survive_a_reopen(self, catalog, cwd):
+    async def test_appends_survive_a_reopen(self, catalog, cwd):
         """What "persisted" means: another catalog instance sees the writes."""
         session = catalog.create(cwd, MODEL, BACKEND, system_prompt="sys")
-        session.append_message(_msg("user", "before"))
+        await session.append_message(_msg("user", "before"))
         ref = catalog.list(cwd)[0].ref
 
         reopened = self.reopen(catalog)
@@ -165,14 +165,14 @@ class SessionCatalogContractTests:
             pytest.skip("catalog has no durable form")
         assert _texts(reopened.load(ref).messages) == ["sys", "before"]
 
-    def test_a_listed_ref_outlives_the_catalog_that_minted_it(self, catalog, cwd):
+    async def test_a_listed_ref_outlives_the_catalog_that_minted_it(self, catalog, cwd):
         """Refs are storage handles, not process-local tokens.
 
         A ref that only resolves inside the instance that produced it passes every
         other test here and still cannot resume a session on the next run.
         """
         created = catalog.create(cwd, MODEL, BACKEND)
-        created.append_message(_msg("user", "hi"))
+        await created.append_message(_msg("user", "hi"))
         ref = catalog.list(cwd)[0].ref
 
         reopened = self.reopen(catalog)
@@ -182,7 +182,7 @@ class SessionCatalogContractTests:
 
     # -------------------------------------------------------------- ephemeral
 
-    def test_ephemeral_session_is_never_reachable_through_the_catalog(self, catalog, cwd):
+    async def test_ephemeral_session_is_never_reachable_through_the_catalog(self, catalog, cwd):
         """``--no-session`` means *no session*: nothing was written to find.
 
         Asserted against the listing, not against ``load(session.id)``. An id is
@@ -194,17 +194,17 @@ class SessionCatalogContractTests:
         names it and no "continue where I left off" finds it.
         """
         ephemeral = catalog.create_ephemeral(cwd, MODEL, BACKEND, system_prompt="sys")
-        ephemeral.append_message(_msg("user", "hello"))
+        await ephemeral.append_message(_msg("user", "hello"))
         ephemeral.append_session_info("renamed")
 
         assert catalog.list(cwd) == []
         assert catalog.most_recent(cwd) is None
 
-    def test_ephemeral_session_is_otherwise_fully_usable(self, catalog, cwd):
+    async def test_ephemeral_session_is_otherwise_fully_usable(self, catalog, cwd):
         """Unpersisted, not degraded — the agent loop runs against it unchanged."""
         ephemeral = catalog.create_ephemeral(cwd, MODEL, BACKEND, system_prompt="sys")
-        ephemeral.append_message(_msg("user", "hello"))
-        ephemeral.append_message(_msg("assistant", "hi"))
+        await ephemeral.append_message(_msg("user", "hello"))
+        await ephemeral.append_message(_msg("assistant", "hi"))
         assert isinstance(ephemeral, ConversationSession)
         assert _texts(ephemeral.messages) == ["sys", "hello", "hi"]
         assert ephemeral.model == MODEL
@@ -228,7 +228,7 @@ class SessionCatalogContractTests:
         catalog.create(other_cwd, MODEL, BACKEND)
         assert catalog.list(cwd) == []
 
-    def test_list_is_newest_first(self, catalog, cwd):
+    async def test_list_is_newest_first(self, catalog, cwd):
         """Asserted as an ordering invariant, not an expected pair of ids.
 
         Two sessions created microseconds apart may share a ``modified`` stamp at
@@ -236,17 +236,17 @@ class SessionCatalogContractTests:
         actually rely on, and it is true whether or not they tie.
         """
         for n in range(3):
-            catalog.create(cwd, MODEL, BACKEND).append_message(_msg("user", f"m{n}"))
+            await catalog.create(cwd, MODEL, BACKEND).append_message(_msg("user", f"m{n}"))
 
         modified = [i.modified for i in catalog.list(cwd)]
         assert modified == sorted(modified, reverse=True)
 
-    def test_list_metadata_describes_the_conversation(self, catalog, cwd):
+    async def test_list_metadata_describes_the_conversation(self, catalog, cwd):
         """The picker renders from these fields alone; ``system`` is not a message."""
         session = catalog.create(cwd, MODEL, BACKEND, system_prompt="sys", name="My Session")
-        session.append_message(_msg("user", "first question"))
-        session.append_message(_msg("assistant", "an answer"))
-        session.append_message(_msg("user", "last question"))
+        await session.append_message(_msg("user", "first question"))
+        await session.append_message(_msg("assistant", "an answer"))
+        await session.append_message(_msg("user", "last question"))
 
         (info,) = catalog.list(cwd)
         assert info.id == session.id
@@ -263,30 +263,30 @@ class SessionCatalogContractTests:
 
     # ------------------------------------------------------------------ fork
 
-    def test_fork_carries_the_history_under_a_new_id(self, catalog, cwd):
+    async def test_fork_carries_the_history_under_a_new_id(self, catalog, cwd):
         source = catalog.create(cwd, MODEL, BACKEND, system_prompt="sys")
-        source.append_message(_msg("user", "original"))
+        await source.append_message(_msg("user", "original"))
 
         forked = catalog.fork(source, cwd)
         assert forked.id != source.id
         assert _texts(forked.messages) == ["sys", "original"]
 
-    def test_fork_leaves_the_source_untouched(self, catalog, cwd):
+    async def test_fork_leaves_the_source_untouched(self, catalog, cwd):
         """The point of forking: explore without editing what you branched from."""
         source = catalog.create(cwd, MODEL, BACKEND, system_prompt="sys")
-        source.append_message(_msg("user", "original"))
+        await source.append_message(_msg("user", "original"))
 
         forked = catalog.fork(source, cwd)
-        forked.append_message(_msg("user", "branch"))
+        await forked.append_message(_msg("user", "branch"))
 
         assert "branch" not in _texts(source.messages)
         # ...and not in the *stored* source either, which is what the next run reads.
         source_ref = next(i.ref for i in catalog.list(cwd) if i.id == source.id)
         assert _texts(catalog.load(source_ref).messages) == ["sys", "original"]
 
-    def test_fork_is_listed_and_loadable_in_its_own_right(self, catalog, cwd):
+    async def test_fork_is_listed_and_loadable_in_its_own_right(self, catalog, cwd):
         source = catalog.create(cwd, MODEL, BACKEND)
-        source.append_message(_msg("user", "original"))
+        await source.append_message(_msg("user", "original"))
         forked = catalog.fork(source, cwd)
 
         by_id = {i.id: i for i in catalog.list(cwd)}
@@ -297,14 +297,14 @@ class SessionCatalogContractTests:
 
     # ---------------------------------- most_recent (shared base-class method)
 
-    def test_most_recent_loads_the_head_of_the_listing(self, catalog, cwd):
+    async def test_most_recent_loads_the_head_of_the_listing(self, catalog, cwd):
         """``most_recent`` is defined as ``load(list(cwd)[0].ref)`` — pin that.
 
         Comparing against the listing rather than a remembered session keeps this
         honest under ties, while still proving the two agree.
         """
         for n in range(3):
-            catalog.create(cwd, MODEL, BACKEND).append_message(_msg("user", f"m{n}"))
+            await catalog.create(cwd, MODEL, BACKEND).append_message(_msg("user", f"m{n}"))
 
         result = catalog.most_recent(cwd)
         assert result is not None

@@ -291,6 +291,8 @@ async def run_rpc(args: "CLIArgs", config: dict[str, Any]) -> int:
             "create_backend() returned a backend with no .agent_session — "
             "RPCHandler has nothing to dispatch against"
         )
+        # A host may read the tree before it prompts (docs/ASYNC-SESSION-LOG.md §3.2).
+        await agent_session.start()
         handler = RPCHandler(agent_session, runtime=runtime)
         try:
             await handler.run()

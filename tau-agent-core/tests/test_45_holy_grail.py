@@ -132,7 +132,7 @@ async def test_idiom_asks_without_locking() -> None:
 async def test_the_ni_note_is_not_a_request_at_all() -> None:
     """Row 1: neither key set, so it is an ordinary display message, not a request."""
     session = await _session()
-    session._session_log.append_message({"role": "user", "content": "I like it. Do it, mind it!"})
+    await session._session_log.append_message({"role": "user", "content": "I like it. Do it, mind it!"})
 
     await _call(session, "knights_of_ni")
     await _turn_edge(session)
@@ -220,7 +220,7 @@ async def test_dismissing_the_idiom_ask_changes_nothing() -> None:
 
     entries = session._session_log.entries()
     parent = next(e["parentId"] for e in entries if str(e["id"]) == request.entry_id)
-    session._session_log.append_navigate(str(parent))
+    await session._session_log.append_navigate(str(parent))
 
     assert session.pending_request is None
     assert not [e for e in session._session_log.entries() if e.get("customType") == "idiom"]

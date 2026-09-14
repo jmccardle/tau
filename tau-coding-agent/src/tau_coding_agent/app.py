@@ -3234,7 +3234,7 @@ class TauApp(App):
 
         self.sub_title = "Building branch…"
         try:
-            new_messages = commit_branch(session, ids, drop_context=drop_context)
+            new_messages = await commit_branch(session, ids, drop_context=drop_context)
         except Exception as e:
             self.notify(f"Branch failed: {e}", severity="error")
             self.log.error(f"Branch failed: {e}")
@@ -3276,7 +3276,7 @@ class TauApp(App):
             plan = plan_paste(
                 ConversationTree(session.entries(), session.cursor), source_id, target_id
             )
-            minted = paste_subtree(session, source_id, target_id)
+            minted = await paste_subtree(session, source_id, target_id)
         except Exception as e:
             self.notify(f"Paste failed: {e}", severity="error")
             self.log.error(f"Paste failed: {e}")
@@ -3324,7 +3324,7 @@ class TauApp(App):
         before = len(self.messages)
         self.sub_title = "Eliding span…"
         try:
-            new_messages = elide_span(session, anchor_id, first_kept_id)
+            new_messages = await elide_span(session, anchor_id, first_kept_id)
         except Exception as e:
             self.notify(f"Elide failed: {e}", severity="error")
             self.log.error(f"Elide failed: {e}")

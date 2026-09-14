@@ -124,11 +124,11 @@ async def test_the_three_array_shapes_describe_what_the_verbs_really_return(
     `array` and put the element shape in the property's English, where nothing could
     disagree with it because nothing read it.
     """
-    session._session_log.append_message({"role": "system", "content": "you are a test"})
-    session._session_log.append_message(
+    await session._session_log.append_message({"role": "system", "content": "you are a test"})
+    await session._session_log.append_message(
         UserMessage(content=[TextContent(text="hello")], timestamp=0).model_dump()
     )
-    session._session_log.append_message(
+    await session._session_log.append_message(
         AssistantMessage(
             content=[TextContent(text="hi")],
             api="openai-completions",

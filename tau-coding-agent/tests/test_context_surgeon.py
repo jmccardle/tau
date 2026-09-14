@@ -196,8 +196,8 @@ async def test_compact_now_defers_and_applies_at_end_of_prompt(monkeypatch) -> N
     )
     log = session.session_log
     for i in range(2):
-        log.append_message(_msg("user", f"u{i}"))
-        log.append_message(_msg("assistant", f"a{i}"))
+        await log.append_message(_msg("user", f"u{i}"))
+        await log.append_message(_msg("assistant", f"a{i}"))
 
     def compaction_count() -> int:
         return sum(1 for e in log.entries() if e["type"] == "compaction")
@@ -231,10 +231,10 @@ async def test_summarize_history_appends_a_branch_summary(monkeypatch) -> None:
         compaction_settings=CompactionSettings(enabled=False),
     )
     log = session.session_log
-    log.append_message(_msg("user", "u0"))
-    first_asst = log.append_message(_msg("assistant", "a0"))
-    log.append_message(_msg("user", "u1"))
-    log.append_message(_msg("assistant", "a1"))
+    await log.append_message(_msg("user", "u0"))
+    first_asst = await log.append_message(_msg("assistant", "a0"))
+    await log.append_message(_msg("user", "u1"))
+    await log.append_message(_msg("assistant", "a1"))
 
     with patch(
         "tau_agent_core.agent_loop.stream_simple",
@@ -392,8 +392,8 @@ async def test_fork_session_spawns_a_delegate(fake_home) -> None:
     live = Session.create(
         str(fake_home), "gpt-4o", "openai", base_dir=fake_home / ".tau" / "sessions"
     )
-    live.append_message({"role": "user", "content": "hello"})
-    live.append_message({"role": "assistant", "content": "hi"})
+    await live.append_message({"role": "user", "content": "hello"})
+    await live.append_message({"role": "assistant", "content": "hi"})
     agent = AgentSession(
         session_log=live,
         model=_model(),

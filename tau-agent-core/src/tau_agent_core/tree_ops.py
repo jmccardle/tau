@@ -50,7 +50,7 @@ __all__ = [
 
 
 @agent_facing(topic="sessions")
-def navigate(session: SessionLog, target_id: str | None) -> list[dict]:
+async def navigate(session: SessionLog, target_id: str | None) -> list[dict]:
     """Move ``session``'s cursor to ``target_id`` and return the new context.
 
     Appends a ``navigate`` entry — zero LLM calls. The abandoned branch drops out
@@ -74,7 +74,7 @@ def navigate(session: SessionLog, target_id: str | None) -> list[dict]:
     """
     if target_id == session.cursor:
         return ConversationTree(session.entries(), session.cursor).context_for()
-    session.append_navigate(target_id)
+    await session.append_navigate(target_id)
     return ConversationTree(session.entries(), session.cursor).context_for()
 
 
@@ -134,19 +134,20 @@ async def summarize_and_navigate(
         api_key=api_key,
         custom_instructions=custom_instructions,
     )
-    session.append_branch_summary(summary, target_id)
+    await session.append_branch_summary(summary, target_id)
     return ConversationTree(session.entries(), session.cursor).context_for(), usage
 
 
 @agent_facing(topic="sessions")
-def elide_span(session: SessionLog, anchor_id: str, first_kept_id: str) -> list[dict]:
+async def elide_span(session: SessionLog, anchor_id: str, first_kept_id: str) -> list[dict]:
     """Fold a span out of ``session``'s context and return the new context.
 
     ``elide`` is the summary-less generalization of the compaction anchor (W3,
-    NODE-ADDRESSABLE-AGENTS.md). **Synchronous**, unlike
-    :func:`summarize_and_navigate`: there is no summary, therefore no model call
-    and nothing to await. An ``async def`` with no ``await`` would advertise an
-    I/O boundary this operation does not have.
+    NODE-ADDRESSABLE-AGENTS.md). It awaits only its two appends — unlike
+    :func:`summarize_and_navigate`, there is no summary and therefore no model
+    call. It was synchronous until ``SessionLog``'s appenders became coroutines
+    (docs/BLOCKING-PERSISTENCE.md); the I/O boundary it now advertises is the
+    store's write, not a completion.
 
     Two ids, because an elide is not a branch point. ``anchor_id`` is where the
     fold jumps FROM — the elide entry is appended as its child, so the anchor
@@ -221,8 +222,8 @@ def elide_span(session: SessionLog, anchor_id: str, first_kept_id: str) -> list[
         )
 
     if session.cursor != anchor_id:
-        session.append_navigate(anchor_id)
-    session.append_elide(
+        await session.append_navigate(anchor_id)
+    await session.append_elide(
         first_kept_id,
         covered_entries=len(hidden),
         covered_tokens=estimate_span_tokens(hidden),
@@ -233,7 +234,9 @@ def elide_span(session: SessionLog, anchor_id: str, first_kept_id: str) -> list[
 
 
 @agent_facing(topic="sessions")
-def commit_branch(session: SessionLog, ids: Sequence[str], *, drop_context: bool) -> list[dict]:
+async def commit_branch(
+    session: SessionLog, ids: Sequence[str], *, drop_context: bool
+) -> list[dict]:
     """Build a branch out of the marked entries and continue on it.
 
     The durable half of TREE-BROWSER-AS-EDITOR.md §6. ``tree_surgery`` decides what
@@ -282,14 +285,14 @@ def commit_branch(session: SessionLog, ids: Sequence[str], *, drop_context: bool
     plan = plan_branch(tree, ids, drop_context=drop_context)
 
     if session.cursor != plan.attach:
-        session.append_navigate(plan.attach)
+        await session.append_navigate(plan.attach)
 
     parent = plan.attach
     for source_id in plan.copies:
         kind, payload = copy_of(tree.entry(source_id))
-        parent = session.append_at(parent, kind, payload)
+        parent = await session.append_at(parent, kind, payload)
     if plan.copies:
-        session.append_navigate(parent)
+        await session.append_navigate(parent)
 
     if plan.elide_from is not None:
         after = session.entries()
@@ -301,7 +304,7 @@ def commit_branch(session: SessionLog, ids: Sequence[str], *, drop_context: bool
             for e in grown.context_entries(session.cursor)
             if e["id"] not in kept and not is_system_message(e)
         ]
-        session.append_elide(
+        await session.append_elide(
             plan.elide_from,
             covered_entries=len(hidden),
             covered_tokens=estimate_span_tokens(hidden),
@@ -312,7 +315,7 @@ def commit_branch(session: SessionLog, ids: Sequence[str], *, drop_context: bool
 
 
 @agent_facing(topic="sessions")
-def paste_subtree(session: SessionLog, source_id: str, target_id: str) -> list[str]:
+async def paste_subtree(session: SessionLog, source_id: str, target_id: str) -> list[str]:
     """Re-create the subtree at ``source_id`` under ``target_id``.
 
     The durable half of TREE-BROWSER-AS-EDITOR.md §7. Every copied entry is a new
@@ -349,5 +352,5 @@ def paste_subtree(session: SessionLog, source_id: str, target_id: str) -> list[s
     minted: dict[str, str] = {}
     for mint in plan.mints:
         parent = plan.target if mint.parent_source_id is None else minted[mint.parent_source_id]
-        minted[mint.source_id] = session.append_at(parent, mint.kind, mint.payload)
+        minted[mint.source_id] = await session.append_at(parent, mint.kind, mint.payload)
     return [minted[mint.source_id] for mint in plan.mints]

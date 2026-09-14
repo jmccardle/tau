@@ -394,7 +394,7 @@ def router_ledger_extension(api: Any) -> None:
 
         lines.append(recommendation_line(rec))
         pending[
-            api.request_user_action(
+            await api.request_user_action(
                 f"Ledger recommends {rec.from_model!r} → {rec.to_model!r} for task "
                 f"{rec.task!r} (~{rec.savings_pct:.1f}% cheaper), effective next turn.",
                 ask={

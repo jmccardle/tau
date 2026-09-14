@@ -79,12 +79,12 @@ def _text_blob(messages: list) -> str:
 # ── TreeStore: the append → load round-trip ──────────────────────────────────
 
 
-def test_treestore_append_then_load(tmp_path):
+async def test_treestore_append_then_load(tmp_path):
     api = _api_for(_session(tmp_path))
     store: state.TreeStore = state.TreeStore(api, "todo")
 
-    store.append({"text": "buy milk", "done": False})
-    store.append({"text": "walk dog", "done": True})
+    await store.append({"text": "buy milk", "done": False})
+    await store.append({"text": "walk dog", "done": True})
 
     # A FRESH store over the same log reconstructs both records in tree order.
     fresh: state.TreeStore = state.TreeStore(api, "todo")
@@ -103,14 +103,14 @@ def test_treestore_requires_custom_type(tmp_path):
         state.TreeStore(api, "")
 
 
-def test_treestore_latest_snapshot(tmp_path):
+async def test_treestore_latest_snapshot(tmp_path):
     """``latest()`` is the "full snapshot wins" read (the todo/list pattern)."""
     api = _api_for(_session(tmp_path))
     store: state.TreeStore = state.TreeStore(api, "todos")
     assert store.latest() is None
 
-    store.append({"items": ["a"]})
-    store.append({"items": ["a", "b"]})
+    await store.append({"items": ["a"]})
+    await store.append({"items": ["a", "b"]})
     assert store.latest() == {"items": ["a", "b"]}
 
     reloaded: state.TreeStore = state.TreeStore(api, "todos")
@@ -118,26 +118,26 @@ def test_treestore_latest_snapshot(tmp_path):
     assert reloaded.latest() == {"items": ["a", "b"]}
 
 
-def test_treestore_isolates_custom_types(tmp_path):
+async def test_treestore_isolates_custom_types(tmp_path):
     """Two stores of different types over one log never cross-contaminate."""
     api = _api_for(_session(tmp_path))
     todos: state.TreeStore = state.TreeStore(api, "todo")
     marks: state.TreeStore = state.TreeStore(api, "bookmark")
 
-    todos.append({"text": "task"})
-    marks.append({"label": "here", "entry": "abc"})
-    todos.append({"text": "task2"})
+    await todos.append({"text": "task"})
+    await marks.append({"label": "here", "entry": "abc"})
+    await todos.append({"text": "task2"})
 
     assert state.TreeStore(api, "todo").load() == [{"text": "task"}, {"text": "task2"}]
     assert state.TreeStore(api, "bookmark").load() == [{"label": "here", "entry": "abc"}]
 
 
-def test_treestore_append_rejects_non_dict_record(tmp_path):
+async def test_treestore_append_rejects_non_dict_record(tmp_path):
     """A record that does not encode to a dict raises (Fail-Early, not dropped)."""
     api = _api_for(_session(tmp_path))
     store: state.TreeStore = state.TreeStore(api, "notes")
     with pytest.raises(TypeError, match="must encode to a dict"):
-        store.append("just a string")  # type: ignore[arg-type]
+        await store.append("just a string")  # type: ignore[arg-type]
 
 
 # ── TreeStore: typed records via encode/decode ───────────────────────────────
@@ -149,7 +149,7 @@ class Bookmark:
     entry_id: str
 
 
-def test_treestore_typed_records_roundtrip(tmp_path):
+async def test_treestore_typed_records_roundtrip(tmp_path):
     api = _api_for(_session(tmp_path))
     store: state.TreeStore[Bookmark] = state.TreeStore(
         api,
@@ -157,8 +157,8 @@ def test_treestore_typed_records_roundtrip(tmp_path):
         encode=lambda b: {"label": b.label, "entry_id": b.entry_id},
         decode=lambda d: Bookmark(label=d["label"], entry_id=d["entry_id"]),
     )
-    store.append(Bookmark("start", "aaa"))
-    store.append(Bookmark("fix", "bbb"))
+    await store.append(Bookmark("start", "aaa"))
+    await store.append(Bookmark("fix", "bbb"))
 
     reloaded: state.TreeStore[Bookmark] = state.TreeStore(
         api,
@@ -174,7 +174,7 @@ def test_treestore_typed_records_roundtrip(tmp_path):
 # ── TreeStore: active-path reconstruction (tree-as-truth) ────────────────────
 
 
-def test_treestore_excludes_abandoned_branch(tmp_path):
+async def test_treestore_excludes_abandoned_branch(tmp_path):
     """Records on a branch the cursor navigated away from are not reconstructed.
 
     Reconstructing from *all* entries would resurrect an abandoned branch's
@@ -186,25 +186,25 @@ def test_treestore_excludes_abandoned_branch(tmp_path):
     ts: state.TreeStore = state.TreeStore(api, "note")
 
     # A message to branch from, then a record on the current tip.
-    root_id = store.append_message({"role": "user", "content": "root"})
-    ts.append({"n": "on-main"})
+    root_id = await store.append_message({"role": "user", "content": "root"})
+    await ts.append({"n": "on-main"})
 
     # Navigate the cursor back to the root, then append a record on the new branch.
-    store.append_navigate(root_id)
-    ts.append({"n": "on-branch"})
+    await store.append_navigate(root_id)
+    await ts.append({"n": "on-branch"})
 
     # Active path = root → on-branch; the on-main record is off the active branch.
     records = state.TreeStore(api, "note").load()
     assert records == [{"n": "on-branch"}]
 
 
-def test_treestore_records_never_reach_the_model(tmp_path):
+async def test_treestore_records_never_reach_the_model(tmp_path):
     """The backplane guarantee: a TreeStore record is excluded from the LLM wire."""
     store = _session(tmp_path)
     api = _api_for(store)
-    store.append_message({"role": "user", "content": "hello"})
+    await store.append_message({"role": "user", "content": "hello"})
     ts: state.TreeStore = state.TreeStore(api, "secret")
-    ts.append({"payload": "MODEL MUST NOT SEE THIS"})
+    await ts.append({"payload": "MODEL MUST NOT SEE THIS"})
 
     context = ConversationTree(store.entries(), store.cursor).context_for()
     assert "hello" in _text_blob(context)
@@ -215,7 +215,7 @@ def test_treestore_records_never_reach_the_model(tmp_path):
 # ── TreeStore: RELOAD-INVARIANCE (real on-disk Session reload) ───────────────
 
 
-def test_treestore_survives_ondisk_reload(tmp_path):
+async def test_treestore_survives_ondisk_reload(tmp_path):
     """append → flush → Session.load: a fresh TreeStore reconstructs the records.
 
     The S56 reload-invariance proof, à la S39's on-disk test: the durable
@@ -225,8 +225,8 @@ def test_treestore_survives_ondisk_reload(tmp_path):
     store = _session(tmp_path)
     api = _api_for(store)
     ts: state.TreeStore = state.TreeStore(api, "todo")
-    ts.append({"text": "buy milk", "done": False, "n": 1})
-    ts.append({"text": "walk dog", "done": True, "n": 2})
+    await ts.append({"text": "buy milk", "done": False, "n": 1})
+    await ts.append({"text": "walk dog", "done": True, "n": 2})
 
     # A real reload from the persisted JSONL bytes, then a fresh store over it.
     reloaded = Session.load(store.path)

@@ -48,12 +48,12 @@ class _Tool:
         ).model_dump()
 
 
-def _session(tools: list) -> tuple[AgentSession, InMemorySessionLog]:
+async def _session(tools: list) -> tuple[AgentSession, InMemorySessionLog]:
     log = InMemorySessionLog()
     session = AgentSession(
         session_log=log, model=_model(), system_prompt="", tools=tools, api_key="k"
     )
-    log.append_message({"role": "user", "content": [{"type": "text", "text": "shared prefix"}]})
+    await log.append_message({"role": "user", "content": [{"type": "text", "text": "shared prefix"}]})
     return session, log
 
 
@@ -61,7 +61,7 @@ async def test_asking_for_an_unavailable_tool_raises_before_any_model_call():
     """Fail-Early, and BEFORE the model runs. A sub-agent silently missing a tool it was
     told to use does not error — it returns a confident wrong answer ("I couldn't find
     it"), which reads exactly like a real verdict."""
-    session, log = _session([_Tool("lookup")])
+    session, log = await _session([_Tool("lookup")])
     before = [e["id"] for e in log.entries()]
 
     with pytest.raises(ValueError, match="not available on this session"):
@@ -76,7 +76,7 @@ async def test_the_allowlist_is_a_hard_filter(monkeypatch):
     """Sub-agents share the process and cwd, so 'inherit the parent's tools' would hand a
     retrieval evaluator `write` and `bash`. Only the named tools reach the sub-agent."""
     lookup, danger = _Tool("lookup"), _Tool("write")
-    session, log = _session([lookup, danger])
+    session, log = await _session([lookup, danger])
 
     captured: dict = {}
 
@@ -90,7 +90,7 @@ async def test_the_allowlist_is_a_hard_filter(monkeypatch):
     assert captured["tools"] == ["lookup"], "write must not be handed to the sub-agent"
 
 
-def _extension_session() -> tuple[AgentSession, InMemorySessionLog]:
+async def _extension_session() -> tuple[AgentSession, InMemorySessionLog]:
     """A session in the shape a host uses when it owns every tool it offers.
 
     ``tools=[]`` plus ``no_tools="builtin"`` suppresses the built-ins and leaves
@@ -120,7 +120,7 @@ def _extension_session() -> tuple[AgentSession, InMemorySessionLog]:
                 "execute": _execute,
             }
         )
-    log.append_message({"role": "user", "content": [{"type": "text", "text": "shared prefix"}]})
+    await log.append_message({"role": "user", "content": [{"type": "text", "text": "shared prefix"}]})
     return session, log
 
 
@@ -134,7 +134,7 @@ async def test_a_branch_may_hold_a_tool_that_came_from_an_extension(monkeypatch)
     session" naming a tool the model had just successfully called, and `tools=[]` (a
     sub-agent that can think and do nothing) was the only value that did not.
     """
-    session, log = _extension_session()
+    session, log = await _extension_session()
     assert [t.name for t in session._tools] == [], "the shape the bug needs"
 
     captured: dict = {}
@@ -157,7 +157,7 @@ async def test_the_refusal_still_fires_and_now_names_the_extension_tools():
     session, which is what made the error unactionable — it said "not available on this
     session" about a session where two tools were.
     """
-    session, log = _extension_session()
+    session, log = await _extension_session()
 
     with pytest.raises(ValueError, match=r"\['bash'\].*available: \['remember', 'say'\]"):
         await session._extension_api.context.spawn_branch(
@@ -168,7 +168,7 @@ async def test_the_refusal_still_fires_and_now_names_the_extension_tools():
 async def test_a_failing_sub_agent_is_contained_and_marks_its_branch(monkeypatch):
     """§9.2/5. A raise here would mean one bad evaluator in a fan-out kills the whole
     primary turn. The failure comes back as a RESULT, and the branch records it."""
-    session, log = _session([])
+    session, log = await _session([])
     tip = log.cursor
 
     async def _boom(self, text, images=None, context=None):
@@ -190,12 +190,12 @@ async def test_a_failing_sub_agent_is_contained_and_marks_its_branch(monkeypatch
 async def test_the_sub_agents_work_never_reaches_the_spawners_context(
     monkeypatch,
 ):
-    session, log = _session([])
+    session, log = await _session([])
     tip = log.cursor
 
     async def _work(self, text, images=None, context=None):
         # the sub-agent writes through its OWN log, which is the BranchView
-        self._session_log.append_message(
+        await self._session_log.append_message(
             {"role": "assistant", "content": [{"type": "text", "text": "SUB-AGENT ONLY"}]}
         )
         return []
@@ -222,7 +222,7 @@ async def test_system_prompt_defaults_to_the_parents_but_can_be_overridden(monke
     ``session._system_prompt`` with no override, which was the one concrete blocker on
     'fork at a node with a different spec'. Default behaviour must be unchanged; passing
     a string must reach the sub-agent's ``AgentSession`` instead."""
-    session, log = _session([])
+    session, log = await _session([])
     captured: dict = {}
 
     async def _fake_prompt(self, text, images=None, context=None):
@@ -242,7 +242,7 @@ async def test_system_prompt_defaults_to_the_parents_but_can_be_overridden(monke
 
 async def test_max_turns_bounds_the_sub_agent(monkeypatch):
     """A looping sub-agent must not be able to burn the primary run's budget."""
-    session, log = _session([])
+    session, log = await _session([])
     captured: dict = {}
 
     async def _fake_prompt(self, text, images=None, context=None):
@@ -263,7 +263,7 @@ def _branch_ends(session: AgentSession) -> list[dict]:
 
 
 async def test_a_finished_branch_announces_its_end_exactly_once(monkeypatch):
-    session, log = _session([])
+    session, log = await _session([])
     ends = _branch_ends(session)
 
     async def _work(self, text, images=None, context=None):
@@ -280,7 +280,7 @@ async def test_a_failing_branch_still_announces_its_end(monkeypatch):
     that opened a span on the branch's first event (the TUI opens a render lane)
     closes it here — the sub-agent's own ``agent_end`` never arrives, because
     ``AgentLoop.run`` emits it after the while loop rather than from a ``finally``."""
-    session, log = _session([])
+    session, log = await _session([])
     ends = _branch_ends(session)
 
     async def _boom(self, text, images=None, context=None):
@@ -300,7 +300,7 @@ async def test_a_cancelled_branch_still_announces_its_end(monkeypatch):
     ``Exception``, so the containment handler never sees it — the ``finally``
     does. A bare cancel stringifies to "", so the error names the TYPE rather
     than reporting an empty reason."""
-    session, log = _session([])
+    session, log = await _session([])
     ends = _branch_ends(session)
     running = asyncio.Event()
 
@@ -325,7 +325,7 @@ async def test_a_branch_that_never_started_announces_nothing(monkeypatch):
     """The bracket is only owed for a branch that actually ran. The allowlist
     check raises BEFORE the sub-agent exists, so there is no span to close and no
     ``branch_end`` claiming one ended."""
-    session, log = _session([_Tool("lookup")])
+    session, log = await _session([_Tool("lookup")])
     ends = _branch_ends(session)
 
     with pytest.raises(ValueError, match="not available on this session"):

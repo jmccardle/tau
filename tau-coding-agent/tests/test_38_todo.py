@@ -149,10 +149,10 @@ async def test_state_is_branch_correct(tmp_path):
     api = _api_for(session_log)
     store = todo_mod.TreeStore(api, todo_mod.TODO_CUSTOM_TYPE)
 
-    root_id = session_log.append_message({"role": "user", "content": "root"})
+    root_id = await session_log.append_message({"role": "user", "content": "root"})
     await _call(store, "add", text="on-main")
 
-    session_log.append_navigate(root_id)
+    await session_log.append_navigate(root_id)
     fresh_store = todo_mod.TreeStore(api, todo_mod.TODO_CUSTOM_TYPE)
     todos, next_id = todo_mod._current_state(fresh_store)
     assert todos == []

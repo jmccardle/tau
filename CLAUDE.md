@@ -54,7 +54,7 @@ not get it.
 
 | Path | What it is |
 |---|---|
-| `docs/` | 79 design records, one per non-trivial change; `docs/INDEX.md` is the index |
+| `docs/` | 80 design records, one per non-trivial change; `docs/INDEX.md` is the index |
 | `docs/library/reference/` | Generated from `@agent_facing` markers — edit the docstring, not the page |
 | `docs/probe-results/` | Measured runs; exempt from the prose scans, because editing one falsifies it |
 | `.claude/skills/` | `feature-doc`, `release`, `worklog` — invoked, not read by default |

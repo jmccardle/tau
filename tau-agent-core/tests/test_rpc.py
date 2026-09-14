@@ -1540,6 +1540,97 @@ async def test_agent_end_wire_event_carries_the_post_persistence_cursor(real_han
     assert agent_end["params"]["cursor"] == post_turn_cursor
 
 
+#: One append's suspension, modelling a JMFTS POST. See _SuspendingLog.
+_SUSPEND_S = 0.02
+
+
+class _SuspendingLog(InMemorySessionLog):
+    """An ``InMemorySessionLog`` whose appends really suspend.
+
+    The test above cannot fail on its own. ``InMemorySessionLog``'s appenders
+    are coroutines that never await anything, and a coroutine that does not
+    await does not yield to the loop — so the writer task is never scheduled
+    mid-persistence whatever the ordering says, and the assertion passes with
+    the invariant broken. The one shipped store that DOES suspend per append is
+    ``JmftsSessionLog``, which hops to a thread (docs/ASYNC-SESSION-LOG.md §2),
+    and ``tau-agent-core`` cannot import it.
+
+    So this models it with a 20 ms sleep per append — conservative for an HTTP
+    POST, and deliberately not ``asyncio.sleep(0)``. A zero sleep yields exactly
+    one loop iteration, which measurably is NOT enough for the writer task to be
+    scheduled, dequeue and write: injecting an ``await asyncio.sleep(0)`` into
+    `_run_one_turn` between the enqueue and persistence leaves both this test and
+    the one above green. 0.2 s fails both. The window has to be a plausible
+    network round trip or the test is theatre.
+    """
+
+    async def append_message(self, message: dict) -> str:
+        await asyncio.sleep(_SUSPEND_S)
+        return await super().append_message(message)
+
+    async def append_custom_message(self, message: dict, custom_type: str) -> str:
+        await asyncio.sleep(_SUSPEND_S)
+        return await super().append_custom_message(message, custom_type)
+
+    async def append_custom_entry(self, custom_type: str, data: dict) -> str:
+        await asyncio.sleep(_SUSPEND_S)
+        return await super().append_custom_entry(custom_type, data)
+
+
+async def test_agent_end_cursor_is_still_post_persistence_when_appends_suspend():
+    """The gate ROADMAP.md said the test above is not.
+
+    docs/ASYNC-SESSION-LOG.md made every appender a coroutine, which reopens the
+    question `_stamp_agent_end_cursor` answers: it reads the cursor at DEQUEUE
+    time and relies on the writer task not being scheduled until this turn's
+    persistence has finished. That held when persistence was one synchronous
+    stretch. It has to be re-established now that persistence can suspend
+    part-way through, and only a store that actually suspends can ask.
+    """
+    session = AgentSession(session_log=_SuspendingLog(), model=_model(), tools=[])
+    handler = RPCHandler(session)
+    pre_turn_cursor = session.session_log.cursor
+
+    async def _fast_stream_simple(model, context, options=None):
+        return _Stream("hi there")
+
+    recorder = _Recorder()
+    handler._real_stdout = recorder
+    handler._running = True
+    pump = asyncio.create_task(handler._write_stdout())
+
+    def _has_agent_end() -> bool:
+        return any(
+            line.get("method") == "event" and line["params"].get("type") == "agent_end"
+            for line in recorder.lines
+        )
+
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_fast_stream_simple):
+        await handler._handle_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "prompt", "params": {"text": "hello"}}
+        )
+        for _ in range(200):
+            if _has_agent_end():
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("agent_end never reached the recorder")
+
+    handler._running = False
+    await asyncio.wait_for(pump, timeout=5.0)
+    recorder.close()
+    recorder.join()
+
+    (agent_end,) = [
+        line
+        for line in recorder.lines
+        if line.get("method") == "event" and line["params"].get("type") == "agent_end"
+    ]
+    post_turn_cursor = session.session_log.cursor
+    assert post_turn_cursor != pre_turn_cursor
+    assert agent_end["params"]["cursor"] == post_turn_cursor
+
+
 async def test_agent_end_cursor_survives_a_session_log_swap_before_dequeue(
     real_handler, real_session
 ):

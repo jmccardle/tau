@@ -550,6 +550,46 @@ class RPCHandler:
             if not waiter.done():
                 self._event_credits.remove_waiter(waiter)
 
+    async def await_outbound_prerequisites(self, item: dict[str, Any]) -> None:
+        """Block the writer until this item can be framed correctly.
+
+        Today it does exactly one thing, and it is the ordering
+        :meth:`_stamp_agent_end_cursor` used to get for free: an ``agent_end``
+        waits for the turn's persistence to settle
+        (:attr:`AgentSession.persistence_settled`), because the cursor stamped
+        one line later is read live and is the PRE-persistence tip until then.
+
+        Separate from :meth:`prepare_outbound` because that one is synchronous
+        and must stay so — it is called from the writer's hot path and its whole
+        contract is that it cannot suspend between reading a value and framing
+        it. This is the awaiting half, and it runs first.
+
+        It blocks the writer, not just this item, for as long as persistence
+        takes. That is the right trade and not a new one: the queue is FIFO, so
+        everything behind an ``agent_end`` was already behind it.
+
+        It waits only when the item's captured ``_cursor_log`` is still the
+        session's live log. A swap that landed since the enqueue held
+        ``turn_lock``, so that turn's persistence is already finished, and
+        waiting on the CURRENT session would be waiting on an unrelated turn —
+        the same wrong-session hazard :meth:`_stamp_agent_end_cursor` guards
+        against by stamping the captured log rather than the live one.
+
+        Args:
+            item: The outbound frame about to be written.
+        """
+        captured = item.get("_cursor_log")  # READ, not popped — the stamp pops it.
+        if captured is None:
+            return
+        params = item.get("params")
+        if not isinstance(params, dict) or params.get("type") != "agent_end":
+            return
+        session = self._session
+        # A swap since the enqueue held `turn_lock`, so that turn is already persisted.
+        if captured is not session.session_log:
+            return
+        await session.persistence_settled.wait()
+
     def prepare_outbound(self, item: dict[str, Any]) -> None:
         """Last-moment fixups on a queued item, applied just before it is framed.
 
@@ -576,15 +616,26 @@ class RPCHandler:
         failure F3 exists to prevent, and the one `abort`'s old `cursor` field
         had.
 
-        WHY THAT READ IS ORDERED, not a race: between the `put_nowait` in
-        `_forward_event` and `_persist_loop_messages` there is no `await`, so
-        this coroutine cannot be suspended in that window and the writer task
-        cannot dequeue until persistence has already happened. That is a real
-        guarantee, but an UNSTATED one — it lives in `agent_session.py`, not
-        here, and an `await` introduced between those two points would silently
-        reintroduce the stale cursor. `test_agent_end_wire_event_carries_the_
-        post_persistence_cursor` pins it: it asserts the cursor on the wire is
-        the post-turn tip, and fails if that ordering is ever broken.
+        WHY THAT READ IS ORDERED, not a race: `await_outbound_prerequisites`
+        runs immediately before this and waits on
+        `AgentSession.persistence_settled`, so the writer task cannot reach
+        here until this turn's messages are written.
+
+        That wait is new (2026-09-14, docs/ASYNC-SESSION-LOG.md §3.3) and it
+        REPLACES an unstated guarantee that had stopped being sufficient. The
+        old one: between the `put_nowait` in `_forward_event` and
+        `_persist_loop_messages` there is no `await`, so this coroutine could
+        not be suspended in that window. That window is still `await`-free —
+        but `SessionLog`'s appenders are coroutines now, so persistence can
+        suspend PART-WAY THROUGH, and a store that really suspends
+        (`JmftsSessionLog` thread-hops per append) let the writer dequeue
+        mid-turn and stamp a null cursor. Measured, not argued.
+
+        `test_agent_end_wire_event_carries_the_post_persistence_cursor` does not
+        pin this, and never did: it runs on `InMemorySessionLog`, whose appends
+        never yield, so it passes whatever the ordering is.
+        `test_agent_end_cursor_is_still_post_persistence_when_appends_suspend`
+        is the one that fails when the wait is removed.
 
         STILL TRUE UNDER T3's BACKPRESSURE, and worth spelling out because
         T3 makes a backlogged writer routine rather than rare (phase-4

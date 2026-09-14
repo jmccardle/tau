@@ -162,12 +162,12 @@ def holy_grail_extension(api: Any) -> None:
         pending.append({"kind": "ni"})
         return {"content": [{"type": "text", "text": "success"}]}
 
-    def say_ni(ctx: Any) -> str:
+    async def say_ni(ctx: Any) -> str:
         """Append the Ni note: a phrase, and how often ``it`` has been said."""
         phrase = "Ni!" if random.random() < 0.8 else "Ecky-ecky-ecky-ecky-pikang ZOOM-ping"
         said = count_it(ctx.entries())
         text = f"{phrase}  (you have said “it” {said} times)"
-        api.send_message({"customType": "knights_of_ni", "content": text})
+        await api.send_message({"customType": "knights_of_ni", "content": text})
         return text
 
     async def ni(args: str, ctx: Any) -> None:
@@ -178,23 +178,23 @@ def holy_grail_extension(api: Any) -> None:
         message. Returning the text too would put the same line on screen twice,
         once as chrome and once as the thing that persists.
         """
-        say_ni(ctx)
+        await say_ni(ctx)
 
     async def on_user_turn_end(event: dict[str, Any], ctx: Any) -> None:
         """Raise what the turn's tools asked for, at the one point nothing appends after."""
         while pending:
             want = pending.pop(0)
             if want["kind"] == "ni":
-                say_ni(ctx)
+                await say_ni(ctx)
             elif want["kind"] == "black-knight":
-                api.request_user_action(
+                await api.request_user_action(
                     "I move for no man.",
                     lock=True,
                     release="tis-but-a-scratch",
                 )
             else:
                 third = want["third"]
-                request_id = api.request_user_action(
+                request_id = await api.request_user_action(
                     "Answer me these questions three, ere the other side ye see.",
                     lock=True,
                     release="tis-but-a-scratch",
@@ -238,7 +238,7 @@ def holy_grail_extension(api: Any) -> None:
 
     async def idiom(args: str, ctx: Any) -> str:
         """Ask without locking: a prompt still advances while this sits unanswered."""
-        api.request_user_action(
+        await api.request_user_action(
             "Choose whom the agent is doing an impression of.",
             ask={
                 "title": "Idiom",
@@ -262,7 +262,7 @@ def holy_grail_extension(api: Any) -> None:
         character = answers(ctx, args.strip()).get("character")
         if character not in IDIOMS:
             return f"No character chosen for request {args.strip()!r}"
-        api.send_message(
+        await api.send_message(
             {
                 "customType": "idiom",
                 "content": f"From now on, answer as {character}: {IDIOMS[character]}.",

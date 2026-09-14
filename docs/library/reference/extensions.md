@@ -60,7 +60,7 @@ import τ-agent-core internals.
 ### append_entry
 
 ```python
-append_entry(custom_type: str, data: dict) -> None
+async append_entry(custom_type: str, data: dict) -> None
 ```
 
 `tau_agent_core.extension_types.ExtensionAPI.append_entry`
@@ -93,7 +93,7 @@ model input. To inject a node the model reads, use ``send_message``
 ### emit
 
 ```python
-emit(topic: str, payload: Any) -> None
+async emit(topic: str, payload: Any) -> None
 ```
 
 `tau_agent_core.extension_types.ExtensionAPI.emit`
@@ -401,7 +401,7 @@ guess; the resolved tool is merged into the loop's tools next turn.
 ### request_user_action
 
 ```python
-request_user_action(sentence: str, *, lock: bool = False, ask: dict[str, Any] | None = None, release: str | None = None) -> str
+async request_user_action(sentence: str, *, lock: bool = False, ask: dict[str, Any] | None = None, release: str | None = None) -> str
 ```
 
 `tau_agent_core.extension_types.ExtensionAPI.request_user_action`
@@ -435,7 +435,7 @@ The appended entry's id — the request id an action is dispatched with, and wha
 ### run_command
 
 ```python
-run_command(name: str, args: str = '') -> Any
+async run_command(name: str, args: str = '') -> Any
 ```
 
 `tau_agent_core.extension_types.ExtensionAPI.run_command`
@@ -463,7 +463,7 @@ Whatever the command's handler returned.
 ### send_message
 
 ```python
-send_message(message: dict, options: dict | None = None) -> None
+async send_message(message: dict, options: dict | None = None) -> None
 ```
 
 `tau_agent_core.extension_types.ExtensionAPI.send_message`
@@ -563,7 +563,7 @@ the full behavior and the raise conditions.
 ### submit
 
 ```python
-submit(text: str, *, multitask_strategy: MultitaskStrategy = 'reject', images: list[dict[str, Any]] | None = None, correlation: dict[str, Any] | None = None, allow_user_input: bool = False) -> SubmissionResult
+async submit(text: str, *, multitask_strategy: MultitaskStrategy = 'reject', images: list[dict[str, Any]] | None = None, correlation: dict[str, Any] | None = None, allow_user_input: bool = False) -> SubmissionResult
 ```
 
 `tau_agent_core.extension_types.ExtensionAPI.submit`
@@ -755,7 +755,7 @@ Abort the current operation by calling signal.abort() if available.
 ### compact
 
 ```python
-compact(custom_instructions: str | None = None, defer: bool = False) -> Any
+async compact(custom_instructions: str | None = None, defer: bool = False) -> Any
 ```
 
 `tau_agent_core.extension_types.ExtensionContext.compact`
@@ -786,7 +786,7 @@ Two variants (S20 / decision 3):
 ### complete
 
 ```python
-complete(messages: list[dict[str, Any]], *, model: Any = None, constraints: Any = None, api_key: str | None = None) -> Any
+async complete(messages: list[dict[str, Any]], *, model: Any = None, constraints: Any = None, api_key: str | None = None) -> Any
 ```
 
 `tau_agent_core.extension_types.ExtensionContext.complete`
@@ -831,7 +831,7 @@ A ``tau_llm.AssistantMessage``.
 ### complete_text
 
 ```python
-complete_text(messages: list[dict[str, Any]], *, model: Any = None, constraints: Any = None, api_key: str | None = None) -> str
+async complete_text(messages: list[dict[str, Any]], *, model: Any = None, constraints: Any = None, api_key: str | None = None) -> str
 ```
 
 `tau_agent_core.extension_types.ExtensionContext.complete_text`
@@ -894,7 +894,7 @@ contract, so mutating the returned list does not touch the log.
 ### fork
 
 ```python
-fork(entry_id: str | None = None, mode: Literal['in_place', 'export'] = 'in_place', defer: bool = False) -> Any
+async fork(entry_id: str | None = None, mode: Literal['in_place', 'export'] = 'in_place', defer: bool = False) -> Any
 ```
 
 `tau_agent_core.extension_types.ExtensionContext.fork`
@@ -991,7 +991,7 @@ a ``message_end`` handler instead of pulling ``event.message["usage"]``.
 ### navigate
 
 ```python
-navigate(target_id: str | None, summarize: bool = False, custom_instructions: str | None = None) -> list[dict[str, Any]]
+async navigate(target_id: str | None, summarize: bool = False, custom_instructions: str | None = None) -> list[dict[str, Any]]
 ```
 
 `tau_agent_core.extension_types.ExtensionContext.navigate`
@@ -1016,7 +1016,7 @@ Returns the re-rendered active-path messages (``ConversationTree.context_for``).
 ### prompt
 
 ```python
-prompt(text: str) -> list[dict[str, Any]]
+async prompt(text: str) -> list[dict[str, Any]]
 ```
 
 `tau_agent_core.extension_types.ExtensionContext.prompt`
@@ -1205,7 +1205,7 @@ True once `shutdown()` has been called on this context (P3).
 ### spawn_branch
 
 ```python
-spawn_branch(parent_id: str | None, prompt: str, *, tools: list[str], model: Any = None, max_turns: int | None = None, label: str | None = None, system_prompt: str | None = None) -> 'BranchResult'
+async spawn_branch(parent_id: str | None, prompt: str, *, tools: list[str], model: Any = None, max_turns: int | None = None, label: str | None = None, system_prompt: str | None = None) -> 'BranchResult'
 ```
 
 `tau_agent_core.extension_types.ExtensionContext.spawn_branch`
@@ -1283,7 +1283,7 @@ class:`BranchResult`. **Check ``ok``** — a failed branch returns a result, it 
 ### summarize_branch
 
 ```python
-summarize_branch(from_entry: str, custom_instructions: str | None = None) -> list[dict[str, Any]]
+async summarize_branch(from_entry: str, custom_instructions: str | None = None) -> list[dict[str, Any]]
 ```
 
 `tau_agent_core.extension_types.ExtensionContext.summarize_branch`
@@ -1479,7 +1479,7 @@ fabricated channel — the JSON record family only exists on that one path).
 ### form
 
 ```python
-form(spec: dict[str, Any]) -> dict[str, Any] | None
+async form(spec: dict[str, Any]) -> dict[str, Any] | None
 ```
 
 `tau_agent_core.extension_types.ExtensionUI.form`

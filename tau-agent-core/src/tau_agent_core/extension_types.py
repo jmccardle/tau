@@ -1387,7 +1387,7 @@ class ExtensionContext:
                 messages = await sub.prompt(prompt)
             except Exception as exc:  # noqa: BLE001 — containment is the point (§9.2/5)
                 branch_error = str(exc)
-                branch.append_custom_entry(
+                await branch.append_custom_entry(
                     "branch_error", {"lane": branch.lane, "label": branch.label, "error": str(exc)}
                 )
                 return BranchResult(
@@ -1467,7 +1467,7 @@ class ExtensionContext:
             if target_id is None:
                 raise ValueError("navigate(summarize=True) requires a target_id to summarize")
             return await self.summarize_branch(target_id, custom_instructions=custom_instructions)
-        return _navigate(log, target_id)
+        return await _navigate(log, target_id)
 
     async def fork(
         self,
@@ -1504,7 +1504,7 @@ class ExtensionContext:
             return None
         log = session.session_log
         if mode == "in_place":
-            log.append_navigate(entry_id)
+            await log.append_navigate(entry_id)
             return ConversationTree(log.entries(), log.cursor).context_for()
         if mode == "export":
             fork_classmethod = getattr(type(log), "fork", None)
@@ -1516,7 +1516,7 @@ class ExtensionContext:
             cwd = getattr(log, "cwd", None) or self._cwd
             forked = fork_classmethod(log, cwd)
             if entry_id is not None:
-                forked.append_navigate(entry_id)
+                await forked.append_navigate(entry_id)
             return str(forked.path)
         raise ValueError(f"fork: unknown mode {mode!r} (expected 'in_place' or 'export')")
 
@@ -2373,7 +2373,7 @@ class ExtensionAPI:
         if self._hook_handlers is not None:
             self._hook_handlers.shortcuts.append(key)
 
-    def append_entry(self, custom_type: str, data: dict) -> None:
+    async def append_entry(self, custom_type: str, data: dict) -> None:
         """Persist durable, NON-message extension state onto the session tree (E6 §2 / S39).
 
         Appends a ``{customType, data}`` node of its own tree entry KIND
@@ -2401,9 +2401,9 @@ class ExtensionAPI:
                 "append_entry: no session with a custom-entry log is bound "
                 "(the entry would have nowhere durable to land)"
             )
-        self._session._append_custom_entry(custom_type, data)
+        await self._session._append_custom_entry(custom_type, data)
 
-    def request_user_action(
+    async def request_user_action(
         self,
         sentence: str,
         *,
@@ -2463,7 +2463,7 @@ class ExtensionAPI:
             ask=None if ask is None else validate_ask_spec(ask),
             release=release,
         )
-        entry_id: str = self._session._append_custom_entry(REQUEST_ENTRY_TYPE, data)
+        entry_id: str = await self._session._append_custom_entry(REQUEST_ENTRY_TYPE, data)
         return entry_id
 
     def set_session_name(self, name: str) -> None:
@@ -2519,7 +2519,7 @@ class ExtensionAPI:
             raise RuntimeError("send_user_message: no session with a message queue is bound")
         self._session._queue_message(content, deliver_as=deliver_as)
 
-    def send_message(self, message: dict, options: dict | None = None) -> None:
+    async def send_message(self, message: dict, options: dict | None = None) -> None:
         """Append a durable custom message node onto the active path (pi ``sendMessage``).
 
         Persists ``{customType, content, display?, details?}`` as a ``role:
@@ -2547,7 +2547,7 @@ class ExtensionAPI:
                 "send_message: no session with a custom-message log is bound "
                 "(the message would have nowhere durable to land)"
             )
-        self._session._append_custom_message(message, options or {})
+        await self._session._append_custom_message(message, options or {})
 
     @property
     def ui(self) -> ExtensionUI:

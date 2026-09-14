@@ -42,12 +42,12 @@ class TestOnDiskSessionContract(SessionLogContractTests):
 class TestOnDiskReloadRoundTrip:
     """The property a database store must also satisfy: reload == same tree."""
 
-    def test_entries_and_cursor_survive_a_reload(self, tmp_path):
+    async def test_entries_and_cursor_survive_a_reload(self, tmp_path):
         session = Session.create(cwd="/tmp", model="m", backend="openai", base_dir=tmp_path)
-        a = session.append_message({"role": "user", "content": "one"})
-        session.append_message({"role": "assistant", "content": "abandoned"})
-        session.append_navigate(a)
-        session.append_message({"role": "assistant", "content": "kept"})
+        a = await session.append_message({"role": "user", "content": "one"})
+        await session.append_message({"role": "assistant", "content": "abandoned"})
+        await session.append_navigate(a)
+        await session.append_message({"role": "assistant", "content": "kept"})
 
         expected_entries = session.entries()
         expected_cursor = session.cursor

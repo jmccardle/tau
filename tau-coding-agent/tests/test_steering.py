@@ -68,7 +68,7 @@ class _SteerBackend:
             return SubmissionResult(accepted=True, submission_id=submission.submission_id)
         await self._released.wait()
         self._released.clear()
-        self._log.append_message(
+        await self._log.append_message(
             {"role": "assistant", "content": [{"type": "text", "text": "partial"}]}
         )
         return SubmissionResult(accepted=True, submission_id=submission.submission_id)

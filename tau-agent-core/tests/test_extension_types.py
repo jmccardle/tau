@@ -18,7 +18,7 @@ Reference: PHASE-3-SUBPHASE-0.md, Extension API Surface contract
 
 import io
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -389,25 +389,27 @@ class TestExtensionAPIAppendEntry:
         api = ExtensionAPI()
         assert hasattr(api, "append_entry")
 
-    def test_append_entry_raises_without_session(self):
+    async def test_append_entry_raises_without_session(self):
         """Fail-Early: no session bound → raise, not a silent RAM store (G4)."""
         api = ExtensionAPI()
         with pytest.raises(RuntimeError):
-            api.append_entry("notification", {"text": "test"})
+            await api.append_entry("notification", {"text": "test"})
 
-    def test_append_entry_delegates_to_session(self):
+    async def test_append_entry_delegates_to_session(self):
         """append_entry() forwards {custom_type, data} to _append_custom_entry."""
         mock_session = MagicMock()
+        mock_session._append_custom_entry = AsyncMock(return_value="e1")
         api = ExtensionAPI(session=mock_session)
-        api.append_entry("notification", {"text": "test"})
+        await api.append_entry("notification", {"text": "test"})
         mock_session._append_custom_entry.assert_called_once_with("notification", {"text": "test"})
 
-    def test_append_multiple_entries_delegate(self):
+    async def test_append_multiple_entries_delegate(self):
         """Each append_entry() call is a separate durable append."""
         mock_session = MagicMock()
+        mock_session._append_custom_entry = AsyncMock(return_value="e1")
         api = ExtensionAPI(session=mock_session)
-        api.append_entry("counter", {"value": 1})
-        api.append_entry("counter", {"value": 2})
+        await api.append_entry("counter", {"value": 1})
+        await api.append_entry("counter", {"value": 2})
         assert mock_session._append_custom_entry.call_count == 2
 
 
@@ -505,7 +507,7 @@ class TestExtensionAPISession:
             "actually, use ripgrep", deliver_as="steer"
         )
 
-    def test_send_message_raises_without_session(self):
+    async def test_send_message_raises_without_session(self):
         """ExtensionAPI.send_message() raises without a session (Fail-Early, S38).
 
         The old behaviour silently no-op'd on a nonexistent method; a message with
@@ -513,24 +515,24 @@ class TestExtensionAPISession:
         """
         api = ExtensionAPI()
         with pytest.raises(RuntimeError):
-            api.send_message({"customType": "note", "content": "Hello"}, {})
+            await api.send_message({"customType": "note", "content": "Hello"}, {})
 
-    def test_send_message_with_session(self):
+    async def test_send_message_with_session(self):
         """ExtensionAPI.send_message() appends custom message on session."""
         mock_session = MagicMock()
-        mock_session._append_custom_message = MagicMock()
+        mock_session._append_custom_message = AsyncMock(return_value="e1")
         api = ExtensionAPI(session=mock_session)
-        api.send_message({"customType": "note", "content": "Hello"}, {"source": "extension"})
+        await api.send_message({"customType": "note", "content": "Hello"}, {"source": "extension"})
         mock_session._append_custom_message.assert_called_once_with(
             {"customType": "note", "content": "Hello"}, {"source": "extension"}
         )
 
-    def test_send_message_default_options_forwarded_as_empty_dict(self):
+    async def test_send_message_default_options_forwarded_as_empty_dict(self):
         """Omitting options forwards ``{}`` (display-only default is applied downstream)."""
         mock_session = MagicMock()
-        mock_session._append_custom_message = MagicMock()
+        mock_session._append_custom_message = AsyncMock(return_value="e1")
         api = ExtensionAPI(session=mock_session)
-        api.send_message({"customType": "note", "content": "Hi"})
+        await api.send_message({"customType": "note", "content": "Hi"})
         mock_session._append_custom_message.assert_called_once_with(
             {"customType": "note", "content": "Hi"}, {}
         )
@@ -1204,7 +1206,7 @@ class TestExtensionAPIIntegration:
         assert api._context is ctx
         assert api._session is session
 
-    def test_tool_registration_event_subscription_and_entry_persistence(self):
+    async def test_tool_registration_event_subscription_and_entry_persistence(self):
         """Tool registration, event subscription, and entry persistence work together."""
         api = ExtensionAPI()
         received = []
@@ -1226,8 +1228,9 @@ class TestExtensionAPIIntegration:
         assert tools[0].source == "extension"
 
         mock_session = MagicMock()
+        mock_session._append_custom_entry = AsyncMock(return_value="e1")
         session_api = ExtensionAPI(session=mock_session)
-        session_api.append_entry("counter", {"value": 42})
+        await session_api.append_entry("counter", {"value": 42})
         mock_session._append_custom_entry.assert_called_once_with("counter", {"value": 42})
 
     def test_ui_property_reflects_context_ui(self):

@@ -159,7 +159,10 @@ class _EphemeralConversationSession:
     ) -> "_EphemeralConversationSession":
         session = cls(cwd, model, backend, name=name)
         if system_prompt:
-            session.append_message({"role": "system", "content": system_prompt})
+            # Sync core, not the async appender: `create` has no loop to await on.
+            session._log._append_now(
+                "message", message={"role": "system", "content": system_prompt}
+            )
         return session
 
     # -- SessionLog surface (delegates to the wrapped in-memory log) --------
@@ -175,16 +178,16 @@ class _EphemeralConversationSession:
     def entries(self) -> list[dict[str, Any]]:
         return self._log.entries()
 
-    def append_message(self, message: dict[str, Any]) -> str:
-        return self._log.append_message(message)
+    async def append_message(self, message: dict[str, Any]) -> str:
+        return await self._log.append_message(message)
 
-    def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
-        return self._log.append_custom_message(message, custom_type)
+    async def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
+        return await self._log.append_custom_message(message, custom_type)
 
-    def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
-        return self._log.append_custom_entry(custom_type, data)
+    async def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
+        return await self._log.append_custom_entry(custom_type, data)
 
-    def append_compaction(
+    async def append_compaction(
         self,
         summary: str,
         first_kept_id: str,
@@ -202,7 +205,7 @@ class _EphemeralConversationSession:
         fields are named here only because §11.3 made them required keywords, which
         is what forces a re-export like this one to be updated in step rather than
         quietly dropping them."""
-        return self._log.append_compaction(
+        return await self._log.append_compaction(
             summary,
             first_kept_id,
             tokens_before,
@@ -213,7 +216,7 @@ class _EphemeralConversationSession:
             agent_spec_id=agent_spec_id,
         )
 
-    def append_elide(
+    async def append_elide(
         self,
         first_kept_id: str,
         *,
@@ -222,20 +225,20 @@ class _EphemeralConversationSession:
         agent_spec_id: str | None,
     ) -> str:
         """W3 splice anchor, delegated like every other appender (§ ``SessionLog``)."""
-        return self._log.append_elide(
+        return await self._log.append_elide(
             first_kept_id,
             covered_entries=covered_entries,
             covered_tokens=covered_tokens,
             agent_spec_id=agent_spec_id,
         )
 
-    def append_navigate(self, target_id: str | None) -> str:
-        return self._log.append_navigate(target_id)
+    async def append_navigate(self, target_id: str | None) -> str:
+        return await self._log.append_navigate(target_id)
 
-    def append_branch_summary(self, summary: str, from_id: str | None) -> str:
-        return self._log.append_branch_summary(summary, from_id)
+    async def append_branch_summary(self, summary: str, from_id: str | None) -> str:
+        return await self._log.append_branch_summary(summary, from_id)
 
-    def append_at(
+    async def append_at(
         self,
         parent_id: str | None,
         entry_type: str,
@@ -244,7 +247,7 @@ class _EphemeralConversationSession:
         """The C2/W14 explicit-parent append. Delegated like every other appender, so a
         branch sub-agent works in an ephemeral session too -- branching is a property of
         the entry algebra, not of durability."""
-        return self._log.append_at(parent_id, entry_type, payload)
+        return await self._log.append_at(parent_id, entry_type, payload)
 
     # -- ConversationSession additions --------------------------------------
 

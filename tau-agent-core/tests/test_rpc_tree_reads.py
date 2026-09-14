@@ -60,21 +60,23 @@ def handler(log: _DurableLog) -> RPCHandler:
 
 
 @pytest.fixture
-def entries(handler: RPCHandler, log: _DurableLog) -> dict[str, str]:
+async def entries(handler: RPCHandler, log: _DurableLog) -> dict[str, str]:
     """A user turn with a tool call and its result, appended AFTER the agent_spec.
 
-    Depends on `handler` for the ordering, not for the handler: constructing an
-    `AgentSession` appends an `agent_spec` entry, so a fixture that appended
-    first would put the session's own root in the middle of the conversation.
+    Depends on `handler` for the ordering, not for the handler: an `AgentSession`
+    QUEUES an `agent_spec` at construction and `start()` writes it
+    (docs/ASYNC-SESSION-LOG.md §3.2), so a fixture that appended first would put
+    the session's own root in the middle of the conversation.
     """
-    user = log.append_message({"role": "user", "content": [{"type": "text", "text": "one"}]})
-    called = log.append_message(
+    await handler._session.start()
+    user = await log.append_message({"role": "user", "content": [{"type": "text", "text": "one"}]})
+    called = await log.append_message(
         {
             "role": "assistant",
             "content": [{"type": "toolCall", "id": "call-1", "name": "ls", "arguments": {}}],
         }
     )
-    answered = log.append_message(
+    answered = await log.append_message(
         {
             "role": "toolResult",
             "tool_call_id": "call-1",
@@ -148,8 +150,8 @@ async def test_a_fork_draws_its_branches_under_their_shared_parent(
     under the parent it hangs from, ahead of nothing, and the parent links are
     what a host rebuilds the shape from.
     """
-    log.append_navigate(entries["user"])
-    second = log.append_message(
+    await log.append_navigate(entries["user"])
+    second = await log.append_message(
         {"role": "assistant", "content": [{"type": "text", "text": "other"}]}
     )
     result = (await _call(handler, "get_tree"))["result"]
@@ -229,10 +231,15 @@ async def test_a_session_with_no_conversation_answers_its_one_bookkeeping_row(
 ) -> None:
     """Not an error, and not empty either.
 
-    `AgentSession.__init__` appends an `agent_spec`, so the smallest real tree is
-    one node. A head opening a browser on a fresh session draws that row rather
-    than an empty panel it would read as a failure.
+    An `AgentSession` carries an `agent_spec`, so the smallest real tree is one
+    node. A head opening a browser on a fresh session draws that row rather than
+    an empty panel it would read as a failure.
+
+    `start()` is what writes it — the record is queued at construction
+    (docs/ASYNC-SESSION-LOG.md §3.2) and `rpc_mode` awaits this once before
+    `RPCHandler.run`, which is the real call this line stands in for.
     """
+    await handler._session.start()
     result = (await _call(handler, "get_tree"))["result"]
     assert result["count"] == 1
     assert result["nodes"][0]["kind"] == "customEntry"
@@ -273,7 +280,7 @@ async def test_get_entry_reaches_a_node_off_the_active_path(
     A browser's cursor is very often on a node the active path does not contain,
     and `get_messages` answers only for the path.
     """
-    log.append_navigate(entries["user"])
+    await log.append_navigate(entries["user"])
     abandoned = entries["answered"]
     result = (await _call(handler, "get_entry", {"entry_id": abandoned}))["result"]
     assert result["entry"]["id"] == abandoned

@@ -104,7 +104,7 @@ def _files_under(base: Path) -> set[Path]:
     return set(base.rglob("*.jsonl")) if base.exists() else set()
 
 
-def _plant_real_session(env: dict[str, Path]) -> Session:
+async def _plant_real_session(env: dict[str, Path]) -> Session:
     """The human's own work, in the user's real session list, in ``workdir``."""
     session = Session.create(
         str(env["workdir"]),
@@ -113,8 +113,8 @@ def _plant_real_session(env: dict[str, Path]) -> Session:
         base_dir=_user_sessions(env),
     )
     session.append_session_info("my real work")
-    session.append_message({"role": "user", "content": "the actual question"})
-    session.append_message({"role": "assistant", "content": [{"type": "text", "text": "answer"}]})
+    await session.append_message({"role": "user", "content": "the actual question"})
+    await session.append_message({"role": "assistant", "content": [{"type": "text", "text": "answer"}]})
     return session
 
 
@@ -159,7 +159,7 @@ def _run_rpc_child(
 # ── the leak, dead ───────────────────────────────────────────────────────────
 
 
-def test_an_rpc_child_leaves_the_users_session_list_untouched(env):
+async def test_an_rpc_child_leaves_the_users_session_list_untouched(env):
     """The reproduction verbatim, inverted into a regression test.
 
     A real session exists in ``~/.tau/sessions`` for this cwd; one ``--mode
@@ -175,7 +175,7 @@ def test_an_rpc_child_leaves_the_users_session_list_untouched(env):
     for the no-flag file-store case (i.e. restore the pre-fix behaviour) → red
     at "the RPC child's session landed in the user's session list".
     """
-    real = _plant_real_session(env)
+    real = await _plant_real_session(env)
     before = _files_under(_user_sessions(env))
     assert before, "fixture failure: the human's session was never written"
 

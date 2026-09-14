@@ -187,6 +187,8 @@ async def test_set_auto_compaction_enables_and_returns_the_effective_state(
     real_handler: RPCHandler, real_session: AgentSession
 ) -> None:
     assert real_session._compaction_settings.enabled is False
+    # The agent_spec is queued until something drains it; `tip` is that record.
+    await real_session.start()
     tip = real_session.session_log.cursor
     assert tip is not None
     await real_handler._handle_request(
@@ -236,7 +238,7 @@ async def test_set_auto_compaction_returns_the_live_tip_although_it_moves_nothin
     be unchanged by the call, because flipping an in-memory
     `CompactionSettings` field appends nothing.
     """
-    tip = real_session.session_log.append_message(
+    tip = await real_session.session_log.append_message(
         {"role": "user", "content": [{"type": "text", "text": "hi"}]}
     )
     assert real_session.session_log.cursor == tip
@@ -368,8 +370,8 @@ async def test_enabling_over_the_wire_makes_a_real_turn_actually_compact(
     """
     log = real_session.session_log
     for i in range(3):
-        log.append_message(_msg("user", f"seed user {i}"))
-        log.append_message(_msg("assistant", f"seed assistant {i}"))
+        await log.append_message(_msg("user", f"seed user {i}"))
+        await log.append_message(_msg("assistant", f"seed assistant {i}"))
     assert not any(e.get("type") == "compaction" for e in log.entries())
     pre_turn_cursor = log.cursor
 

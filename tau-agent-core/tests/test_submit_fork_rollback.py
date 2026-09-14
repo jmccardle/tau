@@ -91,8 +91,8 @@ class TestForkAdmission:
         """The concrete admission check the spec requires: an assistant message
         with a dangling toolCall must not become a fork point."""
         log = InMemorySessionLog()
-        log.append_message({"role": "user", "content": [{"type": "text", "text": "go"}]})
-        log.append_message(
+        await log.append_message({"role": "user", "content": [{"type": "text", "text": "go"}]})
+        await log.append_message(
             {
                 "role": "assistant",
                 "content": [{"type": "toolCall", "id": "call_1", "name": "read", "arguments": {}}],
@@ -112,7 +112,7 @@ class TestForkAdmission:
         """accepted=True comes back before the branch's own turn has run at
         all — there is no caller left to await it (decision 2)."""
         log = InMemorySessionLog()
-        log.append_message({"role": "user", "content": [{"type": "text", "text": "hi"}]})
+        await log.append_message({"role": "user", "content": [{"type": "text", "text": "hi"}]})
         session = AgentSession(session_log=log, model=_model(), tools=[])
 
         started = asyncio.Event()
@@ -148,7 +148,7 @@ class TestForkAdmission:
         any part of what it was forked to continue, and nothing anywhere says so.
         """
         log = InMemorySessionLog()
-        log.append_message({"role": "user", "content": [{"type": "text", "text": "hi"}]})
+        await log.append_message({"role": "user", "content": [{"type": "text", "text": "hi"}]})
         session = AgentSession(session_log=log, model=_model(), tools=[], no_tools="builtin")
 
         async def _execute(tool_call_id, params, signal, on_update, ctx):
@@ -179,12 +179,12 @@ class TestForkAdmission:
 
     async def test_fork_does_not_move_or_touch_the_primary_cursor(self, monkeypatch):
         log = InMemorySessionLog()
-        log.append_message({"role": "user", "content": [{"type": "text", "text": "hi"}]})
+        await log.append_message({"role": "user", "content": [{"type": "text", "text": "hi"}]})
         session = AgentSession(session_log=log, model=_model(), tools=[])
         tip = log.cursor
 
         async def _work(self, text, images=None, context=None):
-            self._session_log.append_message(
+            await self._session_log.append_message(
                 {"role": "assistant", "content": [{"type": "text", "text": "BRANCH ONLY"}]}
             )
             return []
@@ -370,7 +370,7 @@ class TestRollback:
         It must now target the cursor immediately before THIS continuation
         started, exactly as it does for a submit()-driven turn."""
         log = InMemorySessionLog()
-        log.append_message({"role": "user", "content": [{"type": "text", "text": "seed"}]})
+        await log.append_message({"role": "user", "content": [{"type": "text", "text": "seed"}]})
         session = AgentSession(session_log=log, model=_model(), tools=[])
 
         gate = asyncio.Event()

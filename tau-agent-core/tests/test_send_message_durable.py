@@ -49,12 +49,12 @@ def _text_blob(messages: list) -> str:
     return "\n".join(out)
 
 
-def test_send_message_appends_durable_custom_message_node() -> None:
+async def test_send_message_appends_durable_custom_message_node() -> None:
     """The node is a persisted ``customMessage`` entry on the active path."""
     session = _make_session()
     api = ExtensionAPI(session=session)
 
-    api.send_message({"customType": "gate-note", "content": "policy applied"})
+    await api.send_message({"customType": "gate-note", "content": "policy applied"})
 
     entries = session._session_log.entries()
     custom = [e for e in entries if e.get("type") == "customMessage"]
@@ -66,12 +66,12 @@ def test_send_message_appends_durable_custom_message_node() -> None:
     assert "policy applied" in _text_blob(path)
 
 
-def test_send_message_display_only_by_default_off_the_wire() -> None:
+async def test_send_message_display_only_by_default_off_the_wire() -> None:
     """Default is display-only: on the path, dropped by convert_to_llm (D-E6-1)."""
     session = _make_session()
     api = ExtensionAPI(session=session)
 
-    api.send_message({"customType": "gate-note", "content": "secret to the model"})
+    await api.send_message({"customType": "gate-note", "content": "secret to the model"})
 
     path = ConversationTree(
         session._session_log.entries(), session._session_log.cursor
@@ -84,12 +84,12 @@ def test_send_message_display_only_by_default_off_the_wire() -> None:
     assert all((not isinstance(m, dict)) or m.get("role") != "custom" for m in wire)
 
 
-def test_send_message_visible_to_model_opt_in_reaches_the_wire() -> None:
+async def test_send_message_visible_to_model_opt_in_reaches_the_wire() -> None:
     """visible_to_model=True remaps custom→user so the model sees it."""
     session = _make_session()
     api = ExtensionAPI(session=session)
 
-    api.send_message(
+    await api.send_message(
         {"customType": "gate-note", "content": "the model should read this"},
         {"visible_to_model": True},
     )
@@ -103,11 +103,11 @@ def test_send_message_visible_to_model_opt_in_reaches_the_wire() -> None:
     assert any(isinstance(m, dict) and m.get("role") == "user" for m in wire)
 
 
-def test_send_message_survives_reload() -> None:
+async def test_send_message_survives_reload() -> None:
     """Reload-invariance: a fresh fold over the persisted entries keeps the node."""
     session = _make_session()
     api = ExtensionAPI(session=session)
-    api.send_message({"customType": "gate-note", "content": "durable across reload"})
+    await api.send_message({"customType": "gate-note", "content": "durable across reload"})
 
     # Simulate a reload: rebuild the tree from the persisted entries alone.
     persisted = session._session_log.entries()
@@ -117,7 +117,7 @@ def test_send_message_survives_reload() -> None:
     assert "durable across reload" not in _text_blob(convert_to_llm(reloaded.context_for()))
 
 
-def test_send_message_requires_content_and_custom_type() -> None:
+async def test_send_message_requires_content_and_custom_type() -> None:
     """Fail-Early: missing content or customType raises (no fabricated default)."""
     session = _make_session()
     api = ExtensionAPI(session=session)
@@ -125,9 +125,9 @@ def test_send_message_requires_content_and_custom_type() -> None:
     import pytest
 
     with pytest.raises(ValueError):
-        api.send_message({"customType": "gate-note"})  # no content
+        await api.send_message({"customType": "gate-note"})  # no content
     with pytest.raises(ValueError):
-        api.send_message({"content": "hi"})  # no customType
+        await api.send_message({"content": "hi"})  # no customType
 
 
 async def test_send_message_announces_the_append_on_its_channel() -> None:
@@ -146,7 +146,7 @@ async def test_send_message_announces_the_append_on_its_channel() -> None:
         "custom_message", lambda *, entry_id, message: seen.append({"id": entry_id, "m": message})
     )
     api = ExtensionAPI(session=session)
-    api.send_message({"customType": "gate-note", "content": "announced"})
+    await api.send_message({"customType": "gate-note", "content": "announced"})
     await asyncio.sleep(0)  # the emit is a task; let it run
 
     assert len(seen) == 1
@@ -155,21 +155,39 @@ async def test_send_message_announces_the_append_on_its_channel() -> None:
     assert seen[0]["id"] in {str(e["id"]) for e in session._session_log.entries()}
 
 
-def test_an_unreachable_announcement_raises_rather_than_vanishing() -> None:
-    """Off the loop WITH a subscriber is a head that would silently fall behind."""
+async def test_an_unreachable_announcement_raises_rather_than_vanishing() -> None:
+    """Off the loop WITH a subscriber is a head that would silently fall behind.
+
+    Driven through ``_announce_append`` on a worker thread rather than through
+    ``api.send_message``, which is how it used to be reached. That route is gone:
+    ``send_message`` is a coroutine since docs/ASYNC-SESSION-LOG.md §3.1, so a
+    caller is already on a loop by construction and the refusal cannot fire
+    there. The refusal itself still protects ``_announce_append``, whose
+    contract is unchanged for any caller that reaches it off the loop — a
+    thread is the one that still can.
+    """
+    import asyncio
+
     import pytest
 
     session = _make_session()
     session.subscribe_channel("custom_message", lambda **kwargs: None)
-    api = ExtensionAPI(session=session)
+
+    def _off_the_loop() -> None:
+        session._announce_append("custom_message", entry_id="e1", message={})
 
     with pytest.raises(RuntimeError, match="custom_message"):
-        api.send_message({"customType": "gate-note", "content": "nobody hears this"})
+        await asyncio.to_thread(_off_the_loop)
 
 
-def test_no_subscriber_off_the_loop_is_not_an_error() -> None:
+async def test_no_subscriber_off_the_loop_is_not_an_error() -> None:
     """A headless script building a session loses nothing, so it is not refused."""
+    import asyncio
+
     session = _make_session()
     api = ExtensionAPI(session=session)
-    api.send_message({"customType": "gate-note", "content": "fine"})
+    await api.send_message({"customType": "gate-note", "content": "fine"})
     assert any(e.get("customType") == "gate-note" for e in session._session_log.entries())
+
+    # The same no-subscriber case at the guard itself, where it is still reachable.
+    await asyncio.to_thread(session._announce_append, "custom_message", entry_id="e1")

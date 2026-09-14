@@ -192,7 +192,7 @@ class EventBus:
 ### emit
 
 ```python
-emit(event: AgentEvent) -> None
+async emit(event: AgentEvent) -> None
 ```
 
 `tau_agent_core.events.EventBus.emit`
@@ -210,7 +210,7 @@ This is an async method to be compatible with async consumers.
 ### emit_channel
 
 ```python
-emit_channel(channel: str, *args: Any, **kwargs: Any) -> None
+async emit_channel(channel: str, *args: Any, **kwargs: Any) -> None
 ```
 
 `tau_agent_core.events.EventBus.emit_channel`

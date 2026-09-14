@@ -50,8 +50,8 @@ def _session_on(tmp_path) -> tuple[AgentSession, Session]:
 
 async def test_fork_export_writes_a_new_file_and_leaves_source_untouched(tmp_path):
     agent, live = _session_on(tmp_path)
-    live.append_message({"role": "user", "content": "hello"})
-    live.append_message({"role": "assistant", "content": "hi"})
+    await live.append_message({"role": "user", "content": "hello"})
+    await live.append_message({"role": "assistant", "content": "hi"})
     source_entries_before = live.entries()
     ctx = agent._extension_api.context
 
@@ -76,10 +76,10 @@ async def test_fork_export_writes_a_new_file_and_leaves_source_untouched(tmp_pat
 
 async def test_fork_export_positions_cursor_at_entry_id(tmp_path):
     agent, live = _session_on(tmp_path)
-    live.append_message({"role": "user", "content": "u0"})
-    first_asst = live.append_message({"role": "assistant", "content": "a0"})
-    live.append_message({"role": "user", "content": "u1"})
-    live.append_message({"role": "assistant", "content": "a1"})
+    await live.append_message({"role": "user", "content": "u0"})
+    first_asst = await live.append_message({"role": "assistant", "content": "a0"})
+    await live.append_message({"role": "user", "content": "u1"})
+    await live.append_message({"role": "assistant", "content": "a1"})
     ctx = agent._extension_api.context
 
     new_path = await ctx.fork(first_asst, mode="export")

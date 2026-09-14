@@ -95,19 +95,19 @@ class _InMemoryConversationSession:
     def entries(self) -> list[dict[str, Any]]:
         return self._log.entries()
 
-    def append_message(self, message: dict[str, Any]) -> str:
+    async def append_message(self, message: dict[str, Any]) -> str:
         self._touch()
-        return self._log.append_message(message)
+        return await self._log.append_message(message)
 
-    def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
+    async def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
         self._touch()
-        return self._log.append_custom_message(message, custom_type)
+        return await self._log.append_custom_message(message, custom_type)
 
-    def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
+    async def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
         self._touch()
-        return self._log.append_custom_entry(custom_type, data)
+        return await self._log.append_custom_entry(custom_type, data)
 
-    def append_compaction(
+    async def append_compaction(
         self,
         summary: str,
         first_kept_id: str,
@@ -120,7 +120,7 @@ class _InMemoryConversationSession:
         agent_spec_id: str | None,
     ) -> str:
         self._touch()
-        return self._log.append_compaction(
+        return await self._log.append_compaction(
             summary,
             first_kept_id,
             tokens_before,
@@ -131,7 +131,7 @@ class _InMemoryConversationSession:
             agent_spec_id=agent_spec_id,
         )
 
-    def append_elide(
+    async def append_elide(
         self,
         first_kept_id: str,
         *,
@@ -140,22 +140,22 @@ class _InMemoryConversationSession:
         agent_spec_id: str | None,
     ) -> str:
         self._touch()
-        return self._log.append_elide(
+        return await self._log.append_elide(
             first_kept_id,
             covered_entries=covered_entries,
             covered_tokens=covered_tokens,
             agent_spec_id=agent_spec_id,
         )
 
-    def append_navigate(self, target_id: str | None) -> str:
+    async def append_navigate(self, target_id: str | None) -> str:
         self._touch()
-        return self._log.append_navigate(target_id)
+        return await self._log.append_navigate(target_id)
 
-    def append_branch_summary(self, summary: str, from_id: str | None) -> str:
+    async def append_branch_summary(self, summary: str, from_id: str | None) -> str:
         self._touch()
-        return self._log.append_branch_summary(summary, from_id)
+        return await self._log.append_branch_summary(summary, from_id)
 
-    def append_at(
+    async def append_at(
         self,
         parent_id: str | None,
         entry_type: str,
@@ -163,7 +163,7 @@ class _InMemoryConversationSession:
     ) -> str:
         """The C2/W14 explicit-parent append — delegated like every other appender."""
         self._touch()
-        return self._log.append_at(parent_id, entry_type, payload)
+        return await self._log.append_at(parent_id, entry_type, payload)
 
     # -- ConversationSession additions ---------------------------------------
 
@@ -265,7 +265,10 @@ class InMemorySessionCatalog(SessionCatalog):
     ) -> _InMemoryConversationSession:
         session = _InMemoryConversationSession(cwd, model, backend, name)
         if system_prompt:
-            session.append_message({"role": "system", "content": system_prompt})
+            # Sync core, like every real catalog: `create` is not a coroutine.
+            session._log._append_now(
+                "message", message={"role": "system", "content": system_prompt}
+            )
         return session
 
     def load(self, ref: str) -> ConversationSession:
@@ -281,7 +284,8 @@ class InMemorySessionCatalog(SessionCatalog):
         )
         for entry in source.entries():
             if entry.get("type") == "message":
-                forked.append_message(entry["message"])
+                # Sync core: `fork` is not a coroutine on the ABC or either store.
+                forked._log._append_now("message", message=entry["message"])
         self._sessions[forked.id] = forked
         return forked
 

@@ -69,11 +69,11 @@ def _msg(role: str, text: str) -> dict:
     return {"role": role, "content": [{"type": "text", "text": text}]}
 
 
-def _session(tmp_path: Path) -> tuple[AgentSession, Session]:
+async def _session(tmp_path: Path) -> tuple[AgentSession, Session]:
     live = Session.create("/tmp", "gpt-4o", "openai", base_dir=tmp_path)
     agent = AgentSession(session_log=live, model=_model(), extensions=[])
     review_mod.review_swarm_extension(agent._bind_extension_api("examples/50_review_swarm.py"))
-    live.append_message(_msg("user", "review my changes"))
+    await live.append_message(_msg("user", "review my changes"))
     return agent, live
 
 
@@ -235,8 +235,8 @@ async def test_recheck_finding_runs_a_readonly_tau_child_through_the_gate(monkey
 # ── registration ─────────────────────────────────────────────────────────────
 
 
-def test_registers_all_commands(tmp_path) -> None:
-    agent, _live = _session(tmp_path)
+async def test_registers_all_commands(tmp_path) -> None:
+    agent, _live = await _session(tmp_path)
     for name in ("review", "review_keep", "review_discard", "findings"):
         assert agent._registry.get_command(name) is not None
 
@@ -245,7 +245,7 @@ def test_registers_all_commands(tmp_path) -> None:
 
 
 async def test_review_dedupes_rechecks_and_presents_survivors(tmp_path, monkeypatch) -> None:
-    agent, _live = _session(tmp_path)
+    agent, _live = await _session(tmp_path)
     result = await _run_review(agent, monkeypatch)
     assert result.handled is True
     text = result.output
@@ -259,7 +259,7 @@ async def test_review_dedupes_rechecks_and_presents_survivors(tmp_path, monkeypa
 
 
 async def test_review_emits_panel_record_on_headless_stream(tmp_path, monkeypatch) -> None:
-    agent, _live = _session(tmp_path)
+    agent, _live = await _session(tmp_path)
     records: list[dict[str, Any]] = []
     agent.set_extension_record_sink(records.append)
 
@@ -280,7 +280,7 @@ async def test_review_emits_panel_record_on_headless_stream(tmp_path, monkeypatc
 
 
 async def test_empty_diff_reports_nothing_and_clears_panel(tmp_path, monkeypatch) -> None:
-    agent, _live = _session(tmp_path)
+    agent, _live = await _session(tmp_path)
     records: list[dict[str, Any]] = []
     agent.set_extension_record_sink(records.append)
     result = await _run_review(agent, monkeypatch, diff="   \n")
@@ -292,7 +292,7 @@ async def test_empty_diff_reports_nothing_and_clears_panel(tmp_path, monkeypatch
 async def test_review_keep_writes_durable_findings_and_findings_lists_them(
     tmp_path, monkeypatch
 ) -> None:
-    agent, _live = _session(tmp_path)
+    agent, _live = await _session(tmp_path)
     await _run_review(agent, monkeypatch)
 
     kept = await agent.run_extension_command("review_keep", "1")
@@ -303,7 +303,7 @@ async def test_review_keep_writes_durable_findings_and_findings_lists_them(
 
 
 async def test_review_keep_all_writes_every_survivor(tmp_path, monkeypatch) -> None:
-    agent, _live = _session(tmp_path)
+    agent, _live = await _session(tmp_path)
     await _run_review(agent, monkeypatch)
     kept = await agent.run_extension_command("review_keep", "all")
     assert kept.output == "Kept 2 finding(s) to the session findings ledger."
@@ -313,13 +313,13 @@ async def test_review_keep_all_writes_every_survivor(tmp_path, monkeypatch) -> N
 
 
 async def test_review_keep_without_pending_reports(tmp_path) -> None:
-    agent, _live = _session(tmp_path)
+    agent, _live = await _session(tmp_path)
     result = await agent.run_extension_command("review_keep", "all")
     assert result.output == "No pending review to keep from. Run /review first."
 
 
 async def test_review_discard_drops_pending(tmp_path, monkeypatch) -> None:
-    agent, _live = _session(tmp_path)
+    agent, _live = await _session(tmp_path)
     await _run_review(agent, monkeypatch)
     discarded = await agent.run_extension_command("review_discard", "")
     assert discarded.output == "Discarded 2 pending finding(s)."
@@ -329,7 +329,7 @@ async def test_review_discard_drops_pending(tmp_path, monkeypatch) -> None:
 
 
 async def test_findings_empty_report(tmp_path) -> None:
-    agent, _live = _session(tmp_path)
+    agent, _live = await _session(tmp_path)
     result = await agent.run_extension_command("findings", "")
     assert result.output == "No findings kept yet. Run /review, then /review_keep."
 
@@ -366,7 +366,7 @@ async def test_compute_diff_reads_a_real_working_tree_diff(tmp_path) -> None:
 
 
 async def test_kept_findings_survive_reload(tmp_path, monkeypatch) -> None:
-    agent, live = _session(tmp_path)
+    agent, live = await _session(tmp_path)
     await _run_review(agent, monkeypatch)
     await agent.run_extension_command("review_keep", "all")
     session_path = live.path

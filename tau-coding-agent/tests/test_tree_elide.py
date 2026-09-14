@@ -120,12 +120,12 @@ async def _seeded(app: TauApp) -> tuple[Any, list[str]]:
     await app.action_new_chat()
     session = app.current_session
     ids = [
-        session.append_message({"role": "user", "content": "u1"}),
-        session.append_message({"role": "assistant", "content": "a1"}),
-        session.append_message({"role": "user", "content": "u2"}),
-        session.append_message({"role": "assistant", "content": "a2"}),
-        session.append_message({"role": "user", "content": "u3"}),
-        session.append_message({"role": "assistant", "content": "a3"}),
+        await session.append_message({"role": "user", "content": "u1"}),
+        await session.append_message({"role": "assistant", "content": "a1"}),
+        await session.append_message({"role": "user", "content": "u2"}),
+        await session.append_message({"role": "assistant", "content": "a2"}),
+        await session.append_message({"role": "user", "content": "u3"}),
+        await session.append_message({"role": "assistant", "content": "a3"}),
     ]
     return session, ids
 
@@ -342,41 +342,41 @@ async def test_backend_without_elide_span_warns(app, monkeypatch, wait_for_worke
 # --- direct backend checks (no Textual) -------------------------------------
 
 
-def _linear_log():
+async def _linear_log():
     from tau_agent_core.session_log import InMemorySessionLog
 
     log = InMemorySessionLog()
-    ids = [log.append_message({"role": "user", "content": f"m{i}"}) for i in range(5)]
+    ids = [await log.append_message({"role": "user", "content": f"m{i}"}) for i in range(5)]
     return log, ids
 
 
-def test_elide_span_rejects_unknown_ids():
-    log, ids = _linear_log()
+async def test_elide_span_rejects_unknown_ids():
+    log, ids = await _linear_log()
     backend = _backend()
 
     with pytest.raises(ValueError, match="elide anchor 'nope' not found"):
-        backend.elide_span(log, "nope", ids[2])
+        await backend.elide_span(log, "nope", ids[2])
     with pytest.raises(ValueError, match="elide resume point 'nope' not found"):
-        backend.elide_span(log, ids[3], "nope")
+        await backend.elide_span(log, ids[3], "nope")
     assert not any(e.get("type") in ("elide", "navigate") for e in log.entries())
 
 
-def test_elide_span_accepts_the_anchor_itself_as_the_resume_point():
+async def test_elide_span_accepts_the_anchor_itself_as_the_resume_point():
     """The degenerate-but-coherent end of the range: keep only the anchor."""
-    log, ids = _linear_log()
+    log, ids = await _linear_log()
     backend = _backend()
 
-    messages = backend.elide_span(log, ids[4], ids[4])
+    messages = await backend.elide_span(log, ids[4], ids[4])
 
     assert _texts(messages) == ["m4"]
     assert {e["id"] for e in log.entries()} >= set(ids)
 
 
-def test_elide_span_returns_the_same_fold_the_tree_computes():
-    log, ids = _linear_log()
+async def test_elide_span_returns_the_same_fold_the_tree_computes():
+    log, ids = await _linear_log()
     backend = _backend()
 
-    messages = backend.elide_span(log, log.cursor, ids[3])
+    messages = await backend.elide_span(log, log.cursor, ids[3])
 
     assert messages == ConversationTree(log.entries(), log.cursor).context_for()
 
@@ -384,11 +384,11 @@ def test_elide_span_returns_the_same_fold_the_tree_computes():
 # --- the browser row for an existing elide ----------------------------------
 
 
-def test_elide_node_preview_names_the_hidden_span():
+async def test_elide_node_preview_names_the_hidden_span():
     """An ``elide`` carries no summary, so without this it renders as a bare
     ``(elide)`` and is illegible in the browser."""
-    log, ids = _linear_log()
-    log.append_elide(ids[3], covered_entries=3, covered_tokens=3, agent_spec_id=None)
+    log, ids = await _linear_log()
+    await log.append_elide(ids[3], covered_entries=3, covered_tokens=3, agent_spec_id=None)
 
     nodes = {n.id: n for n in _flatten(ConversationTree(log.entries(), log.cursor).tree())}
     elide_id = next(e["id"] for e in log.entries() if e["type"] == "elide")
@@ -400,12 +400,12 @@ def test_elide_node_preview_names_the_hidden_span():
     assert tree_browser.SessionTreeModal._label(nodes[elide_id]).startswith("elide: hides 3 entries")
 
 
-def test_elide_node_preview_reports_an_unreachable_boundary():
+async def test_elide_node_preview_reports_an_unreachable_boundary():
     """A hand-written log CAN hold the boundary this TUI flow refuses to create; the
     row says what that node actually does (keep nothing) rather than counting it."""
-    log, ids = _linear_log()
-    log.append_navigate(ids[1])
-    log.append_elide(ids[4], covered_entries=0, covered_tokens=0, agent_spec_id=None)
+    log, ids = await _linear_log()
+    await log.append_navigate(ids[1])
+    await log.append_elide(ids[4], covered_entries=0, covered_tokens=0, agent_spec_id=None)
 
     nodes = {n.id: n for n in _flatten(ConversationTree(log.entries(), log.cursor).tree())}
     elide_id = next(e["id"] for e in log.entries() if e["type"] == "elide")
@@ -415,10 +415,10 @@ def test_elide_node_preview_reports_an_unreachable_boundary():
     assert ConversationTree(log.entries(), log.cursor).context_for() == []
 
 
-def test_singular_entry_in_the_preview():
-    log, ids = _linear_log()
+async def test_singular_entry_in_the_preview():
+    log, ids = await _linear_log()
     # Resuming at m1 hides m0 alone: one entry, one estimated token.
-    log.append_elide(ids[1], covered_entries=1, covered_tokens=1, agent_spec_id=None)
+    await log.append_elide(ids[1], covered_entries=1, covered_tokens=1, agent_spec_id=None)
     nodes = {n.id: n for n in _flatten(ConversationTree(log.entries(), log.cursor).tree())}
     elide_id = next(e["id"] for e in log.entries() if e["type"] == "elide")
     assert nodes[elide_id].preview == f"hides 1 entry, resumes at {ids[1]}"
@@ -474,7 +474,7 @@ async def test_the_mode_chooser_no_longer_offers_an_elide():
 
 
 async def test_tree_modal_shows_the_caption_it_was_given():
-    log, _ids = _linear_log()
+    log, _ids = await _linear_log()
     view = ConversationTree(log.entries(), log.cursor)
     modal = tree_browser.SessionTreeModal(
         view,
@@ -491,7 +491,7 @@ async def test_tree_modal_shows_the_caption_it_was_given():
 
 
 async def test_tree_modal_default_caption_is_unchanged():
-    log, _ids = _linear_log()
+    log, _ids = await _linear_log()
     view = ConversationTree(log.entries(), log.cursor)
     harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
@@ -531,7 +531,7 @@ async def _goto(harness, pilot, entry_id):
     return tree
 
 
-def _forked_log():
+async def _forked_log():
     """``u1 → a1 → u2 → a2``, plus a second branch ``b1`` hanging off ``a1``.
 
     The shape that separates "on one line of the conversation" from "in the same
@@ -540,11 +540,11 @@ def _forked_log():
     from tau_agent_core.session_log import InMemorySessionLog
 
     log = InMemorySessionLog()
-    u1 = log.append_message({"role": "user", "content": "u1"})
-    a1 = log.append_message({"role": "assistant", "content": "a1"})
-    u2 = log.append_message({"role": "user", "content": "u2"})
-    a2 = log.append_message({"role": "assistant", "content": "a2"})
-    b1 = log.append_at(a1, "message", {"message": {"role": "assistant", "content": "b1"}})
+    u1 = await log.append_message({"role": "user", "content": "u1"})
+    a1 = await log.append_message({"role": "assistant", "content": "a1"})
+    u2 = await log.append_message({"role": "user", "content": "u2"})
+    a2 = await log.append_message({"role": "assistant", "content": "a2"})
+    b1 = await log.append_at(a1, "message", {"message": {"role": "assistant", "content": "b1"}})
     return log, u1, a1, u2, a2, b1
 
 
@@ -555,7 +555,7 @@ async def test_ctrl_e_with_no_mark_folds_the_history_behind_the_current_tip():
     on a node and pressing the key means "keep from here to where I am, drop what
     is older". The leaf is the anchor because it is the deeper of the two.
     """
-    log, ids = _linear_log()
+    log, ids = await _linear_log()
     harness, modal = await _open(ConversationTree(log.entries(), log.cursor))
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -569,7 +569,7 @@ async def test_ctrl_e_with_no_mark_folds_the_history_behind_the_current_tip():
 async def test_the_deeper_node_is_the_anchor_whichever_order_they_were_marked():
     """The reader marks one end and puts the cursor on the other, and does not have
     to remember which they picked first — the tree decides."""
-    log, ids = _linear_log()
+    log, ids = await _linear_log()
     expected = tree_browser.TreeIntent("elide", (ids[3], ids[1]))
 
     for mark, cursor in ((ids[1], ids[3]), (ids[3], ids[1])):
@@ -589,7 +589,7 @@ async def test_two_nodes_on_different_branches_are_refused_and_the_browser_stays
     """The reported problem: an illegal second pick used to be discovered after the
     browser had closed, as an error over a conversation whose shape was no longer
     on screen. It is refused here, by name, with the tree still up."""
-    log, _u1, _a1, _u2, a2, b1 = _forked_log()
+    log, _u1, _a1, _u2, a2, b1 = await _forked_log()
     harness, modal = await _open(ConversationTree(log.entries(), log.cursor))
     said: list[str] = []
     async with harness.run_test() as pilot:
@@ -608,7 +608,7 @@ async def test_two_nodes_on_different_branches_are_refused_and_the_browser_stays
 async def test_a_span_that_would_hide_nothing_is_refused_by_name():
     """The legal-but-empty pair — the one illegality the greying does not cover,
     because computing it per row costs a context walk per row."""
-    log, ids = _linear_log()
+    log, ids = await _linear_log()
     view = ConversationTree(log.entries(), log.cursor)
     first_kept = view.context_entries()[0]["id"]
     harness, modal = await _open(view)
@@ -634,7 +634,7 @@ async def test_marking_one_node_greys_the_rows_that_cannot_pair_with_it():
     """
     from tau_coding_agent.tree_browser import ZoneTree
 
-    log, u1, a1, u2, a2, b1 = _forked_log()
+    log, u1, a1, u2, a2, b1 = await _forked_log()
     harness, modal = await _open(ConversationTree(log.entries(), log.cursor))
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -659,7 +659,7 @@ async def test_the_help_line_offers_the_elide_only_where_it_is_legal():
     and nowhere else, and it says how much the fold would drop."""
     from textual.widgets import Static
 
-    log, u1, a1, _u2, a2, b1 = _forked_log()
+    log, u1, a1, _u2, a2, b1 = await _forked_log()
     harness, modal = await _open(ConversationTree(log.entries(), log.cursor))
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -682,7 +682,7 @@ async def test_the_help_line_offers_the_elide_only_where_it_is_legal():
 
 
 async def test_three_marks_are_refused_with_a_sentence_about_two_ends():
-    log, ids = _linear_log()
+    log, ids = await _linear_log()
     harness, modal = await _open(ConversationTree(log.entries(), log.cursor))
     said: list[str] = []
     async with harness.run_test() as pilot:
@@ -703,7 +703,7 @@ async def test_the_ctrl_e_key_actually_reaches_the_action():
     """The binding, not the method. The App binds ``ctrl+e`` to the extension
     chord, so this screen's binding has to win — and it is ``priority`` rather
     than relying on which of two non-priority bindings textual reaches first."""
-    log, ids = _linear_log()
+    log, ids = await _linear_log()
     harness, _modal = await _open(ConversationTree(log.entries(), log.cursor))
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -720,7 +720,7 @@ async def test_the_ctrl_d_key_folds_the_detail_pane():
     ``enter`` to ``ctrl+m``), and ``Enter`` is this screen's commit key."""
     from tau_coding_agent.transcript import TreeDetailPane
 
-    log, _ids = _linear_log()
+    log, _ids = await _linear_log()
     harness, _modal = await _open(ConversationTree(log.entries(), log.cursor))
     async with harness.run_test(size=(120, 40)) as pilot:
         for _ in range(4):
@@ -741,7 +741,7 @@ async def test_enter_commits_without_also_folding_the_detail_pane():
     the pane through the layout rule for reasons that have nothing to do with the
     key. ``_detail_folded`` is the reader's choice and only the toggle writes it.
     """
-    log, ids = _linear_log()
+    log, ids = await _linear_log()
     harness, modal = await _open(ConversationTree(log.entries(), log.cursor))
     async with harness.run_test(size=(120, 40)) as pilot:
         for _ in range(4):
@@ -767,7 +767,7 @@ async def test_the_offer_counts_what_leaves_the_context_not_what_the_fold_hides(
     """
     from textual.widgets import Static
 
-    log, ids = _linear_log()
+    log, ids = await _linear_log()
     harness, modal = await _open(ConversationTree(log.entries(), log.cursor))
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -793,7 +793,7 @@ async def test_an_elide_at_the_tip_drops_only_the_prefix_and_says_so():
     line does not warn about a move that is not happening."""
     from textual.widgets import Static
 
-    log, ids = _linear_log()
+    log, ids = await _linear_log()
     harness, modal = await _open(ConversationTree(log.entries(), log.cursor))
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -812,7 +812,7 @@ async def test_an_elide_at_the_tip_drops_only_the_prefix_and_says_so():
         assert "move back to it" not in str(marks.content)
 
 
-def test_the_two_ends_bracket_what_is_kept():
+async def test_the_two_ends_bracket_what_is_kept():
     """The whole question, at the backend where the answer lives.
 
     Pairing 2 with 4 over ``[1..6]`` yields ``[2,3,4]``, not ``[1,5,6]``. An
@@ -820,10 +820,10 @@ def test_the_two_ends_bracket_what_is_kept():
     the kept region is always one contiguous run ending at the anchor — cutting a
     span out of the MIDDLE is not a shape this operation can express.
     """
-    log, ids = _linear_log()
-    ids = ids + [log.append_message({"role": "user", "content": "m5"})]
+    log, ids = await _linear_log()
+    ids = ids + [await log.append_message({"role": "user", "content": "m5"})]
     backend = _backend()
-    backend.elide_span(log, ids[3], ids[1])
+    await backend.elide_span(log, ids[3], ids[1])
     kept = [
         e.get("message", {}).get("content")
         for e in ConversationTree(log.entries(), log.cursor).context_entries()

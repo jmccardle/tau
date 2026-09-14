@@ -79,12 +79,12 @@ def log() -> _DurableLog:
 
 
 @pytest.fixture
-def entries(log: _DurableLog) -> list[str]:
+async def entries(log: _DurableLog) -> list[str]:
     """Three messages, so a navigate has somewhere to go and a paste something to copy."""
     return [
-        log.append_message({"role": "user", "content": [{"type": "text", "text": "one"}]}),
-        log.append_message({"role": "assistant", "content": [{"type": "text", "text": "two"}]}),
-        log.append_message({"role": "user", "content": [{"type": "text", "text": "three"}]}),
+        await log.append_message({"role": "user", "content": [{"type": "text", "text": "one"}]}),
+        await log.append_message({"role": "assistant", "content": [{"type": "text", "text": "two"}]}),
+        await log.append_message({"role": "user", "content": [{"type": "text", "text": "three"}]}),
     ]
 
 
@@ -243,7 +243,7 @@ async def test_a_tree_mutation_refuses_an_unpersisted_session(
     can never load again — a worse version of the promise `set_model` already
     refuses to make.
     """
-    entry_id = ephemeral_handler.session.session_log.append_message(
+    entry_id = await ephemeral_handler.session.session_log.append_message(
         {"role": "user", "content": [{"type": "text", "text": "one"}]}
     )
     response = await _call(ephemeral_handler, "navigate", {"target_id": entry_id})

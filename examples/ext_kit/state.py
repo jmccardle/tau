@@ -229,7 +229,7 @@ class TreeStore(Generic[T]):
 
     # ── write side ───────────────────────────────────────────────────────────
 
-    def append(self, record: T) -> None:
+    async def append(self, record: T) -> None:
         """Persist ``record`` as a durable ``customEntry`` on the active path.
 
         Encodes to a dict (via ``encode`` when typed) and calls
@@ -245,7 +245,7 @@ class TreeStore(Generic[T]):
                 f"TreeStore[{self.custom_type!r}].append: record must encode to a dict, "
                 f"got {type(data).__name__} — pass an ``encode`` for typed records"
             )
-        self._api.append_entry(self.custom_type, data)
+        await self._api.append_entry(self.custom_type, data)
         self._records.append(record)
 
 

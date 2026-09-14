@@ -68,13 +68,13 @@ def _msg(role: str, text: str) -> dict:
     return {"role": role, "content": [{"type": "text", "text": text}]}
 
 
-def _session(tmp_path: Path, corpus_dir: Path | None = None) -> tuple[AgentSession, Session]:
+async def _session(tmp_path: Path, corpus_dir: Path | None = None) -> tuple[AgentSession, Session]:
     corpus_dir = corpus_dir if corpus_dir is not None else tmp_path / "corpus"
     live = Session.create("/tmp", "gpt-4o", "openai", base_dir=tmp_path)
     agent = AgentSession(session_log=live, model=_model(), extensions=[])
     agent._extensions_config = {_STEM: {"corpus_dir": str(corpus_dir)}}
     rt_mod.red_team_memory_extension(agent._bind_extension_api("examples/52_red_team_memory.py"))
-    live.append_message(_msg("user", "review my changes"))
+    await live.append_message(_msg("user", "review my changes"))
     return agent, live
 
 
@@ -241,8 +241,8 @@ async def test_recheck_finding_runs_a_readonly_child_and_carries_the_seed(monkey
 # ── registration ─────────────────────────────────────────────────────────────
 
 
-def test_registers_all_commands(tmp_path) -> None:
-    agent, _live = _session(tmp_path)
+async def test_registers_all_commands(tmp_path) -> None:
+    agent, _live = await _session(tmp_path)
     for name in ("review", "review_keep", "review_discard", "findings", "red_team"):
         assert agent._registry.get_command(name) is not None
 
@@ -251,7 +251,7 @@ def test_registers_all_commands(tmp_path) -> None:
 
 
 async def test_review_dedupes_rechecks_and_presents_survivors(tmp_path, monkeypatch) -> None:
-    agent, _live = _session(tmp_path)
+    agent, _live = await _session(tmp_path)
     result = await _run_review(agent, monkeypatch)
     assert result.handled is True
     text = result.output
@@ -265,7 +265,7 @@ async def test_review_dedupes_rechecks_and_presents_survivors(tmp_path, monkeypa
 
 
 async def test_review_emits_panel_record_on_headless_stream(tmp_path, monkeypatch) -> None:
-    agent, _live = _session(tmp_path)
+    agent, _live = await _session(tmp_path)
     records: list[dict[str, Any]] = []
     agent.set_extension_record_sink(records.append)
 
@@ -282,7 +282,7 @@ async def test_review_emits_panel_record_on_headless_stream(tmp_path, monkeypatc
 
 
 async def test_empty_diff_reports_nothing_and_clears_panel(tmp_path, monkeypatch) -> None:
-    agent, _live = _session(tmp_path)
+    agent, _live = await _session(tmp_path)
     records: list[dict[str, Any]] = []
     agent.set_extension_record_sink(records.append)
     result = await _run_review(agent, monkeypatch, diff="   \n")
@@ -294,7 +294,7 @@ async def test_empty_diff_reports_nothing_and_clears_panel(tmp_path, monkeypatch
 
 
 async def test_review_keep_promotes_to_corpus_and_red_team_lists_it(tmp_path, monkeypatch) -> None:
-    agent, _live = _session(tmp_path)
+    agent, _live = await _session(tmp_path)
     await _run_review(agent, monkeypatch)
 
     kept = await agent.run_extension_command("review_keep", "all")
@@ -314,7 +314,7 @@ async def test_review_keep_promotes_to_corpus_and_red_team_lists_it(tmp_path, mo
 
 
 async def test_discard_does_not_promote(tmp_path, monkeypatch) -> None:
-    agent, _live = _session(tmp_path)
+    agent, _live = await _session(tmp_path)
     await _run_review(agent, monkeypatch)
     await agent.run_extension_command("review_discard", "")
     listed = await agent.run_extension_command("red_team", "")
@@ -322,13 +322,13 @@ async def test_discard_does_not_promote(tmp_path, monkeypatch) -> None:
 
 
 async def test_red_team_empty_report(tmp_path) -> None:
-    agent, _live = _session(tmp_path)
+    agent, _live = await _session(tmp_path)
     result = await agent.run_extension_command("red_team", "")
     assert result.output.startswith("Red-team memory is empty")
 
 
 async def test_review_keep_without_pending_reports(tmp_path) -> None:
-    agent, _live = _session(tmp_path)
+    agent, _live = await _session(tmp_path)
     result = await agent.run_extension_command("review_keep", "all")
     assert result.output == "No pending review to keep from. Run /review first."
 
@@ -342,12 +342,12 @@ async def test_corpus_accretes_across_sessions_and_seeds_the_adversaries(
     corpus_dir = tmp_path / "shared-corpus"
 
     # Session A: confirm two findings → they land in the shared corpus.
-    agent_a, _a = _session(tmp_path / "a", corpus_dir=corpus_dir)
+    agent_a, _a = await _session(tmp_path / "a", corpus_dir=corpus_dir)
     await _run_review(agent_a, monkeypatch)
     await agent_a.run_extension_command("review_keep", "all")
 
     # Session B: a brand-new session over the SAME corpus dir already remembers them.
-    agent_b, _b = _session(tmp_path / "b", corpus_dir=corpus_dir)
+    agent_b, _b = await _session(tmp_path / "b", corpus_dir=corpus_dir)
     listed = await agent_b.run_extension_command("red_team", "")
     assert "2 confirmed finding(s) across sessions" in listed.output
 
@@ -359,12 +359,12 @@ async def test_corpus_accretes_across_sessions_and_seeds_the_adversaries(
 async def test_reconfirm_across_sessions_bumps_keeps_not_length(tmp_path, monkeypatch) -> None:
     corpus_dir = tmp_path / "shared-corpus"
 
-    agent_a, _a = _session(tmp_path / "a", corpus_dir=corpus_dir)
+    agent_a, _a = await _session(tmp_path / "a", corpus_dir=corpus_dir)
     await _run_review(agent_a, monkeypatch)
     await agent_a.run_extension_command("review_keep", "all")
 
     # Session B re-confirms the same findings → keeps bump, corpus length unchanged.
-    agent_b, _b = _session(tmp_path / "b", corpus_dir=corpus_dir)
+    agent_b, _b = await _session(tmp_path / "b", corpus_dir=corpus_dir)
     await _run_review(agent_b, monkeypatch)
     kept = await agent_b.run_extension_command("review_keep", "all")
     assert kept.output == (
@@ -379,7 +379,7 @@ async def test_reconfirm_across_sessions_bumps_keeps_not_length(tmp_path, monkey
 
 
 async def test_kept_findings_survive_reload(tmp_path, monkeypatch) -> None:
-    agent, live = _session(tmp_path)
+    agent, live = await _session(tmp_path)
     await _run_review(agent, monkeypatch)
     await agent.run_extension_command("review_keep", "all")
     session_path = live.path

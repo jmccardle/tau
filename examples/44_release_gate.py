@@ -79,7 +79,7 @@ def register(api: Any) -> None:
         command = str((event.get("input") or {}).get("command") or "")
         if "deploy" not in command:
             return
-        api.request_user_action(
+        await api.request_user_action(
             f"A deploy-shaped command ran: {command!r}",
             lock=True,
             ask=ASK,
@@ -117,11 +117,11 @@ def register(api: Any) -> None:
         return f"{request.label}: {request.sentence}"
 
     async def ask_only(args: str, ctx: Any) -> str:
-        api.request_user_action("A question you are free to ignore.", ask=ASK)
+        await api.request_user_action("A question you are free to ignore.", ask=ASK)
         return "Asked without locking — a prompt still advances."
 
     async def hold(args: str, ctx: Any) -> str:
-        api.request_user_action(
+        await api.request_user_action(
             "Held with no form. /gate-clear is the way out.",
             lock=True,
             release="gate-clear",

@@ -1712,7 +1712,7 @@ class TauBackend(Backend):
         swaps into ``self.messages`` and re-renders (reusing the compaction path, §3.4).
         """
         if target_id == session.cursor or not summarize:
-            return tree_ops.navigate(session, target_id)
+            return await tree_ops.navigate(session, target_id)
         messages, summary_usage = await tree_ops.summarize_and_navigate(
             session,
             target_id,
@@ -1723,7 +1723,9 @@ class TauBackend(Backend):
         self.agent_session.record_side_usage(summary_usage)
         return messages
 
-    def elide_span(self, session: SessionLog, anchor_id: str, first_kept_id: str) -> list[dict]:
+    async def elide_span(
+        self, session: SessionLog, anchor_id: str, first_kept_id: str
+    ) -> list[dict]:
         """Fold a span out of the live session's context and return the new context.
 
         Delegates to :func:`tau_agent_core.tree_ops.elide_span`, which holds the two
@@ -1732,8 +1734,8 @@ class TauBackend(Backend):
         silent-no-op anti-pattern. The app owns the modals and the re-render; the
         core owns the mutation and both refusals.
 
-        **Synchronous**, unlike :meth:`navigate_tree`: there is no summary, therefore
-        no model call and nothing to await.
+        It awaits only the store's writes, unlike :meth:`navigate_tree`: there is no
+        summary, therefore no model call.
 
         Returns ``ConversationTree.context_for(cursor)`` — the flat message list the
         TUI swaps into ``self.messages`` and re-renders.
@@ -1742,9 +1744,9 @@ class TauBackend(Backend):
             ValueError: an unknown anchor or resume point, a resume point that is
                 not on the anchor's path, or a span that would hide nothing.
         """
-        return tree_ops.elide_span(session, anchor_id, first_kept_id)
+        return await tree_ops.elide_span(session, anchor_id, first_kept_id)
 
-    def commit_branch(
+    async def commit_branch(
         self, session: SessionLog, ids: Sequence[str], *, drop_context: bool
     ) -> list[dict]:
         """Build a branch out of the marked messages and continue on it.
@@ -1768,9 +1770,9 @@ class TauBackend(Backend):
                 turn-complete. Checked before the first append, so a refusal leaves
                 the log byte-identical.
         """
-        return tree_ops.commit_branch(session, ids, drop_context=drop_context)
+        return await tree_ops.commit_branch(session, ids, drop_context=drop_context)
 
-    def paste_subtree(self, session: SessionLog, source_id: str, target_id: str) -> list[str]:
+    async def paste_subtree(self, session: SessionLog, source_id: str, target_id: str) -> list[str]:
         """Re-create the subtree at ``source_id`` under ``target_id``.
 
         Delegates to :func:`tau_agent_core.tree_ops.paste_subtree`. The paste never
@@ -1792,7 +1794,7 @@ class TauBackend(Backend):
                 inside the source's own subtree, or a copied tool result whose call is
                 on neither the target's path nor the copied run.
         """
-        return tree_ops.paste_subtree(session, source_id, target_id)
+        return await tree_ops.paste_subtree(session, source_id, target_id)
 
     async def rollback_turn(self, text: str) -> SubmissionResult:
         """Abort the in-flight turn, un-path what it produced, and run ``text`` instead.

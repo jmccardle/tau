@@ -569,7 +569,7 @@ async def _review_command(
     return _swarm_report(outcome)
 
 
-def _review_keep_command(args: str, ctx: Any, *, pending: _Pending, store: TreeStore) -> str:
+async def _review_keep_command(args: str, ctx: Any, *, pending: _Pending, store: TreeStore) -> str:
     """``/review_keep <spec>``: record the selected survivors as a durable node.
 
     The panel-action target and the CLI triage verb: writes each selected pending
@@ -584,7 +584,7 @@ def _review_keep_command(args: str, ctx: Any, *, pending: _Pending, store: TreeS
         return selection
     for i in selection:
         finding = pending.survivors[i]
-        store.append(
+        await store.append(
             {
                 "file": finding["file"],
                 "line": finding.get("line"),
@@ -634,8 +634,8 @@ def review_swarm_extension(api: Any) -> None:
     async def review_handler(args: str, ctx: Any) -> str:
         return await _review_command(args, ctx, pending=pending, config=config)
 
-    def review_keep_handler(args: str, ctx: Any) -> str:
-        return _review_keep_command(args, ctx, pending=pending, store=store)
+    async def review_keep_handler(args: str, ctx: Any) -> str:
+        return await _review_keep_command(args, ctx, pending=pending, store=store)
 
     def review_discard_handler(args: str, ctx: Any) -> str:
         return _review_discard_command(args, ctx, pending=pending)

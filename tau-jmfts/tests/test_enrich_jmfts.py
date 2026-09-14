@@ -70,7 +70,7 @@ LONG_ANSWER = (
 )
 
 
-def test_an_enriched_conversation_becomes_semantically_searchable(
+async def test_an_enriched_conversation_becomes_semantically_searchable(
     catalog: JmftsSessionCatalog, client: JmftsClient, run_id: str, index_name: str
 ) -> None:
     """The exit criterion of the whole JMFTS integration, and the thing that was NOT
@@ -82,10 +82,10 @@ def test_an_enriched_conversation_becomes_semantically_searchable(
     """
     session = _session(catalog, run_id)
     try:
-        session.append_message(_msg("user", "Why is our pod getting killed on startup?"))
-        session.append_message(_msg("assistant", LONG_ANSWER))
-        session.append_message(_msg("user", "And the Redis connection pool exhaustion?"))
-        session.append_message(
+        await session.append_message(_msg("user", "Why is our pod getting killed on startup?"))
+        await session.append_message(_msg("assistant", LONG_ANSWER))
+        await session.append_message(_msg("user", "And the Redis connection pool exhaustion?"))
+        await session.append_message(
             _msg("assistant", "Raise maxTotal and set testOnBorrow; an unclosed Jedis leaked.")
         )
 
@@ -104,7 +104,7 @@ def test_an_enriched_conversation_becomes_semantically_searchable(
         catalog.delete(str(session.root_doc_id))
 
 
-def test_the_search_is_scoped_to_this_conversation(
+async def test_the_search_is_scoped_to_this_conversation(
     catalog: JmftsSessionCatalog, client: JmftsClient, run_id: str
 ) -> None:
     """``parent_id`` is a subtree filter. Without it, "search my conversation" silently
@@ -114,8 +114,8 @@ def test_the_search_is_scoped_to_this_conversation(
     theirs = _session(catalog, run_id + "b")
     try:
         secret = f"quokka-{run_id}"  # a token that exists in exactly one conversation
-        theirs.append_message(_msg("assistant", f"The deployment codename is {secret}."))
-        mine.append_message(_msg("assistant", "This conversation is about something else."))
+        await theirs.append_message(_msg("assistant", f"The deployment codename is {secret}."))
+        await mine.append_message(_msg("assistant", "This conversation is about something else."))
 
         enrich_conversation(client, mine.root_doc_id)
         enrich_conversation(client, theirs.root_doc_id)
@@ -131,7 +131,7 @@ def test_the_search_is_scoped_to_this_conversation(
         catalog.delete(str(theirs.root_doc_id))
 
 
-def test_a_long_message_is_chunked_so_its_TAIL_is_searchable_too(
+async def test_a_long_message_is_chunked_so_its_TAIL_is_searchable_too(
     catalog: JmftsSessionCatalog, client: JmftsClient, run_id: str
 ) -> None:
     """The embedder truncates at 512 tokens and drops the rest with NO error, so a long
@@ -140,7 +140,7 @@ def test_a_long_message_is_chunked_so_its_TAIL_is_searchable_too(
     session = _session(catalog, run_id)
     try:
         tail_marker = f"the final clause mentions {run_id} explicitly"
-        session.append_message(_msg("assistant", LONG_ANSWER + " " + tail_marker))
+        await session.append_message(_msg("assistant", LONG_ANSWER + " " + tail_marker))
 
         report = enrich_conversation(client, session.root_doc_id)
         assert report.chunked, "a message well past the embed window was not chunked"
@@ -156,7 +156,7 @@ def test_a_long_message_is_chunked_so_its_TAIL_is_searchable_too(
         catalog.delete(str(session.root_doc_id))
 
 
-def test_text_with_no_word_boundaries_is_split_and_embedded(
+async def test_text_with_no_word_boundaries_is_split_and_embedded(
     catalog: JmftsSessionCatalog, client: JmftsClient, run_id: str
 ) -> None:
     """A base64 blob (or minified JS, or a long path) is ONE enormous "word" that a
@@ -170,7 +170,7 @@ def test_text_with_no_word_boundaries_is_split_and_embedded(
     session = _session(catalog, run_id)
     try:
         blob = base64.b64encode(os.urandom(4000)).decode()
-        session.append_message(_msg("assistant", "Here is the dump: " + blob))
+        await session.append_message(_msg("assistant", "Here is the dump: " + blob))
 
         report = enrich_conversation(client, session.root_doc_id)
 
@@ -188,7 +188,7 @@ def test_text_with_no_word_boundaries_is_split_and_embedded(
         catalog.delete(str(session.root_doc_id))
 
 
-def test_dense_content_short_enough_for_prose_is_still_over_the_token_window(
+async def test_dense_content_short_enough_for_prose_is_still_over_the_token_window(
     catalog: JmftsSessionCatalog, client: JmftsClient, run_id: str
 ) -> None:
     """The bug a character threshold cannot see, and the one prose hides.
@@ -207,7 +207,7 @@ def test_dense_content_short_enough_for_prose_is_still_over_the_token_window(
     try:
         blob = base64.b64encode(os.urandom(2048)).decode()[:1800]
         assert len(blob) == 1800, "the fixture must sit just inside the old 1800-char proxy"
-        session.append_message(_msg("assistant", blob))
+        await session.append_message(_msg("assistant", blob))
 
         report = enrich_conversation(client, session.root_doc_id)
 
@@ -224,7 +224,7 @@ def test_dense_content_short_enough_for_prose_is_still_over_the_token_window(
         catalog.delete(str(session.root_doc_id))
 
 
-def test_enrichment_is_idempotent(
+async def test_enrichment_is_idempotent(
     catalog: JmftsSessionCatalog, client: JmftsClient, run_id: str, index_name: str
 ) -> None:
     """Re-running must not re-embed, must not RE-CHUNK (which would mint a second full
@@ -234,8 +234,8 @@ def test_enrichment_is_idempotent(
     a no-op and the reported doc count is stable."""
     session = _session(catalog, run_id)
     try:
-        session.append_message(_msg("user", "Why is our pod getting killed on startup?"))
-        session.append_message(_msg("assistant", LONG_ANSWER))
+        await session.append_message(_msg("user", "Why is our pod getting killed on startup?"))
+        await session.append_message(_msg("assistant", LONG_ANSWER))
 
         first = enrich_conversation(client, session.root_doc_id, index=index_name)
         assert first.embedded or first.chunked
@@ -257,7 +257,7 @@ def test_enrichment_is_idempotent(
         catalog.delete(str(session.root_doc_id))
 
 
-def test_a_pass_that_died_before_embedding_is_completed_by_re_running(
+async def test_a_pass_that_died_before_embedding_is_completed_by_re_running(
     catalog: JmftsSessionCatalog, client: JmftsClient, run_id: str
 ) -> None:
     """Resumable, not merely "runs twice without crashing". A crash between chunking and
@@ -265,7 +265,7 @@ def test_a_pass_that_died_before_embedding_is_completed_by_re_running(
     rather than see "chunks exist" and call the document done."""
     session = _session(catalog, run_id)
     try:
-        session.append_message(_msg("assistant", LONG_ANSWER))
+        await session.append_message(_msg("assistant", LONG_ANSWER))
         # The LONGEST message, not the first: the first tau:message is the system prompt.
         messages = client.get_children(
             session.root_doc_id, usetype="tau:message", depth=-1, limit=10

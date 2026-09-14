@@ -382,7 +382,7 @@ async def _review_command(
     return report
 
 
-def _review_keep_command(
+async def _review_keep_command(
     args: str,
     ctx: Any,
     *,
@@ -405,7 +405,7 @@ def _review_keep_command(
     kept: list[dict[str, Any]] = []
     for i in selection:
         finding = pending.survivors[i]
-        store.append(
+        await store.append(
             {
                 "file": finding["file"],
                 "line": finding.get("line"),
@@ -485,8 +485,8 @@ def red_team_memory_extension(api: Any) -> None:
             args, ctx, pending=pending, config=config, corpus_store=corpus_store
         )
 
-    def review_keep_handler(args: str, ctx: Any) -> str:
-        return _review_keep_command(
+    async def review_keep_handler(args: str, ctx: Any) -> str:
+        return await _review_keep_command(
             args, ctx, pending=pending, store=store, corpus_store=corpus_store
         )
 

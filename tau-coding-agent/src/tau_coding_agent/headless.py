@@ -826,7 +826,7 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
             return 0
 
         # Stamped here because print mode appends the user turn itself (see :768).
-        session.append_message(
+        await session.append_message(
             {
                 "role": "user",
                 "content": prompt_text,
@@ -878,7 +878,7 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
 
         for message in new_messages:
             if message.get("role") != "user":
-                session.append_message(message)
+                await session.append_message(message)
 
         return 0
     finally:

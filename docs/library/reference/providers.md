@@ -123,7 +123,7 @@ Return self as the async iterator.
 ### __anext__
 
 ```python
-__anext__() -> Any
+async __anext__() -> Any
 ```
 
 `tau_llm.streaming.AssistantMessageEventStream.__anext__`
@@ -166,7 +166,7 @@ The partial state is preserved either way.
 ### result
 
 ```python
-result() -> AssistantMessage
+async result() -> AssistantMessage
 ```
 
 `tau_llm.streaming.AssistantMessageEventStream.result`
@@ -273,7 +273,7 @@ Reference: SUBPHASE-0.0.md, Phase 1 Subphase 0 — Provider interface.
 ### aclose
 
 ```python
-aclose() -> None
+async aclose() -> None
 ```
 
 `tau_llm.providers.base.Provider.aclose`
@@ -303,7 +303,7 @@ idempotent — the pool may close an instance that never issued a request.
 ### stream_chat
 
 ```python
-stream_chat(model: Model, messages: list[Any], tools: list[ToolSpec] | None = None, options: dict[str, Any] | None = None) -> StreamEventStream
+async stream_chat(model: Model, messages: list[Any], tools: list[ToolSpec] | None = None, options: dict[str, Any] | None = None) -> StreamEventStream
 ```
 
 `tau_llm.providers.base.Provider.stream_chat`
@@ -479,7 +479,7 @@ Reference: SUBPHASE-0.0.md, "4. Streaming Events" section.
 <!-- agent: yes -->
 
 ```python
-aclose_providers() -> None
+async aclose_providers() -> None
 ```
 
 `tau_llm.client.aclose_providers`
@@ -497,7 +497,7 @@ it again (or with nothing pooled) is a no-op; a subsequent
 <!-- agent: yes -->
 
 ```python
-complete_simple(model: Any, context: dict[str, Any], options: dict[str, Any] | None = None) -> AssistantMessage
+async complete_simple(model: Any, context: dict[str, Any], options: dict[str, Any] | None = None) -> AssistantMessage
 ```
 
 `tau_llm.client.complete_simple`
@@ -725,7 +725,7 @@ A ``(text_parts, images)`` pair. ``images`` holds ``(mime_type, data)`` with ``d
 <!-- agent: yes -->
 
 ```python
-stream_simple(model: Any, context: dict[str, Any], options: dict[str, Any] | None = None) -> AssistantMessageEventStream
+async stream_simple(model: Any, context: dict[str, Any], options: dict[str, Any] | None = None) -> AssistantMessageEventStream
 ```
 
 `tau_llm.client.stream_simple`

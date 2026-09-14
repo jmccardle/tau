@@ -73,7 +73,7 @@ drained at session shutdown instead (:meth:`emit_session_shutdown`).
 ### answer_request
 
 ```python
-answer_request(request_id: str, action: str, values: dict[str, Any] | None = None) -> ExtensionCommandResult
+async answer_request(request_id: str, action: str, values: dict[str, Any] | None = None) -> ExtensionCommandResult
 ```
 
 `tau_agent_core.agent_session.AgentSession.answer_request`
@@ -102,7 +102,7 @@ The dispatched command's :class:`ExtensionCommandResult`. ``handled`` is ``False
 ### compact
 
 ```python
-compact(custom_instructions: str | None = None) -> CompactionResult | None
+async compact(custom_instructions: str | None = None) -> CompactionResult | None
 ```
 
 `tau_agent_core.agent_session.AgentSession.compact`
@@ -132,7 +132,7 @@ The CompactionResult, or None when there is nothing to compact (an empty convers
 ### compact_messages
 
 ```python
-compact_messages(messages: list[dict[str, Any]], custom_instructions: str | None = None) -> list[dict[str, Any]] | None
+async compact_messages(messages: list[dict[str, Any]], custom_instructions: str | None = None) -> list[dict[str, Any]] | None
 ```
 
 `tau_agent_core.agent_session.AgentSession.compact_messages`
@@ -168,7 +168,7 @@ summary.
 ### continue_conversation
 
 ```python
-continue_conversation() -> list[dict[str, Any]]
+async continue_conversation() -> list[dict[str, Any]]
 ```
 
 `tau_agent_core.agent_session.AgentSession.continue_conversation`
@@ -198,7 +198,7 @@ List of messages produced by the agent loop.
 ### disable_extension
 
 ```python
-disable_extension(path: str) -> ExtensionActionResult
+async disable_extension(path: str) -> ExtensionActionResult
 ```
 
 `tau_agent_core.agent_session.AgentSession.disable_extension`
@@ -218,7 +218,7 @@ back. A no-op (unknown / already disabled) returns ``ok=False``, not an error.
 ### emit_session_shutdown
 
 ```python
-emit_session_shutdown(reason: str = 'quit') -> None
+async emit_session_shutdown(reason: str = 'quit') -> None
 ```
 
 `tau_agent_core.agent_session.AgentSession.emit_session_shutdown`
@@ -252,7 +252,7 @@ caller either, and the reason it must not outlive the session is identical.
 ### emit_session_start
 
 ```python
-emit_session_start(reason: str = 'startup') -> None
+async emit_session_start(reason: str = 'startup') -> None
 ```
 
 `tau_agent_core.agent_session.AgentSession.emit_session_start`
@@ -285,7 +285,7 @@ will later need :meth:`submit_threadsafe` to have somewhere to marshal to.
 ### enable_extension
 
 ```python
-enable_extension(path: str) -> ExtensionActionResult
+async enable_extension(path: str) -> ExtensionActionResult
 ```
 
 `tau_agent_core.agent_session.AgentSession.enable_extension`
@@ -614,7 +614,7 @@ read — no path effect, display-only.
 ### load_extensions
 
 ```python
-load_extensions(explicit_paths: list[str] | None = None, *, discover: bool = True, user_dir: str | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, collect_explicit_errors: bool = False) -> LoadExtensionsResult
+async load_extensions(explicit_paths: list[str] | None = None, *, discover: bool = True, user_dir: str | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, collect_explicit_errors: bool = False) -> LoadExtensionsResult
 ```
 
 `tau_agent_core.agent_session.AgentSession.load_extensions`
@@ -714,10 +714,34 @@ class:`~tau_agent_core.flows.Performed` carrying ``data`` plus the resulting cur
 - `KeyError` — No capability has that name.
 - `ValueError` — The named capability is a read, or the caller already put a ``cursor`` in ``data``. Both are Fail-Early: a read reporting a cursor is E5 rule 2 broken, and a hand-supplied cursor is a second answer to the question this method exists to answer.
 
+### persistence_settled
+
+`tau_agent_core.agent_session.AgentSession.persistence_settled: asyncio.Event`
+
+Set except while a turn is between emitting ``agent_end`` and persisting.
+
+docs/ASYNC-SESSION-LOG.md §3.3. ``RPCHandler._stamp_agent_end_cursor``
+reads ``session_log.cursor`` when the writer task dequeues an
+``agent_end``, and that read is only right if this turn's messages are
+already written. Until the appenders became coroutines that was free:
+:meth:`_run_one_turn` ran from the enqueue through persistence without
+suspending, so the writer could not be scheduled in between. A store
+whose appends really suspend — ``JmftsSessionLog`` hops to a thread —
+breaks that, and the wire carried a null cursor.
+
+So the ordering is stated rather than inherited. :meth:`_run_one_turn`
+clears this before ``loop.run`` (which is what emits ``agent_end``) and
+sets it in a ``finally`` after both persistence calls, on the error path
+as well. The writer awaits it before framing an ``agent_end``.
+
+It cannot deadlock against the T3 credit pool: persistence emits no
+events of its own, so nothing it does needs a credit the blocked writer
+would have to release.
+
 ### prompt
 
 ```python
-prompt(text: str, images: list[dict] | None = None, context: list[dict] | None = None) -> list[dict[str, Any]]
+async prompt(text: str, images: list[dict] | None = None, context: list[dict] | None = None) -> list[dict[str, Any]]
 ```
 
 `tau_agent_core.agent_session.AgentSession.prompt`
@@ -796,7 +820,7 @@ before/after DELTA to attribute the spend to a particular exchange.
 ### reload_extension
 
 ```python
-reload_extension(path: str) -> ExtensionActionResult
+async reload_extension(path: str) -> ExtensionActionResult
 ```
 
 `tau_agent_core.agent_session.AgentSession.reload_extension`
@@ -909,7 +933,7 @@ running loop is a misuse of the seam, surfaced loudly by ``get_running_loop``
 ### run_extension_command
 
 ```python
-run_extension_command(name: str, args: str = '') -> ExtensionCommandResult
+async run_extension_command(name: str, args: str = '') -> ExtensionCommandResult
 ```
 
 `tau_agent_core.agent_session.AgentSession.run_extension_command`
@@ -963,7 +987,7 @@ The state after the call, read back off the settings rather than echoed from the
 ### set_extension_config
 
 ```python
-set_extension_config(path: str, values: dict[str, Any]) -> ExtensionActionResult
+async set_extension_config(path: str, values: dict[str, Any]) -> ExtensionActionResult
 ```
 
 `tau_agent_core.agent_session.AgentSession.set_extension_config`
@@ -1176,6 +1200,24 @@ Cumulative tokens spent on completions OUTSIDE the agent loop.
 A copy — the ledger is the session's own record, and handing out a live alias
 would let one reader's arithmetic rewrite it (see :meth:`get_usage`).
 
+### start
+
+```python
+async start() -> None
+```
+
+`tau_agent_core.agent_session.AgentSession.start`
+
+Make the session's ``agent_spec`` durable without running a turn.
+
+The awaited door onto :meth:`_flush_pending_agent_specs` for a caller that
+reads the tree before it prompts. ``tau --mode rpc`` calls it once before
+``RPCHandler.run`` for exactly that reason. Idempotent, and unnecessary
+before a turn: :meth:`submit` and :meth:`continue_conversation` both drain
+the queue before reading ``_pre_turn_leaf``, so the record lands AHEAD of
+the turn it describes rather than inside it — which is where a rollback to
+that leaf needs it to be.
+
 ### state
 
 `tau_agent_core.agent_session.AgentSession.state: SessionState`
@@ -1185,7 +1227,7 @@ Read-only access to session state. Identity is the session UUID (§4.2).
 ### submit
 
 ```python
-submit(sub: Submission, *, context: list[dict[str, Any]] | None = None, on_admitted: Callable[[], None] | None = None) -> SubmissionResult
+async submit(sub: Submission, *, context: list[dict[str, Any]] | None = None, on_admitted: Callable[[], None] | None = None) -> SubmissionResult
 ```
 
 `tau_agent_core.agent_session.AgentSession.submit`
@@ -1574,7 +1616,7 @@ bus's ``on_error`` sink, never swallowed).
 ### summarize_and_navigate
 
 ```python
-summarize_and_navigate(target_id: str, *, custom_instructions: str | None = None) -> list[dict[str, Any]]
+async summarize_and_navigate(target_id: str, *, custom_instructions: str | None = None) -> list[dict[str, Any]]
 ```
 
 `tau_agent_core.agent_session.AgentSession.summarize_and_navigate`
@@ -1809,7 +1851,7 @@ prefix from a branch would break the very walk that gives it its context.
 ### append_at
 
 ```python
-append_at(parent_id: str | None, entry_type: str, payload: dict[str, Any]) -> str
+async append_at(parent_id: str | None, entry_type: str, payload: dict[str, Any]) -> str
 ```
 
 `tau_agent_core.session_log.BranchView.append_at`
@@ -1825,7 +1867,7 @@ Pass through to the underlying log — a branch adds nothing to the entry.
 ### append_branch_summary
 
 ```python
-append_branch_summary(summary: str, from_id: str | None) -> str
+async append_branch_summary(summary: str, from_id: str | None) -> str
 ```
 
 `tau_agent_core.session_log.BranchView.append_branch_summary`
@@ -1840,7 +1882,7 @@ Re-parent to the branch point before appending (pi ``branchWithSummary``).
 ### append_compaction
 
 ```python
-append_compaction(summary: str, first_kept_id: str, tokens_before: int, *, summarizer_model_id: str, summary_usage: dict[str, int], covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
+async append_compaction(summary: str, first_kept_id: str, tokens_before: int, *, summarizer_model_id: str, summary_usage: dict[str, int], covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
 ```
 
 `tau_agent_core.session_log.BranchView.append_compaction`
@@ -1867,7 +1909,7 @@ entries with no marker of their own (docs/LANE-REMOVAL.md §1).
 ### append_custom_entry
 
 ```python
-append_custom_entry(custom_type: str, data: dict[str, Any]) -> str
+async append_custom_entry(custom_type: str, data: dict[str, Any]) -> str
 ```
 
 `tau_agent_core.session_log.BranchView.append_custom_entry`
@@ -1882,7 +1924,7 @@ append_custom_entry(custom_type: str, data: dict[str, Any]) -> str
 ### append_custom_message
 
 ```python
-append_custom_message(message: dict[str, Any], custom_type: str) -> str
+async append_custom_message(message: dict[str, Any], custom_type: str) -> str
 ```
 
 `tau_agent_core.session_log.BranchView.append_custom_message`
@@ -1897,7 +1939,7 @@ append_custom_message(message: dict[str, Any], custom_type: str) -> str
 ### append_elide
 
 ```python
-append_elide(first_kept_id: str, *, covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
+async append_elide(first_kept_id: str, *, covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
 ```
 
 `tau_agent_core.session_log.BranchView.append_elide`
@@ -1916,7 +1958,7 @@ the unknown-id cases rather than merely a rejected call.
 ### append_message
 
 ```python
-append_message(message: dict[str, Any]) -> str
+async append_message(message: dict[str, Any]) -> str
 ```
 
 `tau_agent_core.session_log.BranchView.append_message`
@@ -1930,7 +1972,7 @@ append_message(message: dict[str, Any]) -> str
 ### append_navigate
 
 ```python
-append_navigate(target_id: str | None) -> str
+async append_navigate(target_id: str | None) -> str
 ```
 
 `tau_agent_core.session_log.BranchView.append_navigate`
@@ -2925,7 +2967,7 @@ fresh log has zero entries (``messages == []``) until the first append.
 ### append_at
 
 ```python
-append_at(parent_id: str | None, entry_type: str, payload: dict[str, Any]) -> str
+async append_at(parent_id: str | None, entry_type: str, payload: dict[str, Any]) -> str
 ```
 
 `tau_agent_core.session_log.InMemorySessionLog.append_at`
@@ -2948,7 +2990,7 @@ with no event of its own — a system message, a navigate, a compaction.
 ### append_branch_summary
 
 ```python
-append_branch_summary(summary: str, from_id: str | None) -> str
+async append_branch_summary(summary: str, from_id: str | None) -> str
 ```
 
 `tau_agent_core.session_log.InMemorySessionLog.append_branch_summary`
@@ -2973,7 +3015,7 @@ Fail-Early: a non-``None`` ``from_id`` must name a real entry (parity with
 ### append_compaction
 
 ```python
-append_compaction(summary: str, first_kept_id: str, tokens_before: int, *, summarizer_model_id: str, summary_usage: dict[str, int], covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
+async append_compaction(summary: str, first_kept_id: str, tokens_before: int, *, summarizer_model_id: str, summary_usage: dict[str, int], covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
 ```
 
 `tau_agent_core.session_log.InMemorySessionLog.append_compaction`
@@ -3002,7 +3044,7 @@ none of them has a default — TREE-BROWSER-AS-EDITOR.md §8, §11.3).
 ### append_custom_entry
 
 ```python
-append_custom_entry(custom_type: str, data: dict[str, Any]) -> str
+async append_custom_entry(custom_type: str, data: dict[str, Any]) -> str
 ```
 
 `tau_agent_core.session_log.InMemorySessionLog.append_custom_entry`
@@ -3028,7 +3070,7 @@ emits no message for it (conversation_tree.py). The foundation S56's
 ### append_custom_message
 
 ```python
-append_custom_message(message: dict[str, Any], custom_type: str) -> str
+async append_custom_message(message: dict[str, Any], custom_type: str) -> str
 ```
 
 `tau_agent_core.session_log.InMemorySessionLog.append_custom_message`
@@ -3051,7 +3093,7 @@ reload byte-identically.
 ### append_elide
 
 ```python
-append_elide(first_kept_id: str, *, covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
+async append_elide(first_kept_id: str, *, covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
 ```
 
 `tau_agent_core.session_log.InMemorySessionLog.append_elide`
@@ -3076,7 +3118,7 @@ id. There is no summary here, so there is no summarizer and no summary cost
 ### append_message
 
 ```python
-append_message(message: dict[str, Any]) -> str
+async append_message(message: dict[str, Any]) -> str
 ```
 
 `tau_agent_core.session_log.InMemorySessionLog.append_message`
@@ -3090,7 +3132,7 @@ append_message(message: dict[str, Any]) -> str
 ### append_navigate
 
 ```python
-append_navigate(target_id: str | None) -> str
+async append_navigate(target_id: str | None) -> str
 ```
 
 `tau_agent_core.session_log.InMemorySessionLog.append_navigate`
@@ -3683,6 +3725,18 @@ facade. ``append_model_change`` / ``append_thinking_change`` /
 them (the TUI/headless call those on the concrete ``Session`` directly), so
 keeping them off the Protocol avoids an unused-method contract (Fail-Early).
 
+**Every appender is ``async``; ``id``/``cursor``/``entries()`` are not.**
+docs/BLOCKING-PERSISTENCE.md: the agent loop runs on the head's own event
+loop, so a store that does network I/O per append froze the screen for the
+length of a turn's persistence. The rejected cheap fix was to call this
+Protocol from a worker thread, which would have made thread-safety a new,
+unstated requirement of every implementor. Saying ``async`` says the same
+thing out loud and leaves each store to meet it its own way: a RAM or
+file-backed store awaits nothing, and the JMFTS store thread-hops behind a
+client it owns. The three reads stay synchronous because they are already in
+memory in every shipped store, and making them ``async`` would push ``await``
+into ``ConversationTree`` and every caller that merely inspects a session.
+
 **Precondition: a conversation has exactly one writing process**
 (NODE-ADDRESSABLE-AGENTS.md Decision 6). Concurrency *inside* a conversation is
 lanes — open a :class:`BranchView`, which is a second cursor over the same
@@ -3712,7 +3766,7 @@ Decision 6 for the full argument.
 ### append_at
 
 ```python
-append_at(parent_id: str | None, entry_type: str, payload: dict[str, Any]) -> str
+async append_at(parent_id: str | None, entry_type: str, payload: dict[str, Any]) -> str
 ```
 
 `tau_agent_core.session_log.SessionLog.append_at`
@@ -3749,7 +3803,7 @@ because nothing should — see docs/LANE-REMOVAL.md §1.
 ### append_branch_summary
 
 ```python
-append_branch_summary(summary: str, from_id: str | None) -> str
+async append_branch_summary(summary: str, from_id: str | None) -> str
 ```
 
 `tau_agent_core.session_log.SessionLog.append_branch_summary`
@@ -3764,7 +3818,7 @@ append_branch_summary(summary: str, from_id: str | None) -> str
 ### append_compaction
 
 ```python
-append_compaction(summary: str, first_kept_id: str, tokens_before: int, *, summarizer_model_id: str, summary_usage: dict[str, int], covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
+async append_compaction(summary: str, first_kept_id: str, tokens_before: int, *, summarizer_model_id: str, summary_usage: dict[str, int], covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
 ```
 
 `tau_agent_core.session_log.SessionLog.append_compaction`
@@ -3825,7 +3879,7 @@ nothing reads it back to reconstruct anything that could then be wrong.
 ### append_custom_entry
 
 ```python
-append_custom_entry(custom_type: str, data: dict[str, Any]) -> str
+async append_custom_entry(custom_type: str, data: dict[str, Any]) -> str
 ```
 
 `tau_agent_core.session_log.SessionLog.append_custom_entry`
@@ -3840,7 +3894,7 @@ append_custom_entry(custom_type: str, data: dict[str, Any]) -> str
 ### append_custom_message
 
 ```python
-append_custom_message(message: dict[str, Any], custom_type: str) -> str
+async append_custom_message(message: dict[str, Any], custom_type: str) -> str
 ```
 
 `tau_agent_core.session_log.SessionLog.append_custom_message`
@@ -3855,7 +3909,7 @@ append_custom_message(message: dict[str, Any], custom_type: str) -> str
 ### append_elide
 
 ```python
-append_elide(first_kept_id: str, *, covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
+async append_elide(first_kept_id: str, *, covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
 ```
 
 `tau_agent_core.session_log.SessionLog.append_elide`
@@ -3901,7 +3955,7 @@ no-op refusal check — which is §8.1's pattern verbatim.
 ### append_message
 
 ```python
-append_message(message: dict[str, Any]) -> str
+async append_message(message: dict[str, Any]) -> str
 ```
 
 `tau_agent_core.session_log.SessionLog.append_message`
@@ -3915,7 +3969,7 @@ append_message(message: dict[str, Any]) -> str
 ### append_navigate
 
 ```python
-append_navigate(target_id: str | None) -> str
+async append_navigate(target_id: str | None) -> str
 ```
 
 `tau_agent_core.session_log.SessionLog.append_navigate`
@@ -4585,7 +4639,7 @@ A sentence naming the problem, or ``None``.
 <!-- agent: yes -->
 
 ```python
-commit_branch(session: SessionLog, ids: Sequence[str], *, drop_context: bool) -> list[dict]
+async commit_branch(session: SessionLog, ids: Sequence[str], *, drop_context: bool) -> list[dict]
 ```
 
 `tau_agent_core.tree_ops.commit_branch`
@@ -4662,7 +4716,7 @@ The entry type and the payload to append.
 <!-- agent: yes -->
 
 ```python
-elide_span(session: SessionLog, anchor_id: str, first_kept_id: str) -> list[dict]
+async elide_span(session: SessionLog, anchor_id: str, first_kept_id: str) -> list[dict]
 ```
 
 `tau_agent_core.tree_ops.elide_span`
@@ -4670,10 +4724,11 @@ elide_span(session: SessionLog, anchor_id: str, first_kept_id: str) -> list[dict
 Fold a span out of ``session``'s context and return the new context.
 
 ``elide`` is the summary-less generalization of the compaction anchor (W3,
-NODE-ADDRESSABLE-AGENTS.md). **Synchronous**, unlike
-:func:`summarize_and_navigate`: there is no summary, therefore no model call
-and nothing to await. An ``async def`` with no ``await`` would advertise an
-I/O boundary this operation does not have.
+NODE-ADDRESSABLE-AGENTS.md). It awaits only its two appends — unlike
+:func:`summarize_and_navigate`, there is no summary and therefore no model
+call. It was synchronous until ``SessionLog``'s appenders became coroutines
+(docs/BLOCKING-PERSISTENCE.md); the I/O boundary it now advertises is the
+store's write, not a completion.
 
 Two ids, because an elide is not a branch point. ``anchor_id`` is where the
 fold jumps FROM — the elide entry is appended as its child, so the anchor
@@ -4926,7 +4981,7 @@ The concatenated text, stripped, or ``None``. ``None`` covers both "no assistant
 <!-- agent: yes -->
 
 ```python
-navigate(session: SessionLog, target_id: str | None) -> list[dict]
+async navigate(session: SessionLog, target_id: str | None) -> list[dict]
 ```
 
 `tau_agent_core.tree_ops.navigate`
@@ -5077,7 +5132,7 @@ A sentence naming the offending result, or ``None``.
 <!-- agent: yes -->
 
 ```python
-paste_subtree(session: SessionLog, source_id: str, target_id: str) -> list[str]
+async paste_subtree(session: SessionLog, source_id: str, target_id: str) -> list[str]
 ```
 
 `tau_agent_core.tree_ops.paste_subtree`
@@ -5325,7 +5380,7 @@ A fresh dict of command name to one-line description. Fresh rather than shared, 
 <!-- agent: yes -->
 
 ```python
-summarize_and_navigate(session: SessionLog, target_id: str, model: Any, *, api_key: str | None = None, custom_instructions: str | None = None) -> tuple[list[dict], dict[str, int]]
+async summarize_and_navigate(session: SessionLog, target_id: str, model: Any, *, api_key: str | None = None, custom_instructions: str | None = None) -> tuple[list[dict], dict[str, int]]
 ```
 
 `tau_agent_core.tree_ops.summarize_and_navigate`
@@ -5364,7 +5419,7 @@ A pair: the re-rendered context (``ConversationTree.context_for``) and the summa
 <!-- agent: yes -->
 
 ```python
-summarize_branch(branch_text: str, model: Any, *, api_key: str | None = None, custom_instructions: str | None = None) -> tuple[str, dict[str, int]]
+async summarize_branch(branch_text: str, model: Any, *, api_key: str | None = None, custom_instructions: str | None = None) -> tuple[str, dict[str, int]]
 ```
 
 `tau_agent_core.session_manager.summarize_branch`

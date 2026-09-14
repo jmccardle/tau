@@ -260,8 +260,8 @@ async def test_a_resumed_session_is_drawn_before_the_prompt_opens(env: ReplEnv) 
     await env.run([])
     assert env.backend is not None
     session = env.backend.bound[0]
-    session.append_message({"role": "user", "content": "port the parser", "timestamp": 1})
-    session.append_message(
+    await session.append_message({"role": "user", "content": "port the parser", "timestamp": 1})
+    await session.append_message(
         {
             "role": "assistant",
             "content": [{"type": "text", "text": "Ported it."}],

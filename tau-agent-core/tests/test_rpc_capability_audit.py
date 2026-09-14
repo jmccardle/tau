@@ -86,6 +86,22 @@ EXPOSED: dict[str, str] = {
 }
 
 NOT_EXPOSED: dict[str, str] = {
+    "persistence_settled": (
+        "An asyncio.Event the OUTPUT WRITER waits on, so an agent_end is not framed "
+        "until this turn is persisted and the cursor it carries is the post-turn tip "
+        "(docs/ASYNC-SESSION-LOG.md §3.3). An Event does not serialize, and the "
+        "property a host wants from it is already on the wire: agent_end arrives "
+        "after persistence, carrying that cursor. Exposing it would publish the "
+        "mechanism instead of the guarantee."
+    ),
+    "start": (
+        "Flushes the queued agent_spec records (docs/ASYNC-SESSION-LOG.md §3.2). It is "
+        "the HEAD's job, not the host's: rpc_mode awaits it once before RPCHandler.run, "
+        "so every tree a host can read has already had it called, and every turn drains "
+        "the queue again before its own first write. A verb would let a host ask for "
+        "something already done, and a second call means nothing — there is no state a "
+        "host could observe that would make it want one."
+    ),
     "pending_request": (
         "The extension request at the cursor (docs/EXTENSION-LOCKS.md §2). A host "
         "learns of it the moment it matters — the submit refusal carries the whole "

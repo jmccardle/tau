@@ -305,24 +305,24 @@ async def test_run_task_stops_rerouting_after_max_reroutes(monkeypatch) -> None:
 # ── the full command flow (real AgentSession, faked subprocess) ──────────────
 
 
-def _session(tmp_path: Path, monkeypatch) -> tuple[AgentSession, Session]:
+async def _session(tmp_path: Path, monkeypatch) -> tuple[AgentSession, Session]:
     # Route the cross-session CostLedger under tmp_path via $HOME (CostLedger default root).
     monkeypatch.setenv("HOME", str(tmp_path))
     live = Session.create("/tmp", "gpt-4o", "openai", base_dir=tmp_path)
     agent = AgentSession(session_log=live, model=_model(), extensions=[])
     fleet_mod.delegate_fleet_extension(agent._bind_extension_api("examples/51_delegate_fleet.py"))
-    live.append_message(_msg("user", "run a fleet"))
+    await live.append_message(_msg("user", "run a fleet"))
     return agent, live
 
 
 async def test_registers_all_commands(tmp_path, monkeypatch) -> None:
-    agent, _live = _session(tmp_path, monkeypatch)
+    agent, _live = await _session(tmp_path, monkeypatch)
     for name in ("fleet", "fleet_abort", "fleet_ledger"):
         assert agent._registry.get_command(name) is not None
 
 
 async def test_fleet_launches_children_ledgers_them_and_reports(tmp_path, monkeypatch) -> None:
-    agent, _live = _session(tmp_path, monkeypatch)
+    agent, _live = await _session(tmp_path, monkeypatch)
     monkeypatch.setattr(
         fleet_mod.spawn,
         "stream_tau",
@@ -339,7 +339,7 @@ async def test_fleet_launches_children_ledgers_them_and_reports(tmp_path, monkey
 
 
 async def test_fleet_emits_live_dashboard_panel_records(tmp_path, monkeypatch) -> None:
-    agent, _live = _session(tmp_path, monkeypatch)
+    agent, _live = await _session(tmp_path, monkeypatch)
     monkeypatch.setattr(fleet_mod.spawn, "stream_tau", _scripted_stream([[_turn(), _end()]]))
     records: list[dict[str, Any]] = []
     agent.set_extension_record_sink(records.append)
@@ -357,13 +357,13 @@ async def test_fleet_emits_live_dashboard_panel_records(tmp_path, monkeypatch) -
 
 
 async def test_empty_fleet_reports_usage(tmp_path, monkeypatch) -> None:
-    agent, _live = _session(tmp_path, monkeypatch)
+    agent, _live = await _session(tmp_path, monkeypatch)
     result = await agent.run_extension_command("fleet", "   \n  ")
     assert result.output == "No tasks — usage: /fleet <one task per line>."
 
 
 async def test_fleet_ledger_empty_report(tmp_path, monkeypatch) -> None:
-    agent, _live = _session(tmp_path, monkeypatch)
+    agent, _live = await _session(tmp_path, monkeypatch)
     result = await agent.run_extension_command("fleet_ledger", "")
     assert result.output == "Fleet ledger: no children recorded yet. Run /fleet first."
 
@@ -420,7 +420,7 @@ async def test_ledger_dir_config_routes_the_ledger(tmp_path, monkeypatch) -> Non
         "51_delegate_fleet": {"ledger_dir": str(ledger_root), "ledger_name": "fleet-run"}
     }
     fleet_mod.delegate_fleet_extension(agent._bind_extension_api("examples/51_delegate_fleet.py"))
-    live.append_message(_msg("user", "go"))
+    await live.append_message(_msg("user", "go"))
     monkeypatch.setattr(fleet_mod.spawn, "stream_tau", _scripted_stream([[_turn(), _end()]]))
 
     await agent.run_extension_command("fleet", "one task")
@@ -432,7 +432,7 @@ async def test_ledger_dir_config_routes_the_ledger(tmp_path, monkeypatch) -> Non
 
 
 async def test_fleet_ledger_survives_reload(tmp_path, monkeypatch) -> None:
-    agent, _live = _session(tmp_path, monkeypatch)
+    agent, _live = await _session(tmp_path, monkeypatch)
     monkeypatch.setattr(
         fleet_mod.spawn,
         "stream_tau",

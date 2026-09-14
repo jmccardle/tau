@@ -170,13 +170,13 @@ async def test_seam3_before_compact_reaches_extension_handler():
         api.on(SESSION_BEFORE_COMPACT, lambda event: received.append(event))
 
     store = Session.create_in_memory("/tmp", "gpt-4o", "openai")
-    first_kept = store.append_message({"role": "user", "content": "keep me"})
+    first_kept = await store.append_message({"role": "user", "content": "keep me"})
     session = AgentSession(session_log=store, model=_model(), extensions=[ext])
 
     unsub = subscribe_session_events(session.route_session_event)
     try:
         # The genuine seam-3 emit point (append_compaction), which compact() calls.
-        store.append_compaction(
+        await store.append_compaction(
             "summary", first_kept_id=first_kept, tokens_before=42, **_PROV
         )
         await asyncio.sleep(0)
@@ -201,12 +201,12 @@ async def test_seam3_channel_isolation():
         api.on("session_start", lambda event: other_channel.append(event))
 
     store = Session.create_in_memory("/tmp", "gpt-4o", "openai")
-    first_kept = store.append_message({"role": "user", "content": "keep me"})
+    first_kept = await store.append_message({"role": "user", "content": "keep me"})
     session = AgentSession(session_log=store, model=_model(), extensions=[ext])
 
     unsub = subscribe_session_events(session.route_session_event)
     try:
-        store.append_compaction(
+        await store.append_compaction(
             "summary", first_kept_id=first_kept, tokens_before=0, **_PROV
         )
         await asyncio.sleep(0)

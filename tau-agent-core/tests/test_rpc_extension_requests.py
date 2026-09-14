@@ -76,10 +76,10 @@ def handler(log: _DurableLog) -> RPCHandler:
     return RPCHandler(AgentSession(session_log=log, model=_model(), tools=[]))
 
 
-def _raise(
+async def _raise(
     log: _DurableLog, *, lock: bool = True, ask: dict | None = None, release: str | None = None
 ) -> str:
-    return log.append_custom_entry(
+    return await log.append_custom_entry(
         REQUEST_ENTRY_TYPE,
         build_request_data(
             "/x/gate.py",
@@ -130,7 +130,7 @@ async def test_a_request_at_the_cursor_is_reported_whole(
     tau's four-state framing line, which is a second copy of the one table
     docs/EXTENSION-LOCKS.md §9 owns.
     """
-    entry_id = _raise(log, ask=ASK, release="gate-clear")
+    entry_id = await _raise(log, ask=ASK, release="gate-clear")
     request = (await _call(handler, "get_pending_request"))["result"]["request"]
     assert request["entry_id"] == entry_id
     assert request["extension"] == "/x/gate.py"
@@ -144,7 +144,7 @@ async def test_a_request_at_the_cursor_is_reported_whole(
 
 async def test_a_bare_lock_carries_no_ask(handler: RPCHandler, log: _DurableLog) -> None:
     """The state a host renders as a refusal with a way out, not as a form."""
-    _raise(log, lock=True, ask=None, release="gate-clear")
+    await _raise(log, lock=True, ask=None, release="gate-clear")
     request = (await _call(handler, "get_pending_request"))["result"]["request"]
     assert request["ask"] is None
     assert request["label"] == "Extension gate requires intervention"
@@ -152,8 +152,8 @@ async def test_a_bare_lock_carries_no_ask(handler: RPCHandler, log: _DurableLog)
 
 async def test_the_read_is_the_cursor_and_not_a_walk(handler: RPCHandler, log: _DurableLog) -> None:
     """Moving past a request clears it. That is what makes branching a way out."""
-    _raise(log, ask=ASK)
-    log.append_message({"role": "user", "content": [{"type": "text", "text": "moved on"}]})
+    await _raise(log, ask=ASK)
+    await log.append_message({"role": "user", "content": [{"type": "text", "text": "moved on"}]})
     assert (await _call(handler, "get_pending_request"))["result"]["request"] is None
 
 
@@ -164,7 +164,7 @@ async def test_answering_appends_the_response_and_releases_the_lock(
     handler: RPCHandler, log: _DurableLog
 ) -> None:
     """The append IS the release: it moves the cursor, and a lock is read at the cursor."""
-    entry_id = _raise(log, ask=ASK)
+    entry_id = await _raise(log, ask=ASK)
     answer = await _call(
         handler,
         "answer_request",
@@ -188,7 +188,7 @@ async def test_an_absent_extension_warns_and_still_releases(
     A lock whose owner cannot answer must not become a session nobody can
     continue, so the response is appended and the lock is gone either way.
     """
-    entry_id = _raise(log, ask=ASK)
+    entry_id = await _raise(log, ask=ASK)
     result = (
         await _call(
             handler,
@@ -201,7 +201,7 @@ async def test_an_absent_extension_warns_and_still_releases(
 
 
 async def test_an_ask_with_no_fields_takes_no_values(handler: RPCHandler, log: _DurableLog) -> None:
-    entry_id = _raise(log, ask=NO_FIELDS_ASK)
+    entry_id = await _raise(log, ask=NO_FIELDS_ASK)
     answer = await _call(handler, "answer_request", {"request_id": entry_id, "action": "Yes"})
     assert answer["result"]["cursor"] is not None
 
@@ -225,8 +225,8 @@ async def test_each_refusal_reaches_the_host_as_invalid_params_with_nothing_appe
     handler: RPCHandler, log: _DurableLog, params: dict, expected: str
 ) -> None:
     """Fail-Early, and TOTAL: a refused answer leaves the log byte-identical."""
-    bare = _raise(log, lock=True, ask=None)
-    asked = _raise(log, ask=ASK)
+    bare = await _raise(log, lock=True, ask=None)
+    asked = await _raise(log, ask=ASK)
     resolved = dict(params)
     resolved["request_id"] = {"@bare": bare, "@ask": asked}.get(
         params["request_id"], params["request_id"]
@@ -243,7 +243,7 @@ async def test_each_refusal_reaches_the_host_as_invalid_params_with_nothing_appe
 async def test_a_missing_action_is_refused_by_the_schema(
     handler: RPCHandler, log: _DurableLog
 ) -> None:
-    entry_id = _raise(log, ask=ASK)
+    entry_id = await _raise(log, ask=ASK)
     answer = await _call(handler, "answer_request", {"request_id": entry_id})
     assert answer["error"]["code"] == -32602
     assert "action" in answer["error"]["message"]

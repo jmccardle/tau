@@ -496,6 +496,10 @@ class AgentSession:
 
         self._session_event_tasks: set[asyncio.Task[None]] = set()
 
+        self._pending_agent_specs: list[dict[str, Any]] = []
+        self._persistence_settled = asyncio.Event()
+        self._persistence_settled.set()
+
         self._extension_api = self._make_extension_api()
         self._extension_runner = ExtensionRunner(context=self._extension_api.context)
         self._extension_runner.on_error(self._surface_extension_error)
@@ -507,7 +511,18 @@ class AgentSession:
         self._record_agent_spec()
 
     def _record_agent_spec(self) -> None:
-        """Append a NON-AUTHORITATIVE ``agent_spec`` provenance node (W2).
+        """Queue a NON-AUTHORITATIVE ``agent_spec`` provenance node (W2).
+
+        **It builds the record and queues it; it does not write it.** ``SessionLog``'s appenders
+        are coroutines (docs/BLOCKING-PERSISTENCE.md), and this method's two
+        callers — ``__init__`` and :meth:`set_model` — are ordinary functions that
+        no head can await. So the record is held in ``_pending_agent_specs`` and
+        :meth:`_flush_pending_agent_specs` writes it, at the top of every method
+        that appends and from :meth:`start`. Relative order is unchanged, because
+        the flush runs before that method's own first append; what changed is
+        WHEN it becomes durable, which is now the first turn rather than the
+        constructor. A caller that needs it durable sooner awaits
+        :meth:`start`.
 
         Written at construction and again on every runtime spec swap
         (:meth:`set_model` — the one frame field this class lets a caller change
@@ -570,8 +585,7 @@ class AgentSession:
         loaded_paths = [
             path for path in self._loaded_extensions if path not in self._disabled_paths
         ]
-        self._session_log.append_custom_entry(
-            "agent_spec",
+        self._pending_agent_specs.append(
             {
                 "model": self.get_model(),
                 "system_prompt_digest": _system_prompt_digest(self._system_prompt),
@@ -579,8 +593,43 @@ class AgentSession:
                 "extensions": [_extension_factory_label(ext) for ext in self._extensions]
                 + loaded_paths,
                 "cwd": os.getcwd(),
-            },
+            }
         )
+
+    async def _flush_pending_agent_specs(self) -> None:
+        """Write every queued ``agent_spec``, in the order it was recorded.
+
+        Called at the top of every method that appends, BEFORE that method's own
+        first write, so the records still precede the turn they describe.
+
+        **A list rather than one slot**, because ``__init__`` and each
+        :meth:`set_model` between two turns each record one and each is a
+        separate swap. A single slot would keep the last and silently drop the
+        rest, so a session constructed, re-modelled and then prompted would carry
+        one record where it used to carry two — the Fail-Early rule's swallowed
+        gap, in the very node that exists to say what the frame was.
+
+        The queue is drained before the first write: an append that raises must
+        not leave a record queued to be written again against a later turn, which
+        would date it wrong.
+        """
+        pending, self._pending_agent_specs = self._pending_agent_specs, []
+        for spec in pending:
+            await self._session_log.append_custom_entry("agent_spec", spec)
+
+    @agent_facing(topic="sessions")
+    async def start(self) -> None:
+        """Make the session's ``agent_spec`` durable without running a turn.
+
+        The awaited door onto :meth:`_flush_pending_agent_specs` for a caller that
+        reads the tree before it prompts. ``tau --mode rpc`` calls it once before
+        ``RPCHandler.run`` for exactly that reason. Idempotent, and unnecessary
+        before a turn: :meth:`submit` and :meth:`continue_conversation` both drain
+        the queue before reading ``_pre_turn_leaf``, so the record lands AHEAD of
+        the turn it describes rather than inside it — which is where a rollback to
+        that leaf needs it to be.
+        """
+        await self._flush_pending_agent_specs()
 
     @property
     def messages(self) -> list[dict[str, Any]]:
@@ -668,6 +717,30 @@ class AgentSession:
         via ``api.on(...)``, never through this property.
         """
         return self._extension_runner
+
+    @property
+    def persistence_settled(self) -> asyncio.Event:
+        """Set except while a turn is between emitting ``agent_end`` and persisting.
+
+        docs/ASYNC-SESSION-LOG.md §3.3. ``RPCHandler._stamp_agent_end_cursor``
+        reads ``session_log.cursor`` when the writer task dequeues an
+        ``agent_end``, and that read is only right if this turn's messages are
+        already written. Until the appenders became coroutines that was free:
+        :meth:`_run_one_turn` ran from the enqueue through persistence without
+        suspending, so the writer could not be scheduled in between. A store
+        whose appends really suspend — ``JmftsSessionLog`` hops to a thread —
+        breaks that, and the wire carried a null cursor.
+
+        So the ordering is stated rather than inherited. :meth:`_run_one_turn`
+        clears this before ``loop.run`` (which is what emits ``agent_end``) and
+        sets it in a ``finally`` after both persistence calls, on the error path
+        as well. The writer awaits it before framing an ``agent_end``.
+
+        It cannot deadlock against the T3 credit pool: persistence emits no
+        events of its own, so nothing it does needs a credit the blocked writer
+        would have to release.
+        """
+        return self._persistence_settled
 
     @property
     def turn_lock(self) -> asyncio.Lock:
@@ -1475,11 +1548,11 @@ class AgentSession:
         self._unregister_bucket(bucket)
         self._disabled_paths.add(target)
         message = f"disabled {Path(target).stem}"
-        if self._release_lock_of(target):
+        if await self._release_lock_of(target):
             message += ", releasing its lock on the session"
         return ExtensionActionResult("disable", target, True, message)
 
-    def _release_lock_of(self, path: str) -> bool:
+    async def _release_lock_of(self, path: str) -> bool:
         """Move the cursor off ``path``'s locking request, if that is where it sits.
 
         docs/EXTENSION-LOCKS.md §6, escape 3. Navigation, not a special case in
@@ -1497,7 +1570,8 @@ class AgentSession:
             (e.get("parentId") for e in reversed(entries) if str(e.get("id")) == request.entry_id),
             None,
         )
-        self._session_log.append_navigate(str(parent) if parent is not None else None)
+        await self._flush_pending_agent_specs()
+        await self._session_log.append_navigate(str(parent) if parent is not None else None)
         return True
 
     async def enable_extension(self, path: str) -> ExtensionActionResult:
@@ -1933,6 +2007,39 @@ class AgentSession:
         added except the stamp.
         """
         await self._events.emit(self._stamp_event(event))
+
+    def _submission_runs_a_turn(self, sub: Submission) -> bool:
+        """Whether ``sub`` will reach the model, rather than write nothing at all.
+
+        Read before :attr:`_pre_turn_leaf` is captured, to decide whether to drain
+        the queued ``agent_spec`` records (docs/ASYNC-SESSION-LOG.md §3.2). The
+        drain has to happen THERE and not later: a rollback refuses when
+        ``_pre_turn_leaf`` is ``None``, so a first turn on an empty log needs the
+        record written before the leaf is read.
+
+        But two submissions promise to write NOTHING, and both are pinned:
+        ``store_history=False`` (test_submit_admission.py) and a command dispatch,
+        which returns before any turn (test_submit_commands.py). Draining for
+        either would put a provenance node in a log the caller was told stays
+        untouched.
+
+        The command test is the same one :meth:`_apply_input_pipeline` makes, run
+        against the PRE-hook text. The two can disagree — an ``input`` hook can
+        rewrite a slash command in or out — and this errs by running the drain for
+        a submission that turns out to dispatch, which writes a record early
+        rather than writing a wrong one.
+
+        Args:
+            sub: The submission about to be admitted.
+
+        Returns:
+            Whether to expect a turn that persists.
+        """
+        if not sub.store_history:
+            return False
+        if sub.expand_commands and self.resolve_command(sub.text) is not None:
+            return False
+        return True
 
     def resolve_command(self, text: str) -> CommandInvocation | None:
         """Would ``text`` dispatch as a command, and which one? (``submit()`` step 3.)
@@ -2451,7 +2558,7 @@ class AgentSession:
                             "aborted turn's"
                         ),
                     )
-                self._session_log.append_navigate(rollback_target)
+                await self._session_log.append_navigate(rollback_target)
         elif sub.multitask_strategy == "fork":
             fork_point = self._session_log.cursor
             reason = ConversationTree(
@@ -2482,6 +2589,8 @@ class AgentSession:
 
             self._turn_token_counter += 1
             self._current_turn_token = self._turn_token_counter
+            if self._submission_runs_a_turn(sub):
+                await self._flush_pending_agent_specs()
             self._pre_turn_leaf = self._session_log.cursor
 
             self._is_streaming = True
@@ -2849,27 +2958,39 @@ class AgentSession:
 
         turn_messages: list[dict[str, Any]] = []
 
+        # Cleared BEFORE loop.run, because loop.run is what emits agent_end.
+        self._persistence_settled.clear()
         try:
-            final_messages = await loop.run(
-                prompts=[*pre_user_messages, user_msg, *queued, *post_user_messages],
-                context=context_messages,
-            )
-        except BaseException as exc:
-            self._persist_turn_inputs(
+            try:
+                final_messages = await loop.run(
+                    prompts=[*pre_user_messages, user_msg, *queued, *post_user_messages],
+                    context=context_messages,
+                )
+            except BaseException as exc:
+                await self._persist_turn_inputs(
+                    pre_user_messages,
+                    user_msg,
+                    queued,
+                    post_user_messages,
+                    turn_messages,
+                    persist,
+                )
+                await self._persist_loop_messages(
+                    completed_messages(exc), turn_messages, persist=persist
+                )
+                raise
+
+            await self._persist_turn_inputs(
                 pre_user_messages, user_msg, queued, post_user_messages, turn_messages, persist
             )
-            self._persist_loop_messages(completed_messages(exc), turn_messages, persist=persist)
-            raise
 
-        self._persist_turn_inputs(
-            pre_user_messages, user_msg, queued, post_user_messages, turn_messages, persist
-        )
-
-        self._persist_loop_messages(final_messages, turn_messages, persist=persist)
+            await self._persist_loop_messages(final_messages, turn_messages, persist=persist)
+        finally:
+            self._persistence_settled.set()
 
         return turn_messages
 
-    def _persist_turn_inputs(
+    async def _persist_turn_inputs(
         self,
         pre_user_messages: list[dict[str, Any]],
         user_msg: UserMessage,
@@ -2889,27 +3010,31 @@ class AgentSession:
         success path, which is why an aborted turn lost the user's prompt as well
         as the assistant's reply.
         """
+        if persist:
+            await self._flush_pending_agent_specs()
         for pre_msg in pre_user_messages:
             if persist:
-                self._session_log.append_custom_message(
+                await self._session_log.append_custom_message(
                     pre_msg, custom_type=str(pre_msg["customType"])
                 )
             turn_messages.append(pre_msg)
 
         user_dict = user_msg.model_dump()
         if persist:
-            self._session_log.append_message(user_dict)
+            await self._session_log.append_message(user_dict)
         turn_messages.append(user_dict)
 
         for qmsg in queued:
             qdict = qmsg.model_dump()
             if persist:
-                self._session_log.append_message(qdict)
+                await self._session_log.append_message(qdict)
             turn_messages.append(qdict)
 
         for cmsg in post_user_messages:
             if persist:
-                self._session_log.append_custom_message(cmsg, custom_type=str(cmsg["customType"]))
+                await self._session_log.append_custom_message(
+                    cmsg, custom_type=str(cmsg["customType"])
+                )
             turn_messages.append(cmsg)
 
     async def _end_of_prompt_drain(self, turn_messages: list[dict[str, Any]]) -> None:
@@ -2974,7 +3099,7 @@ class AgentSession:
         )
         for raw in injected:
             node = self._custom_message_node(raw, hook="user_turn_end")
-            self._session_log.append_custom_message(node, custom_type=str(node["customType"]))
+            await self._session_log.append_custom_message(node, custom_type=str(node["customType"]))
             turn_messages.append(node)
 
     async def continue_conversation(self) -> list[dict[str, Any]]:
@@ -3015,6 +3140,8 @@ class AgentSession:
         self._turn_task = asyncio.current_task()
         self._turn_token_counter += 1
         self._current_turn_token = self._turn_token_counter
+        # Before the leaf is read: the record belongs ahead of the turn, not in it.
+        await self._flush_pending_agent_specs()
         self._pre_turn_leaf = self._session_log.cursor
 
         try:
@@ -3048,7 +3175,7 @@ class AgentSession:
             )
 
             turn_messages: list[dict[str, Any]] = []
-            self._persist_loop_messages(final_messages, turn_messages)
+            await self._persist_loop_messages(final_messages, turn_messages)
 
             return turn_messages
 
@@ -3181,7 +3308,8 @@ class AgentSession:
         )
         self.record_side_usage(result.usage)
         covered = _covered_span(path_entries, result.first_kept_entry_id)
-        self._session_log.append_compaction(
+        await self._flush_pending_agent_specs()
+        await self._session_log.append_compaction(
             summary=result.summary,
             first_kept_id=result.first_kept_entry_id,
             tokens_before=result.tokens_before,
@@ -3399,7 +3527,7 @@ class AgentSession:
             )
         return resolved
 
-    def _persist_loop_messages(
+    async def _persist_loop_messages(
         self,
         final_messages: list[Any],
         turn_messages: list[dict[str, Any]],
@@ -3440,10 +3568,12 @@ class AgentSession:
                         "extension-origin type is required (Fail-Early)"
                     )
                 if persist:
-                    self._session_log.append_custom_message(msg_dict, custom_type=str(custom_type))
+                    await self._session_log.append_custom_message(
+                        msg_dict, custom_type=str(custom_type)
+                    )
             else:
                 if persist:
-                    self._session_log.append_message(msg_dict)
+                    await self._session_log.append_message(msg_dict)
             turn_messages.append(msg_dict)
 
     def _custom_message_node(
@@ -3486,7 +3616,7 @@ class AgentSession:
             timestamp=self._timestamp(),
         )
 
-    def _append_custom_message(
+    async def _append_custom_message(
         self, message: dict[str, Any], options: dict[str, Any] | None = None
     ) -> str:
         """Append a durable extension ``customMessage`` node (``api.send_message``).
@@ -3533,7 +3663,8 @@ class AgentSession:
             visible_to_model=bool(options.get("visible_to_model", False)),
             timestamp=self._timestamp(),
         )
-        entry_id = self._session_log.append_custom_message(
+        await self._flush_pending_agent_specs()
+        entry_id = await self._session_log.append_custom_message(
             node, custom_type=str(message["customType"])
         )
         self._announce_append("custom_message", entry_id=entry_id, message=node)
@@ -3567,7 +3698,7 @@ class AgentSession:
         self._session_event_tasks.add(task)
         task.add_done_callback(self._session_event_tasks.discard)
 
-    def _append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
+    async def _append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
         """Append a durable, NON-message ``customEntry`` node (``api.append_entry``).
 
         The backend for ``ExtensionAPI.append_entry`` (E6 §2 / S39). Persists the
@@ -3592,7 +3723,8 @@ class AgentSession:
             )
         if not isinstance(data, dict):
             raise ValueError(f"append_entry: data must be a dict, got {type(data).__name__}")
-        return self._session_log.append_custom_entry(custom_type, data)
+        await self._flush_pending_agent_specs()
+        return await self._session_log.append_custom_entry(custom_type, data)
 
     @property
     def pending_request(self) -> ExtensionRequest | None:
@@ -3648,7 +3780,7 @@ class AgentSession:
             )
         answered = dict(values or {})
         validate_form_values(request.ask["fields"], answered)
-        self._append_custom_entry(
+        await self._append_custom_entry(
             RESPONSE_ENTRY_TYPE,
             build_response_data(request_id, request.extension, answered, action),
         )

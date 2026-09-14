@@ -184,8 +184,8 @@ async def test_trigger_compact_command_compacts_immediately_and_reports(monkeypa
     )
     log = session.session_log
     for i in range(3):
-        log.append_message(_msg("user", f"u{i}"))
-        log.append_message(_msg("assistant", f"a{i}"))
+        await log.append_message(_msg("user", f"u{i}"))
+        await log.append_message(_msg("assistant", f"a{i}"))
 
     result = await session.run_extension_command("trigger-compact", "")
 

@@ -476,10 +476,10 @@ class Session:
 
     # --- append API (append-on-message; §5.4) ------------------------------
 
-    def append_message(self, message: dict[str, Any]) -> str:
-        return self._append("message", message=message)
+    async def append_message(self, message: dict[str, Any]) -> str:
+        return self._append_now("message", message=message)
 
-    def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
+    async def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
         """Persist an extension-injected custom message as a ``customMessage`` node.
 
         The on-disk counterpart of ``InMemorySessionLog.append_custom_message``
@@ -487,9 +487,9 @@ class Session:
         injection. Its own entry KIND carrying the stored ``message`` (``role:
         "custom"``) and the top-level ``customType`` — folded onto the active path
         by ``ConversationTree`` and remapped custom→user on the wire."""
-        return self._append("customMessage", customType=custom_type, message=message)
+        return self._append_now("customMessage", customType=custom_type, message=message)
 
-    def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
+    async def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
         """Persist a durable, NON-message ``customEntry`` node (E6 §2 / S39).
 
         The on-disk counterpart of ``InMemorySessionLog.append_custom_entry``: the
@@ -500,18 +500,18 @@ class Session:
         reload. It is NOT a ``message``/``customMessage`` node, so ``ConversationTree``
         never folds it into context and ``convert_to_llm`` never sees it (tree-as-
         backplane state: on the durable path, excluded from model input)."""
-        return self._append("customEntry", customType=custom_type, data=data)
+        return self._append_now("customEntry", customType=custom_type, data=data)
 
     def append_model_change(self, model: str, backend: str) -> str:
-        return self._append("model_change", model=model, backend=backend)
+        return self._append_now("model_change", model=model, backend=backend)
 
     def append_thinking_change(self, level: str) -> str:
-        return self._append("thinking_change", level=level)
+        return self._append_now("thinking_change", level=level)
 
     def append_session_info(self, name: str) -> str:
-        return self._append("session_info", name=name)
+        return self._append_now("session_info", name=name)
 
-    def append_compaction(
+    async def append_compaction(
         self,
         summary: str,
         first_kept_id: str,
@@ -549,7 +549,7 @@ class Session:
                 "the context fold"
             )
         _emit_session_event(SESSION_BEFORE_COMPACT, self, first_kept_id=first_kept_id)
-        return self._append(
+        return self._append_now(
             "compaction",
             summary=summary,
             firstKeptId=first_kept_id,
@@ -561,7 +561,7 @@ class Session:
             agentSpecId=agent_spec_id,
         )
 
-    def append_elide(
+    async def append_elide(
         self,
         first_kept_id: str,
         *,
@@ -595,7 +595,7 @@ class Session:
                 "must name a real entry, or the whole kept region silently drops out of "
                 "the context fold"
             )
-        return self._append(
+        return self._append_now(
             "elide",
             firstKeptId=first_kept_id,
             coveredEntries=covered_entries,
@@ -603,7 +603,7 @@ class Session:
             agentSpecId=agent_spec_id,
         )
 
-    def append_navigate(self, target_id: str | None) -> str:
+    async def append_navigate(self, target_id: str | None) -> str:
         """Persist a cursor move as a first-class ``navigate`` entry (§2.2).
 
         pi's ``leafId`` is in-memory only and evaporates on quit (branch() moves
@@ -619,11 +619,11 @@ class Session:
         a dangling cursor would silently drop the whole conversation at read time."""
         if target_id is not None and target_id not in self._ids:
             raise ValueError(f"navigate target {target_id!r} not found")
-        entry_id = self._append("navigate", targetId=target_id)
+        entry_id = self._append_now("navigate", targetId=target_id)
         self._leaf_id = target_id
         return entry_id
 
-    def append_branch_summary(self, summary: str, from_id: str | None) -> str:
+    async def append_branch_summary(self, summary: str, from_id: str | None) -> str:
         """Persist a ``branch_summary`` inline node at the branch point (§2.4, §5).
 
         pi ``branchWithSummary`` (session-manager.ts:1262-1279) sets
@@ -641,7 +641,7 @@ class Session:
         if from_id is not None and from_id not in self._ids:
             raise ValueError(f"branch_summary from {from_id!r} not found")
         self._leaf_id = from_id  # branch point, not the current leaf (pi :1272)
-        return self._append("branch_summary", summary=summary, fromId=from_id)
+        return self._append_now("branch_summary", summary=summary, fromId=from_id)
 
     def shutdown(self) -> None:
         """Signal end-of-session (seam 3). Emits ``session_shutdown``; no disk
@@ -667,14 +667,18 @@ class Session:
         self, model: str, backend: str, system_prompt: str | None, name: str | None
     ) -> None:
         """Write the entries every new session carries: model, optional name, and
-        the system prompt as the first ``message`` entry (uniform reconstruction)."""
+        the system prompt as the first ``message`` entry (uniform reconstruction).
+
+        Through :meth:`_append_now`, never the ``async`` Protocol appenders: this
+        runs inside a synchronous ``create``/``fork``, which a head may call before
+        it has a loop."""
         self.append_model_change(model, backend)
         if name is not None:
             self.append_session_info(name)
         if system_prompt:
-            self.append_message({"role": "system", "content": system_prompt})
+            self._append_now("message", message={"role": "system", "content": system_prompt})
 
-    def append_at(
+    async def append_at(
         self,
         parent_id: str | None,
         entry_type: str,
@@ -688,6 +692,22 @@ class Session:
         in one JSONL file) is already valid on disk — entries carry an explicit
         ``parentId``, so load order was never what defined the tree. Only the *writer*
         convenience of chaining off a single ``_leaf_id`` ever assumed one cursor.
+        """
+        return self._append_at_now(parent_id, entry_type, payload)
+
+    def _append_at_now(
+        self, parent_id: str | None, entry_type: str, payload: dict[str, Any]
+    ) -> str:
+        """The synchronous write :meth:`append_at` exposes as a coroutine.
+
+        It does **not** hop to a thread, unlike the JMFTS store's. One entry is a
+        buffered append to a local file; docs/BLOCKING-PERSISTENCE.md §4 measured
+        the freeze as invisible for this store, and a thread hop per entry costs
+        about what the write does. The ``async`` signature is the Protocol's
+        contract, not a claim that this store threads.
+
+        The split also lets :meth:`_init_state` write a new session's opening
+        entries from a synchronous classmethod, where there may be no running loop.
         """
         if parent_id is not None and parent_id not in self._ids:
             raise ValueError(f"append parent {parent_id!r} not found")
@@ -703,9 +723,9 @@ class Session:
         self._persist_entry(entry)
         return str(entry["id"])
 
-    def _append(self, kind: str, **payload: Any) -> str:
-        """The ordinary append: ``append_at`` the current leaf, then move the leaf."""
-        entry_id = self.append_at(self._leaf_id, kind, payload)
+    def _append_now(self, kind: str, **payload: Any) -> str:
+        """The ordinary append: write at the current leaf, then move the leaf."""
+        entry_id = self._append_at_now(self._leaf_id, kind, payload)
         self._leaf_id = entry_id
         return entry_id
 

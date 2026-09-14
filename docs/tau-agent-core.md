@@ -82,6 +82,11 @@ any live path — checked directly, not inferred. The live architecture is:
   "clone" — there is no method literally named `clone` or `navigate`;
   the latter is `append_navigate`, which appends a marker entry rather than
   mutating a cursor in place).
+
+  **All eight appenders are `async def` as of 2026-09-13**; `id`, `cursor` and
+  `entries()` are not (`docs/ASYNC-SESSION-LOG.md`). An `async` signature is the
+  contract, not a promise of threading: the in-memory and file stores await
+  nothing, and only `JmftsSessionLog` hops to a thread.
 - `conversation_tree.py`'s `ConversationTree` — walks `parent_id` chains to
   build model input; this is what makes fork/branch/rollback/a second agent
   at an earlier point in the conversation safe. Full invariants:

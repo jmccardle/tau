@@ -30,21 +30,21 @@ _PROV = {
 CWD = "/srv/proj"
 
 
-def _session_with_history(base_dir) -> tuple[Session, str, str]:
+async def _session_with_history(base_dir) -> tuple[Session, str, str]:
     """A file-backed session with three turns; returns (session, keep_id, behind_id)."""
     session = Session.create(CWD, "local-llm", "openai", base_dir=base_dir)
-    session.append_message({"role": "user", "content": "old question"})
-    behind_id = session.append_message({"role": "assistant", "content": "old answer"})
-    keep_id = session.append_message({"role": "user", "content": "keep me"})
+    await session.append_message({"role": "user", "content": "old question"})
+    behind_id = await session.append_message({"role": "assistant", "content": "old answer"})
+    keep_id = await session.append_message({"role": "user", "content": "keep me"})
     return session, keep_id, behind_id
 
 
-def test_append_compaction_is_byte_prefix_stable(tmp_path) -> None:
-    session, keep_id, _ = _session_with_history(tmp_path)
+async def test_append_compaction_is_byte_prefix_stable(tmp_path) -> None:
+    session, keep_id, _ = await _session_with_history(tmp_path)
     assert session.path is not None
 
     before = session.path.read_bytes()
-    session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
+    await session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
     after = session.path.read_bytes()
 
     assert after.startswith(before)
@@ -52,9 +52,9 @@ def test_append_compaction_is_byte_prefix_stable(tmp_path) -> None:
     assert b'"type": "compaction"' in after.splitlines()[-1]
 
 
-def test_context_for_splices_appended_compaction(tmp_path) -> None:
-    session, keep_id, _ = _session_with_history(tmp_path)
-    session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
+async def test_context_for_splices_appended_compaction(tmp_path) -> None:
+    session, keep_id, _ = await _session_with_history(tmp_path)
+    await session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
 
     # After append_compaction the leaf is the compaction entry (pi appendCompaction).
     tree = ConversationTree(session.entries(), cursor=session._leaf_id)
@@ -69,9 +69,9 @@ def test_context_for_splices_appended_compaction(tmp_path) -> None:
     assert len(msgs) == 2
 
 
-def test_navigate_behind_boundary_restores_pre_compaction(tmp_path) -> None:
-    session, keep_id, behind_id = _session_with_history(tmp_path)
-    session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
+async def test_navigate_behind_boundary_restores_pre_compaction(tmp_path) -> None:
+    session, keep_id, behind_id = await _session_with_history(tmp_path)
+    await session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
 
     tree = ConversationTree(session.entries(), cursor=session._leaf_id)
     tree.navigate(behind_id)
@@ -82,9 +82,9 @@ def test_navigate_behind_boundary_restores_pre_compaction(tmp_path) -> None:
     ]
 
 
-def test_reloaded_session_resolves_cursor_to_compaction_and_splices(tmp_path) -> None:
-    session, keep_id, _ = _session_with_history(tmp_path)
-    session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
+async def test_reloaded_session_resolves_cursor_to_compaction_and_splices(tmp_path) -> None:
+    session, keep_id, _ = await _session_with_history(tmp_path)
+    await session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
     assert session.path is not None
 
     reloaded = Session.load(session.path)
@@ -94,15 +94,15 @@ def test_reloaded_session_resolves_cursor_to_compaction_and_splices(tmp_path) ->
     assert msgs[1] == {"role": "user", "content": "keep me"}
 
 
-def test_context_property_is_the_spliced_fold_not_the_linear_messages(tmp_path) -> None:
+async def test_context_property_is_the_spliced_fold_not_the_linear_messages(tmp_path) -> None:
     """``Session.context`` (the pi-faithful render/model seed, §2.6) must reflect the
     cursor + compaction splice; ``Session.messages`` (the raw linear fold) must not.
 
     This is the property both TUI resume (app.py) and headless resume (headless.py)
     now seed from — the fix for a compacted session rendering its dropped history.
     """
-    session, keep_id, _ = _session_with_history(tmp_path)
-    session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
+    session, keep_id, _ = await _session_with_history(tmp_path)
+    await session.append_compaction("SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
 
     # The raw linear fold still contains the dropped prefix and no summary — the bug.
     assert {"role": "user", "content": "old question"} in session.messages

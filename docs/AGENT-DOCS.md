@@ -155,6 +155,14 @@ takes. What the reader loses is the meaning, and that is marked in the output as
 `*(no description)*` rather than left blank. The coverage gate is what stops the
 meaning from going missing quietly.
 
+**The signature line carries `async`** (added 2026-09-14, docs/ASYNC-SESSION-LOG.md
+§5). It did not until then: `_signature` rendered a coroutine exactly like an
+ordinary function, so **48** entries — `prompt`, `submit`, `run`, `stream_chat`,
+`emit`, `load_extensions` among them — told a reader to write the one call that
+cannot work. griffe carries it in `Object.labels`, so this is a read of the source
+and not a new heuristic. The coverage gate does not check it: a signature is
+published whether or not prose describes it, and this is part of the signature.
+
 ## 6. The coverage gate
 
 The rule, from `CLAUDE.md`:
@@ -181,22 +189,23 @@ A fifth case fails too: **finding nothing at all**. An empty marked set means
 the marker was removed, the packages moved, or griffe stopped resolving the
 decorator — and a naive percentage would report 100% for all three.
 
-## 7. Status, measured 2026-09-04
+## 7. Status, measured 2026-09-14
 
 220 markers cover the headless surface: `tau_llm` and `tau_agent_core`.
 `tau_coding_agent` is not marked — every topic in `TOPICS` is a headless one,
 and an extension author reaches the TUI through `ExtensionUI` rather than
 directly. Marking it means adding TUI topics first.
 
-Those markers pull in 924 objects once class members are counted.
+Those markers pull in 958 objects once class members are counted.
 
-| | 2026-08-26 | 2026-09-04 |
-|---|---:|---:|
-| Complete | 316 / 758 (41.7%) | **481 / 924 (52.1%)** |
-| No docstring | 245 | 246 |
-| Undocumented parameter | 177 | 165 |
-| Missing `Returns:` | 140 | 124 |
-| Docstring/signature drift | **0** | **0** |
+| | 2026-08-26 | 2026-09-04 | 2026-09-14 |
+|---|---:|---:|---:|
+| Complete | 316 / 758 (41.7%) | 481 / 924 (52.1%) | **517 / 958 (54.0%)** |
+| Docstring/signature drift | **0** | **0** | **0** |
+
+The 2026-09-04 breakdown was 246 with no docstring, 165 with an undocumented
+parameter and 124 missing a `Returns:`; the 09-14 column is a re-run of the same
+gate and was not broken out.
 
 The marked surface grew by 166 objects over the same period, so the percentage
 moved on completions outpacing additions rather than on a static denominator.
@@ -212,7 +221,7 @@ an `Exception: description` pair. All four are fixed.
 
 ### What remains
 
-1. **Write the missing prose.** 535 faults. This is the bulk of the work and is
+1. **Write the missing prose.** 441 objects are incomplete (re-run 2026-09-14). This is the bulk of the work and is
    deliberately not scoped as a sweep: `CLAUDE.md` §"Code style" makes it
    opportunistic instead — editing a function means leaving its docstring
    shorter and more useful in the same commit, permission standing. Filling a

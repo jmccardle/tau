@@ -75,11 +75,11 @@ def test_elide_projection_invents_no_count() -> None:
 # --- the write path uses it --------------------------------------------------
 
 
-def test_appended_elide_document_carries_the_searchable_content() -> None:
+async def test_appended_elide_document_carries_the_searchable_content() -> None:
     client = RecordingClient()
     log = JmftsSessionLog.create(client, cwd=".", model="m", backend="b")  # type: ignore[arg-type]
-    anchor = log.append_message({"role": "user", "content": "keep me"})
-    elide_id = log.append_elide(anchor, **_ELIDE_PROV)
+    anchor = await log.append_message({"role": "user", "content": "keep me"})
+    elide_id = await log.append_elide(anchor, **_ELIDE_PROV)
 
     doc = next(d for d in client.docs if d["id"] == int(elide_id))
     assert doc["usetype"] == "tau:elide"

@@ -128,7 +128,7 @@ def _path_of(session: Session) -> Path:
     return session.path
 
 
-def _build_rich_source_session(tmp_path: Path) -> Session:
+async def _build_rich_source_session(tmp_path: Path) -> Session:
     """A file-store session exercising every cross-reference kind: branching
     (navigate to an ancestor), a branch_summary (re-parenting re-branch), a
     compaction (splice anchor), and a final root-level re-branch
@@ -141,46 +141,46 @@ def _build_rich_source_session(tmp_path: Path) -> Session:
         system_prompt="sys",
     )
     # entries(): [0]=model_change, [1]=message(system, "sys")
-    session.append_message(_msg("user", "hello"))  # [2]
-    session.append_message(_msg("assistant", "hi"))  # [3] branch A tip
+    await session.append_message(_msg("user", "hello"))  # [2]
+    await session.append_message(_msg("assistant", "hi"))  # [3] branch A tip
 
     # Branch B: navigate back to "hello" ([2]), diverge.
     hello_id = session.entries()[2]["id"]
-    session.append_navigate(hello_id)  # [4]
-    alt_id = session.append_message(_msg("assistant", "alt reply"))  # [5]
-    session.append_branch_summary("summarized the alt branch", from_id=alt_id)  # [6]
-    session.append_message(_msg("user", "back on track"))  # [7]
+    await session.append_navigate(hello_id)  # [4]
+    alt_id = await session.append_message(_msg("assistant", "alt reply"))  # [5]
+    await session.append_branch_summary("summarized the alt branch", from_id=alt_id)  # [6]
+    await session.append_message(_msg("user", "back on track"))  # [7]
 
     # Back to branch A ([3]): append a compaction anchored at "hi".
     hi_id = session.entries()[3]["id"]
-    session.append_navigate(hi_id)  # [8]
-    session.append_compaction(
+    await session.append_navigate(hi_id)  # [8]
+    await session.append_compaction(
         "early chat summary", first_kept_id=hi_id, tokens_before=500, **_PROV
     )  # [9]
-    session.append_message(_msg("user", "continue after compaction"))  # [10]
+    await session.append_message(_msg("user", "continue after compaction"))  # [10]
 
     # A brand-new root-level branch.
-    session.append_navigate(None)  # [11]
-    session.append_message(_msg("user", "fresh root-level branch"))  # [12]
+    await session.append_navigate(None)  # [11]
+    await session.append_message(_msg("user", "fresh root-level branch"))  # [12]
     return session
 
 
 @pytest.fixture
-def rich_source(tmp_path: Path) -> Session:
-    return _build_rich_source_session(tmp_path)
+async def rich_source(tmp_path: Path) -> Session:
+    return await _build_rich_source_session(tmp_path)
 
 
-def test_import_preserves_uuid_and_topology(client: JmftsClient, tmp_path: Path) -> None:
+async def test_import_preserves_uuid_and_topology(client: JmftsClient, tmp_path: Path) -> None:
     session = Session.create(
         "/tmp/tau-jmfts-importer-simple",
         "test-model",
         "test-backend",
         base_dir=tmp_path / "sessions",
     )
-    a = session.append_message(_msg("user", "hi"))
-    session.append_message(_msg("assistant", "yo"))
-    session.append_navigate(a)
-    session.append_message(_msg("assistant", "alt"))
+    a = await session.append_message(_msg("user", "hi"))
+    await session.append_message(_msg("assistant", "yo"))
+    await session.append_navigate(a)
+    await session.append_message(_msg("assistant", "alt"))
 
     log: JmftsSessionLog | None = None
     try:
@@ -274,7 +274,7 @@ def test_import_export_round_trip_preserves_context_fold_at_every_branch(
             client.delete_document(log.root_doc_id)
 
 
-def test_import_preserves_elide_crossref_and_context_fold(
+async def test_import_preserves_elide_crossref_and_context_fold(
     client: JmftsClient, tmp_path: Path
 ) -> None:
     """Regression for the importer's kind-keyed ``_CROSS_REF_FIELD`` gap:
@@ -297,11 +297,11 @@ def test_import_preserves_elide_crossref_and_context_fold(
         "test-backend",
         base_dir=tmp_path / "sessions",
     )
-    session.append_message(_msg("user", "before the elide"))  # dropped by the fold
-    kept_id = session.append_message(_msg("assistant", "kept from here"))
-    session.append_navigate(kept_id)
-    session.append_elide(first_kept_id=kept_id, **_ELIDE_PROV)
-    session.append_message(_msg("user", "after the elide"))
+    await session.append_message(_msg("user", "before the elide"))  # dropped by the fold
+    kept_id = await session.append_message(_msg("assistant", "kept from here"))
+    await session.append_navigate(kept_id)
+    await session.append_elide(first_kept_id=kept_id, **_ELIDE_PROV)
+    await session.append_message(_msg("user", "after the elide"))
 
     original_entries = session.entries()
 
@@ -332,7 +332,7 @@ def test_import_preserves_elide_crossref_and_context_fold(
             client.delete_document(log.root_doc_id)
 
 
-def test_export_output_is_loadable_by_file_session(client: JmftsClient, tmp_path: Path) -> None:
+async def test_export_output_is_loadable_by_file_session(client: JmftsClient, tmp_path: Path) -> None:
     log = JmftsSessionLog.create(
         client,
         cwd="/tmp/tau-jmfts-importer-export",
@@ -340,8 +340,8 @@ def test_export_output_is_loadable_by_file_session(client: JmftsClient, tmp_path
         backend="test-backend",
     )
     try:
-        log.append_message(_msg("user", "hello"))
-        log.append_message(_msg("assistant", "hi"))
+        await log.append_message(_msg("user", "hello"))
+        await log.append_message(_msg("assistant", "hi"))
 
         path = tmp_path / "exported.jsonl"
         export_session(log, path)

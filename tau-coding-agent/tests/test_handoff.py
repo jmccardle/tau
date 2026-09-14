@@ -127,10 +127,10 @@ async def test_handoff_reports_new_session_and_summary(monkeypatch, isolate_tau_
     monkeypatch.setattr("tau_llm.client.complete_simple", _summary_response("HANDOFF-SUMMARY"))
     tmp_path = isolate_tau_dir
     agent, live = _file_session(tmp_path)
-    live.append_message(_msg("user", "let's refactor auth"))
-    live.append_message(_msg("assistant", "sure, starting now"))
-    live.append_message(_msg("user", "use JWT"))
-    live.append_message(_msg("assistant", "done, switched to JWT"))
+    await live.append_message(_msg("user", "let's refactor auth"))
+    await live.append_message(_msg("assistant", "sure, starting now"))
+    await live.append_message(_msg("user", "use JWT"))
+    await live.append_message(_msg("assistant", "done, switched to JWT"))
 
     result = await agent.run_extension_command("handoff", "focus on the auth decisions")
 
@@ -152,8 +152,8 @@ async def test_handoff_condenses_the_source_session(monkeypatch, isolate_tau_dir
     monkeypatch.setattr("tau_llm.client.complete_simple", _summary_response("HANDOFF-SUMMARY"))
     tmp_path = isolate_tau_dir
     agent, live = _file_session(tmp_path)
-    live.append_message(_msg("user", "u0"))
-    live.append_message(_msg("assistant", "a0"))
+    await live.append_message(_msg("user", "u0"))
+    await live.append_message(_msg("assistant", "a0"))
 
     await agent.run_extension_command("handoff", "")
 
@@ -170,8 +170,8 @@ async def test_handoff_new_session_survives_reload(monkeypatch, isolate_tau_dir)
     monkeypatch.setattr("tau_llm.client.complete_simple", _summary_response("HANDOFF-SUMMARY"))
     tmp_path = isolate_tau_dir
     agent, live = _file_session(tmp_path)
-    live.append_message(_msg("user", "u0"))
-    live.append_message(_msg("assistant", "a0"))
+    await live.append_message(_msg("user", "u0"))
+    await live.append_message(_msg("assistant", "a0"))
 
     result = await agent.run_extension_command("handoff", "")
     new_path = _reported_new_path(result.output)

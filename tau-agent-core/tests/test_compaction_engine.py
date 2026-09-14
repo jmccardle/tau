@@ -964,22 +964,22 @@ def test_apply_compaction_is_iterative_the_second_compaction_supersedes_the_firs
 # ── AgentSession integration (mocked LLM) ────────────────────────────────────
 
 
-def _session(settings: CompactionSettings | None = None) -> AgentSession:
+async def _session(settings: CompactionSettings | None = None) -> AgentSession:
     log = InMemorySessionLog()
-    log.append_message(_msg("user", "old question"))
-    log.append_message(_msg("assistant", "old answer", stop_reason="stop"))
-    log.append_message(_msg("user", "current"))
+    await log.append_message(_msg("user", "old question"))
+    await log.append_message(_msg("assistant", "old answer", stop_reason="stop"))
+    await log.append_message(_msg("user", "current"))
     return AgentSession(
         session_log=log, model=_model(), api_key="sk-test", compaction_settings=settings
     )
 
 
-def test_compact_runs_the_pipeline_and_shrinks_the_session(monkeypatch):
+async def test_compact_runs_the_pipeline_and_shrinks_the_session(monkeypatch):
     monkeypatch.setattr(
         "tau_agent_core.compaction.complete_simple", _fake_complete("## Goal\nrecap")
     )
-    session = _session(CompactionSettings(keep_recent_tokens=1))
-    result = asyncio.run(session.compact())
+    session = await _session(CompactionSettings(keep_recent_tokens=1))
+    result = await session.compact()
     assert result is not None
     assert "recap" in result.summary
     messages = session.messages
@@ -992,7 +992,7 @@ def test_compact_is_a_noop_on_an_empty_session():
     assert asyncio.run(session.compact()) is None
 
 
-def test_compact_on_default_settings_spends_no_completion_and_writes_nothing(monkeypatch):
+async def test_compact_on_default_settings_spends_no_completion_and_writes_nothing(monkeypatch):
     """The same no-op, reached the way a real caller reaches it: a populated
     three-entry session under the SHIPPED settings. `_session()` here passes
     ``settings=None``, i.e. exactly what AgentSession's own default installs, so
@@ -1012,40 +1012,40 @@ def test_compact_on_default_settings_spends_no_completion_and_writes_nothing(mon
         raise AssertionError("a compaction that removes nothing must not spend a completion")
 
     monkeypatch.setattr("tau_agent_core.compaction.complete_simple", _boom)
-    session = _session()  # settings=None -> DEFAULT_COMPACTION_SETTINGS
+    session = await _session()  # settings=None -> DEFAULT_COMPACTION_SETTINGS
     before = list(session.session_log.entries())
 
-    assert asyncio.run(session.compact()) is None
+    assert await session.compact() is None
 
     assert session.session_log.entries() == before
     assert not any(e.get("type") == "compaction" for e in session.session_log.entries())
 
 
-def test_auto_compact_triggers_once_the_window_crosses_the_threshold(monkeypatch):
+async def test_auto_compact_triggers_once_the_window_crosses_the_threshold(monkeypatch):
     monkeypatch.setattr("tau_agent_core.compaction.complete_simple", _fake_complete("auto recap"))
     # tiny window (> reserve) so the existing small convo crosses the threshold
     log = InMemorySessionLog()
-    log.append_message(_msg("user", "q" * 400))  # ~100 tok
-    log.append_message(_msg("assistant", "a" * 400, stop_reason="stop"))
-    log.append_message(_msg("user", "now"))
+    await log.append_message(_msg("user", "q" * 400))  # ~100 tok
+    await log.append_message(_msg("assistant", "a" * 400, stop_reason="stop"))
+    await log.append_message(_msg("user", "now"))
     session = AgentSession(
         session_log=log,
         model=_model(context_window=100, max_tokens=64),
         api_key="sk-test",
         compaction_settings=CompactionSettings(reserve_tokens=10, keep_recent_tokens=1),
     )
-    asyncio.run(session._maybe_auto_compact())
+    await session._maybe_auto_compact()
     messages = session.messages
     assert any("[[Compaction summary:" in m["content"][0]["text"] for m in messages if m["content"])
 
 
-def test_auto_compact_never_calls_the_llm_when_the_window_is_at_or_below_reserve(monkeypatch):
+async def test_auto_compact_never_calls_the_llm_when_the_window_is_at_or_below_reserve(monkeypatch):
     def _boom(*a, **k):
         raise AssertionError("LLM must not be called")
 
     monkeypatch.setattr("tau_agent_core.compaction.complete_simple", _boom)
-    session = _session(CompactionSettings(reserve_tokens=999999))
-    asyncio.run(session._maybe_auto_compact())  # must not raise
+    session = await _session(CompactionSettings(reserve_tokens=999999))
+    await session._maybe_auto_compact()  # must not raise
 
 
 def test_compact_messages_returns_a_shortened_list_for_the_tui_path(monkeypatch):

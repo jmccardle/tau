@@ -51,15 +51,15 @@ def _anchor_of(log: InMemorySessionLog) -> dict[str, Any]:
     return next(e for e in log.entries() if e["type"] == "elide")
 
 
-def test_elide_records_the_span_the_fold_actually_loses() -> None:
+async def test_elide_records_the_span_the_fold_actually_loses() -> None:
     """``coveredEntries`` is checkable against the tree; ``coveredTokens`` is the
     figure §8.2 names as the one nothing can recompute afterwards, so the only
     guard on it is that it is a positive measurement of a non-empty span."""
     log = InMemorySessionLog()
-    ids = [log.append_message(_um(f"turn {i}")) for i in range(5)]
+    ids = [await log.append_message(_um(f"turn {i}")) for i in range(5)]
 
     before = len(ConversationTree(log.entries(), log.cursor).context_entries(ids[4]))
-    _backend().elide_span(log, ids[4], ids[2])
+    await _backend().elide_span(log, ids[4], ids[2])
     after = len(ConversationTree(log.entries(), log.cursor).context_entries())
 
     anchor = _anchor_of(log)
@@ -69,45 +69,45 @@ def test_elide_records_the_span_the_fold_actually_loses() -> None:
     assert anchor["coveredTokens"] > 0
 
 
-def test_elide_records_the_frame_in_force_at_the_anchor_not_the_newest_one() -> None:
+async def test_elide_records_the_frame_in_force_at_the_anchor_not_the_newest_one() -> None:
     """§8.3. A browser-driven elide aims at an arbitrary historical anchor, and the
     frame that governed the span it folds is the one on THAT anchor's ancestor
     chain. Recording "whatever spec the session most recently wrote" would label
     every historical fold with the current model."""
     log = InMemorySessionLog()
-    old_spec = log.append_custom_entry("agent_spec", {"model": {"id": "the old model"}})
-    log.append_message(_um("turn 0"))
-    keep = log.append_message(_um("turn 1"))
-    anchor = log.append_message(_um("turn 2"))
+    old_spec = await log.append_custom_entry("agent_spec", {"model": {"id": "the old model"}})
+    await log.append_message(_um("turn 0"))
+    keep = await log.append_message(_um("turn 1"))
+    anchor = await log.append_message(_um("turn 2"))
 
-    log.append_custom_entry("agent_spec", {"model": {"id": "the new model"}})
-    log.append_message(_um("turn 3"))
+    await log.append_custom_entry("agent_spec", {"model": {"id": "the new model"}})
+    await log.append_message(_um("turn 3"))
 
-    _backend().elide_span(log, anchor, keep)
+    await _backend().elide_span(log, anchor, keep)
 
     assert _anchor_of(log)["agentSpecId"] == old_spec
 
 
-def test_elide_records_no_frame_when_the_path_has_none() -> None:
+async def test_elide_records_no_frame_when_the_path_has_none() -> None:
     """An honest ``None``, not a fabricated id: a log written without an
     ``AgentSession`` (or imported from pi) has no ``agent_spec`` node at all. §11.3
     keeps this distinguishable from a caller that never looked, by giving the
     parameter no default."""
     log = InMemorySessionLog()
-    ids = [log.append_message(_um(f"turn {i}")) for i in range(3)]
+    ids = [await log.append_message(_um(f"turn {i}")) for i in range(3)]
 
-    _backend().elide_span(log, ids[2], ids[1])
+    await _backend().elide_span(log, ids[2], ids[1])
 
     assert _anchor_of(log)["agentSpecId"] is None
 
 
-def test_elide_provenance_does_not_change_what_the_fold_returns() -> None:
+async def test_elide_provenance_does_not_change_what_the_fold_returns() -> None:
     """§8 called the change additive on the payload. The elide still renders
     nothing and still splices exactly the same span."""
     log = InMemorySessionLog()
-    ids = [log.append_message(_um(f"turn {i}")) for i in range(4)]
+    ids = [await log.append_message(_um(f"turn {i}")) for i in range(4)]
 
-    messages = _backend().elide_span(log, ids[3], ids[2])
+    messages = await _backend().elide_span(log, ids[3], ids[2])
 
     texts = [b["text"] for m in messages for b in m["content"]]
     assert texts == ["turn 2", "turn 3"]

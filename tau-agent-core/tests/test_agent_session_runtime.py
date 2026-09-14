@@ -77,16 +77,16 @@ class _FakeConversationSession:
     def entries(self) -> list[dict[str, Any]]:
         return self._log.entries()
 
-    def append_message(self, message: dict[str, Any]) -> str:
-        return self._log.append_message(message)
+    async def append_message(self, message: dict[str, Any]) -> str:
+        return await self._log.append_message(message)
 
-    def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
-        return self._log.append_custom_message(message, custom_type)
+    async def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
+        return await self._log.append_custom_message(message, custom_type)
 
-    def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
-        return self._log.append_custom_entry(custom_type, data)
+    async def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
+        return await self._log.append_custom_entry(custom_type, data)
 
-    def append_compaction(
+    async def append_compaction(
         self,
         summary: str,
         first_kept_id: str,
@@ -98,7 +98,7 @@ class _FakeConversationSession:
         covered_tokens: int,
         agent_spec_id: str | None,
     ) -> str:
-        return self._log.append_compaction(
+        return await self._log.append_compaction(
             summary,
             first_kept_id,
             tokens_before,
@@ -109,7 +109,7 @@ class _FakeConversationSession:
             agent_spec_id=agent_spec_id,
         )
 
-    def append_elide(
+    async def append_elide(
         self,
         first_kept_id: str,
         *,
@@ -117,21 +117,21 @@ class _FakeConversationSession:
         covered_tokens: int,
         agent_spec_id: str | None,
     ) -> str:
-        return self._log.append_elide(
+        return await self._log.append_elide(
             first_kept_id,
             covered_entries=covered_entries,
             covered_tokens=covered_tokens,
             agent_spec_id=agent_spec_id,
         )
 
-    def append_navigate(self, target_id: str | None) -> str:
-        return self._log.append_navigate(target_id)
+    async def append_navigate(self, target_id: str | None) -> str:
+        return await self._log.append_navigate(target_id)
 
-    def append_branch_summary(self, summary: str, from_id: str | None) -> str:
-        return self._log.append_branch_summary(summary, from_id)
+    async def append_branch_summary(self, summary: str, from_id: str | None) -> str:
+        return await self._log.append_branch_summary(summary, from_id)
 
-    def append_at(self, parent_id, entry_type, payload) -> str:
-        return self._log.append_at(parent_id, entry_type, payload)
+    async def append_at(self, parent_id, entry_type, payload) -> str:
+        return await self._log.append_at(parent_id, entry_type, payload)
 
     @property
     def header(self) -> dict[str, Any]:
@@ -177,7 +177,8 @@ class _FakeCatalog(SessionCatalog):
     ) -> ConversationSession:
         session = _FakeConversationSession(cwd, model, backend, name)
         if system_prompt:
-            session.append_message({"role": "system", "content": system_prompt})
+            # Sync core, like every real catalog: `create` is not a coroutine.
+            session._log._append_now("message", message={"role": "system", "content": system_prompt})
         self._sessions[session.id] = session
         return session
 
@@ -187,7 +188,7 @@ class _FakeCatalog(SessionCatalog):
         # Mirrors FileSessionCatalog: same construction, never registered.
         session = _FakeConversationSession(cwd, model, backend, name)
         if system_prompt:
-            session.append_message({"role": "system", "content": system_prompt})
+            session._log._append_now("message", message={"role": "system", "content": system_prompt})
         return session
 
     def load(self, ref: str) -> ConversationSession:
@@ -201,7 +202,8 @@ class _FakeCatalog(SessionCatalog):
         forked = _FakeConversationSession(cwd, source.model, source.backend)
         for entry in source.entries():
             if entry.get("type") == "message":
-                forked.append_message(entry["message"])
+                # Sync core: `fork` is not a coroutine on the ABC or either store.
+                forked._log._append_now("message", message=entry["message"])
         self._sessions[forked.id] = forked
         return forked
 
@@ -304,7 +306,7 @@ def runtime(session: AgentSession, catalog: _FakeCatalog) -> AgentSessionRuntime
 async def test_new_session_resets_the_documented_set(session: AgentSession, runtime):
     """Every H3 item, driven dirty, then proven clean after new_session()."""
     old_log = session.session_log
-    old_log.append_message({"role": "user", "content": "hi"})
+    await old_log.append_message({"role": "user", "content": "hi"})
 
     session._last_usage = {"input_tokens": 5}
     session.record_side_usage({"input_tokens": 3, "output_tokens": 2, "total_tokens": 5})
@@ -363,8 +365,8 @@ async def test_last_compaction_anchor_is_cleared_not_rederived(session: AgentSes
     """§10 'resolved': a fresh log has no compaction to anchor to — this
     proves it is genuinely GONE, not carried over or recomputed."""
     log = session.session_log
-    first = log.append_message({"role": "user", "content": "turn one"})
-    log.append_compaction(summary="a summary", first_kept_id=first, tokens_before=100, **_PROV)
+    first = await log.append_message({"role": "user", "content": "turn one"})
+    await log.append_compaction(summary="a summary", first_kept_id=first, tokens_before=100, **_PROV)
     # Sanity: the OLD log really does have a splice anchor before the reset.
     old_active = ConversationTree(log.entries(), log.cursor).context_for()
     assert any(m.get("role") == "user" and "summary" in str(m.get("content")) for m in old_active)
@@ -537,7 +539,7 @@ async def test_fork_carries_history_and_leaves_the_source_untouched(
 ):
     session.session_log = catalog.create_ephemeral("/work", "m", "openai")
     source_log = session.session_log
-    source_log.append_message({"role": "user", "content": "hello"})
+    await source_log.append_message({"role": "user", "content": "hello"})
     source_before = list(source_log.entries())
 
     result = await runtime.fork()
@@ -565,7 +567,7 @@ async def test_switch_session_loads_a_different_session(
     session: AgentSession, catalog: _FakeCatalog, runtime
 ):
     other = catalog.create("/work", "m", "openai")
-    other.append_message({"role": "user", "content": "over there"})
+    await other.append_message({"role": "user", "content": "over there"})
 
     result = await runtime.switch_session(other.id)
 

@@ -219,13 +219,13 @@ class _ModalHarness(App):
         self.push_screen(self._modal)
 
 
-def _linear_tree(length: int):
+async def _linear_tree(length: int):
     """A ``ConversationTree`` over one unbranched chain of ``length`` messages."""
     from tau_agent_core.conversation_tree import ConversationTree
     from tau_agent_core.session_log import InMemorySessionLog
 
     log = InMemorySessionLog()
-    ids = [log.append_message({"role": "user", "content": f"m{i}"}) for i in range(length)]
+    ids = [await log.append_message({"role": "user", "content": f"m{i}"}) for i in range(length)]
     return ConversationTree(log.entries(), log.cursor), ids
 
 
@@ -259,7 +259,7 @@ async def test_a_long_unbranched_chain_does_not_indent() -> None:
     A chain with no forks in it now has nothing to indent *for*: every entry is a
     sibling of the one before, and the deepest row is as shallow as the first.
     """
-    view, ids = _linear_tree(40)
+    view, ids = await _linear_tree(40)
     harness = _ModalHarness(SessionTreeModal(view))
     async with harness.run_test() as pilot:
         await pilot.pause()
@@ -277,10 +277,10 @@ async def test_a_fork_is_what_creates_a_widget_level() -> None:
     from tau_agent_core.session_log import InMemorySessionLog
 
     log = InMemorySessionLog()
-    root = log.append_message({"role": "user", "content": "root"})
-    a = log.append_message({"role": "assistant", "content": "a"})
-    b = log.append_at(root, "message", {"message": {"role": "assistant", "content": "b"}})
-    a2 = log.append_message({"role": "user", "content": "a2"})
+    root = await log.append_message({"role": "user", "content": "root"})
+    a = await log.append_message({"role": "assistant", "content": "a"})
+    b = await log.append_at(root, "message", {"message": {"role": "assistant", "content": "b"}})
+    a2 = await log.append_message({"role": "user", "content": "a2"})
     view = ConversationTree(log.entries(), log.cursor)
 
     harness = _ModalHarness(tree_browser.SessionTreeModal(view))
@@ -298,7 +298,7 @@ async def test_a_fork_is_what_creates_a_widget_level() -> None:
 async def test_a_long_chain_still_fills_the_row_at_80_columns() -> None:
     """What §1.1 was really about, measured on the composited screen: depth used to
     eat the label, so the deep rows overflowed and the tree grew a scrollbar."""
-    view, ids = _linear_tree(40)
+    view, ids = await _linear_tree(40)
     modal = tree_browser.SessionTreeModal(view)
     harness = _ModalHarness(modal)
     async with harness.run_test(size=(80, 24)) as pilot:
@@ -309,15 +309,15 @@ async def test_a_long_chain_still_fills_the_row_at_80_columns() -> None:
         assert all(str(node.label) != "…" for node, _label, _depth, _kids in modal._rows)
 
 
-def _wide_tree(turns: int):
+async def _wide_tree(turns: int):
     """A chain whose previews are far longer than any terminal is wide."""
     from tau_agent_core.conversation_tree import ConversationTree
     from tau_agent_core.session_log import InMemorySessionLog
 
     log = InMemorySessionLog()
     for i in range(turns):
-        log.append_message({"role": "user", "content": f"question {i} " + "x" * 200})
-        log.append_message({"role": "assistant", "content": f"answer {i} " + "y" * 200})
+        await log.append_message({"role": "user", "content": f"question {i} " + "x" * 200})
+        await log.append_message({"role": "assistant", "content": f"answer {i} " + "y" * 200})
     return ConversationTree(log.entries(), log.cursor)
 
 
@@ -335,7 +335,7 @@ async def test_the_rows_leave_room_for_the_vertical_scrollbar(size) -> None:
     there) rather than as the arithmetic, because the arithmetic is not what the
     reader sees and a later change to it would still have to keep this true.
     """
-    modal = tree_browser.SessionTreeModal(_wide_tree(40))
+    modal = tree_browser.SessionTreeModal(await _wide_tree(40))
     harness = _ModalHarness(modal)
     async with harness.run_test(size=size) as pilot:
         for _ in range(10):
@@ -923,7 +923,7 @@ async def test_a_tool_result_keeps_its_line_breaks() -> None:
         assert any("beta.py:2: two" in row for row in rows)
 
 
-def _forked_tree():
+async def _forked_tree():
     """``m0 → m1 → m2`` with a second child ``b1`` hanging off ``m0``.
 
     The smallest shape that separates the cursor's ancestor chain from a row that
@@ -934,10 +934,10 @@ def _forked_tree():
     from tau_agent_core.session_log import InMemorySessionLog
 
     log = InMemorySessionLog()
-    m0 = log.append_message({"role": "user", "content": "m0"})
-    m1 = log.append_message({"role": "assistant", "content": "m1"})
-    m2 = log.append_message({"role": "user", "content": "m2"})
-    b1 = log.append_at(m0, "message", {"message": {"role": "assistant", "content": "b1"}})
+    m0 = await log.append_message({"role": "user", "content": "m0"})
+    m1 = await log.append_message({"role": "assistant", "content": "m1"})
+    m2 = await log.append_message({"role": "user", "content": "m2"})
+    b1 = await log.append_at(m0, "message", {"message": {"role": "assistant", "content": "b1"}})
     return ConversationTree(log.entries(), log.cursor), m0, m1, m2, b1
 
 
@@ -988,7 +988,7 @@ async def test_a_row_on_the_cursors_path_is_painted_and_one_off_it_is_not() -> N
     """
     from tau_coding_agent.tree_browser import ZoneTree
 
-    view, m0, m1, m2, b1 = _forked_tree()
+    view, m0, m1, m2, b1 = await _forked_tree()
     harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         for _ in range(6):
@@ -1016,7 +1016,7 @@ async def test_space_marks_a_row_and_two_marks_report_their_common_ancestor() ->
     """
     from tau_coding_agent.tree_browser import ZoneTree
 
-    view, m0, _m1, m2, b1 = _forked_tree()
+    view, m0, _m1, m2, b1 = await _forked_tree()
     harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         for _ in range(6):
@@ -1052,7 +1052,7 @@ async def test_a_selection_total_says_it_is_an_estimate() -> None:
 
     from tau_coding_agent.tree_browser import ZoneTree
 
-    view, _m0, _m1, m2, _b1 = _forked_tree()
+    view, _m0, _m1, m2, _b1 = await _forked_tree()
     harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         for _ in range(6):
@@ -1072,7 +1072,7 @@ async def test_nothing_marked_says_so_and_names_the_key() -> None:
     """The readout's resting state. It is the only feedback a mark on the row
     under the cursor produces (that row keeps its cursor styling), so it has to
     be legible before there is anything to report."""
-    view, _m0, _m1, _m2, _b1 = _forked_tree()
+    view, _m0, _m1, _m2, _b1 = await _forked_tree()
     harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         for _ in range(6):
@@ -1082,7 +1082,7 @@ async def test_nothing_marked_says_so_and_names_the_key() -> None:
         assert "space" in summary
 
 
-def _abandoned_branch_tree():
+async def _abandoned_branch_tree():
     """``m0`` forked into an abandoned branch and a summary of it.
 
     ``m0 → b1 → b2`` is the branch that was walked and then left;
@@ -1096,11 +1096,11 @@ def _abandoned_branch_tree():
     from tau_agent_core.session_log import InMemorySessionLog
 
     log = InMemorySessionLog()
-    m0 = log.append_message({"role": "user", "content": "m0"})
-    b1 = log.append_message({"role": "assistant", "content": "b1"})
-    b2 = log.append_message({"role": "user", "content": "b2"})
-    s = log.append_branch_summary("tried b, went nowhere", m0)
-    m1 = log.append_message({"role": "assistant", "content": "m1"})
+    m0 = await log.append_message({"role": "user", "content": "m0"})
+    b1 = await log.append_message({"role": "assistant", "content": "b1"})
+    b2 = await log.append_message({"role": "user", "content": "b2"})
+    s = await log.append_branch_summary("tried b, went nowhere", m0)
+    m1 = await log.append_message({"role": "assistant", "content": "m1"})
     return ConversationTree(log.entries(), log.cursor), m0, b1, b2, s, m1
 
 
@@ -1120,7 +1120,7 @@ async def test_a_branch_summary_and_the_branch_it_summarizes_read_as_a_pair() ->
     """
     from tau_coding_agent.tree_browser import ZoneTree
 
-    view, m0, b1, b2, s, _m1 = _abandoned_branch_tree()
+    view, m0, b1, b2, s, _m1 = await _abandoned_branch_tree()
     harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         for _ in range(6):
@@ -1161,12 +1161,12 @@ async def test_a_second_abandoned_branch_pairs_with_its_own_summary() -> None:
     from tau_coding_agent.tree_browser import ZoneTree
 
     log = InMemorySessionLog()
-    m0 = log.append_message({"role": "user", "content": "m0"})
-    b1 = log.append_message({"role": "assistant", "content": "b1"})
-    s1 = log.append_branch_summary("first attempt", m0)
-    log.append_navigate(m0)
-    c1 = log.append_message({"role": "assistant", "content": "c1"})
-    s2 = log.append_branch_summary("second attempt", m0)
+    m0 = await log.append_message({"role": "user", "content": "m0"})
+    b1 = await log.append_message({"role": "assistant", "content": "b1"})
+    s1 = await log.append_branch_summary("first attempt", m0)
+    await log.append_navigate(m0)
+    c1 = await log.append_message({"role": "assistant", "content": "c1"})
+    s2 = await log.append_branch_summary("second attempt", m0)
     view = ConversationTree(log.entries(), log.cursor)
 
     harness = _ModalHarness(tree_browser.SessionTreeModal(view))
@@ -1207,7 +1207,7 @@ async def test_hovering_off_the_cursors_path_splits_shared_history_from_divergen
     """
     from tau_coding_agent.tree_browser import ZoneTree
 
-    view, m0, m1, m2, b1 = _forked_tree()
+    view, m0, m1, m2, b1 = await _forked_tree()
     harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         for _ in range(6):
@@ -1246,7 +1246,7 @@ async def test_hovering_on_the_cursors_path_reports_no_divergence() -> None:
     """
     from tau_coding_agent.tree_browser import ZoneTree
 
-    view, m0, m1, m2, b1 = _forked_tree()
+    view, m0, m1, m2, b1 = await _forked_tree()
     harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         for _ in range(6):
@@ -1280,7 +1280,7 @@ async def test_moving_the_cursor_re_measures_the_divergence_from_where_it_now_is
     """
     from tau_coding_agent.tree_browser import ZoneTree
 
-    view, m0, _m1, _m2, b1 = _forked_tree()
+    view, m0, _m1, _m2, b1 = await _forked_tree()
     harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         for _ in range(6):
@@ -1307,7 +1307,7 @@ async def test_a_real_mouse_move_reaches_the_divergence() -> None:
     """
     from tau_coding_agent.tree_browser import ZoneTree
 
-    view, m0, _m1, _m2, b1 = _forked_tree()
+    view, m0, _m1, _m2, b1 = await _forked_tree()
     harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test(size=(80, 24)) as pilot:
         for _ in range(6):
@@ -1321,7 +1321,7 @@ async def test_a_real_mouse_move_reaches_the_divergence() -> None:
         assert tree.zones.hover_divergent == frozenset({b1})
 
 
-def _log_with_two_turns_forked_from_one_answer():
+async def _log_with_two_turns_forked_from_one_answer():
     """The structure the owner reported, built as it really happens.
 
     One answer ("no such file") is the fork point: the reader tried one follow-up,
@@ -1333,15 +1333,15 @@ def _log_with_two_turns_forked_from_one_answer():
 
     log = InMemorySessionLog()
     ids = {}
-    ids["q0"] = log.append_message({"role": "user", "content": "read /tmp/context_test"})
-    ids["a0"] = log.append_message({"role": "assistant", "content": "No such file. Create one?"})
-    ids["u1"] = log.append_message({"role": "user", "content": "Yes, write your favorite number."})
-    ids["t1"] = log.append_message({"role": "toolResult", "content": "Wrote 1 lines"})
-    ids["a1"] = log.append_message({"role": "assistant", "content": "Wrote `42`."})
-    ids["nav"] = log.append_navigate(ids["a0"])
-    ids["u2"] = log.append_message({"role": "user", "content": "Actually, check again!"})
-    ids["t2"] = log.append_message({"role": "toolResult", "content": "42"})
-    ids["a2"] = log.append_message({"role": "assistant", "content": "Whoops, it contains `42`."})
+    ids["q0"] = await log.append_message({"role": "user", "content": "read /tmp/context_test"})
+    ids["a0"] = await log.append_message({"role": "assistant", "content": "No such file. Create one?"})
+    ids["u1"] = await log.append_message({"role": "user", "content": "Yes, write your favorite number."})
+    ids["t1"] = await log.append_message({"role": "toolResult", "content": "Wrote 1 lines"})
+    ids["a1"] = await log.append_message({"role": "assistant", "content": "Wrote `42`."})
+    ids["nav"] = await log.append_navigate(ids["a0"])
+    ids["u2"] = await log.append_message({"role": "user", "content": "Actually, check again!"})
+    ids["t2"] = await log.append_message({"role": "toolResult", "content": "42"})
+    ids["a2"] = await log.append_message({"role": "assistant", "content": "Whoops, it contains `42`."})
     return ConversationTree(log.entries(), log.cursor), ids
 
 
@@ -1356,11 +1356,11 @@ def _shape(view) -> list[tuple[int, str, str]]:
     return [(row.depth, row.node.role or row.node.kind, row.node.preview) for row in _plan(view)]
 
 
-def test_a_user_message_owns_its_turn() -> None:
+async def test_a_user_message_owns_its_turn() -> None:
     """§4 item 3. The turn's tool traffic and answer hang off the message that
     asked for them, so `←` on the user row folds the whole turn away — which is
     what "there's rarely anything to fold" was about."""
-    view, ids = _log_with_two_turns_forked_from_one_answer()
+    view, ids = await _log_with_two_turns_forked_from_one_answer()
     rows = {row.node.id: row for row in _plan(view)}
     group = rows[ids["u2"]]
     assert rows[ids["t2"]].parent is not None
@@ -1369,7 +1369,7 @@ def test_a_user_message_owns_its_turn() -> None:
     assert rows[ids["a2"]].depth == group.depth + 1
 
 
-def test_the_next_user_message_is_a_sibling_not_a_child() -> None:
+async def test_the_next_user_message_is_a_sibling_not_a_child() -> None:
     """The half that keeps §2's bound: a turn group CLOSES at the next user
     message. Without this a hundred linear turns would be a hundred levels deep,
     which is the exact defect TREE-BROWSER-AS-EDITOR.md §2 removed."""
@@ -1378,9 +1378,9 @@ def test_the_next_user_message_is_a_sibling_not_a_child() -> None:
 
     log = InMemorySessionLog()
     for i in range(30):
-        log.append_message({"role": "user", "content": f"q{i}"})
-        log.append_message({"role": "toolResult", "content": f"r{i}"})
-        log.append_message({"role": "assistant", "content": f"a{i}"})
+        await log.append_message({"role": "user", "content": f"q{i}"})
+        await log.append_message({"role": "toolResult", "content": f"r{i}"})
+        await log.append_message({"role": "assistant", "content": f"a{i}"})
     rows = _plan(ConversationTree(log.entries(), log.cursor))
     assert len(rows) == 90
     assert max(row.depth for row in rows) == 1, "one level for the turn, and no more"
@@ -1388,7 +1388,7 @@ def test_the_next_user_message_is_a_sibling_not_a_child() -> None:
     assert {row.parent for row in users} == {None}, "every turn is a top-level row"
 
 
-def test_a_turn_group_starts_collapsed_and_the_one_you_are_in_does_not() -> None:
+async def test_a_turn_group_starts_collapsed_and_the_one_you_are_in_does_not() -> None:
     """§4 item 3, "start collapsed". The exception is the group the cursor row is
     in — a browser that opens without showing where you are has failed at its one
     job.
@@ -1403,18 +1403,18 @@ def test_a_turn_group_starts_collapsed_and_the_one_you_are_in_does_not() -> None
 
     log = InMemorySessionLog()
     for i in range(5):
-        log.append_message({"role": "user", "content": f"q{i}"})
-        log.append_message({"role": "assistant", "content": f"a{i}"})
+        await log.append_message({"role": "user", "content": f"q{i}"})
+        await log.append_message({"role": "assistant", "content": f"a{i}"})
     rows = _plan(ConversationTree(log.entries(), log.cursor))
     users = [row for row in rows if row.node.role == "user"]
     assert [row.expanded for row in users] == [False, False, False, False, True]
     assert all(row.expanded for row in rows if row.node.role != "user")
 
 
-def test_a_navigate_row_is_not_drawn_and_its_turn_moves_up_to_the_fork() -> None:
+async def test_a_navigate_row_is_not_drawn_and_its_turn_moves_up_to_the_fork() -> None:
     """§4 item 4. The entry stays in the log and on the ancestry; it just stops
     costing a row between an answer and the turn that forked off it."""
-    view, ids = _log_with_two_turns_forked_from_one_answer()
+    view, ids = await _log_with_two_turns_forked_from_one_answer()
     rows = _plan(view)
     assert ids["nav"] not in {row.node.id for row in rows}
     assert view.entry(ids["nav"])["type"] == "navigate", "still in the log"
@@ -1426,7 +1426,7 @@ def test_a_navigate_row_is_not_drawn_and_its_turn_moves_up_to_the_fork() -> None
     assert by_id[ids["u1"]].depth == by_id[ids["u2"]].depth
 
 
-def test_the_cursor_keeps_its_row_even_when_it_is_a_navigate() -> None:
+async def test_the_cursor_keeps_its_row_even_when_it_is_a_navigate() -> None:
     """The exception that is not tidiness: hiding the cursor would leave the
     reader with no `◀ current` row at all.
 
@@ -1440,9 +1440,9 @@ def test_the_cursor_keeps_its_row_even_when_it_is_a_navigate() -> None:
     from tau_agent_core.session_log import InMemorySessionLog
 
     log = InMemorySessionLog()
-    first = log.append_message({"role": "user", "content": "q"})
-    log.append_message({"role": "assistant", "content": "a"})
-    nav = log.append_navigate(first)
+    first = await log.append_message({"role": "user", "content": "q"})
+    await log.append_message({"role": "assistant", "content": "a"})
+    nav = await log.append_navigate(first)
     assert log.cursor != nav, "the contract: the leaf advances to the TARGET"
     rows = _plan(ConversationTree(log.entries(), nav))
     assert nav in {row.node.id for row in rows}
@@ -1450,18 +1450,18 @@ def test_the_cursor_keeps_its_row_even_when_it_is_a_navigate() -> None:
     assert nav not in {row.node.id for row in _plan(ConversationTree(log.entries(), log.cursor))}
 
 
-def test_a_navigate_that_forks_keeps_its_row() -> None:
+async def test_a_navigate_that_forks_keeps_its_row() -> None:
     """The other exception. Two branches under one `navigate` drawn as one run is
     a shape the log does not have."""
     from tau_agent_core.conversation_tree import ConversationTree
     from tau_agent_core.session_log import InMemorySessionLog
 
     log = InMemorySessionLog()
-    root = log.append_message({"role": "user", "content": "q"})
-    log.append_message({"role": "assistant", "content": "a"})
-    nav = log.append_navigate(root)
-    b1 = log.append_at(nav, "message", {"message": {"role": "user", "content": "b1"}})
-    b2 = log.append_at(nav, "message", {"message": {"role": "user", "content": "b2"}})
+    root = await log.append_message({"role": "user", "content": "q"})
+    await log.append_message({"role": "assistant", "content": "a"})
+    nav = await log.append_navigate(root)
+    b1 = await log.append_at(nav, "message", {"message": {"role": "user", "content": "b1"}})
+    b2 = await log.append_at(nav, "message", {"message": {"role": "user", "content": "b2"}})
     rows = _plan(ConversationTree(log.entries(), log.cursor))
     assert nav in {row.node.id for row in rows}
     by_id = {row.node.id: row for row in rows}
@@ -1469,11 +1469,11 @@ def test_a_navigate_that_forks_keeps_its_row() -> None:
     assert rows[by_id[b2].parent].node.id == nav
 
 
-def test_the_drawn_rows_are_the_log_minus_the_hidden_ones_in_order() -> None:
+async def test_the_drawn_rows_are_the_log_minus_the_hidden_ones_in_order() -> None:
     """The planner drops rows and re-parents them. It must not reorder them, and
     it must not lose one: a browser showing a conversation the log does not have
     is worse than a cluttered one."""
-    view, ids = _log_with_two_turns_forked_from_one_answer()
+    view, ids = await _log_with_two_turns_forked_from_one_answer()
     drawn = [row.node.id for row in _plan(view)]
     assert drawn == [ids[k] for k in ("q0", "a0", "u1", "t1", "a1", "u2", "t2", "a2")]
 
@@ -1481,7 +1481,7 @@ def test_the_drawn_rows_are_the_log_minus_the_hidden_ones_in_order() -> None:
 async def test_the_widget_tree_matches_the_plan() -> None:
     """The build is a transcription of the plan — asserted once, here, so the
     rules above can be tested without a terminal."""
-    view, ids = _log_with_two_turns_forked_from_one_answer()
+    view, ids = await _log_with_two_turns_forked_from_one_answer()
     modal = tree_browser.SessionTreeModal(view)
     harness = _ModalHarness(modal)
     async with harness.run_test() as pilot:
@@ -1509,7 +1509,7 @@ async def test_a_row_nothing_hangs_from_has_no_expand_arrow() -> None:
     whose only child is a hidden ``navigate`` has a child in the log and none on
     screen, and it is the screen the arrow is a promise about.
     """
-    view, ids = _log_with_two_turns_forked_from_one_answer()
+    view, ids = await _log_with_two_turns_forked_from_one_answer()
     plan = {row.node.id: row for row in _plan(view)}
     # The two turn groups and the answer they fork from — these open something.
     assert {i for i, row in plan.items() if row.has_children} == {
@@ -1542,7 +1542,7 @@ async def test_a_row_nothing_hangs_from_has_no_expand_arrow() -> None:
 async def test_a_row_with_no_arrow_gets_those_two_cells_for_its_preview() -> None:
     """The width arithmetic follows the toggle. ``_relabel`` charged every row for
     one, which on a row that has none is two characters of preview thrown away."""
-    view = _wide_tree(6)
+    view = await _wide_tree(6)
     modal = tree_browser.SessionTreeModal(view)
     harness = _ModalHarness(modal)
     async with harness.run_test(size=(80, 24)) as pilot:
@@ -1577,12 +1577,12 @@ async def test_opening_a_turn_does_not_bring_the_horizontal_scrollbar_back() -> 
     from tau_agent_core.session_log import InMemorySessionLog
 
     log = InMemorySessionLog()
-    log.append_message({"role": "user", "content": "question 0 " + "x" * 200})
+    await log.append_message({"role": "user", "content": "question 0 " + "x" * 200})
     for j in range(30):
-        log.append_message({"role": "toolResult", "content": f"r0.{j} " + "y" * 200})
-    log.append_message({"role": "assistant", "content": "answer 0 " + "y" * 200})
-    log.append_message({"role": "user", "content": "question 1 " + "x" * 200})
-    log.append_message({"role": "assistant", "content": "answer 1 " + "y" * 200})
+        await log.append_message({"role": "toolResult", "content": f"r0.{j} " + "y" * 200})
+    await log.append_message({"role": "assistant", "content": "answer 0 " + "y" * 200})
+    await log.append_message({"role": "user", "content": "question 1 " + "x" * 200})
+    await log.append_message({"role": "assistant", "content": "answer 1 " + "y" * 200})
 
     harness = _ModalHarness(tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor)))
     async with harness.run_test(size=(80, 24)) as pilot:
@@ -1617,10 +1617,10 @@ async def test_each_row_paints_its_type_tag_in_that_roles_colour() -> None:
     from tau_coding_agent.tree_browser import ZoneTree
 
     log = InMemorySessionLog()
-    user = log.append_message({"role": "user", "content": "ask"})
-    assistant = log.append_message({"role": "assistant", "content": "answer"})
-    tool = log.append_message({"role": "toolResult", "content": "42"})
-    log.append_message({"role": "assistant", "content": "done"})
+    user = await log.append_message({"role": "user", "content": "ask"})
+    assistant = await log.append_message({"role": "assistant", "content": "answer"})
+    tool = await log.append_message({"role": "toolResult", "content": "42"})
+    await log.append_message({"role": "assistant", "content": "done"})
 
     harness = _ModalHarness(tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor)))
     async with harness.run_test() as pilot:
@@ -1659,9 +1659,9 @@ async def test_the_tag_is_painted_and_the_preview_after_it_is_not() -> None:
     from tau_coding_agent.tree_browser import ZoneTree
 
     log = InMemorySessionLog()
-    log.append_message({"role": "user", "content": "ask"})
-    assistant = log.append_message({"role": "assistant", "content": "a much longer answer here"})
-    log.append_message({"role": "user", "content": "and again"})
+    await log.append_message({"role": "user", "content": "ask"})
+    assistant = await log.append_message({"role": "assistant", "content": "a much longer answer here"})
+    await log.append_message({"role": "user", "content": "and again"})
 
     harness = _ModalHarness(tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor)))
     async with harness.run_test() as pilot:
@@ -1691,11 +1691,11 @@ async def test_a_bookkeeping_row_does_not_borrow_a_conversation_colour() -> None
     from tau_coding_agent.tree_browser import ZoneTree
 
     log = InMemorySessionLog()
-    root = log.append_message({"role": "user", "content": "ask"})
-    nav = log.append_navigate(root)
+    root = await log.append_message({"role": "user", "content": "ask"})
+    nav = await log.append_navigate(root)
     # Two children, so the planner keeps the navigate's row.
-    log.append_at(nav, "message", {"message": {"role": "assistant", "content": "one"}})
-    log.append_at(nav, "message", {"message": {"role": "assistant", "content": "two"}})
+    await log.append_at(nav, "message", {"message": {"role": "assistant", "content": "one"}})
+    await log.append_at(nav, "message", {"message": {"role": "assistant", "content": "two"}})
 
     harness = _ModalHarness(tree_browser.SessionTreeModal(ConversationTree(log.entries(), root)))
     async with harness.run_test() as pilot:

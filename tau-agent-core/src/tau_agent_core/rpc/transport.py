@@ -535,6 +535,7 @@ async def _write_stdout(self: "RPCHandler") -> None:
                     break
                 continue
             credited = item.pop("_credited", False)
+            await self.await_outbound_prerequisites(item)
             self.prepare_outbound(item)
             line = json.dumps(item, separators=(",", ":"))
             self._write_line(writer, line)

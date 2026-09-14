@@ -109,6 +109,42 @@ The aborter is cleared here as well as in
 the same compaction reports `None` rather than claiming a second
 delivery: `abort` stays idempotent, and its answer stays true.
 
+### await_outbound_prerequisites
+
+```python
+async await_outbound_prerequisites(item: dict[str, Any]) -> None
+```
+
+`tau_agent_core.rpc.handler.RPCHandler.await_outbound_prerequisites`
+
+Block the writer until this item can be framed correctly.
+
+Today it does exactly one thing, and it is the ordering
+:meth:`_stamp_agent_end_cursor` used to get for free: an ``agent_end``
+waits for the turn's persistence to settle
+(:attr:`AgentSession.persistence_settled`), because the cursor stamped
+one line later is read live and is the PRE-persistence tip until then.
+
+Separate from :meth:`prepare_outbound` because that one is synchronous
+and must stay so — it is called from the writer's hot path and its whole
+contract is that it cannot suspend between reading a value and framing
+it. This is the awaiting half, and it runs first.
+
+It blocks the writer, not just this item, for as long as persistence
+takes. That is the right trade and not a new one: the queue is FIFO, so
+everything behind an ``agent_end`` was already behind it.
+
+It waits only when the item's captured ``_cursor_log`` is still the
+session's live log. A swap that landed since the enqueue held
+``turn_lock``, so that turn's persistence is already finished, and
+waiting on the CURRENT session would be waiting on an unrelated turn —
+the same wrong-session hazard :meth:`_stamp_agent_end_cursor` guards
+against by stamping the captured log rather than the live one.
+
+**Parameters**
+
+- `item: dict[str, Any]` — The outbound frame about to be written.
+
 ### bind_compaction_aborter
 
 ```python
@@ -220,7 +256,7 @@ task that has already finished.
 ### run
 
 ```python
-run() -> None
+async run() -> None
 ```
 
 `tau_agent_core.rpc.handler.RPCHandler.run`
@@ -294,7 +330,7 @@ Shutdown ordering is deliberate, and easy to get backwards:
 ### stop
 
 ```python
-stop() -> None
+async stop() -> None
 ```
 
 `tau_agent_core.rpc.handler.RPCHandler.stop`

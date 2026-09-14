@@ -259,7 +259,7 @@ class TestForkInheritsDepth:
         the fork submission's depth is published, so the branch's own first
         ``prompt()`` is admitted one deeper."""
         log = InMemorySessionLog()
-        log.append_message({"role": "user", "content": [{"type": "text", "text": "hi"}]})
+        await log.append_message({"role": "user", "content": [{"type": "text", "text": "hi"}]})
         session = AgentSession(session_log=log, model=_model(), tools=[])
 
         seen: list[int | None] = []

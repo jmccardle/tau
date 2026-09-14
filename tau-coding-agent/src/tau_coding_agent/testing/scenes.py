@@ -187,6 +187,12 @@ def _seed_sessions(home: Path) -> None:
 
     The anchor is still the real clock, and deliberately: the sidebar groups by
     recency, and "Today" is the group this scene is meant to show.
+
+    Writes through ``Session._append_now``, the store's synchronous core, rather
+    than the ``async`` Protocol appenders (docs/ASYNC-SESSION-LOG.md).
+    :func:`stage_scene` is a plain context manager and :func:`open_scene` enters
+    it from inside a running loop, so there is neither an ``await`` to use here
+    nor an ``asyncio.run`` that would work.
     """
     import tau_coding_agent.session_store as store
     from tau_coding_agent.session_store import FileSessionCatalog
@@ -204,9 +210,10 @@ def _seed_sessions(home: Path) -> None:
     try:
         for index, name in enumerate(_SESSION_NAMES):
             session = catalog.create(os.getcwd(), "m", "openai", name=name)
-            session.append_message({"role": "user", "content": f"turn {index}"})
-            session.append_message(
-                {"role": "assistant", "content": [{"type": "text", "text": "ok"}]}
+            session._append_now("message", message={"role": "user", "content": f"turn {index}"})
+            session._append_now(
+                "message",
+                message={"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
             )
             session.shutdown()
     finally:

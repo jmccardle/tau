@@ -149,10 +149,10 @@ async def test_an_auto_compaction_lands_on_the_sessions_side_ledger(monkeypatch)
     log = session.session_log
     padding = "x" * 20_000
     for i in range(6):
-        log.append_message(
+        await log.append_message(
             {"role": "user", "content": [{"type": "text", "text": f"m{i} {padding}"}]}
         )
-        log.append_message({"role": "assistant", "content": [{"type": "text", "text": f"r{i}"}]})
+        await log.append_message({"role": "assistant", "content": [{"type": "text", "text": f"r{i}"}]})
 
     assert session.side_usage["total_tokens"] == 0, "nothing spent off-loop yet"
 

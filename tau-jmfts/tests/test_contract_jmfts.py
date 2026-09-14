@@ -101,7 +101,7 @@ def client(jmfts_url: str, jmfts_token: str | None):
     c.close()
 
 
-def test_root_document_shape_and_id_mapping(client: JmftsClient) -> None:
+async def test_root_document_shape_and_id_mapping(client: JmftsClient) -> None:
     """The root doc is a tau:conversation carrying the header; SessionLog.id is
     the τ uuid (never the JMFTS doc id), and a root-level append (cursor is
     None) parents directly under the root document (Sec2.2/Sec2.3)."""
@@ -120,8 +120,8 @@ def test_root_document_shape_and_id_mapping(client: JmftsClient) -> None:
         seeded_doc = client.get_document(int(seeded_id))
         assert seeded_doc["parent_id"] == log.root_doc_id
 
-        log.append_navigate(None)
-        second_id = log.append_message(_msg("user", "hello"))
+        await log.append_navigate(None)
+        second_id = await log.append_message(_msg("user", "hello"))
         second_doc = client.get_document(int(second_id))
         assert second_doc["parent_id"] == log.root_doc_id
         entries_by_id = {e["id"]: e for e in log.entries()}
@@ -130,26 +130,26 @@ def test_root_document_shape_and_id_mapping(client: JmftsClient) -> None:
         client.delete_document(log.root_doc_id)
 
 
-def test_seq_counter_increments_and_survives_reload(client: JmftsClient) -> None:
+async def test_seq_counter_increments_and_survives_reload(client: JmftsClient) -> None:
     log = JmftsSessionLog.create(
         client, cwd="/tmp/tau-jmfts-contract", model="m", backend="b", id=_session_id()
     )
     try:
-        a = log.append_message(_msg("user", "one"))
-        b = log.append_message(_msg("user", "two"))
+        a = await log.append_message(_msg("user", "one"))
+        b = await log.append_message(_msg("user", "two"))
         doc_a = client.get_document(int(a))
         doc_b = client.get_document(int(b))
         assert doc_a["structured_content"]["seq"] < doc_b["structured_content"]["seq"]
 
         reloaded = JmftsSessionLog.load(client, log.root_doc_id)
-        c = reloaded.append_message(_msg("user", "three"))
+        c = await reloaded.append_message(_msg("user", "three"))
         doc_c = client.get_document(int(c))
         assert doc_c["structured_content"]["seq"] > doc_b["structured_content"]["seq"]
     finally:
         client.delete_document(log.root_doc_id)
 
 
-def test_entries_take_cr1_sibling_positions(client: JmftsClient) -> None:
+async def test_entries_take_cr1_sibling_positions(client: JmftsClient) -> None:
     """CR-1: entries carry an explicit ``position`` (birth order among siblings),
     so a fork point — a node with several children — is deterministically ordered
     rather than resolved only by a created_at tie. The conversation root itself
@@ -161,10 +161,10 @@ def test_entries_take_cr1_sibling_positions(client: JmftsClient) -> None:
         # The root is never position-ordered (store passes sequential=False).
         assert client.get_document(log.root_doc_id)["position"] is None
 
-        log.append_navigate(None)
-        b = log.append_message(_msg("user", "b"))
-        log.append_navigate(None)
-        c = log.append_message(_msg("user", "c"))
+        await log.append_navigate(None)
+        b = await log.append_message(_msg("user", "b"))
+        await log.append_navigate(None)
+        c = await log.append_message(_msg("user", "c"))
 
         children = client.get_children(log.root_doc_id)
         # Contiguous birth-order positions, returned in that order by the contract.
@@ -172,13 +172,13 @@ def test_entries_take_cr1_sibling_positions(client: JmftsClient) -> None:
         ordered_ids = [str(ch["id"]) for ch in children]
         assert ordered_ids.index(b) < ordered_ids.index(c)  # deterministic fork order
 
-        d = log.append_message(_msg("user", "d"))  # chains off c's leaf
+        d = await log.append_message(_msg("user", "d"))  # chains off c's leaf
         assert client.get_document(int(d))["position"] == 0
     finally:
         client.delete_document(log.root_doc_id)
 
 
-def test_seq_doc_id_integrity_check_fires_on_tampered_tree(client: JmftsClient) -> None:
+async def test_seq_doc_id_integrity_check_fires_on_tampered_tree(client: JmftsClient) -> None:
     """Sec2.3: doc-id order must agree with seq order. Simulate a second writer by
     forcing a later doc's seq to precede an earlier doc's seq, then verify
     ``load`` fails loudly instead of silently resolving a bogus cursor/order."""
@@ -186,8 +186,8 @@ def test_seq_doc_id_integrity_check_fires_on_tampered_tree(client: JmftsClient) 
         client, cwd="/tmp/tau-jmfts-contract", model="m", backend="b", id=_session_id()
     )
     try:
-        first = log.append_message(_msg("user", "one"))
-        second = log.append_message(_msg("user", "two"))
+        first = await log.append_message(_msg("user", "one"))
+        second = await log.append_message(_msg("user", "two"))
 
         first_doc = client.get_document(int(first))
         first_seq = first_doc["structured_content"]["seq"]
@@ -202,7 +202,7 @@ def test_seq_doc_id_integrity_check_fires_on_tampered_tree(client: JmftsClient) 
         client.delete_document(log.root_doc_id)
 
 
-def test_foreign_document_is_synthesized_and_walked_through(client: JmftsClient) -> None:
+async def test_foreign_document_is_synthesized_and_walked_through(client: JmftsClient) -> None:
     """Sec2.4: a non-tau:* document (or one lacking structured_content.tau) inside
     the conversation subtree is surfaced as a synthesized jmfts:document entry --
     ConversationTree walks through it and it never reaches model input."""
@@ -210,8 +210,8 @@ def test_foreign_document_is_synthesized_and_walked_through(client: JmftsClient)
         client, cwd="/tmp/tau-jmfts-contract", model="m", backend="b", id=_session_id()
     )
     try:
-        a = log.append_message(_msg("user", "question"))
-        log.append_message(_msg("assistant", "answer"))
+        a = await log.append_message(_msg("user", "question"))
+        await log.append_message(_msg("assistant", "answer"))
 
         foreign = client.create_document(
             title=f"[{TEST_PREFIX}] a RAPTOR summary",
@@ -276,7 +276,7 @@ def test_load_rejects_malformed_header(client: JmftsClient) -> None:
         client.delete_document(doc["id"])
 
 
-def test_fork_remaps_cross_references_not_just_parent_ids(client: JmftsClient) -> None:
+async def test_fork_remaps_cross_references_not_just_parent_ids(client: JmftsClient) -> None:
     """A fork must rewrite ``firstKeptId``/``targetId``/``fromId``, not copy them.
 
     Under this store an entry id IS a JMFTS doc id, so a fork's fresh documents get
@@ -297,15 +297,15 @@ def test_fork_remaps_cross_references_not_just_parent_ids(client: JmftsClient) -
     )
     forked: JmftsSessionLog | None = None
     try:
-        source.append_message(_msg("user", "compacted away"))
-        keep = source.append_message(_msg("assistant", "keep me"))
-        source.append_compaction("the summary", keep, tokens_before=10, **_PROV)
-        tail = source.append_message(_msg("user", "after compaction"))
+        await source.append_message(_msg("user", "compacted away"))
+        keep = await source.append_message(_msg("assistant", "keep me"))
+        await source.append_compaction("the summary", keep, tokens_before=10, **_PROV)
+        tail = await source.append_message(_msg("user", "after compaction"))
 
-        source.append_navigate(keep)
-        source.append_message(_msg("assistant", "doomed branch"))
-        source.append_branch_summary("abandoned", keep)
-        source.append_navigate(tail)
+        await source.append_navigate(keep)
+        await source.append_message(_msg("assistant", "doomed branch"))
+        await source.append_branch_summary("abandoned", keep)
+        await source.append_navigate(tail)
 
         forked = JmftsSessionLog.fork(client, source, cwd="/tmp/tau-jmfts-contract")
 
@@ -334,16 +334,16 @@ def test_fork_remaps_cross_references_not_just_parent_ids(client: JmftsClient) -
             client.delete_document(forked.root_doc_id)
 
 
-def test_fork_preserves_topology_with_new_doc_ids(client: JmftsClient) -> None:
+async def test_fork_preserves_topology_with_new_doc_ids(client: JmftsClient) -> None:
     source = JmftsSessionLog.create(
         client, cwd="/tmp/tau-jmfts-contract", model="m", backend="b", id=_session_id()
     )
     forked: JmftsSessionLog | None = None
     try:
-        a = source.append_message(_msg("user", "hi"))
-        source.append_message(_msg("assistant", "yo"))
-        source.append_navigate(a)
-        source.append_message(_msg("assistant", "alt"))
+        a = await source.append_message(_msg("user", "hi"))
+        await source.append_message(_msg("assistant", "yo"))
+        await source.append_navigate(a)
+        await source.append_message(_msg("assistant", "alt"))
 
         forked = JmftsSessionLog.fork(client, source, cwd="/tmp/tau-jmfts-contract")
 

@@ -202,7 +202,7 @@ def _text_blob(messages: list) -> str:
     return "\n".join(out)
 
 
-def test_verdict_node_persists_and_survives_reload():
+async def test_verdict_node_persists_and_survives_reload():
     """A verdict_node handed to api.send_message lands durably and reloads."""
     session = _make_session()
     api = ExtensionAPI(session=session)
@@ -215,7 +215,7 @@ def test_verdict_node_persists_and_survives_reload():
         stdout="",
         stderr="E501 line too long",
     )
-    api.send_message(gate.verdict_node(result, label="lint"))
+    await api.send_message(gate.verdict_node(result, label="lint"))
 
     # Persisted as a customMessage node on the active path.
     entries = session._session_log.entries()

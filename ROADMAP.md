@@ -16,10 +16,10 @@ debt went with them: `max_turns` no longer ends a run silently, because
 `"max_turns"` and `"repeat_tool_calls"` are `end_reason` values on the wire
 (`events.py:43`, `rpc_event_schema.py:110-111`). **Still open, re-verified
 today:** the trust gate, Tier 9, Tier 10's templates and skills legs, Tier 11
-M4/M5, `--list-models`, `--session-id`, and the last of the three blocking call
-sites — `_persist_loop_messages` is still a plain `def` (`agent_session.py:3402`)
-called from three synchronous sites. Docs coverage **514/955 marked objects
-(53.8%), 0 drift**, up from 316/758 (41.7%); the denominator grew by 197, so the
+M4/M5, `--list-models`, and `--session-id`. The last of the three blocking call
+sites is **closed**: the `SessionLog` appenders are coroutines as of 2026-09-14
+(`docs/ASYNC-SESSION-LOG.md`). Docs coverage **517/958 marked objects
+(54.0%), 0 drift**, up from 316/758 (41.7%); the denominator grew by 200, so the
 percentage rose while 441 objects remain incomplete.
 
 **This file can no longer measure its drift in commits.** Every state header
@@ -428,27 +428,32 @@ to learn they exist. The mypy entry in that list is closed — the 52 findings
 were a measurement artifact of running mypy without the project's dependencies
 visible, not a real debt.
 
-- **One synchronous call site still blocks the UI event loop**, down from three
-  (0.9.5 fixed the other two). The agent loop runs as an async Textual worker on
-  the app's own event loop, so anything synchronous freezes painting and input.
-  `_persist_loop_messages` is still a plain `def` (`agent_session.py:3402`) with
-  three synchronous call sites (`:2861`, `:2868`, `:3051`), so with the JMFTS
-  store a ten-tool turn issues about 21 blocking HTTP round-trips on the UI
-  thread. This is the one that gets worse as turns get longer, and it is now the
-  whole of this debt. ~~`grep`/`find`~~ and ~~`read`/`write`/`edit`~~ — **fixed
-  in 0.9.5**, `to_thread` in all five. **The same `to_thread` move does not work
-  here** and was reverted on 2026-09-13 — see "Suggested order" item 2 and
-  `docs/BLOCKING-PERSISTENCE.md`, which rejected it in 2026-08 for a reason this
-  entry never carried.
-- **The RPC cursor-ordering invariant is documented but not gated** (added
-  2026-09-13). `rpc/handler.py:579-587` states that no `await` may appear between
-  `_forward_event`'s `put_nowait` and `_persist_loop_messages`, and names
-  `test_agent_end_wire_event_carries_the_post_persistence_cursor` as the test
-  that pins it. That test passes with the invariant broken: appends in the test
-  double return fast enough that the writer task never wins the race. The full
-  suite reported 6216 passed / 0 failed on a tree that had the regression in it.
-  A gate that cannot fail is not a gate — the fix is a slow-append double, which
-  is what the reverted attempt's own verifier used to reproduce the defect.
+- ~~**One synchronous call site still blocks the UI event loop**~~ — **fixed
+  2026-09-14** (`docs/ASYNC-SESSION-LOG.md`), by `BLOCKING-PERSISTENCE.md`'s
+  Option B rather than the `to_thread` this entry used to propose. The eight
+  `SessionLog` appenders are `async def`; `id`/`cursor`/`entries()` are not.
+  `_persist_loop_messages` and `_persist_turn_inputs` are coroutines, and only
+  the JMFTS store hops to a thread — a decision that is now local to the one
+  store that does network I/O per append, which is what §2's objection to
+  `to_thread` at the call sites was about. ~~`grep`/`find`~~ and
+  ~~`read`/`write`/`edit`~~ — **fixed in 0.9.5**, `to_thread` in all five.
+  **It was not the six-line item this list claimed**: it cost two breaking
+  contract changes (`SessionLog`, and three `ExtensionAPI` methods the record
+  never named) and turned the construction-time `agent_spec` into a queued
+  write. The freeze itself was never benchmarked, then or now.
+- ~~**The RPC cursor-ordering invariant is documented but not gated**~~ —
+  **closed 2026-09-14**, by the change that would otherwise have broken it.
+  `docs/ASYNC-SESSION-LOG.md` §3.3: making the appenders coroutines does not add
+  an `await` to the window `rpc/handler.py` names, but it lets persistence
+  suspend part-way through, and the wire then carried `cursor: null` for any
+  store whose appends really suspend — measured, not argued.
+  `test_agent_end_cursor_is_still_post_persistence_when_appends_suspend` is the
+  slow-append double this entry asked for (20 ms per append; `asyncio.sleep(0)`
+  is measurably too weak to reproduce anything). The ordering is now stated
+  rather than inherited: `AgentSession.persistence_settled`, awaited by
+  `RPCHandler.await_outbound_prerequisites` before an `agent_end` is framed. The
+  new test fails when that wait is removed; the old one still passes, which is
+  why the old one was never the gate.
 - ~~**No repeat-tool-call detection in `agent_loop.py`**~~ (0.9.3 §4.2) —
   **fixed in 0.9.5.** `AgentLoopConfig.repeat_tool_call_limit`, default 3, `ge=2`
   (`agent_loop_types.py:83`), enforced at `agent_loop.py:322`.
@@ -563,23 +568,18 @@ and two items promoted out of the debt list.
    the one render dict with no lane, and "a head renders the third vocabulary and
    never the second" is true of the TUI only — `tau -p --mode json` and
    `tau --mode rpc` both read `AgentEvent`s directly.
-2. **`_persist_loop_messages` blocks the UI thread** (`agent_session.py:3402`) —
-   **attempted 2026-09-13, reverted, and it is not the small item this list said
-   it was.** Two things were missed when it was scheduled. First,
-   `docs/BLOCKING-PERSISTENCE.md` (2026-08-28) is the record that owns this
-   decision, and it already priced exactly this fix — "Option A — `to_thread` the
-   call sites. ~6 lines. Rejected" — in favour of Option B, an async `SessionLog`
-   protocol, which is a contract change other people implement. Second, the
-   `to_thread` version introduces a **confirmed `tau --mode rpc` regression**:
-   `RPCHandler._stamp_agent_end_cursor` (`rpc/handler.py:566`) depends on there
-   being no `await` between `_forward_event`'s `put_nowait` and
-   `_persist_loop_messages`, and its docstring at `:579-587` states that
-   invariant and predicts its own falsification in terms. Adding the `await`
-   lets the writer task dequeue and stamp the pre-persistence cursor — the
-   stale-tip failure E5/F3 exist to prevent. **The suite does not catch it**: the
-   full run passed 6216/0, and the regression only appears once appends are slow
-   enough to lose the race. So this item now depends on Option B, or on moving
-   the cursor stamp, and either needs a design record first.
+2. ~~**`_persist_loop_messages` blocks the UI thread**~~ — **done 2026-09-14**,
+   on the second attempt and by a different route. The first attempt
+   (`to_thread` at the call sites) was reverted: it is the fix
+   `docs/BLOCKING-PERSISTENCE.md` §3 had already priced and rejected in 2026-08,
+   and it introduced a confirmed `tau --mode rpc` regression, because
+   `RPCHandler._stamp_agent_end_cursor` depends on there being no `await`
+   between `_forward_event`'s `put_nowait` and `_persist_loop_messages`. What
+   shipped is §3's Option B — the appenders are coroutines — which moves no call
+   site onto a thread and so leaves that invariant alone. See
+   `docs/ASYNC-SESSION-LOG.md` for what it cost, including the second broken
+   contract the record had not named. **The invariant is still not gated**; that
+   debt stands on its own above.
 3. ~~**Widen the leakage scan to `tau-*/tests/`**~~ — **done 2026-09-13**
    (`bbb9e90`). Third scope, `TESTS`, held against the strict pattern; ten lines
    in six files cleaned; `tau-jmfts/tests/conftest.py` now requires
@@ -598,7 +598,7 @@ and two items promoted out of the debt list.
    in any `src` tree (re-grepped 2026-09-13). Themes shipped 2026-08-24 and did
    not need the shared loader, so that abstraction is still unwritten and still
    unproven.
-7. **Docstring coverage** — 441 of 955 marked objects are incomplete (53.8%
+7. **Docstring coverage** — 441 of 958 marked objects are incomplete (54.0%
    complete, up from 41.7% on 08-28). The gate cannot enter the pre-commit hook
    until this moves.
 8. **Retry/backoff in `tau-llm`** (0.9.3 §4.3) — unscheduled since 2026-08-21

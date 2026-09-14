@@ -359,7 +359,7 @@ component counts when total is absent/zero.
 <!-- agent: yes -->
 
 ```python
-compact(preparation: CompactionPreparation, model: Model, api_key: str | None, *, custom_instructions: str | None = None, thinking_level: str | None = None) -> CompactionResult
+async compact(preparation: CompactionPreparation, model: Model, api_key: str | None, *, custom_instructions: str | None = None, thinking_level: str | None = None) -> CompactionResult
 ```
 
 `tau_agent_core.compaction.compact`

@@ -30,7 +30,7 @@ _EXAMPLE = str(Path(__file__).resolve().parents[2] / "examples" / "45_holy_grail
 _NOTE = """
 def register(api):
     async def note(args, ctx):
-        api.send_message({"customType": "probe", "content": f"note {args}".strip()})
+        await api.send_message({"customType": "probe", "content": f"note {args}".strip()})
     api.register_command("note", {"description": "append a note", "handler": note})
 """
 
@@ -87,7 +87,7 @@ async def test_the_command_return_value_is_separate_chrome(
     ext.write_text(
         "def register(api):\n"
         "    async def both(args, ctx):\n"
-        "        api.send_message({'customType': 'probe', 'content': 'durable'})\n"
+        "        await api.send_message({'customType': 'probe', 'content': 'durable'})\n"
         "        return 'chrome'\n"
         "    api.register_command('both', {'description': 'x', 'handler': both})\n"
     )
@@ -149,7 +149,7 @@ async def test_the_ni_command_leaves_exactly_one_box(
 _HIDDEN_NOTE = """
 def register(api):
     async def quiet(args, ctx):
-        api.send_message(
+        await api.send_message(
             {"customType": "probe", "content": "not for the transcript", "display": False}
         )
     api.register_command("quiet", {"description": "append a hidden note", "handler": quiet})
@@ -228,7 +228,9 @@ async def test_bracketed_text_is_not_eaten_by_rich_markup(
     ext.write_text(
         "def register(api):\n"
         "    async def gate(args, ctx):\n"
-        "        api.request_user_action('Blocked: rm -rf [build]', lock=True, release='gate')\n"
+        "        await api.request_user_action(\n"
+        "            'Blocked: rm -rf [build]', lock=True, release='gate'\n"
+        "        )\n"
         "    api.register_command('gate', {'description': 'x', 'handler': gate})\n"
     )
     app = make_app(extension_paths=[str(ext)])

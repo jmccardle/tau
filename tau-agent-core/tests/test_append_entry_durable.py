@@ -56,12 +56,12 @@ def _text_blob(messages: list) -> str:
     return "\n".join(out)
 
 
-def test_append_entry_persists_a_custom_entry_node() -> None:
+async def test_append_entry_persists_a_custom_entry_node() -> None:
     """The entry is a persisted ``customEntry`` on the log, carrying customType+data."""
     session = _make_session()
     api = ExtensionAPI(session=session)
 
-    api.append_entry("todo", {"text": "buy milk", "done": False})
+    await api.append_entry("todo", {"text": "buy milk", "done": False})
 
     entries = session._session_log.entries()
     custom = [
@@ -74,12 +74,12 @@ def test_append_entry_persists_a_custom_entry_node() -> None:
     assert session._session_log.cursor == custom[0]["id"]
 
 
-def test_append_entry_excluded_from_context_and_wire() -> None:
+async def test_append_entry_excluded_from_context_and_wire() -> None:
     """A ``customEntry`` is a non-message node: never rendered, never on the wire."""
     session = _make_session()
     api = ExtensionAPI(session=session)
 
-    api.append_entry("secret", {"payload": "MODEL MUST NOT SEE THIS"})
+    await api.append_entry("secret", {"payload": "MODEL MUST NOT SEE THIS"})
 
     tree = ConversationTree(session._session_log.entries(), session._session_log.cursor)
     # It emits NO loop message (context_for skips the non-message kind)…
@@ -90,13 +90,13 @@ def test_append_entry_excluded_from_context_and_wire() -> None:
     assert "MODEL MUST NOT SEE THIS" not in _text_blob(wire)
 
 
-def test_append_entry_readable_through_ctx_entries() -> None:
+async def test_append_entry_readable_through_ctx_entries() -> None:
     """The durable entry is read back through ``ctx.entries()`` (S56 reconstruction)."""
     session = _make_session()
     api = ExtensionAPI(session=session)
 
-    api.append_entry("bookmark", {"label": "start"})
-    api.append_entry("bookmark", {"label": "mid"})
+    await api.append_entry("bookmark", {"label": "start"})
+    await api.append_entry("bookmark", {"label": "mid"})
 
     entries = api._context.entries()
     bookmarks = [e for e in entries if e.get("customType") == "bookmark"]
@@ -104,11 +104,11 @@ def test_append_entry_readable_through_ctx_entries() -> None:
     assert all(e["customType"] == "bookmark" for e in bookmarks)
 
 
-def test_append_entry_survives_reload() -> None:
+async def test_append_entry_survives_reload() -> None:
     """Reload-invariance: a fresh read over the persisted entries keeps the entry."""
     session = _make_session()
     api = ExtensionAPI(session=session)
-    api.append_entry("counter", {"value": 42})
+    await api.append_entry("counter", {"value": 42})
 
     persisted = session._session_log.entries()
     reloaded = [e for e in persisted if e.get("customType") == "counter"]
@@ -120,14 +120,14 @@ def test_append_entry_survives_reload() -> None:
     assert "42" not in _text_blob(context)
 
 
-def test_append_entry_interleaves_with_messages_without_polluting_context() -> None:
+async def test_append_entry_interleaves_with_messages_without_polluting_context() -> None:
     """Backplane entries between real turns don't enter the model context."""
     session = _make_session()
     api = ExtensionAPI(session=session)
 
-    session._session_log.append_message({"role": "user", "content": "hello"})
-    api.append_entry("trace", {"step": 1})
-    session._session_log.append_message({"role": "assistant", "content": "hi there"})
+    await session._session_log.append_message({"role": "user", "content": "hello"})
+    await api.append_entry("trace", {"step": 1})
+    await session._session_log.append_message({"role": "assistant", "content": "hi there"})
 
     context = ConversationTree(
         session._session_log.entries(), session._session_log.cursor
@@ -140,24 +140,24 @@ def test_append_entry_interleaves_with_messages_without_polluting_context() -> N
     assert "customEntry" not in blob
 
 
-def test_append_entry_raises_without_session() -> None:
+async def test_append_entry_raises_without_session() -> None:
     """Fail-Early: no session bound → raise, not a RAM store that evaporates (G4)."""
     api = ExtensionAPI()
     with pytest.raises(RuntimeError, match="append_entry"):
-        api.append_entry("todo", {"text": "x"})
+        await api.append_entry("todo", {"text": "x"})
 
 
-def test_append_entry_rejects_empty_custom_type() -> None:
+async def test_append_entry_rejects_empty_custom_type() -> None:
     """Fail-Early: the extension-origin identity is required, never fabricated."""
     session = _make_session()
     api = ExtensionAPI(session=session)
     with pytest.raises(ValueError, match="custom_type"):
-        api.append_entry("", {"text": "x"})
+        await api.append_entry("", {"text": "x"})
 
 
-def test_append_entry_rejects_non_dict_data() -> None:
+async def test_append_entry_rejects_non_dict_data() -> None:
     """Fail-Early: data must be a dict (structured record), not a bare value."""
     session = _make_session()
     api = ExtensionAPI(session=session)
     with pytest.raises(ValueError, match="data"):
-        api.append_entry("todo", "not a dict")  # type: ignore[arg-type]
+        await api.append_entry("todo", "not a dict")  # type: ignore[arg-type]

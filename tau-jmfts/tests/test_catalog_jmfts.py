@@ -70,7 +70,7 @@ def _cleanup(client: JmftsClient, *roots: int) -> None:
             pass
 
 
-def test_create_ephemeral_writes_nothing_to_jmfts(
+async def test_create_ephemeral_writes_nothing_to_jmfts(
     catalog: JmftsSessionCatalog, client: JmftsClient, run_id: str
 ) -> None:
     """The load-bearing property: an ephemeral session must not appear
@@ -80,9 +80,9 @@ def test_create_ephemeral_writes_nothing_to_jmfts(
     before = client.list_documents(usetype="tau:conversation", title_prefix=f"[{TEST_PREFIX}]")
 
     session = catalog.create_ephemeral(scope, "test-model", "test-backend", system_prompt="sys")
-    session.append_message(_msg("user", "hello"))
-    session.append_message(_msg("assistant", "hi"))
-    session.append_navigate(None)
+    await session.append_message(_msg("user", "hello"))
+    await session.append_message(_msg("assistant", "hi"))
+    await session.append_navigate(None)
     session.append_session_info("renamed")
 
     after = client.list_documents(usetype="tau:conversation", title_prefix=f"[{TEST_PREFIX}]")
@@ -187,7 +187,7 @@ def test_list_skips_malformed_root_without_raising(
         _cleanup(client, good.root_doc_id, malformed["id"])
 
 
-def test_list_cost_for_twenty_sessions(
+async def test_list_cost_for_twenty_sessions(
     catalog: JmftsSessionCatalog, client: JmftsClient, run_id: str
 ) -> None:
     """Not a correctness test -- measures list()'s real cost against the live
@@ -199,8 +199,8 @@ def test_list_cost_for_twenty_sessions(
     try:
         for i in range(20):
             s = catalog.create(scope, "test-model", "test-backend", system_prompt="sys")
-            s.append_message(_msg("user", f"question {i}"))
-            s.append_message(_msg("assistant", f"answer {i}"))
+            await s.append_message(_msg("user", f"question {i}"))
+            await s.append_message(_msg("assistant", f"answer {i}"))
             created.append(s)
 
         start = time.perf_counter()
@@ -241,7 +241,7 @@ def _forge_second_writer(client: JmftsClient, session: JmftsSessionLog) -> None:
     )
 
 
-def test_a_corrupt_session_surfaces_as_an_error_row_and_does_not_vanish(
+async def test_a_corrupt_session_surfaces_as_an_error_row_and_does_not_vanish(
     catalog: JmftsSessionCatalog, client: JmftsClient, run_id: str
 ) -> None:
     """The bug: an integrity violation made the session SILENTLY DISAPPEAR from the
@@ -255,8 +255,8 @@ def test_a_corrupt_session_surfaces_as_an_error_row_and_does_not_vanish(
     healthy = catalog.create(scope, "test-model", "test-backend", system_prompt="sys")
     broken = catalog.create(scope, "test-model", "test-backend", system_prompt="sys")
     try:
-        healthy.append_message(_msg("user", "i am fine"))
-        broken.append_message(_msg("user", "i am about to be corrupted"))
+        await healthy.append_message(_msg("user", "i am fine"))
+        await broken.append_message(_msg("user", "i am about to be corrupted"))
         _forge_second_writer(client, broken)
 
         infos = {i.ref: i for i in catalog.list(scope)}
@@ -274,14 +274,14 @@ def test_a_corrupt_session_surfaces_as_an_error_row_and_does_not_vanish(
         _cleanup(client, healthy.root_doc_id, broken.root_doc_id)
 
 
-def test_opening_a_corrupt_session_still_raises_the_real_reason(
+async def test_opening_a_corrupt_session_still_raises_the_real_reason(
     catalog: JmftsSessionCatalog, client: JmftsClient, run_id: str
 ) -> None:
     """The error ROW is a listing affordance, not a repair. Loading is still
     Fail-Early: the corrupt tree is never opened and silently mis-folded."""
     broken = catalog.create(_cwd(run_id), "test-model", "test-backend", system_prompt="sys")
     try:
-        broken.append_message(_msg("user", "hi"))
+        await broken.append_message(_msg("user", "hi"))
         _forge_second_writer(client, broken)
 
         with pytest.raises(ValueError, match="second writer"):
@@ -290,7 +290,7 @@ def test_opening_a_corrupt_session_still_raises_the_real_reason(
         _cleanup(client, broken.root_doc_id)
 
 
-def test_a_session_deleted_mid_listing_is_the_one_legitimate_skip(
+async def test_a_session_deleted_mid_listing_is_the_one_legitimate_skip(
     catalog: JmftsSessionCatalog, client: JmftsClient, run_id: str, monkeypatch
 ) -> None:
     """A 404 between the list page and the per-session load means the conversation
@@ -300,8 +300,8 @@ def test_a_session_deleted_mid_listing_is_the_one_legitimate_skip(
     healthy = catalog.create(scope, "test-model", "test-backend", system_prompt="sys")
     doomed = catalog.create(scope, "test-model", "test-backend", system_prompt="sys")
     try:
-        healthy.append_message(_msg("user", "i am fine"))
-        doomed.append_message(_msg("user", "i am about to be deleted"))
+        await healthy.append_message(_msg("user", "i am fine"))
+        await doomed.append_message(_msg("user", "i am about to be deleted"))
 
         real_roots = catalog._list_conversation_roots
 
@@ -320,7 +320,7 @@ def test_a_session_deleted_mid_listing_is_the_one_legitimate_skip(
         _cleanup(client, healthy.root_doc_id, doomed.root_doc_id)
 
 
-def test_a_server_failure_mid_listing_raises_rather_than_reporting_a_partial_list(
+async def test_a_server_failure_mid_listing_raises_rather_than_reporting_a_partial_list(
     catalog: JmftsSessionCatalog, client: JmftsClient, run_id: str, monkeypatch
 ) -> None:
     """A 500/timeout is not "the session is absent", it is "I don't know". Dropping
@@ -329,7 +329,7 @@ def test_a_server_failure_mid_listing_raises_rather_than_reporting_a_partial_lis
     scope = _cwd(run_id)
     session = catalog.create(scope, "test-model", "test-backend", system_prompt="sys")
     try:
-        session.append_message(_msg("user", "hi"))
+        await session.append_message(_msg("user", "hi"))
 
         def _boom(*a, **k):
             raise JmftsError(500, "upstream exploded", url="http://x", method="GET")

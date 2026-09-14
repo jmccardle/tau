@@ -123,16 +123,16 @@ class _FakeConversationSession:
     def entries(self) -> list[dict[str, Any]]:
         return self._log.entries()
 
-    def append_message(self, message: dict[str, Any]) -> str:
-        return self._log.append_message(message)
+    async def append_message(self, message: dict[str, Any]) -> str:
+        return await self._log.append_message(message)
 
-    def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
-        return self._log.append_custom_message(message, custom_type)
+    async def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
+        return await self._log.append_custom_message(message, custom_type)
 
-    def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
-        return self._log.append_custom_entry(custom_type, data)
+    async def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
+        return await self._log.append_custom_entry(custom_type, data)
 
-    def append_compaction(
+    async def append_compaction(
         self,
         summary: str,
         first_kept_id: str,
@@ -144,7 +144,7 @@ class _FakeConversationSession:
         covered_tokens: int,
         agent_spec_id: str | None,
     ) -> str:
-        return self._log.append_compaction(
+        return await self._log.append_compaction(
             summary,
             first_kept_id,
             tokens_before,
@@ -155,7 +155,7 @@ class _FakeConversationSession:
             agent_spec_id=agent_spec_id,
         )
 
-    def append_elide(
+    async def append_elide(
         self,
         first_kept_id: str,
         *,
@@ -163,21 +163,21 @@ class _FakeConversationSession:
         covered_tokens: int,
         agent_spec_id: str | None,
     ) -> str:
-        return self._log.append_elide(
+        return await self._log.append_elide(
             first_kept_id,
             covered_entries=covered_entries,
             covered_tokens=covered_tokens,
             agent_spec_id=agent_spec_id,
         )
 
-    def append_navigate(self, target_id: str | None) -> str:
-        return self._log.append_navigate(target_id)
+    async def append_navigate(self, target_id: str | None) -> str:
+        return await self._log.append_navigate(target_id)
 
-    def append_branch_summary(self, summary: str, from_id: str | None) -> str:
-        return self._log.append_branch_summary(summary, from_id)
+    async def append_branch_summary(self, summary: str, from_id: str | None) -> str:
+        return await self._log.append_branch_summary(summary, from_id)
 
-    def append_at(self, parent_id, entry_type, payload) -> str:
-        return self._log.append_at(parent_id, entry_type, payload)
+    async def append_at(self, parent_id, entry_type, payload) -> str:
+        return await self._log.append_at(parent_id, entry_type, payload)
 
     @property
     def header(self) -> dict[str, Any]:
@@ -237,7 +237,10 @@ class _FakeCatalog(SessionCatalog):
         session = _FakeConversationSession(cwd, model, backend, name, path=None)
         session.path = self._path_for(cwd, session.id)
         if system_prompt:
-            session.append_message({"role": "system", "content": system_prompt})
+            # Sync core: `create` is not a coroutine on the ABC or either store.
+            session._log._append_now(
+                "message", message={"role": "system", "content": system_prompt}
+            )
         self._sessions[session.id] = session
         return session
 
@@ -246,7 +249,9 @@ class _FakeCatalog(SessionCatalog):
     ) -> ConversationSession:
         session = _FakeConversationSession(cwd, model, backend, name, path=None)
         if system_prompt:
-            session.append_message({"role": "system", "content": system_prompt})
+            session._log._append_now(
+                "message", message={"role": "system", "content": system_prompt}
+            )
         return session
 
     def load(self, ref: str) -> ConversationSession:
@@ -262,7 +267,7 @@ class _FakeCatalog(SessionCatalog):
         forked._parent = source.id
         for entry in source.entries():
             if entry.get("type") == "message":
-                forked.append_message(entry["message"])
+                forked._log._append_now("message", message=entry["message"])
         self._sessions[forked.id] = forked
         return forked
 
@@ -354,7 +359,7 @@ async def test_lists_this_cwds_sessions_newest_first_with_the_published_projecti
     names, no more, and newest-modified first."""
     older = catalog.create(_CWD, "m", "openai", name="the older one")
     newer = catalog.create(_CWD, "m", "openai")
-    newer.append_message({"role": "user", "content": "hello"})
+    await newer.append_message({"role": "user", "content": "hello"})
     older._modified = newer._modified - timedelta(minutes=5)
     older._parent = "parent-id"
 

@@ -41,10 +41,10 @@ def _context_of(log) -> list[str]:
 
 
 @pytest.fixture
-def primary() -> InMemorySessionLog:
+async def primary() -> InMemorySessionLog:
     log = InMemorySessionLog()
-    log.append_message(_msg("user", "shared prefix"))
-    log.append_message(_msg("assistant", "shared reply"))
+    await log.append_message(_msg("user", "shared prefix"))
+    await log.append_message(_msg("assistant", "shared reply"))
     return log
 
 
@@ -55,25 +55,25 @@ def test_a_branch_is_a_session_log(primary):
     assert isinstance(branch, BranchView)
 
 
-def test_a_branch_shares_identity_and_entries_but_owns_its_cursor(primary):
+async def test_a_branch_shares_identity_and_entries_but_owns_its_cursor(primary):
     tip = primary.cursor
     branch = open_branch(primary, tip, label="evaluate")
 
     assert branch.id == primary.id, "a branch is a lane in one conversation, not a new one"
     assert branch.cursor == tip
 
-    branch.append_message(_msg("user", "branch work"))
+    await branch.append_message(_msg("user", "branch work"))
 
     assert branch.cursor != tip, "the branch's own leaf moved"
     assert primary.cursor == tip, "...and the PRIMARY leaf did not"
     assert len(branch.entries()) == len(primary.entries()), "one shared entry list"
 
 
-def test_the_branchs_context_is_the_shared_prefix_plus_its_own_work(primary):
+async def test_the_branchs_context_is_the_shared_prefix_plus_its_own_work(primary):
     """The whole reason C2 is tractable: no new context plumbing exists."""
     branch = open_branch(primary, primary.cursor, label="evaluate")
-    branch.append_message(_msg("user", "branch question"))
-    branch.append_message(_msg("assistant", "branch answer"))
+    await branch.append_message(_msg("user", "branch question"))
+    await branch.append_message(_msg("assistant", "branch answer"))
 
     assert _context_of(branch) == [
         "shared prefix",
@@ -83,12 +83,12 @@ def test_the_branchs_context_is_the_shared_prefix_plus_its_own_work(primary):
     ]
 
 
-def test_branch_work_never_leaks_into_the_primary_context(primary):
+async def test_branch_work_never_leaks_into_the_primary_context(primary):
     """Structural, not enforced: branch entries are never ANCESTORS of the primary leaf,
     so the leaf→root walk cannot reach them — even though entries() returns them."""
     branch = open_branch(primary, primary.cursor, label="evaluate")
-    branch.append_message(_msg("user", "SECRET branch work"))
-    branch.append_message(_msg("assistant", "branch conclusion"))
+    await branch.append_message(_msg("user", "SECRET branch work"))
+    await branch.append_message(_msg("assistant", "branch conclusion"))
 
     assert "SECRET branch work" not in _context_of(primary)
     assert _context_of(primary) == ["shared prefix", "shared reply"]
@@ -99,20 +99,20 @@ def test_branch_work_never_leaks_into_the_primary_context(primary):
     )
 
 
-def test_branch_entries_carry_no_marker(primary):
+async def test_branch_entries_carry_no_marker(primary):
     """Nothing on disk says "a sub-agent wrote this" (docs/LANE-REMOVAL.md §4).
 
     The branch's identity (``branch.lane``) is in-memory, for routing its live output;
     the durable record of the branch is the SUBTREE it forms, which is exactly what a
     user's fork of the same shape leaves behind too."""
     branch = open_branch(primary, primary.cursor, label="evaluate")
-    branch.append_message(_msg("user", "branch work"))
+    await branch.append_message(_msg("user", "branch work"))
 
     assert all("branchOf" not in e for e in primary.entries())
     assert branch.lane, "the lane still exists — in memory, as a routing key"
 
 
-def test_a_three_way_fork_and_three_sub_agents_are_INDISTINGUISHABLE(primary):
+async def test_a_three_way_fork_and_three_sub_agents_are_INDISTINGUISHABLE(primary):
     """The §1 asymmetry, gone. Three sub-agents off one node and a three-way fork off
     one node produce the same tree, so every reader must treat them the same way.
 
@@ -139,18 +139,18 @@ def test_a_three_way_fork_and_three_sub_agents_are_INDISTINGUISHABLE(primary):
 
     # A) three sub-agents, all rooted at the same node
     subs = InMemorySessionLog()
-    subs.append_message(_msg("user", "shared prefix"))
+    await subs.append_message(_msg("user", "shared prefix"))
     fork_point = subs.cursor
     for label in ("A", "B", "C"):
-        open_branch(subs, fork_point, label=label).append_message(_msg("assistant", label))
+        await open_branch(subs, fork_point, label=label).append_message(_msg("assistant", label))
 
     # B) a three-way fork: the user navigates back to the same node and answers again
     forks = InMemorySessionLog()
-    forks.append_message(_msg("user", "shared prefix"))
+    await forks.append_message(_msg("user", "shared prefix"))
     root = forks.cursor
     for label in ("A", "B", "C"):
-        forks.append_navigate(root)
-        forks.append_message(_msg("assistant", label))
+        await forks.append_navigate(root)
+        await forks.append_message(_msg("assistant", label))
 
     assert _message_shape(subs.entries()) == _message_shape(forks.entries()), "identical trees"
 
@@ -171,7 +171,7 @@ def test_a_three_way_fork_and_three_sub_agents_are_INDISTINGUISHABLE(primary):
     assert subs_tree.subtree_text(fork_point) == forks_tree.subtree_text(root)
 
 
-def test_two_branches_from_one_parent_get_distinct_lanes(primary):
+async def test_two_branches_from_one_parent_get_distinct_lanes(primary):
     """The fan-out shape — several evaluators over one result. Deriving the lane id from
     parent_id would give them one identity on the live ``branch_event`` channel, and a
     frontend would interleave two sub-agents' tokens into one render lane."""
@@ -179,14 +179,14 @@ def test_two_branches_from_one_parent_get_distinct_lanes(primary):
     b = open_branch(primary, primary.cursor, label="evaluator B")
     assert a.lane != b.lane
 
-    a.append_message(_msg("user", "from A"))
-    b.append_message(_msg("user", "from B"))
+    await a.append_message(_msg("user", "from A"))
+    await b.append_message(_msg("user", "from B"))
 
     assert _context_of(a) == ["shared prefix", "shared reply", "from A"]
     assert _context_of(b) == ["shared prefix", "shared reply", "from B"]
 
 
-def test_a_branch_append_landing_last_DOES_become_the_resolved_cursor(primary):
+async def test_a_branch_append_landing_last_DOES_become_the_resolved_cursor(primary):
     """The guarantee τ dropped, made explicit (docs/LANE-REMOVAL.md §2).
 
     ``resolve_cursor`` is pi's rule again — last entry wins — so a crash right after a
@@ -196,7 +196,7 @@ def test_a_branch_append_landing_last_DOES_become_the_resolved_cursor(primary):
     leaf of the view that did not write."""
     tip = primary.cursor
     branch = open_branch(primary, tip, label="evaluate")
-    landed_last = branch.append_message(_msg("assistant", "branch write, landed LAST"))
+    landed_last = await branch.append_message(_msg("assistant", "branch write, landed LAST"))
 
     entries = primary.entries()
     assert entries[-1]["id"] == landed_last, "precondition: a branch entry really is last"
@@ -205,12 +205,12 @@ def test_a_branch_append_landing_last_DOES_become_the_resolved_cursor(primary):
     assert primary.cursor == tip, "but the live primary cursor never moved"
 
 
-def test_a_human_can_still_navigate_INTO_a_branch(primary):
+async def test_a_human_can_still_navigate_INTO_a_branch(primary):
     """A cursor can point anywhere in the tree; the browser must still work."""
     branch = open_branch(primary, primary.cursor, label="evaluate")
-    inside = branch.append_message(_msg("assistant", "inside the branch"))
+    inside = await branch.append_message(_msg("assistant", "inside the branch"))
 
-    primary.append_navigate(inside)  # an untagged, primary navigate AT a branch entry
+    await primary.append_navigate(inside)  # an untagged, primary navigate AT a branch entry
 
     assert primary.cursor == inside
     assert resolve_cursor(primary.entries()) == inside
@@ -222,14 +222,14 @@ def test_open_branch_at_a_dangling_parent_raises(primary):
         open_branch(primary, "does-not-exist", label="evaluate")
 
 
-def test_a_branch_can_be_rooted_before_the_first_entry(primary):
+async def test_a_branch_can_be_rooted_before_the_first_entry(primary):
     """parent_id=None is legal — a branch with no inherited context at all."""
     branch = open_branch(primary, None, label="from scratch")
-    branch.append_message(_msg("user", "no inherited context"))
+    await branch.append_message(_msg("user", "no inherited context"))
     assert _context_of(branch) == ["no inherited context"]
 
 
-def test_summarize_branch_collects_THE_WHOLE_NAMED_SUBTREE(primary):
+async def test_summarize_branch_collects_THE_WHOLE_NAMED_SUBTREE(primary):
     """``subtree_text`` is bounded by descendants of the node the caller named, and by
     nothing else (docs/LANE-REMOVAL.md §6.2).
 
@@ -238,13 +238,13 @@ def test_summarize_branch_collects_THE_WHOLE_NAMED_SUBTREE(primary):
     and stopped at the branch — which silently returned a different region than the one
     the caller asked for, and fought the case where an extension deliberately builds one
     node out of several sibling branches."""
-    abandoned = primary.append_message(_msg("user", "an abandoned line of thought"))
-    primary.append_message(_msg("assistant", "more of the abandoned branch"))
+    abandoned = await primary.append_message(_msg("user", "an abandoned line of thought"))
+    await primary.append_message(_msg("assistant", "more of the abandoned branch"))
 
     # a sub-agent runs off an entry INSIDE the abandoned region
     sub = open_branch(primary, abandoned, label="sub-agent")
-    sub.append_message(_msg("user", "the sub-agent's notes"))
-    sub.append_message(_msg("assistant", "sub-agent scratch work"))
+    await sub.append_message(_msg("user", "the sub-agent's notes"))
+    await sub.append_message(_msg("assistant", "sub-agent scratch work"))
 
     text = ConversationTree(primary.entries(), primary.cursor).subtree_text(abandoned)
 
@@ -254,17 +254,17 @@ def test_summarize_branch_collects_THE_WHOLE_NAMED_SUBTREE(primary):
     assert "sub-agent scratch work" in text
 
 
-def test_subtree_text_reaches_DOWN_but_never_SIDEWAYS(primary):
+async def test_subtree_text_reaches_DOWN_but_never_SIDEWAYS(primary):
     """The bound that does the work: neither the line ABOVE ``from_id`` nor a subtree
     hanging off a DIFFERENT node is a descendant of it, so neither is collected —
     whoever wrote them. A sibling branch is exactly the shape the containment rule was
     trying to exclude, and the structural bound excludes it for free."""
-    left = primary.append_message(_msg("user", "the region being summarized"))
-    primary.append_message(_msg("assistant", "inside the region"))
+    left = await primary.append_message(_msg("user", "the region being summarized"))
+    await primary.append_message(_msg("assistant", "inside the region"))
 
     # a sibling subtree, rooted ABOVE `left` — elsewhere, not below.
     elsewhere = open_branch(primary, None, label="unrelated")
-    elsewhere.append_message(_msg("user", "SOMEWHERE ELSE ENTIRELY"))
+    await elsewhere.append_message(_msg("user", "SOMEWHERE ELSE ENTIRELY"))
 
     text = ConversationTree(primary.entries(), primary.cursor).subtree_text(left)
 
@@ -273,11 +273,11 @@ def test_subtree_text_reaches_DOWN_but_never_SIDEWAYS(primary):
     assert "shared prefix" not in text, "and it never reaches up the ancestor line"
 
 
-def test_summarizing_the_sub_agents_own_branch_still_works(primary):
+async def test_summarizing_the_sub_agents_own_branch_still_works(primary):
     """Naming the branch root is how a spawner reads its sub-agent's verdict back."""
     branch = open_branch(primary, primary.cursor, label="sub-agent")
-    root = branch.append_message(_msg("user", "the sub-agent's question"))
-    branch.append_message(_msg("assistant", "the sub-agent's VERDICT"))
+    root = await branch.append_message(_msg("user", "the sub-agent's question"))
+    await branch.append_message(_msg("assistant", "the sub-agent's VERDICT"))
 
     text = ConversationTree(primary.entries(), primary.cursor).subtree_text(root)
 

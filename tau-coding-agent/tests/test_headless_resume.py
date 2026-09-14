@@ -128,12 +128,12 @@ def env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(store, "_now_iso", fake_now)
 
-    def seed(model: str, user_text: str, *, name: str | None = None, id: str | None = None):
+    async def seed(model: str, user_text: str, *, name: str | None = None, id: str | None = None):
         session = Session.create(
             os.getcwd(), model, "openai", system_prompt="You are helpful.", name=name, id=id
         )
-        session.append_message({"role": "user", "content": user_text})
-        session.append_message({"role": "assistant", "content": [{"type": "text", "text": "r"}]})
+        await session.append_message({"role": "user", "content": user_text})
+        await session.append_message({"role": "assistant", "content": [{"type": "text", "text": "r"}]})
         return session
 
     holder["seed"] = seed
@@ -158,8 +158,8 @@ def _seeded_convo(user_text: str) -> list[dict]:
 
 
 async def test_continue_loads_most_recent_and_updates_in_place(env):
-    a = env["seed"]("local-llm", "a1")
-    b = env["seed"]("local-llm", "b1")  # most recent
+    a = await env["seed"]("local-llm", "a1")
+    b = await env["seed"]("local-llm", "b1")  # most recent
     a_before = a.path.read_bytes()
 
     rc = await run_print(
@@ -192,7 +192,7 @@ async def test_continue_empty_store_errors(env):
 
 async def test_resume_keeps_stored_model_when_no_model_flag(env):
     # Seeded session's model is local-llm; config default is gpt-4o.
-    b = env["seed"]("local-llm", "b1")
+    b = await env["seed"]("local-llm", "b1")
 
     await run_print(
         CLIArgs(messages=["next"], print_mode=True, continue_session=True),
@@ -205,7 +205,7 @@ async def test_resume_keeps_stored_model_when_no_model_flag(env):
 
 
 async def test_explicit_model_overrides_stored_on_resume(env):
-    b = env["seed"]("local-llm", "b1")
+    b = await env["seed"]("local-llm", "b1")
     await run_print(
         CLIArgs(
             messages=["next"],
@@ -224,8 +224,8 @@ async def test_explicit_model_overrides_stored_on_resume(env):
 
 
 async def test_session_by_id_selects_specific(env):
-    a = env["seed"]("local-llm", "a1")
-    b = env["seed"]("local-llm", "b1")  # most recent
+    a = await env["seed"]("local-llm", "a1")
+    b = await env["seed"]("local-llm", "b1")  # most recent
     b_before = b.path.read_bytes()
 
     await run_print(
@@ -239,8 +239,8 @@ async def test_session_by_id_selects_specific(env):
 
 
 async def test_session_by_id_prefix_selects_specific(env):
-    a = env["seed"]("local-llm", "a1", id="abc11111")
-    env["seed"]("local-llm", "b1", id="def22222")
+    a = await env["seed"]("local-llm", "a1", id="abc11111")
+    await env["seed"]("local-llm", "b1", id="def22222")
     await run_print(
         CLIArgs(messages=["go"], print_mode=True, session="abc"),
         _config(),
@@ -257,9 +257,9 @@ async def test_resume_of_compacted_session_hands_spliced_context_to_backend(env)
     (the linear fold, which keeps the dropped history and hides the summary); it
     now reads ``session.context`` (the ConversationTree fold).
     """
-    a = env["seed"]("local-llm", "a1")  # system + user "a1" + assistant "r"
+    a = await env["seed"]("local-llm", "a1")  # system + user "a1" + assistant "r"
     keep_id = a.entries()[-1]["id"]  # the assistant "r" message
-    a.append_compaction("OLD-SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
+    await a.append_compaction("OLD-SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
 
     await run_print(
         CLIArgs(messages=["next"], print_mode=True, session=a.id),
@@ -280,7 +280,7 @@ async def test_resume_of_compacted_session_hands_spliced_context_to_backend(env)
 
 
 async def test_session_by_path_selects_specific(env):
-    a = env["seed"]("local-llm", "a1")
+    a = await env["seed"]("local-llm", "a1")
     await run_print(
         CLIArgs(messages=["go"], print_mode=True, session=str(a.path)),
         _config(),
@@ -290,8 +290,8 @@ async def test_session_by_path_selects_specific(env):
 
 async def test_session_ambiguous_errors(env):
     # Two ids sharing a common prefix → the prefix is ambiguous.
-    env["seed"]("local-llm", "a1", id="abc11111")
-    env["seed"]("local-llm", "b1", id="abc22222")
+    await env["seed"]("local-llm", "a1", id="abc11111")
+    await env["seed"]("local-llm", "b1", id="abc22222")
     with pytest.raises(CLIError, match="matches multiple sessions"):
         await run_print(
             CLIArgs(messages=["go"], print_mode=True, session="abc"),
@@ -300,7 +300,7 @@ async def test_session_ambiguous_errors(env):
 
 
 async def test_session_no_match_errors(env):
-    env["seed"]("local-llm", "a1")
+    await env["seed"]("local-llm", "a1")
     with pytest.raises(CLIError, match="no session matches"):
         await run_print(
             CLIArgs(messages=["go"], print_mode=True, session="zzzzzzzz"),
@@ -312,7 +312,7 @@ async def test_session_no_match_errors(env):
 
 
 async def test_fork_creates_new_file_and_leaves_source(env):
-    b = env["seed"]("local-llm", "b1")
+    b = await env["seed"]("local-llm", "b1")
     b_before = b.path.read_bytes()
 
     await run_print(
@@ -344,7 +344,7 @@ async def test_name_sets_title_on_fresh_run(env):
 
 
 async def test_name_updates_title_on_continue(env):
-    b = env["seed"]("local-llm", "b1")
+    b = await env["seed"]("local-llm", "b1")
     await run_print(
         CLIArgs(
             messages=["next"],
@@ -361,7 +361,7 @@ async def test_name_updates_title_on_continue(env):
 
 
 async def test_system_prompt_with_resume_errors(env):
-    env["seed"]("local-llm", "b1")
+    await env["seed"]("local-llm", "b1")
     with pytest.raises(CLIError, match="system-prompt can't be combined"):
         await run_print(
             CLIArgs(

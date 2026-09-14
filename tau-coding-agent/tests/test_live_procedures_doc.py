@@ -344,8 +344,8 @@ async def test_reload_check_node_survives_byte_identical(tmp_path):
         system_prompt="You are helpful.",
         base_dir=tmp_path / "sessions",
     )
-    session.append_message({"role": "user", "content": "hello there"})
-    session.append_custom_message(
+    await session.append_message({"role": "user", "content": "hello there"})
+    await session.append_custom_message(
         {"role": "custom", "content": [{"type": "text", "text": preamble}]},
         "reminder-preamble",
     )

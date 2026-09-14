@@ -70,10 +70,10 @@ class TestInMemorySessionLog:
         assert log.cursor is None
         assert isinstance(log.id, str) and log.id
 
-    def test_append_message_advances_cursor_and_chains_parent(self):
+    async def test_append_message_advances_cursor_and_chains_parent(self):
         log = InMemorySessionLog()
-        id1 = log.append_message(_um("one"))
-        id2 = log.append_message(_um("two"))
+        id1 = await log.append_message(_um("one"))
+        id2 = await log.append_message(_um("two"))
         entries = log.entries()
         assert [e["type"] for e in entries] == ["message", "message"]
         # cursor is the tip; parentId chains root→leaf.
@@ -84,43 +84,43 @@ class TestInMemorySessionLog:
         entries[0]["type"] = "mutated"
         assert log.entries()[0]["type"] == "message"
 
-    def test_append_compaction_writes_camelcase_shape(self):
+    async def test_append_compaction_writes_camelcase_shape(self):
         log = InMemorySessionLog()
-        first = log.append_message(_um("keep"))
-        log.append_compaction(summary="recap", first_kept_id=first, tokens_before=123, **_PROV)
+        first = await log.append_message(_um("keep"))
+        await log.append_compaction(summary="recap", first_kept_id=first, tokens_before=123, **_PROV)
         comp = log.entries()[-1]
         assert comp["type"] == "compaction"
         assert comp["summary"] == "recap"
         assert comp["firstKeptId"] == first  # camelCase, like session_store.Session
         assert comp["tokensBefore"] == 123
 
-    def test_append_navigate_moves_leaf_to_target(self):
+    async def test_append_navigate_moves_leaf_to_target(self):
         log = InMemorySessionLog()
-        a = log.append_message(_um("a"))
-        log.append_message(_um("b"))
-        nav_id = log.append_navigate(a)
+        a = await log.append_message(_um("a"))
+        await log.append_message(_um("b"))
+        nav_id = await log.append_navigate(a)
         assert log.cursor == a
         assert log.entries()[-1]["id"] == nav_id
         assert log.entries()[-1]["targetId"] == a
 
-    def test_append_navigate_none_targets_pre_root(self):
+    async def test_append_navigate_none_targets_pre_root(self):
         log = InMemorySessionLog()
-        log.append_message(_um("a"))
-        log.append_navigate(None)
+        await log.append_message(_um("a"))
+        await log.append_navigate(None)
         assert log.cursor is None
 
-    def test_append_navigate_unknown_target_raises(self):
+    async def test_append_navigate_unknown_target_raises(self):
         log = InMemorySessionLog()
-        log.append_message(_um("a"))
+        await log.append_message(_um("a"))
         with pytest.raises(ValueError, match="navigate target"):
-            log.append_navigate("deadbeef")
+            await log.append_navigate("deadbeef")
 
-    def test_append_branch_summary_validates_from_id(self):
+    async def test_append_branch_summary_validates_from_id(self):
         log = InMemorySessionLog()
         with pytest.raises(ValueError, match="branch_summary from"):
-            log.append_branch_summary("s", "nope")
-        a = log.append_message(_um("a"))
-        bs = log.append_branch_summary("s", a)
+            await log.append_branch_summary("s", "nope")
+        a = await log.append_message(_um("a"))
+        bs = await log.append_branch_summary("s", a)
         assert log.entries()[-1]["id"] == bs
         assert log.entries()[-1]["fromId"] == a
 
@@ -131,45 +131,45 @@ class TestInMemorySessionLog:
 class TestAgentSpecInForce:
     """TREE-BROWSER-AS-EDITOR.md §8.3 — the frame a splice anchor points at."""
 
-    def test_it_finds_the_nearest_agent_spec_ancestor(self):
+    async def test_it_finds_the_nearest_agent_spec_ancestor(self):
         log = InMemorySessionLog()
-        log.append_custom_entry("agent_spec", {"model": {"id": "first"}})
-        log.append_message(_um("under the first spec"))
-        second = log.append_custom_entry("agent_spec", {"model": {"id": "second"}})
-        leaf = log.append_message(_um("under the second spec"))
+        await log.append_custom_entry("agent_spec", {"model": {"id": "first"}})
+        await log.append_message(_um("under the first spec"))
+        second = await log.append_custom_entry("agent_spec", {"model": {"id": "second"}})
+        leaf = await log.append_message(_um("under the second spec"))
 
         assert agent_spec_in_force(log.entries(), leaf) == second
 
-    def test_a_spec_on_a_sibling_branch_never_governs_this_path(self):
+    async def test_a_spec_on_a_sibling_branch_never_governs_this_path(self):
         """Ancestry, not load order. A ``set_model`` on an abandoned branch is
         chronologically the most recent ``agent_spec`` in the log and governed
         nothing on this leaf's path — the distinction docs/LANE-REMOVAL.md §1
         removed the ``branchOf`` tag over."""
         log = InMemorySessionLog()
-        mine = log.append_custom_entry("agent_spec", {"model": {"id": "mine"}})
-        fork_point = log.append_message(_um("shared prefix"))
-        leaf = log.append_message(_um("my continuation"))
+        mine = await log.append_custom_entry("agent_spec", {"model": {"id": "mine"}})
+        fork_point = await log.append_message(_um("shared prefix"))
+        leaf = await log.append_message(_um("my continuation"))
 
-        log.append_navigate(fork_point)
-        log.append_custom_entry("agent_spec", {"model": {"id": "the other branch"}})
-        log.append_message(_um("their continuation"))
+        await log.append_navigate(fork_point)
+        await log.append_custom_entry("agent_spec", {"model": {"id": "the other branch"}})
+        await log.append_message(_um("their continuation"))
 
         assert agent_spec_in_force(log.entries(), leaf) == mine
 
-    def test_a_log_with_no_agent_spec_answers_none(self):
+    async def test_a_log_with_no_agent_spec_answers_none(self):
         """An honest absence — a pi-imported log, or a store driven without an
         AgentSession, has no such node. §11.3's "no defaults" rule is what keeps
         this answer distinct from a caller that never looked."""
         log = InMemorySessionLog()
-        leaf = log.append_message(_um("no frame was ever recorded"))
+        leaf = await log.append_message(_um("no frame was ever recorded"))
 
         assert agent_spec_in_force(log.entries(), leaf) is None
         assert agent_spec_in_force(log.entries(), None) is None
 
-    def test_a_non_agent_spec_custom_entry_is_not_mistaken_for_one(self):
+    async def test_a_non_agent_spec_custom_entry_is_not_mistaken_for_one(self):
         log = InMemorySessionLog()
-        log.append_custom_entry("jmfts:document", {"docId": "42"})
-        leaf = log.append_message(_um("hello"))
+        await log.append_custom_entry("jmfts:document", {"docId": "42"})
+        leaf = await log.append_message(_um("hello"))
 
         assert agent_spec_in_force(log.entries(), leaf) is None
 
@@ -183,13 +183,13 @@ class TestBranchViewRecordsAnchorProvenance:
     way, just without §8's fields.
     """
 
-    def test_a_branchs_compaction_carries_the_full_provenance(self):
+    async def test_a_branchs_compaction_carries_the_full_provenance(self):
         log = InMemorySessionLog()
-        root = log.append_message(_um("shared"))
+        root = await log.append_message(_um("shared"))
         branch = open_branch(log, root, label="reviewer")
-        keep = branch.append_message(_um("kept in the lane"))
+        keep = await branch.append_message(_um("kept in the lane"))
 
-        anchor_id = branch.append_compaction(
+        anchor_id = await branch.append_compaction(
             "LANE SUMMARY",
             keep,
             77,
@@ -207,13 +207,13 @@ class TestBranchViewRecordsAnchorProvenance:
         assert anchor["coveredTokens"] == 31
         assert anchor["agentSpecId"] is None
 
-    def test_a_branchs_elide_carries_its_span(self):
+    async def test_a_branchs_elide_carries_its_span(self):
         log = InMemorySessionLog()
-        root = log.append_message(_um("shared"))
+        root = await log.append_message(_um("shared"))
         branch = open_branch(log, root, label="reviewer")
-        keep = branch.append_message(_um("kept in the lane"))
+        keep = await branch.append_message(_um("kept in the lane"))
 
-        anchor_id = branch.append_elide(
+        anchor_id = await branch.append_elide(
             keep, covered_entries=1, covered_tokens=12, agent_spec_id=None
         )
 
@@ -226,20 +226,20 @@ class TestBranchViewRecordsAnchorProvenance:
 
 
 class TestConversationTreeOverLog:
-    def test_messages_fold_matches_conversation_tree(self):
+    async def test_messages_fold_matches_conversation_tree(self):
         log = InMemorySessionLog()
-        log.append_message(_um("first"))
-        log.append_message({"role": "assistant", "content": [{"type": "text", "text": "reply"}]})
+        await log.append_message(_um("first"))
+        await log.append_message({"role": "assistant", "content": [{"type": "text", "text": "reply"}]})
         session = AgentSession(session_log=log, model=_model())
         expected = ConversationTree(log.entries(), log.cursor).context_for()
         assert session.messages == expected
         assert [m["role"] for m in session.messages] == ["user", "assistant"]
 
-    def test_compaction_splice_drops_prefix(self):
+    async def test_compaction_splice_drops_prefix(self):
         log = InMemorySessionLog()
-        log.append_message(_um("old"))
-        keep = log.append_message(_um("keep me"))
-        log.append_compaction(summary="SUM", first_kept_id=keep, tokens_before=10, **_PROV)
+        await log.append_message(_um("old"))
+        keep = await log.append_message(_um("keep me"))
+        await log.append_compaction(summary="SUM", first_kept_id=keep, tokens_before=10, **_PROV)
         session = AgentSession(session_log=log, model=_model())
         texts = [m["content"][0]["text"] for m in session.messages]
         assert texts == ["[[Compaction summary: SUM]]", "keep me"]
@@ -287,27 +287,27 @@ class TestEntryTimestampIsTheEventTime:
     was written — a whole turn persists in one pass, so the write time collapses
     every completion onto one millisecond (docs/MESSAGE-TIMESTAMPS.md §1)."""
 
-    def test_message_timestamp_drives_the_entry(self):
+    async def test_message_timestamp_drives_the_entry(self):
         log = InMemorySessionLog()
-        log.append_message({"role": "user", "content": "hi", "timestamp": 1_700_000_000_000})
+        await log.append_message({"role": "user", "content": "hi", "timestamp": 1_700_000_000_000})
         entry = log.entries()[-1]
         assert entry["timestamp"] == "2023-11-14T22:13:20.000Z"
 
-    def test_one_turn_persisted_at_once_keeps_distinct_entry_times(self):
+    async def test_one_turn_persisted_at_once_keeps_distinct_entry_times(self):
         """The defect this fixes: four completions written in one pass used to
         share a millisecond, so nothing downstream could order or time them."""
         log = InMemorySessionLog()
         stamps = [1_700_000_000_000, 1_700_000_004_000, 1_700_000_009_000]
         for stamp in stamps:
-            log.append_message({"role": "assistant", "content": [], "timestamp": stamp})
+            await log.append_message({"role": "assistant", "content": [], "timestamp": stamp})
         written = [e["timestamp"] for e in log.entries()]
         assert len(set(written)) == 3
         assert written == sorted(written)
 
-    def test_an_entry_with_no_event_clock_takes_the_write_time(self):
+    async def test_an_entry_with_no_event_clock_takes_the_write_time(self):
         """A navigate has no event of its own; so does a message carrying None."""
         log = InMemorySessionLog()
-        log.append_message({"role": "assistant", "content": [], "timestamp": None})
+        await log.append_message({"role": "assistant", "content": [], "timestamp": None})
         assert log.entries()[-1]["timestamp"].endswith("Z")
 
 

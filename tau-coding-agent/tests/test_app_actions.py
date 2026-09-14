@@ -121,7 +121,7 @@ async def test_chat_selected_loads_session_by_ref(app, wait_for_workers_settled)
         seeded = app.session_catalog.create(
             os.getcwd(), "m", "openai", system_prompt="sys", name="Picked"
         )
-        seeded.append_message({"role": "user", "content": "hello"})
+        await seeded.append_message({"role": "user", "content": "hello"})
 
         app.action_toggle_sidebar()
         await pilot.pause()
@@ -297,7 +297,7 @@ class _BlockingBackend:
         await self._released.wait()
         self._released.clear()
         partial = {"role": "assistant", "content": [{"type": "text", "text": "partial"}]}
-        self._log.append_message(partial)
+        await self._log.append_message(partial)
         return SubmissionResult(accepted=True, submission_id=submission.submission_id)
 
 

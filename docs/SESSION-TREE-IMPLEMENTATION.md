@@ -144,6 +144,11 @@ def append_navigate(self, target_id: str | None) -> str:   # session_store.py
     return self._append("navigate", targetId=target_id)
 ```
 
+Every `append_*` snippet in this document is the signature as it was BUILT. All
+eight Protocol appenders became `async def` on 2026-09-13 and now delegate to a
+private synchronous core — `docs/ASYNC-SESSION-LOG.md`. The entry algebra the
+snippets describe is unchanged; only the signature is.
+
 **Compatibility is asymmetric and accepted** (plan §4.3): τ reading a pi file
 (no `navigate` entries → cursor = last entry) behaves identically to pi; pi
 reading a τ file hits an unknown kind — flagged, not blocking, and τ is the

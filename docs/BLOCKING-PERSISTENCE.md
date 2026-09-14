@@ -1,11 +1,18 @@
 # Persistence blocks the UI thread, and the fix is a protocol change
 
-**Status: analysed 2026-08-28, deliberately NOT built.** The two sibling items
-from `docs/PLAN-0.9.4.md` §8 — the blocking tool call sites and repeat-tool-call
-detection — are built (`69c5af2`, `244931c`). This one is not, because unlike
-those it cannot be fixed inside τ without changing a contract other people
-implement. This document records what was measured, what the options are, and
-why the cheap one was rejected.
+**Status: analysed 2026-08-28; §3's Option B BUILT 2026-09-14 —
+see `docs/ASYNC-SESSION-LOG.md`.** This document stays as the analysis: what was
+measured, what the options were, and why the cheap one was rejected. It is no
+longer a description of the code, and §4's "until then the freeze is real" no
+longer holds. The two sibling items from `docs/PLAN-0.9.4.md` §8 — the blocking
+tool call sites and repeat-tool-call detection — were already built (`69c5af2`,
+`244931c`); this one waited because unlike those it could not be fixed inside τ
+without changing a contract other people implement.
+
+Two things the build learned that this document did not anticipate, both in
+`ASYNC-SESSION-LOG.md` §3: the extension API breaks too, and
+`AgentSession.__init__` cannot await, so the W2 `agent_spec` record had to become
+a queued write.
 
 ---
 

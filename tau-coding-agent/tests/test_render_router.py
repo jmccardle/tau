@@ -525,7 +525,7 @@ class TestSubscribeRenderWiring:
         """
         backend = _backend()
         session = backend.agent_session
-        session.session_log.append_message(
+        await session.session_log.append_message(
             {"role": "user", "content": [{"type": "text", "text": "shared prefix"}]}
         )
         seen: list[dict] = []
@@ -551,7 +551,7 @@ class TestSubscribeRenderWiring:
         handler never sees it. The lane still has to close."""
         backend = _backend()
         session = backend.agent_session
-        session.session_log.append_message(
+        await session.session_log.append_message(
             {"role": "user", "content": [{"type": "text", "text": "shared prefix"}]}
         )
         seen: list[dict] = []

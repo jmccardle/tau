@@ -64,7 +64,7 @@ no hook work at all. Returns ``False`` when no dispatcher was injected.
 ### run
 
 ```python
-run(prompts: list[Any], context: list[Any] | None = None) -> list[Any]
+async run(prompts: list[Any], context: list[Any] | None = None) -> list[Any]
 ```
 
 `tau_agent_core.agent_loop.AgentLoop.run`
@@ -89,7 +89,7 @@ List of messages produced by the agent loop.
 ### run_continue
 
 ```python
-run_continue(context: list[Any] | None = None) -> list[Any]
+async run_continue(context: list[Any] | None = None) -> list[Any]
 ```
 
 `tau_agent_core.agent_loop.AgentLoop.run_continue`

@@ -95,7 +95,7 @@ def test_jmfts_unreachable_url_fails_loudly_at_construction_not_first_append():
         build_session_catalog({"session_store": {"backend": "jmfts", "url": UNREACHABLE_URL}}, None)
 
 
-def test_no_session_does_not_contact_an_unreachable_jmfts_store():
+async def test_no_session_does_not_contact_an_unreachable_jmfts_store():
     """Reported by Tectum's prototyping: ``--no-session`` in text mode still
     required the JMFTS store, and exited 2 at startup when it was unreachable.
 
@@ -112,7 +112,7 @@ def test_no_session_does_not_contact_an_unreachable_jmfts_store():
         {"session_store": {"backend": "jmfts", "url": UNREACHABLE_URL}}, None, persist=False
     )
     session = catalog.create_ephemeral("/tmp/anywhere", "m", "openai")
-    session.append_message({"role": "user", "content": "no server was ever contacted"})
+    await session.append_message({"role": "user", "content": "no server was ever contacted"})
     assert [m["content"] for m in session.messages] == ["no server was ever contacted"]
 
 

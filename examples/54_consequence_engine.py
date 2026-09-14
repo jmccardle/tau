@@ -554,7 +554,7 @@ async def _what_if_command(
         signal=getattr(ctx, "signal", None),
         max_n=max_n,
     )
-    store.append({"change": outcome["change"], "results": outcome["results"]})
+    await store.append({"change": outcome["change"], "results": outcome["results"]})
     return consequence_report(outcome)
 
 

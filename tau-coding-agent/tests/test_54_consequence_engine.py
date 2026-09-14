@@ -68,14 +68,14 @@ def _msg(role: str, text: str) -> dict:
     return {"role": role, "content": [{"type": "text", "text": text}]}
 
 
-def _session(tmp_path: Path) -> tuple[AgentSession, Session]:
+async def _session(tmp_path: Path) -> tuple[AgentSession, Session]:
     live = Session.create("/tmp", "gpt-4o", "openai", base_dir=tmp_path)
     agent = AgentSession(session_log=live, model=_model(), extensions=[])
     ce_mod.consequence_engine_extension(
         agent._bind_extension_api("examples/54_consequence_engine.py")
     )
     # A message so the tree has a real active path for the customEntry nodes to hang off.
-    live.append_message(_msg("user", "what if I drop the retry limit?"))
+    await live.append_message(_msg("user", "what if I drop the retry limit?"))
     return agent, live
 
 
@@ -400,8 +400,8 @@ async def test_add_worktree_raises_outside_a_git_repo(tmp_path) -> None:
 # ── registration ─────────────────────────────────────────────────────────────
 
 
-def test_registers_both_commands(tmp_path) -> None:
-    agent, _live = _session(tmp_path)
+async def test_registers_both_commands(tmp_path) -> None:
+    agent, _live = await _session(tmp_path)
     for name in ("what-if", "consequences"):
         assert agent._registry.get_command(name) is not None
 
@@ -410,7 +410,7 @@ def test_registers_both_commands(tmp_path) -> None:
 
 
 async def test_what_if_names_what_breaks_and_records_it(tmp_path, monkeypatch) -> None:
-    agent, _live = _session(tmp_path)
+    agent, _live = await _session(tmp_path)
     _patch_engine(monkeypatch)
 
     result = await agent.run_extension_command("what-if", _CHANGE)
@@ -424,13 +424,13 @@ async def test_what_if_names_what_breaks_and_records_it(tmp_path, monkeypatch) -
 
 
 async def test_what_if_empty_change_returns_usage(tmp_path) -> None:
-    agent, _live = _session(tmp_path)
+    agent, _live = await _session(tmp_path)
     result = await agent.run_extension_command("what-if", "   ")
     assert result.output.startswith("usage: /what-if <change>")
 
 
 async def test_consequences_lists_recorded_runs(tmp_path, monkeypatch) -> None:
-    agent, _live = _session(tmp_path)
+    agent, _live = await _session(tmp_path)
     _patch_engine(monkeypatch)
 
     empty = await agent.run_extension_command("consequences", "")
@@ -445,7 +445,7 @@ async def test_consequences_lists_recorded_runs(tmp_path, monkeypatch) -> None:
 
 
 async def test_recorded_runs_survive_reload(tmp_path, monkeypatch) -> None:
-    agent, live = _session(tmp_path)
+    agent, live = await _session(tmp_path)
     _patch_engine(monkeypatch)
     await agent.run_extension_command("what-if", _CHANGE)
     session_path = live.path

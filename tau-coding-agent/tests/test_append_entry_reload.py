@@ -43,12 +43,12 @@ def _text_blob(messages: list) -> str:
     return "\n".join(out)
 
 
-def test_custom_entry_survives_ondisk_reload(tmp_path) -> None:
+async def test_custom_entry_survives_ondisk_reload(tmp_path) -> None:
     """append_entry → flush → Session.load: the entry round-trips through bytes."""
     store = Session.create("/tmp", "gpt-4o", "openai", base_dir=tmp_path)
     session = AgentSession(session_log=store, model=_model(), extensions=[])
 
-    session._append_custom_entry("todo", {"text": "buy milk", "done": False, "n": 3})
+    await session._append_custom_entry("todo", {"text": "buy milk", "done": False, "n": 3})
 
     before = store.entries()
     assert sum(1 for e in before if e.get("customType") == "todo") == 1
@@ -62,12 +62,12 @@ def test_custom_entry_survives_ondisk_reload(tmp_path) -> None:
     assert entries[0]["data"] == {"text": "buy milk", "done": False, "n": 3}
 
 
-def test_custom_entry_off_the_wire_after_reload(tmp_path) -> None:
+async def test_custom_entry_off_the_wire_after_reload(tmp_path) -> None:
     """The reloaded backplane node stays out of the context and the LLM wire."""
     store = Session.create("/tmp", "gpt-4o", "openai", base_dir=tmp_path)
     session = AgentSession(session_log=store, model=_model(), extensions=[])
-    session._session_log.append_message({"role": "user", "content": "hello"})
-    session._append_custom_entry("secret", {"payload": "MODEL MUST NOT SEE THIS"})
+    await session._session_log.append_message({"role": "user", "content": "hello"})
+    await session._append_custom_entry("secret", {"payload": "MODEL MUST NOT SEE THIS"})
 
     reloaded = Session.load(store.path)
     context = ConversationTree(reloaded.entries(), reloaded.cursor).context_for()

@@ -84,7 +84,7 @@ async def _bookmark_command(args: str, ctx: Any, *, store: TreeStore[dict[str, A
         return "Nothing to bookmark yet — start a conversation first."
     cursor = active_cursor(entries)
 
-    store.append({"label": label, "entry_id": cursor})
+    await store.append({"label": label, "entry_id": cursor})
     return f"Bookmarked '{label}' at {cursor}"
 
 

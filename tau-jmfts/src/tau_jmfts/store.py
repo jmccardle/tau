@@ -25,6 +25,7 @@ in fact a *child* of the header document in JMFTS.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import os
 import socket
@@ -510,37 +511,41 @@ class JmftsSessionLog:
     def _init_state(
         self, model: str, backend: str, system_prompt: str | None, name: str | None
     ) -> None:
-        """Mirrors ``Session._init_state``: the entries every new session carries."""
+        """Mirrors ``Session._init_state``: the entries every new session carries.
+
+        Through :meth:`_append_now`, never the ``async`` Protocol appenders —
+        the same reason ``Session._init_state`` does: this runs inside a
+        synchronous ``create``, where there may be no running loop."""
         self.append_model_change(model, backend)
         if name is not None:
             self.append_session_info(name)
         if system_prompt:
-            self.append_message({"role": "system", "content": system_prompt})
+            self._append_now("message", message={"role": "system", "content": system_prompt})
 
     # --- append API -------------------------------------------------------
 
-    def append_message(self, message: dict[str, Any]) -> str:
-        return self._append("message", message=message)
+    async def append_message(self, message: dict[str, Any]) -> str:
+        return await self._append_off_loop("message", message=message)
 
-    def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
-        return self._append("customMessage", customType=custom_type, message=message)
+    async def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
+        return await self._append_off_loop("customMessage", customType=custom_type, message=message)
 
-    def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
-        return self._append("customEntry", customType=custom_type, data=data)
+    async def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
+        return await self._append_off_loop("customEntry", customType=custom_type, data=data)
 
     def append_model_change(self, model: str, backend: str) -> str:
-        return self._append("model_change", model=model, backend=backend)
+        return self._append_now("model_change", model=model, backend=backend)
 
     def append_session_info(self, name: str) -> str:
         """Mirrors ``Session.append_session_info``, plus keeping the root
         document's ``title`` projection current (Sec2.1: title is mutable via
         session_info) -- purely cosmetic, ``structured_content.tau`` stays
         authoritative regardless."""
-        entry_id = self._append("session_info", name=name)
+        entry_id = self._append_now("session_info", name=name)
         self._client.update_document(self._root_doc_id, title=name, re_embed=False)
         return entry_id
 
-    def append_compaction(
+    async def append_compaction(
         self,
         summary: str,
         first_kept_id: str,
@@ -566,7 +571,7 @@ class JmftsSessionLog:
                 "must name a real entry, or the whole kept region silently drops out of "
                 "the context fold"
             )
-        return self._append(
+        return await self._append_off_loop(
             "compaction",
             summary=summary,
             firstKeptId=first_kept_id,
@@ -578,7 +583,7 @@ class JmftsSessionLog:
             agentSpecId=agent_spec_id,
         )
 
-    def append_elide(
+    async def append_elide(
         self,
         first_kept_id: str,
         *,
@@ -599,7 +604,7 @@ class JmftsSessionLog:
                 "must name a real entry, or the whole kept region silently drops out of "
                 "the context fold"
             )
-        return self._append(
+        return await self._append_off_loop(
             "elide",
             firstKeptId=first_kept_id,
             coveredEntries=covered_entries,
@@ -607,18 +612,18 @@ class JmftsSessionLog:
             agentSpecId=agent_spec_id,
         )
 
-    def append_navigate(self, target_id: str | None) -> str:
+    async def append_navigate(self, target_id: str | None) -> str:
         """Move the leaf to ``target_id`` (``None`` = before the root document).
         The next append after ``navigate(None)`` parents directly under the root
         document -- a second, sibling root-level τ entry (Sec2.3's crux; the
         contract's ``test_navigate_to_none_starts_a_new_root_level_branch``)."""
         if target_id is not None and target_id not in self._ids:
             raise ValueError(f"navigate target {target_id!r} not found")
-        entry_id = self._append("navigate", targetId=target_id)
+        entry_id = await self._append_off_loop("navigate", targetId=target_id)
         self._leaf_id = target_id
         return entry_id
 
-    def append_branch_summary(self, summary: str, from_id: str | None) -> str:
+    async def append_branch_summary(self, summary: str, from_id: str | None) -> str:
         """Re-parent to the branch point BEFORE appending, mirroring
         ``Session.append_branch_summary`` / ``InMemorySessionLog.append_branch_summary``:
         the summary's ``parentId`` (and, here, its JMFTS ``parent_id``) is the
@@ -627,9 +632,9 @@ class JmftsSessionLog:
         if from_id is not None and from_id not in self._ids:
             raise ValueError(f"branch_summary from {from_id!r} not found")
         self._leaf_id = from_id  # branch point, not the current leaf
-        return self._append("branch_summary", summary=summary, fromId=from_id)
+        return await self._append_off_loop("branch_summary", summary=summary, fromId=from_id)
 
-    def append_at(
+    async def append_at(
         self,
         parent_id: str | None,
         entry_type: str,
@@ -645,11 +650,26 @@ class JmftsSessionLog:
         """
         if parent_id is not None and parent_id not in self._ids:
             raise ValueError(f"append parent {parent_id!r} not found")
-        return self._append(entry_type, _parent=parent_id, **payload)
+        return await self._append_off_loop(entry_type, _parent=parent_id, **payload)
 
     # --- internals -------------------------------------------------------
 
-    def _append(self, kind: str, _parent: str | None = _UNSET, **payload: Any) -> str:
+    async def _append_off_loop(self, kind: str, **payload: Any) -> str:
+        """:meth:`_append_now` on a worker thread — the Protocol's ``async`` kept.
+
+        This store's append is a synchronous HTTP POST, so on the head's own event
+        loop it froze the screen for the length of a turn's persistence
+        (docs/BLOCKING-PERSISTENCE.md §1). The thread hop is safe HERE and was
+        rejected as a change to the Protocol: ``httpx.Client`` is thread-safe, the
+        ``SessionLog`` precondition gives a conversation exactly one writer, and
+        each caller awaits this before issuing the next append — so the mirror
+        state ``_append_now`` mutates is only ever touched by one thread at a time.
+        None of those three hold for a foreign implementor, which is why the
+        obligation is this store's and not the contract's.
+        """
+        return await asyncio.to_thread(self._append_now, kind, **payload)
+
+    def _append_now(self, kind: str, _parent: str | None = _UNSET, **payload: Any) -> str:
         """POST the entry document first, then adopt the returned id (Sec2.3) and
         advance the in-memory mirror. ``parent_leaf`` -> ``parent_id`` is exactly
         the crux mapping: ``None`` (root-level) becomes the ROOT DOCUMENT's id.

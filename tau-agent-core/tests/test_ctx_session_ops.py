@@ -174,10 +174,12 @@ class TestCompact:
             compaction_settings=CompactionSettings(enabled=True, keep_recent_tokens=1),
         )
         log = session.session_log
+        # Before `before`, so the compact below adds exactly its own entry.
+        await session.start()
         # Three turns so the cut keeps the most recent and summarizes the prefix.
         for i in range(3):
-            log.append_message(_msg("user", f"u{i}"))
-            log.append_message(_msg("assistant", f"a{i}"))
+            await log.append_message(_msg("user", f"u{i}"))
+            await log.append_message(_msg("assistant", f"a{i}"))
         before = len(log.entries())
 
         result = await _ctx(session).compact()
@@ -203,10 +205,10 @@ class TestSummarizeBranch:
             compaction_settings=CompactionSettings(enabled=False),
         )
         log = session.session_log
-        log.append_message(_msg("user", "u0"))
-        first_asst = log.append_message(_msg("assistant", "a0"))
-        log.append_message(_msg("user", "u1"))
-        log.append_message(_msg("assistant", "a1"))
+        await log.append_message(_msg("user", "u0"))
+        first_asst = await log.append_message(_msg("assistant", "a0"))
+        await log.append_message(_msg("user", "u1"))
+        await log.append_message(_msg("assistant", "a1"))
         assert len(session.messages) == 4
 
         rendered = await _ctx(session).summarize_branch(first_asst)
@@ -228,10 +230,10 @@ class TestSummarizeBranch:
             compaction_settings=CompactionSettings(enabled=False),
         )
         log = session.session_log
-        log.append_message(_msg("user", "u0"))
-        first_asst = log.append_message(_msg("assistant", "a0"))
-        log.append_message(_msg("user", "u1"))
-        log.append_message(_msg("assistant", "a1"))
+        await log.append_message(_msg("user", "u0"))
+        first_asst = await log.append_message(_msg("assistant", "a0"))
+        await log.append_message(_msg("user", "u1"))
+        await log.append_message(_msg("assistant", "a1"))
 
         rendered = await _ctx(session).navigate(first_asst, summarize=True)
 

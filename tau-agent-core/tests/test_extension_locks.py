@@ -55,7 +55,7 @@ def _gate(api):
         return f"released {args}"
 
     async def arm(event, ctx):
-        api.request_user_action("Pick a voice.", lock=True, ask=_ASK, release="gate-release")
+        await api.request_user_action("Pick a voice.", lock=True, ask=_ASK, release="gate-release")
 
     api.register_command("gate-release", {"description": "release", "handler": release})
     api.on("session_start", arm)
@@ -89,7 +89,7 @@ ASK = {
 
 def register(api):
     async def arm(event, ctx):
-        api.request_user_action("Pick a voice.", lock=True, ask=ASK, release="gate-release")
+        await api.request_user_action("Pick a voice.", lock=True, ask=ASK, release="gate-release")
 
     api.on("session_start", arm)
 '''
@@ -212,7 +212,7 @@ async def test_an_ask_without_a_lock_lets_a_prompt_through() -> None:
 
     def ask_only(api):
         async def arm(event, ctx):
-            api.request_user_action("Answer whenever.", ask=_ASK)
+            await api.request_user_action("Answer whenever.", ask=_ASK)
 
         api.on("session_start", arm)
 
@@ -232,10 +232,10 @@ async def test_a_lock_off_the_cursor_is_inert() -> None:
     parent = next(
         e["parentId"] for e in session._session_log.entries() if str(e["id"]) == request_id
     )
-    session._session_log.append_navigate(str(parent))
+    await session._session_log.append_navigate(str(parent))
     assert session.pending_request is None
 
-    session._session_log.append_navigate(request_id)
+    await session._session_log.append_navigate(request_id)
     assert session.pending_request is not None
 
 
@@ -329,7 +329,7 @@ async def test_navigating_back_onto_a_disabled_extensions_lock_re_locks(tmp_path
     await session.disable_extension(session.pending_request.extension)
     assert session.pending_request is None
 
-    session._session_log.append_navigate(request_id)
+    await session._session_log.append_navigate(request_id)
     assert session.pending_request is not None
 
 
@@ -382,7 +382,7 @@ async def test_request_user_action_needs_an_extension_identity() -> None:
     """Fail-Early: the identity is STORED, so a bare api has nothing to store."""
     session = await _session(extensions=[])
     with pytest.raises(RuntimeError, match="no extension identity"):
-        ExtensionAPI(session=session).request_user_action("x", lock=True)
+        await ExtensionAPI(session=session).request_user_action("x", lock=True)
 
 
 def test_refusal_reason_names_the_owner_and_an_escape() -> None:

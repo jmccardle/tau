@@ -10,6 +10,14 @@ reconstructs an agent (§5 Decision 3 — a record, never a contract).
 This file exercises the AgentSession-level write; the SessionLog-algebra
 properties it depends on (durable, reload-invariant, excluded from
 ``context_for``) are T4 in ``testing/session_log_contract.py``.
+
+**The record is queued at construction, not written there** — every test below
+awaits :meth:`AgentSession.start` before reading the log. ``__init__`` and
+``set_model`` are ordinary functions and the appenders are coroutines
+(docs/ASYNC-SESSION-LOG.md §3.2), so what they do is enqueue; the first method
+that appends drains the queue, and ``start()`` is the door for a reader that has
+not prompted yet. The tree's SHAPE is unchanged: the records still land, in
+order, ahead of the turn they describe.
 """
 
 from __future__ import annotations
@@ -48,7 +56,9 @@ def _tool(name: str) -> AgentTool:
     )
 
 
-def _spec_entries(session: AgentSession) -> list[dict]:
+async def _spec_entries(session: AgentSession) -> list[dict]:
+    """Flush the queued records, then return them. See the module docstring."""
+    await session.start()
     return [
         e
         for e in session.session_log.entries()
@@ -57,9 +67,9 @@ def _spec_entries(session: AgentSession) -> list[dict]:
 
 
 class TestConstructionWritesOneRecord:
-    def test_exactly_one_agent_spec_entry_at_construction(self):
+    async def test_exactly_one_agent_spec_entry_at_construction(self):
         session = AgentSession(session_log=InMemorySessionLog(), model=_model())
-        assert len(_spec_entries(session)) == 1
+        assert len(await _spec_entries(session)) == 1
 
     def test_it_never_reaches_model_input(self):
         """A plain customEntry — ConversationTree excludes the KIND from the fold
@@ -67,74 +77,74 @@ class TestConstructionWritesOneRecord:
         session = AgentSession(session_log=InMemorySessionLog(), model=_model())
         assert session.messages == []
 
-    def test_carries_the_model_projection(self):
+    async def test_carries_the_model_projection(self):
         session = AgentSession(session_log=InMemorySessionLog(), model=_model("gpt-4o"))
-        data = _spec_entries(session)[0]["data"]
+        data = (await _spec_entries(session))[0]["data"]
         assert data["model"] == session.get_model()
         assert data["model"]["id"] == "gpt-4o"
 
-    def test_carries_tool_names_not_tool_objects(self):
+    async def test_carries_tool_names_not_tool_objects(self):
         session = AgentSession(
             session_log=InMemorySessionLog(), model=_model(), tools=[_tool("read"), _tool("grep")]
         )
-        data = _spec_entries(session)[0]["data"]
+        data = (await _spec_entries(session))[0]["data"]
         assert data["tools"] == ["read", "grep"]
 
-    def test_carries_extension_labels(self):
+    async def test_carries_extension_labels(self):
         def my_extension(api):
             pass
 
         session = AgentSession(
             session_log=InMemorySessionLog(), model=_model(), extensions=[my_extension]
         )
-        data = _spec_entries(session)[0]["data"]
+        data = (await _spec_entries(session))[0]["data"]
         assert len(data["extensions"]) == 1
         assert "my_extension" in data["extensions"][0]
 
-    def test_carries_the_process_cwd(self):
+    async def test_carries_the_process_cwd(self):
         session = AgentSession(session_log=InMemorySessionLog(), model=_model())
-        data = _spec_entries(session)[0]["data"]
+        data = (await _spec_entries(session))[0]["data"]
         assert data["cwd"] == os.getcwd()
 
 
 class TestSystemPromptIsDigestedNeverVerbatim:
-    def test_digest_matches_the_documented_sha256_convention(self):
+    async def test_digest_matches_the_documented_sha256_convention(self):
         prompt = "You are a helpful assistant with access to project secrets."
         session = AgentSession(
             session_log=InMemorySessionLog(), model=_model(), system_prompt=prompt
         )
-        data = _spec_entries(session)[0]["data"]
+        data = (await _spec_entries(session))[0]["data"]
         assert data["system_prompt_digest"] == hashlib.sha256(prompt.encode("utf-8")).hexdigest()
         assert data["system_prompt_digest"] == _system_prompt_digest(prompt)
 
-    def test_the_prompt_text_itself_never_appears_in_the_entry(self):
+    async def test_the_prompt_text_itself_never_appears_in_the_entry(self):
         prompt = "SECRET-PROJECT-INSTRUCTIONS-MARKER"
         session = AgentSession(
             session_log=InMemorySessionLog(), model=_model(), system_prompt=prompt
         )
-        entry = _spec_entries(session)[0]
+        entry = (await _spec_entries(session))[0]
         assert prompt not in str(entry)
 
-    def test_two_different_prompts_never_collide(self):
+    async def test_two_different_prompts_never_collide(self):
         s1 = AgentSession(
             session_log=InMemorySessionLog(), model=_model(), system_prompt="prompt one"
         )
         s2 = AgentSession(
             session_log=InMemorySessionLog(), model=_model(), system_prompt="prompt two"
         )
-        d1 = _spec_entries(s1)[0]["data"]["system_prompt_digest"]
-        d2 = _spec_entries(s2)[0]["data"]["system_prompt_digest"]
+        d1 = (await _spec_entries(s1))[0]["data"]["system_prompt_digest"]
+        d2 = (await _spec_entries(s2))[0]["data"]["system_prompt_digest"]
         assert d1 != d2
 
 
 class TestApiKeyNeverEntersTheTree:
-    def test_api_key_absent_hashed_or_otherwise(self):
+    async def test_api_key_absent_hashed_or_otherwise(self):
         """Absolute prohibition (W2): api_key must NEVER enter the tree, not even
         hashed or truncated."""
         session = AgentSession(
             session_log=InMemorySessionLog(), model=_model(), api_key="sk-super-secret-key"
         )
-        entry = _spec_entries(session)[0]
+        entry = (await _spec_entries(session))[0]
         blob = str(entry)
         assert "sk-super-secret-key" not in blob
         assert "api_key" not in entry["data"]
@@ -144,17 +154,17 @@ class TestApiKeyNeverEntersTheTree:
 
 
 class TestSetModelIsASpecSwap:
-    def test_set_model_appends_a_second_agent_spec_record(self):
+    async def test_set_model_appends_a_second_agent_spec_record(self):
         session = AgentSession(
             session_log=InMemorySessionLog(),
             model=_model("model-a"),
             model_resolver=lambda name: _model(name),
         )
-        assert len(_spec_entries(session)) == 1
+        assert len(await _spec_entries(session)) == 1
 
         session.set_model("model-b")
 
-        entries = _spec_entries(session)
+        entries = await _spec_entries(session)
         assert len(entries) == 2
         assert entries[0]["data"]["model"]["id"] == "model-a"
         assert entries[1]["data"]["model"]["id"] == "model-b"
@@ -195,7 +205,7 @@ class TestLoadedFileExtensionsAppearInALaterRecord:
 
         session.set_model("model-b")
 
-        data = _spec_entries(session)[-1]["data"]
+        data = (await _spec_entries(session))[-1]["data"]
         assert str(ext_path) in data["extensions"]
 
     async def test_a_disabled_file_extension_drops_out_of_a_later_record(self, tmp_path):
@@ -212,7 +222,7 @@ class TestLoadedFileExtensionsAppearInALaterRecord:
 
         session.set_model("model-b")
 
-        data = _spec_entries(session)[-1]["data"]
+        data = (await _spec_entries(session))[-1]["data"]
         assert str(ext_path) not in data["extensions"]
 
     async def test_load_extensions_alone_writes_no_new_record(self, tmp_path):
@@ -226,6 +236,6 @@ class TestLoadedFileExtensionsAppearInALaterRecord:
         session = AgentSession(session_log=InMemorySessionLog(), model=_model("model-a"))
         await session.load_extensions([str(ext_path)], discover=False)
 
-        entries = _spec_entries(session)
+        entries = await _spec_entries(session)
         assert len(entries) == 1
         assert entries[0]["data"]["extensions"] == []

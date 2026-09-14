@@ -65,12 +65,12 @@ async def submit(app: TauApp, text: str):
     return await app.on_input_submitted(Input.Submitted(chat_input, text))
 
 
-def seed(app: TauApp, cwd: str, name: str, *, turns: int = 1):
+async def seed(app: TauApp, cwd: str, name: str, *, turns: int = 1):
     """Write one named session for *cwd* through the app's own catalog."""
     session = app.session_catalog.create(cwd, "m", "openai", system_prompt="sys", name=name)
     for index in range(turns):
-        session.append_message({"role": "user", "content": f"turn {index}"})
-        session.append_message({"role": "assistant", "content": [{"type": "text", "text": "ok"}]})
+        await session.append_message({"role": "user", "content": f"turn {index}"})
+        await session.append_message({"role": "assistant", "content": [{"type": "text", "text": "ok"}]})
     return session
 
 
@@ -258,8 +258,8 @@ async def test_picker_lists_only_this_directorys_sessions(app) -> None:
     """
     async with app.run_test() as pilot:
         await pilot.pause()
-        seed(app, os.getcwd(), "here: fix the accumulator")
-        seed(app, OTHER_CWD, "elsewhere: unrelated work")
+        await seed(app, os.getcwd(), "here: fix the accumulator")
+        await seed(app, OTHER_CWD, "elsewhere: unrelated work")
 
         modal = await open_picker(app, pilot)
         assert titles(modal) == ["here: fix the accumulator"]
@@ -269,8 +269,8 @@ async def test_tab_widens_the_scope_to_every_directory(app) -> None:
     """Tab re-runs the loader with ``cwd=None`` — pi's Current/All toggle."""
     async with app.run_test() as pilot:
         await pilot.pause()
-        seed(app, os.getcwd(), "here: fix the accumulator")
-        seed(app, OTHER_CWD, "elsewhere: unrelated work")
+        await seed(app, os.getcwd(), "here: fix the accumulator")
+        await seed(app, OTHER_CWD, "elsewhere: unrelated work")
 
         modal = await open_picker(app, pilot)
         assert modal.scope == SCOPE_CWD
@@ -302,7 +302,7 @@ async def test_tab_is_not_focus_next_in_the_picker(app) -> None:
     """
     async with app.run_test() as pilot:
         await pilot.pause()
-        seed(app, os.getcwd(), "here")
+        await seed(app, os.getcwd(), "here")
         modal = await open_picker(app, pilot)
         table = modal.query_one(DataTable)
         assert table.has_focus
@@ -316,8 +316,8 @@ async def test_slash_filters_the_rows(app) -> None:
     """``/`` opens the filter; typing narrows the table by fuzzy match (§6)."""
     async with app.run_test() as pilot:
         await pilot.pause()
-        seed(app, os.getcwd(), "port the compaction anchor from pi")
-        seed(app, os.getcwd(), "add a NATS bus extension")
+        await seed(app, os.getcwd(), "port the compaction anchor from pi")
+        await seed(app, os.getcwd(), "add a NATS bus extension")
 
         modal = await open_picker(app, pilot)
         assert len(titles(modal)) == 2
@@ -346,7 +346,7 @@ async def test_enter_lands_in_the_chosen_session(app) -> None:
     """
     async with app.run_test() as pilot:
         await pilot.pause()
-        seeded = seed(app, os.getcwd(), "the one to resume")
+        seeded = await seed(app, os.getcwd(), "the one to resume")
         assert app.current_session is None
 
         modal = await open_picker(app, pilot)
@@ -371,7 +371,7 @@ async def test_escape_cancels_without_loading_anything(app) -> None:
     """Esc on the list is "never mind" — no session becomes current."""
     async with app.run_test() as pilot:
         await pilot.pause()
-        seed(app, os.getcwd(), "not this one")
+        await seed(app, os.getcwd(), "not this one")
 
         await open_picker(app, pilot)
         await pilot.press("escape")
@@ -394,7 +394,7 @@ async def test_an_empty_directory_says_so_rather_than_showing_nothing(app) -> No
     """
     async with app.run_test() as pilot:
         await pilot.pause()
-        seed(app, OTHER_CWD, "somewhere else entirely")
+        await seed(app, OTHER_CWD, "somewhere else entirely")
 
         modal = await open_picker(app, pilot)
         assert titles(modal) == []
@@ -405,8 +405,8 @@ async def test_the_status_line_counts_the_filtered_rows(app) -> None:
     """ "1 of 2" while filtering, "2" when not — the count says which it is."""
     async with app.run_test() as pilot:
         await pilot.pause()
-        seed(app, os.getcwd(), "port the compaction anchor from pi")
-        seed(app, os.getcwd(), "add a NATS bus extension")
+        await seed(app, os.getcwd(), "port the compaction anchor from pi")
+        await seed(app, os.getcwd(), "add a NATS bus extension")
 
         modal = await open_picker(app, pilot)
         assert status_text(modal).startswith("2 sessions in ")
@@ -425,7 +425,7 @@ async def test_the_status_line_never_takes_a_row_from_the_table(app) -> None:
     """
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
-        seed(app, os.getcwd(), "one")
+        await seed(app, os.getcwd(), "one")
         modal = await open_picker(app, pilot)
         assert modal.query_one("#session-picker-status", Static).region.height == 1
 
@@ -438,7 +438,7 @@ async def test_the_status_line_keeps_the_end_of_a_long_path(app) -> None:
     """
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
-        seed(app, os.getcwd(), "one")
+        await seed(app, os.getcwd(), "one")
         modal = await open_picker(app, pilot)
         status = status_text(modal)
         leaf = os.path.basename(os.getcwd())
@@ -450,7 +450,7 @@ async def test_a_long_title_is_elided_rather_than_wrapped(app) -> None:
     turns a single session into three rows and pushes the rest off the screen."""
     async with app.run_test() as pilot:
         await pilot.pause()
-        seed(app, os.getcwd(), "a session name far longer than any column this dialog can give it")
+        await seed(app, os.getcwd(), "a session name far longer than any column this dialog can give it")
 
         modal = await open_picker(app, pilot)
         table = modal.query_one(DataTable)
@@ -549,7 +549,7 @@ async def test_slash_resume_with_a_ref_loads_that_session(dispatch_app) -> None:
         await pilot.pause()
         await dispatch_app.action_new_chat()
         await pilot.pause()
-        seeded = seed(dispatch_app, os.getcwd(), "resume me by name")
+        seeded = await seed(dispatch_app, os.getcwd(), "resume me by name")
 
         await submit(dispatch_app, f"/resume {seeded.id}")
         for _ in range(40):
@@ -603,7 +603,7 @@ async def test_the_three_surfaces_are_one_handler(dispatch_app) -> None:
 async def test_the_dialog_fits_and_is_centred(app, size) -> None:
     async with app.run_test(size=size) as pilot:
         await pilot.pause()
-        seed(app, os.getcwd(), "one")
+        await seed(app, os.getcwd(), "one")
         modal = await open_picker(app, pilot)
         assert isinstance(modal, ModalScreen)
 
@@ -626,7 +626,7 @@ async def test_no_row_overflows_the_screen(app, size) -> None:
     async with app.run_test(size=size) as pilot:
         await pilot.pause()
         for index in range(6):
-            seed(app, os.getcwd(), f"session number {index} with a reasonably long name")
+            await seed(app, os.getcwd(), f"session number {index} with a reasonably long name")
         modal = await open_picker(app, pilot)
 
         for number, row in enumerate(render_text(app).splitlines()):

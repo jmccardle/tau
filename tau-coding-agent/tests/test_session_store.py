@@ -71,10 +71,10 @@ def test_filename_is_timestamp_then_uuid(tmp_path):
 # ── round-trip ──────────────────────────────────────────────────────────────
 
 
-def test_round_trip_messages_match(tmp_path):
+async def test_round_trip_messages_match(tmp_path):
     session = _create(tmp_path, system_prompt="You are helpful.")
-    session.append_message({"role": "user", "content": "hello"})
-    session.append_message({"role": "assistant", "content": [{"type": "text", "text": "hi there"}]})
+    await session.append_message({"role": "user", "content": "hello"})
+    await session.append_message({"role": "assistant", "content": [{"type": "text", "text": "hi there"}]})
 
     reloaded = Session.load(session.path)
     assert reloaded.messages == [
@@ -87,7 +87,7 @@ def test_round_trip_messages_match(tmp_path):
     assert reloaded.id == session.id
 
 
-def test_messages_never_concatenates_mutually_exclusive_fork_alternatives(tmp_path):
+async def test_messages_never_concatenates_mutually_exclusive_fork_alternatives(tmp_path):
     """``messages`` is the cursor's ancestry (docs/LANE-REMOVAL.md §3.2).
 
     This is the bug the lane removal was argued from, made executable: ``messages`` was
@@ -97,12 +97,12 @@ def test_messages_never_concatenates_mutually_exclusive_fork_alternatives(tmp_pa
     the path I am looking at".
     """
     session = _create(tmp_path)
-    root = session.append_message({"role": "user", "content": "shared question"})
-    session.append_message({"role": "assistant", "content": "ALTERNATIVE ONE"})
-    session.append_navigate(root)
-    session.append_message({"role": "assistant", "content": "ALTERNATIVE TWO"})
-    session.append_navigate(root)
-    session.append_message({"role": "assistant", "content": "ALTERNATIVE THREE"})
+    root = await session.append_message({"role": "user", "content": "shared question"})
+    await session.append_message({"role": "assistant", "content": "ALTERNATIVE ONE"})
+    await session.append_navigate(root)
+    await session.append_message({"role": "assistant", "content": "ALTERNATIVE TWO"})
+    await session.append_navigate(root)
+    await session.append_message({"role": "assistant", "content": "ALTERNATIVE THREE"})
 
     reloaded = Session.load(session.path)
     assert [m["content"] for m in reloaded.messages] == ["shared question", "ALTERNATIVE THREE"]
@@ -116,20 +116,20 @@ def test_messages_never_concatenates_mutually_exclusive_fork_alternatives(tmp_pa
         for e in reloaded.entries()
         if e.get("message", {}).get("content") == "ALTERNATIVE TWO"
     )
-    reloaded.append_navigate(two)
+    await reloaded.append_navigate(two)
     assert [m["content"] for m in reloaded.messages] == ["shared question", "ALTERNATIVE TWO"]
 
 
-def test_messages_excludes_a_sub_agents_turns_the_same_way_it_excludes_a_forks(tmp_path):
+async def test_messages_excludes_a_sub_agents_turns_the_same_way_it_excludes_a_forks(tmp_path):
     """The §1 asymmetry at the ``Session`` level: a sub-agent branch and a user's fork
     are the same shape, and are now excluded by the same rule — ancestry — rather than
     one by a tag and the other not at all."""
     session = _create(tmp_path)
-    root = session.append_message({"role": "user", "content": "shared question"})
-    session.append_message({"role": "assistant", "content": "the answer"})
+    root = await session.append_message({"role": "user", "content": "shared question"})
+    await session.append_message({"role": "assistant", "content": "the answer"})
 
     branch = open_branch(session, root, label="sub-agent")
-    branch.append_message({"role": "user", "content": "SUB-AGENT ONLY"})
+    await branch.append_message({"role": "user", "content": "SUB-AGENT ONLY"})
 
     assert [m["content"] for m in session.messages] == ["shared question", "the answer"]
     assert all("branchOf" not in e for e in session.entries()), "and no marker was written"
@@ -154,9 +154,9 @@ def test_model_property_raises_without_model_change(tmp_path):
 # ── entries() / header raw views (seam 2) ───────────────────────────────────
 
 
-def test_entries_and_header_raw_views(tmp_path):
+async def test_entries_and_header_raw_views(tmp_path):
     session = _create(tmp_path, system_prompt="sys")
-    session.append_message({"role": "user", "content": "q"})
+    await session.append_message({"role": "user", "content": "q"})
 
     header = session.header
     assert header["type"] == "session"
@@ -176,9 +176,9 @@ def test_entries_and_header_raw_views(tmp_path):
 # ── fork (seam-free, §5.5) ──────────────────────────────────────────────────
 
 
-def test_fork_new_file_parent_header_source_untouched(tmp_path):
+async def test_fork_new_file_parent_header_source_untouched(tmp_path):
     source = _create(tmp_path, system_prompt="sys")
-    source.append_message({"role": "user", "content": "original"})
+    await source.append_message({"role": "user", "content": "original"})
     source_bytes = source.path.read_bytes()
 
     forked = Session.fork(source, CWD, base_dir=tmp_path)
@@ -188,18 +188,18 @@ def test_fork_new_file_parent_header_source_untouched(tmp_path):
     assert source.path.read_bytes() == source_bytes  # source file untouched
     # Fork carries the source transcript; new turns append onto it.
     assert forked.messages == source.messages
-    forked.append_message({"role": "user", "content": "branch"})
+    await forked.append_message({"role": "user", "content": "branch"})
     assert Session.load(forked.path).messages[-1] == {"role": "user", "content": "branch"}
 
 
 # ── listing & scoping (§5.8) ────────────────────────────────────────────────
 
 
-def test_list_sessions_cwd_vs_all(tmp_path):
+async def test_list_sessions_cwd_vs_all(tmp_path):
     a = _create(tmp_path, cwd=CWD)
-    a.append_message({"role": "user", "content": "in proj"})
+    await a.append_message({"role": "user", "content": "in proj"})
     b = _create(tmp_path, cwd=OTHER_CWD)
-    b.append_message({"role": "user", "content": "in other"})
+    await b.append_message({"role": "user", "content": "in other"})
 
     scoped = list_sessions(CWD, base_dir=tmp_path)
     assert [i.id for i in scoped] == [a.id]
@@ -208,11 +208,11 @@ def test_list_sessions_cwd_vs_all(tmp_path):
     assert {i.id for i in everything} == {a.id, b.id}
 
 
-def test_most_recent_returns_newest(tmp_path):
+async def test_most_recent_returns_newest(tmp_path):
     older = _create(tmp_path)
-    older.append_message({"role": "user", "content": "old"})
+    await older.append_message({"role": "user", "content": "old"})
     newer = _create(tmp_path)
-    newer.append_message({"role": "user", "content": "new"})
+    await newer.append_message({"role": "user", "content": "new"})
 
     # most_recent sorts by .modified (last entry time) desc.
     assert most_recent(CWD, base_dir=tmp_path) in (older.path, newer.path)
@@ -223,10 +223,10 @@ def test_most_recent_returns_newest(tmp_path):
 # ── read_session_info (§5.7) ────────────────────────────────────────────────
 
 
-def test_session_info_fields(tmp_path):
+async def test_session_info_fields(tmp_path):
     session = _create(tmp_path, system_prompt="sys", name="Title")
-    session.append_message({"role": "user", "content": "first user"})
-    session.append_message(
+    await session.append_message({"role": "user", "content": "first user"})
+    await session.append_message(
         {"role": "assistant", "content": [{"type": "text", "text": "the answer"}]}
     )
 
@@ -245,7 +245,7 @@ def test_session_info_fields(tmp_path):
     assert info.parent is None
 
 
-def test_session_info_counts_the_ancestry_not_the_file(tmp_path):
+async def test_session_info_counts_the_ancestry_not_the_file(tmp_path):
     """The picker previews the conversation you would RESUME (docs/LANE-REMOVAL.md §3.2).
 
     Before this was ancestry-scoped it counted every ``message`` entry in the file, so a
@@ -254,12 +254,12 @@ def test_session_info_counts_the_ancestry_not_the_file(tmp_path):
     writes no tag.
     """
     session = _create(tmp_path)
-    root = session.append_message({"role": "user", "content": "shared question"})
-    session.append_message({"role": "assistant", "content": "ALTERNATIVE ONE"})
-    session.append_navigate(root)
-    session.append_message({"role": "assistant", "content": "ALTERNATIVE TWO"})
-    session.append_navigate(root)
-    session.append_message({"role": "assistant", "content": "ALTERNATIVE THREE"})
+    root = await session.append_message({"role": "user", "content": "shared question"})
+    await session.append_message({"role": "assistant", "content": "ALTERNATIVE ONE"})
+    await session.append_navigate(root)
+    await session.append_message({"role": "assistant", "content": "ALTERNATIVE TWO"})
+    await session.append_navigate(root)
+    await session.append_message({"role": "assistant", "content": "ALTERNATIVE THREE"})
 
     info = read_session_info(session.path)
     assert info is not None
@@ -268,20 +268,20 @@ def test_session_info_counts_the_ancestry_not_the_file(tmp_path):
     assert info.last_message == "ALTERNATIVE THREE"
 
 
-def test_session_info_title_cannot_come_from_a_sub_agents_prompt(tmp_path):
+async def test_session_info_title_cannot_come_from_a_sub_agents_prompt(tmp_path):
     """``first_message`` becomes the session's display title. A sub-agent's opening
     prompt is not a message of this conversation — and now it is excluded for the
     structural reason (it is not an ancestor of the cursor), which holds whether the
     subtree was written by ``spawn_branch`` or by a user forking at the same node."""
     session = _create(tmp_path)
-    root = session.append_message({"role": "user", "content": "the real first message"})
-    session.append_message({"role": "assistant", "content": "the real answer"})
+    root = await session.append_message({"role": "user", "content": "the real first message"})
+    await session.append_message({"role": "assistant", "content": "the real answer"})
 
     branch = open_branch(session, root, label="sub-agent")
-    branch.append_message({"role": "user", "content": "SUB-AGENT INTERNAL PROMPT"})
-    branch.append_message({"role": "assistant", "content": "sub-agent scratch work"})
+    await branch.append_message({"role": "user", "content": "SUB-AGENT INTERNAL PROMPT"})
+    await branch.append_message({"role": "assistant", "content": "sub-agent scratch work"})
 
-    session.append_message({"role": "user", "content": "the follow-up"})
+    await session.append_message({"role": "user", "content": "the follow-up"})
 
     info = read_session_info(session.path)
     assert info is not None
@@ -307,10 +307,10 @@ def test_create_with_explicit_id(tmp_path):
     assert "deadbeef" in session.path.name
 
 
-def test_create_in_memory_no_disk_flush(tmp_path):
+async def test_create_in_memory_no_disk_flush(tmp_path):
     base = tmp_path / "sessions"
     session = Session.create_in_memory(CWD, "local-llm", "openai", system_prompt="sys")
-    session.append_message({"role": "user", "content": "ephemeral"})
+    await session.append_message({"role": "user", "content": "ephemeral"})
 
     assert session.path is None
     assert session.messages == [
@@ -324,14 +324,14 @@ def test_create_in_memory_no_disk_flush(tmp_path):
 # ── seam 3: lifecycle events ────────────────────────────────────────────────
 
 
-def test_lifecycle_events_emitted(tmp_path):
+async def test_lifecycle_events_emitted(tmp_path):
     events: list[str] = []
     unsubscribe = subscribe_session_events(lambda e: events.append(e["type"]))
     try:
         source = _create(tmp_path)  # → session_start
         Session.fork(source, CWD, base_dir=tmp_path)  # → session_before_fork (+ no start)
-        keep = source.append_message({"role": "user", "content": "recent"})
-        source.append_compaction("summary", first_kept_id=keep, tokens_before=100, **_PROV)
+        keep = await source.append_message({"role": "user", "content": "recent"})
+        await source.append_compaction("summary", first_kept_id=keep, tokens_before=100, **_PROV)
     finally:
         unsubscribe()
 
@@ -351,11 +351,11 @@ def test_unsubscribe_stops_delivery(tmp_path):
 # ── navigate / branch_summary entry kinds + persisted cursor (§2.2, §2.4) ────
 
 
-def test_navigate_entry_round_trips(tmp_path):
+async def test_navigate_entry_round_trips(tmp_path):
     session = _create(tmp_path)
-    interior = session.append_message({"role": "user", "content": "hello"})
-    session.append_message({"role": "assistant", "content": "hi"})
-    nav_id = session.append_navigate(interior)
+    interior = await session.append_message({"role": "user", "content": "hello"})
+    await session.append_message({"role": "assistant", "content": "hi"})
+    nav_id = await session.append_navigate(interior)
 
     reloaded = Session.load(session.path)
     entries = reloaded.entries()
@@ -366,20 +366,20 @@ def test_navigate_entry_round_trips(tmp_path):
     assert any(e.get("message") == {"role": "assistant", "content": "hi"} for e in entries)
 
 
-def test_navigate_null_target_is_pre_root(tmp_path):
+async def test_navigate_null_target_is_pre_root(tmp_path):
     session = _create(tmp_path)
-    session.append_message({"role": "user", "content": "hello"})
-    session.append_navigate(None)
+    await session.append_message({"role": "user", "content": "hello"})
+    await session.append_navigate(None)
 
     reloaded = Session.load(session.path)
     assert reloaded._leaf_id is None  # navigate(None) → before-first-entry cursor
     assert reloaded.entries()[-1]["targetId"] is None
 
 
-def test_branch_summary_round_trips(tmp_path):
+async def test_branch_summary_round_trips(tmp_path):
     session = _create(tmp_path)
-    from_id = session.append_message({"role": "user", "content": "explore"})
-    bs_id = session.append_branch_summary("did some exploring", from_id)
+    from_id = await session.append_message({"role": "user", "content": "explore"})
+    bs_id = await session.append_branch_summary("did some exploring", from_id)
 
     reloaded = Session.load(session.path)
     bs = next(e for e in reloaded.entries() if e["id"] == bs_id)
@@ -392,11 +392,11 @@ def test_branch_summary_round_trips(tmp_path):
     assert reloaded._leaf_id == bs_id
 
 
-def test_cursor_persists_across_navigate_reload(tmp_path):
+async def test_cursor_persists_across_navigate_reload(tmp_path):
     session = _create(tmp_path)
-    interior = session.append_message({"role": "user", "content": "first"})
-    session.append_message({"role": "assistant", "content": "second"})
-    session.append_navigate(interior)
+    interior = await session.append_message({"role": "user", "content": "first"})
+    await session.append_message({"role": "assistant", "content": "second"})
+    await session.append_navigate(interior)
     # In-memory cursor advanced to the target, not the navigate entry.
     assert session._leaf_id == interior
 
@@ -404,35 +404,35 @@ def test_cursor_persists_across_navigate_reload(tmp_path):
     assert reloaded._leaf_id == interior  # persisted cursor survives reload
 
 
-def test_navigate_unknown_target_raises(tmp_path):
+async def test_navigate_unknown_target_raises(tmp_path):
     session = _create(tmp_path)
-    session.append_message({"role": "user", "content": "hello"})
+    await session.append_message({"role": "user", "content": "hello"})
     with pytest.raises(ValueError, match="navigate target"):
-        session.append_navigate("deadbeef")
+        await session.append_navigate("deadbeef")
     # nothing persisted for the bad call.
     assert all(e.get("type") != "navigate" for e in session.entries())
 
 
-def test_branch_summary_unknown_from_raises(tmp_path):
+async def test_branch_summary_unknown_from_raises(tmp_path):
     # Mirror pi branchWithSummary()'s "Entry ... not found" throw.
     session = _create(tmp_path)
-    session.append_message({"role": "user", "content": "explore"})
+    await session.append_message({"role": "user", "content": "explore"})
     with pytest.raises(ValueError, match="branch_summary from"):
-        session.append_branch_summary("summary", "deadbeef")
+        await session.append_branch_summary("summary", "deadbeef")
     assert all(e.get("type") != "branch_summary" for e in session.entries())
 
 
-def test_pi_parity_no_navigate_cursor_is_last_entry(tmp_path):
+async def test_pi_parity_no_navigate_cursor_is_last_entry(tmp_path):
     session = _create(tmp_path)
-    session.append_message({"role": "user", "content": "hello"})
-    last_id = session.append_message({"role": "assistant", "content": "hi"})
+    await session.append_message({"role": "user", "content": "hello"})
+    last_id = await session.append_message({"role": "assistant", "content": "hi"})
 
     reloaded = Session.load(session.path)
     assert reloaded._leaf_id == last_id
     assert reloaded.entries()[-1]["id"] == last_id
 
 
-def test_catalog_create_ephemeral_never_touches_disk(tmp_path):
+async def test_catalog_create_ephemeral_never_touches_disk(tmp_path):
     """The contract says an ephemeral session is unreachable; here it is stronger.
 
     Unreachable-through-the-catalog is satisfiable by a store that writes the file
@@ -442,12 +442,12 @@ def test_catalog_create_ephemeral_never_touches_disk(tmp_path):
     """
     catalog = FileSessionCatalog(base_dir=tmp_path)
     session = catalog.create_ephemeral(CWD, "local-llm", "openai", system_prompt="sys")
-    session.append_message({"role": "user", "content": "ephemeral"})
+    await session.append_message({"role": "user", "content": "ephemeral"})
     assert session.path is None
     assert not (tmp_path / "sessions").exists()
 
 
-def test_catalog_fork_leaves_the_source_file_byte_identical(tmp_path):
+async def test_catalog_fork_leaves_the_source_file_byte_identical(tmp_path):
     """Forking must not rewrite the source's JSONL — not one byte.
 
     The contract checks the source's *messages* are unchanged, which a store could
@@ -456,7 +456,7 @@ def test_catalog_fork_leaves_the_source_file_byte_identical(tmp_path):
     """
     catalog = FileSessionCatalog(base_dir=tmp_path)
     source = catalog.create(CWD, "local-llm", "openai", system_prompt="sys")
-    source.append_message({"role": "user", "content": "original"})
+    await source.append_message({"role": "user", "content": "original"})
     source_bytes = source.path.read_bytes()
 
     forked = catalog.fork(source, CWD)
@@ -465,7 +465,7 @@ def test_catalog_fork_leaves_the_source_file_byte_identical(tmp_path):
     assert source.path.read_bytes() == source_bytes
 
 
-def test_catalog_resolve_ref_accepts_a_jsonl_path(tmp_path):
+async def test_catalog_resolve_ref_accepts_a_jsonl_path(tmp_path):
     """This store's own override: a REF may be a path, not just an id/prefix.
 
     ``SessionCatalog.resolve_ref`` only knows ids — ``.jsonl`` is a filesystem
@@ -474,7 +474,7 @@ def test_catalog_resolve_ref_accepts_a_jsonl_path(tmp_path):
     """
     catalog = FileSessionCatalog(base_dir=tmp_path)
     session = catalog.create(CWD, "local-llm", "openai")
-    session.append_message({"role": "user", "content": "hi"})
+    await session.append_message({"role": "user", "content": "hi"})
 
     assert catalog.resolve_ref(str(session.path), cwd=CWD).id == session.id
     assert catalog.resolve_ref(session.id, cwd=CWD).id == session.id
@@ -484,7 +484,7 @@ def _stamped(role: str, text: str, stamp: int | None) -> dict:
     return {"role": role, "content": text, "timestamp": stamp}
 
 
-def test_timestamps_survive_write_reload_fork_and_paste(tmp_path):
+async def test_timestamps_survive_write_reload_fork_and_paste(tmp_path):
     """The parity requirement, as one check (docs/MESSAGE-TIMESTAMPS.md §4).
 
     A head that reloads a session, or a second head that opens the same file,
@@ -494,10 +494,10 @@ def test_timestamps_survive_write_reload_fork_and_paste(tmp_path):
     """
     catalog = FileSessionCatalog(base_dir=tmp_path)
     session = catalog.create(CWD, "local-llm", "openai", system_prompt="sys")
-    session.append_message(_stamped("user", "ask", 1_700_000_000_000))
-    session.append_message(_stamped("assistant", "think", 1_700_000_003_500))
-    session.append_message(_stamped("toolResult", "rows", 1_700_000_004_000))
-    session.append_message(_stamped("assistant", "answer", 1_700_000_009_250))
+    await session.append_message(_stamped("user", "ask", 1_700_000_000_000))
+    await session.append_message(_stamped("assistant", "think", 1_700_000_003_500))
+    await session.append_message(_stamped("toolResult", "rows", 1_700_000_004_000))
+    await session.append_message(_stamped("assistant", "answer", 1_700_000_009_250))
 
     def stamps(sess) -> list:
         return [
@@ -521,12 +521,12 @@ def test_timestamps_survive_write_reload_fork_and_paste(tmp_path):
     assert stamps(catalog.fork(session, CWD)) == written
 
 
-def test_a_legacy_zero_reads_back_as_unknown(tmp_path):
+async def test_a_legacy_zero_reads_back_as_unknown(tmp_path):
     """τ did not run in 1970. A 0 on disk is the value ``openai-completions``
     fabricated before this fix, and load is the ONE place it is interpreted."""
     catalog = FileSessionCatalog(base_dir=tmp_path)
     session = catalog.create(CWD, "local-llm", "openai", system_prompt="sys")
-    session.append_message(_stamped("assistant", "old", 0))
+    await session.append_message(_stamped("assistant", "old", 0))
 
     reloaded = Session.load(session.path)
     messages = [e["message"] for e in reloaded.entries() if e.get("type") == "message"]

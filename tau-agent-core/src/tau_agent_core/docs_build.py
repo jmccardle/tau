@@ -155,6 +155,10 @@ class ObjectDoc:
         raises: ``(exception, prose)`` pairs from the ``Raises:`` section.
         examples: ``(label, prose)`` for each ``Examples:`` section and each
             google-style admonition (``Note:``, ``Warning:``, ``See Also:``).
+        is_async: Whether the callable is an ``async def``. Read from griffe's
+            labels, because a reference that renders a coroutine with the same
+            signature line as an ordinary function tells a caller to write the
+            one call that cannot work.
         annotation: For an attribute, its annotation as source text.
         filepath: The file the object is defined in.
         lineno: The line the definition starts on.
@@ -178,6 +182,7 @@ class ObjectDoc:
     annotation: str | None
     filepath: str
     lineno: int
+    is_async: bool = False
     members: tuple["ObjectDoc", ...] = ()
 
     @property
@@ -533,6 +538,7 @@ def _build(
         annotation=(None if _annotation is None else str(_annotation)),
         filepath=str(obj.filepath),
         lineno=obj.lineno or 0,
+        is_async="async" in getattr(obj, "labels", ()),
         members=tuple(sorted(members, key=lambda m: m.name)),
     )
 
@@ -674,7 +680,8 @@ def _signature(obj: ObjectDoc) -> str:
 
     Returns:
         One line, with the bare ``*`` separator inserted before the first
-        keyword-only parameter when no ``*args`` already supplies it.
+        keyword-only parameter when no ``*args`` already supplies it, and an
+        ``async`` prefix on a coroutine.
     """
     parts: list[str] = []
     seen_star = False
@@ -686,7 +693,7 @@ def _signature(obj: ObjectDoc) -> str:
             seen_star = True
         parts.append(_param_text(param))
     rendered = ", ".join(parts)
-    prefix = "class " if obj.kind == "class" else ""
+    prefix = "class " if obj.kind == "class" else ("async " if obj.is_async else "")
     suffix = f" -> {obj.annotation}" if obj.kind == "function" and obj.annotation else ""
     return f"{prefix}{obj.name}({rendered}){suffix}"
 

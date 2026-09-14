@@ -3773,7 +3773,7 @@ async def _handle_navigate(
     from tau_agent_core import tree_ops
 
     async with tree_mutation_guard(handler, verb="navigate", appenders=("append_navigate",)) as s:
-        messages = tree_ops.navigate(s.session_log, params["target_id"])
+        messages = await tree_ops.navigate(s.session_log, params["target_id"])
         return {"messages": messages, "cursor": s.session_log.cursor}
 
 
@@ -3887,7 +3887,9 @@ async def _handle_elide_span(
     async with tree_mutation_guard(
         handler, verb="elide_span", appenders=("append_navigate", "append_elide")
     ) as s:
-        messages = tree_ops.elide_span(s.session_log, params["anchor_id"], params["first_kept_id"])
+        messages = await tree_ops.elide_span(
+            s.session_log, params["anchor_id"], params["first_kept_id"]
+        )
         return {"messages": messages, "cursor": s.session_log.cursor}
 
 
@@ -3945,7 +3947,7 @@ async def _handle_commit_branch(
         verb="commit_branch",
         appenders=("append_navigate", "append_at", "append_elide"),
     ) as s:
-        messages = tree_ops.commit_branch(
+        messages = await tree_ops.commit_branch(
             s.session_log, params["ids"], drop_context=params["drop_context"]
         )
         return {"messages": messages, "cursor": s.session_log.cursor}
@@ -3993,7 +3995,9 @@ async def _handle_paste_subtree(
     from tau_agent_core import tree_ops
 
     async with tree_mutation_guard(handler, verb="paste_subtree", appenders=("append_at",)) as s:
-        minted = tree_ops.paste_subtree(s.session_log, params["source_id"], params["target_id"])
+        minted = await tree_ops.paste_subtree(
+            s.session_log, params["source_id"], params["target_id"]
+        )
         return {"minted_ids": minted, "cursor": s.session_log.cursor}
 
 

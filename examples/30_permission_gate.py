@@ -108,7 +108,7 @@ def permission_gate_extension(api: Any) -> None:
         command = blocked.pop()
         blocked.clear()
         asked[
-            api.request_user_action(
+            await api.request_user_action(
                 f"Blocked a dangerous command: {command}",
                 lock=True,
                 release="gate-deny",

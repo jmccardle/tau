@@ -148,7 +148,7 @@ async def _todo_execute(
         new_todo = {"id": next_id, "text": text, "done": False}
         todos = [*todos, new_todo]
         record = _snapshot(todos, next_id + 1, "add")
-        store.append(record)
+        await store.append(record)
         return {
             "content": [
                 {"type": "text", "text": f"Added todo #{new_todo['id']}: {new_todo['text']}"}
@@ -172,7 +172,7 @@ async def _todo_execute(
         toggled = [{**t, "done": not t["done"]} if t["id"] == todo_id else t for t in todos]
         new_done = next(t["done"] for t in toggled if t["id"] == todo_id)
         record = _snapshot(toggled, next_id, "toggle")
-        store.append(record)
+        await store.append(record)
         status = "completed" if new_done else "uncompleted"
         return {
             "content": [{"type": "text", "text": f"Todo #{todo_id} {status}"}],
@@ -182,7 +182,7 @@ async def _todo_execute(
     if action == "clear":
         count = len(todos)
         record = _snapshot([], 1, "clear")
-        store.append(record)
+        await store.append(record)
         return {
             "content": [{"type": "text", "text": f"Cleared {count} todos"}],
             "details": record,
