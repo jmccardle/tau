@@ -1308,21 +1308,18 @@ Returns the re-rendered active-path messages (``ConversationTree.context_for``).
 
 `tau_agent_core.extension_types.ExtensionContext.ui: ExtensionUI`
 
-UI methods (TUI-only, no-ops/headless-policy elsewhere) — E9 / S60.
+UI surfaces: TUI-only, and no-ops or headless policy elsewhere.
 
-The SAME shared ``ExtensionUI`` instance :attr:`ExtensionAPI.ui` exposes
-(both read ``self._ui`` off this one ``ExtensionContext``), so a hook
-handler's ``ctx.ui.notify(...)`` / ``await ctx.ui.confirm(...)`` paints on
-the identical delegate an extension's top-level ``api.ui`` would. Every
-mutating-hook handler and every ``register_command`` handler is called as
-``handler(event_or_args, ctx)`` with THIS ``ExtensionContext`` (never the
-``ExtensionAPI``), so without this property a hook-scoped ``ctx.ui`` call
-(pi's own idiom — ``permission-gate.ts``, ``protected-paths.ts``,
-``claude-rules.ts`` all call ``ctx.ui.*`` from inside a
-``pi.on(...)``/command handler) had no surface to reach the delegate
-through; ``run_extension_command``'s own docstring already promised "the
-same ``ctx.ui`` every hook reaches" — this property makes that true rather
-than aspirational.
+The same :class:`ExtensionUI` instance :attr:`ExtensionAPI.ui` exposes —
+both read ``self._ui`` off this one context — so ``ctx.ui.notify(...)``
+inside a handler paints on the delegate ``api.ui`` would. Every mutating
+hook and every ``register_command`` handler is called as
+``handler(event_or_args, ctx)`` with the context and never the
+:class:`ExtensionAPI`, so this property is a handler's only route to it.
+
+``notify``, ``status``, ``panel`` and ``form`` are the surface. 0.10.0
+removed ``confirm``, ``select`` and ``input``; a question now goes through
+:meth:`ExtensionAPI.request_user_action`, which every head can answer.
 
 ## ExtensionInfo
 <!-- agent: yes -->
@@ -1677,13 +1674,11 @@ set_status(key: str, text: str | None, *, source: str | None = None) -> None
 
 Set (or clear) a keyed slot in the extension status strip (E10 §6 / S67).
 
-Ports pi's ``ctx.ui.setStatus(key, text)`` (types.ts:141): ambient, live
-state painted in a one-line footer strip. ``key`` identifies a SLOT —
-re-calling the same key UPDATES that slot in place (e.g. budget proximity
-ticking each turn), never appending a new one. ``text=None`` CLEARS the slot
-(pi's "pass undefined to clear"). Unlike :meth:`confirm`/:meth:`form` this is
-non-blocking display, so it needs no headless answer policy — it routes
-exactly like :meth:`notify`:
+Ambient, live state painted in a one-line footer strip. ``key`` identifies
+a SLOT — re-calling the same key UPDATES that slot in place (e.g. budget
+proximity ticking each turn), never appending a new one. ``text=None``
+CLEARS the slot. Unlike :meth:`form` this is non-blocking display, so it
+needs no headless answer policy — it routes exactly like :meth:`notify`:
 
 - **TUI mode** with a delegate → paints on the delegate's status strip.
 - **headless ``--mode json``** (a :meth:`set_record_sink` is installed) →
