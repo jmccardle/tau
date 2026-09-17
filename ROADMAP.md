@@ -477,6 +477,18 @@ visible, not a real debt.
   overhaul rather than corrected, because it was implementation detail in a file
   that should carry layout, and `docs/TOOL-CALL-PIPELINE.md` is where it belongs
   once that file is right.
+- **Rollback conflates "pre-root" with "no target"** (added 2026-09-16, from the
+  change that made it reachable). `agent_session.py:2547` refuses a rollback when
+  `rollback_target is None`, and the rejection text says the target is *stale* —
+  a different condition, and the one the second half of that same `or` actually
+  tests. `None` is a real cursor value: it means the log's root. The branch was
+  unreachable while `__init__` always wrote the `agent_spec` entry, so
+  `_pre_turn_leaf` was never `None` at a real turn's start; queuing that write
+  (`docs/ASYNC-SESSION-LOG.md` §3.2) removed the guarantee, and a
+  `store_history=False` first turn now reaches `submit` on an empty log.
+  Deliberately not fixed alongside the change that exposed it: distinguishing the
+  two states is a change to the rollback contract, not to the persistence one.
+  No test reaches it today.
 - **58 ruff findings outside the gate's scope** (tests, `run_agent_loop.py`,
   `experiments/m2`), three rules, none a defect. The `src` trees are clean.
   Recorded because "ruff is clean" is said often enough here to be worth
