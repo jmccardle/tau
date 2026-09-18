@@ -18,7 +18,7 @@ Public API (see docs/JMFTS-INTEGRATION-PLAN.md Sec3):
 Reference: docs/JMFTS-INTEGRATION-PLAN.md
 """
 
-__version__ = "0.10.3"
+__version__ = "0.11.0"
 
 from tau_jmfts.catalog import JmftsSessionCatalog
 from tau_jmfts.client import DocumentDict, JmftsClient, JmftsError, JmftsTextTooLongError
