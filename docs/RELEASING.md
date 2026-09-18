@@ -288,6 +288,48 @@ failure. That instruction is the reason this section could be written: it was
 added at 0.9.7 by someone who could not name their own failure, and it cost one
 matrix to pay off.
 
+#### The 3.13 failure of 0.11.0, named and fixed in the same matrix
+
+**The same class as 0.10.2's, in a file the fix never reached.** 3.11, 3.12 and
+3.14 read `6211 passed, 0 failed`; 3.13 read:
+
+```
+FAILED tau-coding-agent/tests/test_sliding_window.py::test_scrolling_against_the_top_slides_the_window
+/work/tau-coding-agent/tests/test_sliding_window.py:206: AssertionError: assert 'q16' == 'q15'
+```
+
+`_slide_at_edge(-1)` declines when `scroll_offset.y > 0` — the gesture is a push
+against an edge, and a scroll with somewhere left to go is an ordinary scroll.
+The test did `scroll_home(immediate=True)`, paused **once**, and made the
+gesture. Its fixture had paused once after `reload_messages`, which is not
+enough: `_finish_build` calls `scroll_to_tail`, whose `scroll_end` is deferred
+again, so a `scroll_end` from the *build* can land after the test's
+`scroll_home`. The window then never moves and the assertion names a message
+box, not a position.
+
+**It is not a 3.13 defect.** How many deferred callbacks land inside one
+`pilot.pause()` is a question about Textual's screen timer, so it is the wall
+clock again — 3.13 is where it landed, exactly as 3.14 was in 0.9.7.
+
+The fix is 0.10.2's, applied where it was missing. `_settle_transcript` was
+local to `test_app_actions.py`; it is now the `settle_transcript` **fixture** in
+`tau-coding-agent/tests/conftest.py` — a fixture and not an importable function
+for the reason `wait_for_workers_settled`'s docstring gives, that
+`from conftest import …` resolves by bare module name across packages. The
+`loaded` fixture settles, and the three push-against-an-edge tests assert the
+precondition before making the gesture, through one `_at_top` helper.
+
+That guard was checked against the racing state before being trusted: forcing a
+`scroll_end` after the settle makes all three fail with
+
+```
+AssertionError: the reader is at y=169, not on the top edge, so the gesture
+below is an ordinary scroll and _slide_at_edge will decline it
+```
+
+which names the position. No retry was added, and no re-run was read as a
+refutation of the failure.
+
 #### The four that used to fail here, and no longer do
 
 Until 2026-09-02 this section said the opposite: four tests failed in every

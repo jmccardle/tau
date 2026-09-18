@@ -92,6 +92,47 @@ def make_app(monkeypatch: pytest.MonkeyPatch, tau_home: Path) -> Callable[..., T
 
 
 @pytest.fixture
+def settle_transcript() -> Callable[..., Any]:
+    """Wait until a reloaded transcript has stopped moving under its own power.
+
+    ``reload_messages`` and ``move_window`` return when the build is SCHEDULED.
+    Two more things happen afterwards, each on a later refresh:
+    ``_finish_build`` clears ``ChatDisplay.is_building``, then calls
+    ``scroll_to_tail``, whose ``scroll_end`` is itself deferred. A refresh is
+    driven by Textual's own screen timer, so how many of those land inside one
+    ``pilot.pause()`` is a question about the wall clock — which is why a test
+    that pauses a fixed number of times passes on an idle machine and fails
+    under a full suite's load.
+
+    Two failures have been paid for here. A click resolved to a widget eighteen
+    rows above the screen and raised ``OutOfBounds`` from inside Textual
+    (docs/RELEASING.md, 0.10.2). And the 0.11.0 matrix failed
+    ``test_scrolling_against_the_top_slides_the_window`` on 3.13 alone: a
+    deferred ``scroll_end`` landed after the test's ``scroll_home``, so
+    ``_slide_at_edge`` saw ``scroll_offset.y > 0``, read the gesture as an
+    ordinary scroll, and the window never moved.
+
+    So the condition is both: the build is done AND the position has stopped
+    changing. Raises rather than returning early, because a settle that gives up
+    quietly would put the race back.
+    """
+
+    async def _settle(pilot: Any, display: Any, *, tries: int = 50) -> None:
+        stable = 0
+        last = None
+        for _ in range(tries):
+            await pilot.pause()
+            now = (display.is_building, display.scroll_y, display.virtual_size)
+            stable = stable + 1 if now == last and not display.is_building else 0
+            if stable >= 2:
+                return
+            last = now
+        raise AssertionError(f"the transcript never settled in {tries} pauses: {last}")
+
+    return _settle
+
+
+@pytest.fixture
 def wait_for_workers_settled() -> Callable[[App], Any]:
     """Wait for every worker to finish, the way ``app.workers.wait_for_complete()``
     almost does — except that bare call is unsafe to use on this app.

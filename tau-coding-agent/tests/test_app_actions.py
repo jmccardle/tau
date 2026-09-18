@@ -546,33 +546,7 @@ def _long_transcript(turns: int) -> list[dict]:
     return msgs
 
 
-async def _settle_transcript(pilot, display, *, tries: int = 50) -> None:
-    """Wait until a reloaded transcript has stopped moving under its own power.
-
-    ``reload_messages`` returns when the build is SCHEDULED. Two more things
-    happen afterwards, each on a later refresh: ``_finish_build`` clears
-    :attr:`ChatDisplay.is_building`, then calls ``scroll_to_tail``, whose
-    ``scroll_end`` is itself deferred. A test that scrolls in that gap has its
-    scroll silently overwritten — measured, ``scroll_y`` goes 0 → 20 one pause
-    later and the row it wanted lands eighteen rows above the screen.
-
-    So the condition is both: the build is done AND the position has stopped
-    changing. Raises rather than returning early, because a settle that gives up
-    quietly would put the race back.
-    """
-    stable = 0
-    last = None
-    for _ in range(tries):
-        await pilot.pause()
-        now = (display.is_building, display.scroll_y, display.virtual_size)
-        stable = stable + 1 if now == last and not display.is_building else 0
-        if stable >= 2:
-            return
-        last = now
-    raise AssertionError(f"the transcript never settled in {tries} pauses: {last}")
-
-
-async def test_clicking_the_earlier_row_mounts_the_rest(app):
+async def test_clicking_the_earlier_row_mounts_the_rest(app, settle_transcript):
     """The mouse half. Without it the row states a fact and offers no way to act.
 
     ``pilot.click`` resolves the widget to a screen offset and raises
@@ -587,7 +561,7 @@ async def test_clicking_the_earlier_row_mounts_the_rest(app):
         await app.action_new_chat()
         display = app.query_one(transcript.ChatDisplay)
         await display.reload_messages(_long_transcript(20))
-        await _settle_transcript(pilot, display)
+        await settle_transcript(pilot, display)
         assert display.elided_count == 32
 
         # scroll_home defers through call_after_refresh unless immediate is set.

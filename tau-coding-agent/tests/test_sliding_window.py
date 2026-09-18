@@ -46,15 +46,39 @@ def _content(display: transcript.ChatDisplay) -> list:
 
 
 @pytest.fixture
-async def loaded():
-    """A display showing the tail of a 20-turn transcript."""
+async def loaded(settle_transcript):
+    """A display showing the tail of a 20-turn transcript, done moving.
+
+    Settled rather than paused once: the build's own ``scroll_to_tail`` defers a
+    ``scroll_end`` past the callback that clears ``is_building``, so a single
+    pause hands a test a position that is still about to change. See
+    ``settle_transcript`` for the two failures that bought this.
+    """
     messages = _transcript(20)
     async with _Harness().run_test(size=(80, 24)) as pilot:
         display = pilot.app.query_one(transcript.ChatDisplay)
         display.set_transcript_source(lambda: messages)
         await display.reload_messages(messages)
-        await pilot.pause()
+        await settle_transcript(pilot, display)
         yield display, pilot, messages
+
+
+async def _at_top(pilot, display, settle_transcript) -> None:
+    """Take the reader to the top edge and leave them there, measurably.
+
+    The push-against-the-edge tests all need one fact to hold at the moment they
+    make the gesture: ``scroll_offset.y == 0``. ``_slide_at_edge`` reads it, and
+    reads a non-zero value as "this scroll has somewhere to go" — so a position
+    that has not finished settling turns the gesture into an ordinary scroll and
+    the test fails on the OUTCOME, naming nothing. Assert the precondition here
+    instead.
+    """
+    display.scroll_home(animate=False, immediate=True)
+    await settle_transcript(pilot, display)
+    assert display.scroll_offset.y == 0, (
+        f"the reader is at y={display.scroll_offset.y}, not on the top edge, so "
+        "the gesture below is an ordinary scroll and _slide_at_edge will decline it"
+    )
 
 
 def test_window_end_agrees_with_render_cap_start_at_the_tail():
@@ -176,16 +200,14 @@ async def test_the_reader_keeps_their_place_across_a_move(loaded):
     assert display.scroll_offset.y == anchor.virtual_region.y
 
 
-async def test_arriving_at_the_top_does_not_slide(loaded):
+async def test_arriving_at_the_top_does_not_slide(loaded, settle_transcript):
     """The first scroll takes the reader TO the edge. Sliding there would mean the
     ``⋯ N earlier`` row can never be looked at or clicked — reaching it would load
     more and scroll it away, every time."""
     display, pilot, _ = loaded
     before = display._window_start
 
-    display.scroll_home(animate=False, immediate=True)
-    await pilot.pause()
-    await pilot.pause()
+    await _at_top(pilot, display, settle_transcript)
 
     assert display._window_start == before
     assert _users(display)[0] == "q16"
@@ -193,50 +215,49 @@ async def test_arriving_at_the_top_does_not_slide(loaded):
     assert display.query(".chat-fold")
 
 
-async def test_scrolling_against_the_top_slides_the_window(loaded):
+async def test_scrolling_against_the_top_slides_the_window(loaded, settle_transcript):
     display, pilot, _ = loaded
-    display.scroll_home(animate=False, immediate=True)
-    await pilot.pause()
+    await _at_top(pilot, display, settle_transcript)
 
     # A second scroll, with nowhere left to go, is the gesture.
     display.action_scroll_up()
-    await pilot.pause()
-    await pilot.pause()
+    await settle_transcript(pilot, display)
 
     assert _users(display)[0] == "q15"
     assert display.later_count == 2
 
 
-async def test_scrolling_against_the_bottom_slides_it_back(loaded):
+async def test_scrolling_against_the_bottom_slides_it_back(loaded, settle_transcript):
     display, pilot, _ = loaded
     for _ in range(3):
         await display.move_window(-1)
-        await pilot.pause()
+        await settle_transcript(pilot, display)
     before = display._window_start
 
     display.scroll_end(animate=False, immediate=True)
-    await pilot.pause()
+    await settle_transcript(pilot, display)
+    assert display.is_vertical_scroll_end, (
+        "the reader is not on the bottom edge, so the gesture below is an "
+        "ordinary scroll and _slide_at_edge will decline it"
+    )
     display.action_scroll_down()
-    await pilot.pause()
-    await pilot.pause()
+    await settle_transcript(pilot, display)
 
     starts = display.turn_starts(display._reload_source)
     assert starts.index(display._window_start) == starts.index(before) + 1
 
 
-async def test_one_gesture_moves_one_turn(loaded):
+async def test_one_gesture_moves_one_turn(loaded, settle_transcript):
     """The claim is taken in the handler, not the coroutine: one flick of a wheel
     is several events, each arriving before any scheduled call runs."""
     display, pilot, _ = loaded
-    display.scroll_home(animate=False, immediate=True)
-    await pilot.pause()
+    await _at_top(pilot, display, settle_transcript)
     before = display._window_start
 
     display.action_scroll_up()
     display.action_scroll_up()
     display.action_scroll_up()
-    await pilot.pause()
-    await pilot.pause()
+    await settle_transcript(pilot, display)
 
     starts = display.turn_starts(display._reload_source)
     assert starts.index(display._window_start) == starts.index(before) - 1
