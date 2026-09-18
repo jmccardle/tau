@@ -714,3 +714,36 @@ survived it. 0.10.3's fix lets a single-file extension import a sibling, so the
 check was to load one from the *installed* wheel, from an unrelated working
 directory, under `python -I`. That is a different claim from "the suite passed",
 because the suite runs against the checkout.
+
+## What 0.11.0 learned
+
+**The matrix earned its place, for the first time since 0.9.3.** The local
+3.11 gate read `0 failed` and the first matrix did not: 3.13 alone failed
+`test_scrolling_against_the_top_slides_the_window`. §2 has the diagnosis. Three
+things about how it was handled are the reusable part.
+
+**`-rf --tb=line` paid off again, and the payoff was the file name.** The
+failure was in `test_sliding_window.py`, which nobody would have guessed from
+the 0.10.2 write-up — that one named `test_app_actions.py`, and the fix landed
+in that file only. A gate that prints `FAILED <nodeid>` turns "the race is back"
+into "the race is in the one file the fix never reached", which is a different
+morning's work.
+
+**A precondition assertion beats an outcome assertion.** The failing line was
+`assert 'q16' == 'q15'`, which reports a message box and names nothing.
+`_slide_at_edge` declines on `scroll_offset.y > 0`, so the position is the
+actual claim — and asserting *that*, before the gesture, makes a recurrence say
+`the reader is at y=169, not on the top edge`. Same discipline as 0.10.2's
+`screen.region.contains_region` guard, and like that one it was checked against
+the racing state before being trusted.
+
+**Re-gate the fix, in full.** The second matrix was run on the whole four
+versions rather than on 3.13 alone. 0.10.2's first fix passed locally and was
+refuted by a failure on a *different* version, which is the case a narrowed
+re-run cannot see. Both matrices cost ~32 minutes; the second one is what makes
+the first one's finding actionable rather than anecdotal.
+
+**Build twice when the tree moves.** The artifacts were built once before the
+matrix (per the 0.10.3 note above) and then discarded and rebuilt after the test
+fix, because the gated sha had changed. `git status --porcelain` says the tree
+is clean; it does not say the tree is the one the tag will name.
