@@ -243,6 +243,39 @@ async def test_subtitle_shows_rollup_after_reload(app):
         assert app.sub_title == "m · 1 tool · ↑500 ↓42 R100 · 500 ctx"
 
 
+async def test_an_activity_is_a_term_and_does_not_cover_the_rollup(app):
+    """The complaint this fixes: "Compacting…" used to be written straight over
+    ``sub_title``, so the context size vanished for exactly the operation that
+    moves it. The activity now leads and the rollup stays behind it."""
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _reload(app, pilot)
+        app.messages = _RELOAD
+        app._set_activity("Compacting…")
+        await pilot.pause()
+        assert app.sub_title == "Compacting… · m · 1 tool · ↑500 ↓42 R100 · 500 ctx"
+
+        app._set_activity(None)
+        await pilot.pause()
+        assert app.sub_title == "m · 1 tool · ↑500 ↓42 R100 · 500 ctx"
+
+
+async def test_an_activity_with_no_session_is_the_whole_subtitle(app):
+    """There is no model and no rollup before the first chat, and an activity
+    reached that state through :meth:`_withdraw_offer` — which used to be why
+    ``_restore_subtitle`` existed as a second, special-cased path."""
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.current_session = None
+        app._set_activity("Cancelling…")
+        await pilot.pause()
+        assert app.sub_title == "Cancelling…"
+
+        app._set_activity(None)
+        await pilot.pause()
+        assert app.sub_title == ""
+
+
 class _BlockingBackend:
     """A backend whose ``submit_turn`` blocks until ``abort()`` releases it.
 
@@ -662,13 +695,13 @@ async def test_ctrl_c_on_an_empty_input_offers_the_exit_and_then_takes_it(app):
 
         app.action_interrupt()
         await pilot.pause()
-        assert app.sub_title == "press ctrl+C again to exit"
+        assert app.sub_title.startswith("press ctrl+C again to exit · ")
         assert app.is_running, "the first press must not exit"
 
         app.action_interrupt()
         await pilot.pause()
         assert not app.is_running
-    assert before != "press ctrl+C again to exit"
+    assert "press ctrl+C again to exit" not in before
 
 
 async def test_the_exit_offer_lapses_and_puts_the_subtitle_back(app):
@@ -682,7 +715,7 @@ async def test_the_exit_offer_lapses_and_puts_the_subtitle_back(app):
 
         app.action_interrupt()
         await pilot.pause()
-        assert app.sub_title == "press ctrl+C again to exit"
+        assert app.sub_title == f"press ctrl+C again to exit · {settled}"
 
         app._withdraw_offer("exit")  # what the timer fires
         await pilot.pause()
@@ -691,7 +724,7 @@ async def test_the_exit_offer_lapses_and_puts_the_subtitle_back(app):
         app.action_interrupt()
         await pilot.pause()
         assert app.is_running, "the lapsed offer must not still be answerable"
-        assert app.sub_title == "press ctrl+C again to exit"
+        assert app.sub_title.startswith("press ctrl+C again to exit · ")
 
 
 async def test_esc_still_cancels_a_turn_first(app):
@@ -723,7 +756,7 @@ async def test_esc_twice_opens_the_tree_and_once_only_says_so(app):
 
         app.action_escape()
         await pilot.pause()
-        assert app.sub_title == "press Esc again to view the tree"
+        assert app.sub_title.startswith("press Esc again to view the tree · ")
         assert opened == []
 
         app.action_escape()
@@ -742,9 +775,9 @@ async def test_one_key_withdraws_the_other_keys_offer(app):
 
         app.action_escape()
         await pilot.pause()
-        assert app.sub_title == "press Esc again to view the tree"
+        assert app.sub_title.startswith("press Esc again to view the tree · ")
 
         app.action_interrupt()
         await pilot.pause()
-        assert app.sub_title == "press ctrl+C again to exit"
+        assert app.sub_title.startswith("press ctrl+C again to exit · ")
         assert app.is_running

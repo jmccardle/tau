@@ -88,6 +88,10 @@ def project_event(
             extra["cache_notice"] = cache_notice
         if event.type == "message_end":
             extra.update(_truncation_fields(event.message or {}))
+        if event.type == "side_completion_update":
+            # No projector: a side completion is one text block, already a suffix.
+            extra["delta"] = event.delta
+            extra["block_type"] = "text"
         return [_wire_event(event, **extra).model_dump(mode="json")]
 
     if event.message is None:
@@ -160,5 +164,7 @@ def _wire_event(event: AgentEvent, **extra: Any) -> WireEvent:
         source=event.source,
         submitter=event.submitter,
         correlation=event.correlation,
+        purpose=event.purpose,
+        reason=event.reason,
         **extra,
     )

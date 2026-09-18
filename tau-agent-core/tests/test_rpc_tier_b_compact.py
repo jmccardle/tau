@@ -142,7 +142,7 @@ def _fake_complete_simple(text: str):
     trimmed to what this file needs)."""
     from tau_llm.types import AssistantMessage, TextContent, Usage
 
-    async def _impl(model, context, options=None):
+    async def _impl(model, context, options=None, **_):
         return AssistantMessage(
             content=[TextContent(text=text)],
             api="openai-completions",
@@ -838,7 +838,7 @@ async def test_an_aborted_compaction_writes_nothing(
     entry-list assertion goes red."""
     provider_reached = asyncio.Event()
 
-    async def _never_answers(model, context, options=None):
+    async def _never_answers(model, context, options=None, **_):
         provider_reached.set()
         await asyncio.Event().wait()  # the unbounded provider call, forever
         raise AssertionError("unreachable")  # pragma: no cover

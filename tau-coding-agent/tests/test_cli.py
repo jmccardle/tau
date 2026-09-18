@@ -586,7 +586,7 @@ class _FakeBackend:
         return LoadExtensionsResult()
 
     async def stream_submission(
-        self, submission, context, callback, on_event=None, on_pi_event=None
+        self, submission, context, callback, on_event=None, on_json_event=None
     ):
         self.submission = submission
         self.messages = context
@@ -597,9 +597,9 @@ class _FakeBackend:
             callback(d)
             if on_event is not None:
                 on_event({"kind": "text_delta", "delta": d})
-        if on_pi_event is not None:
-            on_pi_event({"type": "turn_start", "turn_index": 0})
-            on_pi_event(
+        if on_json_event is not None:
+            on_json_event({"type": "turn_start", "turn_index": 0})
+            on_json_event(
                 {
                     "type": "message_end",
                     "message": {
@@ -611,7 +611,7 @@ class _FakeBackend:
                     },
                 }
             )
-            on_pi_event(
+            on_json_event(
                 {
                     "type": "agent_end",
                     "messages": [

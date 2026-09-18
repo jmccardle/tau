@@ -18,7 +18,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from tau_llm.docs import agent_facing
 
 
@@ -701,6 +701,7 @@ async def summarize_branch(
     *,
     api_key: str | None = None,
     custom_instructions: str | None = None,
+    on_text_delta: Callable[[str], Any] | None = None,
 ) -> tuple[str, dict[str, int]]:
     """Summarize an abandoned branch's text into a concise summary.
 
@@ -713,6 +714,10 @@ async def summarize_branch(
     Fail-Early (§3.1): the previous truncated-raw-text fallback is GONE — a failed,
     aborted, or empty LLM response RAISES rather than fabricating a summary from raw
     text. No branch-summary is ever silently invented.
+
+    ``on_text_delta`` is called with each fragment as the summary arrives, so a head
+    can show the wait instead of a frozen modal (docs/STREAMING-SIDE-WORK.md). ``None``
+    keeps the collapsed path.
 
     Returns:
         ``(summary, usage)`` — the text AND what producing it cost. This is a real LLM
@@ -747,7 +752,9 @@ async def summarize_branch(
     options: dict[str, Any] | None = {"api_key": api_key} if api_key is not None else None
 
     try:
-        response = await resolved_complete(model, context, options=options)
+        response = await resolved_complete(
+            model, context, options=options, on_text_delta=on_text_delta
+        )
     except CompletionFailed as exc:
         raise RuntimeError(f"Branch summarization failed: {exc.detail}") from exc
     summary = "\n".join(c.text for c in response.content if isinstance(c, TextContent)).strip()

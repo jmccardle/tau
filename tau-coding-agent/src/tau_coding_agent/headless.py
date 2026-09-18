@@ -839,7 +839,7 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
             sys.stdout.write(json.dumps(session.header) + "\n")
             sys.stdout.flush()
 
-            def on_pi_event(event: dict) -> None:
+            def on_json_event(event: dict) -> None:
                 sys.stdout.write(json.dumps(event) + "\n")
                 sys.stdout.flush()
 
@@ -847,7 +847,7 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
                 pass
 
             _text, _usage, new_messages, _tcs, result = await backend.stream_submission(
-                submission, messages, noop, on_pi_event=on_pi_event
+                submission, messages, noop, on_json_event=on_json_event
             )
         else:  # text
 

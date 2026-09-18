@@ -47,7 +47,8 @@ from tau_coding_agent.themes import (
     install_themes,
     resolve_theme,
 )
-from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.compaction import estimate_context_tokens
+from tau_agent_core.conversation_tree import ConversationTree, summary_message_of
 from tau_agent_core.tree_surgery import plan_branch, plan_paste
 from tau_agent_core.agent_session import ExtensionCommandResult
 from tau_agent_core.extension_locks import ExtensionRequest, refusal_reason
@@ -89,6 +90,7 @@ from tau_agent_core.attachments import (
 )
 from tau_agent_core.tools.image_resize import DEFAULT_MAX_IMAGE_DIMENSION
 from tau_coding_agent.chat_widgets import (
+    MessageBox,
     ReasoningRegion,
     ToolBox,
     format_telemetry,
@@ -203,7 +205,10 @@ class TauApp(App):
         self._submissions_in_flight: int = 0
         self._pending_steer: list[str] = []
         self._render_router: Optional[RenderRouter] = None
+        # One open side-completion box per purpose; see _render_side_completion.
+        self._side_box: dict[str, MessageBox] = {}
         self._pending_confirm: dict[str, Timer] = {}
+        self._activity: Optional[str] = None
         self._sidebar_open: bool = False
         self._cache_warned_models: set[str] = set()
         self._working_list_lock = asyncio.Lock()
@@ -506,12 +511,36 @@ class TauApp(App):
         self.config[THEME_CONFIG_KEY] = theme_name
         update_config(THEME_CONFIG_KEY, theme_name)
 
+    def _live_model_name(self) -> str | None:
+        """The current session's model key, or ``None`` before one exists.
+
+        ``Session.model`` raises when a session carries no ``model_change`` entry
+        (Fail-Early: it refuses to fabricate a default). A session from any of the
+        shipped paths always has one, so this catches a store the TUI does not
+        own rather than an expected state, and falls back to the configured
+        default instead of taking the empty pane down with it.
+        """
+        session = self.current_session
+        if session is None:
+            return None
+        try:
+            return str(session.model)
+        except (ValueError, AttributeError):
+            return None
+
     def _session_facts(self) -> transcript.SessionFacts:
         """The configuration the empty chat pane states (handoff §4.4).
 
         Read fresh on every show — :class:`ChatDisplay` holds this method, not its
         result — because ``/model`` and a resumed session both change the answer
         while the chat is still empty.
+
+        **The live session's model wins over ``default_model``.** Both change the
+        answer by moving :meth:`Session.model`, which is the latest
+        ``model_change`` entry, and neither writes ``config.json`` — so reading
+        the config key gave the same string back however the session was started,
+        and the pane stated a model the next turn would not use.
+        ``default_model`` is the answer only before the first session exists.
 
         The tool list comes from :func:`_tools_row`, which asks
         :func:`~tau_coding_agent.backends.resolve_tool_names` over
@@ -522,7 +551,7 @@ class TauApp(App):
         :meth:`action_new_chat` refuses to start on, and the pane is where a user
         can see it before typing.
         """
-        name = self.config.get("default_model", "local-llm")
+        name = self._live_model_name() or self.config.get("default_model", "local-llm")
         entry = self.config.get("models", {}).get(name)
         if entry is None:
             return transcript.SessionFacts(
@@ -916,7 +945,7 @@ class TauApp(App):
 
         self._submissions_in_flight += 1
         self.is_generating = True
-        self.sub_title = "Thinking… (Esc to cancel)"
+        self._set_activity("Thinking… (Esc to cancel)")
         self._generate_response(submission)
 
     # -- steering: text typed during a turn (docs/TUI-STEERING.md) ----------
@@ -1586,7 +1615,9 @@ class TauApp(App):
             )
         finally:
             self._settle_submission()
-            self._refresh_subtitle()
+            # Only the LAST submission stops the header saying "Thinking…".
+            if not self.is_generating:
+                self._set_activity(None)
 
     def action_cancel_generation(self) -> None:
         """Esc: cooperatively abort the in-flight response (no-op if idle).
@@ -1608,7 +1639,7 @@ class TauApp(App):
             return
         self.current_backend.abort()
         self._return_pending_to_the_editor()
-        self.sub_title = "Cancelling…"
+        self._set_activity("Cancelling…")
 
     # -- "press it again": two keys that ask before doing something big -------
 
@@ -1633,7 +1664,7 @@ class TauApp(App):
             self._withdraw_offers()
             return True
         self._withdraw_offers()
-        self.sub_title = message
+        self._set_activity(message)
         self._pending_confirm[name] = self.set_timer(
             self.CONFIRM_SECONDS, lambda: self._withdraw_offer(name)
         )
@@ -1644,20 +1675,11 @@ class TauApp(App):
         timer = self._pending_confirm.pop(name, None)
         if timer is not None:
             timer.stop()
-        self._restore_subtitle()
+        self._set_activity(None)
 
     def _withdraw_offers(self) -> None:
         for name in list(self._pending_confirm):
             self._withdraw_offer(name)
-
-    def _restore_subtitle(self) -> None:
-        """Undo whatever an offer wrote. ``_refresh_subtitle`` returns early with no
-        session, which would leave the offer's text standing — so say nothing
-        instead, which is what the header shows before a session exists."""
-        if self.current_session is None:
-            self.sub_title = ""
-            return
-        self._refresh_subtitle()
 
     def action_interrupt(self) -> None:
         """``ctrl+C``, in four steps from "stop that" to "quit".
@@ -1862,25 +1884,25 @@ class TauApp(App):
             )
             return
 
-        self.sub_title = "Rolling back…"
+        self._set_activity("Rolling back…")
         try:
             result = await rollback_turn(text)
         except Exception as e:
             self.notify(f"Rollback failed: {e}", severity="error")
             self.log.error(f"Rollback failed: {e}")
             self.log.error(traceback.format_exc())
-            self._refresh_subtitle()
+            self._set_activity(None)
             return
 
         if not result.accepted:
             self.notify(result.rejection_reason or "Rollback was refused", severity="warning")
-            self._refresh_subtitle()
+            self._set_activity(None)
             return
 
         assert self.current_session is not None  # is_generating implies a session
         self.messages = list(self.current_session.context)
         await self._reload_transcript()
-        self._refresh_subtitle()
+        self._set_activity(None)
         self.notify("Rolled back and re-ran from before the aborted turn")
 
     async def _get_assistant_response(self, submission: Submission) -> None:
@@ -2045,6 +2067,9 @@ class TauApp(App):
         """
         display = self.query_one(transcript.ChatDisplay)
         kind = event.get("kind")
+        if kind in ("side_start", "side_delta", "side_end"):
+            await self._render_side_completion(display, kind, event)
+            return
         lane = event.get("lane") or DEFAULT_LANE
         if kind == "lane_start":
             label = self._lane_label(event.get("source"), event.get("submitter"))
@@ -2081,6 +2106,69 @@ class TauApp(App):
         if kind == "tool_call":
             self._flush_pending_steer(at_tool_call=True)
         await display.handle_stream_event(event)
+
+    async def _render_side_completion(
+        self, display: "transcript.ChatDisplay", kind: str, event: dict
+    ) -> None:
+        """Draw a compaction or branch summary as it arrives (§2).
+
+        One box, mounted on ``side_start`` and streamed into, rather than a toast
+        that says "Compacting…" and then a second one that says it finished. The
+        box is the same kind a reloaded session draws for the entry this work
+        produces, so watching it happen and scrolling back to it look alike.
+
+        The subtitle carries the summariser's model on the way in and what it
+        SPENT on the way out — the one place those tokens are visible, because
+        side work runs outside the agent loop and no ``turn_end`` counts it.
+
+        ``_side_box`` is keyed by purpose, matching ``RenderRouter``'s own
+        assumption that one purpose runs at a time. A delta or an end that finds
+        no open box is dropped rather than mounting a headless one: it means this
+        app attached mid-completion, and half a summary presented as a whole one
+        is worse than nothing.
+        """
+        purpose = str(event.get("purpose") or "compaction")
+        if kind == "side_start":
+            box = display.add_message(purpose, "", subtitle="working…", source="markdown")
+            model = str(event.get("model") or "")
+            if model:
+                box.set_subtitle(f"{model} · working…")
+            self._side_box[purpose] = box
+            return
+        box = self._side_box.get(purpose)
+        if box is None:
+            return
+        if kind == "side_delta":
+            await box.append_content_delta(str(event.get("delta") or ""))
+            return
+        self._side_box.pop(purpose, None)
+        await box.finish_stream()
+        error = event.get("error")
+        if error:
+            box.set_subtitle(f"failed: {error}")
+            return
+        text = event.get("text")
+        if text is not None and text != box.content_text:
+            box.update_content(str(text))
+        box.set_subtitle(self._side_cost(event.get("usage")))
+        self._refresh_subtitle()
+
+    @staticmethod
+    def _side_cost(usage: object) -> str:
+        """What a side completion spent, in the arrow vocabulary the header uses.
+
+        Says ``cost not reported`` rather than showing zeros when the provider
+        returned no usage — a summary that cost nothing and one that was not
+        counted are different facts, and only one of them is true.
+        """
+        if not isinstance(usage, dict) or not any(usage.values()):
+            return "cost not reported"
+        parts = [
+            f"{prefix}{format_tokens(int(usage.get(key, 0) or 0))}"
+            for prefix, key in (("↑", "input_tokens"), ("↓", "output_tokens"))
+            if usage.get(key)
+        ]
+        return " ".join(parts) or "cost not reported"
 
     def _bind_render_subscription(self) -> None:
         """(Re)attach the persistent renderer to the current backend's bus.
@@ -2365,7 +2453,7 @@ class TauApp(App):
         await display.clear_messages()
 
         # Update UI
-        self.sub_title = f"{model}"
+        self._refresh_subtitle()
         self.notify(f"Started new chat with {model}")
 
         self.query_one(ChatSidebar).refresh_chats()
@@ -2632,6 +2720,42 @@ class TauApp(App):
         return target_collapsed
 
     @staticmethod
+    def _context_size(messages: list[dict], usages: list[dict]) -> int:
+        """How big the NEXT request's prompt is, in tokens.
+
+        The last completion's reported prompt size when that is still what the
+        next one will carry — a measured number, and the one to prefer. It stops
+        being true the moment a compaction or a branch summary lands after it:
+        the fold drops a prefix the model will not be sent again, and the header
+        went on showing the pre-fold figure. That is why compacting appeared to
+        change nothing (docs/STREAMING-SIDE-WORK.md §6).
+
+        In that one case it falls back to the estimator over the current list,
+        which is what ``should_compact`` already decides on, so the header and
+        the auto-trigger answer the same question from the same source. An
+        estimate and a measurement do not agree exactly; the alternative is a
+        number that is confidently wrong, and the estimator is the one that moves
+        when the conversation does.
+
+        Zero before the first completion, NOT the estimate: nothing has been sent
+        yet, and ``_aggregate_label`` drops the whole ``ctx`` part on zero so an
+        untouched chat shows just the model.
+        """
+        if not usages:
+            return 0
+        last_measured = max(
+            (i for i, m in enumerate(messages) if isinstance(m.get("usage"), dict)),
+            default=-1,
+        )
+        last_summary = max(
+            (i for i, m in enumerate(messages) if summary_message_of(m) is not None),
+            default=-1,
+        )
+        if last_summary > last_measured:
+            return estimate_context_tokens(messages).tokens
+        return prompt_tokens(usages[-1])
+
+    @staticmethod
     def _aggregate_label(messages: list[dict]) -> str:
         """Conversation-level rollup: tool calls, cumulative usage, current context.
 
@@ -2663,7 +2787,7 @@ class TauApp(App):
             key: sum(int(u.get(key, 0) or 0) for u in usages)
             for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
         }
-        context = prompt_tokens(usages[-1]) if usages else 0
+        context = TauApp._context_size(messages, usages)
         parts = [f"{tools} tool" + ("" if tools == 1 else "s")] if tools else []
         arrows = " ".join(
             f"{prefix}{format_tokens(totals[key])}"
@@ -2681,13 +2805,38 @@ class TauApp(App):
             parts.append(f"{format_tokens(context)} ctx")
         return " · ".join(parts)
 
+    def _set_activity(self, text: str | None) -> None:
+        """Say that something is under way, or that nothing is; then redraw.
+
+        ``None`` ends the activity. Every long operation brackets itself with a
+        pair of these, on every exit including the failing ones — the subtitle is
+        the only place a tree operation or a compaction says it is running, so
+        one missed clear leaves the header claiming work that has stopped.
+        """
+        self._activity = text
+        self._refresh_subtitle()
+
     def _refresh_subtitle(self) -> None:
-        """Set the header subtitle to the model plus the conversation rollup."""
-        if not self.current_session:
-            return
-        agg = self._aggregate_label(self.messages)
-        model = str(self.current_session.model)
-        self.sub_title = f"{model} · {agg}" if agg else model
+        """Draw the header subtitle: the activity, the model, the rollup.
+
+        The activity is a TERM, not a replacement. It used to be written straight
+        over ``sub_title``, which took the context size and the token arrows off
+        screen for exactly the operations that move them — compacting, summarizing
+        a branch, a whole generating turn — and put them back only once the number
+        had already finished changing (docs/STREAMING-SIDE-WORK.md §6).
+
+        It goes FIRST because the header is centre-aligned and truncates its tail:
+        on a narrow terminal the transient half, which carries an affordance
+        ("Esc to cancel"), is the half worth keeping.
+
+        With no session there is no model and no rollup, so the activity is the
+        whole subtitle — which is also how the header reads before the first chat.
+        """
+        parts = [self._activity] if self._activity else []
+        if self.current_session is not None:
+            parts.append(str(self.current_session.model))
+            parts.append(self._aggregate_label(self.messages))
+        self.sub_title = " · ".join(p for p in parts if p)
 
     def action_focus_and_send(self):
         """Focus input and send if focused (for global hotkey)."""
@@ -2925,6 +3074,8 @@ class TauApp(App):
             self.notify(f"Cannot switch model: {exc}", severity="error")
             return
         self._refresh_subtitle()
+        # The empty pane states the model too, and no DOM change tells it so.
+        self.query_one(transcript.ChatDisplay).refresh_facts()
         model = performed.data["model"]
         self.notify(f"Model is now {model.get('name', name)} (from the next turn)")
 
@@ -2997,12 +3148,21 @@ class TauApp(App):
     async def action_compact(self, custom_instructions: str = "") -> None:
         """Compact the current conversation into a summary checkpoint.
 
-        Summarizes the older messages via the model and replaces them with a
-        single checkpoint, freeing context for the conversation to continue.
-        Operates on ``self.messages`` — the live list sent to the model — then
-        re-renders. The session file keeps the full transcript (append-only, no
-        rewrite); compaction is a runtime context optimization on the working
-        list, so a resumed session still has its complete history.
+        Summarizes everything before the cut point and appends a ``compaction``
+        entry, so the compacted prefix drops out of context AT READ TIME and the
+        boundary is a node in the tree — openable in the browser, carrying
+        ``tokens_before``, ``covered_entries``, ``covered_tokens`` and what the
+        summary cost. The log is still append-only: nothing is rewritten or lost,
+        and navigating above the boundary shows the full history again.
+
+        **This is the same compaction the auto-trigger runs**, as of the change
+        in docs/STREAMING-SIDE-WORK.md §4. It used to be a second one
+        (``AgentSession.compact_messages``) that wrote no entry and returned a
+        shortened list, which the next ``completion_end`` then overwrote from
+        ``session.context`` — so a manual compaction lasted until the next turn
+        and silently undid itself. Its count-based cut is not lost; it is
+        ROADMAP.md's "shrink the sent prompt" item, which is a different feature
+        with a different trigger.
 
         Args:
             custom_instructions: Extra focus for the summary — everything the
@@ -3024,35 +3184,37 @@ class TauApp(App):
         if backend is None:
             self.notify("No chat to compact", severity="warning")
             return
-        if not hasattr(backend, "compact_messages"):
+        if not hasattr(backend, "compact"):
             self.notify("This backend does not support compaction", severity="warning")
             return
 
         focus = custom_instructions.strip() or None
-        self.notify(
-            f"Compacting conversation, focus: {focus}…" if focus else "Compacting conversation…"
-        )
-        self.sub_title = "Compacting…"
+        if focus:
+            self.notify(f"Compacting conversation, focus: {focus}…")
+        self._set_activity("Compacting…")
         before = len(self.messages)
         try:
-            new_messages = await backend.compact_messages(self.messages, focus)
+            result = await backend.compact(focus)
         except Exception as e:
             self.notify(f"Compaction failed: {e}", severity="error")
             self.log.error(f"Compaction failed: {e}")
             self.log.error(traceback.format_exc())
-            self._refresh_subtitle()
+            self._set_activity(None)
             return
 
-        if new_messages is None:
+        if result is None:
             self.notify("Nothing to compact yet")
-            self._refresh_subtitle()
+            self._set_activity(None)
             return
 
-        self.messages = new_messages
+        self.messages = list(self.current_session.context)
         # reload_messages lives on the ChatDisplay widget, not the app.
         await self._reload_transcript()
-        self._refresh_subtitle()
-        self.notify(f"Compacted {before} → {len(new_messages)} messages")
+        self._set_activity(None)
+        self.notify(
+            f"Compacted {before} → {len(self.messages)} messages, "
+            f"{format_tokens(result.tokens_saved)} tokens saved"
+        )
 
     @work(group="session-picker")
     async def action_resume_session(self) -> None:
@@ -3165,7 +3327,7 @@ class TauApp(App):
                 return
 
         summarize = mode in ("summarize", "custom")
-        self.sub_title = "Summarizing branch…" if summarize else "Navigating tree…"
+        self._set_activity("Summarizing branch…" if summarize else "Navigating tree…")
         try:
             new_messages = await navigate_tree(
                 session,
@@ -3177,12 +3339,12 @@ class TauApp(App):
             self.notify(f"Tree navigation failed: {e}", severity="error")
             self.log.error(f"Tree navigation failed: {e}")
             self.log.error(traceback.format_exc())
-            self._refresh_subtitle()
+            self._set_activity(None)
             return
 
         self.messages = new_messages
         await self._reload_transcript()
-        self._refresh_subtitle()
+        self._set_activity(None)
         if prefill is None:
             self.notify(
                 "Summarized and moved to selected node" if summarize else "Moved to selected node"
@@ -3232,20 +3394,20 @@ class TauApp(App):
             self.notify(f"Cannot branch from this selection: {exc}", severity="warning")
             return
 
-        self.sub_title = "Building branch…"
+        self._set_activity("Building branch…")
         try:
             new_messages = await commit_branch(session, ids, drop_context=drop_context)
         except Exception as e:
             self.notify(f"Branch failed: {e}", severity="error")
             self.log.error(f"Branch failed: {e}")
             self.log.error(traceback.format_exc())
-            self._refresh_subtitle()
+            self._set_activity(None)
             return
 
         # The same re-render seam every other tree operation uses (§3.4).
         self.messages = new_messages
         await self._reload_transcript()
-        self._refresh_subtitle()
+        self._set_activity(None)
         copied = f"{plan.mints} copied" if plan.mints else "nothing copied"
         folded = f", {plan.hidden} entries folded away" if plan.elide_from else ""
         self.notify(f"Branched from {len(ids)} marked messages — {copied}{folded}.")
@@ -3322,19 +3484,19 @@ class TauApp(App):
             return
 
         before = len(self.messages)
-        self.sub_title = "Eliding span…"
+        self._set_activity("Eliding span…")
         try:
             new_messages = await elide_span(session, anchor_id, first_kept_id)
         except Exception as e:
             self.notify(f"Elide failed: {e}", severity="error")
             self.log.error(f"Elide failed: {e}")
             self.log.error(traceback.format_exc())
-            self._refresh_subtitle()
+            self._set_activity(None)
             return
 
         self.messages = new_messages
         await self._reload_transcript()
-        self._refresh_subtitle()
+        self._set_activity(None)
         self.notify(f"Elided {before} → {len(new_messages)} messages")
 
     def _extension_shortcuts(self) -> list[tuple[str, str, str, str]]:

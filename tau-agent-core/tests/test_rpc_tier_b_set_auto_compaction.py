@@ -116,7 +116,7 @@ class _Stream:
         pass
 
 
-async def _summary_response(model: Any, context: Any, options: Any = None) -> AssistantMessage:
+async def _summary_response(model: Any, context: Any, options: Any = None, **_) -> AssistantMessage:
     return AssistantMessage(
         content=[TextContent(text="AUTO-COMPACTION-SUMMARY")],
         api="openai-completions",
@@ -385,7 +385,7 @@ async def test_enabling_over_the_wire_makes_a_real_turn_actually_compact(
         "method": "set_auto_compaction",
     }
 
-    async def _fast_stream_simple(model: Any, context: Any, options: Any = None) -> _Stream:
+    async def _fast_stream_simple(model: Any, context: Any, options: Any = None, **_) -> _Stream:
         return _Stream("turn reply", total_tokens=5000)
 
     with (

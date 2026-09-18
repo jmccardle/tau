@@ -497,7 +497,7 @@ it again (or with nothing pooled) is a no-op; a subsequent
 <!-- agent: yes -->
 
 ```python
-async complete_simple(model: Any, context: dict[str, Any], options: dict[str, Any] | None = None) -> AssistantMessage
+async complete_simple(model: Any, context: dict[str, Any], options: dict[str, Any] | None = None, *, on_text_delta: TextDeltaSink | None = None) -> AssistantMessage
 ```
 
 `tau_llm.client.complete_simple`
@@ -506,8 +506,8 @@ Whole-message completion — drive a stream to its terminal message.
 
 Faithful port of pi's ``completeSimple`` (stream.ts:67), which is simply
 ``stream(...).result()``. Used where the caller wants the whole
-AssistantMessage and not the intermediate deltas — e.g. compaction's
-summary generation, which has no streaming UI to feed.
+AssistantMessage rather than the intermediate deltas — compaction's summary
+generation, a branch summary, an extension's one-shot completion.
 
 This is about the CALLER's shape, not the transport: it collapses the event
 stream for a caller that has no use for deltas, and the request underneath is
@@ -520,6 +520,7 @@ every entry point here, this one included, keeps working unchanged.
 - `model: Any` — The Model configuration (has provider, id, etc.).
 - `context: dict[str, Any]` — Context dict (same shape as ``stream_simple``): ``messages`` and optional ``tools``. A leading ``{"role": "system", ...}`` message sets the system prompt (client.py does not read ``system_prompt``).
 - `options: dict[str, Any] | None = None` — Optional provider options (``max_tokens``, ``api_key``, ``reasoning``, ``temperature``, …).
+- `on_text_delta: TextDeltaSink | None = None` — Called with each text fragment as it arrives, so a caller that wants the whole message can still SHOW the wait. ``None`` keeps the collapsed path exactly as it was — the stream is driven by ``result()`` alone and nothing iterates it. Sync or async; a coroutine is awaited before the next fragment is read, which paces the provider against the renderer rather than queueing deltas the screen never catches up with. See docs/STREAMING-SIDE-WORK.md.
 
 **Returns**
 

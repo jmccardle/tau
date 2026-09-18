@@ -1729,3 +1729,31 @@ def test_the_duplicate_message_end_does_not_clear_the_stop_reason():
     stream.feed(_message_end({"output_tokens": 30}, stop_reason="length"))
     again = stream.feed(_message_end(None))
     assert again[0]["stop_reason"] == "length"
+
+
+async def test_a_reloaded_summary_is_its_own_box_and_not_a_user_message():
+    """A compaction and a branch summary are stored as `user` messages.
+
+    That is what the model reads — but drawing it literally showed a summary τ
+    wrote as a line the reader typed, in the same blue box as their own prompts.
+    The marker is recognised through `conversation_tree.summary_message_of`, so
+    the head never re-guesses a format the core owns. docs/STREAMING-SIDE-WORK.md §5.
+    """
+    from tau_agent_core.conversation_tree import ConversationTree
+
+    entries = [
+        {"id": "e1", "parentId": None, "type": "compaction", "summary": "what happened before"},
+        {"id": "e2", "parentId": "e1", "type": "branch_summary", "summary": "the road not taken"},
+    ]
+    messages = ConversationTree(entries, "e2").context_for("e2")
+
+    async with _Harness().run_test() as pilot:
+        await pilot.pause()
+        display = pilot.app.query_one(transcript.ChatDisplay)
+        for msg in messages:
+            display.add_persisted_message(msg)
+        await pilot.pause()
+
+        assert _box_roles(display) == ["compaction", "branch_summary"]
+        # The marker is stripped: a reader sees the summary, not the wrapper.
+        assert _box_texts(display) == ["what happened before", "the road not taken"]

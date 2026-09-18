@@ -1,20 +1,20 @@
-"""pi-faithful ``--mode json`` (E-json / step S8, D-delegate).
+"""``tau -p --mode json``: the session header, then one JSON object per line.
 
-pi's ``--mode json`` writes the session header line FIRST, then every
-session-subscribe event as a ``type``-discriminated ``AgentSessionEvent``
-(``print-mode.ts:104-116``). τ pulls this forward so the delegate (step S9) can
-read real per-child limit / failure signals off each ``message_end`` (which
-carries usage/model/stop_reason).
+The header line FIRST, then every bus event as a ``type``-discriminated object
+in τ's own snake-case field names — so a supervising parent reads per-child
+limit and failure signals off each ``message_end``, which carries
+usage/model/stop_reason.
 
 Two levels of coverage:
 
-* the pure serializer :func:`tau_event_to_pi_event` — ``type`` discriminator, the
-  deduped double ``message_end``;
+* the pure serializer :func:`json_mode_payloads` — the ``type`` discriminator,
+  the deduped double ``message_end``, and the delta projection that keeps the
+  stream LINEAR in the answer's length (docs/JSON-MODE-DELTAS.md);
 * the whole path through the REAL ``TauBackend`` bus + ``run_print``, with the LLM
   boundary patched (``agent_loop.stream_simple``) exactly like ``test_cost.py`` so
   the real loop runs without a network call.
 
-Reference: EXTENSIONS-IMPLEMENTATION.md §E-json, §8 S8.
+Reference: docs/JSON-MODE-DELTAS.md; EXTENSIONS-IMPLEMENTATION.md §8 S8.
 """
 
 from __future__ import annotations
@@ -28,7 +28,8 @@ import tau_coding_agent.session_store as store
 from tau_agent_core.events import AgentEvent
 from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, TextContent, Usage
-from tau_coding_agent.backends import tau_event_to_pi_event
+from tau_agent_core.event_projection import MessageDeltaProjector
+from tau_coding_agent.backends import json_mode_payloads
 from tau_coding_agent.cli import CLIArgs
 from tau_coding_agent.headless import run_print
 
@@ -38,13 +39,36 @@ _TS = 1_700_000_000_000
 # --- the pure serializer ----------------------------------------------------
 
 
+def _one(event: AgentEvent) -> dict | None:
+    """The single line ``event`` produces, or None when it produces none."""
+    lines = json_mode_payloads(MessageDeltaProjector(), event)
+    assert len(lines) <= 1, lines
+    return lines[0] if lines else None
+
+
 def test_serializer_uses_type_discriminator_not_kind():
     event = AgentEvent(type="turn_start", timestamp=_TS, turn_index=0)
-    out = tau_event_to_pi_event(event)
+    out = _one(event)
     assert out is not None
     assert out["type"] == "turn_start"
     assert out["turn_index"] == 0
     assert "kind" not in out
+
+
+def test_an_always_false_flag_is_not_a_field():
+    """`blocked`/`is_error` are bool-defaulted, so `exclude_none` cannot drop them.
+
+    Every event of every type carried two dead keys until they were popped
+    explicitly. A TRUE one still ships — it is the only one that says anything.
+    """
+    clean = _one(AgentEvent(type="turn_start", timestamp=_TS, turn_index=0))
+    assert clean is not None
+    assert "blocked" not in clean and "is_error" not in clean
+
+    failed = _one(
+        AgentEvent(type="tool_execution_end", timestamp=_TS, tool_call_id="c1", is_error=True)
+    )
+    assert failed is not None and failed["is_error"] is True
 
 
 def test_serializer_keeps_usage_bearing_message_end():
@@ -59,7 +83,7 @@ def test_serializer_keeps_usage_bearing_message_end():
             "stop_reason": "stop",
         },
     )
-    out = tau_event_to_pi_event(event)
+    out = _one(event)
     assert out is not None
     assert out["type"] == "message_end"
     assert out["message"]["usage"] == {"total_tokens": 5}
@@ -73,7 +97,7 @@ def test_serializer_drops_duplicate_content_only_message_end():
         timestamp=_TS,
         message={"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
     )
-    assert tau_event_to_pi_event(event) is None
+    assert _one(event) is None
 
 
 STOCK_TIMINGS = {
@@ -103,7 +127,7 @@ def test_serializer_preserves_usage_extra_timings_and_repairs():
             "stop_reason": "stop",
         },
     )
-    out = tau_event_to_pi_event(event)
+    out = _one(event)
     assert out is not None
     extra = out["message"]["usage"]["extra"]
     # exclude_none must NOT drop the nested telemetry — it is real measured data.
@@ -123,7 +147,7 @@ def test_serializer_does_not_fabricate_an_empty_extra_when_absent():
             "stop_reason": "stop",
         },
     )
-    out = tau_event_to_pi_event(event)
+    out = _one(event)
     assert out is not None
     assert "extra" not in out["message"]["usage"]
 
@@ -237,3 +261,78 @@ async def test_run_print_json_is_pi_faithful(fake_llm, capsys):
     assert message["stop_reason"] == "stop"
 
     assert lines[-1]["type"] == "agent_end"
+
+
+# --- the stream stays linear ------------------------------------------------
+
+
+def _update(text: str) -> AgentEvent:
+    """One `message_update` carrying the CUMULATIVE text, as the loop emits it."""
+    return AgentEvent(
+        type="message_update",
+        timestamp=_TS,
+        message={"role": "assistant", "content": [{"type": "text", "text": text}]},
+    )
+
+
+def test_a_message_update_carries_the_delta_not_the_accumulated_message():
+    projector = MessageDeltaProjector()
+    first = json_mode_payloads(projector, _update("Hel"))
+    second = json_mode_payloads(projector, _update("Hello"))
+
+    assert [line["delta"] for line in first] == ["Hel"]
+    assert [line["delta"] for line in second] == ["lo"]
+    assert all("message" not in line for line in first + second)
+    assert second[0]["block_type"] == "text"
+    assert second[0]["replace"] is False
+
+
+def test_an_unchanged_snapshot_produces_no_line():
+    """The loop re-emits a snapshot whenever any block changes, including this one's
+    siblings. A re-sent identical block is not news."""
+    projector = MessageDeltaProjector()
+    json_mode_payloads(projector, _update("Hello"))
+    assert json_mode_payloads(projector, _update("Hello")) == []
+
+
+def test_a_growing_tool_call_produces_no_line():
+    """Its id and name ride `tool_execution_start`; its arguments ride `_end`.
+
+    Passing the partial block through as well would be a third transmission of
+    what two other events already carry, and it is the O(n^2) one.
+    """
+    projector = MessageDeltaProjector()
+    event = AgentEvent(
+        type="message_update",
+        timestamp=_TS,
+        message={
+            "role": "assistant",
+            "content": [{"type": "toolCall", "id": "c1", "name": "bash", "arguments": {"c": "l"}}],
+        },
+    )
+    assert json_mode_payloads(projector, event) == []
+
+
+def test_the_stream_scales_linearly_with_the_answer():
+    """The gate for the defect this serializer was rewritten to fix.
+
+    `AgentEvent.message` holds the whole assistant message so far and the loop
+    re-sends it per fragment, so dumping it made the stream quadratic: 10,000
+    characters of answer wrote 10.6 MB (docs/JSON-MODE-DELTAS.md §1). Doubling the
+    answer must roughly double the bytes, not quadruple them. The 2.2 bound is
+    pi's, from its own regression #7290 — the same defect, found independently.
+    """
+
+    def bytes_for(chars: int) -> int:
+        projector = MessageDeltaProjector()
+        accumulated, total = "", 0
+        for _ in range(chars // 10):
+            accumulated += "x" * 10
+            for line in json_mode_payloads(projector, _update(accumulated)):
+                total += len(json.dumps(line)) + 1
+        return total
+
+    small = bytes_for(2_000)
+    large = bytes_for(4_000)
+    assert small > 0
+    assert large / small < 2.2, f"{large} / {small} = {large / small:.1f}x — not linear"

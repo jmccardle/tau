@@ -86,6 +86,14 @@ EXPOSED: dict[str, str] = {
 }
 
 NOT_EXPOSED: dict[str, str] = {
+    "watch_side_completion": (
+        "An async context manager that EMITS the side_completion_* events rather "
+        "than answering a question about them (docs/STREAMING-SIDE-WORK.md §3). A "
+        "host is already on the receiving end of those three events, so calling "
+        "this over the wire would mean asking the server to announce work the "
+        "caller is doing somewhere else — which is not a thing a remote host can "
+        "do. Its one out-of-class caller is TauBackend.navigate_tree, in process."
+    ),
     "persistence_settled": (
         "An asyncio.Event the OUTPUT WRITER waits on, so an agent_end is not framed "
         "until this turn is persisted and the cursor it carries is the post-turn tip "

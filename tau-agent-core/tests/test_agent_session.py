@@ -1647,6 +1647,9 @@ class TestEventBus:
             "tool_execution_start",
             "tool_execution_update",
             "tool_execution_end",
+            "side_completion_start",
+            "side_completion_update",
+            "side_completion_end",
         }
         assert set(bus._listeners.keys()) == expected_types
 

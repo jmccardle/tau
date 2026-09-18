@@ -359,7 +359,7 @@ component counts when total is absent/zero.
 <!-- agent: yes -->
 
 ```python
-async compact(preparation: CompactionPreparation, model: Model, api_key: str | None, *, custom_instructions: str | None = None, thinking_level: str | None = None) -> CompactionResult
+async compact(preparation: CompactionPreparation, model: Model, api_key: str | None, *, custom_instructions: str | None = None, thinking_level: str | None = None, on_text_delta: TextDeltaSink | None = None) -> CompactionResult
 ```
 
 `tau_agent_core.compaction.compact`
@@ -369,6 +369,13 @@ Generate the compaction summary from prepared history (pi: compact).
 On a split turn, the history and the turn prefix are summarized concurrently
 and stitched together (pi uses ``Promise.all``).
 
+``on_text_delta`` watches the HISTORY summary only, even on a split turn.
+The two completions run concurrently, so feeding both into one sink would
+interleave two documents into unreadable text; the prefix summary is stitched
+on after both finish and arrives in the caller's final result instead. Nothing
+is hidden — the whole summary is returned either way — but what the reader
+watches arrive is one document rather than two shuffled together.
+
 **Parameters**
 
 - `preparation: CompactionPreparation` — *(no description)*
@@ -376,6 +383,7 @@ and stitched together (pi uses ``Promise.all``).
 - `api_key: str | None` — *(no description)*
 - `custom_instructions: str | None = None` — *(no description)*
 - `thinking_level: str | None = None` — *(no description)*
+- `on_text_delta: TextDeltaSink | None = None` — *(no description)*
 
 ## estimate_context_tokens
 <!-- agent: yes -->

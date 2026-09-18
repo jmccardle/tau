@@ -111,7 +111,7 @@ class _Stream:
 
 
 def _stream_stub(reply: str = "ok", record: list | None = None):
-    async def fake_stream_simple(model, context, options=None):
+    async def fake_stream_simple(model, context, options=None, **_):
         from tau_llm.streaming import DoneEvent, TextDeltaEvent
 
         if record is not None:

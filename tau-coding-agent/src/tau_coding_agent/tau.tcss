@@ -141,6 +141,10 @@ Vertical.tau-dialog-buttons Button { width: 100%; margin: 0; }
 .box-system { border: solid $tau-role-system; }
 .box-toolCall { border: solid $tau-role-tool; }
 
+/* side work: a compaction or branch summary, where it happened */
+.box-compaction { border: solid $tau-role-system; margin: 1 0 1 2; }
+.box-branch_summary { border: solid $tau-role-system; margin: 1 0 1 2; }
+
 /* legacy standalone tool box */
 .box-toolResult { border: solid $tau-role-result; margin: 1 0 1 2; }
 

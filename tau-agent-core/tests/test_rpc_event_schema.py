@@ -37,7 +37,6 @@ from tau_agent_core.rpc_event_schema import (
 )
 
 DOCUMENTED_DERIVED_FIELDS = {
-    "delta",
     "block_type",
     "replace",
     "message_count",
@@ -54,6 +53,8 @@ DOCUMENTED_EXCLUDED_FIELDS = {
     "tool_results",
     "messages",
     "details",
+    "text",
+    "usage",
 }
 
 
@@ -83,7 +84,7 @@ class TestEventTypesReflectAgentEvent:
     def test_returns_a_tuple_not_a_set(self):
         assert isinstance(event_types(), tuple)
 
-    def test_ten_known_event_types_present(self):
+    def test_thirteen_known_event_types_present(self):
         assert set(event_types()) == {
             "agent_start",
             "agent_end",
@@ -95,6 +96,9 @@ class TestEventTypesReflectAgentEvent:
             "tool_execution_start",
             "tool_execution_update",
             "tool_execution_end",
+            "side_completion_start",
+            "side_completion_update",
+            "side_completion_end",
         }
 
     def test_raises_if_agent_event_type_is_no_longer_a_literal(self, monkeypatch):

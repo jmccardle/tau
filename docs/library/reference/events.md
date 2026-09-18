@@ -43,6 +43,13 @@ can fan out to the right stream. ``None`` alongside ``submission_id``
 (an EMPTY dict would claim "a submission with no correlation data";
 ``None`` says "no submission stamped this event" instead).
 
+### delta
+
+`tau_agent_core.events.AgentEvent.delta: str | None`
+
+One text fragment of a side completion, on
+``side_completion_update``. ``None`` elsewhere.
+
 ### details
 
 `tau_agent_core.events.AgentEvent.details: dict[str, Any] | None`
@@ -91,6 +98,24 @@ Message data (agent_start/end, message_*)
 
 List of messages produced (agent_end)
 
+### purpose
+
+`tau_agent_core.events.AgentEvent.purpose: SideCompletionPurpose | None`
+
+Which side completion a ``side_completion_*`` event reports —
+``"compaction"`` or ``"branch_summary"``. ``None`` on every other
+type. Side work belongs to no turn and stamps no ``submission_id``,
+so this is what a renderer keys on instead.
+
+### reason
+
+`tau_agent_core.events.AgentEvent.reason: SideCompletionReason | None`
+
+What asked for it — ``"manual"``, ``"threshold"`` or
+``"navigate"``. Set on all three ``side_completion_*`` events, so a
+reader that joins late still learns whether the compaction it is
+watching was requested or imposed. ``None`` on every other type.
+
 ### result
 
 `tau_agent_core.events.AgentEvent.result: Any | None`
@@ -122,6 +147,16 @@ contract) — an honest "no submission", never a fabricated id.
 
 WHO submitted — an extension name, ``"human"``, a channel id.
 ``None`` alongside ``submission_id``.
+
+### text
+
+`tau_agent_core.events.AgentEvent.text: str | None`
+
+The finished side-completion text, on ``side_completion_end``.
+Sent whole as well as in fragments, because a subscriber that
+attached late or dropped a delta must still be able to render the
+result rather than a partial one. ``None`` elsewhere, and ``None``
+on an end that failed — paired with ``is_error`` and ``error``.
 
 ### timestamp
 
@@ -155,9 +190,17 @@ Turn number (turn_*)
 
 ### type
 
-`tau_agent_core.events.AgentEvent.type: Literal['agent_start', 'agent_end', 'turn_start', 'turn_end', 'message_start', 'message_update', 'message_end', 'tool_execution_start', 'tool_execution_update', 'tool_execution_end']`
+`tau_agent_core.events.AgentEvent.type: Literal['agent_start', 'agent_end', 'turn_start', 'turn_end', 'message_start', 'message_update', 'message_end', 'tool_execution_start', 'tool_execution_update', 'tool_execution_end', 'side_completion_start', 'side_completion_update', 'side_completion_end']`
 
 Event type discriminator
+
+### usage
+
+`tau_agent_core.events.AgentEvent.usage: dict[str, int] | None`
+
+What a side completion SPENT, on ``side_completion_end``. This is
+the only place those tokens are observable: the work runs outside the
+agent loop, so no ``turn_end`` counts it (docs/STREAMING-SIDE-WORK.md).
 
 ## EventBus
 <!-- agent: yes -->

@@ -90,7 +90,7 @@ def test_usage_sums_field_wise_without_mutating_the_ledger():
 
 
 async def test_compaction_reports_what_its_summarizer_spent(monkeypatch):
-    async def _fake(model, context, options=None):
+    async def _fake(model, context, options=None, **_):
         return _reply("a summary", input_tokens=7000, output_tokens=300)
 
     monkeypatch.setattr("tau_agent_core.compaction.complete_simple", _fake)
@@ -115,7 +115,7 @@ async def test_a_split_turn_counts_BOTH_of_its_completions(monkeypatch):
     one would understate the compaction by roughly half."""
     calls: list[Any] = []
 
-    async def _fake(model, context, options=None):
+    async def _fake(model, context, options=None, **_):
         calls.append(context)
         return _reply("s", input_tokens=1000, output_tokens=100)
 
@@ -141,7 +141,7 @@ async def test_an_auto_compaction_lands_on_the_sessions_side_ledger(monkeypatch)
     the cost meter reads. Before this, those tokens reached nothing."""
     session = _session()
 
-    async def _fake(model, context, options=None):
+    async def _fake(model, context, options=None, **_):
         return _reply("summary", input_tokens=6000, output_tokens=200)
 
     monkeypatch.setattr("tau_agent_core.compaction.complete_simple", _fake)
@@ -156,7 +156,7 @@ async def test_an_auto_compaction_lands_on_the_sessions_side_ledger(monkeypatch)
 
     assert session.side_usage["total_tokens"] == 0, "nothing spent off-loop yet"
 
-    result = await session._perform_compaction()
+    result = await session._perform_compaction("threshold")
     assert result is not None, "the fixture must actually trigger a compaction"
 
     assert session.side_usage["input_tokens"] == 6000
@@ -169,7 +169,7 @@ async def test_an_auto_compaction_lands_on_the_sessions_side_ledger(monkeypatch)
 async def test_ctx_complete_bills_its_tokens_to_the_session(monkeypatch):
     session = _session()
 
-    async def _fake(model, context, options=None):
+    async def _fake(model, context, options=None, **_):
         return _reply("include", input_tokens=120, output_tokens=1)
 
     monkeypatch.setattr("tau_llm.client.complete_simple", _fake)
@@ -185,7 +185,7 @@ async def test_a_constrained_fan_out_accumulates_every_verdict(monkeypatch):
     understates the cost by a factor of N — the case where forgetting hurts most."""
     session = _session()
 
-    async def _fake(model, context, options=None):
+    async def _fake(model, context, options=None, **_):
         return _reply("include", input_tokens=100, output_tokens=1)
 
     monkeypatch.setattr("tau_llm.client.complete_simple", _fake)
@@ -214,7 +214,7 @@ async def test_a_truncated_completion_is_still_billed(monkeypatch):
     """
     session = _session()
 
-    async def _fake(model, context, options=None):
+    async def _fake(model, context, options=None, **_):
         return AssistantMessage(
             role="assistant",
             content=[TextContent(type="text", text="a truncated pref")],
@@ -241,7 +241,7 @@ async def test_a_failed_completion_bills_exactly_what_the_provider_reported(monk
     provider's own accounting rather than second-guessing it (tau_agent_core.usage)."""
     session = _session()
 
-    async def _fake(model, context, options=None):
+    async def _fake(model, context, options=None, **_):
         return AssistantMessage(
             role="assistant",
             content=[],

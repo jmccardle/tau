@@ -32,7 +32,7 @@ from typing import Any
 
 from tau_agent_core.completion import CompletionFailed, resolved_complete
 from tau_agent_core.usage import add_usage, usage_of, zero_usage
-from tau_llm.client import complete_simple
+from tau_llm.client import TextDeltaSink, complete_simple
 from tau_llm.types import Model, TextContent
 
 from tau_agent_core.compaction_utils import (
@@ -477,6 +477,7 @@ async def generate_summary(
     custom_instructions: str | None = None,
     previous_summary: str | None = None,
     thinking_level: str | None = None,
+    on_text_delta: TextDeltaSink | None = None,
 ) -> tuple[str, dict[str, int]]:
     """Generate (or iteratively update) a conversation summary (pi: generateSummary).
 
@@ -517,7 +518,11 @@ async def generate_summary(
 
     try:
         response = await resolved_complete(
-            model, context, options=options, complete_fn=complete_simple
+            model,
+            context,
+            options=options,
+            complete_fn=complete_simple,
+            on_text_delta=on_text_delta,
         )
     except CompletionFailed as exc:
         if exc.stop_reason == "aborted":
@@ -781,11 +786,19 @@ async def compact(
     *,
     custom_instructions: str | None = None,
     thinking_level: str | None = None,
+    on_text_delta: TextDeltaSink | None = None,
 ) -> CompactionResult:
     """Generate the compaction summary from prepared history (pi: compact).
 
     On a split turn, the history and the turn prefix are summarized concurrently
     and stitched together (pi uses ``Promise.all``).
+
+    ``on_text_delta`` watches the HISTORY summary only, even on a split turn.
+    The two completions run concurrently, so feeding both into one sink would
+    interleave two documents into unreadable text; the prefix summary is stitched
+    on after both finish and arrives in the caller's final result instead. Nothing
+    is hidden — the whole summary is returned either way — but what the reader
+    watches arrive is one document rather than two shuffled together.
     """
     if not preparation.first_kept_entry_id:
         raise CompactionError(
@@ -806,6 +819,7 @@ async def compact(
                 custom_instructions=custom_instructions,
                 previous_summary=preparation.previous_summary,
                 thinking_level=thinking_level,
+                on_text_delta=on_text_delta,
             )
 
         (
@@ -834,6 +848,7 @@ async def compact(
             custom_instructions=custom_instructions,
             previous_summary=preparation.previous_summary,
             thinking_level=thinking_level,
+            on_text_delta=on_text_delta,
         )
 
     read_files, modified_files = compute_file_lists(preparation.file_ops)

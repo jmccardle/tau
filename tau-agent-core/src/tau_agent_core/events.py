@@ -45,6 +45,28 @@ AgentEndReason = Literal[
     "error",
 ]
 
+SideCompletionPurpose = Literal["compaction", "branch_summary"]
+"""Which piece of side work a ``side_completion_*`` event is reporting.
+
+Side work is a completion τ makes on its own behalf rather than on the model's:
+it spends tokens, it produces text a reader wants to see, and it belongs to no
+turn. The two are the compaction summary and a branch summary.
+"""
+
+SideCompletionReason = Literal["manual", "threshold", "navigate"]
+"""What ASKED for a side completion — a different question from what it is.
+
+``manual`` is a person or a host: ``/compact`` and the ``compact`` RPC verb.
+``threshold`` is ``_maybe_auto_compact``, which nobody asked for and which is the
+one a reader is most likely to be surprised by. ``navigate`` is the tree
+browser's summarising move, the only thing that raises a branch summary.
+
+pi's equivalent has a third compaction reason, ``overflow`` — compact and retry
+after a request came back over the window. τ has no such recovery path
+(``_perform_compaction`` has exactly two callers), so declaring the value would
+put a branch on the wire that nothing can reach.
+"""
+
 
 @agent_facing(topic="events")
 class AgentEvent(BaseModel):
@@ -101,6 +123,24 @@ class AgentEvent(BaseModel):
             can fan out to the right stream. ``None`` alongside ``submission_id``
             (an EMPTY dict would claim "a submission with no correlation data";
             ``None`` says "no submission stamped this event" instead).
+        purpose: Which side completion a ``side_completion_*`` event reports —
+            ``"compaction"`` or ``"branch_summary"``. ``None`` on every other
+            type. Side work belongs to no turn and stamps no ``submission_id``,
+            so this is what a renderer keys on instead.
+        reason: What asked for it — ``"manual"``, ``"threshold"`` or
+            ``"navigate"``. Set on all three ``side_completion_*`` events, so a
+            reader that joins late still learns whether the compaction it is
+            watching was requested or imposed. ``None`` on every other type.
+        delta: One text fragment of a side completion, on
+            ``side_completion_update``. ``None`` elsewhere.
+        text: The finished side-completion text, on ``side_completion_end``.
+            Sent whole as well as in fragments, because a subscriber that
+            attached late or dropped a delta must still be able to render the
+            result rather than a partial one. ``None`` elsewhere, and ``None``
+            on an end that failed — paired with ``is_error`` and ``error``.
+        usage: What a side completion SPENT, on ``side_completion_end``. This is
+            the only place those tokens are observable: the work runs outside the
+            agent loop, so no ``turn_end`` counts it (docs/STREAMING-SIDE-WORK.md).
     """
 
     type: Literal[
@@ -114,6 +154,9 @@ class AgentEvent(BaseModel):
         "tool_execution_start",
         "tool_execution_update",
         "tool_execution_end",
+        "side_completion_start",
+        "side_completion_update",
+        "side_completion_end",
     ]
 
     timestamp: int = Field(ge=0)
@@ -138,6 +181,12 @@ class AgentEvent(BaseModel):
     source: SubmissionSource | None = None
     submitter: str | None = None
     correlation: dict[str, Any] | None = None
+
+    purpose: SideCompletionPurpose | None = None
+    reason: SideCompletionReason | None = None
+    delta: str | None = None
+    text: str | None = None
+    usage: dict[str, int] | None = None
 
 
 @agent_facing(topic="events")
@@ -183,6 +232,9 @@ class EventBus:
             "tool_execution_start": [],
             "tool_execution_update": [],
             "tool_execution_end": [],
+            "side_completion_start": [],
+            "side_completion_update": [],
+            "side_completion_end": [],
         }
         self._error_listeners: list[ErrorListener] = []
 

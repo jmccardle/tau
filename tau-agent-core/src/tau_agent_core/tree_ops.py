@@ -25,7 +25,7 @@ NODE-ADDRESSABLE-AGENTS.md I1 (ancestry is fixed at append), W3 (elide).
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from tau_llm.docs import agent_facing
 
@@ -86,6 +86,7 @@ async def summarize_and_navigate(
     *,
     api_key: str | None = None,
     custom_instructions: str | None = None,
+    on_text_delta: Callable[[str], Any] | None = None,
 ) -> tuple[list[dict], dict[str, int]]:
     """Summarize the subtree at ``target_id`` and splice the summary onto the path.
 
@@ -109,6 +110,9 @@ async def summarize_and_navigate(
         api_key: The key for that model's provider, when it needs one.
         custom_instructions: Extra guidance for the summarizer's SYSTEM prompt
             (the tree browser's mode 3).
+        on_text_delta: Called with each fragment as the summary arrives, so a head
+            can show it streaming rather than blocking on a modal. Passed straight
+            through to ``summarize_branch``; ``None`` keeps the collapsed path.
 
     Returns:
         A pair: the re-rendered context (``ConversationTree.context_for``) and the
@@ -133,6 +137,7 @@ async def summarize_and_navigate(
         model,
         api_key=api_key,
         custom_instructions=custom_instructions,
+        on_text_delta=on_text_delta,
     )
     await session.append_branch_summary(summary, target_id)
     return ConversationTree(session.entries(), session.cursor).context_for(), usage

@@ -1690,6 +1690,38 @@ extensions costs nothing and is the same object every test already reads.
 Cached against the registry's ``flows_revision`` because building it runs the
 whole registry cross-check and a head asks on every keystroke.
 
+### watch_side_completion
+
+```python
+async watch_side_completion(purpose: SideCompletionPurpose, reason: SideCompletionReason, summarizer_model_id: str) -> AsyncIterator[_SideCompletionWatch]
+```
+
+`tau_agent_core.agent_session.AgentSession.watch_side_completion` · since 0.11.0
+
+Bracket one piece of side work with its three events.
+
+Side work — a compaction summary, a branch summary — spends tokens and
+produces text outside any turn, so nothing in the agent-loop vocabulary
+reports it and a head could only show a spinner. This emits
+``side_completion_start``, one ``side_completion_update`` per fragment
+through the yielded watch, and exactly one ``side_completion_end``.
+
+**Every exit emits the end**, including an exception, which then
+propagates. A renderer opens a box on the start and has no other way to
+learn the work is over; a failure that emitted nothing would leave that
+box open for the life of the session (docs/STREAMING-SIDE-WORK.md §3).
+
+Public because the second caller is outside this class:
+``TauBackend.navigate_tree`` brackets a branch summary, which
+:func:`tau_agent_core.tree_ops.summarize_and_navigate` performs against a
+log this session does not hold.
+
+**Parameters**
+
+- `purpose: SideCompletionPurpose` — which side completion this is.
+- `reason: SideCompletionReason` — *(no description)*
+- `summarizer_model_id: str` — the model id doing the summarising, which is often NOT the conversation's — the start event carries it so a reader can see what they are paying for.
+
 ## Argument
 <!-- agent: yes -->
 
@@ -5380,7 +5412,7 @@ A fresh dict of command name to one-line description. Fresh rather than shared, 
 <!-- agent: yes -->
 
 ```python
-async summarize_and_navigate(session: SessionLog, target_id: str, model: Any, *, api_key: str | None = None, custom_instructions: str | None = None) -> tuple[list[dict], dict[str, int]]
+async summarize_and_navigate(session: SessionLog, target_id: str, model: Any, *, api_key: str | None = None, custom_instructions: str | None = None, on_text_delta: Callable[[str], Any] | None = None) -> tuple[list[dict], dict[str, int]]
 ```
 
 `tau_agent_core.tree_ops.summarize_and_navigate`
@@ -5406,6 +5438,7 @@ holds no session object to bank them against.
 - `model: Any` — The model config the summarizer runs against.
 - `api_key: str | None = None` — The key for that model's provider, when it needs one.
 - `custom_instructions: str | None = None` — Extra guidance for the summarizer's SYSTEM prompt (the tree browser's mode 3).
+- `on_text_delta: Callable[[str], Any] | None = None` — Called with each fragment as the summary arrives, so a head can show it streaming rather than blocking on a modal. Passed straight through to ``summarize_branch``; ``None`` keeps the collapsed path.
 
 **Returns**
 
@@ -5419,7 +5452,7 @@ A pair: the re-rendered context (``ConversationTree.context_for``) and the summa
 <!-- agent: yes -->
 
 ```python
-async summarize_branch(branch_text: str, model: Any, *, api_key: str | None = None, custom_instructions: str | None = None) -> tuple[str, dict[str, int]]
+async summarize_branch(branch_text: str, model: Any, *, api_key: str | None = None, custom_instructions: str | None = None, on_text_delta: Callable[[str], Any] | None = None) -> tuple[str, dict[str, int]]
 ```
 
 `tau_agent_core.session_manager.summarize_branch`
@@ -5436,6 +5469,10 @@ Fail-Early (§3.1): the previous truncated-raw-text fallback is GONE — a faile
 aborted, or empty LLM response RAISES rather than fabricating a summary from raw
 text. No branch-summary is ever silently invented.
 
+``on_text_delta`` is called with each fragment as the summary arrives, so a head
+can show the wait instead of a frozen modal (docs/STREAMING-SIDE-WORK.md). ``None``
+keeps the collapsed path.
+
 Reference: SESSION-TREE-IMPLEMENTATION.md §3.1, §3.3.
 
 **Parameters**
@@ -5444,10 +5481,40 @@ Reference: SESSION-TREE-IMPLEMENTATION.md §3.1, §3.3.
 - `model: Any` — *(no description)*
 - `api_key: str | None = None` — *(no description)*
 - `custom_instructions: str | None = None` — *(no description)*
+- `on_text_delta: Callable[[str], Any] | None = None` — *(no description)*
 
 **Returns**
 
 ``(summary, usage)`` — the text AND what producing it cost. This is a real LLM call made outside the agent loop, so nothing else can observe its tokens; if it does not report them, they go uncounted (see :mod:`tau_agent_core.usage`).
+
+## summary_message_of
+<!-- agent: yes -->
+
+```python
+summary_message_of(message: dict[str, Any]) -> tuple[str, str] | None
+```
+
+`tau_agent_core.conversation_tree.summary_message_of` · since 0.11.0
+
+Recognise a summary that :func:`entries_to_messages` rendered as a message.
+
+A ``compaction`` and a ``branch_summary`` entry both become a ``user``
+message wrapped in a marker, because that is what the model reads. A head
+that drew it literally would show a summary τ wrote as a line the reader
+typed, which is what the TUI did until docs/STREAMING-SIDE-WORK.md §5.
+
+This is here rather than in a head because the marker is written here, by
+:func:`_compaction_message` and :func:`_branch_summary_message`. A renderer
+matching the string itself would be a second copy of a format the core owns,
+and the two would drift the first time the wrapper changed.
+
+**Parameters**
+
+- `message: dict[str, Any]` — One message from :func:`entries_to_messages` or :meth:`ConversationTree.context_for`.
+
+**Returns**
+
+``(purpose, body)`` — ``"compaction"`` or ``"branch_summary"``, and the summary with the marker stripped — or ``None`` for an ordinary message.
 
 ## tool_group
 <!-- agent: yes -->

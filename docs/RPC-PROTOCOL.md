@@ -16,7 +16,7 @@
 
 ## Version negotiation
 
-- **Protocol version:** `1.6`
+- **Protocol version:** `1.7`
 - **Dialect:** `jsonrpc-2.0`
 
 Call get_capabilities (no params) first on every new connection, before any mutating command. Compare protocol_version's MAJOR component against what this host was built against; refuse to send anything else on a mismatch rather than discovering it on the first failing request.
@@ -35,7 +35,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 136,780 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 138,389 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -2447,14 +2447,14 @@ C1: every verb τ deliberately does not implement is declined here, with a reaso
 
 Every `type: "event"` notification carries a `WireEvent` payload (generated from `AgentEvent`, §6 point 3) as `params`. No unbounded field is ever pushed (G3): `message_update` carries a bounded per-chunk `delta`, never the cumulative message; `agent_end` carries a `message_count`, never the message array (pull it with `get_messages`).
 
-**Event types:** `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_start`, `message_update`, `message_end`, `tool_execution_start`, `tool_execution_update`, `tool_execution_end`
+**Event types:** `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_start`, `message_update`, `message_end`, `tool_execution_start`, `tool_execution_update`, `tool_execution_end`, `side_completion_start`, `side_completion_update`, `side_completion_end`
 
 **Fields** (every event carries the full set; unpopulated fields are
 `null`/`false`, never omitted — a fixed record shape, not a variant one):
 
 | Field | Type | Description |
 |---|---|---|
-| `type` | `agent_start` \| `agent_end` \| `turn_start` \| `turn_end` \| `message_start` \| `message_update` \| `message_end` \| `tool_execution_start` \| `tool_execution_update` \| `tool_execution_end` | Event type discriminator. |
+| `type` | `agent_start` \| `agent_end` \| `turn_start` \| `turn_end` \| `message_start` \| `message_update` \| `message_end` \| `tool_execution_start` \| `tool_execution_update` \| `tool_execution_end` \| `side_completion_start` \| `side_completion_update` \| `side_completion_end` | Event type discriminator. |
 | `timestamp` | integer | Milliseconds since epoch. |
 | `turn_index` | integer \| `null` | Turn number (turn_*). |
 | `tool_call_id` | string \| `null` | Tool call id (tool_*). |
@@ -2468,13 +2468,15 @@ Every `type: "event"` notification carries a `WireEvent` payload (generated from
 | `source` | `interactive` \| `rpc` \| `extension` \| `bus` \| `timer` \| `webhook` \| `voice` \| `agent` \| `null` | The submission's origin (E4). None alongside submission_id. |
 | `submitter` | string \| `null` | WHO submitted (E4). None alongside submission_id. |
 | `correlation` | object \| `null` | The submission's free-form origin detail (E4). None alongside submission_id — an empty dict would claim a submission with no correlation data, which is a different statement. |
-| `delta` | string \| `null` | A diffable content-block's delta on message_update (E1) — the prefix-diff against the previous message_update in the same turn, never the cumulative message. Only set for a diffable block kind (see block_type); a non-diffable block change (e.g. a growing toolCall) produces no wire event. None for all other event types. See `replace` for how to apply this value. |
-| `block_type` | `text` \| `thinking` \| `null` | Which diffable content-block kind `delta` belongs to. Set exactly when `delta` is set. |
+| `delta` | string \| `null` | One text fragment that arrived. On message_update (E1) it is a diffable content-block's prefix-diff against the previous message_update in the same turn, never the cumulative message; only a diffable block kind sets it (see block_type), and a non-diffable block change (e.g. a growing toolCall) produces no wire event. On side_completion_update it is the next fragment of the summary. Both are applied the same way, which is why they share a field rather than asking a client to keep two accumulators — see `replace`. None for all other event types. |
+| `block_type` | `text` \| `thinking` \| `null` | Which diffable content-block kind `delta` belongs to. Set exactly when `delta` is set — 'text' on a side_completion_update, which has no other kind. |
 | `replace` | boolean | Only meaningful when delta is set. False (the common case): delta is an incremental suffix — append it to whatever was already accumulated for this block_type this turn. True: the provider replaced rather than extended the block's content — delta is the block's ENTIRE new value, and the receiver must RESET its accumulator to delta rather than appending. Mirrors event_projection.BlockDelta.replace exactly. |
 | `message_count` | integer \| `null` | Count of messages produced this turn, on agent_end (E2). The messages themselves are pulled via get_messages, never pushed. None for all other event types. |
 | `stop_reason` | `stop` \| `length` \| `toolUse` \| `error` \| `aborted` \| `null` | Why the model stopped this completion, on the message_end that carries usage. 'length' means the output cap ended it, so the content is a PREFIX and not an answer — the one value an operator has to act on. None on the content-only duplicate message_end (which carries no usage either) and on every other event type. This rides a field of its own because the message it belongs to is excluded from the wire; it is a closed enum, not unbounded content. See docs/TRUNCATED-TOOL-CALLS.md. |
 | `dropped_tool_calls` | integer \| `null` | How many tool calls this completion lost because the stream ended mid-argument, on message_end. A truncated or aborted arguments buffer is a prefix, so the provider drops the call rather than running it on a repaired or empty payload, and this is the only record that it existed. Null rather than 0 when none were dropped, so 'none lost' and 'not reported' stay distinguishable. None for all other event types. |
 | `cache_notice` | string \| `null` | One sentence saying this turn's prompt cache should have been read and was not, on agent_end. Null is the normal case and says nothing was observed: the cache was read, the server accounts for no cache, the prompt is under the minimum cacheable prefix, or a read earlier in this session already proved caching is on. A host renders it as a warning; see docs/PROMPT-CACHING.md §7 for the three gates. None for all other event types. |
+| `purpose` | `compaction` \| `branch_summary` \| `null` | Which side completion a side_completion_* event reports: 'compaction' or 'branch_summary'. Side work spends tokens and produces text outside any turn, so it stamps no submission_id and a host keys on this instead. The summary TEXT and what it cost are deliberately not on the wire — both land in the session log as a compaction or branch_summary entry, which get_entry serves with tokens_before, covered_tokens and summary_usage attached. Pushing unbounded content through an event is what WireEvent exists to avoid. None for all other event types. See docs/STREAMING-SIDE-WORK.md. |
+| `reason` | `manual` \| `threshold` \| `navigate` \| `null` | What asked for a side completion: 'manual' (a person or this host), 'threshold' (the auto-trigger, which nobody asked for) or 'navigate' (the tree browser's summarising move). On all three side_completion_* events, so a host that attached mid-summary still learns whether the work was requested or imposed. None for all other event types. |
 | `cursor` | string \| `null` | The session log's resulting cursor, on agent_end (E5/F3). Filled in by rpc/transport.py's writer immediately before this line is serialized — not by rpc/wire_events.py at event-projection time — because persistence happens strictly AFTER agent_end fires; reading it any earlier reproduces the exact stale-tip bug this field exists to close. None for all other event types. |
 
 ## Error codes

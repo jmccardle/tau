@@ -124,24 +124,24 @@ async def test_compact_hands_the_focus_to_the_backend_and_strips_it_to_none(app)
     "Additional focus" paragraph for any truthy value, so an empty focus line
     would be a paragraph saying nothing (``compaction.py:497``).
     """
-    seen: list[tuple[int, str | None]] = []
+    seen: list[str | None] = []
 
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.action_new_chat()
         await pilot.pause()
 
-        async def _compact_messages(messages, custom_instructions=None):
-            seen.append((len(messages), custom_instructions))
+        async def _compact(custom_instructions=None):
+            seen.append(custom_instructions)
             return None
 
-        app.current_backend.compact_messages = _compact_messages  # type: ignore[method-assign]
+        app.current_backend.compact = _compact  # type: ignore[method-assign]
 
         await app.action_compact("  keep the API decisions  ")
         await app.action_compact()
         await pilot.pause()
 
-        assert [focus for _, focus in seen] == ["keep the API decisions", None]
+        assert seen == ["keep the API decisions", None]
 
 
 async def test_slash_tree_opens_the_browser_and_slash_fork_no_longer_does(app):
@@ -572,3 +572,65 @@ async def test_a_backend_without_the_mutation_says_so_out_loud(app, monkeypatch)
 
         with pytest.raises(UnsupportedCommandError):
             await app.action_run_session_flow("name", "anything")
+
+
+async def test_compact_writes_a_compaction_entry_the_next_turn_cannot_undo(app, monkeypatch):
+    """The defect that made `/compact` pointless, held shut.
+
+    It used to call `AgentSession.compact_messages`, which wrote NOTHING to the
+    log and handed back a shortened list. `self.messages` is re-derived from
+    `session.context` at every `completion_end` and at every session swap, so the
+    compaction survived until the next turn and then silently undid itself. The
+    fix is that the cut is now a durable entry, which is also what makes it a node
+    in the tree browser. See docs/STREAMING-SIDE-WORK.md §4.
+    """
+    from tau_agent_core.compaction import CompactionSettings
+    from tau_llm.types import AssistantMessage, TextContent, Usage
+
+    async def _summary(model, context, options=None, *, on_text_delta=None, **_):
+        if on_text_delta is not None:
+            sunk = on_text_delta("a summary")
+            if sunk is not None:
+                await sunk
+        return AssistantMessage(
+            role="assistant",
+            content=[TextContent(type="text", text="a summary")],
+            api="openai-completions",
+            provider="openai",
+            model="m",
+            stop_reason="stop",
+            timestamp=1_700_000_000_000,
+            usage=Usage(input_tokens=10, output_tokens=2, total_tokens=12),
+        )
+
+    monkeypatch.setattr("tau_agent_core.compaction.complete_simple", _summary)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+
+        session = app.current_session
+        agent_session = app.current_backend.agent_session
+        # The shipped 20k keep-recent would need a 20k-token fixture to reach a cut.
+        agent_session._compaction_settings = CompactionSettings(
+            reserve_tokens=256, keep_recent_tokens=200
+        )
+        for i in range(3):
+            await session.append_message(
+                {"role": "user", "content": [{"type": "text", "text": f"q{i} " + "x" * 400}]}
+            )
+            await session.append_message(
+                {"role": "assistant", "content": [{"type": "text", "text": f"a{i} " + "y" * 400}]}
+            )
+
+        await app.action_compact()
+        await pilot.pause()
+
+        entries = [e for e in session.entries() if e.get("type") == "compaction"]
+        assert len(entries) == 1, "the cut has to be on the record, not only in memory"
+
+        # Re-deriving from the session — what completion_end does — keeps the cut.
+        rederived = list(session.context)
+        assert len(rederived) == len(app.messages)
+        assert any("[[Compaction summary:" in str(m.get("content")) for m in rederived)

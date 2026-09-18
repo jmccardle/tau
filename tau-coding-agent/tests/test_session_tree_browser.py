@@ -302,7 +302,7 @@ async def test_navigate_summarize_appends_branch_summary_inline(tmp_path):
     backend = _backend()
     captured: dict = {}
 
-    async def fake_complete(model, context, options=None):
+    async def fake_complete(model, context, options=None, **_):
         captured["context"] = context
         return _fake_assistant("SUMMARY OF THE BRANCH")
 
@@ -330,7 +330,7 @@ async def test_navigate_summarize_custom_instructions_reach_system_prompt(tmp_pa
     backend = _backend()
     captured: dict = {}
 
-    async def fake_complete(model, context, options=None):
+    async def fake_complete(model, context, options=None, **_):
         captured["context"] = context
         return _fake_assistant("custom summary")
 
@@ -354,7 +354,7 @@ async def test_navigate_summarize_raises_on_empty_llm_response(tmp_path):
     target = _branch_point(session)
     backend = _backend()
 
-    async def fake_complete(model, context, options=None):
+    async def fake_complete(model, context, options=None, **_):
         return _fake_assistant("")
 
     with patch("tau_llm.client.complete_simple", fake_complete):

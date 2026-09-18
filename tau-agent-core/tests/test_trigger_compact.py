@@ -61,7 +61,7 @@ def _msg(role: str, text: str) -> dict:
 
 
 def _summary_response(text: str):
-    async def _impl(model, context, options=None):
+    async def _impl(model, context, options=None, **_):
         return AssistantMessage(
             content=[TextContent(text=text)],
             api="openai-completions",

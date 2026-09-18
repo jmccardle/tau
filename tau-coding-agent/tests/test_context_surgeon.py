@@ -130,7 +130,7 @@ def _has_tool_result(messages: list[Any], tool_name: str) -> bool:
 def _fake_stream_calling(tool_name: str, tool_args: dict[str, Any]):
     """Emit one tool call, then a text stop once a toolResult for it appears."""
 
-    async def fake(model, context, options=None):
+    async def fake(model, context, options=None, **_):
         messages = context.get("messages", []) if isinstance(context, dict) else []
         if _has_tool_result(messages, tool_name):
             final = _text_assistant("done")
@@ -144,7 +144,7 @@ def _fake_stream_calling(tool_name: str, tool_args: dict[str, Any]):
 
 
 def _summary_response(text: str):
-    async def _impl(model, context, options=None):
+    async def _impl(model, context, options=None, **_):
         return AssistantMessage(
             content=[TextContent(text=text)],
             api="openai-completions",

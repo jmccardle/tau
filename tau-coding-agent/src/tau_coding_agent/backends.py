@@ -80,31 +80,70 @@ def resolve_tool_names(config: dict[str, Any]) -> list[str]:
     return [t for t in names if t not in exclude]
 
 
-def tau_event_to_pi_event(event: AgentEvent) -> dict[str, Any] | None:
-    """Serialize one τ :class:`AgentEvent` into a pi-faithful ``AgentSessionEvent``.
+def json_mode_payloads(projector: MessageDeltaProjector, event: AgentEvent) -> list[dict[str, Any]]:
+    """Serialize one τ :class:`AgentEvent` into the JSONL lines ``tau -p --mode json`` writes.
 
-    pi's ``--mode json`` writes every session-subscribe event straight to stdout
-    as a ``type``-discriminated JSON line (``print-mode.ts:104-108``). τ's
-    ``AgentEvent`` already carries a ``type`` discriminator and τ-snake field
-    names, so the wire shape is the event's own ``model_dump(exclude_none=True)``
-    — there is no legacy ``kind`` remap here (that schema is the TUI widget
-    channel; this is the pi-faithful channel the delegate reads, step S8 /
-    D-delegate).
+    One ``type``-discriminated object per line, in τ's own snake-case field
+    names. Returns a LIST for the same reason
+    :func:`tau_agent_core.rpc.wire_events.project_event` does: a
+    ``message_update`` is not 1:1 — it may produce zero lines, one, or several.
 
-    One faithfulness adjustment — dedup ``message_end``. The agent loop emits
-    ``message_end`` **twice** for a tool-bearing turn: once per-completion
-    (carrying ``usage``/``model``/``stop_reason``, ``agent_loop.py:485``) and once
-    from ``run()``/``run_continue`` (content only). pi emits exactly **one**
-    ``message_end`` per assistant message, so keep the usage-bearing one and drop
-    the content-only duplicate (``None`` → the caller skips it). Every emitted
-    ``message_end`` therefore carries usage/model/stop_reason, which is what the
-    delegate's per-child limit / stop_reason taxonomy reads.
+    **A ``message_update`` carries the DELTA, never the accumulated message.**
+    ``AgentEvent.message`` holds the whole assistant message so far and is
+    re-sent on every fragment, so dumping it made the stream quadratic in the
+    answer's length: a 10,000-character answer wrote 10.6 MB to stdout, measured
+    (docs/JSON-MODE-DELTAS.md §1). The fix is the projector the RPC wire has used
+    since unit 2B, which is why this takes one rather than owning its own state —
+    one projection rule for both machine-readable surfaces. ``turn_start`` resets
+    it, matching that module's reset point.
+
+    A non-diffable block (a ``toolCall`` streaming its arguments) produces no
+    line at all, again matching the RPC wire: identity and name already ride
+    ``tool_execution_start``, and the full arguments ride
+    ``tool_execution_end``, so the passthrough copy was a third transmission of
+    what two other events already carry.
+
+    ``blocked`` and ``is_error`` are dropped when false. They are ``bool`` with a
+    ``False`` default rather than ``None``, so ``exclude_none`` could not, and
+    every event of every type carried two dead keys.
+
+    **Dedup ``message_end``.** The agent loop emits it **twice** for a
+    tool-bearing turn: once per-completion (carrying
+    ``usage``/``model``/``stop_reason``, ``agent_loop.py:485``) and once from
+    ``run()``/``run_continue`` (content only). Keep the usage-bearing one and
+    drop the content-only duplicate, so every emitted ``message_end`` carries
+    usage — which is what a supervising parent reads for its per-child limits.
     """
-    if event.type == "message_end":
-        message = event.message or {}
-        if "usage" not in message:
-            return None
-    return event.model_dump(exclude_none=True)
+    if event.type == "turn_start":
+        projector.reset()
+
+    if event.type != "message_update":
+        if event.type == "message_end" and "usage" not in (event.message or {}):
+            return []
+        return [_json_line(event.model_dump(exclude_none=True))]
+
+    if event.message is None:
+        return []
+
+    lines: list[dict[str, Any]] = []
+    for block_delta in projector.project(event.message):
+        if block_delta.delta is None:
+            continue
+        payload = event.model_dump(exclude_none=True)
+        payload.pop("message", None)
+        payload["delta"] = block_delta.delta
+        payload["block_type"] = block_delta.type
+        payload["replace"] = block_delta.replace
+        lines.append(_json_line(payload))
+    return lines
+
+
+def _json_line(payload: dict[str, Any]) -> dict[str, Any]:
+    """Drop the two always-present false flags. See :func:`json_mode_payloads`."""
+    for flag in ("blocked", "is_error"):
+        if payload.get(flag) is False:
+            payload.pop(flag)
+    return payload
 
 
 class TurnStream:
@@ -360,13 +399,18 @@ class RenderRouter:
     ``lane_start``/``lane_end`` and lets the renderer decide how a bus or forked
     turn should look.
 
-    The emitted vocabulary is :class:`TurnStream`'s, plus the two lane brackets::
+    The emitted vocabulary is :class:`TurnStream`'s, plus the two lane brackets
+    and the three side-completion events, which carry no lane at all::
 
         {"kind": "lane_start", "lane": str, "source": str | None,
          "submitter": str | None, "correlation": dict, "text": str}
         {"kind": "lane_end", "lane": str, "source": str | None,
          "submitter": str | None, "context": int, "output": int,
          "seconds": float | None, "cache_notice": str | None, "extra": dict}
+        {"kind": "side_start", "purpose": str, "model": str}
+        {"kind": "side_delta", "purpose": str, "delta": str}
+        {"kind": "side_end", "purpose": str, "text": str | None,
+         "usage": dict | None, "error": str | None}
 
     ``output`` is every token the lane GENERATED, summed across its completions
     and including the side-usage delta ``submission_end`` reports for work done
@@ -386,7 +430,9 @@ class RenderRouter:
     ``continue_conversation()`` resume, or a ``compact()`` outside any submission,
     emits ``agent_start``/``agent_end`` with no submission to stamp them — and a
     renderer that swallowed them would be indistinguishable from one that had
-    quietly stopped working.
+    quietly stopped working. A ``side_completion_*`` is the one kind that carries
+    no submission and is not an orphan: it is routed by ``purpose`` instead, by
+    :meth:`_route_side_completion`.
     """
 
     def __init__(
@@ -460,6 +506,9 @@ class RenderRouter:
 
     async def on_agent_event(self, event: AgentEvent) -> None:
         """Route one ``AgentEvent`` from the primary bus into its submission's lane."""
+        if event.type.startswith("side_completion_"):
+            await self._route_side_completion(event)
+            return
         lane = event.submission_id
         if lane is None:
             self._orphan(
@@ -469,6 +518,36 @@ class RenderRouter:
             )
             return
         await self._route(lane, event)
+
+    async def _route_side_completion(self, event: AgentEvent) -> None:
+        """Emit a side completion's three render events. Not a lane.
+
+        Side work belongs to no submission, so it cannot open a lane — and it
+        should not: a lane is a turn, with a prompt, a cost and a place in the
+        LaneStrip, and a compaction is none of those. It is rendered where it
+        happens, in the transcript, and the ``purpose`` identifies it instead of
+        a lane id.
+
+        One at a time is assumed and is true: a compaction runs under the turn
+        lock, and a branch summary runs from a modal. Two concurrent side
+        completions of the same purpose would share a box, which is why the
+        ``purpose`` — not a generated id — is the key.
+        """
+        kind = {
+            "side_completion_start": "side_start",
+            "side_completion_update": "side_delta",
+            "side_completion_end": "side_end",
+        }[event.type]
+        payload: dict[str, Any] = {"kind": kind, "purpose": event.purpose}
+        if event.type == "side_completion_start":
+            payload["model"] = (event.message or {}).get("model", "")
+        elif event.type == "side_completion_update":
+            payload["delta"] = event.delta or ""
+        else:
+            payload["text"] = event.text
+            payload["usage"] = event.usage
+            payload["error"] = event.error
+        await self._deliver(payload)
 
     async def on_branch_event(self, *, lane: str, label: str, event: AgentEvent) -> None:
         """Route one sub-agent event (``branch_event`` channel) into its branch lane.
@@ -1100,14 +1179,17 @@ class Backend(ABC):
         messages: list[dict],
         callback: Callable[[str], None],
         on_event: Callable[[dict], None] | None = None,
-        on_pi_event: Callable[[dict], None] | None = None,
+        on_json_event: Callable[[dict], None] | None = None,
     ) -> tuple[str, dict, list[dict], list[dict]]:
         """Return (assistant_text, usage, new_messages, tool_calls).
 
-        ``on_pi_event`` (optional) is the pi-faithful ``--mode json`` sink:
-        every bus event serialized via :func:`tau_event_to_pi_event` (``type``
-        discriminator, deduped ``message_end`` carrying usage/model/stop_reason).
-        Distinct from ``on_event`` (the legacy ``kind`` widget-lifecycle channel).
+        ``on_json_event`` (optional) is the ``--mode json`` sink: every bus event
+        through :func:`json_mode_payloads` — a ``type``-discriminated τ-snake
+        object per line, ``message_update`` carrying a DELTA rather than the
+        accumulated message, and the double ``message_end`` deduped to the
+        usage-bearing one. Distinct from ``on_event`` (the legacy ``kind``
+        widget-lifecycle channel). One event can produce zero lines or several,
+        which is why the sink is called per payload rather than per event.
 
         This is the *derive-the-submission-for-me* convenience: the last user
         message in ``messages`` becomes an ordinary interactive
@@ -1124,7 +1206,7 @@ class Backend(ABC):
         context: list[dict],
         callback: Callable[[str], None],
         on_event: Callable[[dict], None] | None = None,
-        on_pi_event: Callable[[dict], None] | None = None,
+        on_json_event: Callable[[dict], None] | None = None,
     ) -> tuple[str, dict, list[dict], list[dict], SubmissionResult]:
         """Admit ``submission`` through the one door and stream the turn it starts.
 
@@ -1135,7 +1217,7 @@ class Backend(ABC):
         rather than inheriting whatever the adapter happened to hardcode. The turn
         is admitted EXACTLY ONCE — by :meth:`AgentSession.submit` inside this
         method — and the same normalized ``callback`` / ``on_event`` /
-        ``on_pi_event`` channels :meth:`stream_chat` documents drive the render.
+        ``on_json_event`` channels :meth:`stream_chat` documents drive the render.
 
         Returns :meth:`stream_chat`'s 4-tuple plus the
         :class:`~tau_agent_core.submission.SubmissionResult` VERBATIM, refusals
@@ -1665,18 +1747,20 @@ class TauBackend(Backend):
         effective = self.agent_session.set_auto_compaction(enabled)
         return self.agent_session.performed("set_auto_compaction", {"enabled": effective})
 
-    async def compact_messages(
-        self, messages: list[dict], custom_instructions: str | None = None
-    ) -> list[dict] | None:
-        """Compact the conversation the TUI sends, returning the shortened list.
+    async def compact(self, custom_instructions: str | None = None) -> Any:
+        """Compact the bound session, appending the boundary to its log.
 
-        Delegates to the AgentSession's compaction engine. Operates on the
-        caller's ``messages`` (the TUI's authoritative ``current_chat.messages``,
-        which ``stream_chat`` passes as the LLM context) — not the parallel
-        session-manager path. Returns None when there is nothing to compact.
+        The one compaction a head should call. Delegates to
+        :meth:`AgentSession.compact`, which cuts on the token budget, writes a
+        ``compaction`` entry through :meth:`bind_session_log`'s log, and brackets
+        the summary in ``side_completion_*`` events. The caller re-reads its
+        context from the session afterwards rather than being handed a list —
+        the entry is the record, and a returned list would be a second one.
+
+        Returns the ``CompactionResult``, or ``None`` when there was nothing to
+        compact.
 
         Args:
-            messages: The context to compact.
             custom_instructions: Extra focus for the generated summary, threaded
                 unchanged into the summarizer's system prompt. This is the
                 ``compact`` capability's one declared argument
@@ -1684,7 +1768,7 @@ class TauBackend(Backend):
                 that reads the registry and a head that reads this signature
                 agree about what the command takes.
         """
-        return await self.agent_session.compact_messages(messages, custom_instructions)
+        return await self.agent_session.compact(custom_instructions)
 
     async def navigate_tree(
         self,
@@ -1704,22 +1788,28 @@ class TauBackend(Backend):
 
         The live coding-agent ``Session`` is passed in (the TUI owns it, §2.6), so the
         mutation lands on IT, not on the scratch ``InMemorySessionLog`` the AgentSession
-        runs against. What this adds over calling the core directly is banking the
-        summarizer's tokens: ``summarize_and_navigate`` returns its usage because it
-        holds no session to bank it against, and this does hold one.
+        runs against. What this adds over calling the core directly is the two things
+        that need a session and ``summarize_and_navigate`` has none of: banking the
+        summarizer's tokens, and bracketing the summary in ``side_completion_*`` events
+        so a head can watch it arrive (docs/STREAMING-SIDE-WORK.md).
 
         Returns ``ConversationTree.context_for(cursor)`` — the flat message list the TUI
         swaps into ``self.messages`` and re-renders (reusing the compaction path, §3.4).
         """
         if target_id == session.cursor or not summarize:
             return await tree_ops.navigate(session, target_id)
-        messages, summary_usage = await tree_ops.summarize_and_navigate(
-            session,
-            target_id,
-            self._model,
-            api_key=self._api_key,
-            custom_instructions=custom_instructions,
-        )
+        async with self.agent_session.watch_side_completion(
+            "branch_summary", "navigate", self._model.id
+        ) as watch:
+            messages, summary_usage = await tree_ops.summarize_and_navigate(
+                session,
+                target_id,
+                self._model,
+                api_key=self._api_key,
+                custom_instructions=custom_instructions,
+                on_text_delta=watch.delta,
+            )
+            watch.finish(watch.streamed, summary_usage)
         self.agent_session.record_side_usage(summary_usage)
         return messages
 
@@ -1995,7 +2085,7 @@ class TauBackend(Backend):
         messages: list[dict],
         callback: Callable[[str], None],
         on_event: Callable[[dict], None] | None = None,
-        on_pi_event: Callable[[dict], None] | None = None,
+        on_json_event: Callable[[dict], None] | None = None,
     ) -> tuple[str, dict, list[dict], list[dict]]:
         """Derive an ordinary interactive submission from ``messages`` and stream it.
 
@@ -2049,7 +2139,7 @@ class TauBackend(Backend):
             messages,
             callback,
             on_event=on_event,
-            on_pi_event=on_pi_event,
+            on_json_event=on_json_event,
         )
         return text, usage, new_messages, tool_calls
 
@@ -2059,7 +2149,7 @@ class TauBackend(Backend):
         context: list[dict],
         callback: Callable[[str], None],
         on_event: Callable[[dict], None] | None = None,
-        on_pi_event: Callable[[dict], None] | None = None,
+        on_json_event: Callable[[dict], None] | None = None,
     ) -> tuple[str, dict, list[dict], list[dict], SubmissionResult]:
         """Admit ``submission`` via :meth:`AgentSession.submit` and stream the turn.
 
@@ -2108,24 +2198,24 @@ class TauBackend(Backend):
                 if on_event is not None:
                     on_event(structured)
 
-        def pi_capture(event: AgentEvent) -> None:
-            """Forward each bus event to the pi-faithful ``--mode json`` sink.
+        json_projector = MessageDeltaProjector()
 
-            Sourced directly from the AgentEvent bus (not the ``kind`` widget
-            channel above): :func:`tau_event_to_pi_event` maps each event to its
-            ``type``-discriminated pi shape, deduping the double ``message_end`` so
-            each assistant message yields one message_end with usage/model/
-            stop_reason (step S8). ``None`` = the content-only duplicate; skip it.
+        def json_capture(event: AgentEvent) -> None:
+            """Forward each bus event to the ``--mode json`` sink.
+
+            Sourced directly from the AgentEvent bus, not the ``kind`` widget
+            channel above. Its own projector, not this backend's
+            ``_delta_projector``: the TUI's is reset by ``stream_chat``'s own
+            lifecycle and the two consumers must not share an accumulator.
             """
-            if on_pi_event is None:
+            if on_json_event is None:
                 return
-            pi_event = tau_event_to_pi_event(event)
-            if pi_event is not None:
-                on_pi_event(pi_event)
+            for payload in json_mode_payloads(json_projector, event):
+                on_json_event(payload)
 
         unsubscribe = self.agent_session.subscribe(capture_event)
-        unsubscribe_pi = (
-            self.agent_session.subscribe(pi_capture) if on_pi_event is not None else None
+        unsubscribe_json = (
+            self.agent_session.subscribe(json_capture) if on_json_event is not None else None
         )
 
         result = await self.agent_session.submit(submission, context=context)
@@ -2133,8 +2223,8 @@ class TauBackend(Backend):
 
         # Unsubscribe
         unsubscribe()
-        if unsubscribe_pi is not None:
-            unsubscribe_pi()
+        if unsubscribe_json is not None:
+            unsubscribe_json()
 
         # Combine all streaming chunks
         full_content = stream.text

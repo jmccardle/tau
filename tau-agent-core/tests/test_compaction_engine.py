@@ -149,7 +149,7 @@ def _fake_complete(text: str, stop_reason: str = "stop", capture: list | None = 
     """Build a monkeypatch replacement for compaction.complete_simple that
     succeeds, optionally recording each call's context/options."""
 
-    async def _impl(model, context, options=None):
+    async def _impl(model, context, options=None, **_):
         if capture is not None:
             capture.append({"context": context, "options": options})
         return _assistant_msg(text, stop_reason=stop_reason, usage=usage)
@@ -162,7 +162,7 @@ def _fake_raises(exc: BaseException):
     opposed to returning an error/aborted AssistantMessage) — the generic
     ``except Exception`` branch each summarizer function has."""
 
-    async def _impl(model, context, options=None):
+    async def _impl(model, context, options=None, **_):
         raise exc
 
     return _impl
@@ -835,7 +835,7 @@ def test_compact_stitches_history_and_turn_prefix_on_a_split_turn(monkeypatch):
     """
     calls: list = []
 
-    async def _complete(model, context, options=None):
+    async def _complete(model, context, options=None, **_):
         calls.append(options["max_tokens"])
         text = "HISTORY" if len(calls) == 1 else "PREFIX"
         usage = Usage(input_tokens=10 * len(calls), output_tokens=1, total_tokens=11 * len(calls))
@@ -869,7 +869,7 @@ def test_compact_skips_the_history_call_when_theres_nothing_before_the_split(mon
     """
     calls: list = []
 
-    async def _complete(model, context, options=None):
+    async def _complete(model, context, options=None, **_):
         calls.append(1)
         return _assistant_msg("PREFIX")
 

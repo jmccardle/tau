@@ -20,15 +20,21 @@ import copy
 import hashlib
 import inspect
 import os
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Literal
 from uuid import uuid4
 
 from tau_llm.abort import AbortSignal
 from tau_llm.types import Model, UserMessage
 
-from tau_agent_core.events import AgentEvent, EventBus
+from tau_agent_core.events import (
+    AgentEvent,
+    EventBus,
+    SideCompletionPurpose,
+    SideCompletionReason,
+)
 from tau_agent_core.extension_types import ExtensionAPI, validate_form_values
 from tau_agent_core.extension_locks import (
     RESPONSE_ENTRY_TYPE,
@@ -304,6 +310,60 @@ def _covered_span(path_entries: list[dict[str, Any]], first_kept_id: str) -> lis
         f"compaction boundary {first_kept_id!r} is not on the path it was cut from; "
         "the covered-span provenance would be a fabricated zero"
     )
+
+
+class _SideCompletionWatch:
+    """The handle one bracketed side completion writes its progress through.
+
+    Held by :meth:`AgentSession._side_completion`, which owns the start and end
+    events; this owns the middle. Two things go through it: :meth:`delta`, which
+    the summariser calls per fragment, and :meth:`finish`, which the summariser's
+    caller calls with the whole text and what it cost.
+
+    ``finish`` is separate from the fragments because the two are not the same
+    text. A summariser appends to what it streamed — compaction stitches on the
+    file lists, and a split turn stitches on a second summary that never
+    streamed — so the accumulated fragments are a prefix of the result, not the
+    result. The end event carries what was actually produced.
+    """
+
+    def __init__(
+        self,
+        events: EventBus,
+        purpose: SideCompletionPurpose,
+        reason: SideCompletionReason,
+        timestamp: Callable[[], int],
+    ) -> None:
+        self._events = events
+        self._purpose = purpose
+        self._reason = reason
+        self._timestamp = timestamp
+        self._streamed: list[str] = []
+        self.text: str | None = None
+        self.usage: dict[str, int] | None = None
+
+    async def delta(self, fragment: str) -> None:
+        """Publish one fragment. The sink handed to the summariser."""
+        self._streamed.append(fragment)
+        await self._events.emit(
+            AgentEvent(
+                type="side_completion_update",
+                timestamp=self._timestamp(),
+                purpose=self._purpose,
+                reason=self._reason,
+                delta=fragment,
+            )
+        )
+
+    @property
+    def streamed(self) -> str:
+        """Everything :meth:`delta` has published, joined. A prefix of ``text``."""
+        return "".join(self._streamed)
+
+    def finish(self, text: str, usage: dict[str, int]) -> None:
+        """Record what the end event will carry. Not itself an emit."""
+        self.text = text
+        self.usage = dict(usage)
 
 
 @agent_facing(topic="sessions")
@@ -1028,6 +1088,77 @@ class AgentSession:
         before/after DELTA to attribute the spend to a particular exchange.
         """
         self._side_usage = add_usage(self._side_usage, usage)
+
+    @agent_facing(topic="sessions", since="0.11.0")
+    @asynccontextmanager
+    async def watch_side_completion(
+        self,
+        purpose: SideCompletionPurpose,
+        reason: SideCompletionReason,
+        summarizer_model_id: str,
+    ) -> AsyncIterator[_SideCompletionWatch]:
+        """Bracket one piece of side work with its three events.
+
+        Side work — a compaction summary, a branch summary — spends tokens and
+        produces text outside any turn, so nothing in the agent-loop vocabulary
+        reports it and a head could only show a spinner. This emits
+        ``side_completion_start``, one ``side_completion_update`` per fragment
+        through the yielded watch, and exactly one ``side_completion_end``.
+
+        **Every exit emits the end**, including an exception, which then
+        propagates. A renderer opens a box on the start and has no other way to
+        learn the work is over; a failure that emitted nothing would leave that
+        box open for the life of the session (docs/STREAMING-SIDE-WORK.md §3).
+
+        Public because the second caller is outside this class:
+        ``TauBackend.navigate_tree`` brackets a branch summary, which
+        :func:`tau_agent_core.tree_ops.summarize_and_navigate` performs against a
+        log this session does not hold.
+
+        Args:
+            purpose: which side completion this is.
+            summarizer_model_id: the model id doing the summarising, which is
+                often NOT the conversation's — the start event carries it so a
+                reader can see what they are paying for.
+
+        Yields:
+            The watch: ``delta`` is the sink to hand the summariser, and
+            ``finish`` records the text and usage the end event carries.
+        """
+        await self._events.emit(
+            AgentEvent(
+                type="side_completion_start",
+                timestamp=self._timestamp(),
+                purpose=purpose,
+                reason=reason,
+                message={"model": summarizer_model_id},
+            )
+        )
+        watch = _SideCompletionWatch(self._events, purpose, reason, self._timestamp)
+        try:
+            yield watch
+        except BaseException as exc:
+            await self._events.emit(
+                AgentEvent(
+                    type="side_completion_end",
+                    timestamp=self._timestamp(),
+                    purpose=purpose,
+                    reason=reason,
+                    is_error=True,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            )
+            raise
+        await self._events.emit(
+            AgentEvent(
+                type="side_completion_end",
+                timestamp=self._timestamp(),
+                purpose=purpose,
+                reason=reason,
+                text=watch.text,
+                usage=watch.usage,
+            )
+        )
 
     @property
     def side_usage(self) -> dict[str, int]:
@@ -3208,7 +3339,7 @@ class AgentSession:
         """
         await self._events.emit(AgentEvent(type="agent_start", timestamp=self._timestamp()))
         try:
-            return await self._perform_compaction(custom_instructions=custom_instructions)
+            return await self._perform_compaction("manual", custom_instructions=custom_instructions)
         finally:
             await self._events.emit(AgentEvent(type="agent_end", timestamp=self._timestamp()))
 
@@ -3283,11 +3414,25 @@ class AgentSession:
         return [*system_msgs, summary_msg, *kept]
 
     async def _perform_compaction(
-        self, custom_instructions: str | None = None
+        self,
+        reason: SideCompletionReason,
+        custom_instructions: str | None = None,
     ) -> CompactionResult | None:
         """Compaction core shared by manual ``compact`` and the auto-trigger.
 
-        Emits no lifecycle events of its own; the callers bracket it.
+        ``reason`` is what asked — the one thing the two callers differ by that a
+        reader can see, and the reason it is a REQUIRED parameter rather than a
+        defaulted one: a default would be one caller's answer silently standing in
+        for the other's.
+
+        Emits no ``agent_start``/``agent_end`` of its own; the callers bracket it.
+        It DOES emit its own ``side_completion_*`` events, because those describe
+        the summary rather than the call — the auto-trigger and ``/compact``
+        produce the same three, and a bracket written twice would drift.
+
+        The two no-op returns above the completion emit nothing at all: no tokens
+        were spent and no text was produced, so a start with no end would leave
+        every renderer holding an open box forever.
         """
         path_entries = ConversationTree(
             self._session_log.entries(), self._session_log.cursor
@@ -3299,13 +3444,16 @@ class AgentSession:
             return None
 
         summarizer_model, summarizer_api_key = self._summarizer()
-        result = await run_compaction(
-            preparation,
-            summarizer_model,
-            summarizer_api_key,
-            custom_instructions=custom_instructions,
-            thinking_level=self._reasoning,
-        )
+        async with self.watch_side_completion("compaction", reason, summarizer_model.id) as watch:
+            result = await run_compaction(
+                preparation,
+                summarizer_model,
+                summarizer_api_key,
+                custom_instructions=custom_instructions,
+                thinking_level=self._reasoning,
+                on_text_delta=watch.delta,
+            )
+            watch.finish(result.summary, result.usage)
         self.record_side_usage(result.usage)
         covered = _covered_span(path_entries, result.first_kept_entry_id)
         await self._flush_pending_agent_specs()
@@ -3361,7 +3509,7 @@ class AgentSession:
 
         await self._events.emit(AgentEvent(type="agent_start", timestamp=self._timestamp()))
         try:
-            await self._perform_compaction()
+            await self._perform_compaction("threshold")
         finally:
             await self._events.emit(AgentEvent(type="agent_end", timestamp=self._timestamp()))
 

@@ -67,6 +67,7 @@ async def resolved_complete(
     options: dict[str, Any] | None = None,
     resolver: Callable[[str], Model] | None = None,
     complete_fn: Callable[..., Awaitable[AssistantMessage]] | None = None,
+    on_text_delta: Callable[[str], Awaitable[None] | None] | None = None,
 ) -> AssistantMessage:
     """Resolve ``model``, run one completion, and apply the shared error check.
 
@@ -85,6 +86,11 @@ async def resolved_complete(
             compaction path passes its own module-level ``complete_simple`` instead,
             so a patch of ``tau_agent_core.compaction.complete_simple`` is honored
             there — the two patch sites the suite relies on both keep working.
+        on_text_delta: Forwarded to ``complete_fn`` as a keyword **only when it
+            is not None**, so a three-argument test double keeps working
+            unchanged. A ``complete_fn`` that cannot take it and is handed one
+            raises ``TypeError``, which is the right answer: the caller asked to
+            watch a completion that has no way to show it.
 
     Returns:
         The ``AssistantMessage`` on a non-error, non-aborted ``stop_reason``.
@@ -108,7 +114,10 @@ async def resolved_complete(
 
         fn = complete_simple
 
-    response = await fn(resolved, context, options)
+    if on_text_delta is None:
+        response = await fn(resolved, context, options)
+    else:
+        response = await fn(resolved, context, options, on_text_delta=on_text_delta)
 
     stop_reason = getattr(response, "stop_reason", None)
     if stop_reason in ("error", "aborted"):

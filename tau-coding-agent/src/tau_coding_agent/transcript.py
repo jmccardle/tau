@@ -27,7 +27,7 @@ from tau_coding_agent.chat_widgets import (
     format_tool_result_body,
     format_tool_call_body,
 )
-from tau_agent_core.conversation_tree import TreeNode
+from tau_agent_core.conversation_tree import TreeNode, summary_message_of
 from tau_agent_core.extension_locks import ExtensionRequest
 from tau_agent_core.messages import is_displayed
 from tau_coding_agent import extension_ui
@@ -305,9 +305,19 @@ class MessageList(VerticalScroll):
         several, and a caller that has to style or scroll to "that message"
         (:class:`TreeDetailPane`) needs all of them, not the first.
 
+        A compaction or branch summary is checked for FIRST, because on disk it
+        is a ``user`` message and every later branch would draw it as one. It is
+        the same box the live ``side_completion_*`` path mounts, so a summary
+        looks the same whether it was watched arriving or scrolled back to.
+
         Raises ``TypeError`` on an unrenderable content shape rather than
         silently dropping it (Fail-Early): an unexpected shape is a real bug.
         """
+        summary = summary_message_of(msg)
+        if summary is not None:
+            purpose, body = summary
+            return [self.add_message(purpose, body, source="markdown")]
+
         role = msg.get("role", "")
 
         if role == "toolResult":
@@ -686,6 +696,17 @@ class ChatDisplay(MessageList):
         placeholder.display = not has_content
         if not has_content:
             placeholder.update_facts(self._facts_source())  # type: ignore[misc]
+
+    def refresh_facts(self) -> None:
+        """Re-read the facts for a pane whose DOM did not change.
+
+        :meth:`_sync_placeholder` derives visibility from the children, so every
+        caller that ADDS or REMOVES content reaches it through :meth:`mount` or
+        :meth:`clear_messages`. A model switch on an empty chat changes none of
+        them and still changes what the pane states, which is the one case those
+        two hooks cannot see.
+        """
+        self._sync_placeholder()
 
     def mount(self, *widgets: Widget, before=None, after=None):
         """Mount children, then re-decide whether the placeholder still applies.

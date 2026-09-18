@@ -36,11 +36,18 @@ independently reviewable field list, including the fields (``delta``,
 
 Excluded from :class:`WireEvent`, each because it is unbounded on a stream a
 host cannot backpressure — ``message``, ``args``, ``result``,
-``tool_results``, ``messages``, ``details``. All of them are reachable by
-PULL instead: ``get_messages`` returns whole message dicts, and a
+``tool_results``, ``messages``, ``details``, ``text``. All of them are
+reachable by PULL instead: ``get_messages`` returns whole message dicts, and a
 ``toolResult`` message carries the same ``details`` value the
 ``tool_execution_end`` event does. ``details`` is on this list rather than on
-the wire because ``edit`` puts a whole diff in it.
+the wire because ``edit`` puts a whole diff in it, and ``text`` because a
+``side_completion_end`` carries a whole summary — which lands in the log as a
+``compaction`` or ``branch_summary`` entry that ``get_entry`` serves.
+
+``usage`` is excluded for a different reason and is the one field here that is
+not unbounded: a side completion's spend is already ON the entry it produced
+(``summary_usage``), so putting it on the event too would give a host two
+sources for one number and no rule for which wins.
 
 Two BOUNDED facts are lifted out of the excluded ``message`` and given fields
 of their own: ``stop_reason`` and ``dropped_tool_calls``. Excluding a whole
@@ -67,7 +74,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from tau_agent_core.events import AgentEndReason, AgentEvent
+from tau_agent_core.events import (
+    AgentEndReason,
+    AgentEvent,
+    SideCompletionPurpose,
+    SideCompletionReason,
+)
 from tau_agent_core.submission import SubmissionSource
 
 
@@ -90,6 +102,9 @@ class WireEvent(BaseModel):
         "tool_execution_start",
         "tool_execution_update",
         "tool_execution_end",
+        "side_completion_start",
+        "side_completion_update",
+        "side_completion_end",
     ] = Field(description="Event type discriminator.")
     timestamp: int = Field(ge=0, description="Milliseconds since epoch.")
     turn_index: int | None = Field(default=None, description="Turn number (turn_*).")
@@ -145,17 +160,21 @@ class WireEvent(BaseModel):
     )
     delta: str | None = Field(
         default=None,
-        description="A diffable content-block's delta on message_update (E1) — "
-        "the prefix-diff against the previous message_update in the same turn, "
-        "never the cumulative message. Only set for a diffable block kind (see "
-        "block_type); a non-diffable block change (e.g. a growing toolCall) "
-        "produces no wire event. None for all other event types. See `replace` "
-        "for how to apply this value.",
+        description="One text fragment that arrived. On message_update (E1) it "
+        "is a diffable content-block's prefix-diff against the previous "
+        "message_update in the same turn, never the cumulative message; only a "
+        "diffable block kind sets it (see block_type), and a non-diffable block "
+        "change (e.g. a growing toolCall) produces no wire event. On "
+        "side_completion_update it is the next fragment of the summary. Both "
+        "are applied the same way, which is why they share a field rather than "
+        "asking a client to keep two accumulators — see `replace`. None for all "
+        "other event types.",
     )
     block_type: Literal["text", "thinking"] | None = Field(
         default=None,
         description="Which diffable content-block kind `delta` belongs to. Set "
-        "exactly when `delta` is set.",
+        "exactly when `delta` is set — 'text' on a side_completion_update, which "
+        "has no other kind.",
     )
     replace: bool = Field(
         default=False,
@@ -202,6 +221,27 @@ class WireEvent(BaseModel):
         "earlier in this session already proved caching is on. A host renders "
         "it as a warning; see docs/PROMPT-CACHING.md §7 for the three gates. "
         "None for all other event types.",
+    )
+    purpose: SideCompletionPurpose | None = Field(
+        default=None,
+        description="Which side completion a side_completion_* event reports: "
+        "'compaction' or 'branch_summary'. Side work spends tokens and produces "
+        "text outside any turn, so it stamps no submission_id and a host keys on "
+        "this instead. The summary TEXT and what it cost are deliberately not on "
+        "the wire — both land in the session log as a compaction or "
+        "branch_summary entry, which get_entry serves with tokens_before, "
+        "covered_tokens and summary_usage attached. Pushing unbounded content "
+        "through an event is what WireEvent exists to avoid. None for all other "
+        "event types. See docs/STREAMING-SIDE-WORK.md.",
+    )
+    reason: SideCompletionReason | None = Field(
+        default=None,
+        description="What asked for a side completion: 'manual' (a person or "
+        "this host), 'threshold' (the auto-trigger, which nobody asked for) or "
+        "'navigate' (the tree browser's summarising move). On all three "
+        "side_completion_* events, so a host that attached mid-summary still "
+        "learns whether the work was requested or imposed. None for all other "
+        "event types.",
     )
     cursor: str | None = Field(
         default=None,

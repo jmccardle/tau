@@ -132,6 +132,13 @@ def summarize(values: list[int]) -> dict[str, Any]:
 
 @dataclass
 class _Bracket:
+    """One open ``agent_start``, and whether a TURN has run inside it.
+
+    A ``side_completion_*`` event does not set ``saw_inner``: those events ARE
+    the compaction, not content within it, and counting them would make the one
+    bracket this marker exists to catch look occupied.
+    """
+
     start_ms: int
     saw_inner: bool = False
 
@@ -223,6 +230,10 @@ class PromptLatencyCollector:
             else:
                 window.bare_brackets += 1
                 window.bare_bracket_ms += event.timestamp - bracket.start_ms
+            return
+
+        if event.type.startswith("side_completion_"):
+            # The compaction itself, not a turn inside it. See _Bracket.saw_inner.
             return
 
         if self._bracket is not None:

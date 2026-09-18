@@ -88,13 +88,19 @@ def is_system_message(entry: dict[str, Any]) -> bool:
     return isinstance(message, dict) and message.get("role") == "system"
 
 
+_SUMMARY_MARKERS: tuple[tuple[str, str], ...] = (
+    ("compaction", "[[Compaction summary: "),
+    ("branch_summary", "[[Branch summary: "),
+)
+
+
 def _compaction_message(summary: str) -> dict[str, Any]:
     """Render a compaction anchor as the loop-consumable user message. Mirrors
     ``SessionManager.get_active_messages`` (``session_manager.py:208-220``) so the
     fold parity test holds."""
     return {
         "role": "user",
-        "content": [{"type": "text", "text": f"[[Compaction summary: {summary}]]"}],
+        "content": [{"type": "text", "text": f"{_SUMMARY_MARKERS[0][1]}{summary}]]"}],
     }
 
 
@@ -105,8 +111,39 @@ def _branch_summary_message(summary: str) -> dict[str, Any]:
     prefix — it sits in the path exactly where it was appended (Decision 5, §5)."""
     return {
         "role": "user",
-        "content": [{"type": "text", "text": f"[[Branch summary: {summary}]]"}],
+        "content": [{"type": "text", "text": f"{_SUMMARY_MARKERS[1][1]}{summary}]]"}],
     }
+
+
+@agent_facing(topic="sessions", since="0.11.0")
+def summary_message_of(message: dict[str, Any]) -> tuple[str, str] | None:
+    """Recognise a summary that :func:`entries_to_messages` rendered as a message.
+
+    A ``compaction`` and a ``branch_summary`` entry both become a ``user``
+    message wrapped in a marker, because that is what the model reads. A head
+    that drew it literally would show a summary τ wrote as a line the reader
+    typed, which is what the TUI did until docs/STREAMING-SIDE-WORK.md §5.
+
+    This is here rather than in a head because the marker is written here, by
+    :func:`_compaction_message` and :func:`_branch_summary_message`. A renderer
+    matching the string itself would be a second copy of a format the core owns,
+    and the two would drift the first time the wrapper changed.
+
+    Args:
+        message: One message from :func:`entries_to_messages` or
+            :meth:`ConversationTree.context_for`.
+
+    Returns:
+        ``(purpose, body)`` — ``"compaction"`` or ``"branch_summary"``, and the
+        summary with the marker stripped — or ``None`` for an ordinary message.
+    """
+    if message.get("role") != "user":
+        return None
+    text = _message_text(message)
+    for purpose, prefix in _SUMMARY_MARKERS:
+        if text.startswith(prefix) and text.endswith("]]"):
+            return purpose, text[len(prefix) : -2]
+    return None
 
 
 @agent_facing(topic="sessions", since="0.9.7")

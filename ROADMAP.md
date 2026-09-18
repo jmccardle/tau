@@ -40,8 +40,8 @@ Phases B and C (the picker modal and `--resume` in the TUI — the "Open work"
 list below still called both open while this file's own 08-21 header called
 them shipped), Tier 10's themes leg, and the agent-facing docs mechanism.
 **Still open, confirmed 2026-08-28:** Tier 8's trust gate, Tier 9 (`--export`
-HTML, pi-faithful `--mode json`), Tier 10's templates and skills legs, Tier 11
-M4/M5, two flags (`--list-models`, `--session-id`), and the `docs/PLAN-0.9.4.md`
+HTML; the `--mode json` half is struck), Tier 10's templates and skills
+legs, Tier 11 M4/M5, two flags (`--list-models`, `--session-id`), and the `docs/PLAN-0.9.4.md`
 §8 debt list. Suite: 4951 passed, 144 skipped, 0 failed. Docs coverage:
 316/758 (41.7%), 0 drift.
 
@@ -96,8 +96,8 @@ left open. Now shipped: context files (Tier 8's loader half), Session UX Phases
 B and C, the non-streaming transport, multi-vendor dispatch, backend hardening,
 and branch-lane removal — see `docs/PLAN-0.9.3.md`, whose §7 sequencing list is
 fully built. **Genuinely still open, confirmed against code on 2026-08-21:**
-Tier 8's trust gate, Tier 9 (`--export` HTML, pi-faithful `--mode json`), Tier
-10 (themes/templates/skills — untouched), Tier 11's M4/M5 (deliberately
+Tier 8's trust gate, Tier 9 (`--export` HTML, and a `--mode json` half since
+struck), Tier 10 (themes/templates/skills — untouched), Tier 11's M4/M5 (deliberately
 deferred), two flags (`--list-models`, `--session-id`), and from 0.9.3 §4:
 retry/backoff, repeat-tool-call detection, and non-OpenAI clients. The "Doc
 hygiene" section below is now fully closed.
@@ -407,9 +407,24 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
   `cli.py`'s only export flag is `--export-session`, a JMFTS→`.jsonl` copy
   (`cli.py:421-426`, `_run_export_session` at `cli.py:636`). No HTML exporter is
   reachable from the CLI.
-- **pi-faithful `--mode json`** (Tier 9) — `--mode json` works but emits τ's
-  own `AgentEvent` vocabulary, not pi's schema (doc already flags this as
-  unvalidated/divergent).
+- ~~**pi-faithful `--mode json`** (Tier 9)~~ — **struck 2026-09-17.** The
+  objective was to make `--mode json` emit pi's `AgentSessionEvent` schema. It
+  is retired rather than done, for two reasons measured that day. Nothing speaks
+  pi's schema: pi's only consumer of it is pi's own in-process `rpc-client.ts`,
+  τ's only consumers are `examples/ext_kit/`, which read three type names off
+  τ-snake fields, and Claude Code's `--output-format stream-json` is a third
+  schema that matching pi would not get you. And adopting it would COST — pi's
+  events carry no `timestamp` and none of the four provenance fields τ stamps on
+  every event, which is what `examples/51_delegate_fleet.py` needs to tell one
+  child's output from another's. `CLAUDE.md` retired pi parity on 2026-09-03;
+  this entry outlived that and was still stated in pi's terms.
+  **The real defect underneath it is fixed** (`docs/JSON-MODE-DELTAS.md`):
+  `--mode json` re-sent the whole accumulated answer on every fragment, so a
+  10,000-character answer wrote 10.6 MB to stdout. It now emits prefix-diffs
+  through the same `MessageDeltaProjector` the RPC wire has used since unit 2B —
+  486 KB for the same answer, with a linearity gate. That was τ's own bug, not a
+  divergence from pi, and pi having hit it too (its regression #7290) is
+  evidence it is real rather than a reason to copy anything else.
 - **Tier 10 — templates and skills legs** (the themes leg shipped 2026-08-24,
   see above). Still absent on 2026-08-28: no `PromptTemplate` type, no
   `$ARGUMENTS` handling, no `SKILL.md` loader, no shared resource-loader
@@ -477,6 +492,23 @@ visible, not a real debt.
   overhaul rather than corrected, because it was implementation detail in a file
   that should carry layout, and `docs/TOOL-CALL-PIPELINE.md` is where it belongs
   once that file is right.
+- **Shrink the sent prompt when the cache has expired** (added 2026-09-16). Not
+  compaction: compaction cuts because the conversation is outgrowing the window,
+  and this cuts because a particular *request* is about to be expensive. τ has
+  the signal already — `PromptCacheObserver` decides whether this turn's prefix
+  was read from the server's cache (`docs/PROMPT-CACHING.md` §7's three gates) —
+  and a turn that gets a cache miss pays full price for every input token, which
+  makes it the cheapest moment to send fewer of them. The mechanism exists too:
+  the count-based cut that `AgentSession.compact_messages` used to perform (keep
+  the last user turn, summarise the rest) was removed in
+  `docs/STREAMING-SIDE-WORK.md` §2 because it was wired to `/compact`, where it
+  wrote nothing durable and undid itself on the next turn. Rebuilt here it would
+  write a real entry like every other cut. **Open questions before it is
+  schedulable:** whether the trigger is per-request or per-session; whether a
+  user-visible prompt is wanted, since this spends a completion to save tokens
+  and could cost more than it saves on a short conversation; and what it does
+  when the cache expires mid-conversation on a model with no cache at all, where
+  the observer's answer is "nothing observed" rather than "missed".
 - **Rollback conflates "pre-root" with "no target"** (added 2026-09-16, from the
   change that made it reachable). `agent_session.py:2547` refuses a rollback when
   `rollback_target is None`, and the rejection text says the target is *stale* —
@@ -551,9 +583,9 @@ broader docs-overhaul plan already agreed (see memory
 1. **Session API parameter slots** (`base_dir`, `id`, `create_in_memory`) →
    Tier 7. **Partially realized:** `--session-dir`/`--no-session` shipped;
    `--session-id` still open.
-2. **Raw `entries()`/`header` accessor** on `Session` → Tier 9. **Still
-   open** — neither `--export` (HTML) nor pi-faithful `--mode json` has used
-   it yet.
+2. **Raw `entries()`/`header` accessor** on `Session` → Tier 9. **Half
+   realized** — `--mode json` writes `session.header` as its first line; no
+   HTML exporter uses `entries()` yet.
 3. **Session-lifecycle event emission** (`session_start`/`before_fork`/
    `before_compact`/`shutdown`) → Tier 11. **Realized** —
    `registry.py:200` `LIFECYCLE_EVENTS`, consumed by the E6–E11 extension
@@ -601,7 +633,8 @@ and two items promoted out of the debt list.
    it elsewhere.
 4. **Trust gate** (Tier 8) — security-ordered; Tier 10's skills leg and
    project-local extensions are gated behind it per the original plan.
-5. **Tier 9** — `--export` HTML, pi-faithful `--mode json`. Both seams
+5. **Tier 9** — `--export` HTML. The other half of this tier, a pi-faithful
+   `--mode json`, was struck on 2026-09-17; see "Open work". Both seams
    (`entries()`/`header`) are already in place, and `export.py` already defines
    the HTML format types. Re-checked 2026-09-13: no HTML exporter is reachable
    from `cli.py`.
