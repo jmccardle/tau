@@ -86,6 +86,19 @@ EXPOSED: dict[str, str] = {
 }
 
 NOT_EXPOSED: dict[str, str] = {
+    "context_estimate": (
+        "The session's own reading of how big its context is, counted with its "
+        "own tokenizer and its own online fit (docs/TOKEN-ACCOUNTING.md). A host "
+        "already gets the number: `get_session_stats` returns exactly this "
+        "estimate as `context`, plus the window and the headroom, and it is the "
+        "same call. What this method adds over that verb is the optional "
+        "`messages` argument — the ability to price a message list the session is "
+        "NOT holding — and a host cannot use it, because the list would have to "
+        "travel to the server to be counted and then the answer is about a "
+        "context that does not exist. Exposing it would mean a second verb "
+        "answering the same question as the first for every argument a host can "
+        "actually supply."
+    ),
     "watch_side_completion": (
         "An async context manager that EMITS the side_completion_* events rather "
         "than answering a question about them (docs/STREAMING-SIDE-WORK.md §3). A "

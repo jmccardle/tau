@@ -20,7 +20,7 @@ from __future__ import annotations
 import pytest
 
 from tau_agent_core.agent_session import AgentSession
-from tau_agent_core.compaction import CompactionSettings
+from tau_agent_core.compaction import CompactionSettings, count_message
 from tau_agent_core.rpc import commands
 from tau_agent_core.rpc.handler import RPCHandler
 from tau_agent_core.session_log import InMemorySessionLog
@@ -197,17 +197,18 @@ async def test_context_headroom_is_negative_on_an_over_budget_session() -> None:
 
     result = await _call(RPCHandler(session))
 
+    trailing = count_message(_user_message("y" * 400)).tokens
     assert result["context_window"] == 8192
-    assert result["context"]["tokens"] == 9100
+    assert result["context"]["tokens"] == 9000 + trailing
     assert result["context_headroom"] < 0
-    assert result["context_headroom"] == -908
+    assert result["context_headroom"] == 8192 - (9000 + trailing)
     assert result["context_headroom"] == result["context_window"] - result["context"]["tokens"]
 
 
 async def test_context_projects_the_usage_anchor_and_the_trailing_estimate() -> None:
     """The `context` description's four-field contract: 'usage_tokens is the
     anchored provider-reported count up to the last assistant Usage,
-    trailing_tokens the heuristic estimate for messages after it,
+    trailing_tokens the counted estimate for messages after it,
     last_usage_index that message's index' — and `tokens` their sum.
 
     Every other test in this file uses a session with NO assistant Usage,
@@ -228,12 +229,14 @@ async def test_context_projects_the_usage_anchor_and_the_trailing_estimate() -> 
     result = await _call(RPCHandler(session))
 
     context = result["context"]
+    trailing = count_message(_user_message("y" * 400)).tokens
+    assert trailing not in (0, 500), "the three fields must stay pairwise distinct"
     assert context["last_usage_index"] == 1, "the anchor is the assistant message, index 1 of 3"
     assert context["usage_tokens"] == 500, "the provider's own total_tokens, not an estimate"
-    assert context["trailing_tokens"] == 100, "400 chars after the anchor, at ~4 chars/token"
-    assert context["tokens"] == 600
+    assert context["trailing_tokens"] == trailing, "the counter's own answer for what follows"
+    assert context["tokens"] == 500 + trailing
     assert context["tokens"] == context["usage_tokens"] + context["trailing_tokens"]
-    assert result["context_headroom"] == 8192 - 600
+    assert result["context_headroom"] == 8192 - (500 + trailing)
 
 
 async def test_a_session_with_no_assistant_usage_is_estimated_end_to_end() -> None:
@@ -242,7 +245,7 @@ async def test_a_session_with_no_assistant_usage_is_estimated_end_to_end() -> No
     and the whole list was heuristically estimated'.
 
     `test_empty_session_has_zero_context_tokens_and_full_headroom` covers
-    this only degenerately — on an empty session tokens, trailing_tokens
+    this only degenerately -- on an empty session tokens, trailing_tokens
     and usage_tokens are all 0, so tokens==trailing_tokens holds for any
     wiring at all. This session has real content and still no anchor, so
     the equality has to be earned: 100 == 100 while usage_tokens stays 0.
@@ -258,9 +261,11 @@ async def test_a_session_with_no_assistant_usage_is_estimated_end_to_end() -> No
     result = await _call(RPCHandler(session))
 
     context = result["context"]
+    expected = count_message(_user_message("z" * 400)).tokens
+    assert expected > 0, "400 characters cost something"
     assert context["last_usage_index"] is None
     assert context["usage_tokens"] == 0, "no anchor means nothing is provider-reported"
-    assert context["tokens"] == 100
+    assert context["tokens"] == expected
     assert context["tokens"] == context["trailing_tokens"]
 
 

@@ -52,6 +52,16 @@ from tau_llm.docs import agent_facing
 if TYPE_CHECKING:
     from tau_agent_core.extensions.runner import ExtensionRunner
 
+MidTurnCompactor = Callable[[list[Any], list[Any]], Awaitable[list[Any] | None]]
+"""Called at every agent-loop turn boundary; may replace the loop's context.
+
+Receives ``(messages, produced)`` — the full context the loop is about to send
+again, and the messages this loop has produced so far — and returns a REPLACEMENT
+context, or None to leave it alone. :meth:`AgentSession._compact_mid_turn` is the
+implementation; the loop itself holds no compaction policy, because the window,
+the settings and the session log all live a layer up.
+"""
+
 
 @agent_facing(topic="agent-loop")
 class BlockedCall:
@@ -140,6 +150,7 @@ class AgentLoop:
         abort_signal: AbortSignal | None = None,
         hook_dispatcher: ExtensionRunner | None = None,
         steer_queue: list[Any] | None = None,
+        mid_turn_compactor: MidTurnCompactor | None = None,
     ) -> None:
         self.config = config
         self._emit = emit or (lambda e: asyncio.create_task(self._noop_emit(e)))
@@ -151,6 +162,7 @@ class AgentLoop:
         self._abort_signal: AbortSignal | None = abort_signal
         self._hook_dispatcher: ExtensionRunner | None = hook_dispatcher
         self._steer_queue: list[Any] | None = steer_queue
+        self._mid_turn_compactor: MidTurnCompactor | None = mid_turn_compactor
 
     @staticmethod
     async def _noop_emit(event: AgentEvent) -> None:
@@ -325,6 +337,7 @@ class AgentLoop:
                     end_reason = "repeat_tool_calls"
                     break
 
+                messages = await self._compact_if_needed(messages, final_messages)
                 turn_index += 1
 
             else:
@@ -338,6 +351,25 @@ class AgentLoop:
         await self._emit_agent_end(final_messages, end_reason=end_reason)
 
         return final_messages
+
+    async def _compact_if_needed(self, messages: list[Any], produced: list[Any]) -> list[Any]:
+        """Offer the turn boundary to the mid-turn compactor; return the context to use.
+
+        This is the ONE point inside a turn where replacing the context is safe:
+        the tool results for the turn just finished are in ``messages``, the
+        ``turn_end`` hooks have run, and the next statement is the next request.
+        Compacting anywhere else would either drop a tool result its own tool call
+        still refers to, or rewrite a list the loop is midway through reading.
+
+        Returns ``messages`` unchanged when no compactor is injected or the
+        compactor declined. A compactor that raises is NOT caught — a compaction
+        that cannot run is the loop's problem, because the request it was
+        protecting is the next thing that happens.
+        """
+        if self._mid_turn_compactor is None:
+            return messages
+        replacement = await self._mid_turn_compactor(messages, produced)
+        return messages if replacement is None else replacement
 
     async def run_continue(
         self,
@@ -476,6 +508,7 @@ class AgentLoop:
                     end_reason = "repeat_tool_calls"
                     break
 
+                messages = await self._compact_if_needed(messages, final_messages)
                 turn_index += 1
 
             else:

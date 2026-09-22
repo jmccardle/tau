@@ -6,7 +6,7 @@
 <!-- agent: yes -->
 
 ```python
-class AgentLoop(config: AgentLoopConfig, emit: Callable[[AgentEvent], Awaitable[None]] | None = None, tools: list[AgentTool] | None = None, model: Any = None, abort_signal: AbortSignal | None = None, hook_dispatcher: ExtensionRunner | None = None, steer_queue: list[Any] | None = None)
+class AgentLoop(config: AgentLoopConfig, emit: Callable[[AgentEvent], Awaitable[None]] | None = None, tools: list[AgentTool] | None = None, model: Any = None, abort_signal: AbortSignal | None = None, hook_dispatcher: ExtensionRunner | None = None, steer_queue: list[Any] | None = None, mid_turn_compactor: MidTurnCompactor | None = None)
 ```
 
 `tau_agent_core.agent_loop.AgentLoop`
@@ -27,6 +27,7 @@ Reference: SUBPHASE-0.0.md, "5. Agent Events" section.
 - `abort_signal: AbortSignal | None = None` — *(no description)*
 - `hook_dispatcher: ExtensionRunner | None = None` — *(no description)*
 - `steer_queue: list[Any] | None = None` — *(no description)*
+- `mid_turn_compactor: MidTurnCompactor | None = None` — *(no description)*
 
 ### add_tool
 

@@ -31,7 +31,8 @@ Usage::
             return MyCatalog(...)
 """
 
+from tau_agent_core.testing.sizing import text_costing_at_least
 from tau_agent_core.testing.session_catalog_contract import SessionCatalogContractTests
 from tau_agent_core.testing.session_log_contract import SessionLogContractTests
 
-__all__ = ["SessionCatalogContractTests", "SessionLogContractTests"]
+__all__ = ["text_costing_at_least", "SessionCatalogContractTests", "SessionLogContractTests"]

@@ -27,6 +27,7 @@ from typing import Any, Callable, Literal
 from tau_llm.types import Model
 
 from tau_agent_core.agent_session import AgentSession
+from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.compaction_policy import CompactionPolicy
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.session_log import InMemorySessionLog, SessionLog
@@ -1227,6 +1228,7 @@ def create_agent_session(
     cwd: str | None = None,
     tool_execution_mode: Literal["sequential", "parallel"] = "parallel",
     compaction_policy: CompactionPolicy | None = None,
+    compaction_settings: CompactionSettings | None = None,
     bus_available: bool = False,
     no_tools: Literal["all", "builtin"] | None = None,
     max_turns: int | None = None,
@@ -1297,6 +1299,10 @@ def create_agent_session(
             latency number and on the far side of §11.1's partition. Declaring a
             policy never makes compaction quieter — it adds construction-time and
             runtime checks that raise.
+        compaction_settings: Optional :class:`~tau_agent_core.compaction.CompactionSettings`
+            — the two thresholds and the retention size. Mutually exclusive with
+            ``compaction_policy``, which supplies its own; ``AgentSession`` raises
+            on both. ``None`` takes the shipped defaults.
         bus_available: Whether this session has a bus transport a loaded
             extension may declare against (H8, SIM_SPEC_v2 §16.10). ``False``
             — the default — refuses to load any file extension that declares
@@ -1387,6 +1393,7 @@ def create_agent_session(
         api_key=api_key,
         reasoning=reasoning_arg,
         compaction_policy=compaction_policy,
+        compaction_settings=compaction_settings,
         tool_execution_mode=tool_execution_mode,
         bus_available=bus_available,
         no_tools=no_tools,

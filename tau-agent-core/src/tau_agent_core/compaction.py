@@ -44,8 +44,19 @@ from tau_agent_core.compaction_utils import (
     serialize_conversation,
 )
 from tau_llm.docs import agent_facing
+from tau_llm.tokens import (
+    ZERO_TOKENS,
+    CharClassCounter,
+    ContextCalibrator,
+    TextCounter,
+    TokenCount,
+)
 
-ESTIMATED_IMAGE_CHARS = 4800
+ESTIMATED_IMAGE_TOKENS = 1200
+"""Assumed cost of one image. Not measured — see :func:`count_message`."""
+
+COMPACTION_SUMMARY_PREFIX = "[[Compaction summary: "
+"""How a compaction summary announces itself once it is back in the context."""
 
 
 # ─── Errors ──────────────────────────────────────────────────────────────
@@ -72,11 +83,33 @@ class CompactionError(Exception):
 @agent_facing(topic="compaction")
 @dataclass
 class CompactionSettings:
-    """Compaction thresholds and retention settings (pi: CompactionSettings)."""
+    """Compaction thresholds and retention settings.
+
+    Attributes:
+        enabled: Whether automatic compaction runs at all.
+        reserve_tokens: The margin ``m``. The hard limit is
+            ``context_window - reserve_tokens``, so this is what a compaction has
+            left to spend on its own summarization call and output.
+        keep_recent_tokens: How much recent conversation a compaction retains
+            uncompacted. A retention size only — it does not set a threshold.
+        soft_limit_ratio: Where the soft limit sits as a fraction of the hard one.
+            A ratio rather than a fixed gap because the gap has to scale: 20000
+            tokens below the hard limit is a reasonable warning distance on a
+            128k window and below zero on a 1000-token one.
+        hard_limit_tokens: Pin the mid-turn ceiling outright, ignoring the window
+            and the reserve. None derives it.
+        soft_limit_tokens: Pin the end-of-turn ceiling outright. None derives it.
+
+    :func:`compaction_limits` is what turns these into the two numbers that get
+    compared against, and raises rather than return an unusable pair.
+    """
 
     enabled: bool = True
-    reserve_tokens: int = 16384  # tokens reserved for summary prompt + output
-    keep_recent_tokens: int = 20000  # approx recent-context tokens to keep
+    reserve_tokens: int = 16384
+    keep_recent_tokens: int = 20000
+    soft_limit_ratio: float = 0.8
+    hard_limit_tokens: int | None = None
+    soft_limit_tokens: int | None = None
 
 
 # Default compaction settings used by the harness (pi: DEFAULT_COMPACTION_SETTINGS).
@@ -132,35 +165,39 @@ def calculate_context_tokens(usage: dict[str, Any]) -> int:
     )
 
 
-def _estimate_text_and_image_chars(content: Any) -> int:
-    """Char count for a string-or-block-list content value (pi helper)."""
+def _text_and_images(content: Any) -> tuple[list[str], int]:
+    """Text parts and image count for a string-or-block-list content value."""
     if isinstance(content, str):
-        return len(content)
+        return [content], 0
     if not isinstance(content, list):
-        return 0
-    chars = 0
+        return [], 0
+    parts: list[str] = []
+    images = 0
     for block in content:
         if not isinstance(block, dict):
             continue
         if block.get("type") == "text":
-            chars += len(str(block.get("text", "")))
+            parts.append(str(block.get("text", "")))
         elif block.get("type") == "image":
-            chars += ESTIMATED_IMAGE_CHARS
-    return chars
+            images += 1
+    return parts, images
 
 
 @agent_facing(topic="compaction")
-def estimate_tokens(message: dict[str, Any]) -> int:
-    """Estimate token count for one message dict (pi: estimateTokens).
+def message_payload(message: dict[str, Any]) -> tuple[str, int]:
+    """The ``(text, image_count)`` of one message dict, as the wire carries it.
 
-    Conservative ~4-chars-per-token heuristic over the textual payload, by role.
+    The single spelling of "what is in this message that costs tokens", shared by
+    :func:`count_message` and by anything measuring a transcript. An unknown role
+    contributes nothing, which is the truth: the wire has no place to put it.
     """
     role = message.get("role")
-    chars = 0
-
-    if role == "user":
-        chars = _estimate_text_and_image_chars(message.get("content"))
-    elif role == "assistant":
+    if role in ("user", "toolResult"):
+        parts, images = _text_and_images(message.get("content"))
+        return "\n".join(parts), images
+    if role == "assistant":
+        parts = []
+        images = 0
         content = message.get("content")
         if isinstance(content, list):
             for block in content:
@@ -168,19 +205,71 @@ def estimate_tokens(message: dict[str, Any]) -> int:
                     continue
                 btype = block.get("type")
                 if btype == "text":
-                    chars += len(str(block.get("text", "")))
+                    parts.append(str(block.get("text", "")))
                 elif btype == "thinking":
-                    chars += len(str(block.get("thinking", "")))
+                    parts.append(str(block.get("thinking", "")))
                 elif btype == "toolCall":
+                    parts.append(str(block.get("name", "")))
                     args = block.get("arguments")
-                    args_len = len(_safe_json(args)) if args is not None else 0
-                    chars += len(str(block.get("name", ""))) + args_len
-    elif role == "toolResult":
-        chars = _estimate_text_and_image_chars(message.get("content"))
-    else:
-        return 0
+                    if args is not None:
+                        parts.append(_safe_json(args))
+                elif btype == "image":
+                    images += 1
+        return "\n".join(parts), images
+    return "", 0
 
-    return math.ceil(chars / 4)
+
+def default_counter() -> TextCounter:
+    """The counter used when a caller names none: character classes, no tokenizer.
+
+    Module-level and shared, because :class:`~tau_llm.tokens.CharClassCounter`
+    is stateless and constructing one per message on a 10,000-message transcript
+    is pure waste.
+    """
+    return _DEFAULT_COUNTER
+
+
+_DEFAULT_COUNTER: TextCounter = CharClassCounter()
+
+
+@agent_facing(topic="compaction")
+def count_message(message: dict[str, Any], counter: TextCounter | None = None) -> TokenCount:
+    """Tokens one message dict costs, labelled with how the number was reached.
+
+    ``counter`` is any :class:`~tau_llm.tokens.TextCounter`: a
+    :class:`~tau_llm.tokens.TokenizerCounter` gives an exact count of the text, a
+    :class:`~tau_llm.tokens.CharClassCounter` (the default) gives a labelled
+    estimate. Neither includes the chat template — see
+    :func:`estimate_context_tokens`, which is where that gap is closed.
+
+    An image is priced at :data:`ESTIMATED_IMAGE_TOKENS`, which is an assumption
+    and not a measurement: providers tile images differently and τ has not
+    measured any of them. The returned count says ``exact=False`` whenever an
+    image is in it, even behind an exact tokenizer.
+    """
+    text, images = message_payload(message)
+    if not text and not images:
+        return ZERO_TOKENS
+    count = (counter or _DEFAULT_COUNTER).count(text, role=message.get("role"))
+    if not images:
+        return count
+    return TokenCount(
+        tokens=count.tokens + images * ESTIMATED_IMAGE_TOKENS,
+        source=count.source,
+        exact=False,
+        includes_template=count.includes_template,
+    )
+
+
+@agent_facing(topic="compaction")
+def estimate_tokens(message: dict[str, Any]) -> int:
+    """Estimated token count for one message dict, as a bare int.
+
+    The count-only view of :func:`count_message` for the several call sites that
+    display a size and have no use for its provenance. Anything DECIDING on the
+    number should call :func:`count_message` and read ``exact``.
+    """
+    return count_message(message).tokens
 
 
 def _safe_json(value: Any) -> str:
@@ -207,57 +296,265 @@ def _get_assistant_usage(message: dict[str, Any]) -> dict[str, Any] | None:
 @agent_facing(topic="compaction")
 @dataclass
 class ContextUsageEstimate:
-    """Estimated context-token usage for a message list (pi: ContextUsageEstimate)."""
+    """Estimated context-token usage for a message list.
+
+    Attributes:
+        tokens: The whole estimate — ``usage_tokens + trailing_tokens``.
+        usage_tokens: What the provider billed for everything up to and
+            including ``last_usage_index``. Exact when present.
+        trailing_tokens: The counted cost of the messages after that anchor.
+        last_usage_index: Index of the anchoring assistant message, or None when
+            no message on the path has reported usage yet.
+        count: ``tokens`` with its provenance attached. ``exact`` is True only
+            when every message was either billed or counted by a real tokenizer
+            AND the framing around the trailing messages is accounted for — which
+            in practice means a calibrated fit, so it is usually False.
+    """
 
     tokens: int
     usage_tokens: int
     trailing_tokens: int
     last_usage_index: int | None
+    count: TokenCount = ZERO_TOKENS
 
 
-def _last_assistant_usage_info(messages: list[dict[str, Any]]) -> tuple[dict[str, Any], int] | None:
+def _last_assistant_usage_info(
+    messages: list[dict[str, Any]], usage_valid_after: int = 0
+) -> tuple[dict[str, Any], int] | None:
+    """The newest assistant turn whose usage actually reports a size, with its index.
+
+    Three things disqualify an anchor.
+
+    A usage dict of all zeros is "the provider said nothing", not "the context was
+    empty" — the same reading
+    :func:`~tau_agent_core.prompt_cache.prompt_tokens` takes. Anchoring on one
+    would price every message before it at zero and report a 90k conversation as
+    whatever arrived after the silent turn.
+
+    A usage from BEFORE the newest compaction describes a context that no longer
+    exists. The turn was billed against the conversation the compaction then
+    folded away, so anchoring on it reports the old size plus the new tail.
+    Measured live on 2026-09-18: the first request after a mid-turn compaction
+    read 22,588 tokens against a billed 5,734 — a ratio of 3.94, over the hard
+    limit that had just fired, which is a compaction loop.
+
+    ``usage_valid_after`` is how that is caught, and POSITION IS NOT ENOUGH. The
+    kept tail sits after the summary in the flattened path but was billed before
+    the fold, so walking backwards and stopping at the summary misses exactly the
+    message that causes the fault. A wall-clock boundary distinguishes them:
+    :meth:`AgentSession.context_estimate` passes the newest compaction's stamp,
+    and any message at or before it is disqualified whatever its position. The
+    summary stop below is kept for the other order, where the summary really is
+    newer than every usage on the path.
+    """
     for i in range(len(messages) - 1, -1, -1):
-        usage = _get_assistant_usage(messages[i])
-        if usage is not None:
-            return usage, i
+        message = messages[i]
+        if is_compaction_summary(message):
+            return None
+        usage = _get_assistant_usage(message)
+        if usage is None or calculate_context_tokens(usage) <= 0:
+            continue
+        if usage_valid_after and int(message.get("timestamp") or 0) <= usage_valid_after:
+            return None
+        return usage, i
     return None
 
 
 @agent_facing(topic="compaction")
-def estimate_context_tokens(messages: list[dict[str, Any]]) -> ContextUsageEstimate:
-    """Estimate context tokens, anchoring on the last assistant Usage when present.
+def estimate_context_tokens(
+    messages: list[dict[str, Any]],
+    *,
+    counter: TextCounter | None = None,
+    calibrator: ContextCalibrator | None = None,
+    usage_valid_after: int = 0,
+) -> ContextUsageEstimate:
+    """Context tokens for a message list, anchored on the provider where possible.
 
-    Faithful port of pi's estimateContextTokens (compaction.ts:165): the provider
-    is the source of truth for everything up to the last assistant turn; only the
-    trailing messages after it are heuristically estimated.
+    The provider is the source of truth for everything up to the last assistant
+    turn that reported usage; only the messages after that anchor are counted
+    locally. That anchoring is what keeps the estimate from drifting: the system
+    prompt, the tool schemas and every chat-template header before the anchor are
+    inside the billed number and need no modelling at all.
+
+    ``counter`` counts the trailing text — a tokenizer for exact, the character
+    classes by default. ``calibrator``, when it has a fit, adds the per-message
+    framing those trailing messages will cost and scales the payload; without one
+    the trailing count omits framing, which under-counts the next request.
+
+    Args:
+        messages: The active path, oldest first.
+        counter: Text counter for the trailing messages.
+        calibrator: A fitted :class:`~tau_llm.tokens.ContextCalibrator`, or None.
+        usage_valid_after: Epoch-ms boundary; usage from a message at or before
+            it is not an anchor. Pass the newest compaction's timestamp, because
+            everything billed before a fold was billed against a context the fold
+            removed. 0 disables the check.
+
+    Returns:
+        A :class:`ContextUsageEstimate` whose ``count`` says how it was reached.
     """
-    info = _last_assistant_usage_info(messages)
+    info = _last_assistant_usage_info(messages, usage_valid_after)
     if info is None:
-        estimated = sum(estimate_tokens(m) for m in messages)
-        return ContextUsageEstimate(
-            tokens=estimated,
-            usage_tokens=0,
-            trailing_tokens=estimated,
-            last_usage_index=None,
+        trailing_msgs = messages
+        usage_tokens = 0
+        index = None
+    else:
+        usage, anchor = info
+        usage_tokens = calculate_context_tokens(usage)
+        trailing_msgs = messages[anchor + 1 :]
+        index = anchor
+
+    payload = ZERO_TOKENS
+    for m in trailing_msgs:
+        payload = payload + count_message(m, counter)
+
+    trailing = payload
+    if calibrator is not None and trailing_msgs:
+        trailing = calibrator.predict(messages=len(trailing_msgs), payload=payload)
+
+    total = usage_tokens + trailing.tokens
+    if usage_tokens:
+        count = TokenCount(
+            tokens=total,
+            source="usage" if trailing.tokens == 0 else trailing.source,
+            exact=trailing.tokens == 0,
+            includes_template=trailing.includes_template or trailing.tokens == 0,
+        )
+    else:
+        count = TokenCount(
+            tokens=total,
+            source=trailing.source,
+            exact=trailing.exact and trailing.includes_template,
+            includes_template=trailing.includes_template,
         )
 
-    usage, index = info
-    usage_tokens = calculate_context_tokens(usage)
-    trailing = sum(estimate_tokens(messages[i]) for i in range(index + 1, len(messages)))
     return ContextUsageEstimate(
-        tokens=usage_tokens + trailing,
+        tokens=total,
         usage_tokens=usage_tokens,
-        trailing_tokens=trailing,
+        trailing_tokens=trailing.tokens,
         last_usage_index=index,
+        count=count,
     )
 
 
 @agent_facing(topic="compaction")
+@dataclass(frozen=True)
+class CompactionLimits:
+    """The two token ceilings a session compacts against.
+
+    Attributes:
+        soft: Checked at the end of an agent turn. Crossing it schedules a
+            compaction that runs before the next turn starts, while there is
+            still room to do anything else.
+        hard: Checked at every turn boundary INSIDE the agent loop. Crossing it
+            compacts immediately and the loop continues on the compacted
+            context, because the alternative is a request the provider refuses.
+        window: The model's context window, for reference in an error message.
+
+    ``soft <= hard <= window`` always holds; :func:`compaction_limits` raises
+    rather than return a pair that does not.
+    """
+
+    soft: int
+    hard: int
+    window: int
+
+
+@agent_facing(topic="compaction")
+def compaction_limits(context_window: int, settings: CompactionSettings) -> CompactionLimits:
+    """Resolve ``settings`` against ``context_window`` into two absolute ceilings.
+
+    By default the hard limit is ``context_window - reserve_tokens`` — the margin
+    a compaction needs for its own summarization call and output — and the soft
+    limit sits at ``soft_limit_ratio`` of that, so an end-of-turn compaction fires
+    with room to spare. Either can be pinned outright with ``hard_limit_tokens`` /
+    ``soft_limit_tokens``, which is how a test asks for a 20k ceiling on a 172k
+    model.
+
+    Raises:
+        ValueError: when the resolved limits are unusable — non-positive, out of
+            order, or past the window. Fail-Early: a hard limit below the soft
+            limit would make the mid-turn check fire before the end-of-turn one
+            and compact on every single tool call.
+    """
+    if context_window <= 0:
+        raise ValueError(f"context_window must be > 0, got {context_window}")
+    if not 0 < settings.soft_limit_ratio <= 1:
+        raise ValueError(f"soft_limit_ratio must be in (0, 1], got {settings.soft_limit_ratio}")
+
+    hard = (
+        settings.hard_limit_tokens
+        if settings.hard_limit_tokens is not None
+        else context_window - settings.reserve_tokens
+    )
+    soft = (
+        settings.soft_limit_tokens
+        if settings.soft_limit_tokens is not None
+        else math.floor(hard * settings.soft_limit_ratio)
+    )
+
+    if hard <= 0 or soft <= 0:
+        raise ValueError(
+            f"compaction limits must be positive; got soft={soft} hard={hard} from "
+            f"context_window={context_window} and reserve_tokens="
+            f"{settings.reserve_tokens}. The window is too small for that margin — "
+            f"lower reserve_tokens or pin the limits directly."
+        )
+    if soft > hard:
+        raise ValueError(
+            f"soft limit {soft} is above hard limit {hard}; the mid-turn check would "
+            f"fire before the end-of-turn one and compact on every tool call."
+        )
+    if hard > context_window:
+        raise ValueError(
+            f"hard limit {hard} exceeds context_window {context_window}; a request at "
+            f"that size is refused before any compaction can run."
+        )
+    return CompactionLimits(soft=soft, hard=hard, window=context_window)
+
+
+@agent_facing(topic="compaction")
+def try_compaction_limits(
+    context_window: int, settings: CompactionSettings
+) -> CompactionLimits | None:
+    """:func:`compaction_limits`, or None when this window cannot carry the margins.
+
+    None is a real state and not a swallowed error: a model whose whole window is
+    smaller than the room a compaction needs to run cannot be auto-compacted at
+    any threshold, and the honest answer to "should we compact" there is "this
+    setting does not apply", not a number. :meth:`AgentSession._maybe_auto_compact`
+    says the same thing in its guard.
+
+    Use :func:`compaction_limits` wherever the caller has already established that
+    the window is workable and a bad pair is a bug worth raising on.
+    """
+    try:
+        return compaction_limits(context_window, settings)
+    except ValueError:
+        return None
+
+
+@agent_facing(topic="compaction")
 def should_compact(context_tokens: int, context_window: int, settings: CompactionSettings) -> bool:
-    """Whether context usage exceeds the compaction threshold (pi: shouldCompact)."""
+    """Whether to compact at the END of a turn, having crossed the soft limit."""
     if not settings.enabled:
         return False
-    return context_tokens > context_window - settings.reserve_tokens
+    limits = try_compaction_limits(context_window, settings)
+    return limits is not None and context_tokens > limits.soft
+
+
+@agent_facing(topic="compaction")
+def must_compact(context_tokens: int, context_window: int, settings: CompactionSettings) -> bool:
+    """Whether to compact NOW, mid-turn, having crossed the hard limit.
+
+    The difference from :func:`should_compact` is when the caller is allowed to
+    wait. A soft crossing can wait for the turn to finish; a hard crossing cannot,
+    because the next request in this same turn is the one that gets refused.
+    """
+    if not settings.enabled:
+        return False
+    limits = try_compaction_limits(context_window, settings)
+    return limits is not None and context_tokens > limits.hard
 
 
 def _entry_message_role(entry: dict[str, Any]) -> str | None:
@@ -314,8 +611,20 @@ def find_cut_point(
     end_index: int,
     keep_recent_tokens: int,
 ) -> CutPointResult:
-    """Choose the cut that retains ~``keep_recent_tokens`` of recent context
-    (pi: findCutPoint)."""
+    """Choose the cut that retains ~``keep_recent_tokens`` of recent context.
+
+    Walks backwards from ``end_index`` accumulating counted tokens, stops at the
+    first message that meets the target, and cuts at the first valid cut point at
+    or after it. When the target is met inside the NEWEST turn there is no such
+    cut point, and the fallback is the LAST cut point rather than the first: the
+    first keeps the whole conversation, which made ``prepare_compaction`` return
+    None for any path whose final message exceeded ``keep_recent_tokens`` on its
+    own (docs/TOKEN-ACCOUNTING.md §1).
+
+    The initial ``cut_points[0]`` survives for the other case — a conversation
+    smaller than the target, where keeping everything is the right answer and
+    ``prepare_compaction`` then reports nothing to compact.
+    """
     cut_points = find_valid_cut_points(entries, start_index, end_index)
     if not cut_points:
         return CutPointResult(
@@ -330,10 +639,7 @@ def find_cut_point(
             continue
         accumulated += estimate_tokens(entry.get("message", {}))
         if accumulated >= keep_recent_tokens:
-            for c in cut_points:
-                if c >= i:
-                    cut_index = c
-                    break
+            cut_index = next((c for c in cut_points if c >= i), cut_points[-1])
             break
 
     while cut_index > start_index:
@@ -615,14 +921,36 @@ def _summary_context_message(summary: str) -> dict[str, Any]:
     """The user message a compaction summary becomes when it re-enters context.
 
     One spelling of the wrapper, shared by ``_build_messages_from_entries``
-    (reading a compaction entry that already exists) and ``compact``'s
-    ``tokens_saved`` arithmetic (pricing the summary it is about to write). Two
+    (reading a compaction entry that already exists), ``compact``'s
+    ``tokens_saved`` arithmetic (pricing the summary it is about to write), and
+    :func:`is_compaction_summary` (recognising one on the way back). Two
     spellings would let the estimate drift from the thing it estimates.
     """
     return {
         "role": "user",
-        "content": [{"type": "text", "text": f"[[Compaction summary: {summary}]]"}],
+        "content": [{"type": "text", "text": f"{COMPACTION_SUMMARY_PREFIX}{summary}]]"}],
     }
+
+
+@agent_facing(topic="compaction")
+def is_compaction_summary(message: dict[str, Any]) -> bool:
+    """Whether this message is a compaction summary re-entering the context.
+
+    Recognised by the marker :func:`_summary_context_message` writes, which is
+    why both live here: a second spelling of the prefix would make this silently
+    stop matching the thing it is about.
+    """
+    if message.get("role") != "user":
+        return False
+    content = message.get("content")
+    if not isinstance(content, list) or not content:
+        return False
+    first = content[0]
+    return (
+        isinstance(first, dict)
+        and first.get("type") == "text"
+        and str(first.get("text", "")).startswith(COMPACTION_SUMMARY_PREFIX)
+    )
 
 
 def _build_messages_from_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:

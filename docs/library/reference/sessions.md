@@ -165,6 +165,37 @@ summary.
 
 - `CompactionError` — if summary generation fails. Fail-Early.
 
+### context_estimate
+
+```python
+context_estimate(messages: list[dict[str, Any]] | None = None) -> ContextUsageEstimate
+```
+
+`tau_agent_core.agent_session.AgentSession.context_estimate`
+
+This session's context size, counted with its own counter and fit.
+
+The single place the harness answers "how big is the context": the header,
+``get_session_stats``, both compaction checks and every extension read the
+same number from here, so a display and a trigger can never disagree.
+
+``messages`` defaults to the active path — or, while an agent loop is
+mid-turn, to the context that loop is actually holding. The persisted path
+is stale there: nothing this turn produced reaches the log until the turn
+ends, so a bare reading during a twenty-tool-call turn would report the
+conversation as it stood before the turn began. The loop publishes its
+view at each turn boundary (:meth:`_compact_mid_turn`), which leaves one
+gap: the FIRST request of a turn is still measured against the persisted
+path, so it omits that turn's own user message.
+
+The returned estimate's ``count`` carries the provenance — whether a
+tokenizer or the character classes produced it, and whether the
+chat-template framing is inside it.
+
+**Parameters**
+
+- `messages: list[dict[str, Any]] | None = None` — *(no description)*
+
 ### continue_conversation
 
 ```python

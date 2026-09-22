@@ -140,6 +140,201 @@ warning that this ``@…`` names no file and will be sent as ordinary text.
 - `matches: tuple[PathCompletion, ...]` — The candidates, alphabetical, at most :data:`_COMPLETION_LIMIT`.
 - `total: int` — How many candidates matched before that cap, so a frontend can say that the list is not all of them.
 
+## CalibrationState
+<!-- agent: yes -->
+
+```python
+class CalibrationState(nn: float = 0.0, npay: float = 0.0, pp: float = 0.0, nr: float = 0.0, pr: float = 0.0, count: int = 0)
+```
+
+`tau_llm.tokens.CalibrationState`
+
+The five running sums and the observation count a calibrator carries.
+
+Serializable so a session can resume a fit instead of paying the three-turn
+warm-up again. Sums, not samples: the fit is a 2x2 normal-equation solve, so
+the whole history compresses to this regardless of how many turns fed it.
+
+**Constructor parameters**
+
+- `nn: float = 0.0` — *(no description)*
+- `npay: float = 0.0` — *(no description)*
+- `pp: float = 0.0` — *(no description)*
+- `nr: float = 0.0` — *(no description)*
+- `pr: float = 0.0` — *(no description)*
+- `count: int = 0` — *(no description)*
+
+### from_dict
+
+```python
+from_dict(data: dict[str, Any]) -> CalibrationState
+```
+
+`tau_llm.tokens.CalibrationState.from_dict`
+
+Rebuild from :meth:`to_dict`. Missing keys are a hard error.
+
+**Parameters**
+
+- `data: dict[str, Any]` — *(no description)*
+
+### to_dict
+
+```python
+to_dict() -> dict[str, float | int]
+```
+
+`tau_llm.tokens.CalibrationState.to_dict`
+
+Plain-dict form for persistence.
+
+## CharClassCounter
+<!-- agent: yes -->
+
+```python
+class CharClassCounter(coefficients: dict[str, tuple[float, ...]] | None = None)
+```
+
+`tau_llm.tokens.CharClassCounter`
+
+Estimated token counts from character composition, with no tokenizer.
+
+A linear model over the six character classes plus a word count, per role.
+It exists because one chars-per-token ratio cannot hold both prose and code:
+in the shipped fit a digit costs 1.23 tokens and a space costs 0.16, and a
+ratio that splits the difference is wrong about both.
+
+``exact`` is False and stays False. A caller wanting exactness constructs a
+:class:`TokenizerCounter` and handles :class:`TokenizerUnavailable`.
+
+**Constructor parameters**
+
+- `coefficients: dict[str, tuple[float, ...]] | None = None` — *(no description)*
+
+### count
+
+```python
+count(text: str, *, role: str | None = None) -> TokenCount
+```
+
+`tau_llm.tokens.CharClassCounter.count`
+
+Estimated token count for ``text`` under ``role``'s weights.
+
+**Parameters**
+
+- `text: str` — *(no description)*
+- `role: str | None = None` — *(no description)*
+
+### exact
+
+`tau_llm.tokens.CharClassCounter.exact: bool`
+
+*No description. This object is marked but undocumented.*
+
+### source
+
+`tau_llm.tokens.CharClassCounter.source: TokenSource`
+
+*No description. This object is marked but undocumented.*
+
+## ContextCalibrator
+<!-- agent: yes -->
+
+```python
+class ContextCalibrator(state: CalibrationState | None = None)
+```
+
+`tau_llm.tokens.ContextCalibrator`
+
+Learns what an endpoint charges beyond the text, from what it charged.
+
+Solves ``billed ~= a*messages + r*payload`` by least squares over five running
+sums, where ``payload`` is whatever a :class:`TextCounter` said the messages
+cost. ``a`` absorbs per-message chat-template framing and the amortized system
+prompt and tool schemas; ``r`` absorbs the payload's scale error — tokenizer
+drift, or the class model's fit.
+
+Both are constrained to physically admissible values: ``a >= 0`` because
+framing cannot refund tokens, and ``r`` inside
+:data:`CALIBRATION_SCALE_BOUNDS` because a payload that needs doubling means
+the payload is measuring something else. An unconstrained solve on real
+traffic produced ``-85 tokens/message`` on one model, which is how the bounds
+got here.
+
+One calibrator per (model, session): the fit is about an endpoint's framing,
+and the system prompt it amortizes is a property of the session.
+
+**Constructor parameters**
+
+- `state: CalibrationState | None = None` — *(no description)*
+
+### observations
+
+`tau_llm.tokens.ContextCalibrator.observations: int`
+
+How many turns have been observed.
+
+### observe
+
+```python
+observe(*, messages: int, payload_tokens: int, billed_tokens: int) -> None
+```
+
+`tau_llm.tokens.ContextCalibrator.observe`
+
+Record one turn: ``messages`` messages, ``payload_tokens`` counted, billed.
+
+**Parameters**
+
+- `messages: int` — How many messages were in the request.
+- `payload_tokens: int` — What the text counter said those messages cost.
+- `billed_tokens: int` — What the provider said the request's input cost.
+
+**Raises**
+
+- `ValueError` — on a non-positive message count or a negative token count. A turn the caller cannot describe must not silently become a zero-weighted observation that drags the fit.
+
+### predict
+
+```python
+predict(*, messages: int, payload: TokenCount) -> TokenCount
+```
+
+`tau_llm.tokens.ContextCalibrator.predict`
+
+What the endpoint will bill for ``messages`` messages costing ``payload``.
+
+Returns ``payload`` unchanged, with its own provenance, when the fit is not
+ready — an uncalibrated number that says it is uncalibrated, rather than a
+calibrated-looking number with nothing behind it.
+
+**Parameters**
+
+- `messages: int` — *(no description)*
+- `payload: TokenCount` — *(no description)*
+
+### ready
+
+`tau_llm.tokens.ContextCalibrator.ready: bool`
+
+Whether a solve is possible. False during the warm-up.
+
+### solve
+
+```python
+solve() -> tuple[float, float] | None
+```
+
+`tau_llm.tokens.ContextCalibrator.solve`
+
+The fitted ``(a, r)``, or None while the fit is unusable.
+
+None means one of: fewer than :data:`CALIBRATION_MIN_OBSERVATIONS` turns
+seen, a singular system (every observed turn had the same shape), or a
+multiplier outside :data:`CALIBRATION_SCALE_BOUNDS`. A caller that gets
+None uses the uncalibrated payload and says so.
+
 ## ImageContent
 <!-- agent: yes -->
 
@@ -332,6 +527,15 @@ Serialize to OpenAI-compatible format.
 
 dict with keys compatible with OpenAI API: - id: model identifier - name: human-readable name - provider: provider name - base_url: API endpoint - max_completion_tokens: max tokens for completion
 
+### tokenizer
+
+`tau_llm.types.Model.tokenizer: str | None`
+
+A ``tokenizer.json`` path or HuggingFace repo id, for exact token counts.
+
+Unset means token counts for this model are estimated from character
+composition and labelled as estimates (:mod:`tau_llm.tokens`).
+
 ## PathCompletion
 <!-- agent: yes -->
 
@@ -387,6 +591,44 @@ Reference: SUBPHASE-0.0.md, "1. Messages" section.
 
 *No description. This object is marked but undocumented.*
 
+## TextCounter
+<!-- agent: yes -->
+
+`tau_llm.tokens.TextCounter`
+
+Anything that can say how many tokens a string costs.
+
+Implementations: :class:`TokenizerCounter` (exact) and
+:class:`CharClassCounter` (estimated). A caller that needs to know which it
+holds reads :attr:`source` rather than testing the concrete type.
+
+### count
+
+```python
+count(text: str, *, role: str | None = None) -> TokenCount
+```
+
+`tau_llm.tokens.TextCounter.count`
+
+Tokens for ``text``, optionally hinted by the message ``role``.
+
+**Parameters**
+
+- `text: str` — *(no description)*
+- `role: str | None = None` — *(no description)*
+
+### exact
+
+`tau_llm.tokens.TextCounter.exact: bool`
+
+Whether :meth:`count` returns the real token count for its input.
+
+### source
+
+`tau_llm.tokens.TextCounter.source: TokenSource`
+
+Which route this counter is.
+
 ## ThinkingContent
 <!-- agent: yes -->
 
@@ -419,6 +661,126 @@ Reference: SUBPHASE-0.0.md, "1. Messages" section.
 `tau_llm.types.ThinkingContent.type: Literal['thinking']`
 
 *No description. This object is marked but undocumented.*
+
+## TokenCount
+<!-- agent: yes -->
+
+```python
+class TokenCount(tokens: int, source: TokenSource, exact: bool, includes_template: bool)
+```
+
+`tau_llm.tokens.TokenCount`
+
+A token count that carries its own provenance.
+
+**Constructor parameters**
+
+- `tokens: int` — The count itself. Never negative.
+- `source: TokenSource` — Which route produced it — see :data:`TokenSource`.
+- `exact: bool` — True only when the number is the real token count for what was counted. A tokenizer is exact about text; it is not exact about a request, because the request carries framing the tokenizer never saw.
+- `includes_template: bool` — Whether chat-template framing (role headers, turn delimiters, the tool schemas) is inside ``tokens``. A count that omits it is an under-count of the request, which is the dangerous direction.
+
+## TokenizerCounter
+<!-- agent: yes -->
+
+```python
+class TokenizerCounter(tokenizer: Any, *, name: str = '<tokenizer>')
+```
+
+`tau_llm.tokens.TokenizerCounter`
+
+Exact text counts from the model's own tokenizer.
+
+Wraps a HuggingFace ``tokenizers.Tokenizer``. The ``tokenizers`` package is
+an optional extra (``pip install 'ffwf-tau-llm[tokenizers]'``); constructing
+this class without it raises rather than silently falling back to an estimate,
+because a caller asking for exactness and getting a guess is the failure this
+module exists to end.
+
+``exact`` is True and ``includes_template`` is False: the tokenizer encodes
+the text it is given, and the chat template that wraps that text on the wire
+is not in it. :class:`ContextCalibrator` is what learns the difference.
+
+**Constructor parameters**
+
+- `tokenizer: Any` — *(no description)*
+- `name: str = '<tokenizer>'` — *(no description)*
+
+### count
+
+```python
+count(text: str, *, role: str | None = None) -> TokenCount
+```
+
+`tau_llm.tokens.TokenizerCounter.count`
+
+Exact token count for ``text``. ``role`` is accepted and ignored.
+
+**Parameters**
+
+- `text: str` — *(no description)*
+- `role: str | None = None` — *(no description)*
+
+### exact
+
+`tau_llm.tokens.TokenizerCounter.exact: bool`
+
+*No description. This object is marked but undocumented.*
+
+### from_file
+
+```python
+from_file(path: str) -> TokenizerCounter
+```
+
+`tau_llm.tokens.TokenizerCounter.from_file`
+
+Load a ``tokenizer.json`` off disk.
+
+**Parameters**
+
+- `path: str` — *(no description)*
+
+**Raises**
+
+- `TokenizerUnavailable` — the ``tokenizers`` package is not installed.
+- `OSError` — the file does not exist or does not parse.
+
+### from_pretrained
+
+```python
+from_pretrained(repo_id: str) -> TokenizerCounter
+```
+
+`tau_llm.tokens.TokenizerCounter.from_pretrained`
+
+Fetch a tokenizer from the HuggingFace hub by repository id.
+
+Network-dependent and uncached by this class — the caller owns the cache,
+because where a downloaded file lands is a policy question this module has
+no business answering.
+
+**Parameters**
+
+- `repo_id: str` — *(no description)*
+
+**Raises**
+
+- `TokenizerUnavailable` — the ``tokenizers`` package is not installed.
+- `Exception` — whatever the hub call raises, unchanged.
+
+### source
+
+`tau_llm.tokens.TokenizerCounter.source: TokenSource`
+
+*No description. This object is marked but undocumented.*
+
+## TokenizerUnavailable
+<!-- agent: yes -->
+
+`tau_llm.tokens.TokenizerUnavailable`
+
+Raised when an exact count was asked for and no tokenizer can supply it.
 
 ## ToolCall
 <!-- agent: yes -->
@@ -660,6 +1022,31 @@ dotfiles.
 **Returns**
 
 class:`AttachmentCompletions` when the cursor is inside a ``@…``, with an empty ``matches`` when nothing matches — that emptiness is the "this names no file" warning, not an absence of information. ``None`` when the cursor is not inside a reference at all.
+
+## counter_for
+<!-- agent: yes -->
+
+```python
+counter_for(model: Any, *, fallback: bool = False) -> TextCounter
+```
+
+`tau_llm.tokens.counter_for`
+
+The best text counter available for ``model``.
+
+Reads ``model.tokenizer`` — a ``tokenizer.json`` path or a HuggingFace repo
+id. Unset means no tokenizer was configured and the caller gets a
+:class:`CharClassCounter`.
+
+**Parameters**
+
+- `model: Any` — Any object with an optional ``tokenizer`` attribute; a :class:`~tau_llm.types.Model` in practice.
+- `fallback: bool = False` — What to do when ``model.tokenizer`` IS set but will not load. False (the default) re-raises: the operator named a tokenizer, so silently substituting an estimate would hide a typo in a path behind a plausible number. True downgrades to the class counter, for a display that must render something rather than crash a UI thread.
+
+**Raises**
+
+- `TokenizerUnavailable` — ``model.tokenizer`` is set, ``fallback`` is False, and the ``tokenizers`` package is missing.
+- `OSError` — ``model.tokenizer`` is set, ``fallback`` is False, and the file or repo id does not resolve.
 
 ## elide_attachment_bodies
 <!-- agent: yes -->

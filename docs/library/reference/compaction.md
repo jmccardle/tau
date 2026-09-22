@@ -39,6 +39,26 @@ receive a fabricated summary.
 - `code: str` — *(no description)*
 - `message: str` — *(no description)*
 
+## CompactionLimits
+<!-- agent: yes -->
+
+```python
+class CompactionLimits(soft: int, hard: int, window: int)
+```
+
+`tau_agent_core.compaction.CompactionLimits`
+
+The two token ceilings a session compacts against.
+
+``soft <= hard <= window`` always holds; :func:`compaction_limits` raises
+rather than return a pair that does not.
+
+**Constructor parameters**
+
+- `soft: int` — Checked at the end of an agent turn. Crossing it schedules a compaction that runs before the next turn starts, while there is still room to do anything else.
+- `hard: int` — Checked at every turn boundary INSIDE the agent loop. Crossing it compacts immediately and the loop continues on the compacted context, because the alternative is a request the provider refuses.
+- `window: int` — The model's context window, for reference in an error message.
+
 ## CompactionPolicy
 <!-- agent: yes -->
 
@@ -306,36 +326,43 @@ these in its persistence layer; τ threads them through so
 <!-- agent: yes -->
 
 ```python
-class CompactionSettings(enabled: bool = True, reserve_tokens: int = 16384, keep_recent_tokens: int = 20000)
+class CompactionSettings(enabled: bool = True, reserve_tokens: int = 16384, keep_recent_tokens: int = 20000, soft_limit_ratio: float = 0.8, hard_limit_tokens: int | None = None, soft_limit_tokens: int | None = None)
 ```
 
 `tau_agent_core.compaction.CompactionSettings`
 
-Compaction thresholds and retention settings (pi: CompactionSettings).
+Compaction thresholds and retention settings.
+
+:func:`compaction_limits` is what turns these into the two numbers that get
+compared against, and raises rather than return an unusable pair.
 
 **Constructor parameters**
 
-- `enabled: bool = True` — *(no description)*
-- `reserve_tokens: int = 16384` — *(no description)*
-- `keep_recent_tokens: int = 20000` — *(no description)*
+- `enabled: bool = True` — Whether automatic compaction runs at all.
+- `reserve_tokens: int = 16384` — The margin ``m``. The hard limit is ``context_window - reserve_tokens``, so this is what a compaction has left to spend on its own summarization call and output.
+- `keep_recent_tokens: int = 20000` — How much recent conversation a compaction retains uncompacted. A retention size only — it does not set a threshold.
+- `soft_limit_ratio: float = 0.8` — Where the soft limit sits as a fraction of the hard one. A ratio rather than a fixed gap because the gap has to scale: 20000 tokens below the hard limit is a reasonable warning distance on a 128k window and below zero on a 1000-token one.
+- `hard_limit_tokens: int | None = None` — Pin the mid-turn ceiling outright, ignoring the window and the reserve. None derives it.
+- `soft_limit_tokens: int | None = None` — Pin the end-of-turn ceiling outright. None derives it.
 
 ## ContextUsageEstimate
 <!-- agent: yes -->
 
 ```python
-class ContextUsageEstimate(tokens: int, usage_tokens: int, trailing_tokens: int, last_usage_index: int | None)
+class ContextUsageEstimate(tokens: int, usage_tokens: int, trailing_tokens: int, last_usage_index: int | None, count: TokenCount = ZERO_TOKENS)
 ```
 
 `tau_agent_core.compaction.ContextUsageEstimate`
 
-Estimated context-token usage for a message list (pi: ContextUsageEstimate).
+Estimated context-token usage for a message list.
 
 **Constructor parameters**
 
-- `tokens: int` — *(no description)*
-- `usage_tokens: int` — *(no description)*
-- `trailing_tokens: int` — *(no description)*
-- `last_usage_index: int | None` — *(no description)*
+- `tokens: int` — The whole estimate — ``usage_tokens + trailing_tokens``.
+- `usage_tokens: int` — What the provider billed for everything up to and including ``last_usage_index``. Exact when present.
+- `trailing_tokens: int` — The counted cost of the messages after that anchor.
+- `last_usage_index: int | None` — Index of the anchoring assistant message, or None when no message on the path has reported usage yet.
+- `count: TokenCount = ZERO_TOKENS` — ``tokens`` with its provenance attached. ``exact`` is True only when every message was either billed or counted by a real tokenizer AND the framing around the trailing messages is accounted for — which in practice means a calibrated fit, so it is usually False.
 
 ## calculate_context_tokens
 <!-- agent: yes -->
@@ -385,24 +412,92 @@ watches arrive is one document rather than two shuffled together.
 - `thinking_level: str | None = None` — *(no description)*
 - `on_text_delta: TextDeltaSink | None = None` — *(no description)*
 
+## compaction_limits
+<!-- agent: yes -->
+
+```python
+compaction_limits(context_window: int, settings: CompactionSettings) -> CompactionLimits
+```
+
+`tau_agent_core.compaction.compaction_limits`
+
+Resolve ``settings`` against ``context_window`` into two absolute ceilings.
+
+By default the hard limit is ``context_window - reserve_tokens`` — the margin
+a compaction needs for its own summarization call and output — and the soft
+limit sits at ``soft_limit_ratio`` of that, so an end-of-turn compaction fires
+with room to spare. Either can be pinned outright with ``hard_limit_tokens`` /
+``soft_limit_tokens``, which is how a test asks for a 20k ceiling on a 172k
+model.
+
+**Parameters**
+
+- `context_window: int` — *(no description)*
+- `settings: CompactionSettings` — *(no description)*
+
+**Raises**
+
+- `ValueError` — when the resolved limits are unusable — non-positive, out of order, or past the window. Fail-Early: a hard limit below the soft limit would make the mid-turn check fire before the end-of-turn one and compact on every single tool call.
+
+## count_message
+<!-- agent: yes -->
+
+```python
+count_message(message: dict[str, Any], counter: TextCounter | None = None) -> TokenCount
+```
+
+`tau_agent_core.compaction.count_message`
+
+Tokens one message dict costs, labelled with how the number was reached.
+
+``counter`` is any :class:`~tau_llm.tokens.TextCounter`: a
+:class:`~tau_llm.tokens.TokenizerCounter` gives an exact count of the text, a
+:class:`~tau_llm.tokens.CharClassCounter` (the default) gives a labelled
+estimate. Neither includes the chat template — see
+:func:`estimate_context_tokens`, which is where that gap is closed.
+
+An image is priced at :data:`ESTIMATED_IMAGE_TOKENS`, which is an assumption
+and not a measurement: providers tile images differently and τ has not
+measured any of them. The returned count says ``exact=False`` whenever an
+image is in it, even behind an exact tokenizer.
+
+**Parameters**
+
+- `message: dict[str, Any]` — *(no description)*
+- `counter: TextCounter | None = None` — *(no description)*
+
 ## estimate_context_tokens
 <!-- agent: yes -->
 
 ```python
-estimate_context_tokens(messages: list[dict[str, Any]]) -> ContextUsageEstimate
+estimate_context_tokens(messages: list[dict[str, Any]], *, counter: TextCounter | None = None, calibrator: ContextCalibrator | None = None, usage_valid_after: int = 0) -> ContextUsageEstimate
 ```
 
 `tau_agent_core.compaction.estimate_context_tokens`
 
-Estimate context tokens, anchoring on the last assistant Usage when present.
+Context tokens for a message list, anchored on the provider where possible.
 
-Faithful port of pi's estimateContextTokens (compaction.ts:165): the provider
-is the source of truth for everything up to the last assistant turn; only the
-trailing messages after it are heuristically estimated.
+The provider is the source of truth for everything up to the last assistant
+turn that reported usage; only the messages after that anchor are counted
+locally. That anchoring is what keeps the estimate from drifting: the system
+prompt, the tool schemas and every chat-template header before the anchor are
+inside the billed number and need no modelling at all.
+
+``counter`` counts the trailing text — a tokenizer for exact, the character
+classes by default. ``calibrator``, when it has a fit, adds the per-message
+framing those trailing messages will cost and scales the payload; without one
+the trailing count omits framing, which under-counts the next request.
 
 **Parameters**
 
-- `messages: list[dict[str, Any]]` — *(no description)*
+- `messages: list[dict[str, Any]]` — The active path, oldest first.
+- `counter: TextCounter | None = None` — Text counter for the trailing messages.
+- `calibrator: ContextCalibrator | None = None` — A fitted :class:`~tau_llm.tokens.ContextCalibrator`, or None.
+- `usage_valid_after: int = 0` — Epoch-ms boundary; usage from a message at or before it is not an anchor. Pass the newest compaction's timestamp, because everything billed before a fold was billed against a context the fold removed. 0 disables the check.
+
+**Returns**
+
+class:`ContextUsageEstimate` whose ``count`` says how it was reached.
 
 ## estimate_span_tokens
 <!-- agent: yes -->
@@ -447,13 +542,74 @@ estimate_tokens(message: dict[str, Any]) -> int
 
 `tau_agent_core.compaction.estimate_tokens`
 
-Estimate token count for one message dict (pi: estimateTokens).
+Estimated token count for one message dict, as a bare int.
 
-Conservative ~4-chars-per-token heuristic over the textual payload, by role.
+The count-only view of :func:`count_message` for the several call sites that
+display a size and have no use for its provenance. Anything DECIDING on the
+number should call :func:`count_message` and read ``exact``.
 
 **Parameters**
 
 - `message: dict[str, Any]` — *(no description)*
+
+## is_compaction_summary
+<!-- agent: yes -->
+
+```python
+is_compaction_summary(message: dict[str, Any]) -> bool
+```
+
+`tau_agent_core.compaction.is_compaction_summary`
+
+Whether this message is a compaction summary re-entering the context.
+
+Recognised by the marker :func:`_summary_context_message` writes, which is
+why both live here: a second spelling of the prefix would make this silently
+stop matching the thing it is about.
+
+**Parameters**
+
+- `message: dict[str, Any]` — *(no description)*
+
+## message_payload
+<!-- agent: yes -->
+
+```python
+message_payload(message: dict[str, Any]) -> tuple[str, int]
+```
+
+`tau_agent_core.compaction.message_payload`
+
+The ``(text, image_count)`` of one message dict, as the wire carries it.
+
+The single spelling of "what is in this message that costs tokens", shared by
+:func:`count_message` and by anything measuring a transcript. An unknown role
+contributes nothing, which is the truth: the wire has no place to put it.
+
+**Parameters**
+
+- `message: dict[str, Any]` — *(no description)*
+
+## must_compact
+<!-- agent: yes -->
+
+```python
+must_compact(context_tokens: int, context_window: int, settings: CompactionSettings) -> bool
+```
+
+`tau_agent_core.compaction.must_compact`
+
+Whether to compact NOW, mid-turn, having crossed the hard limit.
+
+The difference from :func:`should_compact` is when the caller is allowed to
+wait. A soft crossing can wait for the turn to finish; a hard crossing cannot,
+because the next request in this same turn is the one that gets refused.
+
+**Parameters**
+
+- `context_tokens: int` — *(no description)*
+- `context_window: int` — *(no description)*
+- `settings: CompactionSettings` — *(no description)*
 
 ## policy_for_scenario
 <!-- agent: yes -->
@@ -516,10 +672,35 @@ should_compact(context_tokens: int, context_window: int, settings: CompactionSet
 
 `tau_agent_core.compaction.should_compact`
 
-Whether context usage exceeds the compaction threshold (pi: shouldCompact).
+Whether to compact at the END of a turn, having crossed the soft limit.
 
 **Parameters**
 
 - `context_tokens: int` — *(no description)*
+- `context_window: int` — *(no description)*
+- `settings: CompactionSettings` — *(no description)*
+
+## try_compaction_limits
+<!-- agent: yes -->
+
+```python
+try_compaction_limits(context_window: int, settings: CompactionSettings) -> CompactionLimits | None
+```
+
+`tau_agent_core.compaction.try_compaction_limits`
+
+:func:`compaction_limits`, or None when this window cannot carry the margins.
+
+None is a real state and not a swallowed error: a model whose whole window is
+smaller than the room a compaction needs to run cannot be auto-compacted at
+any threshold, and the honest answer to "should we compact" there is "this
+setting does not apply", not a number. :meth:`AgentSession._maybe_auto_compact`
+says the same thing in its guard.
+
+Use :func:`compaction_limits` wherever the caller has already established that
+the window is workable and a bad pair is a bug worth raising on.
+
+**Parameters**
+
 - `context_window: int` — *(no description)*
 - `settings: CompactionSettings` — *(no description)*

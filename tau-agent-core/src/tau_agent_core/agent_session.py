@@ -21,6 +21,7 @@ import hashlib
 import inspect
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Literal
@@ -83,14 +84,19 @@ from tau_agent_core.compaction import (
     CompactionSettings,
     ContextUsageEstimate,
     compact as run_compaction,
+    count_message,
     estimate_context_tokens,
     estimate_span_tokens,
+    must_compact,
     prepare_compaction,
     should_compact,
+    try_compaction_limits,
 )
 from tau_agent_core.compaction_policy import CompactionPolicy
 from tau_agent_core.compaction_utils import create_file_ops, extract_file_ops_from_message
+from tau_agent_core.prompt_cache import prompt_tokens
 from tau_agent_core.usage import add_usage, zero_usage
+from tau_llm.tokens import ZERO_TOKENS, ContextCalibrator, TextCounter, counter_for
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
 from tau_llm.docs import agent_facing
 
@@ -310,6 +316,62 @@ def _covered_span(path_entries: list[dict[str, Any]], first_kept_id: str) -> lis
         f"compaction boundary {first_kept_id!r} is not on the path it was cut from; "
         "the covered-span provenance would be a fabricated zero"
     )
+
+
+def _newest_compaction_ms(entries: list[dict[str, Any]]) -> int:
+    """Epoch-ms of the newest compaction in ``entries``, or 0 if there is none.
+
+    A reloaded session has to know where its own last fold was: every usage
+    reported before it was reported about a context that fold removed
+    (docs/TOKEN-ACCOUNTING.md §1). Entry stamps are ISO; message stamps are
+    epoch-ms; this is the one place they are compared, so this is where the
+    conversion lives. An unparseable stamp yields 0 — no boundary rather than a
+    wrong one, which degrades to the pre-existing behaviour.
+    """
+    newest = 0
+    for entry in entries:
+        if entry.get("type") != "compaction":
+            continue
+        stamp = entry.get("timestamp")
+        if not isinstance(stamp, str):
+            continue
+        try:
+            moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        newest = max(newest, int(moment.timestamp() * 1000))
+    return newest
+
+
+@dataclass
+class _TurnPersistence:
+    """What one ``_run_one_turn`` has written to the log, and what it still owes.
+
+    Persistence used to be a single write at the tail of the turn, so "have the
+    inputs been written" was answerable by where you were in the function.
+    Mid-turn compaction breaks that: it has to flush the turn so far BEFORE it
+    can compact, and whatever the loop produces afterwards must not be written a
+    second time. Both facts now live here instead of in control flow.
+
+    Attributes:
+        pre_user: ``before_agent_start`` injections placed before the user message.
+        user_msg: The user's own message for this turn.
+        queued: Pending ``nextTurn`` messages threaded after the user message.
+        post_user: ``before_agent_start`` injections placed after it.
+        turn_messages: This turn's new messages, in order — ``prompt()``'s return.
+        persist: ``store_history``. False still collects, and writes nothing.
+        inputs_written: Whether the four input groups have reached the log.
+        loop_written: How many of the loop's produced messages have reached it.
+    """
+
+    pre_user: list[dict[str, Any]]
+    user_msg: UserMessage
+    queued: list[UserMessage]
+    post_user: list[dict[str, Any]]
+    turn_messages: list[dict[str, Any]]
+    persist: bool
+    inputs_written: bool = False
+    loop_written: int = 0
 
 
 class _SideCompletionWatch:
@@ -546,6 +608,13 @@ class AgentSession:
         self._policy_turns_used = 0
         self._model_resolver = model_resolver
         self._last_usage: dict[str, Any] | None = None
+
+        self._token_counter: TextCounter = counter_for(model, fallback=True)
+        self._calibrator = ContextCalibrator()
+        self._calibration_seen: set[tuple[int, int]] = set()
+        self._turn_persistence: _TurnPersistence | None = None
+        self._in_flight_context: list[dict[str, Any]] | None = None
+        self._usage_valid_after = _newest_compaction_ms(self._session_log.entries())
 
         self._side_usage: dict[str, int] = zero_usage()
 
@@ -1274,7 +1343,7 @@ class AgentSession:
             A :class:`SessionStats`. Nothing here mutates, and it answers the same
             on a persisted and an unpersisted session.
         """
-        estimate = estimate_context_tokens(self.messages)
+        estimate = self.context_estimate()
         context_window = int(self.get_model()["context_window"])
         return SessionStats(
             context=estimate,
@@ -3085,9 +3154,19 @@ class AgentSession:
             abort_signal=self._abort_signal,
             hook_dispatcher=self._extension_runner,
             steer_queue=self._pending_steer_messages,
+            mid_turn_compactor=self._compact_mid_turn,
         )
 
         turn_messages: list[dict[str, Any]] = []
+        turn = _TurnPersistence(
+            pre_user=pre_user_messages,
+            user_msg=user_msg,
+            queued=queued,
+            post_user=post_user_messages,
+            turn_messages=turn_messages,
+            persist=persist,
+        )
+        self._turn_persistence = turn
 
         # Cleared BEFORE loop.run, because loop.run is what emits agent_end.
         self._persistence_settled.clear()
@@ -3098,28 +3177,45 @@ class AgentSession:
                     context=context_messages,
                 )
             except BaseException as exc:
-                await self._persist_turn_inputs(
-                    pre_user_messages,
-                    user_msg,
-                    queued,
-                    post_user_messages,
-                    turn_messages,
-                    persist,
-                )
+                await self._persist_turn_inputs_once(turn)
                 await self._persist_loop_messages(
-                    completed_messages(exc), turn_messages, persist=persist
+                    completed_messages(exc)[turn.loop_written :],
+                    turn_messages,
+                    persist=persist,
                 )
                 raise
 
-            await self._persist_turn_inputs(
-                pre_user_messages, user_msg, queued, post_user_messages, turn_messages, persist
+            await self._persist_turn_inputs_once(turn)
+            await self._persist_loop_messages(
+                final_messages[turn.loop_written :], turn_messages, persist=persist
             )
-
-            await self._persist_loop_messages(final_messages, turn_messages, persist=persist)
         finally:
+            self._turn_persistence = None
+            self._in_flight_context = None
             self._persistence_settled.set()
 
         return turn_messages
+
+    async def _persist_turn_inputs_once(self, turn: _TurnPersistence) -> None:
+        """Write this turn's input messages, at most once.
+
+        A turn can reach the tail persist having already flushed its inputs, if
+        :meth:`_compact_mid_turn` fired: the compaction needed the user message on
+        the path before it could cut one. The latch is on the record rather than
+        on control flow, because there are now three callers and only one of them
+        can see where the others were.
+        """
+        if turn.inputs_written:
+            return
+        turn.inputs_written = True
+        await self._persist_turn_inputs(
+            turn.pre_user,
+            turn.user_msg,
+            turn.queued,
+            turn.post_user,
+            turn.turn_messages,
+            turn.persist,
+        )
 
     async def _persist_turn_inputs(
         self,
@@ -3391,7 +3487,7 @@ class AgentSession:
             messages_to_summarize=to_summarize,
             turn_prefix_messages=[],
             is_split_turn=False,
-            tokens_before=estimate_context_tokens(convo).tokens,
+            tokens_before=self.context_estimate(convo).tokens,
             file_ops=file_ops,
             settings=self._compaction_settings,
             previous_summary=None,
@@ -3455,6 +3551,7 @@ class AgentSession:
             )
             watch.finish(result.summary, result.usage)
         self.record_side_usage(result.usage)
+        self._usage_valid_after = self._timestamp()
         covered = _covered_span(path_entries, result.first_kept_entry_id)
         await self._flush_pending_agent_specs()
         await self._session_log.append_compaction(
@@ -3470,6 +3567,138 @@ class AgentSession:
             ),
         )
         return result
+
+    def _observe_calibration(self, messages: list[dict[str, Any]]) -> None:
+        """Feed the newest billed turn to the calibrator, at most once each.
+
+        One observation per assistant message that reported usage: the request
+        that produced it held every message before it, so ``messages`` is that
+        index and ``payload`` is what the counter says those messages cost. The
+        provider's own prompt size is the target
+        (:func:`~tau_agent_core.prompt_cache.prompt_tokens`), which is the whole
+        point — the fit learns the chat-template framing by watching the gap
+        between what we counted and what we were charged.
+
+        Turns are keyed by ``(timestamp, prompt_tokens)`` rather than by index,
+        because a compaction renumbers the path and an index-keyed set would
+        re-observe every surviving turn after each one.
+        """
+        for i in range(len(messages) - 1, -1, -1):
+            msg = messages[i]
+            if msg.get("role") != "assistant" or msg.get("stop_reason") in ("aborted", "error"):
+                continue
+            usage = msg.get("usage")
+            if not isinstance(usage, dict) or not usage:
+                continue
+            billed = prompt_tokens(usage)
+            if billed <= 0 or i == 0:
+                return
+            key = (int(msg.get("timestamp") or 0), billed)
+            if key in self._calibration_seen:
+                return
+            self._calibration_seen.add(key)
+            payload = ZERO_TOKENS
+            for prior in messages[:i]:
+                payload = payload + count_message(prior, self._token_counter)
+            self._calibrator.observe(
+                messages=i, payload_tokens=payload.tokens, billed_tokens=billed
+            )
+            return
+
+    def context_estimate(
+        self, messages: list[dict[str, Any]] | None = None
+    ) -> ContextUsageEstimate:
+        """This session's context size, counted with its own counter and fit.
+
+        The single place the harness answers "how big is the context": the header,
+        ``get_session_stats``, both compaction checks and every extension read the
+        same number from here, so a display and a trigger can never disagree.
+
+        ``messages`` defaults to the active path — or, while an agent loop is
+        mid-turn, to the context that loop is actually holding. The persisted path
+        is stale there: nothing this turn produced reaches the log until the turn
+        ends, so a bare reading during a twenty-tool-call turn would report the
+        conversation as it stood before the turn began. The loop publishes its
+        view at each turn boundary (:meth:`_compact_mid_turn`), which leaves one
+        gap: the FIRST request of a turn is still measured against the persisted
+        path, so it omits that turn's own user message.
+
+        The returned estimate's ``count`` carries the provenance — whether a
+        tokenizer or the character classes produced it, and whether the
+        chat-template framing is inside it.
+        """
+        if messages is not None:
+            path = messages
+        elif self._in_flight_context is not None:
+            path = self._in_flight_context
+        else:
+            path = self.messages
+        self._observe_calibration(path)
+        return estimate_context_tokens(
+            path,
+            counter=self._token_counter,
+            calibrator=self._calibrator,
+            usage_valid_after=self._usage_valid_after,
+        )
+
+    async def _compact_mid_turn(self, messages: list[Any], produced: list[Any]) -> list[Any] | None:
+        """Compact from INSIDE the agent loop when the hard limit is crossed.
+
+        The end-of-turn check cannot help a turn that blows the window partway
+        through — twenty tool calls into a search, the next request is refused and
+        the turn is lost. This runs at every loop turn boundary and does nothing
+        until :func:`~tau_agent_core.compaction.must_compact` says the next
+        request would not fit.
+
+        When it does fire, the turn so far is PERSISTED FIRST and the compaction
+        goes through the ordinary tree path. That ordering is the whole design:
+        a summary that only existed in the loop's local list would be a context
+        the session tree never saw, and the tree is what the model's input is
+        supposed to be derived from. The cost is that the loop's remaining
+        messages must not be written twice, which
+        :attr:`_mid_turn_persisted` tracks.
+
+        Returns the post-compaction active path, or None to leave the loop alone.
+        """
+        if not self._compaction_settings.enabled:
+            return None
+        context_window = int(getattr(self._model, "context_window", 0) or 0)
+        if context_window <= 0:
+            return None
+
+        turn = self._turn_persistence
+        if turn is None:
+            return None
+
+        unwritten = [self._as_message_dict(m) for m in produced[turn.loop_written :]]
+        path = [*self.messages, *[m for m in unwritten if m is not None]]
+        self._in_flight_context = path
+        estimate = self.context_estimate(path)
+        if not must_compact(estimate.tokens, context_window, self._compaction_settings):
+            return None
+
+        await self._persist_turn_inputs_once(turn)
+        await self._persist_loop_messages(
+            produced[turn.loop_written :], turn.turn_messages, persist=turn.persist
+        )
+        turn.loop_written = len(produced)
+
+        await self._events.emit(AgentEvent(type="agent_start", timestamp=self._timestamp()))
+        try:
+            await self._perform_compaction("threshold")
+        finally:
+            await self._events.emit(AgentEvent(type="agent_end", timestamp=self._timestamp()))
+        compacted = list(self.messages)
+        self._in_flight_context = compacted
+        return compacted
+
+    @staticmethod
+    def _as_message_dict(message: Any) -> dict[str, Any] | None:
+        """One loop message as a plain dict, or None when it is not a message."""
+        if hasattr(message, "model_dump"):
+            dumped = message.model_dump()
+            return dumped if isinstance(dumped, dict) else None
+        return message if isinstance(message, dict) else None
 
     async def _maybe_auto_compact(self) -> None:
         """Compact automatically when context approaches the model's window.
@@ -3493,17 +3722,16 @@ class AgentSession:
         if self._compaction_policy is not None:
             self._compaction_policy.observe_context(
                 turns_used=self._policy_turns_used,
-                context_tokens=estimate_context_tokens(self.messages).tokens,
+                context_tokens=self.context_estimate().tokens,
                 context_window=context_window,
             )
 
         if not settings.enabled:
             return
-        if context_window <= settings.reserve_tokens:
+        if try_compaction_limits(context_window, settings) is None:
             return
 
-        messages = self.messages
-        estimate = estimate_context_tokens(messages)
+        estimate = self.context_estimate()
         if not should_compact(estimate.tokens, context_window, settings):
             return
 

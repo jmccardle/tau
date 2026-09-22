@@ -174,6 +174,12 @@ class Model(BaseModel):
     requires_tool_call_id: bool = True
     supports_multimodal_function_response: bool = False
     grammar_dialect: Literal["llguidance", "gbnf"] | None = None
+    tokenizer: str | None = None
+    """A ``tokenizer.json`` path or HuggingFace repo id, for exact token counts.
+
+    Unset means token counts for this model are estimated from character
+    composition and labelled as estimates (:mod:`tau_llm.tokens`).
+    """
     prompt_cache: bool = True
     """Whether to ask this endpoint to cache the prompt prefix."""
     prompt_cache_dialect: Literal["anthropic"] | None = None

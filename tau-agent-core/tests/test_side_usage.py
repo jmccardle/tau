@@ -59,9 +59,14 @@ def _reply(text: str, *, input_tokens: int, output_tokens: int) -> AssistantMess
     )
 
 
-def _session() -> AgentSession:
+def _session(compaction_settings: CompactionSettings | None = None) -> AgentSession:
     return AgentSession(
-        session_log=InMemorySessionLog(), model=_model(), system_prompt="", tools=[], api_key="k"
+        session_log=InMemorySessionLog(),
+        model=_model(),
+        system_prompt="",
+        tools=[],
+        api_key="k",
+        compaction_settings=compaction_settings,
     )
 
 
@@ -139,7 +144,10 @@ async def test_a_split_turn_counts_BOTH_of_its_completions(monkeypatch):
 async def test_an_auto_compaction_lands_on_the_sessions_side_ledger(monkeypatch):
     """The end-to-end claim: a compaction driven BY THE SESSION shows up in the ledger
     the cost meter reads. Before this, those tokens reached nothing."""
-    session = _session()
+    # keep_recent_tokens is stated rather than inherited: the fixture has to cut
+    # SOMETHING, and how many characters equal the default 20000 tokens depends on
+    # the counter rather than on this test.
+    session = _session(CompactionSettings(keep_recent_tokens=2_000))
 
     async def _fake(model, context, options=None, **_):
         return _reply("summary", input_tokens=6000, output_tokens=200)

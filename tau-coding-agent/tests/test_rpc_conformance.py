@@ -43,7 +43,9 @@ from typing import Any
 
 import pytest
 
+from tau_agent_core.compaction import DEFAULT_COMPACTION_SETTINGS
 from tau_agent_core.rpc import DEFAULT_OUTPUT_QUEUE_EVENT_BOUND, dialect
+from tau_agent_core.testing import text_costing_at_least
 from tau_agent_core.rpc import commands as rpc_commands
 from tau_coding_agent.session_store import Session, rpc_tmp_dirname, session_dir_for_cwd
 
@@ -1775,7 +1777,12 @@ _PIPELINE_BUDGET_S = 2.0
 #: See tau-agent-core/tests/test_compaction_engine.py for the same property
 #: pinned at the unit layer.
 _TURNS_BEFORE_COMPACTION = 4
-_TURN_TEXT = "pad " + "x" * 40_000
+#: Sized in TOKENS: four of these have to clear the default retention between
+#: them, and how many characters that is depends on the counter, not on this
+#: test (docs/TOKEN-ACCOUNTING.md §5).
+_TURN_TEXT = "pad " + text_costing_at_least(
+    DEFAULT_COMPACTION_SETTINGS.keep_recent_tokens // 2
+)
 
 
 async def test_a_slow_compaction_does_not_wedge_the_channel(fake_home, fake_state):

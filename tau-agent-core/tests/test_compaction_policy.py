@@ -46,6 +46,7 @@ from tau_agent_core.run_manifest import (
     write_run_manifest,
 )
 from tau_agent_core.session_log import InMemorySessionLog
+from tau_agent_core.testing import text_costing_at_least
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 
 #: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
@@ -152,7 +153,12 @@ def _session(policy: CompactionPolicy | None = None, **kwargs) -> AgentSession:
     )
 
 
-_COMPACTING_PROMPT = "two " + "x" * 100_000
+#: A prompt whose COUNTED size clears the default retention outright, so the
+#: cut has something to remove. Stated in tokens, not characters: the threshold
+#: it has to clear is in tokens (docs/TOKEN-ACCOUNTING.md §5).
+_COMPACTING_PROMPT = "two " + text_costing_at_least(
+    DEFAULT_COMPACTION_SETTINGS.keep_recent_tokens * 2
+)
 
 
 class TestPolicyDeclarationIsAdmissibleOrRefused:

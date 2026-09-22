@@ -86,6 +86,7 @@ from tau_agent_core.compaction import (
     find_valid_cut_points,
     generate_summary,
     generate_turn_prefix_summary,
+    must_compact,
     prepare_compaction,
     should_compact,
 )
@@ -209,7 +210,7 @@ def _fake_raises(exc: BaseException):
                     {"type": "toolCall", "name": "read", "arguments": {"path": "x"}},
                 ],
             },
-            6,  # 4 (text) + 4 ("read") + len('{"path": "x"}')=13 -> ceil(21/4)
+            9,  # text + tool name + serialized arguments, priced by class
             id="assistant-text-and-tool-call",
         ),
         pytest.param(
@@ -320,24 +321,31 @@ def test_estimate_context_tokens_ignores_untrusted_assistant_usage(stop_reason):
 # ── should_compact ───────────────────────────────────────────────────────────
 
 
+_TWO_LIMITS = CompactionSettings(reserve_tokens=100)
+"""window 1000 -> hard 900, soft floor(900 * 0.8) = 720."""
+
+
 @pytest.mark.parametrize(
-    "context_tokens,context_window,settings,expected",
+    "context_tokens,settings,soft,hard",
     [
-        pytest.param(950, 1000, CompactionSettings(reserve_tokens=100), True, id="over-threshold"),
-        pytest.param(
-            800, 1000, CompactionSettings(reserve_tokens=100), False, id="under-threshold"
-        ),
+        pytest.param(600, _TWO_LIMITS, False, False, id="under-both"),
+        pytest.param(800, _TWO_LIMITS, True, False, id="over-soft-only"),
+        pytest.param(950, _TWO_LIMITS, True, True, id="over-both"),
         pytest.param(
             999999,
-            1000,
             CompactionSettings(enabled=False, reserve_tokens=100),
+            False,
             False,
             id="disabled-never-triggers",
         ),
     ],
 )
-def test_should_compact_threshold(context_tokens, context_window, settings, expected):
-    assert should_compact(context_tokens, context_window, settings) is expected
+def test_the_two_thresholds_fire_in_order(context_tokens, settings, soft, hard):
+    """``should_compact`` is the end-of-turn check and ``must_compact`` the
+    mid-turn one, so a reading can be over the first and under the second — which
+    is the whole point of having two (docs/TOKEN-ACCOUNTING.md §5)."""
+    assert should_compact(context_tokens, 1000, settings) is soft
+    assert must_compact(context_tokens, 1000, settings) is hard
 
 
 # ── cut-point selection ──────────────────────────────────────────────────────
@@ -351,6 +359,21 @@ def _linear() -> list[dict]:
         _msg_entry("u2", "user", "z" * 40),
         _msg_entry("a2", "assistant", "w" * 40, stop_reason="stop"),
     ]
+
+
+_ONE_MESSAGE = 6
+"""What one ``_linear()`` message costs. Asserted below, never assumed."""
+
+_TWO_MESSAGES = 2 * _ONE_MESSAGE
+
+
+def test_the_linear_fixtures_messages_all_cost_the_same():
+    """The cut-point tests below choose retention targets as multiples of one
+    message, so a counter change moves every target together instead of turning
+    each of them into a separate puzzle. This is the assertion that keeps that
+    true."""
+    sizes = {estimate_tokens(e["message"]) for e in _linear() if e["type"] == "message"}
+    assert sizes == {_ONE_MESSAGE}
 
 
 def test_valid_cut_points_exclude_session_and_tool_results_but_include_custom_messages():
@@ -423,16 +446,16 @@ def test_message_for_compaction_skips_a_prior_compaction_entry():
 
 def test_cut_point_lands_cleanly_on_a_user_boundary():
     entries = _linear()
-    # keep ~15 tokens: a2 (~10) then u2 (~10) -> 20 >= 15, cut lands on u2 (clean)
-    cut = find_cut_point(entries, 0, len(entries), keep_recent_tokens=15)
+    # a2 then u2 reaches the target exactly, so the cut lands on u2 (clean)
+    cut = find_cut_point(entries, 0, len(entries), keep_recent_tokens=_TWO_MESSAGES)
     assert cut.first_kept_entry_index == 3  # u2
     assert cut.is_split_turn is False
 
 
 def test_cut_point_splits_a_turn_when_the_boundary_falls_inside_it():
     entries = _linear()
-    # keep ~5 tokens: only a2 retained, which splits its (u2,a2) turn
-    cut = find_cut_point(entries, 0, len(entries), keep_recent_tokens=5)
+    # a2 alone reaches the target, which splits its (u2,a2) turn
+    cut = find_cut_point(entries, 0, len(entries), keep_recent_tokens=_ONE_MESSAGE)
     assert cut.first_kept_entry_index == 4  # a2
     assert cut.is_split_turn is True
     assert cut.turn_start_index == 3  # u2 starts the split turn
@@ -484,7 +507,7 @@ def test_prepare_compaction_is_none_when_theres_nothing_to_compact(entries):
 
 
 def test_prepare_compaction_summarizes_the_prefix_on_a_clean_cut():
-    prep = prepare_compaction(_linear(), CompactionSettings(keep_recent_tokens=15))
+    prep = prepare_compaction(_linear(), CompactionSettings(keep_recent_tokens=_TWO_MESSAGES))
     assert prep is not None
     assert prep.first_kept_entry_id == "u2"
     assert prep.is_split_turn is False
@@ -579,10 +602,10 @@ def test_prepare_compaction_is_none_when_the_default_cut_would_remove_nothing():
     first assertion goes red — a preparation comes back whose two message lists
     are both empty.
     """
-    entries = _linear()  # four ~10-token messages, nowhere near 20000
+    entries = _linear()  # four small messages, nowhere near 20000
     assert prepare_compaction(entries, DEFAULT_COMPACTION_SETTINGS) is None
 
-    prep = prepare_compaction(entries, CompactionSettings(keep_recent_tokens=15))
+    prep = prepare_compaction(entries, CompactionSettings(keep_recent_tokens=_TWO_MESSAGES))
     assert prep is not None and prep.messages_to_summarize
 
 
@@ -794,7 +817,7 @@ def test_tokens_saved_counts_only_the_context_that_actually_left(monkeypatch):
     """
     monkeypatch.setattr("tau_agent_core.compaction.complete_simple", _fake_complete("RECAP"))
     entries = _linear()
-    prep = prepare_compaction(entries, CompactionSettings(keep_recent_tokens=15))
+    prep = prepare_compaction(entries, CompactionSettings(keep_recent_tokens=_TWO_MESSAGES))
     assert prep is not None
     assert [m["content"][0]["text"] for m in prep.messages_to_summarize] == ["x" * 40, "y" * 40]
 
@@ -820,7 +843,7 @@ def test_tokens_saved_is_negative_when_the_summary_costs_more_than_the_prefix(mo
     ``max(0, ...)`` and this goes red with tokens_saved == 0.
     """
     monkeypatch.setattr("tau_agent_core.compaction.complete_simple", _fake_complete("L" * 4000))
-    prep = prepare_compaction(_linear(), CompactionSettings(keep_recent_tokens=15))
+    prep = prepare_compaction(_linear(), CompactionSettings(keep_recent_tokens=_TWO_MESSAGES))
     assert prep is not None
     result = asyncio.run(compact(prep, _model(), "sk-test"))
     assert result.tokens_saved < 0

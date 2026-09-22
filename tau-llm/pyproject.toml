@@ -47,7 +47,14 @@ anthropic = [
 google = [
     "google-genai>=1.0",
 ]
+# Exact token counting. An extra because the wheel is ~3MB of Rust and a caller
+# content with the character-class estimate should not pay for it; tau_llm.tokens
+# imports it lazily and names this extra when it is missing.
+tokenizers = [
+    "tokenizers>=0.15",
+]
 dev = [
+    "tokenizers>=0.15",
     # `anthropic` is deliberately NOT here. The anthropic-messages provider's
     # tests stub the SDK's streaming surface rather than importing it, and
     # test_the_extra_is_genuinely_optional proves the module works with the SDK
