@@ -6,6 +6,21 @@ this file. Older entries cite pi as "the source of truth"; that stopped being th
 arrangement on 2026-09-03 (`CLAUDE.md`, "Parity with pi is not an objective") and
 those citations are provenance now.
 
+**State (2026-09-24):** one release this file never mentioned — **0.11.0**,
+tagged 2026-09-17 at `498a09f`, notes at `docs/RELEASE-NOTES-0.11.0.md`. Indexed
+below. Since it, one commit: `2db2c74` (2026-09-21), the token-accounting and
+two-limit-compaction arc, which has its own "Shipped" subsection and no release.
+`master` is **one commit ahead of both remotes** — local at `2db2c74`, `origin`
+and `github` both at `96a912d` (`git log --oneline -1 origin/master`,
+`github/master`). Suite: **6300 passed, 149 skipped, 6 deselected, 0 failed** in
+452s, and **one warning**, which is a test that does not test what it is named
+for — see the debts list. Docs coverage **556/1019 marked objects (54.6%), 0 drift**, up
+from 517/958 on 09-13; the denominator grew by 61 and 31 of the reported faults
+are in `tau-llm/src/tau_llm/tokens.py`, a file `2db2c74` created, so that commit
+moved the percentage up and added to the debt at the same time. The working tree
+carries three modified files belonging to other sessions and nothing of this
+audit's.
+
 **State (2026-09-13):** re-audited against code after **seven releases this file
 never mentioned** — 0.9.5 through 0.10.3, 2026-08-30 to 09-12. Its own top two
 priorities are both in the first of them. Repeat-tool-call detection is
@@ -337,7 +352,7 @@ booleans collapse into one resolved `no_tools` at the argv boundary,
 still mark several of these ❌ against its own prose and the code — needs a
 resync pass (see "Doc hygiene" below).
 
-### 0.9.5 through 0.10.3 — seven releases, added 2026-09-13
+### 0.9.5 through 0.11.0 — eight releases, added 2026-09-13, extended 2026-09-24
 
 One line per release, pointing at its own note. Each `docs/RELEASE-NOTES-*.md`
 holds the measurements; this is the index, not a summary of them.
@@ -366,6 +381,49 @@ holds the measurements; this is the index, not a summary of them.
 - **0.10.3** (2026-09-12) — *an extension can import the module beside it, and
   this history is public.* 9 code lines in `sdk.py`, and the repository pivot
   recorded above.
+- **0.11.0** (2026-09-17) — *persistence stops freezing the screen, and a
+  compaction stops being a toast.* Minor rather than patch because the eight
+  `SessionLog` appenders and three `ExtensionAPI` methods became coroutines —
+  `docs/ASYNC-SESSION-LOG.md`, which closed item 2 of "Suggested order". Also
+  side work becoming visible, `/compact` no longer undoing itself, the subtitle
+  no longer writing a gerund over its own numbers, and the `--mode json`
+  prefix-diff fix (10.6 MB → 486 KB). §"`pi-faithful --mode json` is struck" is
+  where that objective was retired; "Open work" below carries the same strike.
+
+---
+
+### Token accounting and two-limit compaction — shipped 2026-09-21, unreleased
+
+`2db2c74`, 26 files, +3374/−140. `docs/TOKEN-ACCOUNTING.md` holds the method and
+the measurements; this is the index. **No release carries it yet** — the next
+one is the first that can.
+
+- **The estimate stops being four characters per token.** A per-role linear
+  model over six character classes plus a word count, fitted by non-negative
+  least squares (`tau-llm/src/tau_llm/tokens.py`). `TokenCount` carries `source`,
+  `exact` and `includes_template` as separate fields, because a local tokenizer
+  is exact about text and silent about the chat template while a provider
+  `usage` is exact about both and arrives one request late.
+- **`ContextCalibrator` closes the template gap online**, fitting
+  `billed ≈ a·messages + r·payload` over five running sums, so the fixed cost of
+  the system prompt and the tool schemas stops being invisible.
+- **Compaction has two ceilings.** `hard = window − reserve_tokens` fires
+  mid-turn through a `mid_turn_compactor` callback the loop calls at each turn
+  boundary; `soft = hard × soft_limit_ratio` fires at the end of a turn. The loop
+  holds no policy, and the mid-turn path persists the turn before it cuts.
+- **Four defects it found, all older than it**: a `Usage()` of zeros accepted as
+  a pricing anchor; `find_cut_point` falling back to the earliest cut point, so a
+  single overlong turn could never compact; a usage anchor outliving the
+  compaction that invalidated it, which needs a wall-clock invalidation and not a
+  positional one; and `context_estimate()` stale for the whole of a turn.
+- **`text_costing_at_least`** (`tau_agent_core.testing.sizing`) states a
+  fixture's size in tokens rather than characters. Eleven fixtures had said it in
+  characters and silently stopped crossing the threshold they were built to
+  cross.
+
+Live acceptance against llama.cpp at a 20k hard limit: mid-turn compaction fires
+during the turn, the loop continues on the compacted context and ends normally,
+and predicted/billed stays within 0.917–0.989 over eight requests, median 0.967.
 
 ---
 
@@ -509,6 +567,66 @@ visible, not a real debt.
   and could cost more than it saves on a short conversation; and what it does
   when the cache expires mid-conversation on a model with no cache at all, where
   the observer's answer is "nothing observed" rather than "missed".
+- **`models.<name>.context_window` carries two facts** (added 2026-09-24, from
+  the review of `2db2c74`). *Capacity* is what the endpoint accepts before it
+  errors; *budget* is where we choose to fold. They are different kinds of fact
+  and one field holds both. `backends.py:1062` makes `context_window` the only
+  compaction-relevant number reachable from config, and both triggers read
+  `self._model.context_window` (`agent_session.py:3665`, `:3720`), so lowering it
+  is the only way to fold earlier. Doing that lies to every other reader of the
+  same field: `context_headroom` (`agent_session.py:1347-1352`), the
+  `get_model()` projection, `extension_types.py:958-981`'s `percent`, and
+  `compaction_policy.py:255`, which refuses a summarizer whose window is smaller
+  than the session model's. `CompactionSettings.hard_limit_tokens` and
+  `soft_limit_tokens` already exist as absolute overrides and are simply
+  unreachable from `~/.tau/config.json`; no compaction key exists in `config.py`
+  or `tau_default_config.json`. **Consequence if unsplit:** a percentage can
+  never exceed 100%, because `must_compact` cuts mid-turn at
+  `window − reserve_tokens`, so the "blow through the budget within one turn,
+  fold at the end of it" behaviour has no expression.
+- **`reserve_tokens` is absolute and the underread is proportional** (added
+  2026-09-24). The default is 16384. That is 12.8% of a 128k window and covers
+  the 2–8% underread measured in `docs/TOKEN-ACCOUNTING.md` with no tokenizer
+  configured; it is 1.6% of a 1M window and does not. **Trigger:** a
+  large-window model, default settings, a turn that walks up to `hard`. This is
+  an argument for scaling the reserve with the window, not for biasing the fit
+  high — a bias makes every reading wrong to fix a margin that is wrong.
+- **The TUI's context number is unreadable on a narrow terminal** (added
+  2026-09-24, from use on a phone-width terminal). `_aggregate_label` emits
+  `f"{format_tokens(context)} ctx"` (`app.py:2805`) with no denominator, no
+  percent and no colour ramp, in a centre-aligned header subtitle that truncates
+  its tail; `_refresh_subtitle`'s docstring (`app.py:2823-2830`) states that the
+  activity is placed first *because* the tail is what gets cut, so the `ctx`
+  half is the designed casualty. Drawing it on the `#chat-input` border needs no
+  new widget — `tau.tcss:219` already gives that widget a solid border and
+  `chat_widgets.py:203` already uses the `border_title` idiom — but a colour ramp
+  needs the resolved limits, and `SessionStats` (`agent_session.py:133-166`)
+  carries `context_window` and `compaction_settings` and **not** `soft`/`hard`.
+  A head computing them itself is the derivation-inside-a-head that `CLAUDE.md`
+  forbids, so the field belongs in core.
+- **`docs/RELEASE-NOTES-0.11.0.md` §"The header's `ctx` number answered the wrong
+  question" claims more than the code does** (added 2026-09-24). It says the
+  header and the auto-trigger "answer one question from one source". That holds
+  only when a summary message is newer than the last measured usage; otherwise
+  `_context_size` (`app.py:2723`) returns `prompt_tokens(usages[-1])` while
+  `must_compact` decides on `estimate_context_tokens` (`agent_session.py:3677`).
+  Two sources, one question, and the header's cannot move during a turn — which
+  matters more now that `context_estimate()` publishes `_in_flight_context` at
+  each loop boundary. A released note is not editable; correct it in the next
+  one rather than here.
+- **`test_event_bus_is_reentrant_safe` tests no reentrancy** (added 2026-09-24,
+  from the suite's one warning). `test_event_bus.py:775` calls
+  `bus.emit(...).result()`. `EventBus.emit` is `async def`, so that returns a
+  coroutine, and a coroutine has no `result` — the `AttributeError` is caught by
+  the handler loop's `except Exception` at `events.py:368`, the inner emit never
+  runs, and the un-awaited coroutine is what raises the suite's
+  `RuntimeWarning: coroutine 'EventBus.emit' was never awaited`. The assertion
+  `"agent_start-outer" in received` is satisfied by the outer call alone, so the
+  test passes without ever re-entering the bus. `.claude/skills/release`
+  rule 2's category: the defect is in the test, which makes a claim the harness
+  cannot answer. Fixing it means deciding what reentrancy should do — the
+  `for handler in list(...)` copies are the only reentrancy guard the bus has,
+  and nothing exercises them.
 - **Rollback conflates "pre-root" with "no target"** (added 2026-09-16, from the
   change that made it reachable). `agent_session.py:2547` refuses a rollback when
   `rollback_target is None`, and the rejection text says the target is *stale* —
@@ -622,8 +740,9 @@ and two items promoted out of the debt list.
    shipped is §3's Option B — the appenders are coroutines — which moves no call
    site onto a thread and so leaves that invariant alone. See
    `docs/ASYNC-SESSION-LOG.md` for what it cost, including the second broken
-   contract the record had not named. **The invariant is still not gated**; that
-   debt stands on its own above.
+   contract the record had not named. Released in **0.11.0** (2026-09-17), which
+   is why that release is a minor bump. **The invariant is still not gated**;
+   that debt stands on its own above.
 3. ~~**Widen the leakage scan to `tau-*/tests/`**~~ — **done 2026-09-13**
    (`bbb9e90`). Third scope, `TESTS`, held against the strict pattern; ten lines
    in six files cleaned; `tau-jmfts/tests/conftest.py` now requires
