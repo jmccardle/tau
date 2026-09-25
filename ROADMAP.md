@@ -627,6 +627,23 @@ visible, not a real debt.
   cannot answer. Fixing it means deciding what reentrancy should do — the
   `for handler in list(...)` copies are the only reentrancy guard the bus has,
   and nothing exercises them.
+- **A queued steer is lost silently when a session is swapped** (added 2026-09-25,
+  found integrating backgrounding with tectum's per-turn `new_session`).
+  `AgentSessionRuntime._apply_swap` calls `session.abort()` **unconditionally** —
+  not only when a turn is in flight — and `AgentSession.abort()` clears
+  `_pending_steer_messages` (`agent_session.py:3857`). So `new_session`, `fork` and
+  `switch_session` all empty the steering queue. **Trigger:** anything submits with
+  `multitask_strategy="steer"` while no turn is in flight (which queues the message
+  rather than refusing it), and a session swap follows before a turn runs. The
+  message is discarded and **nothing can observe that it was**: the submission
+  returned `accepted=True`, and there is no hook, event or return value reporting a
+  cleared queue. An extension delivering work asynchronously therefore cannot
+  distinguish "delivered" from "silently dropped". Recorded here rather than only in
+  `docs/BACKGROUND-TOOLS.md` §6.1 because that record is on the unmerged
+  `feat/background-tools` branch. Two candidate fixes, neither chosen: make the
+  clear report what it discarded (an event, or a `session_shutdown` payload), or
+  refuse a steer into an idle session instead of queueing it — the second changes a
+  documented `submit` semantic and is the larger claim.
 - **Rollback conflates "pre-root" with "no target"** (added 2026-09-16, from the
   change that made it reachable). `agent_session.py:2547` refuses a rollback when
   `rollback_target is None`, and the rejection text says the target is *stale* —
