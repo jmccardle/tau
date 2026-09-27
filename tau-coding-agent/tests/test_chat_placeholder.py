@@ -390,6 +390,16 @@ def test_tagline_list_has_no_duplicates():
     assert len(set(TAGLINES)) == len(TAGLINES)
 
 
+def test_the_list_grows_only_at_the_end():
+    """Index 0 is the deterministic tagline, and a release appends to this list.
+
+    Inserting anywhere but the end moves it, and every snapshot SVG changes at
+    once — a failure that names a hundred files and no reason. Say the reason
+    here instead. See ``docs/RELEASING.md`` §"The tagline".
+    """
+    assert TAGLINES[0] == "a coding agent you can take apart"
+
+
 @pytest.mark.parametrize("tagline", TAGLINES)
 def test_every_tagline_fits_the_narrowest_chat_column(tagline: str):
     """50 columns is the measured content width of the chat at 80x24 with the

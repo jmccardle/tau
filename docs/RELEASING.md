@@ -635,6 +635,51 @@ Each release also gets a GitHub Release carrying `tau-<version>.tar.gz`. The
 wheels and sdists are not attached: PyPI is their home, CI rebuilds them at
 publish time, and a second copy here could differ from what was published.
 
+#### The tagline
+
+Every release message opens with a tagline as an epigraph, no explanation. It
+comes from `TAGLINES` in `tau-coding-agent/src/tau_coding_agent/tagline.py` —
+the same list the TUI picks from under the τ.
+
+```markdown
+# v0.12.0 — <headline>
+
+*"<tagline>"*
+
+<the notes>
+```
+
+Two gates, both in `test_chat_placeholder.py`. The list is **append-only**:
+`TAGLINES[0]` is what `--no-fun` returns and what every snapshot renders. And a
+tagline is **50 characters or fewer** — the chat pane's width at 80×24 with the
+sidebar open, so a longer one wraps.
+
+##### Writing the next two
+
+About two per minor or major release, one from each of us; a patch release draws
+from stock. Do this before the bump, because John's half takes as long as it
+takes.
+
+1. **Read the tail.** Already grown this cycle? Draw from the unused entries and
+   start the release.
+2. **Pick a category** — *philosophy*, *hacker lore / jargon*, *comedy / memes*,
+   *AI current events*. Read the last four entries, judge them, choose at random
+   among the least represented. **The categories are not stored anywhere, and
+   must not be:** a table turns the reading into a `random.choice`, and the
+   reading is the step.
+3. **Prompt John**, naming the category. No candidates from you.
+4. **Fork a subagent for yours** (`subagent_type: "fork"`, so it has the release
+   in context). It picks at random among *ponder and recite*, *web search*,
+   *news search* and *changelog review*, does that one thing, and returns one
+   candidate. Snark as high as it goes.
+5. **Reveal yours only after his lands.** Both are appended; he picks which
+   ships, and if he does not say, his does.
+6. **Record the shipped one** in the ledger, in step 8's commit.
+
+| release | tagline |
+|---|---|
+| — | 0.11.0 and earlier carried none |
+
 Create it as a **draft** while the publisher registration is still outstanding:
 
 ```bash

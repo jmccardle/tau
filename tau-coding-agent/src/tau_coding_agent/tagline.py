@@ -17,7 +17,13 @@ string. Nothing downstream — no backend, session, tool, or agent-loop code —
 ever sees it. That containment is the point: a joke that can break a turn is not
 worth telling.
 
-Reference: docs/CLI-PLAN.md (Secondary flags).
+:data:`TAGLINES` is **append-only**. Index 0 is the deterministic tagline, so
+moving it re-renders every snapshot, and the tail is the most recently added,
+which is what ``docs/RELEASING.md`` §"The tagline" reads. A release draws its
+release-message epigraph from here and adds about two, so the list grows rather
+than churns.
+
+Reference: docs/CLI-PLAN.md (Secondary flags), docs/RELEASING.md §"The tagline".
 """
 
 from __future__ import annotations
@@ -36,6 +42,13 @@ TAGLINES: tuple[str, ...] = (
     "git commit now or cuss later",
     "does NOT run on electron",
     "yes, TUIs are cool in 2026",
+    "write new values on new tablets",
+    "Sussman sat hacking at the PDP-6",
+    "hack safe. Or don't, I'm a TUI, not a cop",
+    "overly attached agent harness",
+    "self-host your own 20x plan",
+    "one must imagine Sisyphus's agents happy",
+    "I think, therefore I raise",
 )
 
 FUN_DEFAULT = True
