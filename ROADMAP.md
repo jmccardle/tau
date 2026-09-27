@@ -6,6 +6,16 @@ this file. Older entries cite pi as "the source of truth"; that stopped being th
 arrangement on 2026-09-03 (`CLAUDE.md`, "Parity with pi is not an objective") and
 those citations are provenance now.
 
+**State (2026-09-27):** the three modified files the 09-24 header left alone
+(untouched since 2026-09-18) are committed as `7705a93`. They add the release
+tagline: `docs/RELEASING.md` §"The tagline" plus seven `TAGLINES` entries, and
+`test_the_list_grows_only_at_the_end` pins index 0. The next release is the
+first to use that section. Its ledger has no row for a shipped tagline yet.
+Remotes: `origin/master` is at `1041e31` and `github/master` is still at
+`96a912d`. So `github` is behind by `2db2c74`, `05bb709`, `1041e31`, and now
+`7705a93` and this commit. The only suite run was `test_chat_placeholder.py`:
+46 passed.
+
 **State (2026-09-24):** one release this file never mentioned — **0.11.0**,
 tagged 2026-09-17 at `498a09f`, notes at `docs/RELEASE-NOTES-0.11.0.md`. Indexed
 below. Since it, one commit: `2db2c74` (2026-09-21), the token-accounting and
