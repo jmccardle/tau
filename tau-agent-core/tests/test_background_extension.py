@@ -1,4 +1,4 @@
-"""Tests for ``examples/ext_kit/background.py`` — backgrounding conferred on a tool.
+"""Tests for ``tau_agent_core.extensions_builtin.background`` — backgrounding conferred on a tool.
 
 Five things have to hold, and each is a claim the module's docstring makes:
 
@@ -8,12 +8,11 @@ Five things have to hold, and each is a claim the module's docstring makes:
 * **Electing it returns at once.** The tool call returns a handle while the work is
   still running, and the provenance — handle, tool, args, start time — rides
   ``details``.
-* **The completion is delivered through steer, once.** With the epoch unchanged the
-  supervised task calls the submit closure with the finished result.
-* **A session boundary refuses loudly.** A completion whose epoch no longer matches
-  raises :class:`BackgroundSessionGoneError` through the error sink and does NOT
-  reach the submit closure. This is the behaviour the open product question is
-  parked behind, so it is pinned rather than assumed.
+* **The completion is delivered through steer, once.** The supervised task calls
+  the submit closure with the finished result.
+* **A result outlives its session, labelled.** Against a real ``AgentSession`` and
+  a real ``new_session``, a completion lands in the new conversation and says which
+  session, tool, arguments and start time it came from.
 * **Depth is cleared, and a ten-deep chain survives.** ``DRIVING_SUBMISSION_DEPTH``
   is a ``ContextVar`` a spawned task inherits, so without clearing it
   ``next_submission_depth`` climbs once per completion and the eleventh raises. The
@@ -31,8 +30,6 @@ backgrounding change the meaning of the answer.
 from __future__ import annotations
 
 import asyncio
-import sys
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -43,13 +40,21 @@ from tau_agent_core.submission import (
     next_submission_depth,
 )
 
-# ── import the kit as a top-level package (examples/ on the path) ────────────
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_EXAMPLES = str(_REPO_ROOT / "examples")
-if _EXAMPLES not in sys.path:
-    sys.path.insert(0, _EXAMPLES)
+from tau_agent_core.extensions_builtin import background as bg
 
-from ext_kit import background as bg  # noqa: E402  (path insertion must precede the import)
+_SID = "session-a"
+
+
+def _registry(**kwargs: Any) -> bg.BackgroundRegistry:
+    """A registry pinned to session :data:`_SID`.
+
+    Args:
+        **kwargs: Passed through, e.g. ``on_error``.
+
+    Returns:
+        The registry.
+    """
+    return bg.BackgroundRegistry(session_id=lambda: _SID, **kwargs)
 
 
 def _text_result(text: str) -> dict[str, Any]:
@@ -101,20 +106,20 @@ class TestConferring:
     """The wrapper is transparent until the model elects backgrounding."""
 
     def test_schema_gains_exactly_one_property(self):
-        reg = bg.BackgroundRegistry()
+        reg = _registry()
         defn = bg.backgroundable("slow", reg, lambda c, r: None, definition=_definition())
         props = defn["parameters"]["properties"]
         assert set(props) == {"q", bg.BACKGROUND_KEY}
         assert props[bg.BACKGROUND_KEY]["type"] == "boolean"
 
     def test_the_original_schema_is_not_mutated(self):
-        reg = bg.BackgroundRegistry()
+        reg = _registry()
         original = _definition()
         bg.backgroundable("slow", reg, lambda c, r: None, definition=original)
         assert bg.BACKGROUND_KEY not in original["parameters"]["properties"]
 
     def test_description_and_label_default_to_the_wrapped_tool(self):
-        reg = bg.BackgroundRegistry()
+        reg = _registry()
         defn = bg.backgroundable("slow", reg, lambda c, r: None, definition=_definition())
         assert defn["description"] == "the slow tool"
         assert defn["label"] == "Slow"
@@ -126,7 +131,7 @@ class TestConferring:
             seen.update(params)
             return _text_result("ran")
 
-        reg = bg.BackgroundRegistry()
+        reg = _registry()
         defn = bg.backgroundable(
             "slow", reg, lambda c, r: None, definition=_definition(execute=_exec)
         )
@@ -142,7 +147,7 @@ class TestConferring:
             seen.update(params)
             return _text_result("ran")
 
-        reg = bg.BackgroundRegistry()
+        reg = _registry()
         defn = bg.backgroundable(
             "slow", reg, lambda c, r: None, definition=_definition(execute=_exec)
         )
@@ -162,7 +167,7 @@ class TestElecting:
             return _text_result("late")
 
         delivered: list[tuple[bg.BackgroundCall, Any]] = []
-        reg = bg.BackgroundRegistry()
+        reg = _registry()
         defn = bg.backgroundable(
             "slow",
             reg,
@@ -188,7 +193,7 @@ class TestElecting:
         async def _exec(tool_call_id, params, signal=None, on_update=None, ctx=None):
             return _text_result("done")
 
-        reg = bg.BackgroundRegistry()
+        reg = _registry()
         defn = bg.backgroundable(
             "slow", reg, lambda c, r: None, definition=_definition(execute=_exec)
         )
@@ -206,11 +211,11 @@ class TestElecting:
             return _text_result("the answer")
 
         delivered: list[str] = []
-        reg = bg.BackgroundRegistry()
+        reg = _registry()
         defn = bg.backgroundable(
             "slow",
             reg,
-            lambda c, r: delivered.append(bg.completion_text(c, r)),
+            lambda c, r: delivered.append(bg.completion_text(c, r, current_session_id=_SID)),
             definition=_definition(execute=_exec),
         )
         result = await defn["execute"]("call-1", {bg.BACKGROUND_KEY: True})
@@ -222,109 +227,24 @@ class TestElecting:
         assert "finished" in delivered[0]
 
     def test_a_returned_error_result_is_delivered_as_failed_not_finished(self):
-        call = bg.BackgroundCall(handle="bg-slow-1", tool="slow", args={}, started_at_ms=1, epoch=0)
+        call = bg.BackgroundCall(
+            handle="bg-slow-1", tool="slow", args={}, started_at_ms=1, origin_session_id=_SID
+        )
         failed = {"content": [{"type": "text", "text": "no such host"}], "is_error": True}
-        text = bg.completion_text(call, failed)
+        text = bg.completion_text(call, failed, current_session_id=_SID)
         assert "failed" in text
         assert "finished" not in text
         assert "no such host" in text
 
     def test_a_non_dict_result_still_renders(self):
-        call = bg.BackgroundCall(handle="bg-slow-1", tool="slow", args={}, started_at_ms=1, epoch=0)
-        assert "42" in bg.completion_text(call, 42)
-
-
-class TestSessionBoundary:
-    """A completion whose session is gone refuses loudly rather than misdelivering."""
-
-    async def test_epoch_mismatch_raises_and_does_not_deliver(self):
-        gate = asyncio.Event()
-
-        async def _exec(tool_call_id, params, signal=None, on_update=None, ctx=None):
-            await gate.wait()
-            return _text_result("orphan")
-
-        errors: list[BaseException] = []
-        delivered: list[Any] = []
-        reg = bg.BackgroundRegistry(on_error=errors.append)
-        defn = bg.backgroundable(
-            "slow",
-            reg,
-            lambda c, r: delivered.append(r),
-            definition=_definition(execute=_exec),
+        call = bg.BackgroundCall(
+            handle="bg-slow-1", tool="slow", args={}, started_at_ms=1, origin_session_id=_SID
         )
+        assert "42" in bg.completion_text(call, 42, current_session_id=_SID)
 
-        await defn["execute"]("call-1", {bg.BACKGROUND_KEY: True})
-        reg.bump_epoch()
-        gate.set()
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
 
-        assert delivered == []
-        assert len(errors) == 1
-        assert isinstance(errors[0], bg.BackgroundSessionGoneError)
-        assert errors[0].started_epoch == 0
-        assert errors[0].current_epoch == 1
-        assert "NOT" in str(errors[0])
-
-    async def test_completing_after_the_swap_is_the_covered_half(self):
-        """complete → new_session → error, the sequence tectum's responder3 hits.
-
-        ``new_session`` reaches ``AgentSession.abort()`` unconditionally
-        (``agent_session_runtime.py`` ``_apply_swap``), and ``abort`` clears
-        ``_pending_steer_messages``. So a completion that has not yet been submitted
-        when the swap happens must not be submitted into the new session. The swap is
-        modelled here as the ``session_shutdown`` hook this module binds.
-        """
-        gate = asyncio.Event()
-
-        async def _never_until(tool_call_id, params, signal=None, on_update=None, ctx=None):
-            await gate.wait()
-            return _text_result("late answer")
-
-        api = _FakeAPI({})
-        errors: list[BaseException] = []
-        reg = bg.register_backgrounding(
-            api, definitions={"recall": _definition("recall", execute=_never_until)}
-        )
-        reg.on_error = errors.append
-
-        await api.registered[0]["execute"]("call-1", {bg.BACKGROUND_KEY: True})
-        reg.bump_epoch()
-        gate.set()
-        for _ in range(4):
-            await asyncio.sleep(0)
-
-        assert api.submitted == []
-        assert [type(e) for e in errors] == [bg.BackgroundSessionGoneError]
-
-    async def test_completing_before_the_swap_is_the_UNCOVERED_half(self):
-        """The epoch does NOT catch a steer queued before the swap clears it.
-
-        Sequence: the turn ends, the completion submits while the session is idle so
-        the epoch still matches, and only THEN does ``new_session`` clear the queue.
-        This module sees a successful submit and reports nothing, because an
-        ``ExtensionAPI`` has no way to learn that a queued steer was later dropped —
-        there is no "your steer was cleared" hook.
-
-        Pinned so the limitation is a stated fact rather than a surprise:
-        ``docs/BACKGROUND-TOOLS.md`` §7. The fix is the persistent-session work, not
-        anything this module can do.
-        """
-        api = _FakeAPI({})
-        errors: list[BaseException] = []
-        reg = bg.register_backgrounding(api, definitions={"recall": _definition("recall")})
-        reg.on_error = errors.append
-
-        await api.registered[0]["execute"]("call-1", {bg.BACKGROUND_KEY: True})
-        for _ in range(4):
-            await asyncio.sleep(0)
-
-        assert len(api.submitted) == 1
-        assert errors == []
-
-        reg.bump_epoch()
-        assert errors == []
+class TestErrors:
+    """A failure on the completion path reaches the error sink, never the transcript."""
 
     async def test_a_failing_tool_reaches_the_error_sink_not_the_transcript(self):
         async def _exec(tool_call_id, params, signal=None, on_update=None, ctx=None):
@@ -332,7 +252,7 @@ class TestSessionBoundary:
 
         errors: list[BaseException] = []
         delivered: list[Any] = []
-        reg = bg.BackgroundRegistry(on_error=errors.append)
+        reg = _registry(on_error=errors.append)
         defn = bg.backgroundable(
             "slow",
             reg,
@@ -346,7 +266,7 @@ class TestSessionBoundary:
         assert [str(e) for e in errors] == ["the tool broke"]
 
     def test_the_default_error_sink_raises_rather_than_dropping(self):
-        reg = bg.BackgroundRegistry()
+        reg = _registry()
         with pytest.raises(ValueError, match="boom"):
             reg.on_error(ValueError("boom"))
 
@@ -361,7 +281,7 @@ class TestSubmissionDepth:
             seen.append(next_submission_depth(0))
             return _text_result("ok")
 
-        reg = bg.BackgroundRegistry()
+        reg = _registry()
         defn = bg.backgroundable(
             "slow", reg, lambda c, r: None, definition=_definition(execute=_exec)
         )
@@ -378,7 +298,7 @@ class TestSubmissionDepth:
         depths: list[int] = []
         links = MAX_SUBMISSION_DEPTH + 1
 
-        reg = bg.BackgroundRegistry()
+        reg = _registry()
 
         async def _exec(tool_call_id, params, signal=None, on_update=None, ctx=None):
             depths.append(next_submission_depth(0))
@@ -420,7 +340,7 @@ class TestCancelAll:
             return _text_result("never")
 
         delivered: list[Any] = []
-        reg = bg.BackgroundRegistry(on_error=lambda exc: None)
+        reg = _registry(on_error=lambda exc: None)
         defn = bg.backgroundable(
             "slow",
             reg,
@@ -437,7 +357,7 @@ class TestCancelAll:
         assert delivered == []
 
     async def test_cancel_all_with_nothing_outstanding_is_zero(self):
-        reg = bg.BackgroundRegistry()
+        reg = _registry()
         assert await reg.cancel_all() == 0
 
 
@@ -445,29 +365,43 @@ class TestFailEarly:
     """Every refusal the module documents."""
 
     def test_unknown_builtin_name_raises(self):
-        reg = bg.BackgroundRegistry()
+        reg = _registry()
         with pytest.raises(ValueError, match="unknown built-in tool"):
-            bg.backgroundable("nope-not-a-tool", reg, lambda c, r: None)
+            bg.backgroundable("nope-not-a-tool", reg, lambda c, r: None, cwd="/tmp")
+
+    def test_a_builtin_named_without_a_cwd_raises(self):
+        reg = _registry()
+        with pytest.raises(ValueError, match="needs cwd="):
+            bg.backgroundable("read", reg, lambda c, r: None)
 
     def test_definition_and_tool_together_raise(self):
-        reg = bg.BackgroundRegistry()
+        reg = _registry()
         with pytest.raises(ValueError, match="not both"):
             bg.backgroundable(
                 "slow", reg, lambda c, r: None, definition=_definition(), tool=object()
             )
 
     def test_definition_missing_execute_raises(self):
-        reg = bg.BackgroundRegistry()
+        reg = _registry()
         defn = _definition()
         del defn["execute"]
         with pytest.raises(ValueError, match="missing required key 'execute'"):
             bg.backgroundable("slow", reg, lambda c, r: None, definition=defn)
 
     def test_a_tool_already_declaring_the_flag_raises(self):
-        reg = bg.BackgroundRegistry()
+        reg = _registry()
         defn = _definition(properties={bg.BACKGROUND_KEY: {"type": "string"}})
         with pytest.raises(ValueError, match="two things"):
             bg.backgroundable("slow", reg, lambda c, r: None, definition=defn)
+
+
+class _FakeContext:
+    """The two ``ExtensionContext`` reads ``register_backgrounding`` makes."""
+
+    def __init__(self) -> None:
+        """Start on session :data:`_SID` in ``/tmp``."""
+        self.session_id = _SID
+        self.cwd = "/tmp"
 
 
 class _FakeAPI:
@@ -480,6 +414,7 @@ class _FakeAPI:
             config: The per-extension config slice.
         """
         self.config = config
+        self.context = _FakeContext()
         self.registered: list[dict[str, Any]] = []
         self.hooks: dict[str, Any] = {}
         self.submitted: list[dict[str, Any]] = []
@@ -525,10 +460,18 @@ class TestRegisterBackgrounding:
         for defn in api.registered:
             assert bg.BACKGROUND_KEY in defn["parameters"]["properties"]
 
-    def test_binds_both_lifecycle_hooks(self):
+    def test_binds_only_the_shutdown_hook(self):
         api = _FakeAPI({"tools": ["read"]})
         bg.register_backgrounding(api)
-        assert set(api.hooks) == {"session_start", "session_shutdown"}
+        assert set(api.hooks) == {"session_shutdown"}
+
+    def test_a_named_builtin_is_constructed_for_the_sessions_cwd(self):
+        api = _FakeAPI({"tools": ["read"]})
+        api.context.cwd = "/srv/elsewhere"
+        bg.register_backgrounding(api)
+        assert api.registered[0]["name"] == "read"
+        tool = bg._resolve_builtin("read", "/srv/elsewhere")
+        assert tool.cwd == "/srv/elsewhere"
 
     def test_naming_no_tools_raises(self):
         api = _FakeAPI({})
@@ -553,9 +496,36 @@ class TestRegisterBackgrounding:
         assert sent["multitask_strategy"] == "steer"
         assert sent["correlation"]["background_handle"] == result["details"]["background_handle"]
         assert sent["correlation"]["tool"] == "recall"
+        assert sent["correlation"]["origin_session_id"] == _SID
+        assert sent["correlation"]["crossed_session"] is False
         assert reg.outstanding() == []
 
-    async def test_the_shutdown_hook_bumps_the_epoch_and_cancels(self):
+    async def test_a_completion_after_the_session_changed_is_labelled(self):
+        gate = asyncio.Event()
+
+        async def _later(tool_call_id, params, signal=None, on_update=None, ctx=None):
+            await gate.wait()
+            return _text_result("the late answer")
+
+        api = _FakeAPI({})
+        bg.register_backgrounding(
+            api, definitions={"recall": _definition("recall", execute=_later)}
+        )
+        await api.registered[0]["execute"]("call-1", {"q": "x", bg.BACKGROUND_KEY: True})
+        api.context.session_id = "session-b"
+        gate.set()
+        for _ in range(4):
+            await asyncio.sleep(0)
+
+        sent = api.submitted[0]
+        assert sent["correlation"]["origin_session_id"] == _SID
+        assert sent["correlation"]["crossed_session"] is True
+        assert "from an earlier session" in sent["text"]
+        assert _SID in sent["text"]
+        assert '{"q": "x"}' in sent["text"]
+        assert "the late answer" in sent["text"]
+
+    async def test_the_shutdown_hook_cancels(self):
         api = _FakeAPI({})
         reg = bg.register_backgrounding(api, definitions={"recall": _definition("recall")})
 
@@ -571,7 +541,185 @@ class TestRegisterBackgrounding:
 
         await api.hooks["session_shutdown"]()
 
-        assert reg2.epoch == 1
         assert reg2.outstanding() == []
         assert api.submitted == []
-        assert reg.epoch == 0
+        assert reg.outstanding() == []
+
+
+class TestRealSessionBoundary:
+    """Against a real ``AgentSession`` and a real ``AgentSessionRuntime`` swap.
+
+    A swap fires ``session_before_switch`` and no lifecycle hook, so these are the
+    tests a hook-driven check would have passed while production did otherwise.
+    """
+
+    @staticmethod
+    def _session(execute: Any) -> tuple[Any, Any, Any]:
+        """A real session with ``recall`` backgrounded, its runtime, and its api.
+
+        Args:
+            execute: The wrapped ``recall`` execute.
+
+        Returns:
+            ``(session, runtime, holder)``; ``holder["registry"]`` is the registry.
+        """
+        from test_agent_session_runtime import _FakeCatalog, _model, _runtime
+
+        from tau_agent_core.agent_session import AgentSession
+
+        holder: dict[str, Any] = {}
+
+        def _factory(api: Any) -> None:
+            holder["registry"] = bg.register_backgrounding(
+                api, definitions={"recall": _definition("recall", execute=execute)}
+            )
+
+        catalog = _FakeCatalog()
+        session = AgentSession(
+            session_log=catalog.create("/work", "m", "openai"),
+            model=_model(),
+            tools=[],
+            extensions=[_factory],
+        )
+        return session, _runtime(session, catalog), holder
+
+    @staticmethod
+    def _user_texts(session: Any) -> list[str]:
+        """Every user message's text in the session's current log.
+
+        Args:
+            session: The ``AgentSession``.
+
+        Returns:
+            The texts, in log order.
+        """
+        texts = []
+        for entry in session.session_log.entries():
+            message = entry.get("message") or {}
+            if entry.get("type") == "message" and message.get("role") == "user":
+                content = message.get("content")
+                if isinstance(content, list):
+                    content = "".join(b.get("text", "") for b in content if isinstance(b, dict))
+                texts.append(content)
+        return texts
+
+    async def test_a_result_landing_after_new_session_is_delivered_there_labelled(self):
+        from unittest.mock import patch
+
+        from test_agent_session_runtime import _Stream
+
+        gate = asyncio.Event()
+
+        async def _later(tool_call_id, params, signal=None, on_update=None, ctx=None):
+            await gate.wait()
+            return _text_result("the late answer")
+
+        session, runtime, holder = self._session(_later)
+        origin = session._extension_api.context.session_id
+
+        async def _stream_simple(model, context, options=None):
+            return _Stream("noted")
+
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_stream_simple):
+            defn = [d for d in _registered(session) if d.name == "recall"][0]
+            await defn.execute("call-1", {"q": "x", bg.BACKGROUND_KEY: True})
+
+            swapped = await runtime.new_session(persist=False)
+            assert swapped["cancelled"] is False
+            assert session._extension_api.context.session_id != origin
+
+            gate.set()
+            for _ in range(50):
+                await asyncio.sleep(0)
+                if holder["registry"].outstanding() == [] and self._user_texts(session):
+                    break
+
+        texts = self._user_texts(session)
+        assert len(texts) == 1
+        assert "from an earlier session" in texts[0]
+        assert origin in texts[0]
+        assert "the late answer" in texts[0]
+
+    async def test_a_result_in_the_same_session_wakes_it_unlabelled(self):
+        from unittest.mock import patch
+
+        from test_agent_session_runtime import _Stream
+
+        session, runtime, holder = self._session(None)
+
+        async def _stream_simple(model, context, options=None):
+            return _Stream("noted")
+
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_stream_simple):
+            defn = [d for d in _registered(session) if d.name == "recall"][0]
+            await defn.execute("call-1", {"q": "x", bg.BACKGROUND_KEY: True})
+            for _ in range(50):
+                await asyncio.sleep(0)
+                if self._user_texts(session):
+                    break
+
+        texts = self._user_texts(session)
+        assert len(texts) == 1
+        assert texts[0].startswith("[background bg-recall-1] recall finished:")
+        assert "earlier session" not in texts[0]
+
+    async def test_a_result_queued_into_a_turn_the_swap_aborts_is_lost(self):
+        """Pinned defect, not desired behaviour: ROADMAP "A queued steer is lost".
+
+        The completion lands while a turn is in flight, so ``steer`` queues it. The
+        swap's ``abort()`` and reset then clear the queue, and nothing reports it.
+        Fixing it needs the steer queue to carry provenance, which is core work
+        outside this extension (docs/BACKGROUND-TOOLS.md §6.2).
+        """
+        from unittest.mock import patch
+
+        from test_agent_session_runtime import _Stream
+
+        gate = asyncio.Event()
+        turn_gate = asyncio.Event()
+
+        async def _later(tool_call_id, params, signal=None, on_update=None, ctx=None):
+            await gate.wait()
+            return _text_result("the late answer")
+
+        session, runtime, holder = self._session(_later)
+
+        async def _gated(model, context, options=None):
+            await turn_gate.wait()
+            return _Stream("done")
+
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_gated):
+            defn = [d for d in _registered(session) if d.name == "recall"][0]
+            await defn.execute("call-1", {"q": "x", bg.BACKGROUND_KEY: True})
+            from test_agent_session_runtime import _sub
+
+            turn = asyncio.create_task(session.submit(_sub("hello", "t-1")))
+            await asyncio.sleep(0)
+            assert session.is_streaming is True
+
+            gate.set()
+            for _ in range(10):
+                await asyncio.sleep(0)
+            assert holder["registry"].outstanding() == []
+            assert len(session._pending_steer_messages) == 1
+
+            swap = asyncio.create_task(runtime.new_session(persist=False))
+            await asyncio.sleep(0)
+            turn_gate.set()
+            await asyncio.wait_for(turn, timeout=5.0)
+            await asyncio.wait_for(swap, timeout=5.0)
+
+        assert session._pending_steer_messages == []
+        assert self._user_texts(session) == []
+
+
+def _registered(session: Any) -> list[Any]:
+    """The extension tool definitions a real session resolves for a turn.
+
+    Args:
+        session: The ``AgentSession``.
+
+    Returns:
+        The ``ExtensionToolDefinition`` objects in its registry.
+    """
+    return list(session._extension_api._registry._tools.values())

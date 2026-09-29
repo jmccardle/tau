@@ -923,6 +923,21 @@ class ExtensionContext:
         return self._is_idle
 
     @property
+    def session_id(self) -> str:
+        """The id of the conversation this context's session is on right now.
+
+        ``new_session``, ``fork`` and ``switch_session`` swap the log under a live
+        session and fire no lifecycle hook, so reading this before and after an
+        ``await`` is how an extension learns whether it is still in the same
+        conversation.
+
+        Raises:
+            RuntimeError: if no session is bound.
+        """
+        session_id: str = self._require_session().session_log.id
+        return session_id
+
+    @property
     def ui(self) -> ExtensionUI:
         """UI surfaces: TUI-only, and no-ops or headless policy elsewhere.
 

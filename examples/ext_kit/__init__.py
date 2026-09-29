@@ -33,13 +33,6 @@ step table. This package currently ships:
   ``<system-reminder>`` edit), :class:`~ext_kit.steer.TurnDebouncer` (turn-cadence rate
   limiter), and :func:`~ext_kit.steer.wrap_tool` (the pi *tool-override* pattern — shadow
   a built-in tool with ``before`` / ``after`` hooks).
-* :mod:`ext_kit.background` — *backgrounding as a conferred property*:
-  :func:`~ext_kit.background.backgroundable` (wrap any tool so the MODEL may elect
-  a non-blocking call, adding one boolean to its schema and nothing to the tool),
-  the supervised :class:`~ext_kit.background.BackgroundRegistry` (cancel-and-wait,
-  no orphans, and the epoch that makes a completion refuse to cross a session
-  boundary), and :func:`~ext_kit.background.register_backgrounding` (the extension
-  entry point, tool names read from ``api.config``).
 """
 
 from __future__ import annotations
@@ -110,20 +103,8 @@ from ext_kit.steer import (
     TurnDebouncer,
     wrap_tool,
 )
-from ext_kit.background import (
-    BACKGROUND_KEY,
-    BACKGROUND_PARAM,
-    BackgroundCall,
-    BackgroundRegistry,
-    BackgroundSessionGoneError,
-    backgroundable,
-    completion_text,
-    register_backgrounding,
-)
 
 __all__ = [
-    "BACKGROUND_KEY",
-    "BACKGROUND_PARAM",
     "CEILING_OK",
     "CEILING_STOPPED",
     "CEILING_WARN",
@@ -139,9 +120,6 @@ __all__ = [
     "VERDICT_FAIL",
     "VERDICT_PASS",
     "VERDICT_TIMEOUT",
-    "BackgroundCall",
-    "BackgroundRegistry",
-    "BackgroundSessionGoneError",
     "Ceiling",
     "ChildResult",
     "ChildUsage",
@@ -165,15 +143,12 @@ __all__ = [
     "UsageMeter",
     "WorkerPool",
     "active_path",
-    "backgroundable",
     "build_child_args",
-    "completion_text",
     "event_tool_signature",
     "iter_jsonl",
     "monitor_stream",
     "price_increment",
     "read_jsonl",
-    "register_backgrounding",
     "revert_and_recheck",
     "roll_message_usage",
     "run_gate",

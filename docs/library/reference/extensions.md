@@ -1103,6 +1103,21 @@ extension-private client plumbing.
 
 - `model: Any = None` — *(no description)*
 
+### session_id
+
+`tau_agent_core.extension_types.ExtensionContext.session_id: str`
+
+The id of the conversation this context's session is on right now.
+
+``new_session``, ``fork`` and ``switch_session`` swap the log under a live
+session and fire no lifecycle hook, so reading this before and after an
+``await`` is how an extension learns whether it is still in the same
+conversation.
+
+**Raises**
+
+- `RuntimeError` — if no session is bound.
+
 ### set_headless_ui_defaults
 
 ```python
