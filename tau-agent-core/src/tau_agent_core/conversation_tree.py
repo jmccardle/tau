@@ -282,8 +282,32 @@ def _custom_message_preview(message: dict[str, Any]) -> str:
     return f"{custom_type}{mark}: {text}"
 
 
+def _config_preview(data: Any) -> str:
+    """Row text for a config entry: what it sets from here on (docs/CURSORS.md §5).
+
+    The model by name (``model``) or, failing that, by id (``model_spec``); tools
+    as a count; the digest is left out, because a hash tells a reader nothing.
+    """
+    if not isinstance(data, dict) or not data:
+        return "config: (nothing set)"
+    parts: list[str] = []
+    if "model" in data:
+        parts.append(f"model {data['model']}")
+    elif isinstance(data.get("model_spec"), dict):
+        parts.append(f"model {_spec_model_id({'model': data['model_spec']})}")
+    if "thinking" in data:
+        parts.append(f"thinking {data['thinking'] or 'off'}")
+    if "tools" in data:
+        parts.append(_tools_phrase(_spec_tools(data)))
+    if "extensions" in data:
+        parts.append(f"{len(data['extensions'] or [])} extensions")
+    if "cwd" in data:
+        parts.append(f"cwd {data['cwd']}")
+    return "config: " + ("; ".join(parts) if parts else "prompt changed")
+
+
 def _custom_entry_preview(entry: dict[str, Any]) -> str:
-    """Row text for a ``customEntry`` that is not an ``agent_spec``.
+    """Row text for a ``customEntry`` that is not an ``agent_spec`` or a config.
 
     Until this, every one of them rendered as ``customEntry: <customType>`` — the
     loss :meth:`ConversationTree._agent_spec_preview` already fixed for one kind,
@@ -919,6 +943,8 @@ class ConversationTree:
         elif kind == "customEntry":
             if entry.get("customType") == "agent_spec":
                 text = self._agent_spec_preview(entry)
+            elif entry.get("customType") == "config":
+                text = _config_preview(entry.get("data"))
             else:
                 text = _custom_entry_preview(entry)
         else:

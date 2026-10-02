@@ -397,7 +397,7 @@ async def test_elide_node_preview_names_the_hidden_span():
     """An ``elide`` carries no summary, so without this it renders as a bare
     ``(elide)`` and is illegible in the browser."""
     cursor, ids = await _linear_log()
-    await cursor.append_elide(ids[3], covered_entries=3, covered_tokens=3, agent_spec_id=None)
+    await cursor.append_elide(ids[3], covered_entries=3, covered_tokens=3, config_id=None)
 
     nodes = {n.id: n for n in _flatten(cursor.tree().tree())}
     elide_id = next(e["id"] for e in cursor.entries() if e["type"] == "elide")
@@ -416,7 +416,7 @@ async def test_elide_node_preview_reports_an_unreachable_boundary():
     row says what that node actually does (keep nothing) rather than counting it."""
     cursor, ids = await _linear_log()
     cursor.move(ids[1])
-    await cursor.append_elide(ids[4], covered_entries=0, covered_tokens=0, agent_spec_id=None)
+    await cursor.append_elide(ids[4], covered_entries=0, covered_tokens=0, config_id=None)
 
     nodes = {n.id: n for n in _flatten(cursor.tree().tree())}
     elide_id = next(e["id"] for e in cursor.entries() if e["type"] == "elide")
@@ -429,7 +429,7 @@ async def test_elide_node_preview_reports_an_unreachable_boundary():
 async def test_singular_entry_in_the_preview():
     cursor, ids = await _linear_log()
     # Resuming at m1 hides m0 alone: one entry, one estimated token.
-    await cursor.append_elide(ids[1], covered_entries=1, covered_tokens=1, agent_spec_id=None)
+    await cursor.append_elide(ids[1], covered_entries=1, covered_tokens=1, config_id=None)
     nodes = {n.id: n for n in _flatten(cursor.tree().tree())}
     elide_id = next(e["id"] for e in cursor.entries() if e["type"] == "elide")
     assert nodes[elide_id].preview == f"hides 1 entry, resumes at {ids[1]}"

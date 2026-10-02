@@ -32,7 +32,10 @@ from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, 
 from tau_agent_core.session_log import (
     event_iso,
     normalize_loaded_entries,
+    CONFIG_ENTRY_TYPE,
+    config_at,
     default_leaf,
+    session_name,
 )
 
 from tau_coding_agent.config import TAU_DIR, ConfigError
@@ -222,6 +225,14 @@ def _generate_entry_id(existing: set[str]) -> str:
     return uuid.uuid4().hex  # pragma: no cover — 100 collisions is astronomically unlikely
 
 
+def _required(config: dict[str, Any], key: str, session_id: str) -> str:
+    """``config[key]`` as a string, or raise naming the session that lacks it."""
+    value = config.get(key)
+    if value is None:
+        raise ValueError(f"session {session_id} has no {key!r} in its config")
+    return str(value)
+
+
 def _extract_text(message: dict[str, Any]) -> str:
     """Flatten a τ message's content to plain text (for picker display/search)."""
     content = message.get("content")
@@ -291,29 +302,25 @@ class Session:
         return ConversationTree(self.entries(), default_leaf(self._entries)).context_for()
 
     @property
+    def config(self) -> dict[str, Any]:
+        """The folded config at the default leaf (``session_log.config_at``)."""
+        return config_at(self._entries, default_leaf(self._entries))
+
+    @property
     def model(self) -> str:
-        """Latest ``model_change`` model (config key). Raises if none — a session
-        always has one from ``create`` (Fail-Early: don't fabricate a default)."""
-        for entry in reversed(self._entries):
-            if entry.get("type") == "model_change":
-                return str(entry["model"])
-        raise ValueError(f"session {self.id} has no model_change entry")
+        """The config's model name. Raises if none — ``create`` always writes one
+        (Fail-Early: don't fabricate a default)."""
+        return _required(self.config, "model", self.id)
 
     @property
     def backend(self) -> str:
-        for entry in reversed(self._entries):
-            if entry.get("type") == "model_change":
-                return str(entry["backend"])
-        raise ValueError(f"session {self.id} has no model_change entry")
+        """The config's backend name. Raises if none."""
+        return _required(self.config, "backend", self.id)
 
     @property
     def name(self) -> str | None:
-        """Latest ``session_info`` name (mutable; None if never set)."""
-        for entry in reversed(self._entries):
-            if entry.get("type") == "session_info":
-                value = entry.get("name")
-                return str(value) if value else None
-        return None
+        """The newest ``session_info`` name (``session_log.session_name``), or ``None``."""
+        return session_name(self._entries)
 
     def entries(self) -> list[dict[str, Any]]:
         """Ordered raw entries, all kinds (seam 2 — export / pi-faithful json).
@@ -466,13 +473,16 @@ class Session:
     def _init_state(
         self, model: str, backend: str, system_prompt: str | None, name: str | None
     ) -> None:
-        """Write a new session's opening chain: model, optional name, system prompt.
+        """Write a new session's opening chain: config, optional name, system prompt.
 
+        The root config entry precedes the system message (docs/CURSORS.md §5).
         Synchronous, because ``create``/``fork`` are classmethods a head may call
-        before it has an event loop. The chain is parented entry to entry; there is
-        no stored leaf to move.
+        before it has an event loop.
         """
-        parent = self._append_at_now(None, "model_change", {"model": model, "backend": backend})
+        config = {"model": model, "backend": backend, "cwd": self.cwd}
+        parent = self._append_at_now(
+            None, "customEntry", {"customType": CONFIG_ENTRY_TYPE, "data": config}
+        )
         if name is not None:
             parent = self._append_at_now(parent, "session_info", {"name": name})
         if system_prompt:

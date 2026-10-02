@@ -42,7 +42,7 @@ _PROV = {
     "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
     "covered_entries": 1,
     "covered_tokens": 50,
-    "agent_spec_id": None,
+    "config_id": None,
 }
 
 

@@ -1483,7 +1483,10 @@ async def run_repl(
         )
 
     model_name, model_config = resolve_model_config(
-        config, args, fallback_model=prior.model if prior is not None else None
+        config,
+        args,
+        fallback_model=prior.model if prior is not None else None,
+        prior_config=prior.config if prior is not None else None,
     )
     backend_name = model_config.get("backend", "")
     cwd = os.getcwd()

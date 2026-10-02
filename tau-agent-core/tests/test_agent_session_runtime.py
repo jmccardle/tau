@@ -46,7 +46,7 @@ _PROV = {
     "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
     "covered_entries": 1,
     "covered_tokens": 50,
-    "agent_spec_id": None,
+    "config_id": None,
 }
 
 
@@ -96,6 +96,10 @@ class _FakeConversationSession:
     @property
     def context(self) -> list[dict[str, Any]]:
         return self._tree().context_for()
+
+    @property
+    def config(self) -> dict[str, Any]:
+        return {"model": self._model, "backend": self._backend}
 
     @property
     def model(self) -> str:

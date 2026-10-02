@@ -34,7 +34,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from tau_agent_core.session_log import (
+    CONFIG_ENTRY_TYPE,
+    config_at,
     default_leaf,
+    session_name,
     event_iso,
     normalize_loaded_entries,
 )
@@ -197,6 +200,14 @@ def _remap_cross_refs(
     return sc
 
 
+def _required(config: dict[str, Any], key: str, session_id: str) -> str:
+    """``config[key]`` as a string, or raise naming the session that lacks it."""
+    value = config.get(key)
+    if value is None:
+        raise ValueError(f"session {session_id} has no {key!r} in its config")
+    return str(value)
+
+
 def _is_tau_doc(doc: dict[str, Any]) -> bool:
     """True if this document is a τ entry (Sec2.4): ``usetype`` is ``tau:*`` AND
     ``structured_content.tau`` is present. Anything else is a foreign document."""
@@ -288,29 +299,23 @@ class JmftsSessionLog:
         return ConversationTree(self.entries(), default_leaf(self._entries)).context_for()
 
     @property
+    def config(self) -> dict[str, Any]:
+        """The folded config at the default leaf (``session_log.config_at``)."""
+        return config_at(self._entries, default_leaf(self._entries))
+
+    @property
     def model(self) -> str:
-        for entry in reversed(self._entries):
-            if entry.get("type") == "model_change":
-                return str(entry["model"])
-        raise ValueError(f"session {self.id} has no model_change entry")
+        """The config's model name. Raises if none — ``create`` always writes one."""
+        return _required(self.config, "model", self.id)
 
     @property
     def backend(self) -> str:
-        for entry in reversed(self._entries):
-            if entry.get("type") == "model_change":
-                return str(entry["backend"])
-        raise ValueError(f"session {self.id} has no model_change entry")
-
-    def _latest_session_info_name(self) -> str | None:
-        for entry in reversed(self._entries):
-            if entry.get("type") == "session_info":
-                value = entry.get("name")
-                return str(value) if value else None
-        return None
+        """The config's backend name. Raises if none."""
+        return _required(self.config, "backend", self.id)
 
     def display_title(self) -> str:
         """A short human label: the name, else the first user message, else model."""
-        name = self._latest_session_info_name()
+        name = session_name(self._entries)
         if name:
             return name
         for message in self.messages:
@@ -344,7 +349,7 @@ class JmftsSessionLog:
         host_parent_id: int | None = None,
     ) -> "JmftsSessionLog":
         """Create a new conversation: POST the root document, then seed the same
-        initial entries the file ``Session.create`` writes (model_change, optional
+        initial entries the file ``Session.create`` writes (config, optional
         name, optional system message)."""
         timestamp = _now_iso()
         session_id = id if id is not None else uuid.uuid4().hex
@@ -521,7 +526,10 @@ class JmftsSessionLog:
 
         ``create`` is synchronous and may run before a head has an event loop.
         """
-        parent = self._append_now(None, "model_change", {"model": model, "backend": backend})
+        config = {"model": model, "backend": backend, "cwd": self._header.get("cwd")}
+        parent = self._append_now(
+            None, "customEntry", {"customType": CONFIG_ENTRY_TYPE, "data": config}
+        )
         if name is not None:
             parent = self._append_now(parent, "session_info", {"name": name})
         if system_prompt:

@@ -6,7 +6,7 @@
 <!-- agent: yes -->
 
 ```python
-class AgentSession(*, model: Model, session_log: SessionLog | None = None, cursor: Cursor | None = None, system_prompt: str = '', tools: list[AgentTool] | None = None, extensions: list[Callable] | None = None, api_key: str | None = None, reasoning: str | None = None, compaction_settings: CompactionSettings | None = None, compaction_policy: CompactionPolicy | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, model_resolver: Callable[[str], Model] | None = None, max_turns: int | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None)
+class AgentSession(*, model: Model, session_log: SessionLog | None = None, cursor: Cursor | None = None, system_prompt: str = '', tools: list[AgentTool] | None = None, extensions: list[Callable] | None = None, api_key: str | None = None, reasoning: str | None = None, compaction_settings: CompactionSettings | None = None, compaction_policy: CompactionPolicy | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, model_resolver: Callable[[str], Model] | None = None, max_turns: int | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None, cwd: str | None = None)
 ```
 
 `tau_agent_core.agent_session.AgentSession`
@@ -38,6 +38,7 @@ position someone already holds.
 - `tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel'` — *(no description)*
 - `bus_available: bool = False` — *(no description)*
 - `no_tools: Literal['all', 'builtin'] | None = None` — *(no description)*
+- `cwd: str | None = None` — *(no description)*
 
 ### abort
 
@@ -1296,15 +1297,14 @@ async start() -> None
 
 `tau_agent_core.agent_session.AgentSession.start`
 
-Make the session's ``agent_spec`` durable without running a turn.
+Record the session's config without running a turn.
 
-The awaited door onto :meth:`_flush_pending_agent_specs` for a caller that
-reads the tree before it prompts. ``tau --mode rpc`` calls it once before
+The awaited door onto :meth:`_record_config` for a caller that reads the
+tree before it prompts. ``tau --mode rpc`` calls it once before
 ``RPCHandler.run`` for exactly that reason. Idempotent, and unnecessary
-before a turn: :meth:`submit` and :meth:`continue_conversation` both drain
-the queue before reading ``_pre_turn_leaf``, so the record lands AHEAD of
-the turn it describes rather than inside it — which is where a rollback to
-that leaf needs it to be.
+before a turn: :meth:`submit` and :meth:`continue_conversation` both record
+before reading the pre-turn leaf, so the entry lands AHEAD of the turn it
+governs — which is where a rollback to that leaf needs it to be.
 
 ### state
 
@@ -2132,7 +2132,13 @@ suite's job (``tau_agent_core.testing.session_catalog_contract``).
 
 `tau_agent_core.session_catalog.ConversationSession.backend: str`
 
-The latest ``model_change`` backend. Raises if the session has none.
+The config's backend name at the default leaf. Raises if there is none.
+
+### config
+
+`tau_agent_core.session_catalog.ConversationSession.config: dict[str, Any]`
+
+The folded config at the default leaf (``session_log.config_at``).
 
 ### context
 
@@ -2166,7 +2172,7 @@ Unspliced ``message`` entries on the path to the default leaf.
 
 `tau_agent_core.session_catalog.ConversationSession.model: str`
 
-The latest ``model_change`` model. Raises if the session has none.
+The config's model name at the default leaf. Raises if there is none.
 
 ## ConversationTree
 <!-- agent: yes -->
@@ -2607,7 +2613,7 @@ branch, so they drop out of the context by ancestry alone.
 ### append_compaction
 
 ```python
-async append_compaction(summary: str, first_kept_id: str, tokens_before: int, *, summarizer_model_id: str, summary_usage: dict[str, int], covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
+async append_compaction(summary: str, first_kept_id: str, tokens_before: int, *, summarizer_model_id: str, summary_usage: dict[str, int], covered_entries: int, covered_tokens: int, config_id: str | None) -> str
 ```
 
 `tau_agent_core.cursor.Cursor.append_compaction`
@@ -2627,11 +2633,29 @@ fails there rather than recording ``None``.
 - `summary_usage: dict[str, int]` — *(no description)*
 - `covered_entries: int` — *(no description)*
 - `covered_tokens: int` — *(no description)*
-- `agent_spec_id: str | None` — *(no description)*
+- `config_id: str | None` — *(no description)*
 
 **Raises**
 
 - `ValueError` — ``first_kept_id`` names no entry. The fold never finds an unknown anchor and would drop the whole kept region silently.
+
+### append_config
+
+```python
+async append_config(**keys: Any) -> str
+```
+
+`tau_agent_core.cursor.Cursor.append_config`
+
+Append a config entry setting ``keys`` from here on (docs/CURSORS.md §5).
+
+**Parameters**
+
+- `**keys: Any` — *(no description)*
+
+**Raises**
+
+- `ValueError` — no keys, or a key outside :data:`~tau_agent_core.session_log.CONFIG_KEYS`.
 
 ### append_custom_entry
 
@@ -2666,7 +2690,7 @@ Append a ``customMessage``: extension content that does reach the model.
 ### append_elide
 
 ```python
-async append_elide(first_kept_id: str, *, covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
+async append_elide(first_kept_id: str, *, covered_entries: int, covered_tokens: int, config_id: str | None) -> str
 ```
 
 `tau_agent_core.cursor.Cursor.append_elide`
@@ -2678,7 +2702,7 @@ Append a summary-less splice anchor (NODE-ADDRESSABLE-AGENTS.md W3).
 - `first_kept_id: str` — *(no description)*
 - `covered_entries: int` — *(no description)*
 - `covered_tokens: int` — *(no description)*
-- `agent_spec_id: str | None` — *(no description)*
+- `config_id: str | None` — *(no description)*
 
 **Raises**
 
@@ -4303,46 +4327,6 @@ a hand-built selection produces:
 
 A sentence naming the offending call, or ``None`` when the sequence is turn-complete.
 
-## agent_spec_in_force
-<!-- agent: yes -->
-
-```python
-agent_spec_in_force(entries: list[dict[str, Any]], leaf_id: str | None) -> str | None
-```
-
-`tau_agent_core.session_log.agent_spec_in_force`
-
-The id of the ``agent_spec`` record governing ``leaf_id``, or ``None``.
-
-What a splice anchor's ``agentSpecId`` must be set to
-(TREE-BROWSER-AS-EDITOR.md §8.3): the nearest ``agent_spec`` ``customEntry``
-among ``leaf_id``'s ANCESTORS, walking ``parentId`` leaf→root.
-
-Ancestry, not "the last one this session wrote", for the same reason
-``ConversationTree._previous_agent_spec`` uses it and docs/LANE-REMOVAL.md §1
-removed the tag that pretended otherwise: a leaf's frame is its ancestor chain
-and nothing else. The two answers diverge exactly where it matters — an elide
-the tree browser aims at a historical anchor is governed by whatever spec was in
-force *there*, which may be two ``set_model`` swaps behind the session's current
-one, and a spec written on a sibling branch never governed this path at all.
-
-Lives here beside :func:`default_leaf`, and for the same reason: it is part of
-the entry algebra every ``SessionLog`` implementation must agree on exactly, not
-a property of any one durability layer. Implemented as a plain ``parentId`` walk
-rather than through ``ConversationTree`` so this module keeps its zero-dependency
-position under the tree, and so the two callers (one in ``tau-agent-core``, one in
-``tau-coding-agent``) share one spelling.
-
-Returns ``None`` when no ancestor is an ``agent_spec`` — an honest answer, and a
-reachable one: a pi-imported log has no such node, and neither does a store
-driven directly rather than through ``AgentSession``. §11.3's "no defaults" rule
-is what keeps that answer distinct from a caller who never looked.
-
-**Parameters**
-
-- `entries: list[dict[str, Any]]` — *(no description)*
-- `leaf_id: str | None` — *(no description)*
-
 ## bind_command_args
 <!-- agent: yes -->
 
@@ -4504,6 +4488,50 @@ exists at all rather than a sequence of edits).
 **Raises**
 
 - `ValueError` — The selection is empty, names an unknown entry, contains an entry no branch can carry, or composes a path that is not turn-complete. Checked before the first append, so a refusal leaves the log byte-identical.
+
+## config_at
+<!-- agent: yes -->
+
+```python
+config_at(entries: list[dict[str, Any]], leaf_id: str | None) -> dict[str, Any]
+```
+
+`tau_agent_core.session_log.config_at`
+
+The effective config at ``leaf_id``: every config entry on its path, folded.
+
+Ancestry, not append order: a config written on a sibling branch never
+governed this path, so a cursor moved to an older position runs as the
+conversation was configured there (docs/CURSORS.md §5).
+
+**Parameters**
+
+- `entries: list[dict[str, Any]]` — A log's entries.
+- `leaf_id: str | None` — The position to read at; ``None`` reads nothing.
+
+**Returns**
+
+The folded keys (a subset of :data:`CONFIG_KEYS`); empty if none were set.
+
+## config_entry_at
+<!-- agent: yes -->
+
+```python
+config_entry_at(entries: list[dict[str, Any]], leaf_id: str | None) -> str | None
+```
+
+`tau_agent_core.session_log.config_entry_at`
+
+The id of the nearest config-setting entry on ``leaf_id``'s path, or ``None``.
+
+What a splice anchor's ``configId`` records (TREE-BROWSER-AS-EDITOR.md §8.3):
+the frame in force over the span it covers. ``None`` is a real answer — a log
+no head configured has no such entry.
+
+**Parameters**
+
+- `entries: list[dict[str, Any]]` — *(no description)*
+- `leaf_id: str | None` — *(no description)*
 
 ## copy_of
 <!-- agent: yes -->

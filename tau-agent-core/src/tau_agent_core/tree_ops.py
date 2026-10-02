@@ -23,7 +23,7 @@ from tau_llm.docs import agent_facing
 from tau_agent_core.compaction import estimate_span_tokens
 from tau_agent_core.conversation_tree import ConversationTree, is_system_message
 from tau_agent_core.cursor import Cursor
-from tau_agent_core.session_log import agent_spec_in_force
+from tau_agent_core.session_log import config_entry_at
 from tau_agent_core.tree_surgery import (
     branch_refusal_reason,
     copy_of,
@@ -212,7 +212,7 @@ async def elide_span(cursor: Cursor, anchor_id: str, first_kept_id: str) -> list
         first_kept_id,
         covered_entries=len(hidden),
         covered_tokens=estimate_span_tokens(hidden),
-        agent_spec_id=agent_spec_in_force(entries, anchor_id),
+        config_id=config_entry_at(entries, anchor_id),
     )
     return cursor.context()
 
@@ -282,7 +282,7 @@ async def commit_branch(cursor: Cursor, ids: Sequence[str], *, drop_context: boo
             plan.elide_from,
             covered_entries=len(hidden),
             covered_tokens=estimate_span_tokens(hidden),
-            agent_spec_id=agent_spec_in_force(after, str(cursor.leaf)),
+            config_id=config_entry_at(after, str(cursor.leaf)),
         )
 
     return cursor.context()

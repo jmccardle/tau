@@ -89,7 +89,7 @@ async def test_elide_records_the_frame_in_force_at_the_anchor_not_the_newest_one
 
     await _backend(cursor).elide_span(anchor, keep)
 
-    assert _anchor_of(cursor)["agentSpecId"] == old_spec
+    assert _anchor_of(cursor)["configId"] == old_spec
 
 
 async def test_elide_records_no_frame_when_the_path_has_none() -> None:
@@ -102,7 +102,7 @@ async def test_elide_records_no_frame_when_the_path_has_none() -> None:
 
     await _backend(cursor).elide_span(ids[2], ids[1])
 
-    assert _anchor_of(cursor)["agentSpecId"] is None
+    assert _anchor_of(cursor)["configId"] is None
 
 
 async def test_elide_provenance_does_not_change_what_the_fold_returns() -> None:

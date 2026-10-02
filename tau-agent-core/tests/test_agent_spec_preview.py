@@ -1,4 +1,8 @@
-"""B1-e part 2: what an ``agent_spec`` node says in a tree browser (W2).
+"""What a frame record says in a tree browser: a config entry, or a legacy ``agent_spec``.
+
+τ writes config entries now (docs/CURSORS.md §5); logs written before that carry
+``agent_spec`` records, which still render with a delta against their nearest
+ancestor. Both are rows a reader scans for "which agent spoke here".
 
 W2 writes the node for one stated reason — *"Turns 1-5 from a read-only reviewer
 and 6-10 from a full-tool builder are indistinguishable … the loss you feel the
@@ -56,8 +60,8 @@ def _tool(name: str) -> AgentTool:
     )
 
 
-def _previews(cursor: Cursor) -> list[str]:
-    """Every ``agent_spec`` row's preview, in log order."""
+def _previews(cursor: Cursor, custom_type: str = "agent_spec") -> list[str]:
+    """Every ``custom_type`` row's preview, in log order."""
     tree = cursor.tree()
     nodes = {}
 
@@ -71,7 +75,7 @@ def _previews(cursor: Cursor) -> list[str]:
     return [
         nodes[e["id"]].preview
         for e in cursor.entries()
-        if e.get("type") == "customEntry" and e.get("customType") == "agent_spec"
+        if e.get("type") == "customEntry" and e.get("customType") == custom_type
     ]
 
 
@@ -91,22 +95,22 @@ async def _spec(cursor: Cursor, **overrides: Any) -> str:
 # --- the first spec on a path: say what the frame IS -------------------------
 
 
-async def test_the_first_spec_names_the_model_and_the_tool_set():
+async def test_a_sessions_first_config_names_the_model_and_the_tool_set():
     session = AgentSession(
         session_log=InMemorySessionLog(),
         model=_model("gpt-4o"),
         tools=[_tool("read"), _tool("grep")],
     )
-    # Written by the real W2 code path, not a hand-built payload. `start()` is what
-    # drains the queued record (docs/ASYNC-SESSION-LOG.md §3.2).
     await session.start()
-    assert _previews(session.cursor) == ["agent_spec: gpt-4o · 2 tools: read, grep"]
+    (preview,) = _previews(session.cursor, "config")
+    assert preview.startswith("config: model gpt-4o; thinking off; 2 tools: read, grep")
 
 
-async def test_a_tool_less_spec_says_so_rather_than_showing_an_empty_list():
+async def test_a_tool_less_config_says_so_rather_than_showing_an_empty_list():
     session = AgentSession(session_log=InMemorySessionLog(), model=_model("gpt-4o"), tools=[])
     await session.start()
-    assert _previews(session.cursor) == ["agent_spec: gpt-4o · no tools"]
+    (preview,) = _previews(session.cursor, "config")
+    assert "no tools" in preview
 
 
 async def test_a_long_tool_set_is_truncated_behind_its_count():
@@ -119,23 +123,19 @@ async def test_a_long_tool_set_is_truncated_behind_its_count():
 
 
 async def test_a_model_swap_reads_as_a_model_swap():
-    """The real trigger: ``set_model`` is the one runtime spec swap the class has.
-
-    Both records — the constructor's and the swap's — are queued, and ``start()``
-    drains them in order (docs/ASYNC-SESSION-LOG.md §3.2). A single pending slot
-    would show only the swap, which is what the queue being a LIST prevents.
-    """
+    """A config entry carries only what changed, so the swap's row names only the model."""
     session = AgentSession(
         session_log=InMemorySessionLog(),
         model=_model("model-a"),
         tools=[_tool("read")],
         model_resolver=lambda name: _model(name),
     )
+    await session.start()
     session.set_model("model-b")
     await session.start()
-    previews = _previews(session.cursor)
-    assert previews[0] == "agent_spec: model-a · 1 tool: read"
-    assert previews[1] == "agent_spec: model model-a → model-b"
+    previews = _previews(session.cursor, "config")
+    assert previews[0].startswith("config: model model-a")
+    assert previews[1] == "config: model model-b"
 
 
 async def test_a_tool_set_change_is_reported_as_a_delta():
@@ -255,11 +255,12 @@ async def test_the_preview_changes_nothing_about_the_fold():
         tools=[_tool("read")],
         model_resolver=lambda name: _model(name),
     )
+    await session.start()
     session.set_model("model-b")
     await session.start()
     await session.cursor.append_message({"role": "user", "content": "hi"})
     assert [m["content"] for m in session.messages] == ["hi"]
-    assert len(_previews(session.cursor)) == 2
+    assert len(_previews(session.cursor, "config")) == 2
 
 
 async def test_other_custom_entries_name_their_type_and_summarize_their_payload():

@@ -133,6 +133,7 @@ _BUILTIN_TOOL_CLASSES: dict[str, _BuiltinToolClass] = {
 def _resolve_tools(
     tool_names: list[str] | None,
     tool_options: dict[str, dict[str, Any]] | None = None,
+    cwd: str | None = None,
 ) -> list[AgentTool]:
     """Resolve tool names to :class:`AgentTool` instances.
 
@@ -199,6 +200,9 @@ def _resolve_tools(
         tool_options: Optional mapping of built-in tool name to keyword
             arguments for that tool's constructor, e.g.
             ``{"read": {"max_image_dimension": 2000}}``.
+        cwd: The directory every built-in resolves paths and runs commands in;
+            ``None`` leaves each at the process cwd. A ``tool_options`` entry
+            naming ``cwd`` wins for that tool.
 
     Returns:
         List of :class:`AgentTool` — one per requested name, in request order.
@@ -216,7 +220,9 @@ def _resolve_tools(
         if name not in _BUILTIN_TOOL_CLASSES:
             raise ValueError(f"Unknown tool: {name}")
 
-        tool_obj = _BUILTIN_TOOL_CLASSES[name](**options.get(name, {}))
+        kwargs: dict[str, Any] = {"cwd": cwd} if cwd is not None else {}
+        kwargs.update(options.get(name, {}))
+        tool_obj = _BUILTIN_TOOL_CLASSES[name](**kwargs)
         tool_objs.append(
             AgentTool(
                 definition=ToolDefinition(
@@ -1284,7 +1290,9 @@ def create_agent_session(
         thinking_level: Thinking level ("off", "minimal", "low", "medium",
             "high", "xhigh"). A non-"off" level marks the model reasoning-capable
             and is forwarded to the provider as `reasoning_effort`.
-        cwd: Current working directory.
+        cwd: The working directory: context-file discovery starts there, the
+            built-in tools resolve paths and run commands there, and the session
+            records it in its config. ``None`` is the process cwd.
         tool_execution_mode: Batch-level tool execution policy ("sequential" or
             "parallel", default "parallel") forwarded to AgentSession, which
             threads it into every AgentLoopConfig the session builds. A tool
@@ -1368,7 +1376,9 @@ def create_agent_session(
             "and no built-in tools. Drop `tools=` to suppress the built-ins, or drop "
             "`no_tools=` to offer them."
         )
-    tool_objs: list[AgentTool] = [] if no_tools is not None else _resolve_tools(tools, tool_options)
+    tool_objs: list[AgentTool] = (
+        [] if no_tools is not None else _resolve_tools(tools, tool_options, cwd)
+    )
 
     ext_factories = list(extensions) if extensions else []
 
@@ -1398,4 +1408,5 @@ def create_agent_session(
         bus_available=bus_available,
         no_tools=no_tools,
         max_turns=max_turns,
+        cwd=cwd,
     )

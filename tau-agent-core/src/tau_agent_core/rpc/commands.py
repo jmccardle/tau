@@ -136,7 +136,7 @@ verb's intent:
 
   1. A verb that APPENDS a session-log entry calls
      `require_durable_session` FIRST and refuses an unpersisted session
-     outright: `set_model` (D-2's model_change), `set_session_name`
+     outright: `set_model` (D-2's config entry), `set_session_name`
      (session_info), `compact` (compaction). Nothing is mutated before the
      refusal, so it is total.
   2. A verb that appends NOTHING never asks the question:
@@ -1604,7 +1604,7 @@ def require_durable_session(session: "AgentSession", *, verb: str) -> None:
 
     Callers, and the rule that decides who calls it — D-7, stated once in
     the "DURABILITY in Tier B" block below: **every verb that APPENDS a
-    session-log entry**. ``set_model`` (D-2's ``model_change``),
+    session-log entry**. ``set_model`` (D-2's config entry),
     ``set_session_name`` (``session_info``), and ``compact`` (the
     ``compaction`` entry — added by finding 6 of the Tier B review, which
     measured that verb running to completion on an unpersisted session and
@@ -2628,7 +2628,7 @@ def _resolver_error_message(exc: KeyError | ValueError) -> str:
         "D-2: switches the active model by NAME (AgentSession.set_model, "
         "agent_session.py:785 — effective on the NEXT turn, never mid-"
         "stream) and, unlike the bare session method, PERSISTS the switch: "
-        "appends a model_change entry and returns the resulting cursor (E5, "
+        "appends a config entry naming the model and returns the resulting cursor (E5, "
         "answered the one way the whole tier answers it — see commands.py "
         "'E5 in Tier B': every Tier B mutator's completion carries `cursor`, "
         "present even when the call moved nothing; only the tier's reads omit "
@@ -2659,7 +2659,7 @@ def _resolver_error_message(exc: KeyError | ValueError) -> str:
         "cursor for an entry that died with the process. The "
         "check runs BEFORE session.set_model(name), so a refusal leaves the "
         "in-process model unswitched: this verb never reports 'maybe "
-        "switched, definitely not persisted'. The model_change entry is "
+        "switched, definitely not persisted'. The config entry is "
         "appended at the session's cursor, as the TUI's own switch does. "
         "WHERE the entry "
         "lands, and for how long (unit S): a --mode rpc process defaults to "
@@ -2689,7 +2689,7 @@ async def _handle_set_model(
             raise RPCError(
                 INVALID_PARAMS, _resolver_error_message(exc), data={"name": name}
             ) from exc
-        await session.cursor.append("model_change", model=name, backend=model["provider"])
+        await session.cursor.append_config(model=name, backend=model["provider"])
         return {"model": model, "cursor": session.cursor.leaf}
 
 

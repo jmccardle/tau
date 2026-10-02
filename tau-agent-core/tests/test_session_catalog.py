@@ -31,7 +31,13 @@ from typing import Any
 
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, SessionInfo
-from tau_agent_core.session_log import InMemorySessionLog, default_leaf, session_name
+from tau_agent_core.session_log import (
+    CONFIG_ENTRY_TYPE,
+    InMemorySessionLog,
+    config_at,
+    default_leaf,
+    session_name,
+)
 from tau_agent_core.testing import SessionCatalogContractTests
 
 
@@ -55,7 +61,7 @@ def _now() -> datetime:
 class _InMemoryConversationSession:
     """A RAM-only :class:`ConversationSession` over an ``InMemorySessionLog``.
 
-    Config is written as entries (``model_change``, ``session_info``) and read
+    Config is written as entries (a config entry, ``session_info``) and read
     back the way the file ``Session`` reads it, so the only difference from that
     store is the missing disk flush.
     """
@@ -114,19 +120,24 @@ class _InMemoryConversationSession:
     def context(self) -> list[dict[str, Any]]:
         return self._tree().context_for()
 
-    def _latest_model_change(self) -> dict[str, Any]:
-        for entry in reversed(self.entries()):
-            if entry.get("type") == "model_change":
-                return entry
-        raise ValueError(f"session {self.id} has no model_change entry")
+    @property
+    def config(self) -> dict[str, Any]:
+        entries = self.entries()
+        return config_at(entries, default_leaf(entries))
+
+    def _required(self, key: str) -> str:
+        value = self.config.get(key)
+        if value is None:
+            raise ValueError(f"session {self.id} has no {key!r} in its config")
+        return str(value)
 
     @property
     def model(self) -> str:
-        return str(self._latest_model_change()["model"])
+        return self._required("model")
 
     @property
     def backend(self) -> str:
-        return str(self._latest_model_change()["backend"])
+        return self._required("backend")
 
     @property
     def name(self) -> str | None:
@@ -187,7 +198,11 @@ class InMemorySessionCatalog(SessionCatalog):
         name: str | None,
     ) -> _InMemoryConversationSession:
         session = _InMemoryConversationSession(cwd)
-        leaf = session._append_at_now(None, "model_change", {"model": model, "backend": backend})
+        leaf = session._append_at_now(
+            None,
+            "customEntry",
+            {"customType": CONFIG_ENTRY_TYPE, "data": {"model": model, "backend": backend}},
+        )
         if name:
             leaf = session._append_at_now(leaf, "session_info", {"name": name})
         if system_prompt:

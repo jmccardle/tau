@@ -67,10 +67,11 @@ class _DurableLog(InMemorySessionLog):
 
 
 def _model_changes(session: AgentSession) -> list[tuple[str, str]]:
+    """Every config entry that names a model, as ``(model, backend)``."""
     return [
-        (e["model"], e["backend"])
+        (e["data"]["model"], e["data"]["backend"])
         for e in session.session_log.entries()
-        if e["type"] == "model_change"
+        if e.get("customType") == "config" and "model" in e["data"]
     ]
 
 
@@ -131,7 +132,7 @@ async def test_set_model_switches_persists_and_returns_the_cursor(handler, sessi
     cursor = response["result"]["cursor"]
     assert cursor == session.cursor.leaf
     (entry,) = [e for e in session.session_log.entries() if e["id"] == cursor]
-    assert entry["type"] == "model_change"
+    assert entry["customType"] == "config"
     assert response["result"]["method"] == "set_model"
     assert _model_changes(session) == [("m2", "anthropic")]
     # The switch actually took effect, not merely reported.

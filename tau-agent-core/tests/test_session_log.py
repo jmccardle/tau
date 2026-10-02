@@ -2,7 +2,7 @@
 
 - ``InMemorySessionLog``: ``append_at`` parenting, camelCase entry shape, deep
   copies, and no position of its own (docs/CURSORS.md §3).
-- ``default_leaf``, ``agent_spec_in_force``, ``session_name``: the pure reads
+- ``default_leaf``, ``config_entry_at``, ``session_name``: the pure reads
   every store shares.
 - The SDK default path persists a turn into that log and reads context back
   through the session's cursor.
@@ -23,8 +23,9 @@ from tau_agent_core.cursor import Cursor
 from tau_agent_core.sdk import create_agent_session
 from tau_agent_core.session_log import (
     InMemorySessionLog,
+    config_at,
+    config_entry_at,
     SessionLog,
-    agent_spec_in_force,
     default_leaf,
     normalize_loaded_entries,
     session_name,
@@ -35,7 +36,7 @@ _PROV = {
     "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
     "covered_entries": 1,
     "covered_tokens": 50,
-    "agent_spec_id": None,
+    "config_id": None,
 }
 
 
@@ -145,7 +146,7 @@ class TestAgentSpecInForce:
         second = await cursor.append_custom_entry("agent_spec", {"model": {"id": "second"}})
         leaf = await cursor.append_message(_um("under the second spec"))
 
-        assert agent_spec_in_force(log.entries(), leaf) == second
+        assert config_entry_at(log.entries(), leaf) == second
 
     async def test_a_spec_on_a_sibling_branch_never_governs_this_path(self):
         """Ancestry, not load order. A ``set_model`` on an abandoned branch is
@@ -162,7 +163,7 @@ class TestAgentSpecInForce:
         await cursor.append_custom_entry("agent_spec", {"model": {"id": "the other branch"}})
         await cursor.append_message(_um("their continuation"))
 
-        assert agent_spec_in_force(log.entries(), leaf) == mine
+        assert config_entry_at(log.entries(), leaf) == mine
 
     async def test_a_log_with_no_agent_spec_answers_none(self):
         """An honest absence — a pi-imported log, or a store driven without an
@@ -171,8 +172,8 @@ class TestAgentSpecInForce:
         log = InMemorySessionLog()
         leaf = await Cursor.newest(log).append_message(_um("no frame was ever recorded"))
 
-        assert agent_spec_in_force(log.entries(), leaf) is None
-        assert agent_spec_in_force(log.entries(), None) is None
+        assert config_entry_at(log.entries(), leaf) is None
+        assert config_entry_at(log.entries(), None) is None
 
     async def test_a_non_agent_spec_custom_entry_is_not_mistaken_for_one(self):
         log = InMemorySessionLog()
@@ -180,7 +181,7 @@ class TestAgentSpecInForce:
         await cursor.append_custom_entry("jmfts:document", {"docId": "42"})
         leaf = await cursor.append_message(_um("hello"))
 
-        assert agent_spec_in_force(log.entries(), leaf) is None
+        assert config_entry_at(log.entries(), leaf) is None
 
 
 # ── Fold parity: context built via ConversationTree over the log entries ──────
@@ -311,3 +312,59 @@ def test_default_leaf_skips_a_document_another_system_put_in_the_tree():
         {"type": "jmfts:document", "id": "d1", "parentId": "m1"},
     ]
     assert default_leaf(entries) == "m1"
+
+
+class TestConfigAt:
+    """docs/CURSORS.md §5: config is the fold of config entries on a path."""
+
+    async def test_later_entries_override_earlier_ones_key_by_key(self):
+        cursor = Cursor.newest(InMemorySessionLog())
+        await cursor.append_config(model="a", backend="openai", thinking="low")
+        await cursor.append_message(_um("hi"))
+        await cursor.append_config(model="b")
+        assert config_at(cursor.entries(), cursor.leaf) == {
+            "model": "b",
+            "backend": "openai",
+            "thinking": "low",
+        }
+
+    async def test_a_sibling_branchs_config_never_governs_this_path(self):
+        cursor = Cursor.newest(InMemorySessionLog())
+        await cursor.append_config(model="a")
+        fork = await cursor.append_message(_um("shared"))
+        mine = await cursor.append_message(_um("mine"))
+        cursor.move(fork)
+        await cursor.append_config(model="b")
+        assert config_at(cursor.entries(), mine)["model"] == "a"
+        assert config_at(cursor.entries(), cursor.leaf)["model"] == "b"
+
+    async def test_legacy_kinds_are_read_as_config(self):
+        log = InMemorySessionLog()
+        root = await log.append_at(None, "model_change", {"model": "m", "backend": "openai"})
+        thought = await log.append_at(root, "thinking_change", {"level": "high"})
+        spec = await log.append_at(
+            thought,
+            "customEntry",
+            {
+                "customType": "agent_spec",
+                "data": {"model": {"id": "m-id"}, "tools": ["read"], "cwd": "/repo"},
+            },
+        )
+        assert config_at(log.entries(), spec) == {
+            "model": "m",
+            "backend": "openai",
+            "thinking": "high",
+            "model_spec": {"id": "m-id"},
+            "tools": ["read"],
+            "cwd": "/repo",
+        }
+        assert config_entry_at(log.entries(), spec) == spec
+
+    async def test_an_unknown_config_key_is_refused(self):
+        cursor = Cursor.newest(InMemorySessionLog())
+        with pytest.raises(ValueError, match="unknown key"):
+            await cursor.append_config(api_key="nope")
+
+    def test_a_path_with_no_config_has_none(self):
+        assert config_at([], None) == {}
+        assert config_entry_at([], None) is None

@@ -45,7 +45,13 @@ from typing import Tuple as _Tuple
 
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, SessionInfo
-from tau_agent_core.session_log import InMemorySessionLog, default_leaf
+from tau_agent_core.session_log import (
+    CONFIG_ENTRY_TYPE,
+    InMemorySessionLog,
+    config_at,
+    default_leaf,
+    session_name,
+)
 from tau_jmfts.client import JmftsClient, JmftsError
 from tau_jmfts.store import _HEADER_REQUIRED, SESSION_VERSION, _extract_text
 from tau_jmfts.store import JmftsSessionLog
@@ -148,7 +154,10 @@ class _EphemeralConversationSession:
         """Write the same opening chain every store writes, with no I/O."""
         session = cls(cwd)
         log = session._log
-        parent = log.append_at_now(None, "model_change", {"model": model, "backend": backend})
+        config = {"model": model, "backend": backend, "cwd": session._cwd}
+        parent = log.append_at_now(
+            None, "customEntry", {"customType": CONFIG_ENTRY_TYPE, "data": config}
+        )
         if name is not None:
             parent = log.append_at_now(parent, "session_info", {"name": name})
         if system_prompt:
@@ -193,29 +202,27 @@ class _EphemeralConversationSession:
         entries = self._log.entries()
         return ConversationTree(entries, default_leaf(entries)).context_for()
 
-    def _latest(self, kind: str, field: str) -> str | None:
-        for entry in reversed(self._log.entries()):
-            if entry.get("type") == kind:
-                value = entry.get(field)
-                return str(value) if value else None
-        return None
+    @property
+    def config(self) -> dict[str, Any]:
+        entries = self._log.entries()
+        return config_at(entries, default_leaf(entries))
 
     @property
     def model(self) -> str:
-        model = self._latest("model_change", "model")
+        model = self.config.get("model")
         if model is None:
-            raise ValueError(f"session {self.id} has no model_change entry")
-        return model
+            raise ValueError(f"session {self.id} has no 'model' in its config")
+        return str(model)
 
     @property
     def backend(self) -> str:
-        backend = self._latest("model_change", "backend")
+        backend = self.config.get("backend")
         if backend is None:
-            raise ValueError(f"session {self.id} has no model_change entry")
-        return backend
+            raise ValueError(f"session {self.id} has no 'backend' in its config")
+        return str(backend)
 
     def display_title(self) -> str:
-        name = self._latest("session_info", "name")
+        name = session_name(self._log.entries())
         if name:
             return name
         for message in self.messages:

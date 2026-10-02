@@ -8,10 +8,9 @@ the rest of ``tau_agent_core`` on purpose: ``submission.py`` carries an
 anything this module imported would close a cycle between those two.
 
 The lock is read at the CURSOR ONLY — never by walking ancestry, which is what
-``agent_spec`` does (``session_log.agent_spec_in_force``). The two differ because
-they answer different questions: an ``agent_spec`` is state at a point in the
-past, a lock is permission to extend the session now (docs/EXTENSION-LOCKS.md
-§2).
+config does (``session_log.config_at``). The two differ because they answer
+different questions: config is state at a point in the past, a lock is
+permission to extend the session now (docs/EXTENSION-LOCKS.md §2).
 """
 
 from __future__ import annotations
@@ -185,14 +184,14 @@ def read_request(entry: dict[str, Any]) -> ExtensionRequest | None:
     )
 
 
-PROVENANCE_ENTRY_TYPES: frozenset[str] = frozenset({"agent_spec"})
+PROVENANCE_ENTRY_TYPES: frozenset[str] = frozenset({"config", "agent_spec"})
 """``customType``s τ writes about itself, which the cursor read looks past.
 
-One member. ``AgentSession.__init__`` appends an ``agent_spec`` node at the end
-of construction, so opening a saved session lands the cursor on that node rather
-than on whatever the conversation ended with — which would make a lock survive a
-restart in the log and not in the read, and the restart case is the one this
-whole design exists for.
+A config entry (and the legacy ``agent_spec``) can land after a request — a
+session records its frame before its next append — so a reopened session's
+cursor may sit on it rather than on whatever the conversation ended with. Not
+stepping over it would make a lock survive a restart in the log and not in the
+read, and the restart case is the one this whole design exists for.
 
 This is NOT a search for locks (§2, §7). It steps over τ's own provenance writes
 and stops at the first entry that is anything else, so a lock spliced mid-path is

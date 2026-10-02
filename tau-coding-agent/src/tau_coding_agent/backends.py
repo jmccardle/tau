@@ -1662,8 +1662,8 @@ class TauBackend(Backend):
         Args:
             name: The config model name.
         """
-        await self.agent_session.cursor.append(
-            "model_change", model=name, backend=self.config.get("backend", "")
+        await self.agent_session.cursor.append_config(
+            model=name, backend=self.config.get("backend", "")
         )
 
     async def set_session_name(self, name: str) -> Performed:

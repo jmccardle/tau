@@ -71,13 +71,18 @@ class ConversationSession(SessionLog, Protocol):
         ...
 
     @property
+    def config(self) -> dict[str, Any]:
+        """The folded config at the default leaf (``session_log.config_at``)."""
+        ...
+
+    @property
     def model(self) -> str:
-        """The latest ``model_change`` model. Raises if the session has none."""
+        """The config's model name at the default leaf. Raises if there is none."""
         ...
 
     @property
     def backend(self) -> str:
-        """The latest ``model_change`` backend. Raises if the session has none."""
+        """The config's backend name at the default leaf. Raises if there is none."""
         ...
 
     def display_title(self) -> str:

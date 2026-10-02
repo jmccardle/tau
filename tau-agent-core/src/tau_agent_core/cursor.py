@@ -18,7 +18,7 @@ from tau_llm.abort import AbortSignal
 from tau_llm.docs import agent_facing
 
 from tau_agent_core.conversation_tree import ConversationTree
-from tau_agent_core.session_log import SessionLog, default_leaf
+from tau_agent_core.session_log import CONFIG_ENTRY_TYPE, CONFIG_KEYS, SessionLog, default_leaf
 
 __all__ = ["Cursor", "TURN_CURSOR"]
 
@@ -162,6 +162,19 @@ class Cursor:
         """Append a ``customEntry``: durable data the model never sees."""
         return await self.append("customEntry", customType=custom_type, data=data)
 
+    async def append_config(self, **keys: Any) -> str:
+        """Append a config entry setting ``keys`` from here on (docs/CURSORS.md §5).
+
+        Raises:
+            ValueError: no keys, or a key outside :data:`~tau_agent_core.session_log.CONFIG_KEYS`.
+        """
+        unknown = sorted(set(keys) - CONFIG_KEYS)
+        if not keys or unknown:
+            raise ValueError(
+                f"append_config: unknown key(s) {unknown}" if unknown else "append_config: no keys"
+            )
+        return await self.append_custom_entry(CONFIG_ENTRY_TYPE, dict(keys))
+
     async def append_compaction(
         self,
         summary: str,
@@ -172,7 +185,7 @@ class Cursor:
         summary_usage: dict[str, int],
         covered_entries: int,
         covered_tokens: int,
-        agent_spec_id: str | None,
+        config_id: str | None,
     ) -> str:
         """Append a compaction splice anchor and its provenance.
 
@@ -194,7 +207,7 @@ class Cursor:
             summaryUsage=dict(summary_usage),
             coveredEntries=covered_entries,
             coveredTokens=covered_tokens,
-            agentSpecId=agent_spec_id,
+            configId=config_id,
         )
 
     async def append_elide(
@@ -203,7 +216,7 @@ class Cursor:
         *,
         covered_entries: int,
         covered_tokens: int,
-        agent_spec_id: str | None,
+        config_id: str | None,
     ) -> str:
         """Append a summary-less splice anchor (NODE-ADDRESSABLE-AGENTS.md W3).
 
@@ -217,7 +230,7 @@ class Cursor:
             firstKeptId=first_kept_id,
             coveredEntries=covered_entries,
             coveredTokens=covered_tokens,
-            agentSpecId=agent_spec_id,
+            configId=config_id,
         )
 
     async def append_branch_summary(self, summary: str, from_id: str | None) -> str:

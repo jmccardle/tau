@@ -38,7 +38,7 @@ _PROV = {
     "summary_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
     "covered_entries": 1,
     "covered_tokens": 50,
-    "agent_spec_id": None,
+    "config_id": None,
 }
 
 
@@ -157,12 +157,21 @@ async def test_name_property_latest_wins(tmp_path):
     assert Session.load(session.path).name == "Renamed"
 
 
-def test_model_property_raises_without_model_change(tmp_path):
+def test_model_property_raises_without_a_configured_model(tmp_path):
     bare = Session(
         None, Session._build_header("x", "2026-01-01T00:00:00.000Z", CWD, parent=None), []
     )
-    with pytest.raises(ValueError, match="no model_change"):
+    with pytest.raises(ValueError, match="no 'model' in its config"):
         _ = bare.model
+
+
+def test_a_new_session_opens_with_a_root_config_entry(tmp_path):
+    """docs/CURSORS.md §5: the config precedes the system message, at the root."""
+    session = _create(tmp_path, system_prompt="sys")
+    root = session.entries()[0]
+    assert (root["type"], root["customType"], root["parentId"]) == ("customEntry", "config", None)
+    assert root["data"]["cwd"] == CWD
+    assert session.config["model"] == session.model
 
 
 # ── entries() / header raw views (seam 2) ───────────────────────────────────
@@ -179,7 +188,7 @@ async def test_entries_and_header_raw_views(tmp_path):
     assert header["version"] == 1
 
     kinds = [e["type"] for e in session.entries()]
-    assert kinds == ["model_change", "message", "message"]
+    assert kinds == ["customEntry", "message", "message"]
     # parentId threads each entry onto the previous one; first entry's is None.
     raw = session.entries()
     assert raw[0]["parentId"] is None

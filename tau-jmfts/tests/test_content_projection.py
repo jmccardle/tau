@@ -18,7 +18,7 @@ from typing import Any
 from tau_agent_core.cursor import Cursor
 from tau_jmfts.store import JmftsSessionLog, _content_for
 
-_ELIDE_PROV = {"covered_entries": 1, "covered_tokens": 50, "agent_spec_id": None}
+_ELIDE_PROV = {"covered_entries": 1, "covered_tokens": 50, "config_id": None}
 
 
 class RecordingClient:

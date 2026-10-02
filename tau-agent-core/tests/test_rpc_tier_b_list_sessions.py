@@ -144,6 +144,10 @@ class _FakeConversationSession:
         return self._tree().context_for()
 
     @property
+    def config(self) -> dict[str, Any]:
+        return {"model": self._model, "backend": self._backend}
+
+    @property
     def model(self) -> str:
         return self._model
 

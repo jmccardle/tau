@@ -177,9 +177,10 @@ def _row_is_hidden(node: TreeNode) -> bool:
     * **A ``navigate`` with more than one child is a real fork point.** Hiding it
       would draw two branches as one run — a shape the log does not have.
 
-    Only ``navigate``. ``model_change`` and ``agent_spec`` carry no message
-    either, but each records a real change to what the model is and what it was
-    told, which is worth seeing while browsing history.
+    Only ``navigate``. A config entry (and the legacy ``model_change`` and
+    ``agent_spec``) carries no message either, but each records a real change to
+    what the model is and what it was told, which is worth seeing while browsing
+    history.
     """
     return node.kind == "navigate" and not node.is_leaf and len(node.children) <= 1
 

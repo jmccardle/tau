@@ -33,6 +33,7 @@ from tau_coding_agent.tagline import pick_tagline
 from tau_coding_agent.headless import resolve_extensions_config
 from tau_agent_core.agent_session_runtime import AgentSessionRuntime
 from tau_agent_core.cursor import Cursor
+from tau_agent_core.session_log import config_at
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_coding_agent.config import TAU_DIR, ConfigError, bootstrap_config, update_config
 from tau_coding_agent.session_picker import SessionPickerModal
@@ -515,21 +516,19 @@ class TauApp(App):
         update_config(THEME_CONFIG_KEY, theme_name)
 
     def _live_model_name(self) -> str | None:
-        """The current session's model key, or ``None`` before one exists.
+        """The model name in force at the head's cursor, or ``None`` before one exists.
 
-        ``Session.model`` raises when a session carries no ``model_change`` entry
-        (Fail-Early: it refuses to fabricate a default). A session from any of the
-        shipped paths always has one, so this catches a store the TUI does not
-        own rather than an expected state, and falls back to the configured
-        default instead of taking the empty pane down with it.
+        Read by ancestry at the cursor (``session_log.config_at``), not at the
+        newest entry: after a move, the next turn runs as the conversation was
+        configured there (docs/CURSORS.md §5). ``None`` when no config on the path
+        names one — a store the TUI does not own — so the caller falls back to the
+        configured default instead of taking the empty pane down with it.
         """
-        session = self.current_session
-        if session is None:
+        cursor = self._cursor
+        if cursor is None:
             return None
-        try:
-            return str(session.model)
-        except (ValueError, AttributeError):
-            return None
+        model = config_at(cursor.entries(), cursor.leaf).get("model")
+        return str(model) if model is not None else None
 
     def _session_facts(self) -> transcript.SessionFacts:
         """The configuration the empty chat pane states (handoff §4.4).
@@ -539,8 +538,8 @@ class TauApp(App):
         while the chat is still empty.
 
         **The live session's model wins over ``default_model``.** Both change the
-        answer by moving :meth:`Session.model`, which is the latest
-        ``model_change`` entry, and neither writes ``config.json`` — so reading
+        answer by writing a config entry at the cursor, which
+        :meth:`_live_model_name` reads, and neither writes ``config.json`` — so reading
         the config key gave the same string back however the session was started,
         and the pane stated a model the next turn would not use.
         ``default_model`` is the answer only before the first session exists.
@@ -1995,7 +1994,7 @@ class TauApp(App):
         """
         if not reason:
             return
-        model = str(self.current_session.model) if self.current_session else "?"
+        model = self._live_model_name() or "?"
         if model in self._cache_warned_models:
             return
         self._cache_warned_models.add(model)
@@ -2842,7 +2841,7 @@ class TauApp(App):
         """
         parts = [self._activity] if self._activity else []
         if self.current_session is not None:
-            parts.append(str(self.current_session.model))
+            parts.append(self._live_model_name() or "?")
             parts.append(self._aggregate_label(self.messages))
         self.sub_title = " · ".join(p for p in parts if p)
 
@@ -3136,7 +3135,7 @@ class TauApp(App):
         # Build markdown
         created = datetime.fromisoformat(self.current_session.header["timestamp"])
         lines = [f"# {self.current_session.display_title()}\n"]
-        lines.append(f"Model: {self.current_session.model}\n")
+        lines.append(f"Model: {self._live_model_name() or '?'}\n")
         lines.append(f"Date: {created.astimezone().strftime('%Y-%m-%d %H:%M')}\n")
         lines.append("---\n")
 
@@ -3594,7 +3593,11 @@ class TauApp(App):
                 self.notify(f"Model {session.model} not found in config", severity="error")
                 return
 
-            self.current_backend = create_backend(self._apply_run_config(model_config))
+            recorded = session.config
+            resumed = dict(model_config)
+            if "thinking" in recorded:
+                resumed["thinking"] = recorded["thinking"] or "off"
+            self.current_backend = create_backend(self._apply_run_config(resumed))
             self._session_runtime = self._build_session_runtime(
                 self.current_backend, session.model, model_config["backend"]
             )

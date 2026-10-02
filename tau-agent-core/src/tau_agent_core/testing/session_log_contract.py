@@ -39,7 +39,7 @@ def _compaction_provenance() -> dict[str, Any]:
         "summary_usage": {"input_tokens": 400, "output_tokens": 60, "total_tokens": 460},
         "covered_entries": 2,
         "covered_tokens": 300,
-        "agent_spec_id": None,
+        "config_id": None,
     }
 
 
@@ -47,7 +47,7 @@ def _elide_provenance() -> dict[str, Any]:
     """The three ``append_elide`` provenance kwargs. Three, not five: an elide has
     no summary, so a summarizer model and a summary cost do not exist for it and
     are not parameters (§8.2)."""
-    return {"covered_entries": 2, "covered_tokens": 300, "agent_spec_id": None}
+    return {"covered_entries": 2, "covered_tokens": 300, "config_id": None}
 
 
 def _texts(messages: list[dict[str, Any]]) -> list[str]:
@@ -467,7 +467,7 @@ class SessionLogContractTests:
             summary_usage={"input_tokens": 900, "output_tokens": 70, "total_tokens": 970},
             covered_entries=3,
             covered_tokens=812,
-            agent_spec_id=spec,
+            config_id=spec,
         )
 
         def check(entries: list[dict[str, Any]], where: str) -> None:
@@ -480,7 +480,7 @@ class SessionLogContractTests:
             }, where
             assert anchor["coveredEntries"] == 3, where
             assert anchor["coveredTokens"] == 812, where
-            assert anchor["agentSpecId"] == spec, where
+            assert anchor["configId"] == spec, where
             assert anchor["tokensBefore"] == 1234, where
 
         check(log.entries(), "in entries()")
@@ -503,14 +503,14 @@ class SessionLogContractTests:
         keep = await cursor.append_message(_msg("user", "recent"))
 
         anchor_id = await cursor.append_elide(
-            keep, covered_entries=1, covered_tokens=57, agent_spec_id=None
+            keep, covered_entries=1, covered_tokens=57, config_id=None
         )
 
         def check(entries: list[dict[str, Any]], where: str) -> None:
             anchor = next(e for e in entries if e["id"] == anchor_id)
             assert anchor["coveredEntries"] == 1, where
             assert anchor["coveredTokens"] == 57, where
-            assert anchor["agentSpecId"] is None, where
+            assert anchor["configId"] is None, where
             assert "summarizerModelId" not in anchor, (
                 f"{where}: an elide has no summary, so it must not invent a summarizer"
             )

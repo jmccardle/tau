@@ -158,4 +158,4 @@ class TestConfigNotPersisted:
         entries = session.session_log.entries()
         assert len(entries) == 1
         assert entries[0]["type"] == "customEntry"
-        assert entries[0]["customType"] == "agent_spec"
+        assert entries[0]["customType"] == "config"

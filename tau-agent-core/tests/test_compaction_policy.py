@@ -498,8 +498,8 @@ class TestLocalSummarizerPolicy:
             "the covered span is a subset of the context that preceded it"
         )
 
-        spec = next(e for e in entries if e["id"] == anchor["agentSpecId"])
-        assert spec["type"] == "customEntry" and spec["customType"] == "agent_spec"
+        spec = next(e for e in entries if e["id"] == anchor["configId"])
+        assert spec["type"] == "customEntry" and spec["customType"] == "config"
 
     def test_a_summariser_that_cannot_hold_the_window_is_refused(self):
         policy = CompactionPolicy.local_summarizer(

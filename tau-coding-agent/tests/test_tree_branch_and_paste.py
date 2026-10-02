@@ -296,7 +296,7 @@ async def test_v_with_nothing_copied_says_what_c_is_for():
 
 async def test_a_structural_row_cannot_be_copied():
     cursor, ids = await _linear_log()
-    await cursor.append_elide(ids[2], covered_entries=1, covered_tokens=4, agent_spec_id=None)
+    await cursor.append_elide(ids[2], covered_entries=1, covered_tokens=4, config_id=None)
     elide_id = next(e["id"] for e in cursor.entries() if e["type"] == "elide")
 
     modal = tree_browser.SessionTreeModal(cursor.tree())

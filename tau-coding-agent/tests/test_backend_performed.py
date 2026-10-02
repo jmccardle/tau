@@ -62,10 +62,9 @@ async def test_set_model_reports_the_model_it_switched_to(backend: TauBackend, m
     assert performed.data["model"] == switched
     cursor = backend.agent_session.cursor
     recorded = cursor.tree().entry(cursor.leaf)
-    assert (recorded["type"], recorded["model"], recorded["backend"]) == (
-        "model_change",
-        "fast",
-        "openai",
+    assert (recorded["customType"], recorded["data"]) == (
+        "config",
+        {"model": "fast", "backend": "openai"},
     )
 
 

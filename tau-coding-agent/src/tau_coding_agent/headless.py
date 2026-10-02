@@ -91,7 +91,10 @@ def resolve_no_tools(args: "CLIArgs") -> Literal["all", "builtin"] | None:
 
 
 def resolve_model_config(
-    config: dict, args: "CLIArgs", fallback_model: str | None = None
+    config: dict,
+    args: "CLIArgs",
+    fallback_model: str | None = None,
+    prior_config: dict[str, Any] | None = None,
 ) -> tuple[str, dict]:
     """Resolve ``--model``/``--provider``/``--tools`` into a backend config dict.
 
@@ -108,8 +111,12 @@ def resolve_model_config(
 
     ``fallback_model`` is the model to use when ``--model`` is absent — for a
     resumed session this is the stored session's model, so a bare ``tau -p -c``
-    continues on the same model (pi: a continued session keeps its model unless
-    ``--model`` overrides). It takes precedence over ``default_model``.
+    continues on the same model. It takes precedence over ``default_model``.
+
+    ``prior_config`` is a resumed session's config (``Session.config``). When it
+    records a thinking level and neither ``--thinking`` nor a ``:level`` suffix
+    names one, the session resumes at it; a recorded ``None`` resumes at
+    ``"off"`` (docs/CURSORS.md §5).
     """
     models = config.get("models", {})
     spec = args.model or fallback_model or config.get("default_model")
@@ -139,6 +146,8 @@ def resolve_model_config(
         model_config = {"backend": prov, "model": mid}
 
     thinking = args.thinking or suffix_thinking
+    if thinking is None and prior_config is not None and "thinking" in prior_config:
+        thinking = prior_config["thinking"] or "off"
     if thinking is not None:
         model_config["thinking"] = thinking
 
@@ -372,7 +381,7 @@ async def _apply_resume_metadata(
 ) -> None:
     """On resume/fork, record a model switch and/or a rename at ``cursor`` if they changed."""
     if model_name != prior.model or backend_name != prior.backend:
-        await cursor.append("model_change", model=model_name, backend=backend_name)
+        await cursor.append_config(model=model_name, backend=backend_name)
     if title is not None:
         await cursor.append("session_info", name=title)
 
@@ -734,7 +743,12 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
 
     # A resumed run keeps the session's model unless --model overrides it.
     fallback_model = prior.model if prior is not None else None
-    model_name, model_config = resolve_model_config(config, args, fallback_model=fallback_model)
+    model_name, model_config = resolve_model_config(
+        config,
+        args,
+        fallback_model=fallback_model,
+        prior_config=prior.config if prior is not None else None,
+    )
     backend_name = model_config.get("backend", "")
     cwd = os.getcwd()
 

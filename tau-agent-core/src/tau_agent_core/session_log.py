@@ -3,7 +3,8 @@
 A :class:`SessionLog` stores entries and keeps no position. Who appends where is a
 :class:`~tau_agent_core.cursor.Cursor`'s job, so a store implements three members
 and every store agrees on the entry algebra defined here: :func:`default_leaf`,
-:func:`agent_spec_in_force`, :func:`event_iso`, :func:`normalize_loaded_entries`.
+:func:`config_at`, :func:`config_entry_at`, :func:`session_name`, :func:`event_iso`,
+:func:`normalize_loaded_entries`.
 
 Implementations: :class:`InMemorySessionLog` (below), the file store
 ``tau_coding_agent.session_store.Session``, and the JMFTS store. Each is checked by
@@ -95,46 +96,112 @@ def session_name(entries: list[dict[str, Any]]) -> str | None:
     return None
 
 
-@agent_facing(topic="sessions")
-def agent_spec_in_force(entries: list[dict[str, Any]], leaf_id: str | None) -> str | None:
-    """The id of the ``agent_spec`` record governing ``leaf_id``, or ``None``.
+CONFIG_ENTRY_TYPE = "config"
+"""The ``customType`` of a config ``customEntry`` (docs/CURSORS.md §5)."""
 
-    What a splice anchor's ``agentSpecId`` must be set to
-    (TREE-BROWSER-AS-EDITOR.md §8.3): the nearest ``agent_spec`` ``customEntry``
-    among ``leaf_id``'s ANCESTORS, walking ``parentId`` leaf→root.
+CONFIG_KEYS: frozenset[str] = frozenset(
+    {
+        "model",
+        "backend",
+        "thinking",
+        "cwd",
+        "tools",
+        "extensions",
+        "model_spec",
+        "system_prompt_digest",
+    }
+)
+"""What a config entry may set. Each key is optional; a later entry on a path
+overrides an earlier one key by key.
 
-    Ancestry, not "the last one this session wrote", for the same reason
-    ``ConversationTree._previous_agent_spec`` uses it and docs/LANE-REMOVAL.md §1
-    removed the tag that pretended otherwise: a leaf's frame is its ancestor chain
-    and nothing else. The two answers diverge exactly where it matters — an elide
-    the tree browser aims at a historical anchor is governed by whatever spec was in
-    force *there*, which may be two ``set_model`` swaps behind the session's current
-    one, and a spec written on a sibling branch never governed this path at all.
+- ``model`` / ``backend``: the config name (``--model NAME``) and backend a head
+  rebuilds from on resume.
+- ``thinking``: the requested reasoning level, or ``None`` for none.
+- ``cwd``: the working directory the tools run in.
+- ``tools`` / ``extensions``: names offered to the model, and extensions bound.
+- ``model_spec``: ``{id, provider, context_window}`` of the model that ran.
+- ``system_prompt_digest``: a sha256 of the prompt text, never the text.
+"""
 
-    Lives here beside :func:`default_leaf`, and for the same reason: it is part of
-    the entry algebra every ``SessionLog`` implementation must agree on exactly, not
-    a property of any one durability layer. Implemented as a plain ``parentId`` walk
-    rather than through ``ConversationTree`` so this module keeps its zero-dependency
-    position under the tree, and so the two callers (one in ``tau-agent-core``, one in
-    ``tau-coding-agent``) share one spelling.
 
-    Returns ``None`` when no ancestor is an ``agent_spec`` — an honest answer, and a
-    reachable one: a pi-imported log has no such node, and neither does a store
-    driven directly rather than through ``AgentSession``. §11.3's "no defaults" rule
-    is what keeps that answer distinct from a caller who never looked.
+def _config_of(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """The config keys ``entry`` sets, or ``None`` if it sets none.
+
+    Reads the legacy kinds too: ``model_change`` → ``model``/``backend``,
+    ``thinking_change`` → ``thinking``, and an ``agent_spec`` record → its frame.
     """
-    by_id = {str(e["id"]): e for e in entries if e.get("id") is not None}
-    current = leaf_id
-    visited: set[str] = set()
-    while current is not None and current not in visited:
-        visited.add(current)  # cycle guard, mirroring ConversationTree._walk
-        node = by_id.get(current)
-        if node is None:
+    kind = entry.get("type")
+    if kind == "customEntry":
+        data = entry.get("data")
+        if not isinstance(data, dict):
             return None
-        if node.get("type") == "customEntry" and node.get("customType") == "agent_spec":
-            return current
+        if entry.get("customType") == CONFIG_ENTRY_TYPE:
+            return {k: v for k, v in data.items() if k in CONFIG_KEYS}
+        if entry.get("customType") == "agent_spec":
+            legacy = {k: data[k] for k in ("tools", "extensions", "cwd") if k in data}
+            if "model" in data:
+                legacy["model_spec"] = data["model"]
+            if "system_prompt_digest" in data:
+                legacy["system_prompt_digest"] = data["system_prompt_digest"]
+            return legacy
+        return None
+    if kind == "model_change":
+        return {"model": entry.get("model"), "backend": entry.get("backend")}
+    if kind == "thinking_change":
+        return {"thinking": entry.get("level")}
+    return None
+
+
+def _ancestry(entries: list[dict[str, Any]], leaf_id: str | None) -> list[dict[str, Any]]:
+    """``leaf_id``'s path, root first, by a plain ``parentId`` walk with a cycle guard."""
+    by_id = {str(e["id"]): e for e in entries if e.get("id") is not None}
+    path: list[dict[str, Any]] = []
+    current = leaf_id
+    seen: set[str] = set()
+    while current is not None and current not in seen and current in by_id:
+        seen.add(current)
+        node = by_id[current]
+        path.append(node)
         parent = node.get("parentId")
         current = str(parent) if parent is not None else None
+    path.reverse()
+    return path
+
+
+@agent_facing(topic="sessions")
+def config_at(entries: list[dict[str, Any]], leaf_id: str | None) -> dict[str, Any]:
+    """The effective config at ``leaf_id``: every config entry on its path, folded.
+
+    Ancestry, not append order: a config written on a sibling branch never
+    governed this path, so a cursor moved to an older position runs as the
+    conversation was configured there (docs/CURSORS.md §5).
+
+    Args:
+        entries: A log's entries.
+        leaf_id: The position to read at; ``None`` reads nothing.
+
+    Returns:
+        The folded keys (a subset of :data:`CONFIG_KEYS`); empty if none were set.
+    """
+    folded: dict[str, Any] = {}
+    for entry in _ancestry(entries, leaf_id):
+        config = _config_of(entry)
+        if config:
+            folded.update(config)
+    return folded
+
+
+@agent_facing(topic="sessions")
+def config_entry_at(entries: list[dict[str, Any]], leaf_id: str | None) -> str | None:
+    """The id of the nearest config-setting entry on ``leaf_id``'s path, or ``None``.
+
+    What a splice anchor's ``configId`` records (TREE-BROWSER-AS-EDITOR.md §8.3):
+    the frame in force over the span it covers. ``None`` is a real answer — a log
+    no head configured has no such entry.
+    """
+    for entry in reversed(_ancestry(entries, leaf_id)):
+        if _config_of(entry):
+            return str(entry["id"])
     return None
 
 

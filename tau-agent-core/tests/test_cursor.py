@@ -210,10 +210,10 @@ async def test_a_cursors_anchors_carry_their_full_provenance(head):
         summary_usage={"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
         covered_entries=2,
         covered_tokens=31,
-        agent_spec_id=None,
+        config_id=None,
     )
     elide = await second.append_elide(
-        keep, covered_entries=1, covered_tokens=12, agent_spec_id=None
+        keep, covered_entries=1, covered_tokens=12, config_id=None
     )
 
     by_id = {e["id"]: e for e in head.entries()}
