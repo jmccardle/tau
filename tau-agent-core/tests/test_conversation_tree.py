@@ -440,7 +440,7 @@ def _preview(entries: list[dict[str, Any]], entry_id: str, cursor: str) -> str:
 def test_compaction_preview_states_the_span_it_folds() -> None:
     """§4.2: the tip-append shape — ``firstKeptId`` is an ANCESTOR of the anchor.
 
-    ``session_store.Session.append_compaction`` appends at the leaf, so the kept
+    ``Cursor.append_compaction`` appends at the cursor's leaf, so the kept
     region precedes the anchor. The row must state the span (e02 and e03 drop out;
     e04 onward is kept) and the summary, in that order.
     """
@@ -685,9 +685,9 @@ class TestBrowse:
     def test_every_entry_gets_a_node_including_the_undrawn_kinds(self) -> None:
         """Filtering is the reader's rule, not the log's.
 
-        A `navigate` with one child is hidden by the TUI's browser and is still
-        on the ancestry; a projection that dropped it would hand a head a tree
-        whose parent links do not resolve.
+        A legacy `navigate` with one child is hidden by the TUI's browser and is
+        still on the ancestry; a projection that dropped it would hand a head a
+        tree whose parent links do not resolve.
         """
         entries = _branched() + [
             {

@@ -11,10 +11,9 @@ Proves:
 * the ADDED ``message_end`` observer auto-names the session from the first
   user message the first time an assistant turn completes, and never
   overwrites a name that already exists (manual or auto);
-* naming is durable via ``ExtensionAPI.set_session_name`` ->
-  ``Session.append_session_info`` (S64's fix to the previously-dead
-  ``_session_name``-attribute no-op) and RELOAD-INVARIANT: a freshly loaded
-  on-disk ``Session`` reports the same ``.name``.
+* naming is durable — ``ExtensionAPI.set_session_name`` appends a
+  ``session_info`` entry at the session's cursor — and RELOAD-INVARIANT: a
+  freshly loaded on-disk ``Session`` reports the same ``.name``.
 """
 
 from __future__ import annotations
@@ -98,8 +97,8 @@ async def test_set_then_show(tmp_path):
 
 async def test_assistant_message_end_auto_names_from_first_user_message(tmp_path):
     agent, live = _session_with_autoname(tmp_path)
-    await live.append_message(_msg("user", "let's refactor the auth module"))
-    await live.append_message(_msg("assistant", "sure, starting now"))
+    await agent.cursor.append_message(_msg("user", "let's refactor the auth module"))
+    await agent.cursor.append_message(_msg("assistant", "sure, starting now"))
 
     await _emit_message_end(agent, {"role": "assistant", "content": []})
 
@@ -109,7 +108,7 @@ async def test_assistant_message_end_auto_names_from_first_user_message(tmp_path
 async def test_auto_name_truncates_long_first_message(tmp_path):
     agent, live = _session_with_autoname(tmp_path)
     long_text = "x" * 80
-    await live.append_message(_msg("user", long_text))
+    await agent.cursor.append_message(_msg("user", long_text))
 
     await _emit_message_end(agent, {"role": "assistant", "content": []})
 
@@ -119,7 +118,7 @@ async def test_auto_name_truncates_long_first_message(tmp_path):
 async def test_auto_name_does_not_overwrite_an_existing_manual_name(tmp_path):
     agent, live = _session_with_autoname(tmp_path)
     await agent.run_extension_command("session-name", "Custom Name")
-    await live.append_message(_msg("user", "hello there"))
+    await agent.cursor.append_message(_msg("user", "hello there"))
 
     await _emit_message_end(agent, {"role": "assistant", "content": []})
 
@@ -128,18 +127,18 @@ async def test_auto_name_does_not_overwrite_an_existing_manual_name(tmp_path):
 
 async def test_auto_name_fires_only_once(tmp_path):
     agent, live = _session_with_autoname(tmp_path)
-    await live.append_message(_msg("user", "first topic"))
+    await agent.cursor.append_message(_msg("user", "first topic"))
     await _emit_message_end(agent, {"role": "assistant", "content": []})
     assert live.name == "first topic"
 
-    await live.append_message(_msg("user", "second topic, unrelated"))
+    await agent.cursor.append_message(_msg("user", "second topic, unrelated"))
     await _emit_message_end(agent, {"role": "assistant", "content": []})
     assert live.name == "first topic"
 
 
 async def test_non_assistant_or_missing_message_events_are_ignored(tmp_path):
     agent, live = _session_with_autoname(tmp_path)
-    await live.append_message(_msg("user", "hello"))
+    await agent.cursor.append_message(_msg("user", "hello"))
 
     await agent._events.emit(AgentEvent(type="message_end", timestamp=_TS, message=None))
     await _emit_message_end(agent, {"role": "user", "content": []})
@@ -158,7 +157,7 @@ async def test_no_user_message_yet_does_not_crash(tmp_path):
 
 async def test_auto_named_session_survives_reload(tmp_path):
     agent, live = _session_with_autoname(tmp_path)
-    await live.append_message(_msg("user", "the reload test topic"))
+    await agent.cursor.append_message(_msg("user", "the reload test topic"))
     await _emit_message_end(agent, {"role": "assistant", "content": []})
     session_path = live.path
     assert session_path is not None

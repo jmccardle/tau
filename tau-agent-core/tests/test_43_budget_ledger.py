@@ -36,7 +36,7 @@ from tau_llm.types import AssistantMessage, Model, ToolCall, Usage
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
-from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import InMemorySessionLog
 
 #: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
@@ -118,9 +118,8 @@ def _message_text_blob(messages: list[Any]) -> str:
 
 
 def _reloaded_transcript(session: AgentSession) -> list[Any]:
-    """Rebuild the tree from the persisted entries alone, as a reload from disk would."""
-    log = session._session_log
-    return ConversationTree(log.entries(), log.cursor).context_for()
+    """The context a fresh cursor on the stored entries sees, as a reload from disk would."""
+    return Cursor.newest(session.session_log).context()
 
 
 def _make_session() -> AgentSession:

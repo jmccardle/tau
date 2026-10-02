@@ -35,7 +35,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 138,389 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 137,057 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -115,7 +115,7 @@ what rides on top of this on every response):
       "type": "boolean"
     },
     "cursor": {
-      "description": "The resulting session_log.cursor, duplicated at top level (E5/F3 \u2014 every mutating response returns the resulting cursor). Present only when cancelled is false.",
+      "description": "The resulting cursor.leaf, duplicated at top level (E5/F3 \u2014 every mutating response returns the resulting cursor). Present only when cancelled is false.",
       "type": [
         "string",
         "null"
@@ -333,7 +333,7 @@ what rides on top of this on every response):
 
 #### `get_state`
 
-*Since 2A.* An aggregate over AgentSession.state (session_id/status), is_streaming, get_model(), get_usage(), messages, and session_log.cursor (F3: a host may not cache 'the tip', so cursor rides on every state read). τ has no equivalent of pi's thinkingLevel/steeringMode/followUpMode/sessionFile/pendingMessageCount — none of those exist as AgentSession state today, so they are omitted rather than fabricated. Two of pi's state fields DID gain a τ equivalent in Tier B, and are absent from THIS verb as duplication rather than as absence: pi's sessionName is get_session_name (B5 — read off the session log via extension_types.read_session_name; still not an AgentSession property, which is why it is not folded in here), and pi's autoCompactionEnabled is get_session_stats' compaction_settings.enabled (D-3), the field set_auto_compaction (D-4) writes. This verb answers 'what is running'; get_session_stats' own notes state that division of labour. `addressable` is the one field here that is not about the turn: it answers whether the CURRENT session is persisted, which stopped being a constant when --mode rpc began honoring --no-session. Before that the startup session was always persisted, new_session/fork/switch_session reported addressable on the sessions THEY produced, and a host that never called one of those three had no verb to ask — so the only way to learn an unpersisted session was to trip -32004 on set_model. It belongs on the state read rather than a verb of its own because a host already calls this one, and because it can change under the connection's feet (a switch_session onto an ephemeral session) exactly as `model` and `cursor` can.
+*Since 2A.* An aggregate over AgentSession.state (session_id/status), is_streaming, get_model(), get_usage(), messages, and cursor.leaf (F3: a host may not cache 'the tip', so cursor rides on every state read). τ has no equivalent of pi's thinkingLevel/steeringMode/followUpMode/sessionFile/pendingMessageCount — none of those exist as AgentSession state today, so they are omitted rather than fabricated. Two of pi's state fields DID gain a τ equivalent in Tier B, and are absent from THIS verb as duplication rather than as absence: pi's sessionName is get_session_name (B5 — read off the session log via extension_types.read_session_name; still not an AgentSession property, which is why it is not folded in here), and pi's autoCompactionEnabled is get_session_stats' compaction_settings.enabled (D-3), the field set_auto_compaction (D-4) writes. This verb answers 'what is running'; get_session_stats' own notes state that division of labour. `addressable` is the one field here that is not about the turn: it answers whether the CURRENT session is persisted, which stopped being a constant when --mode rpc began honoring --no-session. Before that the startup session was always persisted, new_session/fork/switch_session reported addressable on the sessions THEY produced, and a host that never called one of those three had no verb to ask — so the only way to learn an unpersisted session was to trip -32004 on set_model. It belongs on the state read rather than a verb of its own because a host already calls this one, and because it can change under the connection's feet (a switch_session onto an ephemeral session) exactly as `model` and `cursor` can.
 
 **Params schema:**
 
@@ -356,7 +356,7 @@ what rides on top of this on every response):
       "type": "boolean"
     },
     "cursor": {
-      "description": "session_log.cursor (F3: no host may cache 'the tip').",
+      "description": "cursor.leaf (F3: no host may cache 'the tip').",
       "type": [
         "string",
         "null"
@@ -492,7 +492,7 @@ what rides on top of this on every response):
       "type": "boolean"
     },
     "cursor": {
-      "description": "The resulting session_log.cursor, duplicated at top level (E5/F3 \u2014 every mutating response returns the resulting cursor). Present only when cancelled is false.",
+      "description": "The resulting cursor.leaf, duplicated at top level (E5/F3 \u2014 every mutating response returns the resulting cursor). Present only when cancelled is false.",
       "type": [
         "string",
         "null"
@@ -674,7 +674,7 @@ what rides on top of this on every response):
       "type": "boolean"
     },
     "cursor": {
-      "description": "The resulting session_log.cursor, duplicated at top level (E5/F3 \u2014 every mutating response returns the resulting cursor). Present only when cancelled is false.",
+      "description": "The resulting cursor.leaf, duplicated at top level (E5/F3 \u2014 every mutating response returns the resulting cursor). Present only when cancelled is false.",
       "type": [
         "string",
         "null"
@@ -1016,7 +1016,7 @@ what rides on top of this on every response):
 {
   "properties": {
     "cursor": {
-      "description": "session_log.cursor after this call (E5, rule 1 of 'E5 in Tier B' above). ALWAYS the unchanged tip: this verb mutates an in-memory CompactionSettings and appends no log entry, so there is nothing here that could move it. Returned rather than omitted because absence is not a signal (rule 3) \u2014 a host reads the same field from every mutator and never has to infer the tip from a missing key (F3).",
+      "description": "cursor.leaf after this call (E5, rule 1 of 'E5 in Tier B' above). ALWAYS the unchanged tip: this verb mutates an in-memory CompactionSettings and appends no log entry, so there is nothing here that could move it. Returned rather than omitted because absence is not a signal (rule 3) \u2014 a host reads the same field from every mutator and never has to infer the tip from a missing key (F3).",
       "type": [
         "string",
         "null"
@@ -1037,7 +1037,7 @@ what rides on top of this on every response):
 
 #### `set_model`
 
-*Since tier-b.* D-2: switches the active model by NAME (AgentSession.set_model, agent_session.py:785 — effective on the NEXT turn, never mid-stream) and, unlike the bare session method, PERSISTS the switch: appends a model_change entry and returns the resulting cursor (E5, answered the one way the whole tier answers it — see commands.py 'E5 in Tier B': every Tier B mutator's completion carries `cursor`, present even when the call moved nothing; only the tier's reads omit it. Here the append always moves it, so it is that entry's own id). D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than racing an in-flight turn's own AgentLoop, which reads self._model when it rebuilds each turn. Refuses: an unknown `name` is a CALLER error, not a runtime failure — the bound resolver's KeyError/ValueError (both are AgentSession.set_model's own documented shapes for 'no such name') is converted to INVALID_PARAMS, the same classification switch_session already gives an unresolvable session_id: a value the schema cannot check syntactically, refused before anything is touched. The resolver's own message (it is the component that knows which names exist) reaches the host verbatim, unwrapped from KeyError.__str__'s repr quotes rather than paraphrased — see _resolver_error_message. An UNPERSISTED session (new_session {persist:false}) is refused too, before anything is touched — require_durable_session, Blocker 2 of the Tier B review — because a cursor returned for an append that lands only in memory is a durability promise this verb cannot keep; SESSION_NOT_PERSISTED, which is also what a log declaring no durable location at all gets (the SDK's InMemorySessionLog). A log MISSING append_model_change entirely is the different, blunter failure it always was — require_log_appender, §1.1, RuntimeError -> INTERNAL_ERROR — because that is a store wired wrong, not a session the host can move off. That refusal is D-7 rule 1, stated once for the whole tier in commands.py's 'DURABILITY in Tier B' block: a verb that APPENDS refuses an unpersisted session — this one, set_session_name, and (since finding 6) compact, which used to run there and report a cursor for an entry that died with the process. Both checks run BEFORE session.set_model(name), so a refusal leaves the in-process model unswitched: this verb never reports 'maybe switched, definitely not persisted'. Known gap (D-2, stated not hidden): the append happens HERE, in the RPC verb, not inside AgentSession.set_model itself — widening that method is out of this phase's scope, since it is also the TUI's own call path — so a TUI model switch still does NOT persist a model_change entry; only a switch made through this RPC verb does. WHERE the entry lands, and for how long (unit S): a --mode rpc process defaults to storing its sessions under a private <tmp>/.tau-<uid>/sessions, NOT the user's ~/.tau/sessions — one 0-message session per spawn would otherwise take over `tau -c` for whoever is working in the same directory. Most systems clear the temp dir on reboot, so this cursor's durability is bounded by MACHINE UPTIME, not forever: a replay can find the entry for the life of the session, and a host that needs more must be started with --session-dir DIR (accepted under --mode rpc precisely so a host can choose, including --session-dir ~/.tau/sessions).
+*Since tier-b.* D-2: switches the active model by NAME (AgentSession.set_model, agent_session.py:785 — effective on the NEXT turn, never mid-stream) and, unlike the bare session method, PERSISTS the switch: appends a model_change entry and returns the resulting cursor (E5, answered the one way the whole tier answers it — see commands.py 'E5 in Tier B': every Tier B mutator's completion carries `cursor`, present even when the call moved nothing; only the tier's reads omit it. Here the append always moves it, so it is that entry's own id). D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than racing an in-flight turn's own AgentLoop, which reads self._model when it rebuilds each turn. Refuses: an unknown `name` is a CALLER error, not a runtime failure — the bound resolver's KeyError/ValueError (both are AgentSession.set_model's own documented shapes for 'no such name') is converted to INVALID_PARAMS, the same classification switch_session already gives an unresolvable session_id: a value the schema cannot check syntactically, refused before anything is touched. The resolver's own message (it is the component that knows which names exist) reaches the host verbatim, unwrapped from KeyError.__str__'s repr quotes rather than paraphrased — see _resolver_error_message. An UNPERSISTED session (new_session {persist:false}) is refused too, before anything is touched — require_durable_session, Blocker 2 of the Tier B review — because a cursor returned for an append that lands only in memory is a durability promise this verb cannot keep; SESSION_NOT_PERSISTED, which is also what a log declaring no durable location at all gets (the SDK's InMemorySessionLog). That refusal is D-7 rule 1, stated once for the whole tier in commands.py's 'DURABILITY in Tier B' block: a verb that APPENDS refuses an unpersisted session — this one, set_session_name, and (since finding 6) compact, which used to run there and report a cursor for an entry that died with the process. The check runs BEFORE session.set_model(name), so a refusal leaves the in-process model unswitched: this verb never reports 'maybe switched, definitely not persisted'. The model_change entry is appended at the session's cursor, as the TUI's own switch does. WHERE the entry lands, and for how long (unit S): a --mode rpc process defaults to storing its sessions under a private <tmp>/.tau-<uid>/sessions, NOT the user's ~/.tau/sessions — one 0-message session per spawn would otherwise take over `tau -c` for whoever is working in the same directory. Most systems clear the temp dir on reboot, so this cursor's durability is bounded by MACHINE UPTIME, not forever: a replay can find the entry for the life of the session, and a host that needs more must be started with --session-dir DIR (accepted under --mode rpc precisely so a host can choose, including --session-dir ~/.tau/sessions).
 
 **Params schema:**
 
@@ -1064,7 +1064,7 @@ what rides on top of this on every response):
 {
   "properties": {
     "cursor": {
-      "description": "session_log.cursor immediately after the model_change entry this call appended (E5) \u2014 that entry's own id, since the append is the last write this handler makes.",
+      "description": "cursor.leaf immediately after the model_change entry this call appended (E5) \u2014 that entry's own id, since the append is the last write this handler makes.",
       "type": [
         "string",
         "null"
@@ -1085,7 +1085,7 @@ what rides on top of this on every response):
 
 #### `set_session_name`
 
-*Since tier-b.* D-1 (mutating): takes turn_safety_guard before writing. Calls AgentSession.set_session_name, which is extension_types.apply_session_name — the SAME body ExtensionAPI.set_session_name calls (docs/RPC-TIER-B.md B5: 'do not reinvent it and do not copy-paste it'), which itself performs §1.1's raise ('the bound log must have append_session_info, else raise') — so this handler does NOT also call require_log_appender: that would check the identical fact twice. require_log_appender (B0) is for a verb with no pre-existing extension-API body to reuse, e.g. set_model. It DOES take require_durable_session first (Blocker 2, Tier B review), which asks a different question — not 'does the log have the appender' (every real session does) but 'will the entry outlive this process': an unpersisted session (new_session {persist:false}) is refused rather than handed a cursor for a rename nobody will ever read back. That is D-7 rule 1, which commands.py's 'DURABILITY in Tier B' block now states once for the whole tier — this verb appends, so it refuses; `compact` appends too and, since finding 6, gives the same answer instead of a third one. E5, answered the one way the whole tier answers it (see commands.py 'E5 in Tier B'): this response carries the resulting `cursor`, as every Tier B mutator's completion does, present even when the call moved nothing — here the append always moves it. An empty name is INVALID_PARAMS (validate_params has no minLength — see the params schema's own note); an unpersisted session, or a log declaring no durable location (e.g. the SDK's InMemorySessionLog), is SESSION_NOT_PERSISTED — round-3 finding 4 of the Tier B review moved it off INTERNAL_ERROR, which the generated reference defines as 'the handler raised something it did not raise on purpose' and which this refusal is the opposite of. A log MISSING append_session_info altogether still surfaces as INTERNAL_ERROR (require_log_appender): a store wired wrong is not a session the host can move off. Nothing is mutated before either check. This verb was RPC's only door onto append_session_info until AgentSession.set_session_name existed; a head now reaches the same body without a wire. WHERE the rename lands, and for how long (unit S): a --mode rpc process defaults to storing its sessions under a private <tmp>/.tau-<uid>/sessions, NOT the user's ~/.tau/sessions — so a name set here does not show up in that user's TUI picker unless the host was started with --session-dir (accepted under --mode rpc precisely so a host can choose, including --session-dir ~/.tau/sessions). Most systems clear the temp dir on reboot, so this cursor's durability is bounded by MACHINE UPTIME, not forever.
+*Since tier-b.* D-1 (mutating): takes turn_safety_guard before writing. Calls AgentSession.set_session_name, which is extension_types.apply_session_name — the SAME body ExtensionAPI.set_session_name calls (docs/RPC-TIER-B.md B5: 'do not reinvent it and do not copy-paste it'). It takes require_durable_session first (Blocker 2, Tier B review), which asks a different question — not 'does the log have the appender' (every real session does) but 'will the entry outlive this process': an unpersisted session (new_session {persist:false}) is refused rather than handed a cursor for a rename nobody will ever read back. That is D-7 rule 1, which commands.py's 'DURABILITY in Tier B' block now states once for the whole tier — this verb appends, so it refuses; `compact` appends too and, since finding 6, gives the same answer instead of a third one. E5, answered the one way the whole tier answers it (see commands.py 'E5 in Tier B'): this response carries the resulting `cursor`, as every Tier B mutator's completion does, present even when the call moved nothing — here the append always moves it. An empty name is INVALID_PARAMS (validate_params has no minLength — see the params schema's own note); an unpersisted session, or a log declaring no durable location (e.g. the SDK's InMemorySessionLog), is SESSION_NOT_PERSISTED — round-3 finding 4 of the Tier B review moved it off INTERNAL_ERROR, which the generated reference defines as 'the handler raised something it did not raise on purpose' and which this refusal is the opposite of. Nothing is mutated before the check. WHERE the rename lands, and for how long (unit S): a --mode rpc process defaults to storing its sessions under a private <tmp>/.tau-<uid>/sessions, NOT the user's ~/.tau/sessions — so a name set here does not show up in that user's TUI picker unless the host was started with --session-dir (accepted under --mode rpc precisely so a host can choose, including --session-dir ~/.tau/sessions). Most systems clear the temp dir on reboot, so this cursor's durability is bounded by MACHINE UPTIME, not forever.
 
 **Params schema:**
 
@@ -1112,7 +1112,7 @@ what rides on top of this on every response):
 {
   "properties": {
     "cursor": {
-      "description": "The resulting session_log.cursor (E5/F3 \u2014 every mutating response returns the resulting cursor).",
+      "description": "The resulting cursor.leaf (E5/F3 \u2014 every mutating response returns the resulting cursor).",
       "type": [
         "string",
         "null"
@@ -1171,7 +1171,7 @@ what rides on top of this on every response):
 {
   "properties": {
     "cursor": {
-      "description": "session_log.cursor after the response was appended (E5 rule 1). The append is what RELEASES the lock \u2014 appending moves the cursor and a lock is read at the cursor \u2014 so this value is the evidence the session is answerable again.",
+      "description": "cursor.leaf after the response was appended (E5 rule 1). The append is what RELEASES the lock \u2014 appending moves the cursor and a lock is read at the cursor \u2014 so this value is the evidence the session is answerable again.",
       "type": [
         "string",
         "null"
@@ -1200,7 +1200,7 @@ what rides on top of this on every response):
 
 #### `commit_branch`
 
-*Since 0.9.8.* tau_agent_core.tree_ops.commit_branch, projected. Builds a branch out of a set of marked entries and continues on it (docs/TREE-BROWSER-AS-EDITOR.md §6). The copies are minted with append_at, which does NOT move the leaf, and the leaf moves onto the last minted entry afterwards — so the commit is atomic from the cursor's point of view and a mint that fails partway leaves orphans hanging off the attach point rather than a half-moved conversation. Refuses, all INVALID_PARAMS and all before the first append: an empty selection, an unknown id, an entry no branch can carry, or a selection composing a path that is not turn-complete. D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: it APPENDS, so require_durable_session refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `cursor`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
+*Since 0.9.8.* tau_agent_core.tree_ops.commit_branch, projected. Builds a branch out of a set of marked entries and continues on it (docs/TREE-BROWSER-AS-EDITOR.md §6). The copies are minted with append_at, which does NOT move the cursor, and the cursor moves onto the last minted entry afterwards — so the commit is atomic from the cursor's point of view and a mint that fails partway leaves orphans hanging off the attach point rather than a half-moved conversation. Refuses, all INVALID_PARAMS and all before the first append: an empty selection, an unknown id, an entry no branch can carry, or a selection composing a path that is not turn-complete. D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: a verb that APPENDS refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `cursor`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
 
 **Params schema:**
 
@@ -1232,7 +1232,7 @@ what rides on top of this on every response):
 {
   "properties": {
     "cursor": {
-      "description": "session_log.cursor after the mutation (E5 rule 1).",
+      "description": "cursor.leaf after the mutation (E5 rule 1).",
       "type": [
         "string",
         "null"
@@ -1350,7 +1350,7 @@ what rides on top of this on every response):
       "type": "string"
     },
     "cursor": {
-      "description": "session_log.cursor \u2014 E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has.",
+      "description": "cursor.leaf \u2014 E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has.",
       "type": [
         "string",
         "null"
@@ -1382,7 +1382,7 @@ what rides on top of this on every response):
 
 #### `elide_span`
 
-*Since 0.9.8.* tau_agent_core.tree_ops.elide_span, projected. Folds a span out of the active context — the summary-less generalization of the compaction anchor. Synchronous and free: no summary, therefore no model call. Nothing is erased; every entry the fold now skips is still in the log and still browsable. Two refusals beyond the ordinary unknown-id one, both INVALID_PARAMS and both checked before the first append: a first_kept_id that is not on the anchor's path (the fold's forward scan would never find it and would emit the anchor and nothing else), and a span that would hide nothing (a persisted node that changes nothing about the context it was created to change is indistinguishable to a user from a successful fold). D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: it APPENDS, so require_durable_session refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `cursor`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
+*Since 0.9.8.* tau_agent_core.tree_ops.elide_span, projected. Folds a span out of the active context — the summary-less generalization of the compaction anchor. Synchronous and free: no summary, therefore no model call. Nothing is erased; every entry the fold now skips is still in the log and still browsable. Two refusals beyond the ordinary unknown-id one, both INVALID_PARAMS and both checked before the first append: a first_kept_id that is not on the anchor's path (the fold's forward scan would never find it and would emit the anchor and nothing else), and a span that would hide nothing (a persisted node that changes nothing about the context it was created to change is indistinguishable to a user from a successful fold). D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: a verb that APPENDS refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `cursor`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
 
 **Params schema:**
 
@@ -1414,7 +1414,7 @@ what rides on top of this on every response):
 {
   "properties": {
     "cursor": {
-      "description": "session_log.cursor after the mutation (E5 rule 1).",
+      "description": "cursor.leaf after the mutation (E5 rule 1).",
       "type": [
         "string",
         "null"
@@ -1472,7 +1472,7 @@ what rides on top of this on every response):
       "type": "string"
     },
     "cursor": {
-      "description": "session_log.cursor \u2014 E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has.",
+      "description": "cursor.leaf \u2014 E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has.",
       "type": [
         "string",
         "null"
@@ -1768,7 +1768,7 @@ what rides on top of this on every response):
       "type": "integer"
     },
     "cursor": {
-      "description": "session_log.cursor at the moment of the read, duplicated out of `nodes` so a host finds it without scanning. Null on a session whose cursor names no entry, which is also the one case in which no node carries is_cursor: true.",
+      "description": "cursor.leaf at the moment of the read, duplicated out of `nodes` so a host finds it without scanning. Null on a session whose cursor names no entry, which is also the one case in which no node carries is_cursor: true.",
       "type": [
         "string",
         "null"
@@ -1920,7 +1920,7 @@ what rides on top of this on every response):
 
 #### `navigate`
 
-*Since 0.9.8.* tau_agent_core.tree_ops.navigate, projected. Moves the session cursor to an entry and hands back the context that produces. Zero model calls: it appends one `navigate` entry. A target_id that is already the cursor is a no-op that still returns the context, so a host need not check first. Until this verb τ's differentiating feature — a session tree a caller can move around in — was reachable only from inside the Textual head (docs/VSCODE-HEAD.md §6). D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: it APPENDS, so require_durable_session refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `cursor`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
+*Since 0.9.8.* tau_agent_core.tree_ops.navigate, projected. Moves the session cursor to an entry and hands back the context that produces. Writes nothing, so it works on an unpersisted session and the position does not survive the process: a reopened session continues from its newest entry (docs/CURSORS.md §4). Until this verb τ's differentiating feature — a session tree a caller can move around in — was reachable only from inside the Textual head (docs/VSCODE-HEAD.md §6). D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: a verb that APPENDS refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `cursor`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
 
 **Params schema:**
 
@@ -1947,7 +1947,7 @@ what rides on top of this on every response):
 {
   "properties": {
     "cursor": {
-      "description": "session_log.cursor after the mutation (E5 rule 1).",
+      "description": "cursor.leaf after the mutation (E5 rule 1).",
       "type": [
         "string",
         "null"
@@ -2037,7 +2037,7 @@ what rides on top of this on every response):
 
 #### `paste_subtree`
 
-*Since 0.9.8.* tau_agent_core.tree_ops.paste_subtree, projected (docs/TREE-BROWSER-AS-EDITOR.md §7). Every copied entry is a new entry carrying `copiedFrom`, minted with append_at, parents before children, with a source-to-new id map re-hanging each child under its copied parent — so the copy keeps the original's shape including its forks. The one tree mutation whose result is NOT a message list: the leaf never moves, so what the model sees changes only when someone navigates onto the copy. Refuses: an unknown id, a source whose kind cannot be copied, a target inside the source's own subtree, or a copied tool result whose call is on neither the target's path nor the copied run. D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: it APPENDS, so require_durable_session refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `cursor`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
+*Since 0.9.8.* tau_agent_core.tree_ops.paste_subtree, projected (docs/TREE-BROWSER-AS-EDITOR.md §7). Every copied entry is a new entry carrying `copiedFrom`, minted with append_at, parents before children, with a source-to-new id map re-hanging each child under its copied parent — so the copy keeps the original's shape including its forks. The one tree mutation whose result is NOT a message list: the cursor never moves, so what the model sees changes only when someone navigates onto the copy. Refuses: an unknown id, a source whose kind cannot be copied, a target inside the source's own subtree, or a copied tool result whose call is on neither the target's path nor the copied run. D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: a verb that APPENDS refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `cursor`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
 
 **Params schema:**
 
@@ -2069,7 +2069,7 @@ what rides on top of this on every response):
 {
   "properties": {
     "cursor": {
-      "description": "session_log.cursor after the paste \u2014 E5 rule 1, and here it is the UNCHANGED tip, present because absence is never a signal (rule 3), not because anything moved.",
+      "description": "cursor.leaf after the paste \u2014 E5 rule 1, and here it is the UNCHANGED tip, present because absence is never a signal (rule 3), not because anything moved.",
       "type": [
         "string",
         "null"
@@ -2127,7 +2127,7 @@ what rides on top of this on every response):
       "type": "string"
     },
     "cursor": {
-      "description": "session_log.cursor \u2014 E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has.",
+      "description": "cursor.leaf \u2014 E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has.",
       "type": [
         "string",
         "null"
@@ -2200,7 +2200,7 @@ what rides on top of this on every response):
       "type": "string"
     },
     "cursor": {
-      "description": "session_log.cursor \u2014 E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has.",
+      "description": "cursor.leaf \u2014 E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has.",
       "type": [
         "string",
         "null"
@@ -2366,7 +2366,7 @@ what rides on top of this on every response):
 
 #### `summarize_and_navigate`
 
-*Since 0.9.8.* AgentSession.summarize_and_navigate(), projected. The summarizing arm of navigate, and a SEPARATE verb rather than a flag on it for the reason the core splits them: this one makes a completion call, so it costs tokens and takes wall time that `navigate` does not. A host offering both should say so in what it offers. The summarizer's tokens are banked to the session's side ledger (AgentSession.record_side_usage) and are NOT itemised in this response — stated, not hidden: there is no verb on this wire that reports side_usage, so a host tracking spend sees them only in aggregate. A summarizer that returns nothing usable RAISES (session_manager.summarize_branch) and reaches the host as INTERNAL_ERROR — it is a runtime failure, not a bad argument, and it is never fabricated into an empty summary. D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: it APPENDS, so require_durable_session refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `cursor`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
+*Since 0.9.8.* AgentSession.summarize_and_navigate(), projected. The summarizing arm of navigate, and a SEPARATE verb rather than a flag on it for the reason the core splits them: this one makes a completion call, so it costs tokens and takes wall time that `navigate` does not. A host offering both should say so in what it offers. The summarizer's tokens are banked to the session's side ledger (AgentSession.record_side_usage) and are NOT itemised in this response — stated, not hidden: there is no verb on this wire that reports side_usage, so a host tracking spend sees them only in aggregate. A summarizer that returns nothing usable RAISES (session_manager.summarize_branch) and reaches the host as INTERNAL_ERROR — it is a runtime failure, not a bad argument, and it is never fabricated into an empty summary. D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: a verb that APPENDS refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `cursor`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
 
 **Params schema:**
 
@@ -2397,7 +2397,7 @@ what rides on top of this on every response):
 {
   "properties": {
     "cursor": {
-      "description": "session_log.cursor after the mutation (E5 rule 1).",
+      "description": "cursor.leaf after the mutation (E5 rule 1).",
       "type": [
         "string",
         "null"

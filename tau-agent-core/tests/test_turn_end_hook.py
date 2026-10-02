@@ -302,9 +302,7 @@ async def test_append_survives_reload() -> None:
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_text_stream("hi")):
         await session.prompt("go")
 
-    reloaded = ConversationTree(
-        session.session_log.entries(), session.session_log.cursor
-    ).context_for()
+    reloaded = ConversationTree(session.session_log.entries(), session.cursor.leaf).context_for()
     customs = _custom_nodes(reloaded)
     assert len(customs) == 1
     assert customs[0]["customType"] == "annot"

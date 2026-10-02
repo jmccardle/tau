@@ -32,6 +32,7 @@ from tau_coding_agent.backends import (
 from tau_coding_agent.tagline import pick_tagline
 from tau_coding_agent.headless import resolve_extensions_config
 from tau_agent_core.agent_session_runtime import AgentSessionRuntime
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_coding_agent.config import TAU_DIR, ConfigError, bootstrap_config, update_config
 from tau_coding_agent.session_picker import SessionPickerModal
@@ -48,7 +49,7 @@ from tau_coding_agent.themes import (
     resolve_theme,
 )
 from tau_agent_core.compaction import estimate_context_tokens
-from tau_agent_core.conversation_tree import ConversationTree, summary_message_of
+from tau_agent_core.conversation_tree import summary_message_of
 from tau_agent_core.tree_surgery import plan_branch, plan_paste
 from tau_agent_core.agent_session import ExtensionCommandResult
 from tau_agent_core.extension_locks import ExtensionRequest, refusal_reason
@@ -248,6 +249,8 @@ class TauApp(App):
         )
         self._store_name: str = resolve_backend_name(self.config, run_config.get("store"))
         self._session_runtime: Optional[AgentSessionRuntime] = None
+        #: The position this head extends; opened on each session it shows (docs/CURSORS.md).
+        self._cursor: Optional[Cursor] = None
 
     def _apply_cli_overrides(self, overrides: dict) -> None:
         """Merge CLI flag overrides over the loaded config (CLI > config.json).
@@ -1114,8 +1117,8 @@ class TauApp(App):
                 return
             if result.messages:
                 async with self._working_list_lock:
-                    if self.current_session is not None:
-                        self.messages = list(self.current_session.context)
+                    if self._cursor is not None:
+                        self.messages = self._cursor.context()
         except Exception as e:
             self.notify(f"Steering failed: {e}", severity="error")
             self.log.error(f"Steering failed: {e}")
@@ -1542,7 +1545,7 @@ class TauApp(App):
             self.post_message(ChatSelected(ready.arguments["session_id"]))
             return
         if ready.mutation == "set_model":
-            self.action_set_model(ready.arguments["name"])
+            await self.action_set_model(ready.arguments["name"])
             return
 
         if ready.flow in self._vocabulary().extension_flows:
@@ -1899,8 +1902,8 @@ class TauApp(App):
             self._set_activity(None)
             return
 
-        assert self.current_session is not None  # is_generating implies a session
-        self.messages = list(self.current_session.context)
+        assert self._cursor is not None  # is_generating implies a session
+        self.messages = self._cursor.context()
         await self._reload_transcript()
         self._set_activity(None)
         self.notify("Rolled back and re-ran from before the aborted turn")
@@ -1939,7 +1942,8 @@ class TauApp(App):
             if result.command is not None:
                 await self._perform_command_outcome(result.command)
 
-            self.messages = list(self.current_session.context)
+            assert self._cursor is not None  # a turn runs only on a bound session
+            self.messages = self._cursor.context()
 
             self.query_one(ChatSidebar).refresh_chats()
 
@@ -2096,8 +2100,8 @@ class TauApp(App):
                 telemetry=telemetry,
                 lane=lane,
             )
-            if self.current_session is not None:
-                self.messages = list(self.current_session.context)
+            if self._cursor is not None:
+                self.messages = self._cursor.context()
             self._report_cache_miss(display, event.get("cache_notice"))
             self._refresh_subtitle()
             return
@@ -2222,9 +2226,11 @@ class TauApp(App):
         NO-runtime case still gets the ``session_log`` bind
         :meth:`_rebind_after_session_swap` does not perform.
         """
-        binder = getattr(self.current_backend, "bind_session_log", None)
-        if binder is not None and self.current_session is not None:
-            binder(self.current_session)
+        if self.current_session is not None:
+            self._cursor = Cursor.newest(self.current_session)
+            binder = getattr(self.current_backend, "bind_cursor", None)
+            if binder is not None:
+                binder(self._cursor)
         self._rebind_after_session_swap()
 
     def _rebind_after_session_swap(self) -> None:
@@ -2257,6 +2263,7 @@ class TauApp(App):
             self._session_event_unsub = None
         agent_session = getattr(self.current_backend, "agent_session", None)
         if agent_session is not None:
+            self._cursor = agent_session.cursor
             self._session_event_unsub = subscribe_session_events(agent_session.route_session_event)
             binder = getattr(agent_session, "set_model_resolver", None)
             if binder is not None:
@@ -2446,7 +2453,8 @@ class TauApp(App):
             )
             self._bind_backend_session()
         await self._load_backend_extensions()
-        self.messages = list(self.current_session.context)
+        assert self._cursor is not None  # bound with the session above
+        self.messages = self._cursor.context()
 
         # Clear display
         display = self.query_one(transcript.ChatDisplay)
@@ -2651,8 +2659,8 @@ class TauApp(App):
         No :attr:`_working_list_lock`: a dispatched command runs no turn, so
         there is no turn holding the lock and nothing to serialise against.
         """
-        if self.current_session is not None:
-            self.messages = list(self.current_session.context)
+        if self._cursor is not None:
+            self.messages = self._cursor.context()
 
     def _render_command_output(self, result: ExtensionCommandResult) -> None:
         """Render a command's returned value as a display-only ``system`` box (S46).
@@ -3031,7 +3039,8 @@ class TauApp(App):
                 system_prompt=system_prompt,
             )
             self._bind_backend_session()
-        self.messages = list(self.current_session.context)
+        assert self._cursor is not None  # bound with the session above
+        self.messages = self._cursor.context()
 
         # Clear display
         display = self.query_one(transcript.ChatDisplay)
@@ -3040,7 +3049,7 @@ class TauApp(App):
 
         self.notify("Chat cleared")
 
-    def action_set_model(self, name: str = "") -> None:
+    async def action_set_model(self, name: str = "") -> None:
         """Switch the active model, or say which names are legal when none was given.
 
         The acceptance test for the capability/flow model (§11 step 6): a command τ
@@ -3069,7 +3078,7 @@ class TauApp(App):
             return
 
         try:
-            performed = set_model(name)
+            performed = await set_model(name)
         except (KeyError, ValueError, RuntimeError) as exc:
             self.notify(f"Cannot switch model: {exc}", severity="error")
             return
@@ -3111,7 +3120,8 @@ class TauApp(App):
             return
 
         self.current_session = result["session"]
-        self.messages = list(self.current_session.context)
+        assert self._cursor is not None  # bound with the session above
+        self.messages = self._cursor.context()
         await self._reload_transcript()
         self.query_one(ChatSidebar).refresh_chats()
         self._refresh_subtitle()
@@ -3207,7 +3217,8 @@ class TauApp(App):
             self._set_activity(None)
             return
 
-        self.messages = list(self.current_session.context)
+        assert self._cursor is not None  # bound with the session above
+        self.messages = self._cursor.context()
         # reload_messages lives on the ChatDisplay widget, not the app.
         await self._reload_transcript()
         self._set_activity(None)
@@ -3244,10 +3255,9 @@ class TauApp(App):
 
         Runs as a worker so it can ``push_screen_wait`` the modal steps (browse →
         mode → optional custom instructions, or → a second browse for ``elide``).
-        Operates on the LIVE ``current_session`` — the TUI owns persistence (§2.6) —
-        building a ``ConversationTree`` over its entries and handing the picked node
-        to ``backend.navigate_tree``, which appends the ``navigate``/``branch_summary``
-        entry and returns the post-navigate context. Re-renders through the same
+        Operates on the head's cursor: the browser folds the tree at it, and
+        ``backend.navigate_tree`` moves it (appending a ``branch_summary`` when asked)
+        and returns the context there. Re-renders through the same
         path ``action_compact`` uses (§3.4): swap ``self.messages`` + reload.
 
         The ``elide`` mode (W3) branches off to :meth:`_elide_span_flow` after the
@@ -3260,8 +3270,8 @@ class TauApp(App):
         landed. The clipboard rides along, so one copy can be pasted in several
         places. Every other intent leaves the browser, as before.
         """
-        session = self.current_session
-        if session is None:
+        cursor = self._cursor
+        if cursor is None:
             self.notify("No conversation to browse", severity="warning")
             return
         navigate_tree = getattr(self.current_backend, "navigate_tree", None)
@@ -3271,7 +3281,7 @@ class TauApp(App):
 
         copied: Optional[str] = None
         while True:
-            tree = ConversationTree(session.entries(), session.cursor)
+            tree = cursor.tree()
             roots = tree.tree()
             if not roots:
                 self.notify("Conversation tree is empty", severity="warning")
@@ -3282,14 +3292,14 @@ class TauApp(App):
                 return
             if intent.action == "elide":
                 anchor_id, first_kept_id = intent.ids
-                await self._elide_span_flow(session, anchor_id, first_kept_id)
+                await self._elide_span_flow(cursor, anchor_id, first_kept_id)
                 return
             if intent.action == "branch":
-                await self._branch_flow(session, intent.ids)
+                await self._branch_flow(cursor, intent.ids)
                 return
             if intent.action == "paste":
                 source_id, target_id = intent.ids
-                if not await self._paste_flow(session, source_id, target_id):
+                if not await self._paste_flow(cursor, source_id, target_id):
                     return
                 copied = source_id
                 continue
@@ -3314,7 +3324,7 @@ class TauApp(App):
         if mode is None:
             return
 
-        if target_id == session.cursor:
+        if target_id == cursor.leaf:
             self.notify("Already at that node")
             return
 
@@ -3330,7 +3340,6 @@ class TauApp(App):
         self._set_activity("Summarizing branch…" if summarize else "Navigating tree…")
         try:
             new_messages = await navigate_tree(
-                session,
                 target_id,
                 summarize=summarize,
                 custom_instructions=custom_instructions,
@@ -3358,7 +3367,7 @@ class TauApp(App):
 
     async def _branch_flow(
         self,
-        session: ConversationSession,
+        cursor: Cursor,
         ids: tuple[str, ...],
     ) -> None:
         """Ask how much context the branch keeps, then commit it (§6).
@@ -3388,15 +3397,14 @@ class TauApp(App):
         drop_context = mode == "only"
 
         try:
-            tree = ConversationTree(session.entries(), session.cursor)
-            plan = plan_branch(tree, ids, drop_context=drop_context)
+            plan = plan_branch(cursor.tree(), ids, drop_context=drop_context)
         except ValueError as exc:
             self.notify(f"Cannot branch from this selection: {exc}", severity="warning")
             return
 
         self._set_activity("Building branch…")
         try:
-            new_messages = await commit_branch(session, ids, drop_context=drop_context)
+            new_messages = await commit_branch(ids, drop_context=drop_context)
         except Exception as e:
             self.notify(f"Branch failed: {e}", severity="error")
             self.log.error(f"Branch failed: {e}")
@@ -3414,7 +3422,7 @@ class TauApp(App):
 
     async def _paste_flow(
         self,
-        session: ConversationSession,
+        cursor: Cursor,
         source_id: str,
         target_id: str,
     ) -> bool:
@@ -3435,10 +3443,8 @@ class TauApp(App):
             return False
 
         try:
-            plan = plan_paste(
-                ConversationTree(session.entries(), session.cursor), source_id, target_id
-            )
-            minted = await paste_subtree(session, source_id, target_id)
+            plan = plan_paste(cursor.tree(), source_id, target_id)
+            minted = await paste_subtree(source_id, target_id)
         except Exception as e:
             self.notify(f"Paste failed: {e}", severity="error")
             self.log.error(f"Paste failed: {e}")
@@ -3452,7 +3458,7 @@ class TauApp(App):
 
     async def _elide_span_flow(
         self,
-        session: ConversationSession,
+        cursor: Cursor,
         anchor_id: str,
         first_kept_id: str,
     ) -> None:
@@ -3486,7 +3492,7 @@ class TauApp(App):
         before = len(self.messages)
         self._set_activity("Eliding span…")
         try:
-            new_messages = await elide_span(session, anchor_id, first_kept_id)
+            new_messages = await elide_span(anchor_id, first_kept_id)
         except Exception as e:
             self.notify(f"Elide failed: {e}", severity="error")
             self.log.error(f"Elide failed: {e}")
@@ -3606,7 +3612,8 @@ class TauApp(App):
                 self.current_session = session
                 self._bind_backend_session()
             await self._load_backend_extensions()
-            self.messages = list(session.context)
+            assert self._cursor is not None  # bound with the session above
+            self.messages = self._cursor.context()
 
             await self._reload_transcript(open_ask=True)
 

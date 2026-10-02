@@ -24,7 +24,7 @@ from typing import Any
 
 import pytest
 
-from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import SessionLog
 from tau_agent_core.testing.session_log_contract import SessionLogContractTests
 from tau_jmfts.client import JmftsClient, JmftsError
@@ -103,8 +103,8 @@ def client(jmfts_url: str, jmfts_token: str | None):
 
 async def test_root_document_shape_and_id_mapping(client: JmftsClient) -> None:
     """The root doc is a tau:conversation carrying the header; SessionLog.id is
-    the τ uuid (never the JMFTS doc id), and a root-level append (cursor is
-    None) parents directly under the root document (Sec2.2/Sec2.3)."""
+    the τ uuid (never the JMFTS doc id), and a root-level append (parent ``None``)
+    parents directly under the root document (Sec2.2/Sec2.3)."""
     log = JmftsSessionLog.create(
         client, cwd="/tmp/tau-jmfts-contract", model="m", backend="b", id=_session_id()
     )
@@ -120,8 +120,8 @@ async def test_root_document_shape_and_id_mapping(client: JmftsClient) -> None:
         seeded_doc = client.get_document(int(seeded_id))
         assert seeded_doc["parent_id"] == log.root_doc_id
 
-        await log.append_navigate(None)
-        second_id = await log.append_message(_msg("user", "hello"))
+        cursor = Cursor(log, None)
+        second_id = await cursor.append_message(_msg("user", "hello"))
         second_doc = client.get_document(int(second_id))
         assert second_doc["parent_id"] == log.root_doc_id
         entries_by_id = {e["id"]: e for e in log.entries()}
@@ -135,14 +135,15 @@ async def test_seq_counter_increments_and_survives_reload(client: JmftsClient) -
         client, cwd="/tmp/tau-jmfts-contract", model="m", backend="b", id=_session_id()
     )
     try:
-        a = await log.append_message(_msg("user", "one"))
-        b = await log.append_message(_msg("user", "two"))
+        cursor = Cursor.newest(log)
+        a = await cursor.append_message(_msg("user", "one"))
+        b = await cursor.append_message(_msg("user", "two"))
         doc_a = client.get_document(int(a))
         doc_b = client.get_document(int(b))
         assert doc_a["structured_content"]["seq"] < doc_b["structured_content"]["seq"]
 
         reloaded = JmftsSessionLog.load(client, log.root_doc_id)
-        c = await reloaded.append_message(_msg("user", "three"))
+        c = await Cursor.newest(reloaded).append_message(_msg("user", "three"))
         doc_c = client.get_document(int(c))
         assert doc_c["structured_content"]["seq"] > doc_b["structured_content"]["seq"]
     finally:
@@ -161,10 +162,10 @@ async def test_entries_take_cr1_sibling_positions(client: JmftsClient) -> None:
         # The root is never position-ordered (store passes sequential=False).
         assert client.get_document(log.root_doc_id)["position"] is None
 
-        await log.append_navigate(None)
-        b = await log.append_message(_msg("user", "b"))
-        await log.append_navigate(None)
-        c = await log.append_message(_msg("user", "c"))
+        cursor = Cursor(log, None)
+        b = await cursor.append_message(_msg("user", "b"))
+        cursor.move(None)
+        c = await cursor.append_message(_msg("user", "c"))
 
         children = client.get_children(log.root_doc_id)
         # Contiguous birth-order positions, returned in that order by the contract.
@@ -172,7 +173,7 @@ async def test_entries_take_cr1_sibling_positions(client: JmftsClient) -> None:
         ordered_ids = [str(ch["id"]) for ch in children]
         assert ordered_ids.index(b) < ordered_ids.index(c)  # deterministic fork order
 
-        d = await log.append_message(_msg("user", "d"))  # chains off c's leaf
+        d = await cursor.append_message(_msg("user", "d"))  # chains off c
         assert client.get_document(int(d))["position"] == 0
     finally:
         client.delete_document(log.root_doc_id)
@@ -181,13 +182,14 @@ async def test_entries_take_cr1_sibling_positions(client: JmftsClient) -> None:
 async def test_seq_doc_id_integrity_check_fires_on_tampered_tree(client: JmftsClient) -> None:
     """Sec2.3: doc-id order must agree with seq order. Simulate a second writer by
     forcing a later doc's seq to precede an earlier doc's seq, then verify
-    ``load`` fails loudly instead of silently resolving a bogus cursor/order."""
+    ``load`` fails loudly instead of silently loading a misordered tree."""
     log = JmftsSessionLog.create(
         client, cwd="/tmp/tau-jmfts-contract", model="m", backend="b", id=_session_id()
     )
     try:
-        first = await log.append_message(_msg("user", "one"))
-        second = await log.append_message(_msg("user", "two"))
+        cursor = Cursor.newest(log)
+        first = await cursor.append_message(_msg("user", "one"))
+        second = await cursor.append_message(_msg("user", "two"))
 
         first_doc = client.get_document(int(first))
         first_seq = first_doc["structured_content"]["seq"]
@@ -210,8 +212,9 @@ async def test_foreign_document_is_synthesized_and_walked_through(client: JmftsC
         client, cwd="/tmp/tau-jmfts-contract", model="m", backend="b", id=_session_id()
     )
     try:
-        a = await log.append_message(_msg("user", "question"))
-        await log.append_message(_msg("assistant", "answer"))
+        cursor = Cursor.newest(log)
+        a = await cursor.append_message(_msg("user", "question"))
+        answer = await cursor.append_message(_msg("assistant", "answer"))
 
         foreign = client.create_document(
             title=f"[{TEST_PREFIX}] a RAPTOR summary",
@@ -230,7 +233,7 @@ async def test_foreign_document_is_synthesized_and_walked_through(client: JmftsC
         assert fe["usetype"] == "raptor:summary"
         assert fe["title"] == f"[{TEST_PREFIX}] a RAPTOR summary"
 
-        tree = ConversationTree(reloaded.entries(), reloaded.cursor)
+        tree = Cursor(reloaded, answer).tree()
         assert tree.tree()  # renders without raising
         context_texts = [
             block.get("text")
@@ -286,26 +289,22 @@ async def test_fork_remaps_cross_references_not_just_parent_ids(client: JmftsCli
     (measured: forking a compacted session lost its kept messages outright, with the
     forked context coming back as summary + tail and "keep me" gone).
 
-    ``test_fork_preserves_topology_with_new_doc_ids`` did not catch it, and the reason
-    is instructive: its ``navigate`` was not the LAST entry, so the dangling
-    ``targetId`` was never actually consulted. The bug only bites where a
-    cross-reference is *read* — a compaction anchor (always read by the fold) or a
-    TRAILING navigate (read by cursor resolution). This test forces both.
+    The bug only bites where a cross-reference is *read*, so the compaction anchor
+    here sits on the default leaf's path, where the fold always reads it.
+    ``targetId`` stays in the check for a legacy ``navigate`` copied from an old log.
     """
     source = JmftsSessionLog.create(
         client, cwd="/tmp/tau-jmfts-contract", model="m", backend="b", id=_session_id()
     )
     forked: JmftsSessionLog | None = None
     try:
-        await source.append_message(_msg("user", "compacted away"))
-        keep = await source.append_message(_msg("assistant", "keep me"))
-        await source.append_compaction("the summary", keep, tokens_before=10, **_PROV)
-        tail = await source.append_message(_msg("user", "after compaction"))
-
-        await source.append_navigate(keep)
-        await source.append_message(_msg("assistant", "doomed branch"))
-        await source.append_branch_summary("abandoned", keep)
-        await source.append_navigate(tail)
+        cursor = Cursor.newest(source)
+        await cursor.append_message(_msg("user", "compacted away"))
+        keep = await cursor.append_message(_msg("assistant", "keep me"))
+        await cursor.append_message(_msg("assistant", "doomed branch"))
+        await cursor.append_branch_summary("abandoned", keep)
+        await cursor.append_compaction("the summary", keep, tokens_before=10, **_PROV)
+        await cursor.append_message(_msg("user", "after compaction"))
 
         forked = JmftsSessionLog.fork(client, source, cwd="/tmp/tau-jmfts-contract")
 
@@ -340,10 +339,11 @@ async def test_fork_preserves_topology_with_new_doc_ids(client: JmftsClient) -> 
     )
     forked: JmftsSessionLog | None = None
     try:
-        a = await source.append_message(_msg("user", "hi"))
-        await source.append_message(_msg("assistant", "yo"))
-        await source.append_navigate(a)
-        await source.append_message(_msg("assistant", "alt"))
+        cursor = Cursor.newest(source)
+        a = await cursor.append_message(_msg("user", "hi"))
+        await cursor.append_message(_msg("assistant", "yo"))
+        cursor.move(a)
+        await cursor.append_message(_msg("assistant", "alt"))
 
         forked = JmftsSessionLog.fork(client, source, cwd="/tmp/tau-jmfts-contract")
 

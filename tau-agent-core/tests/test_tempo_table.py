@@ -329,9 +329,7 @@ async def test_persisted_order_matches_model_visible_order() -> None:
 
     assert _discourse_texts(session.messages) == wire_order
 
-    reloaded = ConversationTree(
-        session.session_log.entries(), session.session_log.cursor
-    ).context_for()
+    reloaded = ConversationTree(session.session_log.entries(), session.cursor.leaf).context_for()
     assert _discourse_texts(reloaded) == wire_order
     assert wire_order == ["BEFORE-MSG", "USER-TEXT", "QUEUED-MSG", "AFTER-MSG"]
 

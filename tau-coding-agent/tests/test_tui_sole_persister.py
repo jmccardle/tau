@@ -5,7 +5,7 @@ The interactive app used to run its backend's ``AgentSession`` against a throwaw
 to its own live ``Session`` — two write paths, and the scratch log meant an
 agent-driven ``compact``/``navigate`` would mutate the wrong store. S18 retires that
 split: the TUI rebinds the backend's ``AgentSession`` onto the live ``Session``
-(``TauBackend.bind_session_log``), drops its own ``append_message`` writes, and
+(``TauBackend.bind_cursor``), drops its own ``append_message`` writes, and
 rebuilds ``self.messages`` from ``session.context`` at turn-end (a VIEW over the
 ``ConversationTree``, pi ``rebuildChatFromMessages``).
 

@@ -31,7 +31,8 @@ from tau_llm.providers.openai import OpenAICompletionsProvider
 from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 from tau_agent_core.agent_session import AgentSession
-from tau_agent_core.conversation_tree import ConversationTree, TreeNode
+from tau_agent_core.conversation_tree import TreeNode
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.messages import convert_to_llm
 from tau_coding_agent.session_store import Session
 
@@ -176,7 +177,7 @@ async def test_before_agent_start_message_is_a_durable_node(tmp_path) -> None:
     assert node_entry["customType"] == "reminder"
     assert node_entry["message"]["role"] == "custom"
     assert node_entry["message"]["content"] == [{"type": "text", "text": "INJECTED"}]
-    tree = ConversationTree(entries, store.cursor)
+    tree = session.cursor.tree()
     custom_nodes = [n for n in _flatten(tree.tree()) if n.kind == "customMessage"]
     assert len(custom_nodes) == 1
     assert custom_nodes[0].role == "custom"  # tree browser tags it distinctly
@@ -191,12 +192,12 @@ async def test_before_agent_start_message_is_a_durable_node(tmp_path) -> None:
 
     # ── (c) RELOAD — byte-identical, no second history ───────────────────────
     before_entries = store.entries()
-    before_ctx = ConversationTree(before_entries, store.cursor).context_for()
+    before_ctx = session.cursor.context()
     reloaded = Session.load(store.path)
     # The raw entries round-trip through the JSONL bytes unchanged.
     assert reloaded.entries() == before_entries
     assert sum(1 for e in reloaded.entries() if e.get("type") == "customMessage") == 1
-    after_ctx = ConversationTree(reloaded.entries(), reloaded.cursor).context_for()
+    after_ctx = Cursor.newest(reloaded).context()
     assert after_ctx == before_ctx
     # The reconstructed context keeps the extension-origin role (render view)…
     assert "custom" in [_role(m) for m in after_ctx]

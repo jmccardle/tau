@@ -60,23 +60,25 @@ def handler(log: _DurableLog) -> RPCHandler:
 
 
 @pytest.fixture
-async def entries(handler: RPCHandler, log: _DurableLog) -> dict[str, str]:
-    """A user turn with a tool call and its result, appended AFTER the agent_spec.
+async def entries(handler: RPCHandler) -> dict[str, str]:
+    """A user turn with a tool call and its result, at the session's cursor.
 
-    Depends on `handler` for the ordering, not for the handler: an `AgentSession`
-    QUEUES an `agent_spec` at construction and `start()` writes it
-    (docs/ASYNC-SESSION-LOG.md §3.2), so a fixture that appended first would put
-    the session's own root in the middle of the conversation.
+    `start()` first: an `AgentSession` QUEUES an `agent_spec` at construction and
+    `start()` writes it (docs/ASYNC-SESSION-LOG.md §3.2), so appending first would
+    put the session's own root in the middle of the conversation.
     """
     await handler._session.start()
-    user = await log.append_message({"role": "user", "content": [{"type": "text", "text": "one"}]})
-    called = await log.append_message(
+    cursor = handler.session.cursor
+    user = await cursor.append_message(
+        {"role": "user", "content": [{"type": "text", "text": "one"}]}
+    )
+    called = await cursor.append_message(
         {
             "role": "assistant",
             "content": [{"type": "toolCall", "id": "call-1", "name": "ls", "arguments": {}}],
         }
     )
-    answered = await log.append_message(
+    answered = await cursor.append_message(
         {
             "role": "toolResult",
             "tool_call_id": "call-1",
@@ -141,7 +143,7 @@ async def test_get_tree_answers_one_node_per_entry_in_draw_order(
 
 
 async def test_a_fork_draws_its_branches_under_their_shared_parent(
-    handler: RPCHandler, log: _DurableLog, entries: dict[str, str]
+    handler: RPCHandler, entries: dict[str, str]
 ) -> None:
     """A second child of the user message is a sibling, and both are its children.
 
@@ -150,8 +152,8 @@ async def test_a_fork_draws_its_branches_under_their_shared_parent(
     under the parent it hangs from, ahead of nothing, and the parent links are
     what a host rebuilds the shape from.
     """
-    await log.append_navigate(entries["user"])
-    second = await log.append_message(
+    handler.session.cursor.move(entries["user"])
+    second = await handler.session.cursor.append_message(
         {"role": "assistant", "content": [{"type": "text", "text": "other"}]}
     )
     result = (await _call(handler, "get_tree"))["result"]
@@ -181,16 +183,18 @@ async def test_the_pairing_facts_ride_along(handler: RPCHandler, entries: dict[s
 
 
 async def test_the_cursor_is_named_once_in_the_nodes_and_once_beside_them(
-    handler: RPCHandler, log: _DurableLog, entries: dict[str, str]
+    handler: RPCHandler, entries: dict[str, str]
 ) -> None:
+    """The session cursor's leaf, even when it is not the newest entry."""
+    handler.session.cursor.move(entries["called"])
     result = (await _call(handler, "get_tree"))["result"]
-    assert result["cursor"] == log.cursor
+    assert result["cursor"] == entries["called"]
     flagged = [node["entry_id"] for node in result["nodes"] if node["is_cursor"]]
-    assert flagged == [log.cursor]
+    assert flagged == [entries["called"]]
 
 
 async def test_a_folds_boundary_is_on_the_node_that_folds(
-    handler: RPCHandler, log: _DurableLog, entries: dict[str, str]
+    handler: RPCHandler, entries: dict[str, str]
 ) -> None:
     """`first_kept_id` is the whole of what a head paints `folded` from.
 
@@ -212,7 +216,7 @@ async def test_a_folds_boundary_is_on_the_node_that_folds(
 
 
 async def test_copyable_reports_the_paste_source_rule(
-    handler: RPCHandler, log: _DurableLog, entries: dict[str, str]
+    handler: RPCHandler, entries: dict[str, str]
 ) -> None:
     """A host greys an illegal paste source from this rather than from its own tuple."""
     await _call(
@@ -273,14 +277,14 @@ async def test_get_entry_hands_back_the_raw_stored_entry(
 
 
 async def test_get_entry_reaches_a_node_off_the_active_path(
-    handler: RPCHandler, log: _DurableLog, entries: dict[str, str]
+    handler: RPCHandler, entries: dict[str, str]
 ) -> None:
     """The reason this is not `get_messages`.
 
     A browser's cursor is very often on a node the active path does not contain,
     and `get_messages` answers only for the path.
     """
-    await log.append_navigate(entries["user"])
+    handler.session.cursor.move(entries["user"])
     abandoned = entries["answered"]
     result = (await _call(handler, "get_entry", {"entry_id": abandoned}))["result"]
     assert result["entry"]["id"] == abandoned

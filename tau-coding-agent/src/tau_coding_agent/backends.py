@@ -37,7 +37,8 @@ from tau_agent_core.prompt_cache import (
     completion_cache,
     prompt_tokens,
 )
-from tau_agent_core.session_log import InMemorySessionLog, SessionLog
+from tau_agent_core.cursor import Cursor
+from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.sdk import (
     BASE_SYSTEM_PROMPT,
     LoadExtensionsResult,
@@ -1403,18 +1404,14 @@ class TauBackend(Backend):
             max_turns=max_turns,
         )
 
-    def bind_session_log(self, session_log: SessionLog) -> None:
-        """Point the AgentSession at the caller's authoritative ``SessionLog``.
+    def bind_cursor(self, cursor: Cursor) -> None:
+        """Attach the AgentSession to the head's cursor, so its turns extend that position.
 
-        The TUI owns a live ``session_store.Session`` that is swapped on new-chat /
-        clear / resume; each time it becomes current, the TUI rebinds this backend's
-        AgentSession onto it so ``prompt()`` / ``compact`` / ``navigate`` persist
-        through that one on-disk log (E3-ctx / D3 — AgentSession becomes the sole
-        persister, retiring the app-side ``append_message`` double-write). The
-        scratch ``InMemorySessionLog`` created in ``__init__`` is discarded on the
-        first bind; a backend that is never bound (headless, tests) keeps it.
+        The TUI opens a cursor on each session it shows and binds it here; the
+        scratch ``InMemorySessionLog`` from ``__init__`` is dropped on the first
+        bind. A backend that is never bound (headless, tests) keeps it.
         """
-        self.agent_session.session_log = session_log
+        self.agent_session.cursor = cursor
 
     def abort(self) -> None:
         """Abort the current turn by tripping the AgentSession's abort signal.
@@ -1636,82 +1633,40 @@ class TauBackend(Backend):
         """
         return await self.agent_session.run_extension_command(name, args)
 
-    def set_model(self, name: str) -> Performed:
+    async def set_model(self, name: str) -> Performed:
         """Switch the active model by config NAME, effective on the next turn.
 
-        Delegates to :meth:`AgentSession.set_model`, which resolves the name through
-        the resolver ``TauApp._build_session_runtime`` bound at startup and raises on
-        a name that resolver does not know. A config key, not a model id — the same
-        name ``--model NAME`` accepts headlessly and the same one ``get_models``
-        publishes.
-
-        The switch is RUNTIME-only in the core (``AgentSession.set_model``'s own
-        docstring), so this records it too: without the append the live model and
-        the log disagree, and the next ``--continue`` resumes on the old one
-        (``resolve_model_config``'s ``fallback_model``). The log is checked BEFORE
-        the switch, the way the RPC verb checks it, so a refusal leaves the session
-        running on the model its record still names.
-
-        Args:
-            name: The config model name.
-
-        Returns:
-            A :class:`~tau_agent_core.flows.Performed` whose ``data`` is
-            ``{model, cursor}``, as ``set_model``'s ``returns`` declares.
-
-        Raises:
-            RuntimeError: The bound log cannot record the change
-                (:meth:`record_model_change`).
-        """
-        self._model_change_log(name)
-        model = self.agent_session.set_model(name)
-        self.record_model_change(name)
-        return self.agent_session.performed("set_model", {"model": model})
-
-    def record_model_change(self, name: str) -> None:
-        """Persist "this session now runs on *name*" without switching anything.
-
-        The append half of :meth:`set_model`, callable on its own because a resume
-        can start on a model the stored session does not name (``tau --mode repl
-        --continue --model other``): the backend was already BUILT from that model's
-        config, so switching again would rebuild it and drop ``--thinking`` on the
-        way (docs/REPL-HEAD.md §3 step 9). The provider is this backend's own, which
-        is the one the session is about to run on.
+        Delegates to :meth:`AgentSession.set_model`, which raises on a name the
+        resolver does not know, then records the switch (:meth:`record_model_change`)
+        so the next ``--continue`` resumes on it.
 
         Args:
             name: The config model name, as ``--model NAME`` spells it.
 
-        Raises:
-            RuntimeError: The bound log has no ``append_model_change`` — an
-                in-memory log has nowhere durable for the entry, and recording it
-                nowhere is the silent switch this method exists to prevent.
+        Returns:
+            A :class:`~tau_agent_core.flows.Performed` whose ``data`` is
+            ``{model, cursor}``, as ``set_model``'s ``returns`` declares.
         """
-        log = self._model_change_log(name)
-        getattr(log, "append_model_change")(name, self.config.get("backend", ""))
+        model = self.agent_session.set_model(name)
+        await self.record_model_change(name)
+        return self.agent_session.performed("set_model", {"model": model})
 
-    def _model_change_log(self, name: str) -> Any:
-        """The bound log, refused when it cannot record a model change.
+    async def record_model_change(self, name: str) -> None:
+        """Append "this session now runs on *name*" at the cursor, switching nothing.
+
+        Callable on its own because a resume can start on a model the stored
+        session does not name (``tau --mode repl --continue --model other``): the
+        backend was already built from that model's config (docs/REPL-HEAD.md §3
+        step 9).
 
         Args:
-            name: The config model name, quoted by the refusal.
-
-        Returns:
-            The bound session log.
-
-        Raises:
-            RuntimeError: It has no ``append_model_change``.
+            name: The config model name.
         """
-        log = self.agent_session.session_log
-        if not hasattr(log, "append_model_change"):
-            raise RuntimeError(
-                f"record_model_change({name!r}): the bound log has no "
-                "append_model_change, so the switch would run with the record "
-                "still naming the old model — and the next --continue would "
-                "resume on it (headless.resolve_model_config's fallback_model)."
-            )
-        return log
+        await self.agent_session.cursor.append(
+            "model_change", model=name, backend=self.config.get("backend", "")
+        )
 
-    def set_session_name(self, name: str) -> Performed:
+    async def set_session_name(self, name: str) -> Performed:
         """Give the live session a display name, persisted to its log.
 
         Delegates to :meth:`AgentSession.set_session_name`. The name is what the
@@ -1725,7 +1680,7 @@ class TauBackend(Backend):
             A :class:`~tau_agent_core.flows.Performed` whose ``data`` is
             ``{name, cursor}``, as ``set_session_name``'s ``returns`` declares.
         """
-        self.agent_session.set_session_name(name)
+        await self.agent_session.set_session_name(name)
         return self.agent_session.performed("set_session_name", {"name": name})
 
     def set_auto_compaction(self, enabled: bool) -> Performed:
@@ -1752,7 +1707,7 @@ class TauBackend(Backend):
 
         The one compaction a head should call. Delegates to
         :meth:`AgentSession.compact`, which cuts on the token budget, writes a
-        ``compaction`` entry through :meth:`bind_session_log`'s log, and brackets
+        ``compaction`` entry at :meth:`bind_cursor`'s cursor, and brackets
         the summary in ``side_completion_*`` events. The caller re-reads its
         context from the session afterwards rather than being handed a list —
         the entry is the record, and a returned list would be a second one.
@@ -1772,37 +1727,27 @@ class TauBackend(Backend):
 
     async def navigate_tree(
         self,
-        session: SessionLog,
         target_id: str,
         *,
         summarize: bool = False,
         custom_instructions: str | None = None,
     ) -> list[dict]:
-        """Move the live session's cursor to ``target_id`` and return the new context.
+        """Move the session's cursor to ``target_id`` and return the context there.
 
-        The head's side of two core capabilities: :func:`tau_agent_core.tree_ops.navigate`
-        when there is no summary to make, :func:`~tau_agent_core.tree_ops
-        .summarize_and_navigate` when there is. The core split them because they differ
-        in cost — one is an append, the other spends tokens — and this method keeps the
-        one ``summarize`` flag the tree browser's three modes already speak.
-
-        The live coding-agent ``Session`` is passed in (the TUI owns it, §2.6), so the
-        mutation lands on IT, not on the scratch ``InMemorySessionLog`` the AgentSession
-        runs against. What this adds over calling the core directly is the two things
-        that need a session and ``summarize_and_navigate`` has none of: banking the
-        summarizer's tokens, and bracketing the summary in ``side_completion_*`` events
-        so a head can watch it arrive (docs/STREAMING-SIDE-WORK.md).
-
-        Returns ``ConversationTree.context_for(cursor)`` — the flat message list the TUI
-        swaps into ``self.messages`` and re-renders (reusing the compaction path, §3.4).
+        :func:`tau_agent_core.tree_ops.navigate` when there is no summary to make,
+        :func:`~tau_agent_core.tree_ops.summarize_and_navigate` when there is. What
+        this adds over the core is what needs a session: banking the summarizer's
+        tokens, and bracketing the summary in ``side_completion_*`` events so a head
+        can watch it arrive (docs/STREAMING-SIDE-WORK.md).
         """
-        if target_id == session.cursor or not summarize:
-            return await tree_ops.navigate(session, target_id)
+        cursor = self.agent_session.cursor
+        if target_id == cursor.leaf or not summarize:
+            return tree_ops.navigate(cursor, target_id)
         async with self.agent_session.watch_side_completion(
             "branch_summary", "navigate", self._model.id
         ) as watch:
             messages, summary_usage = await tree_ops.summarize_and_navigate(
-                session,
+                cursor,
                 target_id,
                 self._model,
                 api_key=self._api_key,
@@ -1813,78 +1758,54 @@ class TauBackend(Backend):
         self.agent_session.record_side_usage(summary_usage)
         return messages
 
-    async def elide_span(
-        self, session: SessionLog, anchor_id: str, first_kept_id: str
-    ) -> list[dict]:
-        """Fold a span out of the live session's context and return the new context.
+    async def elide_span(self, anchor_id: str, first_kept_id: str) -> list[dict]:
+        """Fold a span out of the session's context (:func:`tau_agent_core.tree_ops.elide_span`).
 
-        Delegates to :func:`tau_agent_core.tree_ops.elide_span`, which holds the two
-        refusals that make a fold safe — a resume point the fold's scan cannot reach
-        would empty the context silently, and a fold that hides nothing is the
-        silent-no-op anti-pattern. The app owns the modals and the re-render; the
-        core owns the mutation and both refusals.
-
-        It awaits only the store's writes, unlike :meth:`navigate_tree`: there is no
-        summary, therefore no model call.
-
-        Returns ``ConversationTree.context_for(cursor)`` — the flat message list the
-        TUI swaps into ``self.messages`` and re-renders.
+        Returns:
+            The context at the cursor afterwards.
 
         Raises:
             ValueError: an unknown anchor or resume point, a resume point that is
                 not on the anchor's path, or a span that would hide nothing.
         """
-        return await tree_ops.elide_span(session, anchor_id, first_kept_id)
+        return await tree_ops.elide_span(self.agent_session.cursor, anchor_id, first_kept_id)
 
-    async def commit_branch(
-        self, session: SessionLog, ids: Sequence[str], *, drop_context: bool
-    ) -> list[dict]:
+    async def commit_branch(self, ids: Sequence[str], *, drop_context: bool) -> list[dict]:
         """Build a branch out of the marked messages and continue on it.
 
-        Delegates to :func:`tau_agent_core.tree_ops.commit_branch`, which plans the
-        branch (``tree_surgery``) and performs it in the order TREE-BROWSER-AS-EDITOR.md
-        §6.3 fixes. Nothing is re-parented and nothing is erased.
+        Delegates to :func:`tau_agent_core.tree_ops.commit_branch`
+        (TREE-BROWSER-AS-EDITOR.md §6.3). Nothing is re-parented and nothing is erased.
 
         Args:
-            session: The live session log to write to.
             ids: The marked entry ids, in any order.
             drop_context: Whether the branch keeps only the selection.
 
         Returns:
-            ``ConversationTree.context_for(cursor)`` — the new flat message list, the
-            same re-render seam :meth:`elide_span` and :meth:`navigate_tree` use.
+            The context at the cursor afterwards.
 
         Raises:
             ValueError: The selection is empty, names an unknown entry, contains an
                 entry no branch can carry, or composes a path that is not
-                turn-complete. Checked before the first append, so a refusal leaves
-                the log byte-identical.
+                turn-complete; checked before the first append.
         """
-        return await tree_ops.commit_branch(session, ids, drop_context=drop_context)
+        return await tree_ops.commit_branch(
+            self.agent_session.cursor, ids, drop_context=drop_context
+        )
 
-    async def paste_subtree(self, session: SessionLog, source_id: str, target_id: str) -> list[str]:
-        """Re-create the subtree at ``source_id`` under ``target_id``.
+    async def paste_subtree(self, source_id: str, target_id: str) -> list[str]:
+        """Re-create the subtree at ``source_id`` under ``target_id``; the cursor stays put.
 
-        Delegates to :func:`tau_agent_core.tree_ops.paste_subtree`. The paste never
-        moves the leaf, which is why this returns ids rather than a message list:
-        nothing about the current context changed, so there is nothing to re-render
-        until the reader navigates onto the copy.
-
-        Args:
-            session: The live session log to write to.
-            source_id: The copied node — the root of the subtree.
-            target_id: The entry the copy hangs from.
+        Delegates to :func:`tau_agent_core.tree_ops.paste_subtree`.
 
         Returns:
-            The ids minted, in the order they were appended. The first is the copy of
-            ``source_id`` itself.
+            The ids minted, in append order; the first is the copy of ``source_id``.
 
         Raises:
             ValueError: An unknown id, a source whose kind cannot be copied, a target
                 inside the source's own subtree, or a copied tool result whose call is
                 on neither the target's path nor the copied run.
         """
-        return await tree_ops.paste_subtree(session, source_id, target_id)
+        return await tree_ops.paste_subtree(self.agent_session.cursor, source_id, target_id)
 
     async def rollback_turn(self, text: str) -> SubmissionResult:
         """Abort the in-flight turn, un-path what it produced, and run ``text`` instead.
@@ -1892,7 +1813,7 @@ class TauBackend(Backend):
         The TUI half of ``multitask_strategy="rollback"``
         (docs/SUBMISSION-LIFECYCLE.md decision 2). Everything this method does
         happens inside :meth:`AgentSession.submit`: signal the running turn's abort,
-        wait for its slot, ``append_navigate`` back to the leaf THAT turn recorded at
+        wait for its slot, move the cursor back to the leaf THAT turn recorded at
         its own admission, and run this submission from there. Deliberately a
         four-line delegation rather than a TUI-side navigate — one implementation of
         "un-path a turn" is the entire point of the seam, and the stale-target guard
@@ -1903,10 +1824,10 @@ class TauBackend(Backend):
         the wrong list by construction: it still holds the messages of the turn being
         rolled back, so sending it would re-submit to the model exactly what the
         rollback just removed from the path. With ``context`` omitted the session
-        folds its own log — which, after the navigate, is the pre-turn state. That
-        also makes ``bind_session_log`` a precondition rather than a nicety: on the
-        live TUI path the AgentSession is bound to the same ``Session`` the app
-        renders (E3-ctx / D3), so "the log" and "what the user sees" are one thing.
+        folds its own cursor — which, after the move, is the pre-turn state. That
+        also makes ``bind_cursor`` a precondition rather than a nicety: on the live
+        TUI path the AgentSession extends the same cursor the app renders, so "the
+        context" and "what the user sees" are one thing.
 
         ``allow_user_input=True`` and ``submitter="human"`` for the same reason
         :meth:`AgentSession.prompt` asserts them: a person at the terminal pressed

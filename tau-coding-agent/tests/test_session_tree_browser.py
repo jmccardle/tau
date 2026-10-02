@@ -1,8 +1,8 @@
 """Part-2 tests: the TUI tree-browser + three-mode subtree compaction (§3.6).
 
 Covers the SessionTreeModal overlay (Textual Pilot: returns the chosen id / None on
-cancel) and TauBackend.navigate_tree in both modes — the no-summary ``navigate``
-append (drops the abandoned branch from context but not from disk) and the
+cancel) and TauBackend.navigate_tree in both modes — the no-summary cursor move
+(writes nothing; drops the abandoned branch from context but not from disk) and the
 ``summarize`` ``branch_summary`` append (inline splice + custom instructions reaching
 the summarizer's SYSTEM prompt), plus the re-render seam.
 
@@ -18,6 +18,7 @@ from textual.app import App
 from textual.widgets import Tree
 
 from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
 from tau_coding_agent.tree_browser import SessionTreeModal, TreeIntent
 from tau_coding_agent.backends import TauBackend
 from tau_coding_agent.session_store import Session
@@ -29,14 +30,15 @@ _TS = 1_700_000_000_000
 # --- synthetic tree helpers -------------------------------------------------
 
 
-async def _linear_session(tmp_path) -> Session:
-    """A→B→C linear session (system + user + assistant), persisted to tmp_path."""
+async def _linear_session(tmp_path) -> Cursor:
+    """A→B→C linear session (system + user + assistant) persisted to tmp_path; a cursor at C."""
     session = Session.create(
         str(tmp_path), "gpt-4o", "openai", system_prompt="sys", base_dir=tmp_path
     )
-    await session.append_message({"role": "user", "content": "hello"})
-    await session.append_message({"role": "assistant", "content": "hi there"})
-    return session
+    cursor = Cursor.newest(session)
+    await cursor.append_message({"role": "user", "content": "hello"})
+    await cursor.append_message({"role": "assistant", "content": "hi there"})
+    return cursor
 
 
 # --- SessionTreeModal (Textual Pilot) --------------------------------------
@@ -58,15 +60,15 @@ class _ModalHarness(App):
 
 
 async def test_tree_modal_enter_returns_current_leaf(tmp_path):
-    session = await _linear_session(tmp_path)
-    tree = ConversationTree(session.entries(), session.cursor)
+    cursor = await _linear_session(tmp_path)
+    tree = cursor.tree()
     harness = _ModalHarness(tree_browser.SessionTreeModal(tree))
     async with harness.run_test() as pilot:
         await pilot.pause()
         # The current leaf is highlighted; Enter selects it.
         await pilot.press("enter")
         await pilot.pause()
-    assert harness.result == tree_browser.TreeIntent("navigate", (session.cursor,))
+    assert harness.result == tree_browser.TreeIntent("navigate", (cursor.leaf,))
 
 
 async def test_the_modal_answers_with_an_intent_and_not_a_bare_id(tmp_path):
@@ -78,8 +80,8 @@ async def test_the_modal_answers_with_an_intent_and_not_a_bare_id(tmp_path):
     result as a string is the rewrite §5.3 exists to avoid — it would still pass a
     value comparison against ``ids[0]``.
     """
-    session = await _linear_session(tmp_path)
-    tree = ConversationTree(session.entries(), session.cursor)
+    cursor = await _linear_session(tmp_path)
+    tree = cursor.tree()
     harness = _ModalHarness(tree_browser.SessionTreeModal(tree))
     async with harness.run_test() as pilot:
         await pilot.pause()
@@ -90,13 +92,13 @@ async def test_the_modal_answers_with_an_intent_and_not_a_bare_id(tmp_path):
     assert not isinstance(intent, str)
     # The degenerate case §5.3 names: one action, one id.
     assert intent.action == "navigate"
-    assert intent.ids == (session.cursor,)
-    assert intent.sole_id == session.cursor
+    assert intent.ids == (cursor.leaf,)
+    assert intent.sole_id == cursor.leaf
 
 
 async def test_tree_modal_escape_returns_none(tmp_path):
-    session = await _linear_session(tmp_path)
-    tree = ConversationTree(session.entries(), session.cursor)
+    cursor = await _linear_session(tmp_path)
+    tree = cursor.tree()
     harness = _ModalHarness(tree_browser.SessionTreeModal(tree))
     async with harness.run_test() as pilot:
         await pilot.pause()
@@ -113,15 +115,15 @@ async def test_tree_modal_navigates_and_selects_interior_node(tmp_path):
     walk and the id — the interior node reached by ``up`` is the node committed —
     so the action moved with the row's kind rather than the test's subject.
     """
-    session = await _linear_session(tmp_path)
-    entries = session.entries()
+    cursor = await _linear_session(tmp_path)
+    entries = cursor.entries()
     # entries: [model_change, message(system?), ...]. Pick the first user message.
     user_id = next(
         e["id"]
         for e in entries
         if e.get("type") == "message" and e["message"].get("role") == "user"
     )
-    tree_view = ConversationTree(entries, session.cursor)
+    tree_view = ConversationTree(entries, cursor.leaf)
     harness = _ModalHarness(tree_browser.SessionTreeModal(tree_view))
     async with harness.run_test() as pilot:
         await pilot.pause()
@@ -149,8 +151,8 @@ async def test_clicking_a_row_selects_it_without_leaving_the_browser(tmp_path):
     modal that ignores clicks entirely passes the first, and one that never opened
     passes the second.
     """
-    session = await _linear_session(tmp_path)
-    view = ConversationTree(session.entries(), session.cursor)
+    cursor = await _linear_session(tmp_path)
+    view = cursor.tree()
     harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         await pilot.pause()
@@ -182,13 +184,13 @@ async def test_left_collapses_a_fork_and_then_steps_out_of_it(tmp_path):
     nodes with widget children are forks, which makes this "fold this branch away"
     rather than "hide one message".
     """
-    session = await _linear_session(tmp_path)
-    branch_point = _branch_point(session)
+    cursor = await _linear_session(tmp_path)
+    branch_point = _branch_point(cursor)
     # A second child of the branch point, so the tree has exactly one fork.
-    await session.append_at(
+    await cursor.log.append_at(
         branch_point, "message", {"message": {"role": "assistant", "content": "other"}}
     )
-    view = ConversationTree(session.entries(), session.cursor)
+    view = cursor.tree()
     harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         await pilot.pause()
@@ -218,8 +220,8 @@ async def test_an_agent_spec_row_names_the_model_and_tools(tmp_path):
     the node whose entire purpose is telling a reader WHICH agent produced the
     turns below it, saying nothing about which agent that was.
     """
-    session = await _linear_session(tmp_path)
-    spec_id = await session.append_custom_entry(
+    cursor = await _linear_session(tmp_path)
+    spec_id = await cursor.append_custom_entry(
         "agent_spec",
         {
             "model": {"id": "gpt-4o", "provider": "openai", "context_window": 128000},
@@ -236,7 +238,7 @@ async def test_an_agent_spec_row_names_the_model_and_tools(tmp_path):
         for child in node.children:
             _collect(child)
 
-    for root in ConversationTree(session.entries(), session.cursor).tree():
+    for root in cursor.tree().tree():
         _collect(root)
 
     label = tree_browser.SessionTreeModal._label(nodes[spec_id])
@@ -258,48 +260,52 @@ def _backend() -> TauBackend:
     )
 
 
-def _branch_point(session: Session) -> str:
+def _bound_backend(cursor: Cursor) -> TauBackend:
+    """A real backend whose session extends ``cursor``."""
+    backend = _backend()
+    backend.bind_cursor(cursor)
+    return backend
+
+
+def _branch_point(cursor: Cursor) -> str:
     """The first user message id — the node we branch from."""
     return next(
         e["id"]
-        for e in session.entries()
+        for e in cursor.entries()
         if e.get("type") == "message" and e["message"].get("role") == "user"
     )
 
 
-async def test_navigate_no_summary_appends_navigate_and_drops_branch(tmp_path):
-    session = await _linear_session(tmp_path)
+async def test_navigate_no_summary_writes_nothing_and_drops_branch(tmp_path):
+    cursor = await _linear_session(tmp_path)
     # Give the abandoned tip an extra message so navigating back genuinely drops it.
-    await session.append_message({"role": "user", "content": "abandon me"})
-    target = _branch_point(session)
-    before_ids = {e["id"] for e in session.entries()}
-    old_leaf = session.cursor
+    await cursor.append_message({"role": "user", "content": "abandon me"})
+    target = _branch_point(cursor)
+    before_ids = {e["id"] for e in cursor.entries()}
+    old_leaf = cursor.leaf
 
-    backend = _backend()
-    new_messages = await backend.navigate_tree(session, target, summarize=False)
+    backend = _bound_backend(cursor)
+    new_messages = await backend.navigate_tree(target, summarize=False)
 
-    entries = session.entries()
-    navigate_entries = [e for e in entries if e.get("type") == "navigate"]
-    assert len(navigate_entries) == 1
-    assert navigate_entries[0]["targetId"] == target
-    # Cursor moved to the target.
-    assert session.cursor == target
-    assert session.cursor != old_leaf
+    entries = cursor.entries()
+    # The cursor moved to the target, and the move wrote nothing.
+    assert cursor.leaf == target
+    assert cursor.leaf != old_leaf
     # The abandoned branch is dropped from context but NOT from disk (append-only).
-    assert before_ids <= {e["id"] for e in entries}
+    assert {e["id"] for e in entries} == before_ids
     texts = [_text(m) for m in new_messages]
     assert "abandon me" not in texts
     assert "hello" in texts  # the branch point survives
     # Return value is exactly ConversationTree.context_for(cursor).
-    assert new_messages == ConversationTree(entries, session.cursor).context_for()
+    assert new_messages == ConversationTree(entries, cursor.leaf).context_for()
 
 
 async def test_navigate_summarize_appends_branch_summary_inline(tmp_path):
-    session = await _linear_session(tmp_path)
-    await session.append_message({"role": "user", "content": "explore this dead end"})
-    target = _branch_point(session)
+    cursor = await _linear_session(tmp_path)
+    await cursor.append_message({"role": "user", "content": "explore this dead end"})
+    target = _branch_point(cursor)
 
-    backend = _backend()
+    backend = _bound_backend(cursor)
     captured: dict = {}
 
     async def fake_complete(model, context, options=None, **_):
@@ -307,9 +313,9 @@ async def test_navigate_summarize_appends_branch_summary_inline(tmp_path):
         return _fake_assistant("SUMMARY OF THE BRANCH")
 
     with patch("tau_llm.client.complete_simple", fake_complete):
-        new_messages = await backend.navigate_tree(session, target, summarize=True)
+        new_messages = await backend.navigate_tree(target, summarize=True)
 
-    entries = session.entries()
+    entries = cursor.entries()
     bs = [e for e in entries if e.get("type") == "branch_summary"]
     assert len(bs) == 1
     assert bs[0]["summary"] == "SUMMARY OF THE BRANCH"
@@ -319,15 +325,15 @@ async def test_navigate_summarize_appends_branch_summary_inline(tmp_path):
     # The summary is spliced INLINE into context (Decision 5 fix 2).
     texts = [_text(m) for m in new_messages]
     assert any("SUMMARY OF THE BRANCH" in t for t in texts)
-    assert new_messages == ConversationTree(entries, session.cursor).context_for()
+    assert new_messages == ConversationTree(entries, cursor.leaf).context_for()
 
 
 async def test_navigate_summarize_custom_instructions_reach_system_prompt(tmp_path):
-    session = await _linear_session(tmp_path)
-    await session.append_message({"role": "user", "content": "explore"})
-    target = _branch_point(session)
+    cursor = await _linear_session(tmp_path)
+    await cursor.append_message({"role": "user", "content": "explore"})
+    target = _branch_point(cursor)
 
-    backend = _backend()
+    backend = _bound_backend(cursor)
     captured: dict = {}
 
     async def fake_complete(model, context, options=None, **_):
@@ -336,7 +342,6 @@ async def test_navigate_summarize_custom_instructions_reach_system_prompt(tmp_pa
 
     with patch("tau_llm.client.complete_simple", fake_complete):
         await backend.navigate_tree(
-            session,
             target,
             summarize=True,
             custom_instructions="Only mention file paths.",
@@ -349,44 +354,43 @@ async def test_navigate_summarize_custom_instructions_reach_system_prompt(tmp_pa
 
 async def test_navigate_summarize_raises_on_empty_llm_response(tmp_path):
     # Fail-Early (§3.1): a failed/empty summary raises — no fabricated fallback.
-    session = await _linear_session(tmp_path)
-    await session.append_message({"role": "user", "content": "explore"})
-    target = _branch_point(session)
-    backend = _backend()
+    cursor = await _linear_session(tmp_path)
+    await cursor.append_message({"role": "user", "content": "explore"})
+    target = _branch_point(cursor)
+    backend = _bound_backend(cursor)
 
     async def fake_complete(model, context, options=None, **_):
         return _fake_assistant("")
 
     with patch("tau_llm.client.complete_simple", fake_complete):
         with pytest.raises(RuntimeError, match="empty summary"):
-            await backend.navigate_tree(session, target, summarize=True)
+            await backend.navigate_tree(target, summarize=True)
     # Nothing persisted for the failed call.
-    assert all(e.get("type") != "branch_summary" for e in session.entries())
+    assert all(e.get("type") != "branch_summary" for e in cursor.entries())
 
 
 # --- re-render seam (§3.4) --------------------------------------------------
 
 
 async def test_reload_messages_shows_post_navigate_context(make_app):
-    from tau_coding_agent.transcript import ChatDisplay
 
     app = make_app(create_backend=lambda cfg: _backend())
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.action_new_chat()
         await pilot.pause()
-        session = app.current_session
-        await session.append_message({"role": "user", "content": "keep me"})
-        await session.append_message({"role": "assistant", "content": "abandon"})
-        target = _branch_point(session)
+        cursor = app._cursor
+        await cursor.append_message({"role": "user", "content": "keep me"})
+        await cursor.append_message({"role": "assistant", "content": "abandon"})
+        target = _branch_point(cursor)
 
-        new_messages = await app.current_backend.navigate_tree(session, target, summarize=False)
+        new_messages = await app.current_backend.navigate_tree(target, summarize=False)
         app.messages = new_messages
         await app.query_one(transcript.ChatDisplay).reload_messages(app.messages)
         await pilot.pause()
 
-        assert session.cursor == target
-        assert new_messages == ConversationTree(session.entries(), session.cursor).context_for()
+        assert cursor.leaf == target
+        assert new_messages == cursor.context()
 
 
 # --- shared fakes -----------------------------------------------------------
@@ -416,19 +420,25 @@ def _fake_assistant(text: str):
 
 
 async def _forked_tree():
-    """One answer with two follow-ups tried under it, and the `navigate` between."""
+    """One answer with two follow-ups tried under it: the cursor moved back between them."""
     from tau_agent_core.session_log import InMemorySessionLog
 
-    log = InMemorySessionLog()
+    cursor = Cursor.newest(InMemorySessionLog())
     ids = {}
-    ids["q0"] = await log.append_message({"role": "user", "content": "read /tmp/context_test"})
-    ids["a0"] = await log.append_message({"role": "assistant", "content": "No such file. Create one?"})
-    ids["u1"] = await log.append_message({"role": "user", "content": "Yes, write your favorite number."})
-    ids["a1"] = await log.append_message({"role": "assistant", "content": "Wrote `42`."})
-    await log.append_navigate(ids["a0"])
-    ids["u2"] = await log.append_message({"role": "user", "content": "Actually, check again!"})
-    ids["a2"] = await log.append_message({"role": "assistant", "content": "Whoops, it contains `42`."})
-    return ConversationTree(log.entries(), log.cursor), ids
+    ids["q0"] = await cursor.append_message({"role": "user", "content": "read /tmp/context_test"})
+    ids["a0"] = await cursor.append_message(
+        {"role": "assistant", "content": "No such file. Create one?"}
+    )
+    ids["u1"] = await cursor.append_message(
+        {"role": "user", "content": "Yes, write your favorite number."}
+    )
+    ids["a1"] = await cursor.append_message({"role": "assistant", "content": "Wrote `42`."})
+    cursor.move(ids["a0"])
+    ids["u2"] = await cursor.append_message({"role": "user", "content": "Actually, check again!"})
+    ids["a2"] = await cursor.append_message(
+        {"role": "assistant", "content": "Whoops, it contains `42`."}
+    )
+    return cursor.tree(), ids
 
 
 def _rows_of(tree_widget):
@@ -483,16 +493,16 @@ async def test_message_text_gives_the_whole_message_and_the_preview_gives_one_li
     what the reader typed."""
     from tau_agent_core.session_log import InMemorySessionLog
 
-    log = InMemorySessionLog()
+    cursor = Cursor.newest(InMemorySessionLog())
     typed = "first line\nsecond line\nthird line"
-    entry_id = await log.append_message({"role": "user", "content": typed})
-    view = ConversationTree(log.entries(), log.cursor)
+    entry_id = await cursor.append_message({"role": "user", "content": typed})
+    view = cursor.tree()
     assert view.message_text(entry_id) == typed
     node = next(n for n in view.tree() if n.id == entry_id)
     assert node.preview == "first line"
     # An entry with no message is a record, not text — and asking is not an error.
-    nav = await log.append_navigate(entry_id)
-    assert ConversationTree(log.entries(), log.cursor).message_text(nav) == ""
+    record = await cursor.append_custom_entry("note", {"seen": True})
+    assert cursor.tree().message_text(record) == ""
 
 
 def _script_modals(app, values):
@@ -515,33 +525,29 @@ async def test_revising_a_user_message_forks_from_its_parent(make_app, wait_for_
     """The whole of item 2. Navigating ONTO the user message would make the next
     turn its child — two user turns in a row. The cursor lands on its parent
     instead, so what is typed next replaces it."""
-    from tau_coding_agent.chat_widgets import ChatInput
 
     app = make_app(create_backend=lambda cfg: _backend())
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.action_new_chat()
         session = app.current_session
-        await session.append_message({"role": "user", "content": "u1"})
-        a1 = await session.append_message({"role": "assistant", "content": "a1"})
-        u2 = await session.append_message({"role": "user", "content": "u2 as first typed"})
-        await session.append_message({"role": "assistant", "content": "a2"})
+        cursor = app._cursor
+        await cursor.append_message({"role": "user", "content": "u1"})
+        a1 = await cursor.append_message({"role": "assistant", "content": "a1"})
+        u2 = await cursor.append_message({"role": "user", "content": "u2 as first typed"})
+        await cursor.append_message({"role": "assistant", "content": "a2"})
+        before = session.entries()
 
         _script_modals(app, [tree_browser.TreeIntent("revise", (u2,)), "navigate"])
         app.action_browse_tree()
         await wait_for_workers_settled(app)
         await pilot.pause()
 
-        # The cursor moved to u2's PARENT, not to u2.
-        assert session.entries()[-1]["type"] == "navigate"
-        assert session.entries()[-1]["targetId"] == a1
-        assert session.cursor == a1
+        # The cursor moved to u2's PARENT, not to u2, and the move wrote nothing.
+        assert cursor.leaf == a1
+        assert session.entries() == before
         # …so the revised message is out of the fold, along with what it produced.
-        kept = [
-            e
-            for e in ConversationTree(session.entries(), session.cursor).context_entries()
-            if e.get("type") == "message"
-        ]
+        kept = [e for e in cursor.tree().context_entries() if e.get("type") == "message"]
         assert "u2 as first typed" not in [str(e["message"].get("content")) for e in kept]
         # …and it is back in the input, whole, ready to edit.
         assert app.query_one("#chat-input", chat_widgets.ChatInput).text == "u2 as first typed"
@@ -553,17 +559,16 @@ async def test_navigating_to_an_assistant_message_leaves_the_input_alone(
     """The unchanged half. A ``navigate`` intent continues from below the node and
     stages nothing — putting an answer in the input would be putting words in the
     reader's mouth."""
-    from tau_coding_agent.chat_widgets import ChatInput
 
     app = make_app(create_backend=lambda cfg: _backend())
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.action_new_chat()
-        session = app.current_session
-        await session.append_message({"role": "user", "content": "u1"})
-        a1 = await session.append_message({"role": "assistant", "content": "a1"})
-        await session.append_message({"role": "user", "content": "u2"})
-        await session.append_message({"role": "assistant", "content": "a2"})
+        cursor = app._cursor
+        await cursor.append_message({"role": "user", "content": "u1"})
+        a1 = await cursor.append_message({"role": "assistant", "content": "a1"})
+        await cursor.append_message({"role": "user", "content": "u2"})
+        await cursor.append_message({"role": "assistant", "content": "a2"})
         app.query_one("#chat-input", chat_widgets.ChatInput).text = "half a thought"
 
         _script_modals(app, [tree_browser.TreeIntent("navigate", (a1,)), "navigate"])
@@ -571,7 +576,7 @@ async def test_navigating_to_an_assistant_message_leaves_the_input_alone(
         await wait_for_workers_settled(app)
         await pilot.pause()
 
-        assert session.cursor == a1
+        assert cursor.leaf == a1
         assert app.query_one("#chat-input", chat_widgets.ChatInput).text == "half a thought"
 
 
@@ -589,7 +594,6 @@ async def test_revising_the_very_first_message_is_refused_and_says_why(
     ``InMemorySessionLog`` starts with whatever was appended first), which is why
     the caller checks rather than assuming.
     """
-    from tau_coding_agent.chat_widgets import ChatInput
 
     app = make_app(create_backend=lambda cfg: _backend())
     async with app.run_test() as pilot:
@@ -598,7 +602,7 @@ async def test_revising_the_very_first_message_is_refused_and_says_why(
         session = app.current_session
         root = session.entries()[0]["id"]
         assert session.entries()[0].get("parentId") is None
-        await session.append_message({"role": "user", "content": "u1"})
+        await app._cursor.append_message({"role": "user", "content": "u1"})
         before = len(session.entries())
 
         said: list[str] = []

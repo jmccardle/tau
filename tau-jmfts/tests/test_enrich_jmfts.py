@@ -17,6 +17,8 @@ from typing import Any
 
 import pytest
 
+from tau_agent_core.cursor import Cursor
+from tau_agent_core.session_log import SessionLog
 from tau_jmfts.catalog import JmftsSessionCatalog
 from tau_jmfts.client import CHUNK_USETYPE, JmftsClient, JmftsError
 from tau_jmfts.ext.enrich import enrich_conversation
@@ -57,6 +59,13 @@ def _msg(role: str, text: str) -> dict[str, Any]:
     return {"role": role, "content": [{"type": "text", "text": text}]}
 
 
+async def _append(log: SessionLog, *messages: dict[str, Any]) -> None:
+    """Append ``messages`` in order on a cursor opened at ``log``'s default leaf."""
+    cursor = Cursor.newest(log)
+    for message in messages:
+        await cursor.append_message(message)
+
+
 def _session(catalog: JmftsSessionCatalog, run_id: str):
     return catalog.create(
         f"/tmp/{TEST_PREFIX}-{run_id}", "test-model", "test-backend", system_prompt="sys"
@@ -82,11 +91,12 @@ async def test_an_enriched_conversation_becomes_semantically_searchable(
     """
     session = _session(catalog, run_id)
     try:
-        await session.append_message(_msg("user", "Why is our pod getting killed on startup?"))
-        await session.append_message(_msg("assistant", LONG_ANSWER))
-        await session.append_message(_msg("user", "And the Redis connection pool exhaustion?"))
-        await session.append_message(
-            _msg("assistant", "Raise maxTotal and set testOnBorrow; an unclosed Jedis leaked.")
+        await _append(session, _msg("user", "Why is our pod getting killed on startup?"))
+        await _append(session, _msg("assistant", LONG_ANSWER))
+        await _append(session, _msg("user", "And the Redis connection pool exhaustion?"))
+        await _append(
+            session,
+            _msg("assistant", "Raise maxTotal and set testOnBorrow; an unclosed Jedis leaked."),
         )
 
         report = enrich_conversation(client, session.root_doc_id, index=index_name)
@@ -114,8 +124,8 @@ async def test_the_search_is_scoped_to_this_conversation(
     theirs = _session(catalog, run_id + "b")
     try:
         secret = f"quokka-{run_id}"  # a token that exists in exactly one conversation
-        await theirs.append_message(_msg("assistant", f"The deployment codename is {secret}."))
-        await mine.append_message(_msg("assistant", "This conversation is about something else."))
+        await _append(theirs, _msg("assistant", f"The deployment codename is {secret}."))
+        await _append(mine, _msg("assistant", "This conversation is about something else."))
 
         enrich_conversation(client, mine.root_doc_id)
         enrich_conversation(client, theirs.root_doc_id)
@@ -140,7 +150,7 @@ async def test_a_long_message_is_chunked_so_its_TAIL_is_searchable_too(
     session = _session(catalog, run_id)
     try:
         tail_marker = f"the final clause mentions {run_id} explicitly"
-        await session.append_message(_msg("assistant", LONG_ANSWER + " " + tail_marker))
+        await _append(session, _msg("assistant", LONG_ANSWER + " " + tail_marker))
 
         report = enrich_conversation(client, session.root_doc_id)
         assert report.chunked, "a message well past the embed window was not chunked"
@@ -170,7 +180,7 @@ async def test_text_with_no_word_boundaries_is_split_and_embedded(
     session = _session(catalog, run_id)
     try:
         blob = base64.b64encode(os.urandom(4000)).decode()
-        await session.append_message(_msg("assistant", "Here is the dump: " + blob))
+        await _append(session, _msg("assistant", "Here is the dump: " + blob))
 
         report = enrich_conversation(client, session.root_doc_id)
 
@@ -207,7 +217,7 @@ async def test_dense_content_short_enough_for_prose_is_still_over_the_token_wind
     try:
         blob = base64.b64encode(os.urandom(2048)).decode()[:1800]
         assert len(blob) == 1800, "the fixture must sit just inside the old 1800-char proxy"
-        await session.append_message(_msg("assistant", blob))
+        await _append(session, _msg("assistant", blob))
 
         report = enrich_conversation(client, session.root_doc_id)
 
@@ -234,8 +244,8 @@ async def test_enrichment_is_idempotent(
     a no-op and the reported doc count is stable."""
     session = _session(catalog, run_id)
     try:
-        await session.append_message(_msg("user", "Why is our pod getting killed on startup?"))
-        await session.append_message(_msg("assistant", LONG_ANSWER))
+        await _append(session, _msg("user", "Why is our pod getting killed on startup?"))
+        await _append(session, _msg("assistant", LONG_ANSWER))
 
         first = enrich_conversation(client, session.root_doc_id, index=index_name)
         assert first.embedded or first.chunked
@@ -265,7 +275,7 @@ async def test_a_pass_that_died_before_embedding_is_completed_by_re_running(
     rather than see "chunks exist" and call the document done."""
     session = _session(catalog, run_id)
     try:
-        await session.append_message(_msg("assistant", LONG_ANSWER))
+        await _append(session, _msg("assistant", LONG_ANSWER))
         # The LONGEST message, not the first: the first tau:message is the system prompt.
         messages = client.get_children(
             session.root_doc_id, usetype="tau:message", depth=-1, limit=10

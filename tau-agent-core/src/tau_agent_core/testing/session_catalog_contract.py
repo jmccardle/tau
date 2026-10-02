@@ -40,6 +40,7 @@ from typing import Any
 
 import pytest
 
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 
 MODEL = "contract-model"
@@ -123,7 +124,7 @@ class SessionCatalogContractTests:
 
     async def test_create_then_load_round_trips(self, catalog, cwd):
         created = catalog.create(cwd, MODEL, BACKEND, system_prompt="sys", name="Title")
-        await created.append_message(_msg("user", "hi"))
+        await Cursor.newest(created).append_message(_msg("user", "hi"))
 
         loaded = catalog.load(catalog.list(cwd)[0].ref)
         assert loaded.id == created.id
@@ -145,7 +146,7 @@ class SessionCatalogContractTests:
         """
         made = [catalog.create(cwd, MODEL, BACKEND, name=f"s{n}") for n in range(3)]
         for m in made:
-            await m.append_message(_msg("user", "x"))
+            await Cursor.newest(m).append_message(_msg("user", "x"))
 
         infos = catalog.list(cwd)
         assert {i.id for i in infos} == {m.id for m in made}
@@ -157,7 +158,7 @@ class SessionCatalogContractTests:
     async def test_appends_survive_a_reopen(self, catalog, cwd):
         """What "persisted" means: another catalog instance sees the writes."""
         session = catalog.create(cwd, MODEL, BACKEND, system_prompt="sys")
-        await session.append_message(_msg("user", "before"))
+        await Cursor.newest(session).append_message(_msg("user", "before"))
         ref = catalog.list(cwd)[0].ref
 
         reopened = self.reopen(catalog)
@@ -172,7 +173,7 @@ class SessionCatalogContractTests:
         other test here and still cannot resume a session on the next run.
         """
         created = catalog.create(cwd, MODEL, BACKEND)
-        await created.append_message(_msg("user", "hi"))
+        await Cursor.newest(created).append_message(_msg("user", "hi"))
         ref = catalog.list(cwd)[0].ref
 
         reopened = self.reopen(catalog)
@@ -194,8 +195,8 @@ class SessionCatalogContractTests:
         names it and no "continue where I left off" finds it.
         """
         ephemeral = catalog.create_ephemeral(cwd, MODEL, BACKEND, system_prompt="sys")
-        await ephemeral.append_message(_msg("user", "hello"))
-        ephemeral.append_session_info("renamed")
+        await Cursor.newest(ephemeral).append_message(_msg("user", "hello"))
+        await Cursor.newest(ephemeral).append("session_info", name="renamed")
 
         assert catalog.list(cwd) == []
         assert catalog.most_recent(cwd) is None
@@ -203,8 +204,8 @@ class SessionCatalogContractTests:
     async def test_ephemeral_session_is_otherwise_fully_usable(self, catalog, cwd):
         """Unpersisted, not degraded — the agent loop runs against it unchanged."""
         ephemeral = catalog.create_ephemeral(cwd, MODEL, BACKEND, system_prompt="sys")
-        await ephemeral.append_message(_msg("user", "hello"))
-        await ephemeral.append_message(_msg("assistant", "hi"))
+        await Cursor.newest(ephemeral).append_message(_msg("user", "hello"))
+        await Cursor.newest(ephemeral).append_message(_msg("assistant", "hi"))
         assert isinstance(ephemeral, ConversationSession)
         assert _texts(ephemeral.messages) == ["sys", "hello", "hi"]
         assert ephemeral.model == MODEL
@@ -236,7 +237,9 @@ class SessionCatalogContractTests:
         actually rely on, and it is true whether or not they tie.
         """
         for n in range(3):
-            await catalog.create(cwd, MODEL, BACKEND).append_message(_msg("user", f"m{n}"))
+            await Cursor.newest(catalog.create(cwd, MODEL, BACKEND)).append_message(
+                _msg("user", f"m{n}")
+            )
 
         modified = [i.modified for i in catalog.list(cwd)]
         assert modified == sorted(modified, reverse=True)
@@ -244,9 +247,9 @@ class SessionCatalogContractTests:
     async def test_list_metadata_describes_the_conversation(self, catalog, cwd):
         """The picker renders from these fields alone; ``system`` is not a message."""
         session = catalog.create(cwd, MODEL, BACKEND, system_prompt="sys", name="My Session")
-        await session.append_message(_msg("user", "first question"))
-        await session.append_message(_msg("assistant", "an answer"))
-        await session.append_message(_msg("user", "last question"))
+        await Cursor.newest(session).append_message(_msg("user", "first question"))
+        await Cursor.newest(session).append_message(_msg("assistant", "an answer"))
+        await Cursor.newest(session).append_message(_msg("user", "last question"))
 
         (info,) = catalog.list(cwd)
         assert info.id == session.id
@@ -265,7 +268,7 @@ class SessionCatalogContractTests:
 
     async def test_fork_carries_the_history_under_a_new_id(self, catalog, cwd):
         source = catalog.create(cwd, MODEL, BACKEND, system_prompt="sys")
-        await source.append_message(_msg("user", "original"))
+        await Cursor.newest(source).append_message(_msg("user", "original"))
 
         forked = catalog.fork(source, cwd)
         assert forked.id != source.id
@@ -274,19 +277,39 @@ class SessionCatalogContractTests:
     async def test_fork_leaves_the_source_untouched(self, catalog, cwd):
         """The point of forking: explore without editing what you branched from."""
         source = catalog.create(cwd, MODEL, BACKEND, system_prompt="sys")
-        await source.append_message(_msg("user", "original"))
+        await Cursor.newest(source).append_message(_msg("user", "original"))
 
         forked = catalog.fork(source, cwd)
-        await forked.append_message(_msg("user", "branch"))
+        await Cursor.newest(forked).append_message(_msg("user", "branch"))
 
         assert "branch" not in _texts(source.messages)
         # ...and not in the *stored* source either, which is what the next run reads.
         source_ref = next(i.ref for i in catalog.list(cwd) if i.id == source.id)
         assert _texts(catalog.load(source_ref).messages) == ["sys", "original"]
 
+    async def test_fork_at_an_entry_carries_only_the_path_to_it(self, catalog, cwd):
+        """``at`` is how a fork continues from a position (docs/CURSORS.md §4): the
+        copy holds that entry's ancestry and nothing else, so it reopens there."""
+        source = catalog.create(cwd, MODEL, BACKEND, system_prompt="sys")
+        cursor = Cursor.newest(source)
+        question = await cursor.append_message(_msg("user", "question"))
+        await cursor.append_message(_msg("assistant", "answer on the main line"))
+        cursor.move(question)
+        await cursor.append_message(_msg("assistant", "answer on a sibling"))
+
+        forked = catalog.fork(source, cwd, at=question)
+
+        assert _texts(forked.messages) == ["sys", "question"]
+        assert len(forked.entries()) < len(source.entries())
+
+    async def test_fork_at_an_unknown_entry_raises(self, catalog, cwd):
+        source = catalog.create(cwd, MODEL, BACKEND)
+        with pytest.raises(ValueError):
+            catalog.fork(source, cwd, at="does-not-exist")
+
     async def test_fork_is_listed_and_loadable_in_its_own_right(self, catalog, cwd):
         source = catalog.create(cwd, MODEL, BACKEND)
-        await source.append_message(_msg("user", "original"))
+        await Cursor.newest(source).append_message(_msg("user", "original"))
         forked = catalog.fork(source, cwd)
 
         by_id = {i.id: i for i in catalog.list(cwd)}
@@ -304,7 +327,9 @@ class SessionCatalogContractTests:
         honest under ties, while still proving the two agree.
         """
         for n in range(3):
-            await catalog.create(cwd, MODEL, BACKEND).append_message(_msg("user", f"m{n}"))
+            await Cursor.newest(catalog.create(cwd, MODEL, BACKEND)).append_message(
+                _msg("user", f"m{n}")
+            )
 
         result = catalog.most_recent(cwd)
         assert result is not None

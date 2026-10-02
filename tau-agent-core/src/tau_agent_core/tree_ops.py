@@ -1,23 +1,14 @@
-"""τ-agent-core tree operations: the five durable session-tree mutations.
+"""τ-agent-core tree operations: the five session-tree gestures every head offers.
 
-``conversation_tree`` READS the session tree and ``tree_surgery`` decides what a
-new branch WOULD look like; this module is the half that writes. Every function
-here takes a ``SessionLog`` as its first argument, performs one mutation on it,
-and returns what the caller needs to re-render — nothing else. No frontend
-object, no ``AgentSession``, no display surface.
+``conversation_tree`` READS the tree and ``tree_surgery`` decides what a new
+branch WOULD look like; this module performs it. Every function takes the
+:class:`~tau_agent_core.cursor.Cursor` it acts from, and returns what the caller
+needs to re-render. No frontend object, no ``AgentSession``.
 
-They lived on ``TauBackend`` until the capability/flow split, which is why
-``tree_surgery``'s own module docstring still says the durable half is "in the
-frontend's backend object": one head owned the only way to elide a span, branch
-from a selection, or paste a subtree, so no other head could offer those
-gestures at all and the RPC wire carried none of them. The head still owns the
-modals and the re-render; it no longer owns the mutation.
-
-Two of them cost a model call and three do not, and the split is in the
-signatures rather than behind a flag: :func:`navigate` is synchronous because
-moving a cursor is an append, and :func:`summarize_and_navigate` is a coroutine
-returning the summarizer's usage for the caller to bank, because it spends
-tokens outside the agent loop.
+:func:`navigate` is synchronous, because moving a cursor writes nothing
+(docs/CURSORS.md §4). The rest await their appends, and
+:func:`summarize_and_navigate` also returns the summarizer's usage for the
+caller to bank, because it spends tokens outside the agent loop.
 
 Reference: TREE-BROWSER-AS-EDITOR.md §6 (plan then commit), §7 (copy entries);
 NODE-ADDRESSABLE-AGENTS.md I1 (ancestry is fixed at append), W3 (elide).
@@ -31,7 +22,8 @@ from tau_llm.docs import agent_facing
 
 from tau_agent_core.compaction import estimate_span_tokens
 from tau_agent_core.conversation_tree import ConversationTree, is_system_message
-from tau_agent_core.session_log import SessionLog, agent_spec_in_force
+from tau_agent_core.cursor import Cursor
+from tau_agent_core.session_log import agent_spec_in_force
 from tau_agent_core.tree_surgery import (
     branch_refusal_reason,
     copy_of,
@@ -50,37 +42,30 @@ __all__ = [
 
 
 @agent_facing(topic="sessions")
-async def navigate(session: SessionLog, target_id: str | None) -> list[dict]:
-    """Move ``session``'s cursor to ``target_id`` and return the new context.
+def navigate(cursor: Cursor, target_id: str | None) -> list[dict]:
+    """Move ``cursor`` to ``target_id`` and return the context there.
 
-    Appends a ``navigate`` entry — zero LLM calls. The abandoned branch drops out
-    of context via the ``parentId`` walk but stays on disk, append-only and still
-    browsable. A ``target_id`` that is already the cursor is a no-op that still
-    returns the context, so a caller need not check first.
-
-    Typed to the ``SessionLog`` Protocol rather than a concrete store: this
-    touches only ``cursor``, ``entries()`` and ``append_navigate``, all three of
-    which are on the Protocol, so an in-memory, file or database-backed log works
-    here unchanged.
+    Writes nothing. The branch left behind drops out of context by ancestry and
+    stays in the tree, browsable.
 
     Args:
-        session: The session log to move.
-        target_id: The entry to move the cursor onto, or ``None`` for pre-root —
-            the next append then starts a branch above every existing entry.
+        cursor: The cursor to move.
+        target_id: The entry to move onto, or ``None`` for before the root — the
+            next append then starts a branch above every existing entry.
 
     Returns:
-        ``ConversationTree.context_for(cursor)`` — the flat message list a head
-        swaps into its transcript and re-renders.
+        The flat message list a head swaps into its transcript.
+
+    Raises:
+        ValueError: ``target_id`` names no entry.
     """
-    if target_id == session.cursor:
-        return ConversationTree(session.entries(), session.cursor).context_for()
-    await session.append_navigate(target_id)
-    return ConversationTree(session.entries(), session.cursor).context_for()
+    cursor.move(target_id)
+    return cursor.context()
 
 
 @agent_facing(topic="sessions")
 async def summarize_and_navigate(
-    session: SessionLog,
+    cursor: Cursor,
     target_id: str,
     model: Any,
     *,
@@ -103,7 +88,7 @@ async def summarize_and_navigate(
     holds no session object to bank them against.
 
     Args:
-        session: The session log to write the summary into.
+        cursor: The cursor that moves onto the summary.
         target_id: The branch point. The subtree BELOW it is what gets summarized,
             and the ``branch_summary`` entry is parented at it.
         model: The model config the summarizer runs against.
@@ -128,10 +113,9 @@ async def summarize_and_navigate(
     """
     from tau_agent_core.session_manager import summarize_branch
 
-    entries = session.entries()
-    if target_id not in {e["id"] for e in entries}:
+    if target_id not in {e["id"] for e in cursor.entries()}:
         raise ValueError(f"summarize target {target_id!r} not found")
-    branch_text = ConversationTree(entries, session.cursor).subtree_text(target_id)
+    branch_text = cursor.tree().subtree_text(target_id)
     summary, usage = await summarize_branch(
         branch_text,
         model,
@@ -139,20 +123,17 @@ async def summarize_and_navigate(
         custom_instructions=custom_instructions,
         on_text_delta=on_text_delta,
     )
-    await session.append_branch_summary(summary, target_id)
-    return ConversationTree(session.entries(), session.cursor).context_for(), usage
+    await cursor.append_branch_summary(summary, target_id)
+    return cursor.context(), usage
 
 
 @agent_facing(topic="sessions")
-async def elide_span(session: SessionLog, anchor_id: str, first_kept_id: str) -> list[dict]:
-    """Fold a span out of ``session``'s context and return the new context.
+async def elide_span(cursor: Cursor, anchor_id: str, first_kept_id: str) -> list[dict]:
+    """Fold a span out of ``cursor``'s context and return the new context.
 
     ``elide`` is the summary-less generalization of the compaction anchor (W3,
-    NODE-ADDRESSABLE-AGENTS.md). It awaits only its two appends — unlike
-    :func:`summarize_and_navigate`, there is no summary and therefore no model
-    call. It was synchronous until ``SessionLog``'s appenders became coroutines
-    (docs/BLOCKING-PERSISTENCE.md); the I/O boundary it now advertises is the
-    store's write, not a completion.
+    NODE-ADDRESSABLE-AGENTS.md). It awaits one append and makes no model call,
+    unlike :func:`summarize_and_navigate`.
 
     Two ids, because an elide is not a branch point. ``anchor_id`` is where the
     fold jumps FROM — the elide entry is appended as its child, so the anchor
@@ -178,11 +159,11 @@ async def elide_span(session: SessionLog, anchor_id: str, first_kept_id: str) ->
     root-level entry is a pinned contract case); this operation, where someone just
     asked for a span to disappear, does not.
 
-    Nothing is erased: the navigate/elide pair are appends like any other, and
-    every entry the fold now skips is still in ``entries()`` (Decision 7 / T5).
+    Nothing is erased: the elide is an append like any other, and every entry
+    the fold now skips is still in ``entries()`` (Decision 7 / T5).
 
     Args:
-        session: The session log to fold.
+        cursor: The cursor that moves to the anchor and appends the elide.
         anchor_id: The entry the fold jumps from, which becomes the new tip.
         first_kept_id: The entry the fold resumes at. The anchor itself, or one of
             its ancestors.
@@ -197,14 +178,14 @@ async def elide_span(session: SessionLog, anchor_id: str, first_kept_id: str) ->
             checked before the first append, so a refusal leaves the log
             byte-identical.
     """
-    entries = session.entries()
+    entries = cursor.entries()
     known = {e["id"] for e in entries}
     if anchor_id not in known:
         raise ValueError(f"elide anchor {anchor_id!r} not found")
     if first_kept_id not in known:
         raise ValueError(f"elide resume point {first_kept_id!r} not found")
 
-    tree = ConversationTree(entries, session.cursor)
+    tree = ConversationTree(entries, cursor.leaf)
     path_ids = [e["id"] for e in tree.path(anchor_id)]
     if first_kept_id not in path_ids:
         raise ValueError(
@@ -226,45 +207,40 @@ async def elide_span(session: SessionLog, anchor_id: str, first_kept_id: str) ->
             "nothing — the resume point is already the first entry the fold keeps"
         )
 
-    if session.cursor != anchor_id:
-        await session.append_navigate(anchor_id)
-    await session.append_elide(
+    cursor.move(anchor_id)
+    await cursor.append_elide(
         first_kept_id,
         covered_entries=len(hidden),
         covered_tokens=estimate_span_tokens(hidden),
         agent_spec_id=agent_spec_in_force(entries, anchor_id),
     )
-
-    return ConversationTree(session.entries(), session.cursor).context_for()
+    return cursor.context()
 
 
 @agent_facing(topic="sessions")
-async def commit_branch(
-    session: SessionLog, ids: Sequence[str], *, drop_context: bool
-) -> list[dict]:
+async def commit_branch(cursor: Cursor, ids: Sequence[str], *, drop_context: bool) -> list[dict]:
     """Build a branch out of the marked entries and continue on it.
 
     The durable half of TREE-BROWSER-AS-EDITOR.md §6. ``tree_surgery`` decides what
     the branch IS — which marks are kept in place, which are minted as copies,
     whether an elide follows — and this performs it, in the order §6.3 fixes:
 
-    1. move the leaf to the plan's attach point (the last kept mark);
-    2. mint each copy with ``append_at``, parented at the previous one;
-    3. move the leaf onto the last minted entry;
-    4. append the elide, when the caller asked to keep only the selection.
+    1. mint each copy with ``append_at``, parented at the previous one, starting
+       at the plan's attach point (the last kept mark);
+    2. move the cursor onto the last minted entry, or the attach point;
+    3. append the elide, when the caller asked to keep only the selection.
 
-    **Step 2 is invisible until step 3 lands.** ``append_at`` does not move the
-    leaf, so a mint that fails partway leaves orphan entries hanging off the attach
-    point and the cursor exactly where it was — the commit is atomic from the
-    cursor's point of view, which is the property §6.3 is built around and the
-    reason the copies are not appended one gesture at a time.
+    **Step 1 is invisible until step 2 lands.** ``append_at`` does not move the
+    cursor, so a mint that fails partway leaves orphan entries hanging off the
+    attach point and the cursor exactly where it was — the commit is atomic from
+    the cursor's point of view, which is the property §6.3 is built around.
 
     Nothing is re-parented and nothing is erased. I1 holds because every entry's
     ``parentId`` is still written once, at append (§6.1's argument for why a plan
     exists at all rather than a sequence of edits).
 
     Args:
-        session: The session log to write to.
+        cursor: The cursor that continues on the new branch.
         ids: The marked entry ids, in any order — ``tree_surgery`` puts them into
             tree order.
         drop_context: Whether the branch keeps only the selection. ``True`` appends
@@ -282,50 +258,43 @@ async def commit_branch(
             turn-complete. Checked before the first append, so a refusal leaves the
             log byte-identical.
     """
-    entries = session.entries()
-    tree = ConversationTree(entries, session.cursor)
+    tree = cursor.tree()
     refusal = branch_refusal_reason(tree, ids, drop_context=drop_context)
     if refusal is not None:
         raise ValueError(f"cannot branch from this selection: {refusal}")
     plan = plan_branch(tree, ids, drop_context=drop_context)
 
-    if session.cursor != plan.attach:
-        await session.append_navigate(plan.attach)
-
     parent = plan.attach
     for source_id in plan.copies:
         kind, payload = copy_of(tree.entry(source_id))
-        parent = await session.append_at(parent, kind, payload)
-    if plan.copies:
-        await session.append_navigate(parent)
+        parent = await cursor.log.append_at(parent, kind, payload)
+    cursor.move(parent)
 
     if plan.elide_from is not None:
-        after = session.entries()
-        grown = ConversationTree(after, session.cursor)
-        path_ids = [e["id"] for e in grown.path(session.cursor)]
+        after = cursor.entries()
+        grown = cursor.tree()
+        path_ids = [e["id"] for e in grown.path()]
         kept = set(path_ids[path_ids.index(plan.elide_from) :])
         hidden = [
-            e
-            for e in grown.context_entries(session.cursor)
-            if e["id"] not in kept and not is_system_message(e)
+            e for e in grown.context_entries() if e["id"] not in kept and not is_system_message(e)
         ]
-        await session.append_elide(
+        await cursor.append_elide(
             plan.elide_from,
             covered_entries=len(hidden),
             covered_tokens=estimate_span_tokens(hidden),
-            agent_spec_id=agent_spec_in_force(after, str(session.cursor)),
+            agent_spec_id=agent_spec_in_force(after, str(cursor.leaf)),
         )
 
-    return ConversationTree(session.entries(), session.cursor).context_for()
+    return cursor.context()
 
 
 @agent_facing(topic="sessions")
-async def paste_subtree(session: SessionLog, source_id: str, target_id: str) -> list[str]:
+async def paste_subtree(cursor: Cursor, source_id: str, target_id: str) -> list[str]:
     """Re-create the subtree at ``source_id`` under ``target_id``.
 
     The durable half of TREE-BROWSER-AS-EDITOR.md §7. Every copied entry is a new
     entry carrying ``copiedFrom``, minted with ``append_at`` so the paste never
-    moves the leaf: a paste edits the TREE, and what the model sees changes only
+    moves the cursor: a paste edits the TREE, and what the model sees changes only
     when someone navigates onto the copy. That split is why this returns ids rather
     than a message list — nothing about the current context changed.
 
@@ -334,7 +303,7 @@ async def paste_subtree(session: SessionLog, source_id: str, target_id: str) -> 
     the original's shape including its forks.
 
     Args:
-        session: The session log to write to.
+        cursor: The cursor whose tree is edited; it does not move.
         source_id: The copied node — the root of the subtree.
         target_id: The entry the copy hangs from.
 
@@ -348,7 +317,7 @@ async def paste_subtree(session: SessionLog, source_id: str, target_id: str) -> 
             on neither the target's path nor the copied run. Checked before the
             first append.
     """
-    tree = ConversationTree(session.entries(), session.cursor)
+    tree = cursor.tree()
     plan = plan_paste(tree, source_id, target_id)
     refusal = paste_refusal_reason(tree, plan)
     if refusal is not None:
@@ -357,5 +326,5 @@ async def paste_subtree(session: SessionLog, source_id: str, target_id: str) -> 
     minted: dict[str, str] = {}
     for mint in plan.mints:
         parent = plan.target if mint.parent_source_id is None else minted[mint.parent_source_id]
-        minted[mint.source_id] = await session.append_at(parent, mint.kind, mint.payload)
+        minted[mint.source_id] = await cursor.log.append_at(parent, mint.kind, mint.payload)
     return [minted[mint.source_id] for mint in plan.mints]

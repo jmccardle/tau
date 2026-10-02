@@ -66,10 +66,10 @@ def _session() -> AgentSession:
 async def _seed(session: AgentSession, turns: int = 3) -> None:
     """Enough conversation that ``prepare_compaction`` finds a cut point."""
     for i in range(turns):
-        await session.session_log.append_message(
+        await session.cursor.append_message(
             {"role": "user", "content": [{"type": "text", "text": f"question {i} " + "x" * 400}]}
         )
-        await session.session_log.append_message(
+        await session.cursor.append_message(
             {"role": "assistant", "content": [{"type": "text", "text": f"answer {i} " + "y" * 400}]}
         )
 

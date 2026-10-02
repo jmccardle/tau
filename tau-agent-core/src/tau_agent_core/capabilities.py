@@ -462,7 +462,7 @@ _GET_STATE_RETURNS: dict[str, Any] = {
         "message_count": {"type": "integer", "description": "len(AgentSession.messages)."},
         "cursor": {
             "type": ["string", "null"],
-            "description": "session_log.cursor (F3: no host may cache 'the tip').",
+            "description": "cursor.leaf (F3: no host may cache 'the tip').",
         },
         "addressable": {
             "type": "boolean",
@@ -687,7 +687,7 @@ _SESSION_LIFECYCLE_RETURNS: dict[str, Any] = {
         "cursor": {
             "type": ["string", "null"],
             "description": (
-                "The resulting session_log.cursor, duplicated at top level "
+                "The resulting cursor.leaf, duplicated at top level "
                 "(E5/F3 — every mutating response returns the resulting cursor). "
                 "Present only when cancelled is false."
             ),
@@ -919,7 +919,7 @@ _SET_AUTO_COMPACTION_RETURNS: dict[str, Any] = {
         "cursor": {
             "type": ["string", "null"],
             "description": (
-                "session_log.cursor after this call (E5, rule 1 of 'E5 in "
+                "cursor.leaf after this call (E5, rule 1 of 'E5 in "
                 "Tier B' above). ALWAYS the unchanged tip: this verb mutates "
                 "an in-memory CompactionSettings and appends no log entry, so "
                 "there is nothing here that could move it. Returned rather "
@@ -942,7 +942,7 @@ _SET_MODEL_RETURNS: dict[str, Any] = {
         "cursor": {
             "type": ["string", "null"],
             "description": (
-                "session_log.cursor immediately after the model_change entry "
+                "cursor.leaf immediately after the model_change entry "
                 "this call appended (E5) — that entry's own id, since the "
                 "append is the last write this handler makes."
             ),
@@ -961,7 +961,7 @@ _SET_SESSION_NAME_RETURNS: dict[str, Any] = {
         "cursor": {
             "type": ["string", "null"],
             "description": (
-                "The resulting session_log.cursor (E5/F3 — every mutating "
+                "The resulting cursor.leaf (E5/F3 — every mutating "
                 "response returns the resulting cursor)."
             ),
         },
@@ -1166,7 +1166,7 @@ _GET_TREE_RETURNS: dict[str, Any] = {
         "cursor": {
             "type": ["string", "null"],
             "description": (
-                "session_log.cursor at the moment of the read, duplicated out of "
+                "cursor.leaf at the moment of the read, duplicated out of "
                 "`nodes` so a host finds it without scanning. Null on a session whose "
                 "cursor names no entry, which is also the one case in which no node "
                 "carries is_cursor: true."
@@ -1228,7 +1228,7 @@ _ANSWER_REQUEST_RETURNS: dict[str, Any] = {
         "cursor": {
             "type": ["string", "null"],
             "description": (
-                "session_log.cursor after the response was appended (E5 rule 1). "
+                "cursor.leaf after the response was appended (E5 rule 1). "
                 "The append is what RELEASES the lock — appending moves the cursor "
                 "and a lock is read at the cursor — so this value is the evidence "
                 "the session is answerable again."
@@ -1353,7 +1353,7 @@ _TREE_CONTEXT_RETURNS: dict[str, Any] = {
         },
         "cursor": {
             "type": ["string", "null"],
-            "description": "session_log.cursor after the mutation (E5 rule 1).",
+            "description": "cursor.leaf after the mutation (E5 rule 1).",
         },
     },
     "required": ["messages", "cursor"],
@@ -1375,7 +1375,7 @@ _PASTE_SUBTREE_RETURNS: dict[str, Any] = {
         "cursor": {
             "type": ["string", "null"],
             "description": (
-                "session_log.cursor after the paste — E5 rule 1, and here it is "
+                "cursor.leaf after the paste — E5 rule 1, and here it is "
                 "the UNCHANGED tip, present because absence is never a signal "
                 "(rule 3), not because anything moved."
             ),
@@ -1418,7 +1418,7 @@ _EXTENSION_ACTION_RETURNS: dict[str, Any] = {
         "cursor": {
             "type": ["string", "null"],
             "description": (
-                "session_log.cursor — E5 rule 1 on a mutator whose whole product "
+                "cursor.leaf — E5 rule 1 on a mutator whose whole product "
                 "is runtime state. It is the live tip reported as a READ, not a "
                 "claim that this call wrote anything; the same reading "
                 "set_auto_compaction's cursor already has."

@@ -40,10 +40,10 @@ class _RecordingBackend:
 
     def __init__(self) -> None:
         self.submissions: list[Any] = []
-        self._log: Any = None
+        self._cursor: Any = None
 
-    def bind_session_log(self, session_log) -> None:
-        self._log = session_log
+    def bind_cursor(self, cursor) -> None:
+        self._cursor = cursor
 
     def abort(self) -> None:  # pragma: no cover - no test aborts
         pass

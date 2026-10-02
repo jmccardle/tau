@@ -6,7 +6,7 @@
 <!-- agent: yes -->
 
 ```python
-class AgentSession(session_log: SessionLog, model: Model, system_prompt: str = '', tools: list[AgentTool] | None = None, extensions: list[Callable] | None = None, api_key: str | None = None, reasoning: str | None = None, compaction_settings: CompactionSettings | None = None, compaction_policy: CompactionPolicy | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, model_resolver: Callable[[str], Model] | None = None, max_turns: int | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None)
+class AgentSession(*, model: Model, session_log: SessionLog | None = None, cursor: Cursor | None = None, system_prompt: str = '', tools: list[AgentTool] | None = None, extensions: list[Callable] | None = None, api_key: str | None = None, reasoning: str | None = None, compaction_settings: CompactionSettings | None = None, compaction_policy: CompactionPolicy | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, model_resolver: Callable[[str], Model] | None = None, max_turns: int | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None)
 ```
 
 `tau_agent_core.agent_session.AgentSession`
@@ -15,17 +15,16 @@ High-level session API. Combines agent loop, a session log, and events.
 
 This is the primary entry point for both SDK and TUI usage.
 
-Persistence goes through a :class:`~tau_agent_core.session_log.SessionLog`
-(the coding-agent's file ``Session`` on the live path, an
-:class:`~tau_agent_core.session_log.InMemorySessionLog` on the SDK default
-path); context is rebuilt from the log's entries + cursor via
-:class:`~tau_agent_core.conversation_tree.ConversationTree` — the retired
-System-A ``SessionManager`` no longer participates (§2.6).
+Every turn extends one :class:`~tau_agent_core.cursor.Cursor` over a
+:class:`~tau_agent_core.session_log.SessionLog`. Construct with ``session_log``
+to open a cursor at the log's default leaf, or with ``cursor`` to extend a
+position someone already holds.
 
 **Constructor parameters**
 
-- `session_log: SessionLog` — *(no description)*
 - `model: Model` — *(no description)*
+- `session_log: SessionLog | None = None` — *(no description)*
+- `cursor: Cursor | None = None` — *(no description)*
 - `system_prompt: str = ''` — *(no description)*
 - `tools: list[AgentTool] | None = None` — *(no description)*
 - `extensions: list[Callable] | None = None` — *(no description)*
@@ -490,17 +489,14 @@ get_last_compaction() -> CompactionRecord | None
 
 `tau_agent_core.agent_session.AgentSession.get_last_compaction`
 
-The newest ``compaction`` entry in the bound log, or ``None``.
+The newest ``compaction`` on this session's cursor path, or ``None``.
 
-Scans ``session_log.entries()`` in append order rather than the
-:class:`~tau_agent_core.conversation_tree.ConversationTree` active path.
-Stated as a scope note rather than hidden: on a session with a second open
-lane this would report a compaction that happened on the other lane, and a
-lane-aware caller wants ``ConversationTree.context_entries`` instead.
+The path, not the log: a compaction on a sibling branch never shaped this
+cursor's context (docs/CURSORS.md §2).
 
 **Returns**
 
-class:`CompactionRecord`, or ``None`` if this session has never compacted — an honest absence, never a fabricated entry.
+class:`CompactionRecord`, or ``None`` if this path never compacted.
 
 ### get_model
 
@@ -540,18 +536,7 @@ get_session_name() -> str | None
 
 `tau_agent_core.agent_session.AgentSession.get_session_name`
 
-This session's durable display name, or ``None`` if it was never named.
-
-Derived from the log's latest ``session_info`` entry at call time, so it is
-correct across a reload and after another writer renamed the session.
-
-**Returns**
-
-The name, or ``None``.
-
-**Raises**
-
-- `RuntimeError` — The bound log has no name to read — an in-memory log has nowhere for a ``session_info`` entry to live. Distinct from "never named", which is ``None``.
+The newest ``session_info`` name in the log, or ``None`` if never named.
 
 ### get_session_stats
 
@@ -697,11 +682,7 @@ file stem. ``None`` leaves the constructor-supplied map (default ``{}``).
 
 `tau_agent_core.agent_session.AgentSession.messages: list[dict[str, Any]]`
 
-Current conversation messages (active path).
-
-Built at read time from the log's raw entries + persisted cursor by
-``ConversationTree.context_for`` — the leaf→root walk plus the
-compaction/branch_summary splice (§2.1, §2.6).
+The model-input context at this session's cursor.
 
 ### pending_request
 
@@ -752,7 +733,7 @@ class:`~tau_agent_core.flows.Performed` carrying ``data`` plus the resulting cur
 Set except while a turn is between emitting ``agent_end`` and persisting.
 
 docs/ASYNC-SESSION-LOG.md §3.3. ``RPCHandler._stamp_agent_end_cursor``
-reads ``session_log.cursor`` when the writer task dequeues an
+reads the captured cursor's leaf when the writer task dequeues an
 ``agent_end``, and that read is only right if this turn's messages are
 already written. Until the appenders became coroutines that was free:
 :meth:`_run_one_turn` ran from the enqueue through persistence without
@@ -1167,25 +1148,20 @@ harness core deliberately does not read ``~/.tau/config.json`` itself
 ### set_session_name
 
 ```python
-set_session_name(name: str) -> None
+async set_session_name(name: str) -> None
 ```
 
 `tau_agent_core.agent_session.AgentSession.set_session_name`
 
-Give this session a durable display name.
-
-Appends a ``session_info`` entry, which is ambient metadata:
-:class:`~tau_agent_core.conversation_tree.ConversationTree` never folds one
-into context, so a rename is persisted and is never model input.
+Name this session: a ``session_info`` entry at the cursor, never model input.
 
 **Parameters**
 
-- `name: str` — The name to give it. Empty is refused rather than stored.
+- `name: str` — *(no description)*
 
 **Raises**
 
 - `ValueError` — ``name`` is empty.
-- `RuntimeError` — The bound log has no ``append_session_info`` — session naming needs a log with somewhere durable to put it.
 
 ### set_ui_delegate
 
@@ -1331,11 +1307,9 @@ Owns, in order (the spec's numbered list):
      exactly like ``"enqueue"``. Once acquired, it navigates the log back
      to the leaf THAT turn recorded at ITS OWN admission
      (:attr:`_pre_turn_leaf`, read BEFORE this call's own admission
-     overwrites it) via ``append_navigate`` — the same "move the cursor,
-     the abandoned suffix falls off the ``parentId`` walk" mechanism
-     ``append_branch_summary`` uses (minus the summary; see
-     :meth:`~tau_agent_core.session_log.SessionLog.append_navigate` and
-     ``ctx.fork(mode="in_place")``, which is the identical shape). If NO
+     overwrites it) by moving the cursor — the abandoned suffix falls off
+     the ``parentId`` walk, the shape ``ctx.fork(mode="in_place")`` also
+     has. If NO
      turn is in flight there is nothing to discard, so this degrades to a
      plain admission at the current cursor — no navigate, no signal.
      **Known limitation:** ``asyncio.Lock`` is FIFO; a rollback queued
@@ -1351,15 +1325,14 @@ Owns, in order (the spec's numbered list):
      queue-jump gap stands, but it now fails safely instead of silently.
    - ``"fork"`` (decision 2): does **not** touch :attr:`_turn_lock` at
      all — the in-flight turn, if any, is genuinely untouched. The fork
-     point is the log's current committed tip
-     (:attr:`~tau_agent_core.session_log.SessionLog.cursor`); admission
+     point is this session's cursor leaf; admission
      checks it is TURN-COMPLETE
      (:meth:`~tau_agent_core.conversation_tree.ConversationTree.fork_admission_reason`)
      and returns ``accepted=False`` with a clear reason rather than
      producing a bad prefix. On success, a second agent is spawned in a
      SUPERVISED background task (:meth:`_spawn_fork`,
      :attr:`_forked_tasks`) — reusing ``ctx.spawn_branch``'s entire
-     mechanism (``BranchView``, tool scoping, failure containment,
+     mechanism (a second cursor, tool scoping, failure containment,
      ``branch_event`` forwarding) — and ``submit()`` returns
      ``accepted=True`` immediately, before the branch's turn finishes;
      there is no caller left to await it the way ``spawn_branch``'s
@@ -1861,214 +1834,6 @@ Current branch status
 
 Last update timestamp (ms since epoch)
 
-## BranchView
-<!-- agent: yes -->
-
-```python
-class BranchView(log: SessionLog, parent_id: str | None, *, lane: str, label: str)
-```
-
-`tau_agent_core.session_log.BranchView`
-
-A second cursor over ONE underlying log — the branch sub-agent's handle (C2/W14).
-
-A :class:`SessionLog` in its own right (so an ``AgentSession`` accepts it with **no**
-changes), but not a second log: same ``id``, same ``entries()`` (the whole shared
-list, not a filtered one), same durable storage. What it owns is **its own leaf**.
-Every append it makes goes to the underlying log via ``append_at`` — parented at the
-branch's leaf — and moves only *this* view's cursor, never the spawning one.
-
-Its writes are **not marked** on disk. :attr:`lane` is an in-memory identity used to
-route this branch's live output (the TUI opens a render lane per branch); it is not
-stamped on the entries, because a durable "this came from a sub-agent" tag makes a
-three-way fork and three sub-agents — structurally identical trees — behave
-oppositely for every reader that asks "does this entry belong to the conversation I
-am looking at?" (docs/LANE-REMOVAL.md §1, §3.2). The answer to that question is
-ancestry from the reader's own cursor, and it is available without any tag.
-
-Two properties then fall out of the existing fold **for free**, which is the entire
-reason C2 is tractable (JMFTS-INTEGRATION-PLAN.md §9.2):
-
-- **The sub-agent's context is already correct.** ``AgentSession.messages`` is
-  ``ConversationTree(log.entries(), log.cursor).context_for()``. Hand it this view
-  and the leaf→root walk from the branch leaf yields exactly the shared conversation
-  prefix (down to ``parent_id``) plus the branch's own work. Choosing ``parent_id``
-  IS choosing the sub-agent's inherited context. No new context plumbing exists.
-- **Isolation is mutual, and it is structural rather than enforced.** ``context_for``
-  walks leaf→root, so a branch's entries are never *ancestors* of the primary leaf
-  and cannot leak into the primary context — whatever their kind, and even though
-  ``entries()`` returns them. Nothing filters them out; the tree shape means they are
-  never on the path.
-
-``entries()`` deliberately returns the WHOLE list (branch + primary). It must: the
-``ConversationTree`` fold resolves ``parentId`` by dict lookup, so hiding the primary
-prefix from a branch would break the very walk that gives it its context.
-
-**Constructor parameters**
-
-- `log: SessionLog` — *(no description)*
-- `parent_id: str | None` — *(no description)*
-- `lane: str` — *(no description)*
-- `label: str` — *(no description)*
-
-### append_at
-
-```python
-async append_at(parent_id: str | None, entry_type: str, payload: dict[str, Any]) -> str
-```
-
-`tau_agent_core.session_log.BranchView.append_at`
-
-Pass through to the underlying log — a branch adds nothing to the entry.
-
-**Parameters**
-
-- `parent_id: str | None` — *(no description)*
-- `entry_type: str` — *(no description)*
-- `payload: dict[str, Any]` — *(no description)*
-
-### append_branch_summary
-
-```python
-async append_branch_summary(summary: str, from_id: str | None) -> str
-```
-
-`tau_agent_core.session_log.BranchView.append_branch_summary`
-
-Re-parent to the branch point before appending (pi ``branchWithSummary``).
-
-**Parameters**
-
-- `summary: str` — *(no description)*
-- `from_id: str | None` — *(no description)*
-
-### append_compaction
-
-```python
-async append_compaction(summary: str, first_kept_id: str, tokens_before: int, *, summarizer_model_id: str, summary_usage: dict[str, int], covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
-```
-
-`tau_agent_core.session_log.BranchView.append_compaction`
-
-Fail-Early on an unknown anchor, exactly as the concrete stores do — a
-compaction whose ``firstKeptId`` names nothing silently drops the whole kept
-region from the fold rather than raising.
-
-A branch adds nothing to the provenance and hides nothing from it: the five
-§8 fields are written verbatim, exactly as ``append_at`` writes a branch's
-entries with no marker of their own (docs/LANE-REMOVAL.md §1).
-
-**Parameters**
-
-- `summary: str` — *(no description)*
-- `first_kept_id: str` — *(no description)*
-- `tokens_before: int` — *(no description)*
-- `summarizer_model_id: str` — *(no description)*
-- `summary_usage: dict[str, int]` — *(no description)*
-- `covered_entries: int` — *(no description)*
-- `covered_tokens: int` — *(no description)*
-- `agent_spec_id: str | None` — *(no description)*
-
-### append_custom_entry
-
-```python
-async append_custom_entry(custom_type: str, data: dict[str, Any]) -> str
-```
-
-`tau_agent_core.session_log.BranchView.append_custom_entry`
-
-*No description. This object is marked but undocumented.*
-
-**Parameters**
-
-- `custom_type: str` — *(no description)*
-- `data: dict[str, Any]` — *(no description)*
-
-### append_custom_message
-
-```python
-async append_custom_message(message: dict[str, Any], custom_type: str) -> str
-```
-
-`tau_agent_core.session_log.BranchView.append_custom_message`
-
-*No description. This object is marked but undocumented.*
-
-**Parameters**
-
-- `message: dict[str, Any]` — *(no description)*
-- `custom_type: str` — *(no description)*
-
-### append_elide
-
-```python
-async append_elide(first_kept_id: str, *, covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
-```
-
-`tau_agent_core.session_log.BranchView.append_elide`
-
-Fail-Early on an unknown anchor, exactly as ``append_compaction`` does —
-see :class:`InMemorySessionLog` for why a dangling anchor is the worst of
-the unknown-id cases rather than merely a rejected call.
-
-**Parameters**
-
-- `first_kept_id: str` — *(no description)*
-- `covered_entries: int` — *(no description)*
-- `covered_tokens: int` — *(no description)*
-- `agent_spec_id: str | None` — *(no description)*
-
-### append_message
-
-```python
-async append_message(message: dict[str, Any]) -> str
-```
-
-`tau_agent_core.session_log.BranchView.append_message`
-
-*No description. This object is marked but undocumented.*
-
-**Parameters**
-
-- `message: dict[str, Any]` — *(no description)*
-
-### append_navigate
-
-```python
-async append_navigate(target_id: str | None) -> str
-```
-
-`tau_agent_core.session_log.BranchView.append_navigate`
-
-Move THIS branch's leaf. The primary cursor is untouched.
-
-**Parameters**
-
-- `target_id: str | None` — *(no description)*
-
-### cursor
-
-`tau_agent_core.session_log.BranchView.cursor: str | None`
-
-This branch's leaf — independent of the underlying log's primary cursor.
-
-### entries
-
-```python
-entries() -> list[dict[str, Any]]
-```
-
-`tau_agent_core.session_log.BranchView.entries`
-
-*No description. This object is marked but undocumented.*
-
-### id
-
-`tau_agent_core.session_log.BranchView.id: str`
-
-The UNDERLYING session's id — a branch is a lane in one conversation, not a
-second conversation. (Its own identity is :attr:`lane`.)
-
 ## BrowseNode
 <!-- agent: yes -->
 
@@ -2255,63 +2020,16 @@ is how it is written on disk.
 
 `tau_agent_core.session_catalog.ConversationSession`
 
-The frontend surface the concrete file ``Session`` already has, as a Protocol.
+A stored session as a catalog hands it to a head: storage plus listing reads.
 
-A **derived** Protocol (``SessionLog`` plus more), not a widening of
-``SessionLog`` itself: ``AgentSession`` never calls ``header``/``messages``/
-``context``/``model``/``backend``/``display_title``/``append_model_change``/
-``append_session_info`` (it only touches the members on ``SessionLog``), so
-keeping them off ``SessionLog`` avoids forcing ``InMemorySessionLog`` — the SDK's
-default, no-frontend log — to grow members it would never use. They live here
-instead because the TUI (``app.py``) and headless (``headless.py``) DO call them,
-through whatever :class:`SessionCatalog` handed them the session.
+Kept off :class:`SessionLog` so the SDK's ``InMemorySessionLog`` need not grow
+members only a head calls. The views read at
+:func:`~tau_agent_core.session_log.default_leaf`, which is where a reopened
+session continues. A head reads position-dependent state from its own
+:class:`~tau_agent_core.cursor.Cursor`, never from these.
 
-That same rule is why this Protocol is SMALLER than the concrete file
-``Session``. ``Session`` also has ``cwd``, ``name``, ``shutdown()`` and
-``append_thinking_change()`` — all four have **zero callers** anywhere in
-``src`` (``shutdown()`` in particular is shadowed by the unrelated
-``AgentSession.emit_session_shutdown``, which is what the frontends actually
-call). Putting them here would force every future store — the JMFTS one next —
-to implement four members nobody invokes, which is precisely the cost
-``SessionLog``'s docstring exists to avoid. Add a member here when a caller
-appears, not before.
-
-``@runtime_checkable`` only verifies member NAMES are present (via
-``isinstance``/``hasattr``), never signatures — an ``isinstance(x,
-ConversationSession)`` pass is not a contract pass. It does not check that
-``display_title`` takes no arguments, that ``model`` raises rather than
-returning ``None``, or any other behavioural promise; that is what a contract
-test suite (in the spirit of the W5 ``SessionLog`` suite) is for, not this
-Protocol.
-
-### append_model_change
-
-```python
-append_model_change(model: str, backend: str) -> str
-```
-
-`tau_agent_core.session_catalog.ConversationSession.append_model_change`
-
-*No description. This object is marked but undocumented.*
-
-**Parameters**
-
-- `model: str` — *(no description)*
-- `backend: str` — *(no description)*
-
-### append_session_info
-
-```python
-append_session_info(name: str) -> str
-```
-
-`tau_agent_core.session_catalog.ConversationSession.append_session_info`
-
-*No description. This object is marked but undocumented.*
-
-**Parameters**
-
-- `name: str` — *(no description)*
+``@runtime_checkable`` checks member names only; behaviour is the contract
+suite's job (``tau_agent_core.testing.session_catalog_contract``).
 
 ### backend
 
@@ -2323,7 +2041,7 @@ The latest ``model_change`` backend. Raises if the session has none.
 
 `tau_agent_core.session_catalog.ConversationSession.context: list[dict[str, Any]]`
 
-The active-path context at the current cursor — the model-input source.
+The folded context at the default leaf.
 
 ### display_title
 
@@ -2345,7 +2063,7 @@ The line-1 header (raw, mutable copy per call).
 
 `tau_agent_core.session_catalog.ConversationSession.messages: list[dict[str, Any]]`
 
-Raw linear fold: every ``message`` entry in load order (ignores cursor).
+Unspliced ``message`` entries on the path to the default leaf.
 
 ### model
 
@@ -2588,7 +2306,7 @@ docs/SUBMISSION-LIFECYCLE.md's concrete admission check for
 Forking at an assistant message whose ``toolCall`` blocks have no matching
 ``toolResult`` on this path yields a prefix most providers reject outright
 — a chat-completions turn cannot end on an assistant message that declares
-tool calls with no results attached, and ``BranchView``'s ancestors-only
+tool calls with no results attached, and a cursor's ancestors-only
 walk (I1, NODE-ADDRESSABLE-AGENTS.md §2) means a toolResult appended AFTER
 ``target_id`` (a descendant) can never rescue it — there is no "wait for
 the rest of the turn to land" here, only "this point was, or was not,
@@ -2614,7 +2332,7 @@ a safe fork point.
 
 **Raises**
 
-- `ValueError` — ``target_id`` names no entry — Fail-Early, mirroring :func:`~tau_agent_core.session_log.open_branch`'s own check on the same value (a dangling fork point would hand the second agent an empty or wrong context with no error).
+- `ValueError` — ``target_id`` names no entry — Fail-Early, mirroring the :class:`~tau_agent_core.cursor.Cursor` constructor's check on the same value (a dangling fork point would hand the second agent an empty or wrong context with no error).
 
 ### message_text
 
@@ -2724,6 +2442,234 @@ A well-formed session has one root (first entry with ``parentId is None``);
 orphaned entries (broken parent chain) are also returned as roots. Each
 node's children are sorted by timestamp (oldest first); ``is_leaf`` marks
 the current cursor. Roots keep load order.
+
+## Cursor
+<!-- agent: yes -->
+
+```python
+class Cursor(log: SessionLog, leaf: str | None, *, owner: Cursor | None = None, label: str = '')
+```
+
+`tau_agent_core.cursor.Cursor`
+
+A position in one tree, and the only thing that appends at a position.
+
+Not durable: moving a cursor writes nothing, and a process exit ends it. The
+position a reopened tree starts from is :func:`default_leaf` (§4).
+
+**Constructor parameters**
+
+- `log: SessionLog` — The tree's storage, shared with every other cursor on it.
+- `leaf: str | None` — *(no description)*
+- `owner: Cursor | None = None` — The cursor that opened this one (a sub-agent's spawner), or ``None``.
+- `label: str = ''` — What the cursor was opened to do, for display.
+
+### append
+
+```python
+async append(entry_type: str, **payload: Any) -> str
+```
+
+`tau_agent_core.cursor.Cursor.append`
+
+Write an entry at the leaf, move onto it, and return its id.
+
+**Parameters**
+
+- `entry_type: str` — *(no description)*
+- `**payload: Any` — *(no description)*
+
+### append_branch_summary
+
+```python
+async append_branch_summary(summary: str, from_id: str | None) -> str
+```
+
+`tau_agent_core.cursor.Cursor.append_branch_summary`
+
+Move to the branch point ``from_id``, then append a ``branch_summary`` there.
+
+Parenting at the branch point leaves the summarized children as a sibling
+branch, so they drop out of the context by ancestry alone.
+
+**Parameters**
+
+- `summary: str` — *(no description)*
+- `from_id: str | None` — *(no description)*
+
+**Raises**
+
+- `ValueError` — ``from_id`` names no entry.
+
+### append_compaction
+
+```python
+async append_compaction(summary: str, first_kept_id: str, tokens_before: int, *, summarizer_model_id: str, summary_usage: dict[str, int], covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
+```
+
+`tau_agent_core.cursor.Cursor.append_compaction`
+
+Append a compaction splice anchor and its provenance.
+
+The provenance keywords have no defaults (TREE-BROWSER-AS-EDITOR.md §8,
+§11.3): every value exists at the call site, so a caller that cannot name one
+fails there rather than recording ``None``.
+
+**Parameters**
+
+- `summary: str` — *(no description)*
+- `first_kept_id: str` — *(no description)*
+- `tokens_before: int` — *(no description)*
+- `summarizer_model_id: str` — *(no description)*
+- `summary_usage: dict[str, int]` — *(no description)*
+- `covered_entries: int` — *(no description)*
+- `covered_tokens: int` — *(no description)*
+- `agent_spec_id: str | None` — *(no description)*
+
+**Raises**
+
+- `ValueError` — ``first_kept_id`` names no entry. The fold never finds an unknown anchor and would drop the whole kept region silently.
+
+### append_custom_entry
+
+```python
+async append_custom_entry(custom_type: str, data: dict[str, Any]) -> str
+```
+
+`tau_agent_core.cursor.Cursor.append_custom_entry`
+
+Append a ``customEntry``: durable data the model never sees.
+
+**Parameters**
+
+- `custom_type: str` — *(no description)*
+- `data: dict[str, Any]` — *(no description)*
+
+### append_custom_message
+
+```python
+async append_custom_message(message: dict[str, Any], custom_type: str) -> str
+```
+
+`tau_agent_core.cursor.Cursor.append_custom_message`
+
+Append a ``customMessage``: extension content that does reach the model.
+
+**Parameters**
+
+- `message: dict[str, Any]` — *(no description)*
+- `custom_type: str` — *(no description)*
+
+### append_elide
+
+```python
+async append_elide(first_kept_id: str, *, covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
+```
+
+`tau_agent_core.cursor.Cursor.append_elide`
+
+Append a summary-less splice anchor (NODE-ADDRESSABLE-AGENTS.md W3).
+
+**Parameters**
+
+- `first_kept_id: str` — *(no description)*
+- `covered_entries: int` — *(no description)*
+- `covered_tokens: int` — *(no description)*
+- `agent_spec_id: str | None` — *(no description)*
+
+**Raises**
+
+- `ValueError` — ``first_kept_id`` names no entry, for the reason :meth:`append_compaction` gives.
+
+### append_message
+
+```python
+async append_message(message: dict[str, Any]) -> str
+```
+
+`tau_agent_core.cursor.Cursor.append_message`
+
+Append a ``message`` entry.
+
+**Parameters**
+
+- `message: dict[str, Any]` — *(no description)*
+
+### context
+
+```python
+context() -> list[dict[str, Any]]
+```
+
+`tau_agent_core.cursor.Cursor.context`
+
+What the model receives from this position (``ConversationTree.context_for``).
+
+### entries
+
+```python
+entries() -> list[dict[str, Any]]
+```
+
+`tau_agent_core.cursor.Cursor.entries`
+
+Every entry of the tree, all branches — not only this cursor's path.
+
+### id
+
+`tau_agent_core.cursor.Cursor.id`
+
+Runtime identity, unique per cursor; never written to an entry.
+
+### move
+
+```python
+move(target: str | None) -> None
+```
+
+`tau_agent_core.cursor.Cursor.move`
+
+Move to ``target``; writes nothing.
+
+**Parameters**
+
+- `target: str | None` — *(no description)*
+
+**Raises**
+
+- `ValueError` — ``target`` names no entry.
+
+### newest
+
+```python
+newest(log: SessionLog, *, owner: Cursor | None = None, label: str = '') -> Cursor
+```
+
+`tau_agent_core.cursor.Cursor.newest`
+
+A cursor at ``log``'s default leaf: where a reopened tree continues.
+
+**Parameters**
+
+- `log: SessionLog` — *(no description)*
+- `owner: Cursor | None = None` — *(no description)*
+- `label: str = ''` — *(no description)*
+
+### session_id
+
+`tau_agent_core.cursor.Cursor.session_id: str`
+
+The id of the tree this cursor extends.
+
+### tree
+
+```python
+tree() -> ConversationTree
+```
+
+`tau_agent_core.cursor.Cursor.tree`
+
+The tree folded at this cursor's leaf.
 
 ## CustomMessageEntry
 <!-- agent: yes -->
@@ -2861,7 +2807,7 @@ A hard failure (a broken file on reload) still raises out of the action —
 There is no ``cursor`` field, though one action moves it: disabling an
 extension whose lock is the cursor releases it (docs/EXTENSION-LOCKS.md §6).
 Both projections of this record already carry the LIVE cursor — the RPC verb
-reads ``session.session_log.cursor``, and ``AgentSession.performed`` writes it
+reads ``session.cursor.leaf``, and ``AgentSession.performed`` writes it
 and refuses a caller that hands it one — so a second copy here would be the
 two-writers drift that method exists to remove. The move is visible in
 ``message``.
@@ -3013,15 +2959,11 @@ class InMemorySessionLog(id: str | None = None)
 
 `tau_agent_core.session_log.InMemorySessionLog`
 
-A minimal, RAM-only :class:`SessionLog` for the SDK default path.
+A RAM-only :class:`SessionLog`: the SDK default and the test double.
 
-The append algebra (parentId chaining off the current leaf, 8-hex ids,
-latest-wins cursor, navigate moving the tip to its target) is exactly
-``session_store.Session._append``/``append_navigate`` — but with no disk
-flush. Entries are camelCase (``parentId``/``firstKeptId``/``fromId``) so
-:class:`~tau_agent_core.conversation_tree.ConversationTree` reads them the
-same as an on-disk ``Session``. No header, no system message, no file: a
-fresh log has zero entries (``messages == []``) until the first append.
+Entries are byte-shaped like the file store's (camelCase ``parentId``,
+8-hex ids), so :class:`~tau_agent_core.conversation_tree.ConversationTree`
+folds both the same way. A fresh log has no entries.
 
 **Constructor parameters**
 
@@ -3035,14 +2977,7 @@ async append_at(parent_id: str | None, entry_type: str, payload: dict[str, Any])
 
 `tau_agent_core.session_log.InMemorySessionLog.append_at`
 
-Explicit-parent append (see the Protocol). Does NOT move this log's leaf.
-
-The entry's ``timestamp`` is WHEN THE EVENT HAPPENED, not when the log was
-written: a whole turn is persisted in one pass after the agent loop
-returns, so the write time collapses every completion of that turn onto one
-millisecond (docs/MESSAGE-TIMESTAMPS.md §1). It is taken from the payload's
-message when that message carries one, and falls back to now for an entry
-with no event of its own — a system message, a navigate, a compaction.
+*No description. This object is marked but undocumented.*
 
 **Parameters**
 
@@ -3050,169 +2985,24 @@ with no event of its own — a system message, a navigate, a compaction.
 - `entry_type: str` — *(no description)*
 - `payload: dict[str, Any]` — *(no description)*
 
-### append_branch_summary
+### append_at_now
 
 ```python
-async append_branch_summary(summary: str, from_id: str | None) -> str
+append_at_now(parent_id: str | None, entry_type: str, payload: dict[str, Any]) -> str
 ```
 
-`tau_agent_core.session_log.InMemorySessionLog.append_branch_summary`
+`tau_agent_core.session_log.InMemorySessionLog.append_at_now`
 
-Move the leaf to ``from_id`` (the branch point) then append, mirroring
-``Session.append_branch_summary`` (session_store.py:433) and pi
-``branchWithSummary`` (session-manager.ts:1272): the summary parents at the
-branch point so the abandoned children become a sibling branch that drops
-out of ``context_for`` via the ``parentId`` walk. Without this re-parent the
-summary would append off the *current* leaf and the abandoned branch would
-stay on the active path — the exact divergence ``ctx.summarize_branch``
-(E3-ctx / S19) exposed on the SDK/in-memory path.
+:meth:`append_at` without the coroutine, for a caller with no event loop.
 
-Fail-Early: a non-``None`` ``from_id`` must name a real entry (parity with
-``Session.append_branch_summary``).
+A catalog's synchronous ``create`` writes a new session's opening chain
+through this; nothing else should need it.
 
 **Parameters**
 
-- `summary: str` — *(no description)*
-- `from_id: str | None` — *(no description)*
-
-### append_compaction
-
-```python
-async append_compaction(summary: str, first_kept_id: str, tokens_before: int, *, summarizer_model_id: str, summary_usage: dict[str, int], covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
-```
-
-`tau_agent_core.session_log.InMemorySessionLog.append_compaction`
-
-Fail-Early on an unknown splice anchor, as ``append_navigate`` already does.
-
-An anchor matching no entry is never found by the tree fold, so the entire kept
-region silently drops out of the context — the worst of the three
-unknown-id cases, because it corrupts model input rather than raising.
-
-The five provenance keywords land as camelCase payload fields beside the
-three that were already here (see the Protocol for what each records and why
-none of them has a default — TREE-BROWSER-AS-EDITOR.md §8, §11.3).
-
-**Parameters**
-
-- `summary: str` — *(no description)*
-- `first_kept_id: str` — *(no description)*
-- `tokens_before: int` — *(no description)*
-- `summarizer_model_id: str` — *(no description)*
-- `summary_usage: dict[str, int]` — *(no description)*
-- `covered_entries: int` — *(no description)*
-- `covered_tokens: int` — *(no description)*
-- `agent_spec_id: str | None` — *(no description)*
-
-### append_custom_entry
-
-```python
-async append_custom_entry(custom_type: str, data: dict[str, Any]) -> str
-```
-
-`tau_agent_core.session_log.InMemorySessionLog.append_custom_entry`
-
-Persist a durable, NON-message ``customEntry`` node (E6 §2 / S39).
-
-The reloadable backing for ``api.append_entry`` (formerly the RAM-only
-registry ``_entry_store``, lost on restart — G4). It carries the extension's
-``{customType, data}`` as its own tree entry KIND — deliberately NOT a
-``message``/``customMessage``, so :class:`~tau_agent_core.conversation_tree.ConversationTree`
-never folds it into the loop context and ``convert_to_llm`` never sees it:
-it is tree-as-backplane state, on the durable path and readable through
-``ctx.entries()``, but excluded from model input. Folds onto the active path
-like any node (it advances the leaf); the exclusion is that ``context_for``
-emits no message for it (conversation_tree.py). The foundation S56's
-``TreeStore`` reconstructs from ``ctx.entries()`` on reload.
-
-**Parameters**
-
-- `custom_type: str` — *(no description)*
-- `data: dict[str, Any]` — *(no description)*
-
-### append_custom_message
-
-```python
-async append_custom_message(message: dict[str, Any], custom_type: str) -> str
-```
-
-`tau_agent_core.session_log.InMemorySessionLog.append_custom_message`
-
-Persist an extension-injected custom message as a ``customMessage`` node.
-
-The durable form of a ``before_agent_start`` injection (E5 §3.1 / S29):
-its own tree entry KIND, carrying the stored ``message`` (``role:
-"custom"``) plus the top-level ``customType`` (the extension-origin
-identity). ``ConversationTree`` folds it onto the active path like a
-``message`` entry (it is not a splice anchor) and the wire remaps
-custom→user, so the injected content reaches the model and survives a
-reload byte-identically.
-
-**Parameters**
-
-- `message: dict[str, Any]` — *(no description)*
-- `custom_type: str` — *(no description)*
-
-### append_elide
-
-```python
-async append_elide(first_kept_id: str, *, covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
-```
-
-`tau_agent_core.session_log.InMemorySessionLog.append_elide`
-
-Persist a summary-less splice anchor (W3, NODE-ADDRESSABLE-AGENTS.md):
-the same splice as ``append_compaction``, minus ``summary``/``tokensBefore``.
-Fail-Early for the identical reason ``append_compaction`` validates — an
-anchor matching no entry is never found by ``_active_path_entries``'s
-forward scan, so the ENTIRE kept region silently drops out of the fold.
-
-Three provenance keywords, not five: §8.2's missing size plus §8.3's frame
-id. There is no summary here, so there is no summarizer and no summary cost
-(see the Protocol).
-
-**Parameters**
-
-- `first_kept_id: str` — *(no description)*
-- `covered_entries: int` — *(no description)*
-- `covered_tokens: int` — *(no description)*
-- `agent_spec_id: str | None` — *(no description)*
-
-### append_message
-
-```python
-async append_message(message: dict[str, Any]) -> str
-```
-
-`tau_agent_core.session_log.InMemorySessionLog.append_message`
-
-*No description. This object is marked but undocumented.*
-
-**Parameters**
-
-- `message: dict[str, Any]` — *(no description)*
-
-### append_navigate
-
-```python
-async append_navigate(target_id: str | None) -> str
-```
-
-`tau_agent_core.session_log.InMemorySessionLog.append_navigate`
-
-Persist a cursor move; the leaf advances to ``target_id`` (not to the
-navigate entry itself), mirroring ``Session.append_navigate``. Fail-Early:
-a non-``None`` target must name a real entry.
-
-**Parameters**
-
-- `target_id: str | None` — *(no description)*
-
-### cursor
-
-`tau_agent_core.session_log.InMemorySessionLog.cursor: str | None`
-
-*No description. This object is marked but undocumented.*
+- `parent_id: str | None` — *(no description)*
+- `entry_type: str` — *(no description)*
+- `payload: dict[str, Any]` — *(no description)*
 
 ### entries
 
@@ -3424,7 +3214,7 @@ catalog must supply:
 
 - ``create`` / ``create_ephemeral`` — new persisted / in-memory session.
 - ``load(ref)`` — reconstruct a session from a :class:`SessionInfo`'s ``ref``.
-- ``fork(source, cwd)`` — a new session carrying ``source``'s history.
+- ``fork(source, cwd, at=)`` — a new session carrying ``source``'s history.
 - ``list(cwd)`` — newest-first listing metadata, ``cwd=None`` for every dir.
 
 ### create
@@ -3466,17 +3256,25 @@ Create a new in-memory (unpersisted) session — ``--no-session``.
 ### fork
 
 ```python
-fork(source: ConversationSession, cwd: str) -> ConversationSession
+fork(source: ConversationSession, cwd: str, *, at: str | None = None) -> ConversationSession
 ```
 
 `tau_agent_core.session_catalog.SessionCatalog.fork`
 
 A new session carrying ``source``'s history; ``source`` is untouched.
 
+``at`` given → only the path to that entry, so the fork continues from it.
+``None`` → every entry.
+
 **Parameters**
 
 - `source: ConversationSession` — *(no description)*
 - `cwd: str` — *(no description)*
+- `at: str | None = None` — *(no description)*
+
+**Raises**
+
+- `ValueError` — ``at`` names no entry of ``source``.
 
 ### list
 
@@ -3779,52 +3577,16 @@ Metadata about a session, for listing and display.
 
 `tau_agent_core.session_log.SessionLog`
 
-The persistence surface ``AgentSession`` reads from and appends to.
+Append-only entry storage for one conversation tree.
 
-Exactly the methods ``AgentSession`` calls, plus the two cursor-move /
-branch-summary appenders the tree-browser (Part 2) drives through the same
-facade. ``append_model_change`` / ``append_thinking_change`` /
-``append_session_info`` are deliberately absent — ``AgentSession`` never calls
-them (the TUI/headless call those on the concrete ``Session`` directly), so
-keeping them off the Protocol avoids an unused-method contract (Fail-Early).
+``append_at`` is a coroutine and the two reads are not
+(docs/BLOCKING-PERSISTENCE.md): a store that does network I/O awaits it, and
+the reads are in memory in every shipped store.
 
-**Every appender is ``async``; ``id``/``cursor``/``entries()`` are not.**
-docs/BLOCKING-PERSISTENCE.md: the agent loop runs on the head's own event
-loop, so a store that does network I/O per append froze the screen for the
-length of a turn's persistence. The rejected cheap fix was to call this
-Protocol from a worker thread, which would have made thread-safety a new,
-unstated requirement of every implementor. Saying ``async`` says the same
-thing out loud and leaves each store to meet it its own way: a RAM or
-file-backed store awaits nothing, and the JMFTS store thread-hops behind a
-client it owns. The three reads stay synchronous because they are already in
-memory in every shipped store, and making them ``async`` would push ``await``
-into ``ConversationTree`` and every caller that merely inspects a session.
-
-**Precondition: a conversation has exactly one writing process**
-(NODE-ADDRESSABLE-AGENTS.md Decision 6). Concurrency *inside* a conversation is
-lanes — open a :class:`BranchView`, which is a second cursor over the same
-entry log, never a second writer of it. Concurrency *across* processes is
-``Session.fork(mode="export")`` (``tau_coding_agent.session_store``): a
-verbatim entry copy into a new file with its own header, "self-contained — no
-cross-file chaining," handed to a second process as an independent
-conversation. There is no third option — a second process must never append
-to the same conversation's log a first process is also appending to.
-
-This is stated as a precondition, not enforced by a guard, a stat check, or an
-id change here. The hazard it heads off is **not** id collision (an earlier
-draft of the design doc said otherwise): ``_generate_entry_id`` retries against
-the log's own id set, so a same-process collision merely redraws, and a
-cross-process collision window is only the entries the other writer added
-since the last load — negligible. The real hazard is that the *cursor* — the
-file store's ``_leaf_id`` — is process-local memory that nothing re-reads: two
-writers both parent their next append off the same node, and the conversation
-silently becomes a fork instead of a line, with ``resolve_cursor`` picking one
-writer's turns on reload and orphaning the other's on disk, unlinked from any
-tree walk. Guarding against that here would mean giving this Protocol a
-liveness check no single implementation needs today; the fix that exists
-(``fork(mode="export")``) already prices out the correct trade at process
-scale (a full copy) against a lane's trade at turn scale (zero copy) — see
-Decision 6 for the full argument.
+**Several cursors may append concurrently within one process.** A store must
+keep every concurrent ``append_at`` whole and give each a distinct id; the
+contract suite checks this. Two processes appending to one conversation is
+out of scope (docs/CURSORS.md §3).
 
 ### append_at
 
@@ -3834,28 +3596,9 @@ async append_at(parent_id: str | None, entry_type: str, payload: dict[str, Any])
 
 `tau_agent_core.session_log.SessionLog.append_at`
 
-Append an entry at an EXPLICIT parent.
+Write one entry parented at ``parent_id`` and return its new id.
 
-The one primitive C2/W14's branch sub-agents need, and the ONLY member this
-Protocol grew for them. Every appender above is "``append_at`` at the current
-leaf, then move the leaf"; this exposes the parent so a second cursor can write
-to the same log without disturbing the first. It does **not** move the store's
-own leaf — a branch's writes must never move the tip of the cursor that spawned
-it.
-
-Deliberately ONE new member rather than the ``branch()``-per-store shape first
-sketched in the C2 plan: with ``append_at`` in place, the branch handle itself
-(:class:`BranchView`) is storage-agnostic and lives here **once**, instead of
-being reimplemented — and kept in sync — inside each of the three stores. It is
-also the member ``runtime_checkable`` can actually police, since that checks
-member *names*, never signatures: a store that ignored a ``parent_id=`` kwarg
-bolted onto the six existing appenders would pass an ``isinstance`` check while
-silently ignoring the explicit parent.
-
-It writes NO branch marker. A branch's identity is in-memory
-(:attr:`BranchView.lane`, which the TUI uses as a render-routing key); nothing
-durable distinguishes a sub-agent's entry from a user's fork of the same shape,
-because nothing should — see docs/LANE-REMOVAL.md §1.
+The entry's ``timestamp`` is :func:`event_iso` of ``payload``.
 
 **Parameters**
 
@@ -3863,191 +3606,9 @@ because nothing should — see docs/LANE-REMOVAL.md §1.
 - `entry_type: str` — *(no description)*
 - `payload: dict[str, Any]` — *(no description)*
 
-### append_branch_summary
+**Raises**
 
-```python
-async append_branch_summary(summary: str, from_id: str | None) -> str
-```
-
-`tau_agent_core.session_log.SessionLog.append_branch_summary`
-
-*No description. This object is marked but undocumented.*
-
-**Parameters**
-
-- `summary: str` — *(no description)*
-- `from_id: str | None` — *(no description)*
-
-### append_compaction
-
-```python
-async append_compaction(summary: str, first_kept_id: str, tokens_before: int, *, summarizer_model_id: str, summary_usage: dict[str, int], covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
-```
-
-`tau_agent_core.session_log.SessionLog.append_compaction`
-
-Persist a compaction splice anchor and the provenance of its summary.
-
-The five keyword arguments are TREE-BROWSER-AS-EDITOR.md §8's decision,
-widened onto this Protocol by §11.3. They are **keyword-only and have no
-defaults**, which is the whole point: every one of them already exists at
-the call site and was being discarded there (§8.1), so a caller that cannot
-name one fails where the value lives rather than recording ``None``. A
-default would make "no provenance recorded" indistinguishable from
-"provenance recorded as unknown" — the swallowed-gap pattern the repo's
-Fail-Early rule exists to prevent (§11.3, rejected option 1).
-
-- ``summarizer_model_id`` — the id of the model that WROTE ``summary``.
-  Not the conversation's model: ``AgentSession._summarizer()``
-  (agent_session.py:866) routes a ``local_summarizer`` policy's compaction
-  through a different one, so the two genuinely differ and the transcript
-  could not previously say which (§8.1).
-- ``summary_usage`` — what generating ``summary`` cost, i.e.
-  ``CompactionResult.usage`` (compaction.py:112-119). Compaction summarises
-  a full context window and fires automatically, so this is routinely the
-  most expensive call in a session; ``tokens_before`` says how big the
-  context was, this says what shrinking it charged.
-- ``covered_entries`` / ``covered_tokens`` — the span this anchor removes
-  from the fold, as measured at write time: the count of entries and
-  :func:`~tau_agent_core.compaction.estimate_span_tokens` over them. Passed
-  in rather than recomputed here — see :meth:`append_elide` for why.
-- ``agent_spec_id`` — the id of the ``agent_spec`` ``customEntry`` in force
-  over the covered span, from :func:`agent_spec_in_force`. ``None`` is a
-  real answer (a pi-imported log, or a store driven without an
-  ``AgentSession``, has no such node), not an absent one — the absence of a
-  default is what keeps those two cases apart. §8.3: only the ID is
-  recorded, never the prompt text, and the record it points at may lag what
-  was actually bound, because ``_record_agent_spec`` re-runs at construction
-  and ``set_model`` but not at ``load_extensions``.
-
-``agent_spec_id`` is deliberately NOT validated against the entry set, unlike
-``first_kept_id``. The hazards are not comparable: a dangling
-``first_kept_id`` is never found by the fold's forward scan and silently
-drops the entire kept region from model input, while a dangling
-``agent_spec_id`` only makes one browser row unhelpful. ``agent_spec`` is a
-RECORD and never a contract (NODE-ADDRESSABLE-AGENTS.md Decision 3), so
-nothing reads it back to reconstruct anything that could then be wrong.
-
-**Parameters**
-
-- `summary: str` — *(no description)*
-- `first_kept_id: str` — *(no description)*
-- `tokens_before: int` — *(no description)*
-- `summarizer_model_id: str` — *(no description)*
-- `summary_usage: dict[str, int]` — *(no description)*
-- `covered_entries: int` — *(no description)*
-- `covered_tokens: int` — *(no description)*
-- `agent_spec_id: str | None` — *(no description)*
-
-### append_custom_entry
-
-```python
-async append_custom_entry(custom_type: str, data: dict[str, Any]) -> str
-```
-
-`tau_agent_core.session_log.SessionLog.append_custom_entry`
-
-*No description. This object is marked but undocumented.*
-
-**Parameters**
-
-- `custom_type: str` — *(no description)*
-- `data: dict[str, Any]` — *(no description)*
-
-### append_custom_message
-
-```python
-async append_custom_message(message: dict[str, Any], custom_type: str) -> str
-```
-
-`tau_agent_core.session_log.SessionLog.append_custom_message`
-
-*No description. This object is marked but undocumented.*
-
-**Parameters**
-
-- `message: dict[str, Any]` — *(no description)*
-- `custom_type: str` — *(no description)*
-
-### append_elide
-
-```python
-async append_elide(first_kept_id: str, *, covered_entries: int, covered_tokens: int, agent_spec_id: str | None) -> str
-```
-
-`tau_agent_core.session_log.SessionLog.append_elide`
-
-Persist a summary-less splice anchor (W3, NODE-ADDRESSABLE-AGENTS.md).
-
-Same anchor kind ``ConversationTree._active_path_entries`` folds
-``compaction`` on — "skip the path from here back to ``first_kept_id``" —
-with the ``summary``/``tokens_before`` fields dropped, since there is
-nothing to render. Structured exclusion in tree SHAPE (Decision 2): no new
-per-node flag, no new walker, and a branch whose path never reaches this
-node is completely unaffected (Decision 7 keeps it out of no fold but
-``context_for`` — ``entries()`` stays total).
-
-**It takes three of :meth:`append_compaction`'s five provenance arguments,
-not five.** An elide generates no summary, so there is no summarizer model
-and no summary cost; ``summarizer_model_id``/``summary_usage`` would be
-parameters whose only admissible value is a placeholder, which is the same
-swallowed gap §11.3 rejects, wearing symmetry as a disguise. It does have a
-covered span and it does run under an ``agent_spec``, so it takes those.
-
-``covered_entries``/``covered_tokens`` close §8.2 — an elide recorded no
-size at all, where a compaction at least recorded ``tokensBefore``. They are
-**passed in, not computed here**, for three reasons. (1) ``covered_tokens``
-is not recoverable from structure at read time (§8.2 says exactly this), so
-it must cross the boundary regardless; computing the count here while the
-token figure comes from the caller would let the two describe different
-spans, with nothing to catch it. (2) The count arithmetic already exists,
-once, in ``ConversationTree._splice_span_phrase`` (conversation_tree.py:552);
-reproducing it in the five stores that implement this Protocol would be five
-copies, and pushing it down here would make every store depend on
-``ConversationTree``. (3) Both call sites already compute the span and throw
-it away — ``tree_ops.elide_span`` builds the exact ``hidden`` list for its
-no-op refusal check — which is §8.1's pattern verbatim.
-
-**Parameters**
-
-- `first_kept_id: str` — *(no description)*
-- `covered_entries: int` — *(no description)*
-- `covered_tokens: int` — *(no description)*
-- `agent_spec_id: str | None` — *(no description)*
-
-### append_message
-
-```python
-async append_message(message: dict[str, Any]) -> str
-```
-
-`tau_agent_core.session_log.SessionLog.append_message`
-
-*No description. This object is marked but undocumented.*
-
-**Parameters**
-
-- `message: dict[str, Any]` — *(no description)*
-
-### append_navigate
-
-```python
-async append_navigate(target_id: str | None) -> str
-```
-
-`tau_agent_core.session_log.SessionLog.append_navigate`
-
-*No description. This object is marked but undocumented.*
-
-**Parameters**
-
-- `target_id: str | None` — *(no description)*
-
-### cursor
-
-`tau_agent_core.session_log.SessionLog.cursor: str | None`
-
-The current leaf (tip) entry id; ``None`` before the first entry.
+- `ValueError` — ``parent_id`` is not ``None`` and names no entry.
 
 ### entries
 
@@ -4057,13 +3618,13 @@ entries() -> list[dict[str, Any]]
 
 `tau_agent_core.session_log.SessionLog.entries`
 
-The ordered, append-only raw entries (all kinds), in load order.
+Every entry of every branch, in append order; a copy the caller may mutate.
 
 ### id
 
 `tau_agent_core.session_log.SessionLog.id: str`
 
-Stable session identity (a UUID — never a filesystem path, §4.2).
+Stable session identity (a UUID — never a filesystem path).
 
 ## SessionManager
 <!-- agent: yes -->
@@ -4562,7 +4123,7 @@ the tree browser aims at a historical anchor is governed by whatever spec was in
 force *there*, which may be two ``set_model`` swaps behind the session's current
 one, and a spec written on a sibling branch never governed this path at all.
 
-Lives here beside :func:`resolve_cursor`, and for the same reason: it is part of
+Lives here beside :func:`default_leaf`, and for the same reason: it is part of
 the entry algebra every ``SessionLog`` implementation must agree on exactly, not
 a property of any one durability layer. Implemented as a plain ``parentId`` walk
 rather than through ``ConversationTree`` so this module keeps its zero-dependency
@@ -4702,7 +4263,7 @@ A sentence naming the problem, or ``None``.
 <!-- agent: yes -->
 
 ```python
-async commit_branch(session: SessionLog, ids: Sequence[str], *, drop_context: bool) -> list[dict]
+async commit_branch(cursor: Cursor, ids: Sequence[str], *, drop_context: bool) -> list[dict]
 ```
 
 `tau_agent_core.tree_ops.commit_branch`
@@ -4713,16 +4274,15 @@ The durable half of TREE-BROWSER-AS-EDITOR.md §6. ``tree_surgery`` decides what
 the branch IS — which marks are kept in place, which are minted as copies,
 whether an elide follows — and this performs it, in the order §6.3 fixes:
 
-1. move the leaf to the plan's attach point (the last kept mark);
-2. mint each copy with ``append_at``, parented at the previous one;
-3. move the leaf onto the last minted entry;
-4. append the elide, when the caller asked to keep only the selection.
+1. mint each copy with ``append_at``, parented at the previous one, starting
+   at the plan's attach point (the last kept mark);
+2. move the cursor onto the last minted entry, or the attach point;
+3. append the elide, when the caller asked to keep only the selection.
 
-**Step 2 is invisible until step 3 lands.** ``append_at`` does not move the
-leaf, so a mint that fails partway leaves orphan entries hanging off the attach
-point and the cursor exactly where it was — the commit is atomic from the
-cursor's point of view, which is the property §6.3 is built around and the
-reason the copies are not appended one gesture at a time.
+**Step 1 is invisible until step 2 lands.** ``append_at`` does not move the
+cursor, so a mint that fails partway leaves orphan entries hanging off the
+attach point and the cursor exactly where it was — the commit is atomic from
+the cursor's point of view, which is the property §6.3 is built around.
 
 Nothing is re-parented and nothing is erased. I1 holds because every entry's
 ``parentId`` is still written once, at append (§6.1's argument for why a plan
@@ -4730,7 +4290,7 @@ exists at all rather than a sequence of edits).
 
 **Parameters**
 
-- `session: SessionLog` — The session log to write to.
+- `cursor: Cursor` — The cursor that continues on the new branch.
 - `ids: Sequence[str]` — The marked entry ids, in any order — ``tree_surgery`` puts them into tree order.
 - `drop_context: bool` — Whether the branch keeps only the selection. ``True`` appends an elide resuming at the root-most mark, so the context becomes the system prompt plus the branch. ``False`` leaves everything above the attach point in context.
 
@@ -4775,23 +4335,44 @@ The entry type and the payload to append.
 
 - `ValueError` — The entry's kind cannot be copied.
 
+## default_leaf
+<!-- agent: yes -->
+
+```python
+default_leaf(entries: list[dict[str, Any]]) -> str | None
+```
+
+`tau_agent_core.session_log.default_leaf`
+
+Where a reopened tree continues: the newest entry a cursor wrote.
+
+Skipped: a legacy ``navigate``, which names a different position
+(docs/CURSORS.md §1.1, §4), and a namespaced kind (``system:kind``), which a
+store synthesizes for a document another system put in the tree — the JMFTS
+store's ``jmfts:document``. τ's own entry kinds are bare words.
+
+**Parameters**
+
+- `entries: list[dict[str, Any]]` — A log's entries in append order.
+
+**Returns**
+
+The entry id, or ``None`` for a log with no such entry.
+
 ## elide_span
 <!-- agent: yes -->
 
 ```python
-async elide_span(session: SessionLog, anchor_id: str, first_kept_id: str) -> list[dict]
+async elide_span(cursor: Cursor, anchor_id: str, first_kept_id: str) -> list[dict]
 ```
 
 `tau_agent_core.tree_ops.elide_span`
 
-Fold a span out of ``session``'s context and return the new context.
+Fold a span out of ``cursor``'s context and return the new context.
 
 ``elide`` is the summary-less generalization of the compaction anchor (W3,
-NODE-ADDRESSABLE-AGENTS.md). It awaits only its two appends — unlike
-:func:`summarize_and_navigate`, there is no summary and therefore no model
-call. It was synchronous until ``SessionLog``'s appenders became coroutines
-(docs/BLOCKING-PERSISTENCE.md); the I/O boundary it now advertises is the
-store's write, not a completion.
+NODE-ADDRESSABLE-AGENTS.md). It awaits one append and makes no model call,
+unlike :func:`summarize_and_navigate`.
 
 Two ids, because an elide is not a branch point. ``anchor_id`` is where the
 fold jumps FROM — the elide entry is appended as its child, so the anchor
@@ -4817,12 +4398,12 @@ fold. The core's ``append_elide`` deliberately permits it (an anchor on a
 root-level entry is a pinned contract case); this operation, where someone just
 asked for a span to disappear, does not.
 
-Nothing is erased: the navigate/elide pair are appends like any other, and
-every entry the fold now skips is still in ``entries()`` (Decision 7 / T5).
+Nothing is erased: the elide is an append like any other, and every entry
+the fold now skips is still in ``entries()`` (Decision 7 / T5).
 
 **Parameters**
 
-- `session: SessionLog` — The session log to fold.
+- `cursor: Cursor` — The cursor that moves to the anchor and appends the elide.
 - `anchor_id: str` — The entry the fold jumps from, which becomes the new tip.
 - `first_kept_id: str` — The entry the fold resumes at. The anchor itself, or one of its ancestors.
 
@@ -5044,31 +4625,28 @@ The concatenated text, stripped, or ``None``. ``None`` covers both "no assistant
 <!-- agent: yes -->
 
 ```python
-async navigate(session: SessionLog, target_id: str | None) -> list[dict]
+navigate(cursor: Cursor, target_id: str | None) -> list[dict]
 ```
 
 `tau_agent_core.tree_ops.navigate`
 
-Move ``session``'s cursor to ``target_id`` and return the new context.
+Move ``cursor`` to ``target_id`` and return the context there.
 
-Appends a ``navigate`` entry — zero LLM calls. The abandoned branch drops out
-of context via the ``parentId`` walk but stays on disk, append-only and still
-browsable. A ``target_id`` that is already the cursor is a no-op that still
-returns the context, so a caller need not check first.
-
-Typed to the ``SessionLog`` Protocol rather than a concrete store: this
-touches only ``cursor``, ``entries()`` and ``append_navigate``, all three of
-which are on the Protocol, so an in-memory, file or database-backed log works
-here unchanged.
+Writes nothing. The branch left behind drops out of context by ancestry and
+stays in the tree, browsable.
 
 **Parameters**
 
-- `session: SessionLog` — The session log to move.
-- `target_id: str | None` — The entry to move the cursor onto, or ``None`` for pre-root — the next append then starts a branch above every existing entry.
+- `cursor: Cursor` — The cursor to move.
+- `target_id: str | None` — The entry to move onto, or ``None`` for before the root — the next append then starts a branch above every existing entry.
 
 **Returns**
 
-``ConversationTree.context_for(cursor)`` — the flat message list a head swaps into its transcript and re-renders.
+The flat message list a head swaps into its transcript.
+
+**Raises**
+
+- `ValueError` — ``target_id`` names no entry.
 
 ## next_step
 <!-- agent: yes -->
@@ -5134,33 +4712,6 @@ that is usually already absent.
 
 The same list, with legacy assistant zeros replaced by ``None``.
 
-## open_branch
-<!-- agent: yes -->
-
-```python
-open_branch(log: SessionLog, parent_id: str | None, *, label: str) -> BranchView
-```
-
-`tau_agent_core.session_log.open_branch`
-
-Open a new branch lane over ``log``, rooted at ``parent_id``.
-
-``parent_id`` chooses the sub-agent's inherited context (the fold walks up from it),
-and must name a real entry — Fail-Early, since a dangling branch root would give the
-sub-agent an empty or wrong context with no error.
-
-The lane id is freshly generated per call, NOT derived from ``parent_id``. Two
-sub-agents spawned from the SAME parent (the common fan-out shape — several
-evaluators over one retrieval result) would otherwise be indistinguishable on the
-live ``branch_event`` channel, and their output would interleave in one render lane.
-It is a runtime routing key only; nothing durable carries it.
-
-**Parameters**
-
-- `log: SessionLog` — *(no description)*
-- `parent_id: str | None` — *(no description)*
-- `label: str` — *(no description)*
-
 ## paste_refusal_reason
 <!-- agent: yes -->
 
@@ -5195,7 +4746,7 @@ A sentence naming the offending result, or ``None``.
 <!-- agent: yes -->
 
 ```python
-async paste_subtree(session: SessionLog, source_id: str, target_id: str) -> list[str]
+async paste_subtree(cursor: Cursor, source_id: str, target_id: str) -> list[str]
 ```
 
 `tau_agent_core.tree_ops.paste_subtree`
@@ -5204,7 +4755,7 @@ Re-create the subtree at ``source_id`` under ``target_id``.
 
 The durable half of TREE-BROWSER-AS-EDITOR.md §7. Every copied entry is a new
 entry carrying ``copiedFrom``, minted with ``append_at`` so the paste never
-moves the leaf: a paste edits the TREE, and what the model sees changes only
+moves the cursor: a paste edits the TREE, and what the model sees changes only
 when someone navigates onto the copy. That split is why this returns ids rather
 than a message list — nothing about the current context changed.
 
@@ -5214,7 +4765,7 @@ the original's shape including its forks.
 
 **Parameters**
 
-- `session: SessionLog` — The session log to write to.
+- `cursor: Cursor` — The cursor whose tree is edited; it does not move.
 - `source_id: str` — The copied node — the root of the subtree.
 - `target_id: str` — The entry the copy hangs from.
 
@@ -5313,42 +4864,6 @@ same content at a new id.
 
 The composed root→leaf message list.
 
-## resolve_cursor
-<!-- agent: yes -->
-
-```python
-resolve_cursor(entries: list[dict[str, Any]]) -> str | None
-```
-
-`tau_agent_core.session_log.resolve_cursor`
-
-Resolve the persisted cursor (leaf pointer) from the entry log.
-
-Latest-wins: a trailing ``navigate`` entry points at its ``targetId`` (``None`` =
-pre-root); any other kind points at itself. pi-style logs carry no ``navigate``
-entries, so the cursor is simply the last entry — identical to pi's "fall back to
-last entry" on load (session-manager.ts:855-859). **This is pi parity restored**:
-τ briefly filtered lane-tagged (``branchOf``) entries out of this decision, and no
-longer does.
-
-Lives here, not on a concrete store, because **every** SessionLog implementation
-(in-memory, file, and any database-backed one) must agree on it exactly — the
-cursor is part of the entry algebra, not of any one durability layer.
-
-**A guarantee was dropped here, deliberately** (docs/LANE-REMOVAL.md §2). The lane
-filter existed so that a sub-agent's append landing last before a crash could not
-make the next load resume *inside* that branch. τ is an interactive agent, not a
-service that must survive ``pkill`` at an arbitrary instant with perfect
-consistency: if a crash lands you on a branch leaf, the transcript is visible, the
-tree browser moves you, and nothing is corrupted. The filter also encoded a "main
-agent with helpers" model that τ does not hold — one agent moves forwards,
-backwards and sideways through its own history, and there "last write wins" is
-usually the intended continuation rather than an accident (§2).
-
-**Parameters**
-
-- `entries: list[dict[str, Any]]` — *(no description)*
-
 ## selection_order
 <!-- agent: yes -->
 
@@ -5414,6 +4929,24 @@ same question of the verbs that append (docs/RPC-PROTOCOL.md, D-7 rule 1).
 
 Whether the session is one the store can hand back later.
 
+## session_name
+<!-- agent: yes -->
+
+```python
+session_name(entries: list[dict[str, Any]]) -> str | None
+```
+
+`tau_agent_core.session_log.session_name`
+
+The newest ``session_info`` name in append order, or ``None`` if never named.
+
+Append order, not ancestry: a name belongs to the session, not to a position
+in it, so renaming from any branch renames the whole session.
+
+**Parameters**
+
+- `entries: list[dict[str, Any]]` — *(no description)*
+
 ## slash_vocabulary
 <!-- agent: yes -->
 
@@ -5443,7 +4976,7 @@ A fresh dict of command name to one-line description. Fresh rather than shared, 
 <!-- agent: yes -->
 
 ```python
-async summarize_and_navigate(session: SessionLog, target_id: str, model: Any, *, api_key: str | None = None, custom_instructions: str | None = None, on_text_delta: Callable[[str], Any] | None = None) -> tuple[list[dict], dict[str, int]]
+async summarize_and_navigate(cursor: Cursor, target_id: str, model: Any, *, api_key: str | None = None, custom_instructions: str | None = None, on_text_delta: Callable[[str], Any] | None = None) -> tuple[list[dict], dict[str, int]]
 ```
 
 `tau_agent_core.tree_ops.summarize_and_navigate`
@@ -5464,7 +4997,7 @@ holds no session object to bank them against.
 
 **Parameters**
 
-- `session: SessionLog` — The session log to write the summary into.
+- `cursor: Cursor` — The cursor that moves onto the summary.
 - `target_id: str` — The branch point. The subtree BELOW it is what gets summarized, and the ``branch_summary`` entry is parented at it.
 - `model: Any` — The model config the summarizer runs against.
 - `api_key: str | None = None` — The key for that model's provider, when it needs one.

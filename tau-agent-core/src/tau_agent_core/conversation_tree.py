@@ -495,7 +495,7 @@ class ConversationTree:
         Forking at an assistant message whose ``toolCall`` blocks have no matching
         ``toolResult`` on this path yields a prefix most providers reject outright
         — a chat-completions turn cannot end on an assistant message that declares
-        tool calls with no results attached, and ``BranchView``'s ancestors-only
+        tool calls with no results attached, and a cursor's ancestors-only
         walk (I1, NODE-ADDRESSABLE-AGENTS.md §2) means a toolResult appended AFTER
         ``target_id`` (a descendant) can never rescue it — there is no "wait for
         the rest of the turn to land" here, only "this point was, or was not,
@@ -517,9 +517,9 @@ class ConversationTree:
 
         Raises:
             ValueError: ``target_id`` names no entry — Fail-Early, mirroring
-                :func:`~tau_agent_core.session_log.open_branch`'s own check on the
-                same value (a dangling fork point would hand the second agent an
-                empty or wrong context with no error).
+                the :class:`~tau_agent_core.cursor.Cursor` constructor's check on
+                the same value (a dangling fork point would hand the second agent
+                an empty or wrong context with no error).
         """
         if target_id is None:
             return None

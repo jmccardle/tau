@@ -40,6 +40,7 @@ from tau_agent_core.commands import (
     unsupported_command_message,
 )
 
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.flows import Dispatched, Performed, View
 from tau_agent_core.prompt_cache import PromptCacheObserver, completions_from_messages
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
@@ -362,18 +363,18 @@ def select_session(args: "CLIArgs", catalog: SessionCatalog) -> ConversationSess
         raise CLIError(str(exc)) from exc
 
 
-def _apply_resume_metadata(
-    session: ConversationSession,
+async def _apply_resume_metadata(
+    cursor: Cursor,
     model_name: str,
     backend_name: str,
     prior: ConversationSession,
     title: str | None,
 ) -> None:
-    """On resume/fork, record a model switch and/or a rename if they changed."""
+    """On resume/fork, record a model switch and/or a rename at ``cursor`` if they changed."""
     if model_name != prior.model or backend_name != prior.backend:
-        session.append_model_change(model_name, backend_name)
+        await cursor.append("model_change", model=model_name, backend=backend_name)
     if title is not None:
-        session.append_session_info(title)
+        await cursor.append("session_info", name=title)
 
 
 def _emit_command_output(mode: str, command: str, text: str | None) -> None:
@@ -752,12 +753,11 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
         session = create(
             cwd, model_name, backend_name, system_prompt=system_prompt or None, name=args.name
         )
-    elif args.fork is not None:
-        session = catalog.fork(prior, cwd)
-        _apply_resume_metadata(session, model_name, backend_name, prior, args.name)
-    else:  # --continue / --session: append in place
-        session = prior
-        _apply_resume_metadata(session, model_name, backend_name, prior, args.name)
+    else:
+        session = catalog.fork(prior, cwd) if args.fork is not None else prior
+    cursor = Cursor.newest(session)
+    if prior is not None:
+        await _apply_resume_metadata(cursor, model_name, backend_name, prior, args.name)
 
     agent_session = getattr(backend, "agent_session", None)
     if agent_session is not None and hasattr(agent_session, "set_model_resolver"):
@@ -826,14 +826,14 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
             return 0
 
         # Stamped here because print mode appends the user turn itself (see :768).
-        await session.append_message(
+        await cursor.append_message(
             {
                 "role": "user",
                 "content": prompt_text,
                 "timestamp": int(time.time() * 1000),
             }
         )
-        messages: list[dict] = session.context
+        messages: list[dict] = cursor.context()
 
         if args.mode == "json":
             sys.stdout.write(json.dumps(session.header) + "\n")
@@ -878,7 +878,7 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
 
         for message in new_messages:
             if message.get("role") != "user":
-                await session.append_message(message)
+                await cursor.append_message(message)
 
         return 0
     finally:

@@ -201,8 +201,12 @@ async def test_deferred_compact_applies_once_at_end_of_prompt(monkeypatch) -> No
     # Seed prior turns so the compaction has an ample prefix to summarize.
     log = session.session_log
     for i in range(2):
-        await log.append_message({"role": "user", "content": [{"type": "text", "text": f"u{i}"}]})
-        await log.append_message({"role": "assistant", "content": [{"type": "text", "text": f"a{i}"}]})
+        await session.cursor.append_message(
+            {"role": "user", "content": [{"type": "text", "text": f"u{i}"}]}
+        )
+        await session.cursor.append_message(
+            {"role": "assistant", "content": [{"type": "text", "text": f"a{i}"}]}
+        )
 
     def compaction_count() -> int:
         return sum(1 for e in log.entries() if e["type"] == "compaction")

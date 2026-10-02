@@ -75,7 +75,7 @@ async def _session(tmp_path: Path) -> tuple[AgentSession, Session]:
         agent._bind_extension_api("examples/54_consequence_engine.py")
     )
     # A message so the tree has a real active path for the customEntry nodes to hang off.
-    await live.append_message(_msg("user", "what if I drop the retry limit?"))
+    await agent.cursor.append_message(_msg("user", "what if I drop the retry limit?"))
     return agent, live
 
 

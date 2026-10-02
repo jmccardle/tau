@@ -44,7 +44,7 @@ from pathlib import Path
 
 import pytest
 
-from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.messages import convert_to_llm
 from tau_coding_agent.backends import create_backend
 from tau_coding_agent.session_store import Session
@@ -152,8 +152,8 @@ def demo_run(tmp_path, fake_provider):
 def _custom_entries(entries: list[dict]) -> list[dict]:
     """The durable extension-injected nodes on disk.
 
-    Headless persists a ``before_agent_start`` injection through the on-disk
-    ``Session.append_message`` (the loop RETURNS it in prompt()'s messages), so on
+    Headless persists a ``before_agent_start`` injection as a ``message`` appended
+    at the session's cursor (the loop RETURNS it in prompt()'s messages), so on
     disk it is a ``message`` entry whose stored message carries ``role: "custom"``
     plus its ``customType`` — the durable, reloadable form (E5 §3.1).
     """
@@ -218,8 +218,8 @@ def test_reload_invariant_byte_identical_model_context(demo_run):
 
     second = Session.load(path)
     assert first.entries() == second.entries()
-    ctx_first = ConversationTree(first.entries(), first.cursor).context_for()
-    ctx_second = ConversationTree(second.entries(), second.cursor).context_for()
+    ctx_first = Cursor.newest(first).context()
+    ctx_second = Cursor.newest(second).context()
     assert ctx_first == ctx_second
 
     assert [m.get("role") for m in ctx_first] == ["system", "user", "custom", "assistant"]
@@ -258,8 +258,6 @@ def app(make_app):
 async def test_tui_floor_extensions_listing_and_veto(app, tmp_path):
     """A live TUI loads an extension, lists it via ``/extensions``, and renders a
     veto as a blocked ToolBox — the whole visible-surface floor in one run."""
-    from tau_coding_agent.chat_widgets import ChatInput, MessageBox
-    from tau_coding_agent.transcript import ChatDisplay
     from tau_coding_agent.chat_widgets import ToolBox
 
     ext = tmp_path / "full_ext.py"

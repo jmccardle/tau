@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 
 from tau_agent_core.commands import dispatch_builtin, resolve_command
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.flows import Dispatched, Performed
 from tau_agent_core.submission import SubmissionResult
 from tau_coding_agent.app import TauApp
@@ -121,7 +122,7 @@ async def test_chat_selected_loads_session_by_ref(app, wait_for_workers_settled)
         seeded = app.session_catalog.create(
             os.getcwd(), "m", "openai", system_prompt="sys", name="Picked"
         )
-        await seeded.append_message({"role": "user", "content": "hello"})
+        await Cursor.newest(seeded).append_message({"role": "user", "content": "hello"})
 
         app.action_toggle_sidebar()
         await pilot.pause()
@@ -300,7 +301,7 @@ class _BlockingBackend:
     def __init__(self) -> None:
         self.aborted = False
         self._released = asyncio.Event()
-        self._log = None
+        self._cursor = None
         self.submissions: list[Any] = []
         self.contexts: list[list[dict]] = []
         self.command_submissions: list[Any] = []
@@ -313,8 +314,8 @@ class _BlockingBackend:
             command=resolve_and_report(submission.text),
         )
 
-    def bind_session_log(self, session_log) -> None:
-        self._log = session_log
+    def bind_cursor(self, cursor) -> None:
+        self._cursor = cursor
 
     def abort(self) -> None:
         self.aborted = True
@@ -330,7 +331,7 @@ class _BlockingBackend:
         await self._released.wait()
         self._released.clear()
         partial = {"role": "assistant", "content": [{"type": "text", "text": "partial"}]}
-        await self._log.append_message(partial)
+        await self._cursor.append_message(partial)
         return SubmissionResult(accepted=True, submission_id=submission.submission_id)
 
 
@@ -554,7 +555,6 @@ async def test_clicking_the_earlier_row_mounts_the_rest(app, settle_transcript):
     subject is geometry — which is why it settles the transcript first and
     asserts the row's position before clicking it.
     """
-    from tau_coding_agent.chat_widgets import MessageBox
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -583,7 +583,6 @@ async def test_clicking_the_earlier_row_mounts_the_rest(app, settle_transcript):
 async def test_the_palette_action_mounts_the_rest_and_says_it_is_doing_so(app):
     """The keyboard half, plus the notice — mounting hundreds of boxes is slow
     enough that a silent action reads as a dead key."""
-    from tau_coding_agent.chat_widgets import MessageBox
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -621,7 +620,6 @@ async def test_the_palette_action_says_so_when_nothing_is_hidden(app):
 
 
 def _input(app):
-    from tau_coding_agent.chat_widgets import ChatInput
 
     return app.query_one("#chat-input", ChatInput)
 

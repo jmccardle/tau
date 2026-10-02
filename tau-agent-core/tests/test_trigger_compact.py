@@ -28,7 +28,7 @@ from tau_llm.types import AssistantMessage, Model, TextContent
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
-from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import InMemorySessionLog
 
 #: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
@@ -184,8 +184,8 @@ async def test_trigger_compact_command_compacts_immediately_and_reports(monkeypa
     )
     log = session.session_log
     for i in range(3):
-        await log.append_message(_msg("user", f"u{i}"))
-        await log.append_message(_msg("assistant", f"a{i}"))
+        await session.cursor.append_message(_msg("user", f"u{i}"))
+        await session.cursor.append_message(_msg("assistant", f"a{i}"))
 
     result = await session.run_extension_command("trigger-compact", "")
 
@@ -197,7 +197,7 @@ async def test_trigger_compact_command_compacts_immediately_and_reports(monkeypa
     compactions = [e for e in log.entries() if e["type"] == "compaction"]
     assert len(compactions) == 1
 
-    reloaded = ConversationTree(log.entries(), log.cursor).context_for()
+    reloaded = Cursor.newest(log).context()
     reloaded_texts = "".join(
         block.get("text", "")
         for m in reloaded

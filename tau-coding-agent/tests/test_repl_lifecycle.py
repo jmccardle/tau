@@ -24,7 +24,7 @@ async def test_startup_and_shutdown_run_in_the_documented_order(env: ReplEnv) ->
     rc = await env.run([])
     assert rc == 0
     assert env.events == [
-        "bind_session_log",
+        "bind_cursor",
         "set_model_resolver",
         "set_ui_delegate",
         "load_extensions",
@@ -62,9 +62,9 @@ async def test_the_head_binds_and_appends_nothing(env: ReplEnv) -> None:
     hands the session over and never writes an entry of its own."""
     await env.run(["hello"])
     assert env.backend is not None
-    session = env.backend.bound[0]
-    assert env.events.count("bind_session_log") == 1
-    assert [entry.get("role") for entry in session.context] == ["system"]
+    cursor = env.backend.bound[0]
+    assert env.events.count("bind_cursor") == 1
+    assert [entry.get("role") for entry in cursor.context()] == ["system"]
 
 
 async def test_an_empty_line_is_ignored(env: ReplEnv) -> None:
@@ -153,7 +153,7 @@ async def test_a_resume_records_a_model_change_through_the_backend(env: ReplEnv)
     through ``record_model_change`` so the core stays the log's only writer."""
     await env.run([])
     assert env.backend is not None
-    session_id = env.backend.bound[0].id
+    session_id = env.backend.bound[0].session_id
 
     env.install()
     await env.run([], session=session_id, model="other", name="renamed")
@@ -178,7 +178,7 @@ async def test_resume_picks_a_session_before_a_backend_exists(env: ReplEnv) -> N
     env.install()
     await env.run([], answers=["1"], resume=True)
     assert env.backend is not None
-    assert env.backend.bound[0].id == created.id
+    assert env.backend.bound[0].session_id == created.session_id
 
 
 async def test_an_empty_answer_to_the_picker_exits_without_a_backend(env: ReplEnv) -> None:
@@ -259,9 +259,9 @@ async def test_a_resumed_session_is_drawn_before_the_prompt_opens(env: ReplEnv) 
     only by submitting a turn and reading the answer for evidence."""
     await env.run([])
     assert env.backend is not None
-    session = env.backend.bound[0]
-    await session.append_message({"role": "user", "content": "port the parser", "timestamp": 1})
-    await session.append_message(
+    cursor = env.backend.bound[0]
+    await cursor.append_message({"role": "user", "content": "port the parser", "timestamp": 1})
+    await cursor.append_message(
         {
             "role": "assistant",
             "content": [{"type": "text", "text": "Ported it."}],
@@ -271,7 +271,7 @@ async def test_a_resumed_session_is_drawn_before_the_prompt_opens(env: ReplEnv) 
     )
 
     env.install()
-    await env.run([], session=session.id)
+    await env.run([], session=cursor.session_id)
 
     text = env.text
     assert "› port the parser" in text

@@ -1,27 +1,14 @@
 """RPC Tier B — `set_model` (B1, docs/RPC-TIER-B.md §3 "B1 | set_model").
 
-D-2: switches `AgentSession`'s active model (`AgentSession.set_model`) AND
-persists the switch as a `model_change` log entry — something the bare
-session method deliberately does NOT do. The append happens in the RPC verb
-itself (D-2's scope boundary), so a TUI switch through
-`AgentSession.set_model` directly still does not persist; see the verb's
-own `notes` on `commands.COMMAND_TABLE["set_model"]`.
+D-2: switches `AgentSession`'s active model AND appends a `model_change` at the
+session's cursor. The append is the verb's, not `AgentSession.set_model`'s (see
+the verb's `notes`). D-1: mutating, so each path here also proves the verb took
+`turn_safety_guard`. D-7: it appends, so an unpersisted session is refused.
 
-D-1: mutating, so every success/failure path here also proves the verb
-actually took `turn_safety_guard` — not merely that `AgentSession.set_model`
-works (that is `test_agent_session.py`'s job).
+A real `AgentSession`, not a `MagicMock`: the verb reads `turn_lock` and calls
+the real resolver machinery.
 
-§1.1: `require_log_appender` on `append_model_change` — a log with nowhere
-durable to put the entry raises rather than silently skipping the persist.
-
-A new, session-log-less `AgentSession` (real, not a `MagicMock`) rather than
-the `session` fixture `test_rpc.py` uses: this verb reads `turn_lock` (a
-real `asyncio.Lock`, D-1) and calls the real `set_model`/resolver machinery,
-neither of which a `MagicMock` reproduces faithfully — the same choice
-`test_rpc_tier_b_scaffolding.py` and `test_rpc.py`'s own `real_session`
-fixture already make.
-
-Reference: docs/RPC-TIER-B.md D-1, D-2, §1.1, §6 "Every test you write must
+Reference: docs/RPC-TIER-B.md D-1, D-2, D-7, §6 "Every test you write must
 be able to fail."
 """
 
@@ -67,43 +54,24 @@ def _resolver(name: str) -> Model:
         ) from None
 
 
-class _LogWithModelChange:
-    """A minimal stand-in session log carrying §1.1's ``append_model_change``
-    — mirrors ``test_rpc_tier_b_scaffolding.py``'s ``_LogWithAppenders`` (a
-    small test-local fake; no precedent in this suite for a cross-test-file
-    import). Tracks its own ``cursor`` the way the real file-backed
-    ``Session`` does: the leaf id moves to whatever was just appended, so
-    E5's "return the resulting cursor" has something real to observe.
+class _DurableLog(InMemorySessionLog):
+    """`InMemorySessionLog` that declares where it lives, as the file store does.
 
-    ``path`` is not decoration: Blocker 2's ``require_durable_session`` asks
-    the log to declare WHERE it durably lives, and a fake that wants the
-    success path must answer the same question the real ``Session`` does (a
-    non-``None`` ``path``). A fake that stayed silent would be asserting the
-    success path on a session the verb is now required to refuse.
-
-    Also implements ``append_custom_entry``: ``AgentSession.set_model``
-    itself calls ``_record_agent_spec`` (W2, agent_session.py:836), which
-    appends a ``customEntry`` BEFORE this verb ever touches the log — not
-    an appender §1.1 is about (it is on the ``SessionLog`` Protocol
-    proper, unlike ``append_model_change``), but this fake still needs it
-    to avoid an ``AttributeError`` that has nothing to do with what this
-    test file is checking."""
+    `require_durable_session` asks the log for a non-`None` location; `path=None`
+    is the same log with the durability taken away.
+    """
 
     def __init__(self, path: Path | None = Path("/tmp/does-not-need-to-exist.jsonl")) -> None:
+        super().__init__()
         self.path = path
-        self.model_changes: list[tuple[str, str]] = []
-        self.custom_entries: list[tuple[str, dict]] = []
-        self.cursor: str | None = None
 
-    def append_custom_entry(self, custom_type: str, data: dict) -> str:
-        self.custom_entries.append((custom_type, data))
-        self.cursor = f"custom-entry-{len(self.custom_entries)}"
-        return self.cursor
 
-    def append_model_change(self, model: str, backend: str) -> str:
-        self.model_changes.append((model, backend))
-        self.cursor = f"model-change-{len(self.model_changes)}"
-        return self.cursor
+def _model_changes(session: AgentSession) -> list[tuple[str, str]]:
+    return [
+        (e["model"], e["backend"])
+        for e in session.session_log.entries()
+        if e["type"] == "model_change"
+    ]
 
 
 @pytest.fixture
@@ -150,7 +118,7 @@ def test_set_model_is_a_tier_b_verb_with_schemas():
 
 
 async def test_set_model_switches_persists_and_returns_the_cursor(handler, session):
-    session.session_log = _LogWithModelChange()
+    session.session_log = _DurableLog()
 
     response = await _set_model(handler, "m2")
 
@@ -160,9 +128,12 @@ async def test_set_model_switches_persists_and_returns_the_cursor(handler, sessi
         "provider": "anthropic",
         "context_window": 8192,
     }
-    assert response["result"]["cursor"] == "model-change-1"
+    cursor = response["result"]["cursor"]
+    assert cursor == session.cursor.leaf
+    (entry,) = [e for e in session.session_log.entries() if e["id"] == cursor]
+    assert entry["type"] == "model_change"
     assert response["result"]["method"] == "set_model"
-    assert session.session_log.model_changes == [("m2", "anthropic")]
+    assert _model_changes(session) == [("m2", "anthropic")]
     # The switch actually took effect, not merely reported.
     assert session.get_model()["id"] == "m2"
 
@@ -171,51 +142,21 @@ async def test_set_model_is_idempotent_against_the_current_model(handler, sessio
     """Switching to the model already active still appends a fresh entry —
     D-2 does not special-case a no-op switch; a host that asked to persist
     a record of "still on m1" gets one."""
-    session.session_log = _LogWithModelChange()
+    session.session_log = _DurableLog()
 
     response = await _set_model(handler, "m1")
 
     assert response["result"]["model"]["id"] == "m1"
-    assert session.session_log.model_changes == [("m1", "openai")]
-
-
-# ── §1.1: no durable place to put the entry ────────────────────────────
-
-
-async def test_set_model_raises_when_the_log_has_no_appender(handler, session):
-    """A log that declares a durable location but has no
-    ``append_model_change`` — §1.1's own case, isolated from Blocker 2's
-    (below) so each guard is pinned by a test only IT can fail. Fail-Early:
-    raise, never skip the persist step. An unclassified exception from a
-    handler becomes INTERNAL_ERROR (C2), the same bucket _require_runtime's
-    construction-gap RuntimeError lands in."""
-
-    class _DurableButNoAppender:
-        path = Path("/tmp/does-not-need-to-exist.jsonl")
-        cursor: str | None = None
-
-        def append_custom_entry(self, custom_type: str, data: dict) -> str:
-            return "custom-entry-1"
-
-    session.session_log = _DurableButNoAppender()
-
-    response = await _set_model(handler, "m2")
-
-    assert response["error"]["code"] == dialect.INTERNAL_ERROR
-    assert "append_model_change" in response["error"]["message"]
-    assert session.get_model()["id"] == "m1"
+    assert _model_changes(session) == [("m1", "openai")]
 
 
 # ── Blocker 2: a durable-looking append that would land nowhere ────────
 
 
 async def test_set_model_refuses_an_unpersisted_session(handler, session):
-    """The exact defect Blocker 2 names: a real, fully-appender-equipped
-    session whose writes go nowhere (the file store's ``path is None``,
-    which every RPC run started on until this fix). ``require_log_appender``
-    passes here — the appender IS present — so only a durability check can
-    fail this test, and a host must not get a cursor back."""
-    session.session_log = _LogWithModelChange(path=None)
+    """Blocker 2: a log whose declared ``path`` is ``None`` (what every RPC run
+    started on until this fix). A host must not get a cursor back."""
+    session.session_log = _DurableLog(path=None)
 
     response = await _set_model(handler, "m2")
 
@@ -225,7 +166,7 @@ async def test_set_model_refuses_an_unpersisted_session(handler, session):
     assert "unpersisted" in response["error"]["message"]
     # Refused before anything was touched: no switch, nothing appended.
     assert session.get_model()["id"] == "m1"
-    assert session.session_log.model_changes == []
+    assert session.session_log.entries() == []
 
 
 async def test_set_model_refuses_a_log_that_declares_no_durable_location(handler, session):
@@ -243,7 +184,7 @@ async def test_set_model_refuses_a_log_that_declares_no_durable_location(handler
 
 
 async def test_set_model_unknown_name_is_invalid_params(handler, session):
-    session.session_log = _LogWithModelChange()
+    session.session_log = _DurableLog()
 
     response = await _set_model(handler, "no-such-model")
 
@@ -255,7 +196,7 @@ async def test_set_model_unknown_name_is_invalid_params(handler, session):
     assert response["error"]["data"]["name"] == "no-such-model"
     # Refused before anything was touched: no switch, nothing appended.
     assert session.get_model()["id"] == "m1"
-    assert session.session_log.model_changes == []
+    assert _model_changes(session) == []
 
 
 def test_resolver_error_message_unwraps_a_key_error_without_rewording_it() -> None:
@@ -341,7 +282,7 @@ async def test_set_model_refuses_while_a_turn_is_in_flight(monkeypatch, handler,
 
 
 async def test_set_model_releases_the_lock_after_success(handler, session):
-    session.session_log = _LogWithModelChange()
+    session.session_log = _DurableLog()
     assert not session.turn_lock.locked()
 
     await _set_model(handler, "m2")
@@ -354,7 +295,7 @@ async def test_set_model_releases_the_lock_even_when_the_name_is_unknown(handler
     ``finally``) must run even though `_handle_set_model` raises `RPCError`
     from INSIDE the `async with` body — a second `set_model` call right
     after a rejected one must not itself see `TURN_STILL_RUNNING`."""
-    session.session_log = _LogWithModelChange()
+    session.session_log = _DurableLog()
 
     await _set_model(handler, "no-such-model")
     assert not session.turn_lock.locked()

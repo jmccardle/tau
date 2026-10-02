@@ -433,20 +433,12 @@ class RPCHandler:
         must not introduce (phase-3 review, finding 1).
 
         Finding 2 (phase-3 review): an `agent_end` item additionally carries a
-        private `_cursor_log` key — a direct reference to `self._session
-        .session_log` AS IT IS RIGHT NOW, i.e. the log THIS event's turn
-        actually ran against. `_stamp_agent_end_cursor` reads the cursor VALUE
-        off that captured object later, at dequeue time (still — see its own
-        docstring for why dequeue-time is right for the VALUE), but must no
-        longer resolve WHICH log via `self._session.session_log` at that
-        point: `new_session`/`fork`/`switch_session` (phase 3) can replace
-        that attribute with an unrelated session's log while this item is
-        still sitting in the queue, and reading it live at dequeue time then
-        stamps the WRONG session's cursor onto an already-emitted, already-
-        persisted `agent_end` — see `_stamp_agent_end_cursor` for the full
-        argument. `_cursor_log` is popped off (never serialized) before the
-        item reaches `json.dumps`; every other event type does not get one
-        and `_stamp_agent_end_cursor` is a no-op without it.
+        private `_cursor` key — the `Cursor` THIS event's turn ran on, captured
+        now. `_stamp_agent_end_cursor` reads its leaf later, at dequeue time,
+        from that object rather than from `self._session.cursor`, because a
+        `new_session`/`fork`/`switch_session` can replace the session's cursor
+        while the item waits in the queue. `_cursor` is popped off (never
+        serialized) before the item reaches `json.dumps`.
         """
         cache_notice = self._prompt_cache.feed_event(event)
         for params in wire_events.project_event(
@@ -458,7 +450,7 @@ class RPCHandler:
                 "params": params,
             }
             if params.get("type") == "agent_end":
-                item["_cursor_log"] = self._session.session_log
+                item["_cursor"] = self._session.cursor
             credited = await self._acquire_event_credit()
             if credited:
                 item["_credited"] = True
@@ -568,17 +560,17 @@ class RPCHandler:
         takes. That is the right trade and not a new one: the queue is FIFO, so
         everything behind an ``agent_end`` was already behind it.
 
-        It waits only when the item's captured ``_cursor_log`` is still the
-        session's live log. A swap that landed since the enqueue held
+        It waits only when the item's captured ``_cursor`` is still the
+        session's live cursor. A swap that landed since the enqueue held
         ``turn_lock``, so that turn's persistence is already finished, and
         waiting on the CURRENT session would be waiting on an unrelated turn —
         the same wrong-session hazard :meth:`_stamp_agent_end_cursor` guards
-        against by stamping the captured log rather than the live one.
+        against by stamping the captured cursor rather than the live one.
 
         Args:
             item: The outbound frame about to be written.
         """
-        captured = item.get("_cursor_log")  # READ, not popped — the stamp pops it.
+        captured = item.get("_cursor")  # READ, not popped — the stamp pops it.
         if captured is None:
             return
         params = item.get("params")
@@ -586,7 +578,7 @@ class RPCHandler:
             return
         session = self._session
         # A swap since the enqueue held `turn_lock`, so that turn is already persisted.
-        if captured is not session.session_log:
+        if captured is not session.cursor:
             return
         await session.persistence_settled.wait()
 
@@ -654,35 +646,21 @@ class RPCHandler:
         _cursor_under_backpressure` drives this with the credit pool
         actually exhausted and pins it the same way.
 
-        WHY THE LOG *OBJECT* IS NOT RE-RESOLVED HERE (Finding 2, phase-3
-        review): the paragraphs above establish that dequeue time is the
-        right moment to read `.cursor`'s VALUE, but they say nothing about
-        WHICH log to read it from — the original code read `self._session
-        .session_log`, live, at that same dequeue-time. Phase 3 added
-        `new_session`/`fork`/`switch_session`, which can REPLACE that
-        attribute with an unrelated session's (fresh, likely near-empty) log
-        while this `agent_end` item is still sitting in the output queue (a
-        slow/unresponsive peer, or simply a swap landing in the same tick a
-        turn finishes) — at that point `self._session.session_log` is no
-        longer the log this turn ran against, and stamping ITS cursor is
-        exactly the wrong-session failure E5/F3 exist to prevent, just
-        arrived at via a different route than the pre-persistence one two
-        paragraphs up. `_forward_event` closes over the correct log at THE
-        MOMENT THIS EVENT WAS ACTUALLY EMITTED (`item["_cursor_log"]`, popped
-        here) — before persistence, but still the SAME object persistence
-        writes into, and immune to any swap that happens after. Reading from
-        it keeps BOTH properties at once: post-persistence (still a dequeue-
-        time VALUE read) and from the right log (fixed at enqueue time,
-        immune to any swap that follows). A `params`-less or non-`agent_end`
-        item never gets `_cursor_log` set (`_forward_event`) and is a no-op
-        here, same as before.
+        WHY THE CURSOR *OBJECT* IS NOT RE-RESOLVED HERE (Finding 2, phase-3
+        review): dequeue time is the right moment to read the leaf's VALUE, but
+        `new_session`/`fork`/`switch_session` can replace the session's cursor
+        while this item waits in the queue. Stamping the live cursor would put
+        an unrelated session's position on this turn's `agent_end`, so this
+        reads the `Cursor` `_forward_event` captured when the event was emitted
+        (`item["_cursor"]`, popped here). A non-`agent_end` item carries none
+        and is a no-op.
         """
-        log = item.pop("_cursor_log", None)
-        if log is None:
+        cursor = item.pop("_cursor", None)
+        if cursor is None:
             return
         params = item.get("params")
         if isinstance(params, dict) and params.get("type") == "agent_end":
-            params["cursor"] = log.cursor
+            params["cursor"] = cursor.leaf
 
     async def run(self) -> None:
         """Run the RPC server until stdin closes or a shutdown signal fires.

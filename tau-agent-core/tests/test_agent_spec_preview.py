@@ -24,6 +24,7 @@ from tau_llm.types import Model
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
 
@@ -55,9 +56,9 @@ def _tool(name: str) -> AgentTool:
     )
 
 
-def _previews(log: InMemorySessionLog) -> list[str]:
+def _previews(cursor: Cursor) -> list[str]:
     """Every ``agent_spec`` row's preview, in log order."""
-    tree = ConversationTree(log.entries(), log.cursor)
+    tree = cursor.tree()
     nodes = {}
 
     def _collect(node) -> None:
@@ -69,12 +70,12 @@ def _previews(log: InMemorySessionLog) -> list[str]:
         _collect(root)
     return [
         nodes[e["id"]].preview
-        for e in log.entries()
+        for e in cursor.entries()
         if e.get("type") == "customEntry" and e.get("customType") == "agent_spec"
     ]
 
 
-async def _spec(log: InMemorySessionLog, **overrides: Any) -> str:
+async def _spec(cursor: Cursor, **overrides: Any) -> str:
     """Append a hand-built ``agent_spec`` payload; returns its entry id."""
     data: dict[str, Any] = {
         "model": {"id": "model-a", "provider": "openai", "context_window": 128000},
@@ -84,7 +85,7 @@ async def _spec(log: InMemorySessionLog, **overrides: Any) -> str:
         "cwd": "/repo",
     }
     data.update(overrides)
-    return await log.append_custom_entry("agent_spec", data)
+    return await cursor.append_custom_entry("agent_spec", data)
 
 
 # --- the first spec on a path: say what the frame IS -------------------------
@@ -99,19 +100,19 @@ async def test_the_first_spec_names_the_model_and_the_tool_set():
     # Written by the real W2 code path, not a hand-built payload. `start()` is what
     # drains the queued record (docs/ASYNC-SESSION-LOG.md §3.2).
     await session.start()
-    assert _previews(session.session_log) == ["agent_spec: gpt-4o · 2 tools: read, grep"]
+    assert _previews(session.cursor) == ["agent_spec: gpt-4o · 2 tools: read, grep"]
 
 
 async def test_a_tool_less_spec_says_so_rather_than_showing_an_empty_list():
     session = AgentSession(session_log=InMemorySessionLog(), model=_model("gpt-4o"), tools=[])
     await session.start()
-    assert _previews(session.session_log) == ["agent_spec: gpt-4o · no tools"]
+    assert _previews(session.cursor) == ["agent_spec: gpt-4o · no tools"]
 
 
 async def test_a_long_tool_set_is_truncated_behind_its_count():
-    log = InMemorySessionLog()
-    await _spec(log, tools=["read", "write", "edit", "bash", "ls", "grep"])
-    assert _previews(log) == ["agent_spec: model-a · 6 tools: read, write, edit, bash +2 more"]
+    cursor = Cursor.newest(InMemorySessionLog())
+    await _spec(cursor, tools=["read", "write", "edit", "bash", "ls", "grep"])
+    assert _previews(cursor) == ["agent_spec: model-a · 6 tools: read, write, edit, bash +2 more"]
 
 
 # --- a second spec on the same path: say what CHANGED ------------------------
@@ -132,41 +133,41 @@ async def test_a_model_swap_reads_as_a_model_swap():
     )
     session.set_model("model-b")
     await session.start()
-    previews = _previews(session.session_log)
+    previews = _previews(session.cursor)
     assert previews[0] == "agent_spec: model-a · 1 tool: read"
     assert previews[1] == "agent_spec: model model-a → model-b"
 
 
 async def test_a_tool_set_change_is_reported_as_a_delta():
-    log = InMemorySessionLog()
-    await _spec(log, tools=["read", "grep"])
-    await _spec(log, tools=["read", "write", "bash"])
-    assert _previews(log)[1] == "agent_spec: tools +write +bash -grep"
+    cursor = Cursor.newest(InMemorySessionLog())
+    await _spec(cursor, tools=["read", "grep"])
+    await _spec(cursor, tools=["read", "write", "bash"])
+    assert _previews(cursor)[1] == "agent_spec: tools +write +bash -grep"
 
 
 async def test_model_and_tools_changing_together_are_both_named():
-    log = InMemorySessionLog()
-    await _spec(log)
-    await _spec(log, model={"id": "model-b"}, tools=["read", "grep", "bash"])
-    assert _previews(log)[1] == "agent_spec: model model-a → model-b; tools +bash"
+    cursor = Cursor.newest(InMemorySessionLog())
+    await _spec(cursor)
+    await _spec(cursor, model={"id": "model-b"}, tools=["read", "grep", "bash"])
+    assert _previews(cursor)[1] == "agent_spec: model model-a → model-b; tools +bash"
 
 
 async def test_a_new_system_prompt_is_named_but_never_quoted():
     """The record carries a DIGEST, deliberately (the prompt routinely holds a
     repo's project instructions); the preview can only report that it changed."""
-    log = InMemorySessionLog()
-    await _spec(log, system_prompt_digest="digest-a")
-    await _spec(log, system_prompt_digest="digest-b")
-    preview = _previews(log)[1]
+    cursor = Cursor.newest(InMemorySessionLog())
+    await _spec(cursor, system_prompt_digest="digest-a")
+    await _spec(cursor, system_prompt_digest="digest-b")
+    preview = _previews(cursor)[1]
     assert preview == "agent_spec: new system prompt"
     assert "digest-b" not in preview
 
 
 async def test_extensions_are_a_count_not_a_wall_of_paths():
-    log = InMemorySessionLog()
-    await _spec(log, extensions=[])
-    await _spec(log, extensions=["/home/u/.tau/extensions/a.py", "/home/u/.tau/extensions/b.py"])
-    preview = _previews(log)[1]
+    cursor = Cursor.newest(InMemorySessionLog())
+    await _spec(cursor, extensions=[])
+    await _spec(cursor, extensions=["/home/u/.tau/extensions/a.py", "/home/u/.tau/extensions/b.py"])
+    preview = _previews(cursor)[1]
     assert preview == "agent_spec: extensions 0 → 2"
     assert ".py" not in preview
 
@@ -174,18 +175,18 @@ async def test_extensions_are_a_count_not_a_wall_of_paths():
 async def test_a_changed_cwd_is_named():
     """§5 "The filesystem is frame, not path": which directory a span of turns ran
     against is exactly what W2 says the record is for."""
-    log = InMemorySessionLog()
-    await _spec(log, cwd="/repo")
-    await _spec(log, cwd="/repo/worktrees/fix")
-    assert _previews(log)[1] == "agent_spec: cwd /repo → /repo/worktrees/fix"
+    cursor = Cursor.newest(InMemorySessionLog())
+    await _spec(cursor, cwd="/repo")
+    await _spec(cursor, cwd="/repo/worktrees/fix")
+    assert _previews(cursor)[1] == "agent_spec: cwd /repo → /repo/worktrees/fix"
 
 
 async def test_an_unchanged_re_record_says_unchanged():
     """Informative for the reader hunting a swap: this node is not the one."""
-    log = InMemorySessionLog()
-    await _spec(log)
-    await _spec(log)
-    assert _previews(log)[1] == "agent_spec: model-a · 2 tools: read, grep (unchanged)"
+    cursor = Cursor.newest(InMemorySessionLog())
+    await _spec(cursor)
+    await _spec(cursor)
+    assert _previews(cursor)[1] == "agent_spec: model-a · 2 tools: read, grep (unchanged)"
 
 
 # --- the delta is against the ANCESTOR, not against load order ---------------
@@ -194,36 +195,36 @@ async def test_an_unchanged_re_record_says_unchanged():
 async def test_the_delta_is_computed_against_the_nearest_ancestor_spec():
     """I1: a leaf's context is its ancestor chain and nothing else, so a spec on a
     sibling branch never governed these turns and must not be the baseline."""
-    log = InMemorySessionLog()
-    root = await _spec(log, model={"id": "model-a"})
-    await log.append_message({"role": "user", "content": "hi"})
+    cursor = Cursor.newest(InMemorySessionLog())
+    root = await _spec(cursor, model={"id": "model-a"})
+    await cursor.append_message({"role": "user", "content": "hi"})
 
     # A sibling branch off the root with a completely different frame…
-    await log.append_at(
+    await cursor.log.append_at(
         root,
         "customEntry",
         {"customType": "agent_spec", "data": {"model": {"id": "sideshow"}, "tools": []}},
     )
 
-    # …and a swap on the primary line. The delta must read against model-a.
-    await _spec(log, model={"id": "model-b"}, tools=["read", "grep"])
+    # …and a swap on the cursor's own path. The delta must read against model-a.
+    await _spec(cursor, model={"id": "model-b"}, tools=["read", "grep"])
 
-    assert _previews(log)[-1] == "agent_spec: model model-a → model-b"
+    assert _previews(cursor)[-1] == "agent_spec: model model-a → model-b"
 
 
 async def test_a_root_spec_has_no_previous_and_states_the_frame():
-    log = InMemorySessionLog()
-    await _spec(log, model={"id": "model-a"}, tools=["read"])
-    assert _previews(log)[0] == "agent_spec: model-a · 1 tool: read"
+    cursor = Cursor.newest(InMemorySessionLog())
+    await _spec(cursor, model={"id": "model-a"}, tools=["read"])
+    assert _previews(cursor)[0] == "agent_spec: model-a · 1 tool: read"
 
 
 # --- hand-written / future logs are reported, not guessed at -----------------
 
 
 async def test_a_payload_with_no_frame_says_so():
-    log = InMemorySessionLog()
-    await log.append_custom_entry("agent_spec", {})
-    assert _previews(log) == ["agent_spec: (no model recorded) · no tools"]
+    cursor = Cursor.newest(InMemorySessionLog())
+    await cursor.append_custom_entry("agent_spec", {})
+    assert _previews(cursor) == ["agent_spec: (no model recorded) · no tools"]
 
 
 def test_a_non_dict_payload_is_reported_rather_than_crashing_the_browser():
@@ -255,11 +256,10 @@ async def test_the_preview_changes_nothing_about_the_fold():
         model_resolver=lambda name: _model(name),
     )
     session.set_model("model-b")
-    # Straight at the LOG, so it drains nothing: the queue belongs to AgentSession.
     await session.start()
-    await session.session_log.append_message({"role": "user", "content": "hi"})
+    await session.cursor.append_message({"role": "user", "content": "hi"})
     assert [m["content"] for m in session.messages] == ["hi"]
-    assert len(_previews(session.session_log)) == 2
+    assert len(_previews(session.cursor)) == 2
 
 
 async def test_other_custom_entries_name_their_type_and_summarize_their_payload():
@@ -269,7 +269,6 @@ async def test_other_custom_entries_name_their_type_and_summarize_their_payload(
     the kind with a label on it, which is the loss ``_agent_spec_preview`` was
     written to fix for one kind and left in place for every other.
     """
-    log = InMemorySessionLog()
-    await log.append_custom_entry("todo_state", {"items": []})
-    tree = ConversationTree(log.entries(), log.cursor)
-    assert tree.tree()[0].preview == "todo_state — items=[0]"
+    cursor = Cursor.newest(InMemorySessionLog())
+    await cursor.append_custom_entry("todo_state", {"items": []})
+    assert cursor.tree().tree()[0].preview == "todo_state — items=[0]"

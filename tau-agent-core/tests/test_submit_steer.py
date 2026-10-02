@@ -237,9 +237,7 @@ class TestDeliveryPoint:
         assert second.index("TOOL-RAN") < second.index("actually, use ripgrep")
 
         active = _texts(
-            ConversationTree(
-                session._session_log.entries(), session._session_log.cursor
-            ).context_for()
+            ConversationTree(session.session_log.entries(), session.cursor.leaf).context_for()
         )
         assert active.index("do the thing") < active.index("actually, use ripgrep")
         assert "actually, use ripgrep" in _joined(turn_result.messages)
@@ -359,9 +357,7 @@ class TestNoTurnInFlight:
         assert session.is_streaming is False
 
         active = _joined(
-            ConversationTree(
-                session._session_log.entries(), session._session_log.cursor
-            ).context_for()
+            ConversationTree(session.session_log.entries(), session.cursor.leaf).context_for()
         )
         assert "go" in active and "answered" in active
 

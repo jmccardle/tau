@@ -22,7 +22,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from tau_agent_core.conversation_tree import ConversationTree
 from tau_coding_agent import extension_ui, transcript
 
 _EXAMPLE = str(Path(__file__).resolve().parents[2] / "examples" / "45_holy_grail.py")
@@ -209,8 +208,7 @@ async def test_the_tree_browser_still_draws_a_hidden_note(
         await app._dispatch_extension_command("quiet", "")
         await pilot.pause()
 
-        session = app.current_session
-        tree = ConversationTree(session.entries(), session.cursor)
+        tree = app._cursor.tree()
         rows = [node.preview for node in tree.browse() if node.kind == "customMessage"]
         assert rows == ["probe (hidden): not for the transcript"]
 

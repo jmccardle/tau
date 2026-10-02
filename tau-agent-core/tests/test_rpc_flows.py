@@ -104,19 +104,19 @@ class TestEnumerateDomainOnTheWire:
 
     async def test_message_ids_come_from_the_live_session_with_their_text(self, handler):
         """Every entry the session holds, the agent_spec record included."""
-        log = handler.session.session_log
-        first = await log.append_message({"role": "user", "content": "run the tests"})
-        second = await log.append_message({"role": "assistant", "content": "they pass"})
+        cursor = handler.session.cursor
+        first = await cursor.append_message({"role": "user", "content": "run the tests"})
+        second = await cursor.append_message({"role": "assistant", "content": "they pass"})
         got = await _call(handler, "enumerate_domain", {"domain": "message_id"})
         found = {v["value"]: v["label"] for v in got["result"]["values"]}
         assert found[first] == "run the tests"
         assert found[second] == "they pass"
-        assert got["result"]["total"] == len(log.entries())
+        assert got["result"]["total"] == len(cursor.entries())
 
     async def test_the_query_filters_by_text(self, handler):
-        log = handler.session.session_log
-        await log.append_message({"role": "user", "content": "run the tests"})
-        second = await log.append_message({"role": "assistant", "content": "they pass"})
+        cursor = handler.session.cursor
+        await cursor.append_message({"role": "user", "content": "run the tests"})
+        second = await cursor.append_message({"role": "assistant", "content": "they pass"})
         got = await _call(handler, "enumerate_domain", {"domain": "message_id", "query": "PASS"})
         assert [v["value"] for v in got["result"]["values"]] == [second]
 

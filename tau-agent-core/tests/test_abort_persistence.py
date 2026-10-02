@@ -164,7 +164,7 @@ def test_a_turn_that_dies_mid_flight_still_persists_the_users_prompt():
         with pytest.raises(RuntimeError, match="upstream 503"):
             asyncio.run(session.prompt("keep this"))
 
-    users = _entries_of_role(session._session_log, "user")
+    users = _entries_of_role(session.session_log, "user")
     assert len(users) == 1
     assert users[0]["content"][0]["text"] == "keep this"
 
@@ -191,8 +191,8 @@ def test_a_completed_tool_result_survives_a_failure_on_the_next_turn():
         with pytest.raises(RuntimeError, match="upstream 503"):
             asyncio.run(session.prompt("go"))
 
-    assert _roles(session._session_log) == ["user", "assistant", "toolResult"]
-    result = _entries_of_role(session._session_log, "toolResult")[0]
+    assert _roles(session.session_log) == ["user", "assistant", "toolResult"]
+    result = _entries_of_role(session.session_log, "toolResult")[0]
     assert "probe ok" in str(result["content"])
 
 
@@ -232,7 +232,7 @@ def test_a_silent_submission_still_writes_nothing_when_it_fails():
         with pytest.raises(RuntimeError):
             asyncio.run(session._run_one_turn("quiet", None, None, persist=False))
 
-    assert _roles(session._session_log) == []
+    assert _roles(session.session_log) == []
 
 
 def test_the_completed_messages_ride_the_exception():
@@ -299,7 +299,7 @@ def test_an_abort_before_the_batch_answers_every_call():
         asyncio.run(session.prompt("go"))
 
     assert ran == [], "a tool ran after the user aborted"
-    results = _entries_of_role(session._session_log, "toolResult")
+    results = _entries_of_role(session.session_log, "toolResult")
     answered = {r["tool_call_id"] for r in results}
     assert answered == {"c1", "c2"}
     for r in results:
@@ -345,7 +345,7 @@ def test_an_abort_mid_batch_keeps_the_results_it_already_had():
     assert ran == ["first"], "the batch continued past the abort"
     results = {
         r["tool_call_id"]: str(r["content"])
-        for r in _entries_of_role(session._session_log, "toolResult")
+        for r in _entries_of_role(session.session_log, "toolResult")
     }
     assert set(results) == {"c1", "c2", "c3"}
     assert "first ok" in results["c1"], "a completed result was overwritten by the abort"
@@ -383,7 +383,7 @@ def test_a_parallel_batch_is_stopped_by_an_abort_too():
         asyncio.run(session.prompt("go"))
 
     assert ran == []
-    assert {r["tool_call_id"] for r in _entries_of_role(session._session_log, "toolResult")} == {
+    assert {r["tool_call_id"] for r in _entries_of_role(session.session_log, "toolResult")} == {
         "c1",
         "c2",
     }
@@ -459,4 +459,4 @@ def test_an_ordinary_turn_persists_exactly_what_it_always_did():
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_fake):
         asyncio.run(session.prompt("hello"))
 
-    assert _roles(session._session_log) == ["user", "assistant"]
+    assert _roles(session.session_log) == ["user", "assistant"]

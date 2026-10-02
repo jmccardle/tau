@@ -40,7 +40,8 @@ from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
-from tau_agent_core.rpc import RPCHandler, commands
+from tau_agent_core.cursor import Cursor
+from tau_agent_core.rpc import RPCHandler
 from tau_agent_core.rpc.dialect import TURN_STILL_RUNNING
 from tau_agent_core.session_log import InMemorySessionLog
 
@@ -189,7 +190,7 @@ async def test_set_auto_compaction_enables_and_returns_the_effective_state(
     assert real_session._compaction_settings.enabled is False
     # The agent_spec is queued until something drains it; `tip` is that record.
     await real_session.start()
-    tip = real_session.session_log.cursor
+    tip = real_session.cursor.leaf
     assert tip is not None
     await real_handler._handle_request(
         {"jsonrpc": "2.0", "id": 1, "method": "set_auto_compaction", "params": {"enabled": True}}
@@ -207,7 +208,7 @@ async def test_set_auto_compaction_disables_and_is_idempotent(
     real_handler: RPCHandler, real_session: AgentSession
 ) -> None:
     real_session._compaction_settings.enabled = True
-    tip = real_session.session_log.cursor
+    tip = real_session.cursor.leaf
     for msg_id in (1, 2):
         await real_handler._handle_request(
             {
@@ -233,15 +234,15 @@ async def test_set_auto_compaction_returns_the_live_tip_although_it_moves_nothin
     Finding 5 of the Tier B review — this verb returned no `cursor` key at
     all while `compact`, equally mutating, returned "the unchanged current
     tip". The tier now answers E5 one way, and this test is the behavioural
-    half of that: the value must be the log's REAL tip (not a hardcoded
+    half of that: the value must be the cursor's REAL leaf (not a hardcoded
     `None`, which the empty-log tests above cannot tell apart), and it must
     be unchanged by the call, because flipping an in-memory
     `CompactionSettings` field appends nothing.
     """
-    tip = await real_session.session_log.append_message(
+    tip = await real_session.cursor.append_message(
         {"role": "user", "content": [{"type": "text", "text": "hi"}]}
     )
-    assert real_session.session_log.cursor == tip
+    assert real_session.cursor.leaf == tip
     entries_before = len(real_session.session_log.entries())
 
     await real_handler._handle_request(
@@ -250,23 +251,23 @@ async def test_set_auto_compaction_returns_the_live_tip_although_it_moves_nothin
 
     (response,) = [item for item in await _drain(real_handler) if item.get("id") == 1]
     assert response["result"]["cursor"] == tip
-    assert real_session.session_log.cursor == tip
+    assert real_session.cursor.leaf == tip
     assert len(real_session.session_log.entries()) == entries_before
 
 
-class _CursorReadWatcher(InMemorySessionLog):
-    """An ``InMemorySessionLog`` that records, for every read of ``cursor``,
-    whether the session's ``turn_lock`` was held at the time."""
+class _LeafReadWatcher(Cursor):
+    """A ``Cursor`` that records, for every read of ``leaf``, whether the
+    session's ``turn_lock`` was held at the time."""
 
-    def __init__(self, lock: asyncio.Lock) -> None:
-        super().__init__()
+    def __init__(self, log: InMemorySessionLog, lock: asyncio.Lock) -> None:
+        super().__init__(log, None)
         self._lock = lock
         self.reads_while_locked: list[bool] = []
 
     @property
-    def cursor(self) -> str | None:
+    def leaf(self) -> str | None:
         self.reads_while_locked.append(self._lock.locked())
-        return super().cursor
+        return self._leaf
 
 
 async def test_set_auto_compaction_reads_the_cursor_under_the_same_guard_as_the_mutation(
@@ -287,8 +288,8 @@ async def test_set_auto_compaction_reads_the_cursor_under_the_same_guard_as_the_
     which a later edit could silently undo: the response bytes are identical
     either way, so only an observer of WHEN the read happens can see it.
     """
-    watcher = _CursorReadWatcher(real_session.turn_lock)
-    real_session.session_log = watcher  # type: ignore[assignment]
+    watcher = _LeafReadWatcher(InMemorySessionLog(), real_session.turn_lock)
+    real_session.cursor = watcher
 
     await real_handler._handle_request(
         {"jsonrpc": "2.0", "id": 1, "method": "set_auto_compaction", "params": {"enabled": True}}
@@ -368,12 +369,12 @@ async def test_enabling_over_the_wire_makes_a_real_turn_actually_compact(
     cannot otherwise reach (§1.1) — enabling it makes the NEXT turn actually
     compact, not merely toggles a flag nothing reads.
     """
-    log = real_session.session_log
+    cursor = real_session.cursor
     for i in range(3):
-        await log.append_message(_msg("user", f"seed user {i}"))
-        await log.append_message(_msg("assistant", f"seed assistant {i}"))
-    assert not any(e.get("type") == "compaction" for e in log.entries())
-    pre_turn_cursor = log.cursor
+        await cursor.append_message(_msg("user", f"seed user {i}"))
+        await cursor.append_message(_msg("assistant", f"seed assistant {i}"))
+    assert not any(e.get("type") == "compaction" for e in cursor.entries())
+    pre_turn_cursor = cursor.leaf
 
     await real_handler._handle_request(
         {"jsonrpc": "2.0", "id": 1, "method": "set_auto_compaction", "params": {"enabled": True}}
@@ -402,7 +403,7 @@ async def test_enabling_over_the_wire_makes_a_real_turn_actually_compact(
 
         items = await _drain_until_two_agent_ends(real_handler)
 
-    compactions = [e for e in log.entries() if e.get("type") == "compaction"]
+    compactions = [e for e in cursor.entries() if e.get("type") == "compaction"]
     assert len(compactions) == 1
 
     agent_starts = _events_of_type(items, "agent_start")
@@ -424,5 +425,5 @@ async def test_enabling_over_the_wire_makes_a_real_turn_actually_compact(
     real_handler.prepare_outbound(orphan_end)
 
     assert orphan_end["params"]["cursor"] is not None
-    assert orphan_end["params"]["cursor"] == log.cursor
+    assert orphan_end["params"]["cursor"] == cursor.leaf
     assert orphan_end["params"]["cursor"] != pre_turn_cursor

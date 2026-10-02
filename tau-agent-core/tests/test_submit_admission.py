@@ -35,10 +35,9 @@ import pytest
 from tau_llm.streaming import TextDeltaEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 from tau_agent_core.agent_session import AgentSession
-from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.submission import MAX_SUBMISSION_DEPTH, Submission
-from tau_agent_core.flows import Performed, Ready
+from tau_agent_core.flows import Performed
 
 #: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
 _TS = 1_700_000_000_000
@@ -163,7 +162,7 @@ class TestEnqueue:
 
         assert result_a.accepted is True
         assert result_b.accepted is True
-        active = ConversationTree(log.entries(), log.cursor).context_for()
+        active = session.cursor.context()
         assert "turn A" in str(active)
         assert "turn B" in str(active), "B must actually run, not stay parked"
 
@@ -205,13 +204,13 @@ class TestDepthCap:
 class TestStoreHistoryAndSilent:
     async def test_store_history_false_answers_but_persists_nothing(self):
         session = AgentSession(session_log=InMemorySessionLog(), model=_model(), tools=[])
-        before = list(session._session_log.entries())
+        before = list(session.session_log.entries())
 
         result = await session.submit(_sub("go", "sh-1", store_history=False))
 
         assert result.accepted is True
         assert result.messages, "the model still answers the turn"
-        assert session._session_log.entries() == before, "but nothing is written to the log"
+        assert session.session_log.entries() == before, "but nothing is written to the log"
 
     async def test_silent_true_raises_rather_than_half_honouring_itself(self):
         """B1-c: ``silent`` promises MORE than the store_history fold it performs.
@@ -225,7 +224,7 @@ class TestStoreHistoryAndSilent:
         (``__post_init__``) is untouched and still tested in test_submission.py.
         """
         session = AgentSession(session_log=InMemorySessionLog(), model=_model(), tools=[])
-        before = list(session._session_log.entries())
+        before = list(session.session_log.entries())
 
         with pytest.raises(NotImplementedError, match="silent=True"):
             await session.submit(_sub("go", "sh-2", silent=True))
@@ -233,7 +232,7 @@ class TestStoreHistoryAndSilent:
         # Named gap, not a silent fallback: nothing was admitted, nothing ran.
         assert session.is_streaming is False
         assert session._turn_lock.locked() is False
-        assert session._session_log.entries() == before
+        assert session.session_log.entries() == before
 
 
 class TestContinueConversationGuard:

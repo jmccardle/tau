@@ -204,9 +204,7 @@ async def test_transform_survives_reload() -> None:
         await session.prompt("hello world")
 
     # Simulate reload: rebuild the active path purely from persisted raw entries.
-    reloaded = ConversationTree(
-        session.session_log.entries(), session.session_log.cursor
-    ).context_for()
+    reloaded = ConversationTree(session.session_log.entries(), session.cursor.leaf).context_for()
     assert _user_texts(reloaded) == ["HELLO WORLD"]
 
 

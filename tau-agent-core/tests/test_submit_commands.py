@@ -194,7 +194,7 @@ class TestResolveCommand:
 class TestExpandCommandsIsTheSecurityBoundary:
     async def test_a_human_slash_compact_dispatches(self):
         session = _session()
-        before = list(session._session_log.entries())
+        before = list(session.session_log.entries())
 
         result = await session.submit(_human("/compact", "h-1"))
 
@@ -203,7 +203,7 @@ class TestExpandCommandsIsTheSecurityBoundary:
         assert (result.command.flow, result.command.mutation) == ("compact", "compact")
         # No turn: nothing was sent, and no user node joined the log.
         assert result.messages == []
-        assert session._session_log.entries() == before
+        assert session.session_log.entries() == before
 
     async def test_a_bus_slash_compact_is_literal_prompt_text(self):
         """The whole point of the flag. An injected payload cannot smuggle a command."""
@@ -372,13 +372,13 @@ class TestPromptRefusesCommands:
         session = _session()
         calls: list[tuple[str, str]] = []
         _register(session, "deploy", calls)
-        before = list(session._session_log.entries())
+        before = list(session.session_log.entries())
 
         with pytest.raises(UnsupportedCommandError, match="/deploy"):
             await session.prompt("/deploy prod")
 
         assert calls == []
-        assert session._session_log.entries() == before
+        assert session.session_log.entries() == before
         assert session.is_streaming is False
 
     async def test_prompt_raises_on_a_built_in_too(self):

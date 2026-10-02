@@ -98,7 +98,7 @@ def _session(**overrides: Any) -> MagicMock:
     session.get_usage.return_value = None
     session.messages = []
     session.session_log = MagicMock()
-    session.session_log.cursor = "leaf-1"
+    session.cursor.leaf = "leaf-1"
     session.is_addressable = True
     session.tools = []
     session.subscribe.return_value = MagicMock()
@@ -901,24 +901,22 @@ async def test_abort_delegates_and_is_idempotent(handler, session):
 
 def test_prepare_outbound_stamps_the_cursor_only_onto_agent_end(handler, session):
     """B1's dequeue-time cursor stamp: `RPCHandler.prepare_outbound` reads the
-    CAPTURED log's cursor (`_cursor_log`, Finding 2 — see
-    `_stamp_agent_end_cursor`'s docstring) and sets it on an `agent_end`
-    event's params — and touches nothing else (an `abort` response never
-    gets a `params` dict at all; a `turn_start` event is not the completion
-    E5 cares about, and never carries `_cursor_log` in the first place —
-    only `_forward_event` attaches one, and only for `agent_end`)."""
-    captured_log = MagicMock()
-    captured_log.cursor = "post-turn-cursor"
+    leaf of the CAPTURED `Cursor` (`_cursor`, Finding 2 — see
+    `_stamp_agent_end_cursor`'s docstring) onto an `agent_end` event's params,
+    and touches nothing else. Only `_forward_event` attaches `_cursor`, and only
+    for `agent_end`."""
+    captured = MagicMock()
+    captured.leaf = "post-turn-leaf"
 
     agent_end_item = {
         "jsonrpc": "2.0",
         "method": "event",
         "params": {"type": "agent_end"},
-        "_cursor_log": captured_log,
+        "_cursor": captured,
     }
     handler.prepare_outbound(agent_end_item)
-    assert agent_end_item["params"]["cursor"] == "post-turn-cursor"
-    assert "_cursor_log" not in agent_end_item  # popped, never serialized
+    assert agent_end_item["params"]["cursor"] == "post-turn-leaf"
+    assert "_cursor" not in agent_end_item  # popped, never serialized
 
     turn_start_item = {"jsonrpc": "2.0", "method": "event", "params": {"type": "turn_start"}}
     handler.prepare_outbound(turn_start_item)
@@ -1498,7 +1496,7 @@ async def test_agent_end_wire_event_carries_the_post_persistence_cursor(real_han
     that is the one call site late enough to read the post-persistence
     value.
     """
-    pre_turn_cursor = real_session.session_log.cursor
+    pre_turn_cursor = real_session.cursor.leaf
 
     async def _fast_stream_simple(model, context, options=None):
         return _Stream("hi there")
@@ -1535,7 +1533,7 @@ async def test_agent_end_wire_event_carries_the_post_persistence_cursor(real_han
         for line in recorder.lines
         if line.get("method") == "event" and line["params"].get("type") == "agent_end"
     ]
-    post_turn_cursor = real_session.session_log.cursor
+    post_turn_cursor = real_session.cursor.leaf
     assert post_turn_cursor != pre_turn_cursor
     assert agent_end["params"]["cursor"] == post_turn_cursor
 
@@ -1547,8 +1545,8 @@ _SUSPEND_S = 0.02
 class _SuspendingLog(InMemorySessionLog):
     """An ``InMemorySessionLog`` whose appends really suspend.
 
-    The test above cannot fail on its own. ``InMemorySessionLog``'s appenders
-    are coroutines that never await anything, and a coroutine that does not
+    The test above cannot fail on its own. ``InMemorySessionLog.append_at`` is
+    a coroutine that never awaits anything, and a coroutine that does not
     await does not yield to the loop — so the writer task is never scheduled
     mid-persistence whatever the ordering says, and the assertion passes with
     the invariant broken. The one shipped store that DOES suspend per append is
@@ -1564,17 +1562,9 @@ class _SuspendingLog(InMemorySessionLog):
     network round trip or the test is theatre.
     """
 
-    async def append_message(self, message: dict) -> str:
+    async def append_at(self, parent_id: str | None, entry_type: str, payload: dict) -> str:
         await asyncio.sleep(_SUSPEND_S)
-        return await super().append_message(message)
-
-    async def append_custom_message(self, message: dict, custom_type: str) -> str:
-        await asyncio.sleep(_SUSPEND_S)
-        return await super().append_custom_message(message, custom_type)
-
-    async def append_custom_entry(self, custom_type: str, data: dict) -> str:
-        await asyncio.sleep(_SUSPEND_S)
-        return await super().append_custom_entry(custom_type, data)
+        return await super().append_at(parent_id, entry_type, payload)
 
 
 async def test_agent_end_cursor_is_still_post_persistence_when_appends_suspend():
@@ -1589,7 +1579,7 @@ async def test_agent_end_cursor_is_still_post_persistence_when_appends_suspend()
     """
     session = AgentSession(session_log=_SuspendingLog(), model=_model(), tools=[])
     handler = RPCHandler(session)
-    pre_turn_cursor = session.session_log.cursor
+    pre_turn_cursor = session.cursor.leaf
 
     async def _fast_stream_simple(model, context, options=None):
         return _Stream("hi there")
@@ -1626,7 +1616,7 @@ async def test_agent_end_cursor_is_still_post_persistence_when_appends_suspend()
         for line in recorder.lines
         if line.get("method") == "event" and line["params"].get("type") == "agent_end"
     ]
-    post_turn_cursor = session.session_log.cursor
+    post_turn_cursor = session.cursor.leaf
     assert post_turn_cursor != pre_turn_cursor
     assert agent_end["params"]["cursor"] == post_turn_cursor
 
@@ -1634,20 +1624,14 @@ async def test_agent_end_cursor_is_still_post_persistence_when_appends_suspend()
 async def test_agent_end_cursor_survives_a_session_log_swap_before_dequeue(
     real_handler, real_session
 ):
-    """Finding 2 (phase-3 review): `_stamp_agent_end_cursor` used to resolve
-    WHICH log to read the cursor from at dequeue time too
-    (`self._session.session_log`, live) — correct for reading the cursor's
-    VALUE late (post-persistence, see the previous test), wrong once
-    `session_log` can be REPLACED between enqueue and dequeue
-    (`new_session`/`fork`/`switch_session`, phase 3). The reviewer's wire
-    reproduction: a peer that stops reading leaves `agent_end` queued while a
-    swap lands, and the response comes back carrying the NEW session's
-    cursor (`None` for a fresh session) instead of the turn's real tip.
+    """Finding 2 (phase-3 review): the stamp reads the leaf LATE (post-persistence,
+    see the previous test) but from the `Cursor` captured at enqueue, because a
+    `new_session`/`fork`/`switch_session` can replace the session's cursor while
+    `agent_end` waits in the queue. Reading the live one would report the NEW
+    session's leaf (`None` for a fresh session) instead of the turn's.
 
-    Mirrors that by grabbing the raw queued item WITHOUT draining through
-    `_write_stdout` (same technique `test_prepare_outbound_stamps_the_cursor
-    _only_onto_agent_end` uses) so the swap can land before `prepare_outbound`
-    ever runs on it.
+    Grabs the raw queued item without draining through `_write_stdout`, so the
+    swap lands before `prepare_outbound` runs on it.
     """
 
     async def _fast_stream_simple(model, context, options=None):
@@ -1662,16 +1646,15 @@ async def test_agent_end_cursor_survives_a_session_log_swap_before_dequeue(
             lambda item: item.get("method") == "event" and item["params"]["type"] == "agent_end",
         )
 
-    old_log = real_session.session_log
-    old_cursor = old_log.cursor
-    assert old_cursor is not None  # sanity: the turn really persisted something
+    old_leaf = real_session.cursor.leaf
+    assert old_leaf is not None  # sanity: the turn really persisted something
 
     real_session.session_log = InMemorySessionLog()
-    assert real_session.session_log.cursor is None
+    assert real_session.cursor.leaf is None
 
     real_handler.prepare_outbound(agent_end_item)
 
-    assert agent_end_item["params"]["cursor"] == old_cursor
+    assert agent_end_item["params"]["cursor"] == old_leaf
 
 
 async def test_get_messages_reflects_the_turn_only_after_it_runs(real_handler):

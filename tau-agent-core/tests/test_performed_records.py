@@ -94,7 +94,7 @@ def test_performed_adds_the_cursor_exactly_where_returns_declares_one(
 ) -> None:
     """Whether a completion carries a cursor is read off the registry, not decided here."""
     carried = session.performed("set_model", {"model": {"id": "m"}})
-    assert carried.data["cursor"] == session.session_log.cursor
+    assert carried.data["cursor"] == session.cursor.leaf
     assert carried.cursor == carried.data["cursor"]
 
     uncarried = session.performed("abort", {"status": "aborted", "compaction_id": None})

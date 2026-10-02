@@ -108,8 +108,12 @@ async def test_the_agent_can_search_its_own_conversation_and_cite_the_hit(
     catalog = JmftsSessionCatalog(client)
     session, log = _bound(catalog, run_id)
     try:
-        await log.append_message(_msg("user", "What did we decide about the Redis pool?"))
-        await log.append_message(_msg("assistant", "We raised maxTotal to 128 and enabled testOnBorrow."))
+        await session.cursor.append_message(
+            _msg("user", "What did we decide about the Redis pool?")
+        )
+        await session.cursor.append_message(
+            _msg("assistant", "We raised maxTotal to 128 and enabled testOnBorrow.")
+        )
         enrich_conversation(client, log.root_doc_id)
 
         api = _wire(session)
@@ -128,11 +132,15 @@ async def test_scope_conversation_does_not_leak_into_other_conversations(
 ) -> None:
     catalog = JmftsSessionCatalog(client)
     session, mine = _bound(catalog, run_id)
-    _, theirs = _bound(catalog, run_id + "b")
+    other, theirs = _bound(catalog, run_id + "b")
     try:
         secret = f"quokka{run_id}"
-        await theirs.append_message(_msg("assistant", f"The deployment codename is {secret}."))
-        await mine.append_message(_msg("assistant", "This conversation is about something else."))
+        await other.cursor.append_message(
+            _msg("assistant", f"The deployment codename is {secret}.")
+        )
+        await session.cursor.append_message(
+            _msg("assistant", "This conversation is about something else.")
+        )
         enrich_conversation(client, mine.root_doc_id)
         enrich_conversation(client, theirs.root_doc_id)
 
@@ -154,7 +162,7 @@ async def test_read_returns_the_full_document_behind_a_hit(
     session, log = _bound(catalog, run_id)
     try:
         long_text = f"marker-{run_id}. " + ("Detailed reasoning about the retry path. " * 60)
-        await log.append_message(_msg("assistant", long_text))
+        await session.cursor.append_message(_msg("assistant", long_text))
         enrich_conversation(client, log.root_doc_id)
 
         api = _wire(session)
@@ -255,15 +263,17 @@ async def test_retrieval_is_recorded_in_the_tree_not_injected(
     catalog = JmftsSessionCatalog(client)
     session, log = _bound(catalog, run_id)
     try:
-        await log.append_message(_msg("assistant", "We raised maxTotal to 128."))
+        await session.cursor.append_message(_msg("assistant", "We raised maxTotal to 128."))
         enrich_conversation(client, log.root_doc_id)
         before = len(log.entries())
-        cursor_before = log.cursor
+        leaf_before = session.cursor.leaf
 
         api = _wire(session)
         await api.call("jmfts_search", query="redis pool")
 
         assert len(log.entries()) == before, "the tool wrote to the tree out of band"
-        assert log.cursor == cursor_before, "the tool moved the cursor behind the loop's back"
+        assert session.cursor.leaf == leaf_before, (
+            "the tool moved the cursor behind the loop's back"
+        )
     finally:
         catalog.delete(str(log.root_doc_id))

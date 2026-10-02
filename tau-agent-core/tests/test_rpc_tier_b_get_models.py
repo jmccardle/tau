@@ -91,18 +91,14 @@ class _Resolver:
 
 
 class _DurableLog(InMemorySessionLog):
-    """`set_model`'s (D-2) preconditions, satisfied by the smallest thing that
-    can: a `path` so `require_durable_session` sees a declared, set location,
-    and `append_model_change` so `require_log_appender` does. Used by ONE test
-    here — the wire round trip — because that test needs `set_model` to
-    succeed for a reason other than the name it was given; every refusal
-    `set_model` itself owns is `test_rpc_tier_b_set_model.py`'s subject.
+    """`set_model`'s (D-2) precondition, satisfied by the smallest thing that
+    can: a `path`, so `require_durable_session` sees a declared, set location.
+    Used by ONE test here — the wire round trip — because that test needs
+    `set_model` to succeed for a reason other than the name it was given; every
+    refusal `set_model` itself owns is `test_rpc_tier_b_set_model.py`'s subject.
     """
 
     path = "/tmp/get-models-round-trip.jsonl"
-
-    def append_model_change(self, model: str, backend: str) -> str:
-        return "model-change"
 
 
 @pytest.fixture

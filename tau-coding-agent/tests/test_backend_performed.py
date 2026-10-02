@@ -39,9 +39,12 @@ def _check(performed: object, mutation: str) -> Performed:
     return performed
 
 
-def test_set_session_name_reports_a_performed(backend: TauBackend, monkeypatch) -> None:
-    monkeypatch.setattr(backend.agent_session, "set_session_name", lambda name: None)
-    performed = _check(backend.set_session_name("the refactor"), "set_session_name")
+async def test_set_session_name_reports_a_performed(backend: TauBackend, monkeypatch) -> None:
+    async def _name(name: str) -> None:
+        return None
+
+    monkeypatch.setattr(backend.agent_session, "set_session_name", _name)
+    performed = _check(await backend.set_session_name("the refactor"), "set_session_name")
     assert performed.data["name"] == "the refactor"
 
 
@@ -51,26 +54,26 @@ def test_set_auto_compaction_reports_the_effective_state(backend: TauBackend) ->
     assert performed.summary() == "set_auto_compaction: enabled=False"
 
 
-def test_set_model_reports_the_model_it_switched_to(backend: TauBackend, monkeypatch) -> None:
-    """And RECORDS it: a runtime-only switch resumes on the old model."""
+async def test_set_model_reports_the_model_it_switched_to(backend: TauBackend, monkeypatch) -> None:
+    """And RECORDS it at the session's cursor: a runtime-only switch resumes on the old model."""
     switched = {"id": "gpt-4o", "provider": "openai", "context_window": 128000}
-    recorded: list[tuple[str, str]] = []
     monkeypatch.setattr(backend.agent_session, "set_model", lambda name: switched)
-    monkeypatch.setattr(
-        backend.agent_session.session_log,
-        "append_model_change",
-        lambda name, provider: recorded.append((name, provider)),
-        raising=False,
-    )
-    performed = _check(backend.set_model("fast"), "set_model")
+    performed = _check(await backend.set_model("fast"), "set_model")
     assert performed.data["model"] == switched
-    assert recorded == [("fast", "openai")]
+    cursor = backend.agent_session.cursor
+    recorded = cursor.tree().entry(cursor.leaf)
+    assert (recorded["type"], recorded["model"], recorded["backend"]) == (
+        "model_change",
+        "fast",
+        "openai",
+    )
 
 
-def test_set_model_refuses_a_log_that_cannot_record_the_change(backend: TauBackend) -> None:
-    """The refusal comes BEFORE the switch, so the live model still matches the record."""
-    with pytest.raises(RuntimeError, match="append_model_change"):
-        backend.set_model("fast")
+async def test_a_switch_that_fails_records_nothing(backend: TauBackend) -> None:
+    """The switch comes BEFORE the record, so a refused switch leaves no model_change."""
+    with pytest.raises(RuntimeError, match="no model resolver"):
+        await backend.set_model("fast")
+    assert backend.agent_session.cursor.entries() == []
     assert backend.agent_session.get_model()["id"] == "m"
 
 

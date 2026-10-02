@@ -91,6 +91,7 @@ from tau_agent_core.compaction import (
     should_compact,
 )
 from tau_agent_core.compaction_utils import create_file_ops
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.session_manager import SessionManager
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage
@@ -139,8 +140,7 @@ def _msg_entry(eid: str, role: str, text: str, **extra) -> dict:
 
 
 def _msg(role: str, text: str, **extra) -> dict:
-    """A bare message dict for InMemorySessionLog.append_message (the log stamps
-    the entry id/parentId itself, unlike the raw _msg_entry helper)."""
+    """A bare message dict for ``Cursor.append_message``, which stamps id and parentId."""
     msg: dict = {"role": role, "content": [{"type": "text", "text": text}]}
     msg.update(extra)
     return msg
@@ -989,9 +989,10 @@ def test_apply_compaction_is_iterative_the_second_compaction_supersedes_the_firs
 
 async def _session(settings: CompactionSettings | None = None) -> AgentSession:
     log = InMemorySessionLog()
-    await log.append_message(_msg("user", "old question"))
-    await log.append_message(_msg("assistant", "old answer", stop_reason="stop"))
-    await log.append_message(_msg("user", "current"))
+    cursor = Cursor.newest(log)
+    await cursor.append_message(_msg("user", "old question"))
+    await cursor.append_message(_msg("assistant", "old answer", stop_reason="stop"))
+    await cursor.append_message(_msg("user", "current"))
     return AgentSession(
         session_log=log, model=_model(), api_key="sk-test", compaction_settings=settings
     )
@@ -1048,9 +1049,10 @@ async def test_auto_compact_triggers_once_the_window_crosses_the_threshold(monke
     monkeypatch.setattr("tau_agent_core.compaction.complete_simple", _fake_complete("auto recap"))
     # tiny window (> reserve) so the existing small convo crosses the threshold
     log = InMemorySessionLog()
-    await log.append_message(_msg("user", "q" * 400))  # ~100 tok
-    await log.append_message(_msg("assistant", "a" * 400, stop_reason="stop"))
-    await log.append_message(_msg("user", "now"))
+    cursor = Cursor.newest(log)
+    await cursor.append_message(_msg("user", "q" * 400))  # ~100 tok
+    await cursor.append_message(_msg("assistant", "a" * 400, stop_reason="stop"))
+    await cursor.append_message(_msg("user", "now"))
     session = AgentSession(
         session_log=log,
         model=_model(context_window=100, max_tokens=64),

@@ -26,7 +26,6 @@ from pathlib import Path
 import pytest
 
 from tau_agent_core.agent_session import AgentSession
-from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.messages import convert_to_llm
 from tau_llm.types import Model
@@ -175,22 +174,19 @@ async def test_treestore_typed_records_roundtrip(tmp_path):
 
 
 async def test_treestore_excludes_abandoned_branch(tmp_path):
-    """Records on a branch the cursor navigated away from are not reconstructed.
+    """A record on a branch the session's cursor moved off is not reconstructed.
 
-    Reconstructing from *all* entries would resurrect an abandoned branch's
-    records — a silent divergence from what the session shows. TreeStore walks the
-    active ``parentId`` chain, so a record appended, then navigated-past, drops out.
+    TreeStore walks the ``parentId`` chain from ``ctx.cursor.leaf``, so reading all
+    entries instead would resurrect the abandoned branch's record.
     """
-    store = _session(tmp_path)
-    api = _api_for(store)
+    api = _api_for(_session(tmp_path))
+    cursor = api.context.cursor
     ts: state.TreeStore = state.TreeStore(api, "note")
 
-    # A message to branch from, then a record on the current tip.
-    root_id = await store.append_message({"role": "user", "content": "root"})
+    root_id = await cursor.append_message({"role": "user", "content": "root"})
     await ts.append({"n": "on-main"})
 
-    # Navigate the cursor back to the root, then append a record on the new branch.
-    await store.append_navigate(root_id)
+    cursor.move(root_id)
     await ts.append({"n": "on-branch"})
 
     # Active path = root → on-branch; the on-main record is off the active branch.
@@ -200,13 +196,12 @@ async def test_treestore_excludes_abandoned_branch(tmp_path):
 
 async def test_treestore_records_never_reach_the_model(tmp_path):
     """The backplane guarantee: a TreeStore record is excluded from the LLM wire."""
-    store = _session(tmp_path)
-    api = _api_for(store)
-    await store.append_message({"role": "user", "content": "hello"})
+    api = _api_for(_session(tmp_path))
+    await api.context.cursor.append_message({"role": "user", "content": "hello"})
     ts: state.TreeStore = state.TreeStore(api, "secret")
     await ts.append({"payload": "MODEL MUST NOT SEE THIS"})
 
-    context = ConversationTree(store.entries(), store.cursor).context_for()
+    context = api.context.cursor.context()
     assert "hello" in _text_blob(context)
     assert "MODEL MUST NOT SEE THIS" not in _text_blob(context)
     assert "MODEL MUST NOT SEE THIS" not in _text_blob(convert_to_llm(context))

@@ -29,10 +29,10 @@ forked off. Reconstructing from all of them would resurrect records from
 abandoned branches, a silent divergence from what the session actually shows. So
 :class:`TreeStore` walks the ``parentId`` chain from the current cursor to the
 root (the same active-path notion the tree renders), keeping only the
-``customEntry`` records on it. The cursor is derived from the log itself by
-replaying its append/navigate algebra (:func:`active_cursor`) — no private-attr
-reach, no harness import; the store composes ``api.append_entry`` +
-``api.context.entries()`` only.
+``customEntry`` records on it. The cursor is ``api.context.cursor``: a cursor is
+not durable, so it cannot be replayed out of the log (docs/CURSORS.md §4). The
+store composes ``api.append_entry``, ``api.context.entries()`` and
+``api.context.cursor.leaf`` only.
 
 **Fail-Early.** :class:`TreeStore.append` delegates validation to
 ``api.append_entry`` (which raises on an empty ``custom_type`` or non-dict data —
@@ -68,7 +68,8 @@ class _TreeBackplane(Protocol):
 
     In τ, pi's single ``ctx.appendEntry`` splits across two public surfaces: the
     durable write is ``api.append_entry`` and the read-back is
-    ``api.context.entries()``. :class:`TreeStore` needs exactly those two — this
+    ``api.context.entries()`` at ``api.context.cursor.leaf``. :class:`TreeStore`
+    needs exactly those — this
     Protocol names them so the store never imports a harness internal and mypy
     still checks the call sites.
     """
@@ -76,51 +77,27 @@ class _TreeBackplane(Protocol):
     def append_entry(self, custom_type: str, data: dict[str, Any]) -> None: ...
 
     @property
-    def context(self) -> Any:  # exposes ``.entries() -> list[dict[str, Any]]``
+    def context(self) -> Any:  # exposes ``.entries()`` and ``.cursor.leaf``
         ...
 
 
 # ── active-path reconstruction (pure, over the raw entry log) ────────────────
 
 
-def active_cursor(entries: list[dict[str, Any]]) -> str | None:
-    """The current leaf id, replaying the log's own append/navigate algebra.
-
-    Mirrors ``InMemorySessionLog._append`` / ``append_navigate`` (and the on-disk
-    ``Session`` it shadows): every appended entry advances the leaf to its own id,
-    except a ``navigate`` entry, which moves the leaf to its ``targetId`` (and a
-    ``branch_summary``, whose ``_append`` already set the leaf to its own id after
-    re-parenting at the branch point). Replaying this over the ordered log yields
-    the same cursor the session holds — so the store finds the active path without
-    reaching a private ``session_log.cursor`` or importing ``ConversationTree``.
-
-    Public (S64 / ``41_bookmarks``): "where am I right now" is exactly this same
-    question a bookmark needs answered before it can record a waypoint, so this
-    helper is shared rather than re-derived — one cursor algebra, not two.
-    """
-    leaf: str | None = None
-    for entry in entries:
-        if entry.get("type") == "navigate":
-            leaf = entry.get("targetId")
-        else:
-            leaf = entry.get("id")
-    return leaf
-
-
-def _active_path(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The entries on the ``parentId`` chain from the cursor to the root, in
+def active_path(entries: list[dict[str, Any]], leaf: str | None) -> list[dict[str, Any]]:
+    """The entries on the ``parentId`` chain from ``leaf`` to the root, in
     root→leaf order.
 
     A raw ``parentId`` walk (no compaction/branch-summary splicing — backplane
     state is not model context, so it must survive a compaction that summarizes
     *messages*). A cycle guard mirrors ``ConversationTree._walk`` /
-    ``_build_active_path``. Entries off the active branch (abandoned by a navigate
-    or fork) are excluded, so :class:`TreeStore` never resurfaces their records.
+    ``_build_active_path``. Entries off the active branch (abandoned by a move or
+    a fork) are excluded, so :class:`TreeStore` never resurfaces their records.
     """
     by_id = {e["id"]: e for e in entries if "id" in e}
     chain: list[dict[str, Any]] = []
     seen: set[str] = set()
-    node_id = active_cursor(entries)
+    node_id = leaf
     while node_id is not None and node_id in by_id and node_id not in seen:
         seen.add(node_id)
         node = by_id[node_id]
@@ -174,9 +151,10 @@ class TreeStore(Generic[T]):
 
     def _raw_records(self) -> list[dict[str, Any]]:
         """The active-path ``customEntry.data`` dicts for this ``custom_type``."""
-        entries: list[dict[str, Any]] = self._api.context.entries()
+        context = self._api.context
+        entries: list[dict[str, Any]] = context.entries()
         out: list[dict[str, Any]] = []
-        for entry in _active_path(entries):
+        for entry in active_path(entries, context.cursor.leaf):
             if entry.get("type") != CUSTOM_ENTRY_KIND:
                 continue
             if entry.get("customType") != self.custom_type:

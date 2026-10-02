@@ -73,7 +73,7 @@ async def _session(tmp_path: Path) -> tuple[AgentSession, Session]:
     live = Session.create("/tmp", "gpt-4o", "openai", base_dir=tmp_path)
     agent = AgentSession(session_log=live, model=_model(), extensions=[])
     review_mod.review_swarm_extension(agent._bind_extension_api("examples/50_review_swarm.py"))
-    await live.append_message(_msg("user", "review my changes"))
+    await agent.cursor.append_message(_msg("user", "review my changes"))
     return agent, live
 
 

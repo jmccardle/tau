@@ -154,13 +154,15 @@ async def test_an_auto_compaction_lands_on_the_sessions_side_ledger(monkeypatch)
 
     monkeypatch.setattr("tau_agent_core.compaction.complete_simple", _fake)
 
-    log = session.session_log
+    cursor = session.cursor
     padding = "x" * 20_000
     for i in range(6):
-        await log.append_message(
+        await cursor.append_message(
             {"role": "user", "content": [{"type": "text", "text": f"m{i} {padding}"}]}
         )
-        await log.append_message({"role": "assistant", "content": [{"type": "text", "text": f"r{i}"}]})
+        await cursor.append_message(
+            {"role": "assistant", "content": [{"type": "text", "text": f"r{i}"}]}
+        )
 
     assert session.side_usage["total_tokens"] == 0, "nothing spent off-loop yet"
 

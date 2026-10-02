@@ -1156,7 +1156,7 @@ async def _handle_abort(
     since="2A",
     notes=(
         "An aggregate over AgentSession.state (session_id/status), is_streaming, "
-        "get_model(), get_usage(), messages, and session_log.cursor (F3: a host "
+        "get_model(), get_usage(), messages, and cursor.leaf (F3: a host "
         "may not cache 'the tip', so cursor rides on every state read). τ has no "
         "equivalent of pi's thinkingLevel/steeringMode/followUpMode/"
         "sessionFile/pendingMessageCount — none of those exist as AgentSession "
@@ -1197,7 +1197,7 @@ async def _handle_get_state(
         "model": session.get_model(),
         "usage": session.get_usage(),
         "message_count": len(session.messages),
-        "cursor": session.session_log.cursor,
+        "cursor": session.cursor.leaf,
         "addressable": session.is_addressable,
     }
 
@@ -1594,56 +1594,6 @@ async def turn_safety_guard(
         session.turn_lock.release()
 
 
-def require_log_appender(session: "AgentSession", appender_name: str, *, verb: str) -> None:
-    """§1.1: "the bound log must have this appender, else raise" — never a
-    silent no-op.
-
-    **Not a durability check, and never sufficient on its own** (Blocker 2 of
-    the Tier B review; §1.1 has been corrected to say so). This aims at the
-    METHOD axis: does the concrete bound object have somewhere to *call*?
-    Every real ``ConversationSession`` — including an unpersisted one — has
-    every appender, so on the RPC path this check passes on exactly the
-    session whose appends go nowhere. A verb that promises durability calls
-    :func:`require_durable_session` as well; this one only rules out a log
-    that cannot take the entry at all (the SDK's ``InMemorySessionLog``).
-
-    Raises ``RuntimeError`` unless ``session.session_log`` has an attribute
-    named ``appender_name``. An ``InMemorySessionLog`` (the SDK / RPC-with-
-    no-file-backing case) has nowhere durable to put a ``model_change`` or
-    ``session_info`` entry, and the ``SessionLog`` Protocol deliberately
-    OMITS these appenders (``session_log.py:38-48``: "``AgentSession`` never
-    calls them ... so keeping them off the Protocol avoids an unused-method
-    contract") precisely so a caller cannot assume they exist structurally —
-    each call site must check, on the CONCRETE bound object, before appending.
-
-    Reference implementation: ``ExtensionContext.set_session_name``
-    (``extension_types.py:2203``), copied shape-for-shape — same ``hasattr``
-    check on ``session_log``, same raise in place of the silent no-op it
-    replaced. That method's own docstring names the bug this guards against:
-    "The prior implementation looked for a ``_session_name`` attribute that
-    ``AgentSession`` never defines — a silent no-op on every real session
-    (only a ``MagicMock``'s auto-vivified attributes made the old tests
-    pass)." This helper generalizes that shape so B1 and B5 share one
-    implementation instead of each repeating the ``hasattr``/raise pair.
-
-    Does not itself call the appender — a pure precondition check, so a
-    caller does ``require_log_appender(session, "append_model_change",
-    verb="set_model")`` then ``session.session_log.append_model_change(...)``
-    as two explicit steps, never a hidden third thing this function does on
-    a caller's behalf.
-
-    Future callers (docs/RPC-TIER-B.md §1.1): B1's ``set_model`` (checks for
-    ``append_model_change``), B5's ``set_session_name`` (checks for
-    ``append_session_info``).
-    """
-    log = session.session_log
-    if not hasattr(log, appender_name):
-        raise RuntimeError(
-            f"{verb}: the bound session log has no {appender_name!r} — "
-            "nowhere durable to land this entry (e.g. an in-memory RPC session)"
-        )
-
-
 def require_durable_session(session: "AgentSession", *, verb: str) -> None:
     """The precondition a verb takes before promising a durable write — the
     corrected §1.1 guard (Blocker 2 of the Tier B review).
@@ -1665,15 +1615,9 @@ def require_durable_session(session: "AgentSession", *, verb: str) -> None:
     in-memory field, so refusing it would deny a working capability over a
     promise it never made.
 
-    **Why this exists, and why the old check did not cover it.**
-    ``require_log_appender`` checks that the bound log HAS the appender.
-    Every real ``ConversationSession`` has every appender, persisted or not,
-    so on the RPC path that check passed on the one session every host starts
-    on — a ``create_ephemeral`` session whose ``_persist_*`` are no-ops — and
-    both verbs returned a cursor for an entry that was never written
-    anywhere. D-2 exists because "a later replay of the session shows no
-    record that it happened"; a promise that leaves no file is the same
-    silent no-op one layer up. Method presence was the wrong axis.
+    **Why durability and not capability.** Every cursor can append every
+    entry kind to every store, so the question a verb that promises a record
+    must ask is whether the store will keep it past this process.
 
     **Raise, not report.** The alternative — succeed and say
     ``{"durable": false}`` in the result — is rejected: a host asked for a
@@ -1847,7 +1791,7 @@ COMPACTION_END_PARAMS_SCHEMA: dict[str, Any] = {
         "cursor": {
             "type": ["string", "null"],
             "description": (
-                "session_log.cursor once the compaction finished (E5/F3): the "
+                "cursor.leaf once the compaction finished (E5/F3): the "
                 "post-compaction tip when performed is true, else the "
                 "unchanged tip."
             ),
@@ -2100,7 +2044,7 @@ async def _handle_compact(
                             "is_error": False,
                             "error": None,
                             "cancelled": True,
-                            "cursor": session.session_log.cursor,
+                            "cursor": session.cursor.leaf,
                         }
                     )
                     raise
@@ -2119,7 +2063,7 @@ async def _handle_compact(
                         "is_error": True,
                         "error": repr(exc),
                         "cancelled": False,
-                        "cursor": session.session_log.cursor,
+                        "cursor": session.cursor.leaf,
                     }
                 )
                 return
@@ -2127,7 +2071,7 @@ async def _handle_compact(
                 {
                     "is_error": False,
                     "error": None,
-                    **_compaction_outcome(result, session.session_log.cursor),
+                    **_compaction_outcome(result, session.cursor.leaf),
                 }
             )
         finally:
@@ -2626,7 +2570,7 @@ async def _handle_set_auto_compaction(
     session = handler.session
     async with turn_safety_guard(session):
         effective = session.set_auto_compaction(bool(params["enabled"]))
-        cursor = session.session_log.cursor
+        cursor = session.cursor.leaf
     return {"enabled": effective, "cursor": cursor}
 
 
@@ -2707,24 +2651,17 @@ def _resolver_error_message(exc: KeyError | ValueError) -> str:
         "Blocker 2 of the Tier B review — because a cursor returned for an "
         "append that lands only in memory is a durability promise this verb "
         "cannot keep; SESSION_NOT_PERSISTED, which is also what a log declaring "
-        "no durable location at all gets (the SDK's InMemorySessionLog). A "
-        "log MISSING append_model_change entirely is the different, blunter "
-        "failure it always was — require_log_appender, §1.1, RuntimeError -> "
-        "INTERNAL_ERROR — because that is a store wired wrong, not a session "
-        "the host can move off. That "
+        "no durable location at all gets (the SDK's InMemorySessionLog). That "
         "refusal is D-7 rule 1, stated once for the whole tier in "
         "commands.py's 'DURABILITY in Tier B' block: a verb that APPENDS "
         "refuses an unpersisted session — this one, set_session_name, and "
         "(since finding 6) compact, which used to run there and report a "
-        "cursor for an entry that died with the process. Both "
-        "checks run BEFORE session.set_model(name), so a refusal leaves the "
+        "cursor for an entry that died with the process. The "
+        "check runs BEFORE session.set_model(name), so a refusal leaves the "
         "in-process model unswitched: this verb never reports 'maybe "
-        "switched, definitely not persisted'. Known gap (D-2, stated not "
-        "hidden): the append happens HERE, in the RPC verb, not inside "
-        "AgentSession.set_model itself — widening that method is out of "
-        "this phase's scope, since it is also the TUI's own call path — so "
-        "a TUI model switch still does NOT persist a model_change entry; "
-        "only a switch made through this RPC verb does. WHERE the entry "
+        "switched, definitely not persisted'. The model_change entry is "
+        "appended at the session's cursor, as the TUI's own switch does. "
+        "WHERE the entry "
         "lands, and for how long (unit S): a --mode rpc process defaults to "
         "storing its sessions under a private <tmp>/.tau-<uid>/sessions, NOT the "
         "user's ~/.tau/sessions — one 0-message session per spawn would "
@@ -2746,15 +2683,14 @@ async def _handle_set_model(
     name = params["name"]
     async with turn_safety_guard(session):
         require_durable_session(session, verb="set_model")
-        require_log_appender(session, "append_model_change", verb="set_model")
         try:
             model = session.set_model(name)
         except (KeyError, ValueError) as exc:
             raise RPCError(
                 INVALID_PARAMS, _resolver_error_message(exc), data={"name": name}
             ) from exc
-        getattr(session.session_log, "append_model_change")(name, model["provider"])
-        return {"model": model, "cursor": session.session_log.cursor}
+        await session.cursor.append("model_change", model=name, backend=model["provider"])
+        return {"model": model, "cursor": session.cursor.leaf}
 
 
 ### end tier-b:set_model
@@ -2780,12 +2716,7 @@ GET_SESSION_NAME_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_session_
         "AgentSession.set_session_name, which is extension_types."
         "apply_session_name — the SAME body ExtensionAPI.set_session_name "
         "calls (docs/RPC-TIER-B.md B5: 'do "
-        "not reinvent it and do not copy-paste it'), which itself performs "
-        "§1.1's raise ('the bound log must have append_session_info, else "
-        "raise') — so this handler does NOT also call "
-        "require_log_appender: that would check the identical fact twice. "
-        "require_log_appender (B0) is for a verb with no pre-existing "
-        "extension-API body to reuse, e.g. set_model. It DOES take "
+        "not reinvent it and do not copy-paste it'). It takes "
         "require_durable_session first (Blocker 2, Tier B review), which "
         "asks a different question — not 'does the log have the appender' "
         "(every real session does) but 'will the entry outlive this "
@@ -2805,13 +2736,8 @@ GET_SESSION_NAME_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_session_
         "InMemorySessionLog), is SESSION_NOT_PERSISTED — round-3 finding 4 "
         "of the Tier B review moved it off INTERNAL_ERROR, which the "
         "generated reference defines as 'the handler raised something it did "
-        "not raise on purpose' and which this refusal is the opposite of. A "
-        "log MISSING append_session_info altogether still surfaces as "
-        "INTERNAL_ERROR (require_log_appender): a store wired wrong is not a "
-        "session the host can move off. "
-        "Nothing is mutated before either check. This verb was RPC's only "
-        "door onto append_session_info until AgentSession.set_session_name "
-        "existed; a head now reaches the same body without a wire. WHERE the "
+        "not raise on purpose' and which this refusal is the opposite of. "
+        "Nothing is mutated before the check. WHERE the "
         "rename lands, and for how long "
         "(unit S): a --mode rpc process defaults to storing its sessions "
         "under a private <tmp>/.tau-<uid>/sessions, NOT the user's "
@@ -2833,10 +2759,10 @@ async def _handle_set_session_name(
     try:
         async with turn_safety_guard(session):
             require_durable_session(session, verb="set_session_name")
-            session.set_session_name(name)
+            await session.set_session_name(name)
     except ValueError as exc:
         raise RPCError(INVALID_PARAMS, str(exc), data={"name": name}) from exc
-    return {"name": name, "cursor": session.session_log.cursor}
+    return {"name": name, "cursor": session.cursor.leaf}
 
 
 @command(
@@ -3291,10 +3217,7 @@ COMPLETE_MESSAGE_ID_RESULT_SCHEMA: dict[str, Any] = result_schema_for("complete_
 async def _handle_complete_message_id(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    from tau_agent_core.conversation_tree import ConversationTree
-
-    log = handler.session.session_log
-    tree = ConversationTree(log.entries(), log.cursor)
+    tree = handler.session.cursor.tree()
     try:
         found = tree.complete_message_id(
             scope=params.get("scope", "in_session"),
@@ -3361,10 +3284,7 @@ GET_TREE_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_tree")
 async def _handle_get_tree(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    from tau_agent_core.conversation_tree import ConversationTree
-
-    log = handler.session.session_log
-    tree = ConversationTree(log.entries(), log.cursor)
+    tree = handler.session.cursor.tree()
     nodes = [
         {
             "entry_id": node.entry_id,
@@ -3384,7 +3304,7 @@ async def _handle_get_tree(
         }
         for node in tree.browse()
     ]
-    return {"nodes": nodes, "cursor": log.cursor, "count": len(nodes)}
+    return {"nodes": nodes, "cursor": handler.session.cursor.leaf, "count": len(nodes)}
 
 
 ### end tier-c:get_tree
@@ -3433,10 +3353,7 @@ GET_ENTRY_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_entry")
 async def _handle_get_entry(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    from tau_agent_core.conversation_tree import ConversationTree
-
-    log = handler.session.session_log
-    tree = ConversationTree(log.entries(), log.cursor)
+    tree = handler.session.cursor.tree()
     entry_id = params["entry_id"]
     try:
         entry = tree.entry(entry_id)
@@ -3583,7 +3500,7 @@ async def _handle_answer_request(
     return {
         "handled": result.handled,
         "output": result.output,
-        "cursor": handler.session.session_log.cursor,
+        "cursor": handler.session.cursor.leaf,
     }
 
 
@@ -3677,42 +3594,32 @@ async def _handle_get_extension_state(
 
 @asynccontextmanager
 async def tree_mutation_guard(
-    handler: "RPCHandler", *, verb: str, appenders: tuple[str, ...]
+    handler: "RPCHandler", *, verb: str, appends: bool
 ) -> AsyncIterator["AgentSession"]:
-    """The four things every tree-mutating verb does around its one core call.
+    """What every tree verb does around its one ``tree_ops`` call.
 
-    D-1 (`turn_safety_guard`): a tree mutation rewrites what the next turn will be
-    sent, so it must not land while a turn is reading that same path.
+    D-1 (`turn_safety_guard`): a tree edit rewrites what the next turn is sent,
+    so it must not land while a turn reads that path. D-7 rule 1
+    (`require_durable_session`), when the verb ``appends``: an edit lost with
+    the process re-shapes a conversation the host can never load again.
+    `navigate` writes nothing, so it skips that check.
 
-    D-7 rule 1 (`require_durable_session`): all five of these APPEND, so all five
-    refuse an unpersisted session before touching anything. A tree edit that is
-    lost with the process is worse than the same promise `set_model` refuses to
-    make — the host has re-shaped a conversation it can never load again.
-
-    `require_log_appender` for each name the operation will call, checked BEFORE
-    the first append rather than discovered halfway through: `commit_branch`
-    writes through three appenders, and finding out about the third after the
-    first two have landed would leave a half-built branch.
-
-    A `ValueError` out of `tau_agent_core.tree_ops` becomes `INVALID_PARAMS`. Every
-    one of them is a caller error the schema cannot check syntactically — an
-    unknown id, a resume point that is not an ancestor, a selection that composes
-    no turn-complete path — and `tree_ops` checks all of them before the first
-    append, so the refusal is total and the log is byte-identical.
+    A `ValueError` out of `tau_agent_core.tree_ops` becomes `INVALID_PARAMS`:
+    each is a caller error the schema cannot check, raised before the first
+    append, so a refusal leaves the log byte-identical.
 
     Args:
         handler: The RPC handler, for its bound session.
         verb: The verb's name, for the refusal messages.
-        appenders: The `SessionLog` methods this operation will call.
+        appends: Whether the operation writes to the log.
 
     Yields:
         The bound session, with `turn_lock` held.
     """
     session = handler.session
     async with turn_safety_guard(session):
-        require_durable_session(session, verb=verb)
-        for appender in appenders:
-            require_log_appender(session, appender, verb=verb)
+        if appends:
+            require_durable_session(session, verb=verb)
         try:
             yield session
         except ValueError as exc:
@@ -3722,10 +3629,10 @@ async def tree_mutation_guard(
 _TREE_MUTATION_NOTES = (
     "D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING "
     "rather than re-shaping the path an in-flight turn is being run against. "
-    "D-7 rule 1: it APPENDS, so require_durable_session refuses an unpersisted "
-    "session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit "
-    "that dies with the process leaves a host holding a conversation it can "
-    "never load again. E5 rule 1: the completion carries the resulting `cursor`. "
+    "D-7 rule 1: a verb that APPENDS refuses an unpersisted session "
+    "(SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies "
+    "with the process leaves a host holding a conversation it can never load "
+    "again. E5 rule 1: the completion carries the resulting `cursor`. "
     "Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id "
     "above all — comes back as INVALID_PARAMS, checked before the first append, "
     "so a refusal leaves the log byte-identical. WHERE the entries land and for "
@@ -3757,9 +3664,10 @@ TREE_CONTEXT_RESULT_SCHEMA: dict[str, Any] = result_schema_for("navigate")
     since="0.9.8",
     notes=(
         "tau_agent_core.tree_ops.navigate, projected. Moves the session cursor to "
-        "an entry and hands back the context that produces. Zero model calls: it "
-        "appends one `navigate` entry. A target_id that is already the cursor is a "
-        "no-op that still returns the context, so a host need not check first. "
+        "an entry and hands back the context that produces. Writes nothing, so it "
+        "works on an unpersisted session and the position does not survive the "
+        "process: a reopened session continues from its newest entry "
+        "(docs/CURSORS.md §4). "
         "Until this verb τ's differentiating feature — a session tree a caller can "
         "move around in — was reachable only from inside the Textual head "
         "(docs/VSCODE-HEAD.md §6). " + _TREE_MUTATION_NOTES
@@ -3772,9 +3680,9 @@ async def _handle_navigate(
 ) -> dict[str, Any]:
     from tau_agent_core import tree_ops
 
-    async with tree_mutation_guard(handler, verb="navigate", appenders=("append_navigate",)) as s:
-        messages = await tree_ops.navigate(s.session_log, params["target_id"])
-        return {"messages": messages, "cursor": s.session_log.cursor}
+    async with tree_mutation_guard(handler, verb="navigate", appends=False) as s:
+        messages = tree_ops.navigate(s.cursor, params["target_id"])
+        return {"messages": messages, "cursor": s.cursor.leaf}
 
 
 ### end tier-c:navigate
@@ -3825,13 +3733,13 @@ async def _handle_summarize_and_navigate(
     async with tree_mutation_guard(
         handler,
         verb="summarize_and_navigate",
-        appenders=("append_navigate", "append_branch_summary"),
+        appends=True,
     ) as s:
         messages = await s.summarize_and_navigate(
             params["target_id"],
             custom_instructions=params.get("custom_instructions"),
         )
-        return {"messages": messages, "cursor": s.session_log.cursor}
+        return {"messages": messages, "cursor": s.cursor.leaf}
 
 
 ### end tier-c:summarize_and_navigate
@@ -3884,13 +3792,9 @@ async def _handle_elide_span(
 ) -> dict[str, Any]:
     from tau_agent_core import tree_ops
 
-    async with tree_mutation_guard(
-        handler, verb="elide_span", appenders=("append_navigate", "append_elide")
-    ) as s:
-        messages = await tree_ops.elide_span(
-            s.session_log, params["anchor_id"], params["first_kept_id"]
-        )
-        return {"messages": messages, "cursor": s.session_log.cursor}
+    async with tree_mutation_guard(handler, verb="elide_span", appends=True) as s:
+        messages = await tree_ops.elide_span(s.cursor, params["anchor_id"], params["first_kept_id"])
+        return {"messages": messages, "cursor": s.cursor.leaf}
 
 
 ### end tier-c:elide_span
@@ -3926,7 +3830,7 @@ COMMIT_BRANCH_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
         "tau_agent_core.tree_ops.commit_branch, projected. Builds a branch out of "
         "a set of marked entries and continues on it "
         "(docs/TREE-BROWSER-AS-EDITOR.md §6). The copies are minted with append_at, "
-        "which does NOT move the leaf, and the leaf moves onto the last minted "
+        "which does NOT move the cursor, and the cursor moves onto the last minted "
         "entry afterwards — so the commit is atomic from the cursor's point of "
         "view and a mint that fails partway leaves orphans hanging off the attach "
         "point rather than a half-moved conversation. Refuses, all INVALID_PARAMS "
@@ -3945,12 +3849,12 @@ async def _handle_commit_branch(
     async with tree_mutation_guard(
         handler,
         verb="commit_branch",
-        appenders=("append_navigate", "append_at", "append_elide"),
+        appends=True,
     ) as s:
         messages = await tree_ops.commit_branch(
-            s.session_log, params["ids"], drop_context=params["drop_context"]
+            s.cursor, params["ids"], drop_context=params["drop_context"]
         )
-        return {"messages": messages, "cursor": s.session_log.cursor}
+        return {"messages": messages, "cursor": s.cursor.leaf}
 
 
 ### end tier-c:commit_branch
@@ -3980,7 +3884,7 @@ PASTE_SUBTREE_RESULT_SCHEMA: dict[str, Any] = result_schema_for("paste_subtree")
         "carrying `copiedFrom`, minted with append_at, parents before children, "
         "with a source-to-new id map re-hanging each child under its copied parent "
         "— so the copy keeps the original's shape including its forks. The one "
-        "tree mutation whose result is NOT a message list: the leaf never moves, "
+        "tree mutation whose result is NOT a message list: the cursor never moves, "
         "so what the model sees changes only when someone navigates onto the copy. "
         "Refuses: an unknown id, a source whose kind cannot be copied, a target "
         "inside the source's own subtree, or a copied tool result whose call is on "
@@ -3994,11 +3898,9 @@ async def _handle_paste_subtree(
 ) -> dict[str, Any]:
     from tau_agent_core import tree_ops
 
-    async with tree_mutation_guard(handler, verb="paste_subtree", appenders=("append_at",)) as s:
-        minted = await tree_ops.paste_subtree(
-            s.session_log, params["source_id"], params["target_id"]
-        )
-        return {"minted_ids": minted, "cursor": s.session_log.cursor}
+    async with tree_mutation_guard(handler, verb="paste_subtree", appends=True) as s:
+        minted = await tree_ops.paste_subtree(s.cursor, params["source_id"], params["target_id"])
+        return {"minted_ids": minted, "cursor": s.cursor.leaf}
 
 
 ### end tier-c:paste_subtree
@@ -4034,7 +3936,7 @@ def _extension_action_result(
         "path": outcome.path,
         "ok": outcome.ok,
         "message": outcome.message,
-        "cursor": session.session_log.cursor,
+        "cursor": session.cursor.leaf,
     }
 
 

@@ -166,13 +166,15 @@ NOT_EXPOSED: dict[str, str] = {
     ),
     # -- (b) not wire-shaped: Python-callable observer / construction APIs --
     "session_log": (
-        "The settable persistence-facade seam (H1's rebind point for "
-        "new_session/fork, phase 3, AgentSessionRuntime) — no verb hands a "
-        "host the SessionLog itself, nor lets one set it. Verbs read DERIVED "
-        "values through it: get_state and the Tier B mutators take `.cursor` "
-        "(E5), and get_session_stats (D-3) scans `.entries()` for the last "
-        "compaction. Neither makes this property wire-reachable in the sense "
-        "EXPOSED means — a host can never name it."
+        "The settable storage seam (H1's rebind point for new_session/fork, "
+        "AgentSessionRuntime) — no verb hands a host the SessionLog itself, nor "
+        "lets one set it; get_session_stats (D-3) reads `.entries()` through it."
+    ),
+    "cursor": (
+        "The Cursor object this session extends (docs/CURSORS.md). Its leaf is "
+        "on the wire as every mutator's `cursor` field (E5) and get_state's; "
+        "the object itself is a runtime handle with no wire form until cursors "
+        "are addressable by id, which is the web head's record."
     ),
     "set_model_resolver": (
         "A construction-time binding a frontend performs once (closure over "

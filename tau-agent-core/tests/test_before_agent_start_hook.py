@@ -197,9 +197,7 @@ def _system_texts(messages: list[Any]) -> list[str]:
 async def _session_with_stored_prompt(stored: str, fresh: str) -> AgentSession:
     """A session whose tree already opens with a system message, as the file store's does."""
     session = _make_session(system_prompt=fresh)
-    await session._session_log.append_message(
-        {"role": "system", "content": stored, "timestamp": _TS}
-    )
+    await session.cursor.append_message({"role": "system", "content": stored, "timestamp": _TS})
     return session
 
 

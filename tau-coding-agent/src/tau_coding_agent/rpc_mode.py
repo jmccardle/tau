@@ -146,6 +146,7 @@ import os
 import sys
 from typing import TYPE_CHECKING, Any
 
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.rpc import RPCHandler, transport
 from tau_coding_agent.headless import (
     CLIError,
@@ -252,9 +253,9 @@ async def run_rpc(args: "CLIArgs", config: dict[str, Any]) -> int:
                 session_catalog.create_ephemeral if args.no_session else session_catalog.create
             )
             initial_session = create_session(cwd, model_name, backend_name)
-            bind_session_log = getattr(backend, "bind_session_log", None)
-            if bind_session_log is not None:
-                bind_session_log(initial_session)
+            bind_cursor = getattr(backend, "bind_cursor", None)
+            if bind_cursor is not None:
+                bind_cursor(Cursor.newest(initial_session))
             runtime = AgentSessionRuntime(
                 agent_session, session_catalog, cwd, model_name, backend_name, store_name
             )

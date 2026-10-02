@@ -34,7 +34,6 @@ The four states in docs/EXTENSION-LOCKS.md §3 are all reachable from here:
 from typing import Any
 
 from tau_agent_core.extension_locks import RESPONSE_ENTRY_TYPE, request_at_cursor
-from tau_agent_core.session_log import resolve_cursor
 
 
 def _answers(ctx: Any, request_id: str) -> dict[str, Any]:
@@ -102,7 +101,7 @@ def register(api: Any) -> None:
         from the message before it" escape lands on.
         """
         entries = ctx.entries()
-        request = request_at_cursor(entries, resolve_cursor(entries))
+        request = request_at_cursor(entries, ctx.cursor.leaf)
         if request is None:
             return "Nothing to clear at the cursor."
         parent = next(e["parentId"] for e in entries if str(e["id"]) == request.entry_id)
@@ -111,7 +110,7 @@ def register(api: Any) -> None:
 
     async def status(args: str, ctx: Any) -> str:
         entries = ctx.entries()
-        request = request_at_cursor(entries, resolve_cursor(entries))
+        request = request_at_cursor(entries, ctx.cursor.leaf)
         if request is None:
             return "Nothing outstanding at the cursor."
         return f"{request.label}: {request.sentence}"

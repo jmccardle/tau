@@ -12,11 +12,10 @@ Sec2.3 (entry ids, seq ordering, the cursor), Sec2.4 (foreign documents), Sec3.2
 (write path), Sec3.3 (read path), Sec3.4 (fork/compaction/deletion), Sec8
 (decisions: hard-fail on outage, numeric entry ids, sync writes).
 
-Append algebra (parentId chaining off the leaf, navigate moving the leaf,
-branch_summary re-parenting to the branch point, Fail-Early raises on unknown
-ids) mirrors ``tau_agent_core.session_log.InMemorySessionLog`` and
-``tau_coding_agent.session_store.Session`` exactly -- the ``SessionLogContractTests``
-suite in ``tau-agent-core`` pins this. The one thing genuinely new here is the
+The store keeps no leaf; a ``Cursor`` decides where each entry goes
+(docs/CURSORS.md). ``append_at`` matches ``InMemorySessionLog`` and the file
+``Session`` exactly, which the ``SessionLogContractTests`` suite in
+``tau-agent-core`` pins. The one thing genuinely new here is the
 ``parentId is None`` <-> "parented under the conversation ROOT DOCUMENT" mapping
 (Sec2.3): the tau entry-tree is a *forest* of root-level entries, but the JMFTS
 document tree has exactly one root (the header) -- every root-level tau entry is
@@ -29,18 +28,17 @@ import asyncio
 import copy
 import os
 import socket
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from tau_agent_core.session_log import (
+    default_leaf,
     event_iso,
     normalize_loaded_entries,
-    resolve_cursor,
 )
 from tau_jmfts.client import JmftsClient
-
-_UNSET: Any = object()
 
 SESSION_VERSION = 1
 
@@ -49,7 +47,7 @@ _HEADER_REQUIRED = {"type", "version", "id", "timestamp", "cwd", "hostname", "pa
 _MESSAGE_KINDS = ("message", "customMessage")
 _SUMMARY_KINDS = ("compaction", "branch_summary")
 
-# The synthesized kind for a foreign (non-tau:*) document in the subtree (Sec2.4).
+# Namespaced, so session_log.default_leaf never opens a cursor on it (Sec2.4).
 _FOREIGN_KIND = "jmfts:document"
 
 
@@ -240,10 +238,8 @@ class JmftsSessionLog:
         self._header = header
         self._entries = entries
         self._ids: set[str] = {e["id"] for e in entries}
-        self._leaf_id: str | None = resolve_cursor(
-            [e for e in entries if e.get("type") != _FOREIGN_KIND]
-        )
         self._next_seq = next_seq
+        self._append_lock = threading.Lock()
 
     # --- identity / header --------------------------------------------------
 
@@ -271,10 +267,6 @@ class JmftsSessionLog:
         return self._client
 
     @property
-    def cursor(self) -> str | None:
-        return self._leaf_id
-
-    @property
     def header(self) -> dict[str, Any]:
         return dict(self._header)
 
@@ -282,14 +274,18 @@ class JmftsSessionLog:
 
     @property
     def messages(self) -> list[dict[str, Any]]:
-        """Raw linear fold: every ``message`` entry in load order."""
-        return [e["message"] for e in self._entries if e.get("type") == "message"]
+        """Unspliced ``message`` entries on the path to the default leaf, root first."""
+        from tau_agent_core.conversation_tree import ConversationTree
+
+        path = ConversationTree(self._entries, default_leaf(self._entries)).path()
+        return [e["message"] for e in path if e.get("type") == "message"]
 
     @property
     def context(self) -> list[dict[str, Any]]:
+        """The folded context at the default leaf."""
         from tau_agent_core.conversation_tree import ConversationTree
 
-        return ConversationTree(self.entries(), self.cursor).context_for()
+        return ConversationTree(self.entries(), default_leaf(self._entries)).context_for()
 
     @property
     def model(self) -> str:
@@ -376,7 +372,7 @@ class JmftsSessionLog:
         single-writer rule), and run the seq/doc-id integrity cross-check (Sec2.3):
         if sorting by doc id disagrees with the writer's own ``seq`` counter, a
         second writer touched the tree -- fail loudly rather than silently
-        resolving the wrong cursor.
+        loading a misordered tree.
         """
         root_doc_id = int(ref)
         subtree = client.get_subtree(root_doc_id, max_depth=None)
@@ -413,7 +409,7 @@ class JmftsSessionLog:
             else:
                 entries.append(
                     {
-                        "type": "jmfts:document",
+                        "type": _FOREIGN_KIND,
                         "id": str(doc_id),
                         "parentId": parent_id,
                         "timestamp": doc.get("created_at"),
@@ -443,6 +439,7 @@ class JmftsSessionLog:
         cwd: str,
         *,
         host_parent_id: int | None = None,
+        at: str | None = None,
     ) -> "JmftsSessionLog":
         """Fork ``source`` into a new root + a bulk copy of its entries, preserving
         topology (Sec3.4) -- semantics identical to the file ``Session.fork`` full
@@ -453,6 +450,8 @@ class JmftsSessionLog:
         Foreign documents in the source subtree are copied verbatim (usetype,
         title, content, structured_content unchanged) so the fork's tree looks
         exactly like the source's, foreign nodes included. ``source`` is untouched.
+        With ``at``, only the documents on the path to that entry are copied, so the
+        fork continues from it (docs/CURSORS.md §4).
 
         **Cross-references are remapped, not just ``parent_id``.** An entry id IS a
         JMFTS doc id here, so the fork's fresh documents get fresh ids -- and three
@@ -487,6 +486,13 @@ class JmftsSessionLog:
 
         subtree = client.get_subtree(source._root_doc_id, max_depth=None)
         descendants = sorted(subtree["descendants"], key=lambda d: d["id"])
+        if at is not None:
+            from tau_agent_core.conversation_tree import ConversationTree
+
+            if at not in source._ids:
+                raise ValueError(f"fork point {at!r} not found")
+            on_path = {int(e["id"]) for e in ConversationTree(source._entries, at).path()}
+            descendants = [d for d in descendants if d["id"] in on_path]
         old_to_new: dict[int, int] = {}
         for doc in descendants:
             old_parent = doc["parent_id"]
@@ -511,128 +517,17 @@ class JmftsSessionLog:
     def _init_state(
         self, model: str, backend: str, system_prompt: str | None, name: str | None
     ) -> None:
-        """Mirrors ``Session._init_state``: the entries every new session carries.
+        """Write the opening chain ``Session._init_state`` writes, synchronously.
 
-        Through :meth:`_append_now`, never the ``async`` Protocol appenders —
-        the same reason ``Session._init_state`` does: this runs inside a
-        synchronous ``create``, where there may be no running loop."""
-        self.append_model_change(model, backend)
+        ``create`` is synchronous and may run before a head has an event loop.
+        """
+        parent = self._append_now(None, "model_change", {"model": model, "backend": backend})
         if name is not None:
-            self.append_session_info(name)
+            parent = self._append_now(parent, "session_info", {"name": name})
         if system_prompt:
-            self._append_now("message", message={"role": "system", "content": system_prompt})
-
-    # --- append API -------------------------------------------------------
-
-    async def append_message(self, message: dict[str, Any]) -> str:
-        return await self._append_off_loop("message", message=message)
-
-    async def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
-        return await self._append_off_loop("customMessage", customType=custom_type, message=message)
-
-    async def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
-        return await self._append_off_loop("customEntry", customType=custom_type, data=data)
-
-    def append_model_change(self, model: str, backend: str) -> str:
-        return self._append_now("model_change", model=model, backend=backend)
-
-    def append_session_info(self, name: str) -> str:
-        """Mirrors ``Session.append_session_info``, plus keeping the root
-        document's ``title`` projection current (Sec2.1: title is mutable via
-        session_info) -- purely cosmetic, ``structured_content.tau`` stays
-        authoritative regardless."""
-        entry_id = self._append_now("session_info", name=name)
-        self._client.update_document(self._root_doc_id, title=name, re_embed=False)
-        return entry_id
-
-    async def append_compaction(
-        self,
-        summary: str,
-        first_kept_id: str,
-        tokens_before: int,
-        *,
-        summarizer_model_id: str,
-        summary_usage: dict[str, int],
-        covered_entries: int,
-        covered_tokens: int,
-        agent_spec_id: str | None,
-    ) -> str:
-        """Fail-Early on an unknown splice anchor -- see
-        ``InMemorySessionLog.append_compaction`` for why this is the most
-        damaging of the three unknown-id cases to skip.
-
-        The five keyword-only provenance fields (TREE-BROWSER-AS-EDITOR.md §8,
-        widened onto the Protocol by §11.3) ride in the entry payload like every
-        other field, so they reach JMFTS through the same ``structured_content.tau``
-        projection and need no schema of their own."""
-        if first_kept_id not in self._ids:
-            raise ValueError(
-                f"compaction first_kept_id {first_kept_id!r} not found; the splice anchor "
-                "must name a real entry, or the whole kept region silently drops out of "
-                "the context fold"
+            self._append_now(
+                parent, "message", {"message": {"role": "system", "content": system_prompt}}
             )
-        return await self._append_off_loop(
-            "compaction",
-            summary=summary,
-            firstKeptId=first_kept_id,
-            tokensBefore=tokens_before,
-            summarizerModelId=summarizer_model_id,
-            summaryUsage=dict(summary_usage),
-            coveredEntries=covered_entries,
-            coveredTokens=covered_tokens,
-            agentSpecId=agent_spec_id,
-        )
-
-    async def append_elide(
-        self,
-        first_kept_id: str,
-        *,
-        covered_entries: int,
-        covered_tokens: int,
-        agent_spec_id: str | None,
-    ) -> str:
-        """Fail-Early on an unknown splice anchor, mirroring
-        ``append_compaction`` -- the summary-less generalization (W3,
-        NODE-ADDRESSABLE-AGENTS.md) drops ``summary``/``tokensBefore`` but keeps
-        the same anchor semantics ``ConversationTree`` folds on.
-
-        Three provenance fields, not five (§8.2, §8.3): no summary means no
-        summarizer model and no summary cost to record."""
-        if first_kept_id not in self._ids:
-            raise ValueError(
-                f"elide first_kept_id {first_kept_id!r} not found; the splice anchor "
-                "must name a real entry, or the whole kept region silently drops out of "
-                "the context fold"
-            )
-        return await self._append_off_loop(
-            "elide",
-            firstKeptId=first_kept_id,
-            coveredEntries=covered_entries,
-            coveredTokens=covered_tokens,
-            agentSpecId=agent_spec_id,
-        )
-
-    async def append_navigate(self, target_id: str | None) -> str:
-        """Move the leaf to ``target_id`` (``None`` = before the root document).
-        The next append after ``navigate(None)`` parents directly under the root
-        document -- a second, sibling root-level τ entry (Sec2.3's crux; the
-        contract's ``test_navigate_to_none_starts_a_new_root_level_branch``)."""
-        if target_id is not None and target_id not in self._ids:
-            raise ValueError(f"navigate target {target_id!r} not found")
-        entry_id = await self._append_off_loop("navigate", targetId=target_id)
-        self._leaf_id = target_id
-        return entry_id
-
-    async def append_branch_summary(self, summary: str, from_id: str | None) -> str:
-        """Re-parent to the branch point BEFORE appending, mirroring
-        ``Session.append_branch_summary`` / ``InMemorySessionLog.append_branch_summary``:
-        the summary's ``parentId`` (and, here, its JMFTS ``parent_id``) is the
-        branch point, so the abandoned subtree becomes a sibling and drops out of
-        the ``context_for`` fold."""
-        if from_id is not None and from_id not in self._ids:
-            raise ValueError(f"branch_summary from {from_id!r} not found")
-        self._leaf_id = from_id  # branch point, not the current leaf
-        return await self._append_off_loop("branch_summary", summary=summary, fromId=from_id)
 
     async def append_at(
         self,
@@ -640,73 +535,49 @@ class JmftsSessionLog:
         entry_type: str,
         payload: dict[str, Any],
     ) -> str:
-        """Explicit-parent append -- the C2/W14 branch primitive (see the SessionLog
-        Protocol). Does NOT move this log's leaf: a branch's writes must never move the
-        tip of the cursor that spawned it.
+        """Write one entry at ``parent_id`` (the ``SessionLog`` contract).
 
-        Nothing marks the entry as a branch's. The subtree it forms IS the record
-        (docs/LANE-REMOVAL.md §4), and on this store that subtree is already searchable
-        as documents parented under the branch root.
+        Nothing marks whose entry it is; the subtree is the record, and on this
+        store it is searchable as documents under its parent (docs/LANE-REMOVAL.md
+        §4). The POST runs on a worker thread, because it is synchronous HTTP and
+        froze a head's screen on its own loop (docs/BLOCKING-PERSISTENCE.md §1).
         """
         if parent_id is not None and parent_id not in self._ids:
             raise ValueError(f"append parent {parent_id!r} not found")
-        return await self._append_off_loop(entry_type, _parent=parent_id, **payload)
+        return await asyncio.to_thread(self._append_now, parent_id, entry_type, payload)
 
     # --- internals -------------------------------------------------------
 
-    async def _append_off_loop(self, kind: str, **payload: Any) -> str:
-        """:meth:`_append_now` on a worker thread — the Protocol's ``async`` kept.
+    def _append_now(self, parent_id: str | None, kind: str, payload: dict[str, Any]) -> str:
+        """POST the entry document, then adopt the returned id into the mirror.
 
-        This store's append is a synchronous HTTP POST, so on the head's own event
-        loop it froze the screen for the length of a turn's persistence
-        (docs/BLOCKING-PERSISTENCE.md §1). The thread hop is safe HERE and was
-        rejected as a change to the Protocol: ``httpx.Client`` is thread-safe, the
-        ``SessionLog`` precondition gives a conversation exactly one writer, and
-        each caller awaits this before issuing the next append — so the mirror
-        state ``_append_now`` mutates is only ever touched by one thread at a time.
-        None of those three hold for a foreign implementor, which is why the
-        obligation is this store's and not the contract's.
+        ``parent_id`` ``None`` (root-level) becomes the root document's id. Held
+        under ``_append_lock`` from the seq draw to the mirror update, so concurrent
+        cursors cannot draw seqs in one order and get doc ids in another: ``load``
+        raises on that disagreement (docs/CURSORS.md §3). A ``session_info`` also
+        retitles the root document; ``structured_content.tau`` stays authoritative.
         """
-        return await asyncio.to_thread(self._append_now, kind, **payload)
-
-    def _append_now(self, kind: str, _parent: str | None = _UNSET, **payload: Any) -> str:
-        """POST the entry document first, then adopt the returned id (Sec2.3) and
-        advance the in-memory mirror. ``parent_leaf`` -> ``parent_id`` is exactly
-        the crux mapping: ``None`` (root-level) becomes the ROOT DOCUMENT's id.
-
-        ``_parent`` overrides the leaf (the ``append_at`` / branch path) and, when
-        given, this append does NOT advance ``self._leaf_id``. ``_UNSET`` rather than
-        ``None`` as the sentinel because ``None`` is a MEANINGFUL parent here -- it is
-        "root-level", the ``navigate(None)`` case -- so it cannot double as "not
-        supplied" without silently rewriting a root-level branch append into a
-        chain-off-the-leaf one.
-        """
-        explicit_parent = _parent is not _UNSET
-        parent_leaf = self._leaf_id if not explicit_parent else _parent
-        parent_doc_id = self._root_doc_id if parent_leaf is None else int(parent_leaf)
-
+        parent_doc_id = self._root_doc_id if parent_id is None else int(parent_id)
         tau_payload: dict[str, Any] = {
             "type": kind,
             "timestamp": event_iso(payload, _now_iso),
             **payload,
         }
-        seq = self._next_seq
-        self._next_seq += 1
-
-        doc = self._client.create_document(
-            title=_title_for(kind, payload, seq),
-            content=_content_for(kind, payload),
-            parent_id=parent_doc_id,
-            usetype=f"tau:{kind}",
-            structured_content={"tau": tau_payload, "seq": seq},
-            auto_embed=False,
-            sequential=True,
-        )
-
-        entry_id = str(doc["id"])
-        entry: dict[str, Any] = {**tau_payload, "id": entry_id, "parentId": parent_leaf}
-        self._entries.append(entry)
-        self._ids.add(entry_id)
-        if not explicit_parent:
-            self._leaf_id = entry_id  # explicit-parent appends leave the leaf alone
+        with self._append_lock:
+            seq = self._next_seq
+            self._next_seq += 1
+            doc = self._client.create_document(
+                title=_title_for(kind, payload, seq),
+                content=_content_for(kind, payload),
+                parent_id=parent_doc_id,
+                usetype=f"tau:{kind}",
+                structured_content={"tau": tau_payload, "seq": seq},
+                auto_embed=False,
+                sequential=True,
+            )
+            entry_id = str(doc["id"])
+            self._entries.append({**tau_payload, "id": entry_id, "parentId": parent_id})
+            self._ids.add(entry_id)
+        if kind == "session_info":
+            self._client.update_document(self._root_doc_id, title=payload["name"], re_embed=False)
         return entry_id

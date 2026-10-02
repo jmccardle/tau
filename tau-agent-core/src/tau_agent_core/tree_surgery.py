@@ -3,8 +3,8 @@
 ``ConversationTree`` reads the session tree; this module decides what a *new*
 branch would look like before anything is written. It is side-effect-free and holds
 no ``SessionLog``: every function takes a ``ConversationTree`` and returns either a
-plan or the reason there is not one. The durable half — ``append_at``,
-``append_navigate``, ``append_elide`` — is ``tree_ops.commit_branch`` /
+plan or the reason there is not one. The durable half — ``append_at``, a cursor
+move, ``append_elide`` — is ``tree_ops.commit_branch`` /
 ``tree_ops.paste_subtree``, for the same reason the elide's is: the modal
 accumulates an intent, a capability performs it (TREE-BROWSER-AS-EDITOR.md §11.1).
 

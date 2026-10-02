@@ -1,10 +1,8 @@
 """§8.2/§8.3 provenance on the elide the TUI creates (TREE-BROWSER-AS-EDITOR.md).
 
-``TauBackend.elide_span`` is the only non-test caller of ``append_elide``, and until
-§8 it recorded nothing but ``firstKeptId`` — less than a compaction, which at least
-carried ``tokensBefore``. It had the span in hand the whole time: ``hidden`` is
-computed a few lines earlier for the "this elide would hide nothing" refusal and was
-then discarded, which is §8.1's pattern verbatim.
+``TauBackend.elide_span`` writes the elide at the bound cursor. It records the span
+it folds (``coveredEntries``/``coveredTokens``) and the frame in force, not only
+``firstKeptId``.
 
 Two things are pinned here that the contract suite cannot pin, because they are
 properties of the CALL SITE rather than of a store:
@@ -25,14 +23,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_coding_agent.backends import TauBackend
 
 
-def _backend() -> TauBackend:
-    """A real TauBackend — ``elide_span`` makes no model call, so no network."""
-    return TauBackend(
+def _backend(cursor: Cursor) -> TauBackend:
+    """A real TauBackend bound to ``cursor`` — ``elide_span`` makes no model call."""
+    backend = TauBackend(
         {
             "model": "gpt-4o",
             "backend": "openai",
@@ -41,28 +39,34 @@ def _backend() -> TauBackend:
             "tools": [],
         }
     )
+    backend.bind_cursor(cursor)
+    return backend
+
+
+def _cursor() -> Cursor:
+    return Cursor.newest(InMemorySessionLog())
 
 
 def _um(text: str) -> dict[str, Any]:
     return {"role": "user", "content": [{"type": "text", "text": text}]}
 
 
-def _anchor_of(log: InMemorySessionLog) -> dict[str, Any]:
-    return next(e for e in log.entries() if e["type"] == "elide")
+def _anchor_of(cursor: Cursor) -> dict[str, Any]:
+    return next(e for e in cursor.entries() if e["type"] == "elide")
 
 
 async def test_elide_records_the_span_the_fold_actually_loses() -> None:
     """``coveredEntries`` is checkable against the tree; ``coveredTokens`` is the
     figure §8.2 names as the one nothing can recompute afterwards, so the only
     guard on it is that it is a positive measurement of a non-empty span."""
-    log = InMemorySessionLog()
-    ids = [await log.append_message(_um(f"turn {i}")) for i in range(5)]
+    cursor = _cursor()
+    ids = [await cursor.append_message(_um(f"turn {i}")) for i in range(5)]
 
-    before = len(ConversationTree(log.entries(), log.cursor).context_entries(ids[4]))
-    await _backend().elide_span(log, ids[4], ids[2])
-    after = len(ConversationTree(log.entries(), log.cursor).context_entries())
+    before = len(cursor.tree().context_entries(ids[4]))
+    await _backend(cursor).elide_span(ids[4], ids[2])
+    after = len(cursor.tree().context_entries())
 
-    anchor = _anchor_of(log)
+    anchor = _anchor_of(cursor)
     # `after` counts the elide node itself, which did not exist in `before`.
     assert anchor["coveredEntries"] == before - (after - 1)
     assert anchor["coveredEntries"] == 2  # turns 0 and 1
@@ -74,18 +78,18 @@ async def test_elide_records_the_frame_in_force_at_the_anchor_not_the_newest_one
     frame that governed the span it folds is the one on THAT anchor's ancestor
     chain. Recording "whatever spec the session most recently wrote" would label
     every historical fold with the current model."""
-    log = InMemorySessionLog()
-    old_spec = await log.append_custom_entry("agent_spec", {"model": {"id": "the old model"}})
-    await log.append_message(_um("turn 0"))
-    keep = await log.append_message(_um("turn 1"))
-    anchor = await log.append_message(_um("turn 2"))
+    cursor = _cursor()
+    old_spec = await cursor.append_custom_entry("agent_spec", {"model": {"id": "the old model"}})
+    await cursor.append_message(_um("turn 0"))
+    keep = await cursor.append_message(_um("turn 1"))
+    anchor = await cursor.append_message(_um("turn 2"))
 
-    await log.append_custom_entry("agent_spec", {"model": {"id": "the new model"}})
-    await log.append_message(_um("turn 3"))
+    await cursor.append_custom_entry("agent_spec", {"model": {"id": "the new model"}})
+    await cursor.append_message(_um("turn 3"))
 
-    await _backend().elide_span(log, anchor, keep)
+    await _backend(cursor).elide_span(anchor, keep)
 
-    assert _anchor_of(log)["agentSpecId"] == old_spec
+    assert _anchor_of(cursor)["agentSpecId"] == old_spec
 
 
 async def test_elide_records_no_frame_when_the_path_has_none() -> None:
@@ -93,21 +97,21 @@ async def test_elide_records_no_frame_when_the_path_has_none() -> None:
     ``AgentSession`` (or imported from pi) has no ``agent_spec`` node at all. §11.3
     keeps this distinguishable from a caller that never looked, by giving the
     parameter no default."""
-    log = InMemorySessionLog()
-    ids = [await log.append_message(_um(f"turn {i}")) for i in range(3)]
+    cursor = _cursor()
+    ids = [await cursor.append_message(_um(f"turn {i}")) for i in range(3)]
 
-    await _backend().elide_span(log, ids[2], ids[1])
+    await _backend(cursor).elide_span(ids[2], ids[1])
 
-    assert _anchor_of(log)["agentSpecId"] is None
+    assert _anchor_of(cursor)["agentSpecId"] is None
 
 
 async def test_elide_provenance_does_not_change_what_the_fold_returns() -> None:
     """§8 called the change additive on the payload. The elide still renders
     nothing and still splices exactly the same span."""
-    log = InMemorySessionLog()
-    ids = [await log.append_message(_um(f"turn {i}")) for i in range(4)]
+    cursor = _cursor()
+    ids = [await cursor.append_message(_um(f"turn {i}")) for i in range(4)]
 
-    messages = await _backend().elide_span(log, ids[3], ids[2])
+    messages = await _backend(cursor).elide_span(ids[3], ids[2])
 
     texts = [b["text"] for m in messages for b in m["content"]]
     assert texts == ["turn 2", "turn 3"]

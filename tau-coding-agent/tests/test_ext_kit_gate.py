@@ -218,13 +218,13 @@ async def test_verdict_node_persists_and_survives_reload():
     await api.send_message(gate.verdict_node(result, label="lint"))
 
     # Persisted as a customMessage node on the active path.
-    entries = session._session_log.entries()
+    entries = session.session_log.entries()
     custom = [e for e in entries if e.get("type") == "customMessage"]
     assert len(custom) == 1
     assert custom[0]["customType"] == gate.DEFAULT_VERDICT_TYPE
 
     # Reload-invariance: a fresh fold over the persisted entries still carries it.
-    reloaded = ConversationTree(entries, session._session_log.cursor)
+    reloaded = ConversationTree(entries, session.cursor.leaf)
     text = _text_blob(reloaded.context_for())
     assert "lint" in text
     assert "FAIL" in text

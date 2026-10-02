@@ -32,6 +32,7 @@ import pytest
 from tau_llm.types import Model
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.extension_types import ExtensionContext
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.submission import (
     DRIVING_SUBMISSION_DEPTH,
@@ -259,7 +260,9 @@ class TestForkInheritsDepth:
         the fork submission's depth is published, so the branch's own first
         ``prompt()`` is admitted one deeper."""
         log = InMemorySessionLog()
-        await log.append_message({"role": "user", "content": [{"type": "text", "text": "hi"}]})
+        await Cursor.newest(log).append_message(
+            {"role": "user", "content": [{"type": "text", "text": "hi"}]}
+        )
         session = AgentSession(session_log=log, model=_model(), tools=[])
 
         seen: list[int | None] = []

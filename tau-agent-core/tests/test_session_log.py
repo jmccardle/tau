@@ -1,20 +1,14 @@
-"""SessionLog wiring — the persistence facade AgentSession depends on.
+"""SessionLog — the storage seam, and the entry algebra every store agrees on.
 
-Step 1d, Decision-4 option (B): AgentSession persists through a ``SessionLog``
-(read via ``ConversationTree``), not the retired System-A ``SessionManager``.
-This suite covers the core half:
+- ``InMemorySessionLog``: ``append_at`` parenting, camelCase entry shape, deep
+  copies, and no position of its own (docs/CURSORS.md §3).
+- ``default_leaf``, ``agent_spec_in_force``, ``session_name``: the pure reads
+  every store shares.
+- The SDK default path persists a turn into that log and reads context back
+  through the session's cursor.
 
-- ``InMemorySessionLog`` — the SDK-default log: append algebra (parentId
-  chaining, cursor advance, navigate/branch_summary validation) + camelCase
-  entry shape so ``ConversationTree`` folds it identically to an on-disk Session.
-- The SDK default path (``create_agent_session()`` with no session) persists this
-  turn's messages into that log and reads context back through ``ConversationTree``.
-
-The live-path coverage (the coding-agent file ``Session`` injected as the
-SessionLog) lives in ``tau-coding-agent/tests`` — tau-agent-core must not import
-tau-coding-agent (that would be the circular import Decision 4 exists to avoid).
-
-Reference: SESSION-TREE-IMPLEMENTATION.md §2.6, §2.7, §4.2; "Decision 4" (B).
+The cursor itself is ``test_cursor.py``. The live-path coverage (the file
+``Session``) lives in ``tau-coding-agent/tests``.
 """
 
 from __future__ import annotations
@@ -25,14 +19,15 @@ import pytest
 
 from tau_llm.types import Model
 from tau_agent_core.agent_session import AgentSession
-from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.sdk import create_agent_session
 from tau_agent_core.session_log import (
     InMemorySessionLog,
     SessionLog,
     agent_spec_in_force,
+    default_leaf,
     normalize_loaded_entries,
-    open_branch,
+    session_name,
 )
 
 _PROV = {
@@ -67,65 +62,76 @@ class TestInMemorySessionLog:
     def test_fresh_log_is_empty(self):
         log = InMemorySessionLog()
         assert log.entries() == []
-        assert log.cursor is None
+        assert default_leaf(log.entries()) is None
         assert isinstance(log.id, str) and log.id
 
-    async def test_append_message_advances_cursor_and_chains_parent(self):
+    async def test_append_at_parents_where_told_and_returns_a_fresh_id(self):
         log = InMemorySessionLog()
-        id1 = await log.append_message(_um("one"))
-        id2 = await log.append_message(_um("two"))
+        id1 = await log.append_at(None, "message", {"message": _um("one")})
+        id2 = await log.append_at(id1, "message", {"message": _um("two")})
         entries = log.entries()
         assert [e["type"] for e in entries] == ["message", "message"]
-        # cursor is the tip; parentId chains root→leaf.
-        assert log.cursor == id2
         assert entries[0]["parentId"] is None
         assert entries[1]["parentId"] == id1
-        # entries() returns copies — mutating them can't corrupt the log.
+        assert id1 != id2
         entries[0]["type"] = "mutated"
-        assert log.entries()[0]["type"] == "message"
+        assert log.entries()[0]["type"] == "message", "entries() is a copy"
 
-    async def test_append_compaction_writes_camelcase_shape(self):
+    async def test_append_at_an_unknown_parent_raises(self):
         log = InMemorySessionLog()
-        first = await log.append_message(_um("keep"))
-        await log.append_compaction(summary="recap", first_kept_id=first, tokens_before=123, **_PROV)
+        with pytest.raises(ValueError, match="append parent"):
+            await log.append_at("deadbeef", "message", {"message": _um("a")})
+
+    async def test_compaction_written_through_a_cursor_is_camelcase(self):
+        log = InMemorySessionLog()
+        cursor = Cursor.newest(log)
+        first = await cursor.append_message(_um("keep"))
+        await cursor.append_compaction(
+            summary="recap", first_kept_id=first, tokens_before=123, **_PROV
+        )
         comp = log.entries()[-1]
         assert comp["type"] == "compaction"
         assert comp["summary"] == "recap"
         assert comp["firstKeptId"] == first  # camelCase, like session_store.Session
         assert comp["tokensBefore"] == 123
 
-    async def test_append_navigate_moves_leaf_to_target(self):
-        log = InMemorySessionLog()
-        a = await log.append_message(_um("a"))
-        await log.append_message(_um("b"))
-        nav_id = await log.append_navigate(a)
-        assert log.cursor == a
-        assert log.entries()[-1]["id"] == nav_id
-        assert log.entries()[-1]["targetId"] == a
-
-    async def test_append_navigate_none_targets_pre_root(self):
-        log = InMemorySessionLog()
-        await log.append_message(_um("a"))
-        await log.append_navigate(None)
-        assert log.cursor is None
-
-    async def test_append_navigate_unknown_target_raises(self):
-        log = InMemorySessionLog()
-        await log.append_message(_um("a"))
-        with pytest.raises(ValueError, match="navigate target"):
-            await log.append_navigate("deadbeef")
-
-    async def test_append_branch_summary_validates_from_id(self):
-        log = InMemorySessionLog()
-        with pytest.raises(ValueError, match="branch_summary from"):
-            await log.append_branch_summary("s", "nope")
-        a = await log.append_message(_um("a"))
-        bs = await log.append_branch_summary("s", a)
-        assert log.entries()[-1]["id"] == bs
-        assert log.entries()[-1]["fromId"] == a
-
     def test_satisfies_sessionlog_protocol(self):
         assert isinstance(InMemorySessionLog(), SessionLog)
+
+
+class TestDefaultLeaf:
+    """Where a reopened tree continues (docs/CURSORS.md §4)."""
+
+    async def test_it_is_the_newest_entry(self):
+        log = InMemorySessionLog()
+        a = await log.append_at(None, "message", {"message": _um("a")})
+        b = await log.append_at(a, "message", {"message": _um("b")})
+        assert default_leaf(log.entries()) == b
+
+    async def test_a_legacy_navigate_is_skipped(self):
+        log = InMemorySessionLog()
+        a = await log.append_at(None, "message", {"message": _um("a")})
+        b = await log.append_at(a, "message", {"message": _um("b")})
+        await log.append_at(b, "navigate", {"targetId": a})
+        assert default_leaf(log.entries()) == b
+
+    def test_a_log_of_only_navigates_has_none(self):
+        assert default_leaf([{"type": "navigate", "id": "n1", "targetId": None}]) is None
+
+
+class TestSessionName:
+    async def test_the_newest_session_info_in_append_order_names_the_session(self):
+        log = InMemorySessionLog()
+        cursor = Cursor.newest(log)
+        await cursor.append("session_info", name="first")
+        fork = await cursor.append_message(_um("shared"))
+        await cursor.append("session_info", name="second")
+        cursor.move(fork)
+        await cursor.append_message(_um("on another branch"))
+        assert session_name(log.entries()) == "second", "a name belongs to the session"
+
+    def test_an_unnamed_session_has_none(self):
+        assert session_name([]) is None
 
 
 class TestAgentSpecInForce:
@@ -133,10 +139,11 @@ class TestAgentSpecInForce:
 
     async def test_it_finds_the_nearest_agent_spec_ancestor(self):
         log = InMemorySessionLog()
-        await log.append_custom_entry("agent_spec", {"model": {"id": "first"}})
-        await log.append_message(_um("under the first spec"))
-        second = await log.append_custom_entry("agent_spec", {"model": {"id": "second"}})
-        leaf = await log.append_message(_um("under the second spec"))
+        cursor = Cursor.newest(log)
+        await cursor.append_custom_entry("agent_spec", {"model": {"id": "first"}})
+        await cursor.append_message(_um("under the first spec"))
+        second = await cursor.append_custom_entry("agent_spec", {"model": {"id": "second"}})
+        leaf = await cursor.append_message(_um("under the second spec"))
 
         assert agent_spec_in_force(log.entries(), leaf) == second
 
@@ -146,13 +153,14 @@ class TestAgentSpecInForce:
         nothing on this leaf's path — the distinction docs/LANE-REMOVAL.md §1
         removed the ``branchOf`` tag over."""
         log = InMemorySessionLog()
-        mine = await log.append_custom_entry("agent_spec", {"model": {"id": "mine"}})
-        fork_point = await log.append_message(_um("shared prefix"))
-        leaf = await log.append_message(_um("my continuation"))
+        cursor = Cursor.newest(log)
+        mine = await cursor.append_custom_entry("agent_spec", {"model": {"id": "mine"}})
+        fork_point = await cursor.append_message(_um("shared prefix"))
+        leaf = await cursor.append_message(_um("my continuation"))
 
-        await log.append_navigate(fork_point)
-        await log.append_custom_entry("agent_spec", {"model": {"id": "the other branch"}})
-        await log.append_message(_um("their continuation"))
+        cursor.move(fork_point)
+        await cursor.append_custom_entry("agent_spec", {"model": {"id": "the other branch"}})
+        await cursor.append_message(_um("their continuation"))
 
         assert agent_spec_in_force(log.entries(), leaf) == mine
 
@@ -161,85 +169,41 @@ class TestAgentSpecInForce:
         AgentSession, has no such node. §11.3's "no defaults" rule is what keeps
         this answer distinct from a caller that never looked."""
         log = InMemorySessionLog()
-        leaf = await log.append_message(_um("no frame was ever recorded"))
+        leaf = await Cursor.newest(log).append_message(_um("no frame was ever recorded"))
 
         assert agent_spec_in_force(log.entries(), leaf) is None
         assert agent_spec_in_force(log.entries(), None) is None
 
     async def test_a_non_agent_spec_custom_entry_is_not_mistaken_for_one(self):
         log = InMemorySessionLog()
-        await log.append_custom_entry("jmfts:document", {"docId": "42"})
-        leaf = await log.append_message(_um("hello"))
+        cursor = Cursor.newest(log)
+        await cursor.append_custom_entry("jmfts:document", {"docId": "42"})
+        leaf = await cursor.append_message(_um("hello"))
 
         assert agent_spec_in_force(log.entries(), leaf) is None
-
-
-class TestBranchViewRecordsAnchorProvenance:
-    """A branch adds nothing to the provenance and must subtract nothing.
-
-    ``BranchView`` is the SessionLog implementation with no storage of its own, so
-    it is the one that could plausibly forward a widened call by dropping the new
-    keywords and still look correct — its writes land in the underlying log either
-    way, just without §8's fields.
-    """
-
-    async def test_a_branchs_compaction_carries_the_full_provenance(self):
-        log = InMemorySessionLog()
-        root = await log.append_message(_um("shared"))
-        branch = open_branch(log, root, label="reviewer")
-        keep = await branch.append_message(_um("kept in the lane"))
-
-        anchor_id = await branch.append_compaction(
-            "LANE SUMMARY",
-            keep,
-            77,
-            summarizer_model_id="lane-summarizer",
-            summary_usage={"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
-            covered_entries=2,
-            covered_tokens=31,
-            agent_spec_id=None,
-        )
-
-        anchor = next(e for e in log.entries() if e["id"] == anchor_id)
-        assert anchor["summarizerModelId"] == "lane-summarizer"
-        assert anchor["summaryUsage"] == {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7}
-        assert anchor["coveredEntries"] == 2
-        assert anchor["coveredTokens"] == 31
-        assert anchor["agentSpecId"] is None
-
-    async def test_a_branchs_elide_carries_its_span(self):
-        log = InMemorySessionLog()
-        root = await log.append_message(_um("shared"))
-        branch = open_branch(log, root, label="reviewer")
-        keep = await branch.append_message(_um("kept in the lane"))
-
-        anchor_id = await branch.append_elide(
-            keep, covered_entries=1, covered_tokens=12, agent_spec_id=None
-        )
-
-        anchor = next(e for e in log.entries() if e["id"] == anchor_id)
-        assert anchor["coveredEntries"] == 1
-        assert anchor["coveredTokens"] == 12
 
 
 # ── Fold parity: context built via ConversationTree over the log entries ──────
 
 
 class TestConversationTreeOverLog:
-    async def test_messages_fold_matches_conversation_tree(self):
+    async def test_messages_fold_matches_the_cursor_context(self):
         log = InMemorySessionLog()
-        await log.append_message(_um("first"))
-        await log.append_message({"role": "assistant", "content": [{"type": "text", "text": "reply"}]})
+        cursor = Cursor.newest(log)
+        await cursor.append_message(_um("first"))
+        await cursor.append_message(
+            {"role": "assistant", "content": [{"type": "text", "text": "reply"}]}
+        )
         session = AgentSession(session_log=log, model=_model())
-        expected = ConversationTree(log.entries(), log.cursor).context_for()
-        assert session.messages == expected
+        assert session.messages == cursor.context()
         assert [m["role"] for m in session.messages] == ["user", "assistant"]
 
     async def test_compaction_splice_drops_prefix(self):
         log = InMemorySessionLog()
-        await log.append_message(_um("old"))
-        keep = await log.append_message(_um("keep me"))
-        await log.append_compaction(summary="SUM", first_kept_id=keep, tokens_before=10, **_PROV)
+        cursor = Cursor.newest(log)
+        await cursor.append_message(_um("old"))
+        keep = await cursor.append_message(_um("keep me"))
+        await cursor.append_compaction(summary="SUM", first_kept_id=keep, tokens_before=10, **_PROV)
         session = AgentSession(session_log=log, model=_model())
         texts = [m["content"][0]["text"] for m in session.messages]
         assert texts == ["[[Compaction summary: SUM]]", "keep me"]
@@ -253,7 +217,7 @@ class TestConversationTreeOverLog:
 class TestSdkDefaultPathPersistsAndReads:
     def test_default_session_log_is_in_memory(self):
         session = create_agent_session(model="gpt-4o")
-        assert isinstance(session._session_log, InMemorySessionLog)
+        assert isinstance(session.session_log, InMemorySessionLog)
 
     def test_prompt_persists_into_the_log_and_reads_back(self):
         log = InMemorySessionLog()
@@ -263,7 +227,7 @@ class TestSdkDefaultPathPersistsAndReads:
         kinds = [e["type"] for e in log.entries()]
         assert kinds[0] == "customEntry"
         assert kinds[1:] and all(k == "message" for k in kinds[1:])
-        assert session.messages == ConversationTree(log.entries(), log.cursor).context_for()
+        assert session.messages == session.cursor.context()
         roles = [m["role"] for m in session.messages]
         assert "user" in roles and "assistant" in roles
         assert session.messages[0]["content"][0]["text"] == "hello"
@@ -274,7 +238,7 @@ class TestSdkDefaultPathPersistsAndReads:
         asyncio.run(s1.prompt("only in one"))
         assert len(s1.messages) > 0
         assert s2.messages == []
-        assert s1._session_log.id != s2._session_log.id
+        assert s1.session_log.id != s2.session_log.id
 
     def test_state_session_id_is_the_log_uuid(self):
         log = InMemorySessionLog()
@@ -289,7 +253,9 @@ class TestEntryTimestampIsTheEventTime:
 
     async def test_message_timestamp_drives_the_entry(self):
         log = InMemorySessionLog()
-        await log.append_message({"role": "user", "content": "hi", "timestamp": 1_700_000_000_000})
+        await Cursor.newest(log).append_message(
+            {"role": "user", "content": "hi", "timestamp": 1_700_000_000_000}
+        )
         entry = log.entries()[-1]
         assert entry["timestamp"] == "2023-11-14T22:13:20.000Z"
 
@@ -297,17 +263,20 @@ class TestEntryTimestampIsTheEventTime:
         """The defect this fixes: four completions written in one pass used to
         share a millisecond, so nothing downstream could order or time them."""
         log = InMemorySessionLog()
+        cursor = Cursor.newest(log)
         stamps = [1_700_000_000_000, 1_700_000_004_000, 1_700_000_009_000]
         for stamp in stamps:
-            await log.append_message({"role": "assistant", "content": [], "timestamp": stamp})
+            await cursor.append_message({"role": "assistant", "content": [], "timestamp": stamp})
         written = [e["timestamp"] for e in log.entries()]
         assert len(set(written)) == 3
         assert written == sorted(written)
 
     async def test_an_entry_with_no_event_clock_takes_the_write_time(self):
-        """A navigate has no event of its own; so does a message carrying None."""
+        """A compaction has no event of its own; so does a message carrying None."""
         log = InMemorySessionLog()
-        await log.append_message({"role": "assistant", "content": [], "timestamp": None})
+        await Cursor.newest(log).append_message(
+            {"role": "assistant", "content": [], "timestamp": None}
+        )
         assert log.entries()[-1]["timestamp"].endswith("Z")
 
 
@@ -319,7 +288,9 @@ class TestNormalizeLoadedEntries:
         assert normalize_loaded_entries(entries)[0]["message"]["timestamp"] is None
 
     def test_real_timestamps_are_untouched(self):
-        entries = [{"type": "message", "message": {"role": "assistant", "timestamp": 1699999999999}}]
+        entries = [
+            {"type": "message", "message": {"role": "assistant", "timestamp": 1699999999999}}
+        ]
         assert normalize_loaded_entries(entries)[0]["message"]["timestamp"] == 1699999999999
 
     def test_a_user_zero_is_left_alone(self):
@@ -331,3 +302,12 @@ class TestNormalizeLoadedEntries:
     def test_a_non_message_entry_is_left_alone(self):
         entries = [{"type": "navigate", "timestamp": "2026-01-01T00:00:00.000Z"}]
         assert normalize_loaded_entries(entries)[0]["timestamp"] == "2026-01-01T00:00:00.000Z"
+
+
+def test_default_leaf_skips_a_document_another_system_put_in_the_tree():
+    """A store may surface a foreign document (``jmfts:document``); no cursor wrote it."""
+    entries = [
+        {"type": "message", "id": "m1", "parentId": None},
+        {"type": "jmfts:document", "id": "d1", "parentId": "m1"},
+    ]
+    assert default_leaf(entries) == "m1"

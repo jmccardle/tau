@@ -18,7 +18,7 @@ pi's ``newSession``/``fork``/``switchSession`` each build a WHOLE NEW
 the other way: ``AgentSession.session_log`` is ALREADY a settable property
 (``agent_session.py`` — added for exactly this purpose) and ``messages`` is
 ALREADY derived from the log at read time, never stored
-(``ConversationTree(log.entries(), log.cursor).context_for()``). So τ's
+(``session.cursor.context()``). So τ's
 runtime does not rebuild an ``AgentSession`` at all — it resets a defined,
 NARROW slice of the EXISTING one's transient state (H3) and swaps in a new
 ``SessionLog``, leaving everything else — model, tools, extensions, the
@@ -53,11 +53,8 @@ host pools a process instead of respawning" (§4[6]).
   unrelated to switching the LIVE session mid-run; not one of the three verbs
   phase 3 asks for.
 - pi's per-operation ``SessionManager``/cwd/trust-context plumbing — NOT
-  ported. τ's ``fork`` forks the CURRENT session's active-path history as a
-  whole (``SessionCatalog.fork(source, cwd)`` has no entry-id parameter); it
-  does not support pi's node-addressable "fork at THIS message" — that stays
-  a TUI-only ``/fork`` command (unrelated to this runtime, and not one of the
-  four call sites this phase migrates).
+  ported. τ's ``fork`` copies the path to the session's cursor
+  (``SessionCatalog.fork(source, cwd, at=leaf)``).
 
 **H2 — the veto hook.** Every operation dispatches
 ``AgentSession.extension_runner``'s ``session_before_switch`` hook (an
@@ -77,9 +74,7 @@ while :attr:`AgentSession.turn_lock` is held, immediately before the new
 Item                    Reset to                                       How
 ======================  ============================================  =======
 ``session_log``         a fresh/loaded/forked ``ConversationSession``  assigned by the caller, right after this method
-``cursor``              intrinsic to the log above — a fresh/loaded    (nothing separate to touch: ``AgentSession`` has
-                        log's own ``.cursor``                          no cursor field of its own; :attr:`session_log`
-                                                                        IS where cursor lives)
+``cursor``              a new cursor at the new log's default leaf     assigning :attr:`session_log` opens it
 last-compaction anchor  intrinsic to the log above — CLEARED, not      (nothing separate to touch: the anchor is a
                         re-derived                                     property of the log's ENTRIES, found by
                                                                         ``ConversationTree``'s scan for the last
@@ -106,9 +101,8 @@ One item beyond H3's literal list is reset for a real correctness reason, not
 a stylistic extra: ``_pre_turn_leaf`` (the log-cursor-before-the-last-turn
 bookkeeping a ``rollback`` submission reads) is cleared to ``None`` alongside
 the log swap. Left unreset, it would hold an entry id from the DISCARDED log;
-a ``rollback`` submitted against the fresh session would then either append a
-dangling ``navigate`` entry pointing at an id that does not exist in the new
-log (silent corruption) or get lucky and refuse (if ``_current_turn_token``
+a ``rollback`` submitted against the fresh session would then either move the
+cursor to an id that does not exist in the new log or get lucky and refuse (if ``_current_turn_token``
 happens not to match) — neither is acceptable, and clearing it to ``None``
 makes ``rollback`` refuse HONESTLY ("no turn to roll back to") every time,
 which is the correct answer for a session that has just been reset. This is
@@ -358,8 +352,7 @@ class AgentSessionRuntime:
         return await self._apply_swap(_build, reason="new", target=None)
 
     async def fork(self) -> dict[str, Any]:
-        """Branch the CURRENT session's active-path history into a new one,
-        and move this runtime's ``AgentSession`` onto it (H1-H4).
+        """Copy the path to this session's cursor into a new session, and move onto it.
 
         The source session is untouched (``SessionCatalog.fork``'s own
         contract) — only this runtime's ``AgentSession`` moves forward onto
@@ -383,15 +376,11 @@ class AgentSessionRuntime:
             if not isinstance(current, ConversationSession):
                 raise RuntimeError(
                     "AgentSessionRuntime.fork(): the current session_log does not "
-                    f"implement ConversationSession (got {type(current).__name__}) — "
-                    "missing header/messages/context/model/backend/display_title/"
-                    "append_model_change/append_session_info. fork() needs a session "
-                    "the catalog can address; a bare SessionLog was never bound "
-                    "through this runtime's catalog (new_session/switch_session "
-                    "always produce a ConversationSession, so this means fork() was "
-                    "called before either ever ran)."
+                    f"implement ConversationSession (got {type(current).__name__}). "
+                    "fork() needs a session the catalog can address; a bare SessionLog "
+                    "was never bound through this runtime's catalog."
                 )
-            return self._catalog.fork(current, self._cwd)
+            return self._catalog.fork(current, self._cwd, at=self._session.cursor.leaf)
 
         return await self._apply_swap(_build, reason="fork", target=None)
 
@@ -474,7 +463,7 @@ class AgentSessionRuntime:
             "cancelled": False,
             "session": new_log,
             "session_id": new_log.id,
-            "cursor": new_log.cursor,
+            "cursor": session.cursor.leaf,
             "store": self._store,
         }
 

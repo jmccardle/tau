@@ -525,7 +525,7 @@ class TestSubscribeRenderWiring:
         """
         backend = _backend()
         session = backend.agent_session
-        await session.session_log.append_message(
+        await session.cursor.append_message(
             {"role": "user", "content": [{"type": "text", "text": "shared prefix"}]}
         )
         seen: list[dict] = []
@@ -537,7 +537,7 @@ class TestSubscribeRenderWiring:
 
         monkeypatch.setattr(AgentSession, "prompt", _boom)
         result = await session._extension_api.context.spawn_branch(
-            session.session_log.cursor, "explore", tools=[]
+            session.cursor.leaf, "explore", tools=[]
         )
 
         assert result.ok is False, "a failing branch is contained, not raised"
@@ -551,7 +551,7 @@ class TestSubscribeRenderWiring:
         handler never sees it. The lane still has to close."""
         backend = _backend()
         session = backend.agent_session
-        await session.session_log.append_message(
+        await session.cursor.append_message(
             {"role": "user", "content": [{"type": "text", "text": "shared prefix"}]}
         )
         seen: list[dict] = []
@@ -565,9 +565,7 @@ class TestSubscribeRenderWiring:
 
         monkeypatch.setattr(AgentSession, "prompt", _hang)
         task = asyncio.get_running_loop().create_task(
-            session._extension_api.context.spawn_branch(
-                session.session_log.cursor, "explore", tools=[]
-            )
+            session._extension_api.context.spawn_branch(session.cursor.leaf, "explore", tools=[])
         )
         await streaming.wait()
         assert len(router.open_lanes) == 1 and router.open_lanes[0].startswith("branch:")

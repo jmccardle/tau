@@ -24,7 +24,7 @@ from tau_agent_core.extension_locks import (
 from tau_agent_core.extension_types import ExtensionAPI, validate_ask_spec
 from tau_agent_core.messages import convert_to_llm
 from tau_agent_core.conversation_tree import ConversationTree
-from tau_agent_core.session_log import InMemorySessionLog, resolve_cursor
+from tau_agent_core.session_log import InMemorySessionLog, default_leaf
 from tau_agent_core.submission import Submission
 from tau_llm.types import Model
 
@@ -78,7 +78,7 @@ async def _session(log: InMemorySessionLog | None = None, extensions=(_gate,)) -
     return session
 
 
-_FILE_GATE = '''
+_FILE_GATE = """
 ASK = {
     "title": "Voice",
     "text": "Pick one before continuing.",
@@ -92,7 +92,7 @@ def register(api):
         await api.request_user_action("Pick a voice.", lock=True, ask=ASK, release="gate-release")
 
     api.on("session_start", arm)
-'''
+"""
 
 
 async def _file_gate_session(tmp_path) -> AgentSession:
@@ -110,16 +110,13 @@ async def _file_gate_session(tmp_path) -> AgentSession:
 
 
 def _reloaded_log(entries: list[dict]) -> InMemorySessionLog:
-    """An in-memory log seeded from ``entries``, cursor resolved as a load does.
+    """An in-memory log holding ``entries``, as a store's load path leaves it.
 
-    :class:`InMemorySessionLog` has no load path of its own, so this performs the
-    one every real store performs: keep the entries, and set the leaf to
-    :func:`resolve_cursor` over them.
+    A session opened on it places its cursor at :func:`default_leaf`.
     """
     log = InMemorySessionLog()
     log._entries = copy.deepcopy(entries)
     log._ids = {str(e["id"]) for e in entries}
-    log._leaf_id = resolve_cursor(entries)
     return log
 
 
@@ -146,7 +143,7 @@ async def test_the_entry_stores_the_extension_rather_than_looking_it_up() -> Non
     """§4: the case this exists for is a reload where the owner never loaded."""
     session = await _session()
     entry = next(
-        e for e in session._session_log.entries() if e.get("customType") == REQUEST_ENTRY_TYPE
+        e for e in session.session_log.entries() if e.get("customType") == REQUEST_ENTRY_TYPE
     )
     assert entry["data"]["extension"].endswith("_gate")
     assert read_request(entry).extension_name.endswith("_gate")
@@ -154,15 +151,17 @@ async def test_the_entry_stores_the_extension_rather_than_looking_it_up() -> Non
 
 def test_an_unparseable_request_does_not_lock() -> None:
     """A hand-edited log is read, not enforced against: no sentence, no lock."""
-    assert read_request({"type": "customEntry", "customType": REQUEST_ENTRY_TYPE, "id": "x"}) is None
+    assert (
+        read_request({"type": "customEntry", "customType": REQUEST_ENTRY_TYPE, "id": "x"}) is None
+    )
 
 
 async def test_the_request_is_not_model_input() -> None:
     """A ``customEntry`` is tree-as-backplane state; ``convert_to_llm`` never sees it."""
     session = await _session()
-    entries = session._session_log.entries()
-    tree = ConversationTree(entries, resolve_cursor(entries))
-    blob = str(convert_to_llm(tree.context_for(resolve_cursor(entries))))
+    entries = session.session_log.entries()
+    tree = ConversationTree(entries, default_leaf(entries))
+    blob = str(convert_to_llm(tree.context_for(default_leaf(entries))))
     assert "Pick a voice" not in blob
 
 
@@ -226,23 +225,23 @@ async def test_an_ask_without_a_lock_lets_a_prompt_through() -> None:
 
 
 async def test_a_lock_off_the_cursor_is_inert() -> None:
-    """§7: nothing walks the path, so navigating away releases and back re-locks."""
+    """§7: nothing walks the path, so moving the cursor away releases and back re-locks."""
     session = await _session()
     request_id = session.pending_request.entry_id
     parent = next(
-        e["parentId"] for e in session._session_log.entries() if str(e["id"]) == request_id
+        e["parentId"] for e in session.session_log.entries() if str(e["id"]) == request_id
     )
-    await session._session_log.append_navigate(str(parent))
+    session.cursor.move(str(parent))
     assert session.pending_request is None
 
-    await session._session_log.append_navigate(request_id)
+    session.cursor.move(request_id)
     assert session.pending_request is not None
 
 
 async def test_a_reload_still_refuses_with_no_extension_loaded() -> None:
-    """§5: loading resolves the cursor, and the cursor is the lock. Nothing else runs."""
+    """§5: a reopened tree's cursor lands on the request, and that is the lock."""
     first = await _session()
-    reloaded = await _session(log=_reloaded_log(first._session_log.entries()), extensions=[])
+    reloaded = await _session(log=_reloaded_log(first.session_log.entries()), extensions=[])
     result = await reloaded.submit(_submission("hello"))
     assert result.accepted is False
     assert result.lock.extension_name.endswith("_gate")
@@ -260,11 +259,11 @@ async def test_answering_appends_the_response_and_dispatches_the_action() -> Non
     assert result.handled is True
     assert result.output == f"released {request_id}"
     response = next(
-        e for e in session._session_log.entries() if e.get("customType") == RESPONSE_ENTRY_TYPE
+        e for e in session.session_log.entries() if e.get("customType") == RESPONSE_ENTRY_TYPE
     )
     assert response["data"] == {
         "requestId": request_id,
-        "extension": session._session_log.entries()[1]["data"]["extension"],
+        "extension": session.session_log.entries()[1]["data"]["extension"],
         "action": "Use it",
         "values": {"voice": "bass"},
     }
@@ -281,7 +280,7 @@ async def test_answering_releases_the_lock_by_moving_the_cursor() -> None:
 async def test_an_answer_the_owner_cannot_run_still_unlocks() -> None:
     """A lock whose owner is gone must not become a session nobody can continue."""
     first = await _session()
-    reloaded = await _session(log=_reloaded_log(first._session_log.entries()), extensions=[])
+    reloaded = await _session(log=_reloaded_log(first.session_log.entries()), extensions=[])
     result = await reloaded.answer_request(
         reloaded.pending_request.entry_id, "Use it", {"voice": "alto"}
     )
@@ -304,7 +303,7 @@ async def test_a_bad_answer_raises_rather_than_persisting_a_partial_one(
     with pytest.raises(ValueError, match=match):
         await session.answer_request(session.pending_request.entry_id, action, values)
     assert not [
-        e for e in session._session_log.entries() if e.get("customType") == RESPONSE_ENTRY_TYPE
+        e for e in session.session_log.entries() if e.get("customType") == RESPONSE_ENTRY_TYPE
     ]
 
 
@@ -322,14 +321,14 @@ async def test_disabling_the_owner_moves_the_cursor_back_one(tmp_path) -> None:
     assert session.pending_request is None
 
 
-async def test_navigating_back_onto_a_disabled_extensions_lock_re_locks(tmp_path) -> None:
+async def test_moving_back_onto_a_disabled_extensions_lock_re_locks(tmp_path) -> None:
     """§7, degradation 1: the tree does not care what is loaded."""
     session = await _file_gate_session(tmp_path)
     request_id = session.pending_request.entry_id
     await session.disable_extension(session.pending_request.extension)
     assert session.pending_request is None
 
-    await session._session_log.append_navigate(request_id)
+    session.cursor.move(request_id)
     assert session.pending_request is not None
 
 
@@ -338,13 +337,13 @@ async def test_disabling_an_unrelated_extension_moves_nothing(tmp_path) -> None:
     bystander = tmp_path / "bystander.py"
     bystander.write_text("def register(api):\n    pass\n")
     await session.load_extensions([str(bystander)])
-    before = session._session_log.cursor
+    before = session.cursor.leaf
 
     outcome = await session.disable_extension(str(bystander))
 
     assert outcome.ok is True
     assert "releasing" not in outcome.message
-    assert session._session_log.cursor == before
+    assert session.cursor.leaf == before
     assert session.pending_request is not None
 
 

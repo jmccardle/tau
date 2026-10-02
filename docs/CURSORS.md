@@ -1,6 +1,7 @@
 # A conversation is a tree; every writer is a cursor
 
-Position and cost record (2026-10-02), nothing built. It replaces the store-owned
+Step 1 built (2026-10-02): `Cursor`, the leafless store and `default_leaf`
+(§3, §4); the rest is a position and cost record, nothing built. It replaces the store-owned
 leaf, `BranchView`, the name "lane" and the frame-only agent config with one model:
 a **tree** of entries, and **cursors** that extend it. It is the first of three
 records. *Durable writes* (incomplete → finalize) and *the web head* (a fourth
@@ -29,9 +30,9 @@ Three defects follow from this, and each one is measured.
    A branch's `append_navigate` writes into the shared log.
 
    Run: on a log with messages `a → b`, open a branch at `a`, append one message
-   to it, then navigate the branch back to `a`. Reload resolves to `a`. That is
-   neither `b` nor the branch's newest message. The strict xfail
-   `test_a_cursor_move_is_not_a_reload_point` (`test_branch_view.py`) pins this.
+   to it, then navigate the branch back to `a`. Reload resolved to `a`, which is
+   neither `b` nor the branch's newest message. Fixed by step 1: a move writes
+   nothing, and `test_a_cursor_move_is_not_a_reload_point` (`test_cursor.py`) pins it.
 2. **A session swap discards queued messages without a trace.** The steer,
    followUp and nextTurn queues live on `AgentSession`, and so does the head's
    position. `_reset_transient_state` clears all three queues on every
@@ -123,33 +124,47 @@ cursors must not interleave a write or race an id.
 - The JMFTS store is not safe. It takes `_next_seq` without a lock inside a thread
   hop (`tau_jmfts/store.py:684-704`). If two cursors race, `load` later raises
   "second writer touched the tree", which leaves the conversation unloadable.
-- The tree's append path serializes writes for every store, so no store relies on
-  its callers taking turns.
+- **Built:** each store is safe under concurrent `append_at` on its own. The JMFTS
+  store holds a lock from the seq draw to the mirror update, and the contract
+  suite's `test_concurrent_appends_all_land_whole` holds every store to it. That
+  puts the guarantee where the hazard is, rather than in a tree-level append path
+  every caller would have to remember to go through.
 
 Two processes opening one file is out of scope. This guards against corruption
 from τ's own concurrency, not against operator error.
 
 ## 4. Where a reopened tree places its cursor
 
-The default leaf is **the newest entry on a model path**: any kind except
-`customEntry` and `navigate`.
+The default leaf is **the newest entry that is not a `navigate`**
+(`session_log.default_leaf`).
 
-**The rule in force today loses.** "Last entry of any kind" is measured in §1.1:
-the trailing entry can be another cursor's bookkeeping.
+Every other kind is written at some cursor's leaf, so it lies on that cursor's
+path, and a cursor placed on it sees that path's context. A `navigate` is the one
+kind that names a different position. The draft of this record also excluded
+`customEntry`; the build dropped that, because a `customEntry` is written at a
+leaf like anything else and excluding it bought nothing.
+
+**The old rule loses.** It followed a trailing `navigate` to its target, which
+§1.1 measured: the trailing entry can be another cursor's move.
 
 **"Newest message" loses.** A compaction, an elide or a branch summary is appended
 as a child of the leaf. A cursor placed on that message's parent would walk past the
 anchor, and the fold would lose the summary. Those kinds are content; they are not
 bookkeeping.
 
-**Existing files load unchanged.** Their `navigate` entries become inert history.
-The current rule follows a trailing navigate to its target, and the new rule ignores
-it, so a session whose last action was a tree move reopens at its newest content
-instead. Nothing is written to resume at a chosen leaf. `Tree.open_cursor(at=…)` does
-that, which closes the gap recorded in `LANE-REMOVAL.md` §7.
+**Existing files load unchanged.** Their `navigate` entries become inert history,
+so a session whose last action was a tree move reopens at its newest content
+instead. Resuming at a chosen leaf is `Cursor(log, leaf)` in process, or
+`SessionCatalog.fork(source, cwd, at=leaf)` across processes, which copies only the
+path to `leaf`. That closes the gap recorded in `LANE-REMOVAL.md` §7.
 
 **Moving a cursor writes nothing.** A cursor that is not durable has no position to
-persist. The tree browser and RPC `navigate` set `cursor.leaf`.
+persist. The tree browser and RPC `navigate` set `cursor.leaf`. A long-lived host,
+such as the web head, keeps its cursors in memory, so swapping between them or
+resuming one is a lookup and needs no reload. When a cursor opens, moves or closes,
+the bus reports it (`cursor_open`, `cursor_close`). An extension that wants that
+history on disk writes its own `customEntry`. Core defines no record type for
+starting, stopping, storing or reloading a cursor (decided 2026-10-02).
 
 ## 5. Config lives in the tree
 
@@ -251,8 +266,9 @@ A head holds a cursor, and it does not own the queues on that cursor.
 
 - `new_session`, `switch_session` and `fork` detach the head from one cursor and
   attach it to another.
-- The old cursor keeps its queues. If it is idle and nothing owns it, it closes once
-  they are empty and delivers what it holds to its own tree.
+- The old cursor keeps its queues. If it is idle and nothing owns it, it delivers
+  what it holds to its own tree, running a turn there with no head attached. That
+  is the same thing a sub-agent does. It closes once its queues are empty.
 - The §1.2 xfail test therefore passes, by construction. It is deliberately neutral
   about which fix makes it pass.
 - `abort()` and `rollback` still clear the steer queue. That behaviour is designed

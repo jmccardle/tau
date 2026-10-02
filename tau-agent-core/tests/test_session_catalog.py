@@ -31,7 +31,7 @@ from typing import Any
 
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, SessionInfo
-from tau_agent_core.session_log import InMemorySessionLog
+from tau_agent_core.session_log import InMemorySessionLog, default_leaf, session_name
 from tau_agent_core.testing import SessionCatalogContractTests
 
 
@@ -53,34 +53,20 @@ def _now() -> datetime:
 
 
 class _InMemoryConversationSession:
-    """A RAM-only :class:`ConversationSession` — wraps an ``InMemorySessionLog``
-    for the entry/cursor algebra (proving THAT seam composes cleanly under a
-    second frontend type) and layers the config reads
-    (cwd/model/backend/name/header/display_title/shutdown) on top as plain
-    mutable state, exactly mirroring how the file ``Session`` layers them over
-    its own entry log — just without a disk flush.
+    """A RAM-only :class:`ConversationSession` over an ``InMemorySessionLog``.
+
+    Config is written as entries (``model_change``, ``session_info``) and read
+    back the way the file ``Session`` reads it, so the only difference from that
+    store is the missing disk flush.
     """
 
-    def __init__(
-        self,
-        cwd: str,
-        model: str,
-        backend: str,
-        name: str | None = None,
-        parent: str | None = None,
-    ) -> None:
+    def __init__(self, cwd: str, parent: str | None = None) -> None:
         self._log = InMemorySessionLog()
         self._parent = parent
         self._cwd = cwd
-        self._model = model
-        self._backend = backend
-        self._name = name
         self._created = _now()
         self._modified = self._created
         self._shutdown_calls = 0
-
-    def _touch(self) -> None:
-        self._modified = _now()
 
     # -- SessionLog surface (delegates to the wrapped log) ------------------
 
@@ -88,72 +74,8 @@ class _InMemoryConversationSession:
     def id(self) -> str:
         return self._log.id
 
-    @property
-    def cursor(self) -> str | None:
-        return self._log.cursor
-
     def entries(self) -> list[dict[str, Any]]:
         return self._log.entries()
-
-    async def append_message(self, message: dict[str, Any]) -> str:
-        self._touch()
-        return await self._log.append_message(message)
-
-    async def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
-        self._touch()
-        return await self._log.append_custom_message(message, custom_type)
-
-    async def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
-        self._touch()
-        return await self._log.append_custom_entry(custom_type, data)
-
-    async def append_compaction(
-        self,
-        summary: str,
-        first_kept_id: str,
-        tokens_before: int,
-        *,
-        summarizer_model_id: str,
-        summary_usage: dict[str, int],
-        covered_entries: int,
-        covered_tokens: int,
-        agent_spec_id: str | None,
-    ) -> str:
-        self._touch()
-        return await self._log.append_compaction(
-            summary,
-            first_kept_id,
-            tokens_before,
-            summarizer_model_id=summarizer_model_id,
-            summary_usage=summary_usage,
-            covered_entries=covered_entries,
-            covered_tokens=covered_tokens,
-            agent_spec_id=agent_spec_id,
-        )
-
-    async def append_elide(
-        self,
-        first_kept_id: str,
-        *,
-        covered_entries: int,
-        covered_tokens: int,
-        agent_spec_id: str | None,
-    ) -> str:
-        self._touch()
-        return await self._log.append_elide(
-            first_kept_id,
-            covered_entries=covered_entries,
-            covered_tokens=covered_tokens,
-            agent_spec_id=agent_spec_id,
-        )
-
-    async def append_navigate(self, target_id: str | None) -> str:
-        self._touch()
-        return await self._log.append_navigate(target_id)
-
-    async def append_branch_summary(self, summary: str, from_id: str | None) -> str:
-        self._touch()
-        return await self._log.append_branch_summary(summary, from_id)
 
     async def append_at(
         self,
@@ -161,9 +83,14 @@ class _InMemoryConversationSession:
         entry_type: str,
         payload: dict[str, Any],
     ) -> str:
-        """The C2/W14 explicit-parent append — delegated like every other appender."""
-        self._touch()
-        return await self._log.append_at(parent_id, entry_type, payload)
+        return self._append_at_now(parent_id, entry_type, payload)
+
+    def _append_at_now(
+        self, parent_id: str | None, entry_type: str, payload: dict[str, Any]
+    ) -> str:
+        """Synchronous write for ``create``/``fork``, which are not coroutines."""
+        self._modified = _now()
+        return self._log.append_at_now(parent_id, entry_type, payload)
 
     # -- ConversationSession additions ---------------------------------------
 
@@ -175,52 +102,48 @@ class _InMemoryConversationSession:
     def header(self) -> dict[str, Any]:
         return {"type": "session", "id": self.id, "cwd": self._cwd}
 
+    def _tree(self) -> ConversationTree:
+        entries = self.entries()
+        return ConversationTree(entries, default_leaf(entries))
+
     @property
     def messages(self) -> list[dict[str, Any]]:
-        return [e["message"] for e in self._log.entries() if e.get("type") == "message"]
+        return [e["message"] for e in self._tree().path() if e.get("type") == "message"]
 
     @property
     def context(self) -> list[dict[str, Any]]:
-        return ConversationTree(self.entries(), self.cursor).context_for()
+        return self._tree().context_for()
+
+    def _latest_model_change(self) -> dict[str, Any]:
+        for entry in reversed(self.entries()):
+            if entry.get("type") == "model_change":
+                return entry
+        raise ValueError(f"session {self.id} has no model_change entry")
 
     @property
     def model(self) -> str:
-        return self._model
+        return str(self._latest_model_change()["model"])
 
     @property
     def backend(self) -> str:
-        return self._backend
+        return str(self._latest_model_change()["backend"])
 
     @property
     def name(self) -> str | None:
-        return self._name
+        return session_name(self.entries())
 
     def display_title(self) -> str:
-        if self._name:
-            return self._name
+        if self.name:
+            return self.name
         for message in self.messages:
             if message.get("role") == "user":
                 text = _extract_text(message).replace("\n", " ")
                 if text:
                     return text[:50] + ("..." if len(text) > 50 else "")
-        return f"Session ({self._model})"
+        return f"Session ({self.model})"
 
     def shutdown(self) -> None:
         self._shutdown_calls += 1
-
-    def append_model_change(self, model: str, backend: str) -> str:
-        self._model, self._backend = model, backend
-        self._touch()
-        return "model-change"
-
-    def append_thinking_change(self, level: str) -> str:
-        self._touch()
-        return "thinking-change"
-
-    def append_session_info(self, name: str) -> str:
-        self._name = name
-        self._touch()
-        return "session-info"
 
 
 class InMemorySessionCatalog(SessionCatalog):
@@ -263,11 +186,13 @@ class InMemorySessionCatalog(SessionCatalog):
         system_prompt: str | None,
         name: str | None,
     ) -> _InMemoryConversationSession:
-        session = _InMemoryConversationSession(cwd, model, backend, name)
+        session = _InMemoryConversationSession(cwd)
+        leaf = session._append_at_now(None, "model_change", {"model": model, "backend": backend})
+        if name:
+            leaf = session._append_at_now(leaf, "session_info", {"name": name})
         if system_prompt:
-            # Sync core, like every real catalog: `create` is not a coroutine.
-            session._log._append_now(
-                "message", message={"role": "system", "content": system_prompt}
+            session._append_at_now(
+                leaf, "message", {"message": {"role": "system", "content": system_prompt}}
             )
         return session
 
@@ -277,15 +202,25 @@ class InMemorySessionCatalog(SessionCatalog):
         except KeyError:
             raise FileNotFoundError(f"no in-memory session {ref!r}") from None
 
-    def fork(self, source: ConversationSession, cwd: str) -> ConversationSession:
+    def fork(
+        self, source: ConversationSession, cwd: str, *, at: str | None = None
+    ) -> ConversationSession:
         assert isinstance(source, _InMemoryConversationSession)
-        forked = _InMemoryConversationSession(
-            cwd, source.model, source.backend, source.name, parent=source.id
-        )
-        for entry in source.entries():
-            if entry.get("type") == "message":
-                # Sync core: `fork` is not a coroutine on the ABC or either store.
-                forked._log._append_now("message", message=entry["message"])
+        entries = source.entries()
+        if at is not None:
+            tree = ConversationTree(entries, at)
+            if not tree.contains(at):
+                raise ValueError(f"fork point {at!r} not found")
+            entries = tree.path()
+        forked = _InMemoryConversationSession(cwd, parent=source.id)
+        new_ids: dict[str | None, str | None] = {None: None}
+        for entry in entries:
+            payload = {
+                k: v for k, v in entry.items() if k not in ("type", "id", "parentId", "timestamp")
+            }
+            new_ids[entry["id"]] = forked._append_at_now(
+                new_ids[entry.get("parentId")], entry["type"], payload
+            )
         self._sessions[forked.id] = forked
         return forked
 

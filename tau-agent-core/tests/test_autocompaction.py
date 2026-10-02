@@ -40,7 +40,7 @@ from tau_agent_core.compaction import (
     should_compact,
     try_compaction_limits,
 )
-from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.tools.base import AgentTool, AgentToolResult, ToolDefinition
 
@@ -230,16 +230,15 @@ def _session(settings: CompactionSettings, window: int = 40_000) -> AgentSession
 
 async def test_context_estimate_anchors_on_the_provider_and_labels_itself() -> None:
     session = _session(CompactionSettings())
-    log = session.session_log
-    await log.append_message(_msg("user", "hello"))
-    await log.append_message(
+    await session.cursor.append_message(_msg("user", "hello"))
+    await session.cursor.append_message(
         {
             **_msg("assistant", "hi"),
             "usage": {"input_tokens": 9000, "output_tokens": 100, "total_tokens": 9100},
             "timestamp": _TS,
         }
     )
-    await log.append_message(_msg("user", "x" * 4000))
+    await session.cursor.append_message(_msg("user", "x" * 4000))
 
     estimate = session.context_estimate()
     assert estimate.usage_tokens == 9100
@@ -251,10 +250,9 @@ async def test_context_estimate_anchors_on_the_provider_and_labels_itself() -> N
 
 async def test_the_calibrator_learns_from_billed_turns() -> None:
     session = _session(CompactionSettings())
-    log = session.session_log
     for i in range(5):
-        await log.append_message({**_msg("user", "u" * 400), "timestamp": _TS + i})
-        await log.append_message(
+        await session.cursor.append_message({**_msg("user", "u" * 400), "timestamp": _TS + i})
+        await session.cursor.append_message(
             {
                 **_msg("assistant", "a" * 200),
                 "usage": {
@@ -272,9 +270,8 @@ async def test_the_calibrator_learns_from_billed_turns() -> None:
 
 async def test_a_turn_is_observed_at_most_once() -> None:
     session = _session(CompactionSettings())
-    log = session.session_log
-    await log.append_message({**_msg("user", "u"), "timestamp": _TS})
-    await log.append_message(
+    await session.cursor.append_message({**_msg("user", "u"), "timestamp": _TS})
+    await session.cursor.append_message(
         {
             **_msg("assistant", "a"),
             "usage": {"input_tokens": 1000, "output_tokens": 10, "total_tokens": 1010},
@@ -377,7 +374,7 @@ async def test_the_compacted_path_survives_a_reload(monkeypatch) -> None:
         await session.prompt("start")
 
     log = session.session_log
-    reloaded = ConversationTree(log.entries(), log.cursor).context_for()
+    reloaded = Cursor.newest(log).context()
     text = "".join(
         block.get("text", "")
         for m in reloaded
@@ -438,10 +435,11 @@ async def test_crossing_only_the_soft_limit_compacts_after_the_turn(monkeypatch)
         reserve_tokens=1_000,
     )
     session = _session(settings)
-    log = session.session_log
     for i in range(4):
-        await log.append_message({**_msg("user", f"u{i}"), "timestamp": _TS + i})
-        await log.append_message({**_msg("assistant", f"a{i}"), "timestamp": _TS + 100 + i})
+        await session.cursor.append_message({**_msg("user", f"u{i}"), "timestamp": _TS + i})
+        await session.cursor.append_message(
+            {**_msg("assistant", f"a{i}"), "timestamp": _TS + 100 + i}
+        )
 
     responses = [_text("done", billed=9_000)]
     order: list[str] = []
@@ -707,15 +705,17 @@ async def test_a_compaction_moves_the_sessions_anchor_boundary(monkeypatch) -> N
     session = _session(CompactionSettings(keep_recent_tokens=500))
     log = session.session_log
     for i in range(4):
-        await log.append_message({**_msg("user", "u" * 3000), "timestamp": _TS + i})
-        await log.append_message({**_msg("assistant", f"a{i}"), "timestamp": _TS + 100 + i})
+        await session.cursor.append_message({**_msg("user", "u" * 3000), "timestamp": _TS + i})
+        await session.cursor.append_message(
+            {**_msg("assistant", f"a{i}"), "timestamp": _TS + 100 + i}
+        )
 
     assert session._usage_valid_after == 0
     await session._perform_compaction("manual")
     assert session._usage_valid_after > 0, "a compaction must move the boundary"
 
     revived = _session(CompactionSettings())
-    revived._session_log = log
+    revived.session_log = log
     assert _newest_compaction_ms(log.entries()) == pytest.approx(
         session._usage_valid_after, abs=2000
     ), "a reloaded session recovers the same boundary from the log"

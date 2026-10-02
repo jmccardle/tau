@@ -134,7 +134,7 @@ class TestTheDemoActuallyRuns:
     async def test_the_fan_out_writes_nothing_to_the_tree(self, session_and_calls):
         """C1 is stateless — that is what makes N-way asyncio.gather safe."""
         session, _ = session_and_calls
-        log = session._session_log
+        log = session.session_log
         before = len(log.entries())
 
         await _dispatch(session, _PATH, "review", "tls")

@@ -35,7 +35,6 @@ import pytest
 from textual.app import App
 from textual.widgets import Button, Static
 
-from tau_agent_core.conversation_tree import ConversationTree
 from tau_coding_agent.app import TauApp
 from tau_coding_agent.tree_browser import SessionTreeModal
 from tau_coding_agent.backends import TauBackend
@@ -116,22 +115,22 @@ def _notifications(app: TauApp) -> list[tuple[str, str]]:
 
 
 async def _seeded(app: TauApp) -> tuple[Any, list[str]]:
-    """A fresh chat with six appended messages; returns the session + their ids."""
+    """A fresh chat with six messages appended at the app's cursor; returns the store + ids."""
     await app.action_new_chat()
-    session = app.current_session
+    cursor = app._cursor
     ids = [
-        await session.append_message({"role": "user", "content": "u1"}),
-        await session.append_message({"role": "assistant", "content": "a1"}),
-        await session.append_message({"role": "user", "content": "u2"}),
-        await session.append_message({"role": "assistant", "content": "a2"}),
-        await session.append_message({"role": "user", "content": "u3"}),
-        await session.append_message({"role": "assistant", "content": "a3"}),
+        await cursor.append_message({"role": "user", "content": "u1"}),
+        await cursor.append_message({"role": "assistant", "content": "a1"}),
+        await cursor.append_message({"role": "user", "content": "u2"}),
+        await cursor.append_message({"role": "assistant", "content": "a2"}),
+        await cursor.append_message({"role": "user", "content": "u3"}),
+        await cursor.append_message({"role": "assistant", "content": "a3"}),
     ]
-    return session, ids
+    return app.current_session, ids
 
 
-def _kept_ids(session) -> list[str]:
-    return [e["id"] for e in ConversationTree(session.entries(), session.cursor).context_entries()]
+def _kept_ids(app: TauApp) -> list[str]:
+    return [e["id"] for e in app._cursor.tree().context_entries()]
 
 
 def _system_id(session) -> str:
@@ -177,7 +176,7 @@ async def test_elide_action_skips_exactly_the_span_and_keeps_every_entry(
         await pilot.pause()
         session, ids = await _seeded(app)
         before_ids = {e["id"] for e in session.entries()}
-        anchor = session.cursor  # the tip (a3) — fold the history behind it
+        anchor = app._cursor.leaf  # the tip (a3) — fold the history behind it
         resume = ids[4]  # u3
 
         pushed = _script(app, [_elide(anchor, resume)])
@@ -191,7 +190,7 @@ async def test_elide_action_skips_exactly_the_span_and_keeps_every_entry(
         assert elides[0]["parentId"] == anchor
         assert [e for e in session.entries() if e.get("type") == "navigate"] == []
 
-        assert _kept_ids(session) == [_system_id(session), elides[0]["id"], ids[4], ids[5]]
+        assert _kept_ids(app) == [_system_id(session), elides[0]["id"], ids[4], ids[5]]
         assert _texts(app.messages)[-2:] == ["u3", "a3"]
         assert app.messages[0]["role"] == "system"
         assert len(app.messages) == 3
@@ -201,15 +200,15 @@ async def test_elide_action_skips_exactly_the_span_and_keeps_every_entry(
         # …including every elided one, by name.
         assert set(ids) <= {e["id"] for e in session.entries()}
 
-        assert app.messages == ConversationTree(session.entries(), session.cursor).context_for()
+        assert app.messages == app._cursor.context()
         assert app.query_one(transcript.ChatDisplay) is not None
 
         assert [type(screen) for screen in pushed] == [tree_browser.SessionTreeModal]
 
 
-async def test_elide_at_an_interior_anchor_navigates_first(app, wait_for_workers_settled):
-    """An anchor that is not the tip needs the leaf moved onto it before the elide
-    can parent there — the same ``navigate`` append the "no summary" mode makes."""
+async def test_elide_at_an_interior_anchor_moves_the_cursor_first(app, wait_for_workers_settled):
+    """An anchor that is not the tip needs the cursor moved onto it before the elide
+    can parent there; the move itself writes nothing."""
     async with app.run_test() as pilot:
         await pilot.pause()
         session, ids = await _seeded(app)
@@ -221,11 +220,11 @@ async def test_elide_at_an_interior_anchor_navigates_first(app, wait_for_workers
         await wait_for_workers_settled(app)
         await pilot.pause()
 
-        navigates = [e for e in session.entries() if e.get("type") == "navigate"]
         elides = [e for e in session.entries() if e.get("type") == "elide"]
-        assert [n["targetId"] for n in navigates] == [anchor]
+        assert not any(e.get("type") == "navigate" for e in session.entries())
         assert elides[0]["parentId"] == anchor
-        assert _kept_ids(session) == [_system_id(session), elides[0]["id"], ids[2], ids[3]]
+        assert app._cursor.leaf == elides[0]["id"]
+        assert _kept_ids(app) == [_system_id(session), elides[0]["id"], ids[2], ids[3]]
         assert _texts(app.messages)[-2:] == ["u2", "a2"]
         assert app.messages[0]["role"] == "system"
         assert len(app.messages) == 3
@@ -240,7 +239,7 @@ async def test_elide_anchored_at_the_current_cursor_is_not_refused(app, wait_for
         session, ids = await _seeded(app)
         notes = _notifications(app)
 
-        _script(app, [_elide(session.cursor, ids[3])])
+        _script(app, [_elide(app._cursor.leaf, ids[3])])
         app.action_browse_tree()
         await wait_for_workers_settled(app)
         await pilot.pause()
@@ -274,9 +273,9 @@ async def test_elide_with_unreachable_resume_point_notifies_and_appends_nothing(
         assert len(errors) == 1
         assert "not on the path to anchor" in errors[0]
 
-        # Nothing was appended — not the elide, and not the navigate either.
+        # Nothing was appended, and the cursor did not move to the anchor.
         assert session.entries() == entries_before
-        assert not any(e.get("type") in ("elide", "navigate") for e in session.entries())
+        assert app._cursor.leaf == ids[5]
         # …and the rendered transcript is untouched.
         assert app.messages == messages_before
 
@@ -287,10 +286,10 @@ async def test_elide_that_would_hide_nothing_is_refused(app, wait_for_workers_se
     async with app.run_test() as pilot:
         await pilot.pause()
         session, _ids = await _seeded(app)
-        first_kept = _kept_ids(session)[0]
+        first_kept = _kept_ids(app)[0]
         notes = _notifications(app)
 
-        _script(app, [_elide(session.cursor, first_kept)])
+        _script(app, [_elide(app._cursor.leaf, first_kept)])
         app.action_browse_tree()
         await wait_for_workers_settled(app)
         await pilot.pause()
@@ -328,7 +327,7 @@ async def test_backend_without_elide_span_warns(app, monkeypatch, wait_for_worke
         notes = _notifications(app)
         app.current_backend = _PartialBackend()
 
-        _script(app, [_elide(session.cursor, ids[4])])
+        _script(app, [_elide(app._cursor.leaf, ids[4])])
         app.action_browse_tree()
         await wait_for_workers_settled(app)
         await pilot.pause()
@@ -343,42 +342,52 @@ async def test_backend_without_elide_span_warns(app, monkeypatch, wait_for_worke
 
 
 async def _linear_log():
+    """``m0..m4`` in a fresh in-memory log; returns a cursor at ``m4`` and the ids."""
+    from tau_agent_core.cursor import Cursor
     from tau_agent_core.session_log import InMemorySessionLog
 
-    log = InMemorySessionLog()
-    ids = [await log.append_message({"role": "user", "content": f"m{i}"}) for i in range(5)]
-    return log, ids
+    cursor = Cursor.newest(InMemorySessionLog())
+    ids = [await cursor.append_message({"role": "user", "content": f"m{i}"}) for i in range(5)]
+    return cursor, ids
+
+
+def _bound_backend(cursor) -> TauBackend:
+    """A real backend whose session extends ``cursor``."""
+    backend = _backend()
+    backend.bind_cursor(cursor)
+    return backend
 
 
 async def test_elide_span_rejects_unknown_ids():
-    log, ids = await _linear_log()
-    backend = _backend()
+    cursor, ids = await _linear_log()
+    backend = _bound_backend(cursor)
 
     with pytest.raises(ValueError, match="elide anchor 'nope' not found"):
-        await backend.elide_span(log, "nope", ids[2])
+        await backend.elide_span("nope", ids[2])
     with pytest.raises(ValueError, match="elide resume point 'nope' not found"):
-        await backend.elide_span(log, ids[3], "nope")
-    assert not any(e.get("type") in ("elide", "navigate") for e in log.entries())
+        await backend.elide_span(ids[3], "nope")
+    assert not any(e.get("type") == "elide" for e in cursor.entries())
+    assert cursor.leaf == ids[4], "a refused elide does not move the cursor"
 
 
 async def test_elide_span_accepts_the_anchor_itself_as_the_resume_point():
     """The degenerate-but-coherent end of the range: keep only the anchor."""
-    log, ids = await _linear_log()
-    backend = _backend()
+    cursor, ids = await _linear_log()
+    backend = _bound_backend(cursor)
 
-    messages = await backend.elide_span(log, ids[4], ids[4])
+    messages = await backend.elide_span(ids[4], ids[4])
 
     assert _texts(messages) == ["m4"]
-    assert {e["id"] for e in log.entries()} >= set(ids)
+    assert {e["id"] for e in cursor.entries()} >= set(ids)
 
 
 async def test_elide_span_returns_the_same_fold_the_tree_computes():
-    log, ids = await _linear_log()
-    backend = _backend()
+    cursor, ids = await _linear_log()
+    backend = _bound_backend(cursor)
 
-    messages = await backend.elide_span(log, log.cursor, ids[3])
+    messages = await backend.elide_span(cursor.leaf, ids[3])
 
-    assert messages == ConversationTree(log.entries(), log.cursor).context_for()
+    assert messages == cursor.context()
 
 
 # --- the browser row for an existing elide ----------------------------------
@@ -387,40 +396,42 @@ async def test_elide_span_returns_the_same_fold_the_tree_computes():
 async def test_elide_node_preview_names_the_hidden_span():
     """An ``elide`` carries no summary, so without this it renders as a bare
     ``(elide)`` and is illegible in the browser."""
-    log, ids = await _linear_log()
-    await log.append_elide(ids[3], covered_entries=3, covered_tokens=3, agent_spec_id=None)
+    cursor, ids = await _linear_log()
+    await cursor.append_elide(ids[3], covered_entries=3, covered_tokens=3, agent_spec_id=None)
 
-    nodes = {n.id: n for n in _flatten(ConversationTree(log.entries(), log.cursor).tree())}
-    elide_id = next(e["id"] for e in log.entries() if e["type"] == "elide")
+    nodes = {n.id: n for n in _flatten(cursor.tree().tree())}
+    elide_id = next(e["id"] for e in cursor.entries() if e["type"] == "elide")
     preview = nodes[elide_id].preview
 
     # m0, m1, m2 are hidden; the fold resumes at m3.
     assert preview == f"hides 3 entries, resumes at {ids[3]}"
     # And the browser row is no longer a bare "(elide)".
-    assert tree_browser.SessionTreeModal._label(nodes[elide_id]).startswith("elide: hides 3 entries")
+    assert tree_browser.SessionTreeModal._label(nodes[elide_id]).startswith(
+        "elide: hides 3 entries"
+    )
 
 
 async def test_elide_node_preview_reports_an_unreachable_boundary():
     """A hand-written log CAN hold the boundary this TUI flow refuses to create; the
     row says what that node actually does (keep nothing) rather than counting it."""
-    log, ids = await _linear_log()
-    await log.append_navigate(ids[1])
-    await log.append_elide(ids[4], covered_entries=0, covered_tokens=0, agent_spec_id=None)
+    cursor, ids = await _linear_log()
+    cursor.move(ids[1])
+    await cursor.append_elide(ids[4], covered_entries=0, covered_tokens=0, agent_spec_id=None)
 
-    nodes = {n.id: n for n in _flatten(ConversationTree(log.entries(), log.cursor).tree())}
-    elide_id = next(e["id"] for e in log.entries() if e["type"] == "elide")
+    nodes = {n.id: n for n in _flatten(cursor.tree().tree())}
+    elide_id = next(e["id"] for e in cursor.entries() if e["type"] == "elide")
 
     assert "not on this path" in nodes[elide_id].preview
     # …which is exactly what the fold does with it.
-    assert ConversationTree(log.entries(), log.cursor).context_for() == []
+    assert cursor.context() == []
 
 
 async def test_singular_entry_in_the_preview():
-    log, ids = await _linear_log()
+    cursor, ids = await _linear_log()
     # Resuming at m1 hides m0 alone: one entry, one estimated token.
-    await log.append_elide(ids[1], covered_entries=1, covered_tokens=1, agent_spec_id=None)
-    nodes = {n.id: n for n in _flatten(ConversationTree(log.entries(), log.cursor).tree())}
-    elide_id = next(e["id"] for e in log.entries() if e["type"] == "elide")
+    await cursor.append_elide(ids[1], covered_entries=1, covered_tokens=1, agent_spec_id=None)
+    nodes = {n.id: n for n in _flatten(cursor.tree().tree())}
+    elide_id = next(e["id"] for e in cursor.entries() if e["type"] == "elide")
     assert nodes[elide_id].preview == f"hides 1 entry, resumes at {ids[1]}"
 
 
@@ -474,8 +485,8 @@ async def test_the_mode_chooser_no_longer_offers_an_elide():
 
 
 async def test_tree_modal_shows_the_caption_it_was_given():
-    log, _ids = await _linear_log()
-    view = ConversationTree(log.entries(), log.cursor)
+    cursor, _ids = await _linear_log()
+    view = cursor.tree()
     modal = tree_browser.SessionTreeModal(
         view,
         title="Elide: pick the resume point",
@@ -491,8 +502,8 @@ async def test_tree_modal_shows_the_caption_it_was_given():
 
 
 async def test_tree_modal_default_caption_is_unchanged():
-    log, _ids = await _linear_log()
-    view = ConversationTree(log.entries(), log.cursor)
+    cursor, _ids = await _linear_log()
+    view = cursor.tree()
     harness = _ModalHarness(tree_browser.SessionTreeModal(view))
     async with harness.run_test() as pilot:
         await pilot.pause()
@@ -537,15 +548,17 @@ async def _forked_log():
     The shape that separates "on one line of the conversation" from "in the same
     tree": ``b1`` and ``a2`` are cousins, and no elide can name both.
     """
+    from tau_agent_core.cursor import Cursor
     from tau_agent_core.session_log import InMemorySessionLog
 
     log = InMemorySessionLog()
-    u1 = await log.append_message({"role": "user", "content": "u1"})
-    a1 = await log.append_message({"role": "assistant", "content": "a1"})
-    u2 = await log.append_message({"role": "user", "content": "u2"})
-    a2 = await log.append_message({"role": "assistant", "content": "a2"})
+    cursor = Cursor.newest(log)
+    u1 = await cursor.append_message({"role": "user", "content": "u1"})
+    a1 = await cursor.append_message({"role": "assistant", "content": "a1"})
+    u2 = await cursor.append_message({"role": "user", "content": "u2"})
+    a2 = await cursor.append_message({"role": "assistant", "content": "a2"})
     b1 = await log.append_at(a1, "message", {"message": {"role": "assistant", "content": "b1"}})
-    return log, u1, a1, u2, a2, b1
+    return cursor, u1, a1, u2, a2, b1
 
 
 async def test_ctrl_e_with_no_mark_folds_the_history_behind_the_current_tip():
@@ -555,8 +568,8 @@ async def test_ctrl_e_with_no_mark_folds_the_history_behind_the_current_tip():
     on a node and pressing the key means "keep from here to where I am, drop what
     is older". The leaf is the anchor because it is the deeper of the two.
     """
-    log, ids = await _linear_log()
-    harness, modal = await _open(ConversationTree(log.entries(), log.cursor))
+    cursor, ids = await _linear_log()
+    harness, modal = await _open(cursor.tree())
     async with harness.run_test() as pilot:
         for _ in range(4):
             await pilot.pause()
@@ -569,28 +582,28 @@ async def test_ctrl_e_with_no_mark_folds_the_history_behind_the_current_tip():
 async def test_the_deeper_node_is_the_anchor_whichever_order_they_were_marked():
     """The reader marks one end and puts the cursor on the other, and does not have
     to remember which they picked first — the tree decides."""
-    log, ids = await _linear_log()
+    cursor, ids = await _linear_log()
     expected = tree_browser.TreeIntent("elide", (ids[3], ids[1]))
 
-    for mark, cursor in ((ids[1], ids[3]), (ids[3], ids[1])):
-        harness, modal = await _open(ConversationTree(log.entries(), log.cursor))
+    for mark, at in ((ids[1], ids[3]), (ids[3], ids[1])):
+        harness, modal = await _open(cursor.tree())
         async with harness.run_test() as pilot:
             for _ in range(4):
                 await pilot.pause()
             await _goto(harness, pilot, mark)
             modal.action_toggle_mark()
-            await _goto(harness, pilot, cursor)
+            await _goto(harness, pilot, at)
             modal.action_elide()
             await pilot.pause()
-        assert harness.result == expected, f"marked {mark}, cursor on {cursor}"
+        assert harness.result == expected, f"marked {mark}, cursor on {at}"
 
 
 async def test_two_nodes_on_different_branches_are_refused_and_the_browser_stays_open():
     """The reported problem: an illegal second pick used to be discovered after the
     browser had closed, as an error over a conversation whose shape was no longer
     on screen. It is refused here, by name, with the tree still up."""
-    log, _u1, _a1, _u2, a2, b1 = await _forked_log()
-    harness, modal = await _open(ConversationTree(log.entries(), log.cursor))
+    cursor, _u1, _a1, _u2, a2, b1 = await _forked_log()
+    harness, modal = await _open(cursor.tree())
     said: list[str] = []
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -608,8 +621,8 @@ async def test_two_nodes_on_different_branches_are_refused_and_the_browser_stays
 async def test_a_span_that_would_hide_nothing_is_refused_by_name():
     """The legal-but-empty pair — the one illegality the greying does not cover,
     because computing it per row costs a context walk per row."""
-    log, ids = await _linear_log()
-    view = ConversationTree(log.entries(), log.cursor)
+    cursor, ids = await _linear_log()
+    view = cursor.tree()
     first_kept = view.context_entries()[0]["id"]
     harness, modal = await _open(view)
     said: list[str] = []
@@ -632,10 +645,9 @@ async def test_marking_one_node_greys_the_rows_that_cannot_pair_with_it():
     which rows could form a span, and greying half the tree at them would be an
     answer to a question nobody put.
     """
-    from tau_coding_agent.tree_browser import ZoneTree
 
-    log, u1, a1, u2, a2, b1 = await _forked_log()
-    harness, modal = await _open(ConversationTree(log.entries(), log.cursor))
+    cursor, u1, a1, u2, a2, b1 = await _forked_log()
+    harness, modal = await _open(cursor.tree())
     async with harness.run_test() as pilot:
         for _ in range(4):
             await pilot.pause()
@@ -659,8 +671,8 @@ async def test_the_help_line_offers_the_elide_only_where_it_is_legal():
     and nowhere else, and it says how much the fold would drop."""
     from textual.widgets import Static
 
-    log, u1, a1, _u2, a2, b1 = await _forked_log()
-    harness, modal = await _open(ConversationTree(log.entries(), log.cursor))
+    cursor, u1, a1, _u2, a2, b1 = await _forked_log()
+    harness, modal = await _open(cursor.tree())
     async with harness.run_test() as pilot:
         for _ in range(4):
             await pilot.pause()
@@ -682,8 +694,8 @@ async def test_the_help_line_offers_the_elide_only_where_it_is_legal():
 
 
 async def test_three_marks_are_refused_with_a_sentence_about_two_ends():
-    log, ids = await _linear_log()
-    harness, modal = await _open(ConversationTree(log.entries(), log.cursor))
+    cursor, ids = await _linear_log()
+    harness, modal = await _open(cursor.tree())
     said: list[str] = []
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -703,8 +715,8 @@ async def test_the_ctrl_e_key_actually_reaches_the_action():
     """The binding, not the method. The App binds ``ctrl+e`` to the extension
     chord, so this screen's binding has to win — and it is ``priority`` rather
     than relying on which of two non-priority bindings textual reaches first."""
-    log, ids = await _linear_log()
-    harness, _modal = await _open(ConversationTree(log.entries(), log.cursor))
+    cursor, ids = await _linear_log()
+    harness, _modal = await _open(cursor.tree())
     async with harness.run_test() as pilot:
         for _ in range(4):
             await pilot.pause()
@@ -718,10 +730,9 @@ async def test_the_ctrl_d_key_folds_the_detail_pane():
     """``ctrl+d``, and not the ``ctrl+m`` that was asked for: a terminal sends the
     same byte for ``Enter`` and ``Ctrl+M`` (textual's ``KEY_ALIASES`` maps
     ``enter`` to ``ctrl+m``), and ``Enter`` is this screen's commit key."""
-    from tau_coding_agent.transcript import TreeDetailPane
 
-    log, _ids = await _linear_log()
-    harness, _modal = await _open(ConversationTree(log.entries(), log.cursor))
+    cursor, _ids = await _linear_log()
+    harness, _modal = await _open(cursor.tree())
     async with harness.run_test(size=(120, 40)) as pilot:
         for _ in range(4):
             await pilot.pause()
@@ -741,8 +752,8 @@ async def test_enter_commits_without_also_folding_the_detail_pane():
     the pane through the layout rule for reasons that have nothing to do with the
     key. ``_detail_folded`` is the reader's choice and only the toggle writes it.
     """
-    log, ids = await _linear_log()
-    harness, modal = await _open(ConversationTree(log.entries(), log.cursor))
+    cursor, ids = await _linear_log()
+    harness, modal = await _open(cursor.tree())
     async with harness.run_test(size=(120, 40)) as pilot:
         for _ in range(4):
             await pilot.pause()
@@ -767,8 +778,8 @@ async def test_the_offer_counts_what_leaves_the_context_not_what_the_fold_hides(
     """
     from textual.widgets import Static
 
-    log, ids = await _linear_log()
-    harness, modal = await _open(ConversationTree(log.entries(), log.cursor))
+    cursor, ids = await _linear_log()
+    harness, modal = await _open(cursor.tree())
     async with harness.run_test() as pilot:
         for _ in range(4):
             await pilot.pause()
@@ -793,8 +804,8 @@ async def test_an_elide_at_the_tip_drops_only_the_prefix_and_says_so():
     line does not warn about a move that is not happening."""
     from textual.widgets import Static
 
-    log, ids = await _linear_log()
-    harness, modal = await _open(ConversationTree(log.entries(), log.cursor))
+    cursor, ids = await _linear_log()
+    harness, modal = await _open(cursor.tree())
     async with harness.run_test() as pilot:
         for _ in range(4):
             await pilot.pause()
@@ -820,13 +831,12 @@ async def test_the_two_ends_bracket_what_is_kept():
     the kept region is always one contiguous run ending at the anchor — cutting a
     span out of the MIDDLE is not a shape this operation can express.
     """
-    log, ids = await _linear_log()
-    ids = ids + [await log.append_message({"role": "user", "content": "m5"})]
-    backend = _backend()
-    await backend.elide_span(log, ids[3], ids[1])
+    cursor, ids = await _linear_log()
+    ids = ids + [await cursor.append_message({"role": "user", "content": "m5"})]
+    await _bound_backend(cursor).elide_span(ids[3], ids[1])
     kept = [
         e.get("message", {}).get("content")
-        for e in ConversationTree(log.entries(), log.cursor).context_entries()
+        for e in cursor.tree().context_entries()
         if e.get("type") == "message"
     ]
     assert kept == ["m1", "m2", "m3"]

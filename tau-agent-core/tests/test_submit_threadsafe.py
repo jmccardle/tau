@@ -126,7 +126,7 @@ class TestSubmitRefusesAForeignCaller:
         """The E5560 case: another loop, running at the same time as ours."""
         session = AgentSession(session_log=InMemorySessionLog(), model=_model(), tools=[])
         assert session._loop is asyncio.get_running_loop()
-        before = list(session._session_log.entries())
+        before = list(session.session_log.entries())
 
         def _submit_on_another_loop() -> None:
             asyncio.run(session.submit(_sub("from a foreign loop", "f-1")))
@@ -140,7 +140,7 @@ class TestSubmitRefusesAForeignCaller:
         # Refused at the door: nothing was admitted, so the session is untouched.
         assert session.is_streaming is False
         assert session._turn_lock.locked() is False
-        assert session._session_log.entries() == before
+        assert session.session_log.entries() == before
 
     async def test_submit_from_a_plain_thread_with_no_loop_raises(self):
         """No running loop at all — a coroutine driven by something that is not asyncio.
@@ -151,7 +151,7 @@ class TestSubmitRefusesAForeignCaller:
         ``asyncio.run`` has a loop and takes the foreign-loop branch above.
         """
         session = AgentSession(session_log=InMemorySessionLog(), model=_model(), tools=[])
-        before = list(session._session_log.entries())
+        before = list(session.session_log.entries())
 
         def _drive_without_a_loop() -> None:
             coro = session.submit(_sub("from a plain thread", "f-2"))
@@ -166,7 +166,7 @@ class TestSubmitRefusesAForeignCaller:
         message = str(excinfo.value)
         assert "submit_threadsafe" in message
         assert "no running event loop" in message
-        assert session._session_log.entries() == before
+        assert session.session_log.entries() == before
 
     def test_sequential_asyncio_run_against_one_session_is_unaffected(self, fake_llm):
         """The false positive that would matter most: a NEW loop, not a foreign one.
@@ -184,9 +184,7 @@ class TestSubmitRefusesAForeignCaller:
 
         assert first and second
         active = str(
-            ConversationTree(
-                session._session_log.entries(), session._session_log.cursor
-            ).context_for()
+            ConversationTree(session.session_log.entries(), session.cursor.leaf).context_for()
         )
         assert "one" in active and "two" in active
 
@@ -207,9 +205,7 @@ class TestSubmitThreadsafeDelivers:
         assert result.submission_id == "t-1"
         assert result.messages, "the turn ran, not merely queued"
         active = str(
-            ConversationTree(
-                session._session_log.entries(), session._session_log.cursor
-            ).context_for()
+            ConversationTree(session.session_log.entries(), session.cursor.leaf).context_for()
         )
         assert "hello from the bus" in active
         await _eventually(
@@ -232,9 +228,7 @@ class TestSubmitThreadsafeDelivers:
 
         assert result.accepted is True
         active = str(
-            ConversationTree(
-                session._session_log.entries(), session._session_log.cursor
-            ).context_for()
+            ConversationTree(session.session_log.entries(), session.cursor.leaf).context_for()
         )
         assert "from loop B" in active
 
@@ -319,7 +313,7 @@ class TestSubmitThreadsafeRefusals:
         finished submission and pinning nothing.
         """
         session = AgentSession(session_log=InMemorySessionLog(), model=_model(), tools=[])
-        before = list(session._session_log.entries())
+        before = list(session.session_log.entries())
 
         future: concurrent.futures.Future = concurrent.futures.Future()
         assert future.cancel() is True
@@ -328,7 +322,7 @@ class TestSubmitThreadsafeRefusals:
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         assert session._threadsafe_tasks == {}
-        assert session._session_log.entries() == before, "a cancelled submission runs no turn"
+        assert session.session_log.entries() == before, "a cancelled submission runs no turn"
 
     async def test_a_reused_submission_id_is_refused_not_silently_untracked(self):
         """The registry is keyed by id, so a duplicate would drop a live task's

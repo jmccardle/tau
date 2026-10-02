@@ -15,6 +15,7 @@ from tau_llm.types import Model
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
+from tau_agent_core.session_log import default_leaf
 from tau_coding_agent.session_store import Session
 
 
@@ -50,8 +51,8 @@ def _session_on(tmp_path) -> tuple[AgentSession, Session]:
 
 async def test_fork_export_writes_a_new_file_and_leaves_source_untouched(tmp_path):
     agent, live = _session_on(tmp_path)
-    await live.append_message({"role": "user", "content": "hello"})
-    await live.append_message({"role": "assistant", "content": "hi"})
+    await agent.cursor.append_message({"role": "user", "content": "hello"})
+    await agent.cursor.append_message({"role": "assistant", "content": "hi"})
     source_entries_before = live.entries()
     ctx = agent._extension_api.context
 
@@ -74,18 +75,22 @@ async def test_fork_export_writes_a_new_file_and_leaves_source_untouched(tmp_pat
     assert forked.entries() == source_entries_before
 
 
-async def test_fork_export_positions_cursor_at_entry_id(tmp_path):
-    agent, live = _session_on(tmp_path)
-    await live.append_message({"role": "user", "content": "u0"})
-    first_asst = await live.append_message({"role": "assistant", "content": "a0"})
-    await live.append_message({"role": "user", "content": "u1"})
-    await live.append_message({"role": "assistant", "content": "a1"})
+async def test_fork_export_at_entry_id_copies_only_its_path(tmp_path):
+    """The copy ends at ``entry_id``, so it reopens there; the source cursor stays put."""
+    agent, _live = _session_on(tmp_path)
+    await agent.cursor.append_message({"role": "user", "content": "u0"})
+    first_asst = await agent.cursor.append_message({"role": "assistant", "content": "a0"})
+    await agent.cursor.append_message({"role": "user", "content": "u1"})
+    last = await agent.cursor.append_message({"role": "assistant", "content": "a1"})
     ctx = agent._extension_api.context
 
     new_path = await ctx.fork(first_asst, mode="export")
 
     forked = Session.load(Path(new_path))
-    assert forked.cursor == first_asst
+    assert default_leaf(forked.entries()) == first_asst
+    assert [e["message"]["content"] for e in forked.entries() if e["type"] == "message"] == [
+        "u0",
+        "a0",
+    ]
     assert len(forked.context) == 2
-    # Source cursor is unchanged.
-    assert live.cursor != first_asst
+    assert agent.cursor.leaf == last

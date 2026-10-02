@@ -24,6 +24,7 @@ import os
 import pytest
 
 import tau_coding_agent.session_store as store
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.submission import SubmissionResult
 from tau_coding_agent.cli import CLIArgs
 from tau_coding_agent.headless import CLIError, run_print
@@ -132,8 +133,11 @@ def env(monkeypatch, tmp_path):
         session = Session.create(
             os.getcwd(), model, "openai", system_prompt="You are helpful.", name=name, id=id
         )
-        await session.append_message({"role": "user", "content": user_text})
-        await session.append_message({"role": "assistant", "content": [{"type": "text", "text": "r"}]})
+        cursor = Cursor.newest(session)
+        await cursor.append_message({"role": "user", "content": user_text})
+        await cursor.append_message(
+            {"role": "assistant", "content": [{"type": "text", "text": "r"}]}
+        )
         return session
 
     holder["seed"] = seed
@@ -259,7 +263,9 @@ async def test_resume_of_compacted_session_hands_spliced_context_to_backend(env)
     """
     a = await env["seed"]("local-llm", "a1")  # system + user "a1" + assistant "r"
     keep_id = a.entries()[-1]["id"]  # the assistant "r" message
-    await a.append_compaction("OLD-SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV)
+    await Cursor.newest(a).append_compaction(
+        "OLD-SUMMARY", first_kept_id=keep_id, tokens_before=100, **_PROV
+    )
 
     await run_print(
         CLIArgs(messages=["next"], print_mode=True, session=a.id),
@@ -274,9 +280,7 @@ async def test_resume_of_compacted_session_hands_spliced_context_to_backend(env)
     # The dropped prefix is absent from the model context — the actual fix …
     assert {"role": "user", "content": "a1"} not in [_no_ts(m) for m in ctx]
     # … even though it is still on disk (the linear fold would have re-fed it).
-    assert {"role": "user", "content": "a1"} in [
-        _no_ts(m) for m in Session.load(a.path).messages
-    ]
+    assert {"role": "user", "content": "a1"} in [_no_ts(m) for m in Session.load(a.path).messages]
 
 
 async def test_session_by_path_selects_specific(env):

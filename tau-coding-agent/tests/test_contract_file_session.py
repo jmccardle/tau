@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import pytest
 
-from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
+from tau_agent_core.session_log import default_leaf
 from tau_agent_core.testing import SessionLogContractTests
 from tau_coding_agent.session_store import Session
 
@@ -42,21 +43,21 @@ class TestOnDiskSessionContract(SessionLogContractTests):
 class TestOnDiskReloadRoundTrip:
     """The property a database store must also satisfy: reload == same tree."""
 
-    async def test_entries_and_cursor_survive_a_reload(self, tmp_path):
+    async def test_entries_and_default_leaf_survive_a_reload(self, tmp_path):
+        """No position is stored: the reloaded tree reopens at ``default_leaf``, which
+        a cursor that moved and then wrote leaves on its newest entry."""
         session = Session.create(cwd="/tmp", model="m", backend="openai", base_dir=tmp_path)
-        a = await session.append_message({"role": "user", "content": "one"})
-        await session.append_message({"role": "assistant", "content": "abandoned"})
-        await session.append_navigate(a)
-        await session.append_message({"role": "assistant", "content": "kept"})
+        cursor = Cursor.newest(session)
+        a = await cursor.append_message({"role": "user", "content": "one"})
+        await cursor.append_message({"role": "assistant", "content": "abandoned"})
+        cursor.move(a)
+        kept = await cursor.append_message({"role": "assistant", "content": "kept"})
 
         expected_entries = session.entries()
-        expected_cursor = session.cursor
-        expected_context = ConversationTree(expected_entries, expected_cursor).context_for()
+        expected_context = cursor.context()
 
         reloaded = Session.load(session.path)
 
         assert reloaded.entries() == expected_entries
-        assert reloaded.cursor == expected_cursor
-        assert (
-            ConversationTree(reloaded.entries(), reloaded.cursor).context_for() == expected_context
-        )
+        assert default_leaf(reloaded.entries()) == kept
+        assert Cursor.newest(reloaded).context() == expected_context

@@ -27,7 +27,7 @@ from tau_llm.types import Model
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.extension_locks import RESPONSE_ENTRY_TYPE
-from tau_agent_core.session_log import InMemorySessionLog, resolve_cursor
+from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.submission import Submission
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -84,7 +84,7 @@ def _submission(text: str, **kwargs: Any) -> Submission:
 
 
 async def test_black_knight_locks_with_no_ask() -> None:
-    """Row 3 of §3's table: a lock nobody can answer, only navigate off."""
+    """Row 3 of §3's table: a lock nobody can answer, only move off."""
     session = await _session()
     result = await _call(session, "none_shall_pass")
 
@@ -132,13 +132,13 @@ async def test_idiom_asks_without_locking() -> None:
 async def test_the_ni_note_is_not_a_request_at_all() -> None:
     """Row 1: neither key set, so it is an ordinary display message, not a request."""
     session = await _session()
-    await session._session_log.append_message({"role": "user", "content": "I like it. Do it, mind it!"})
+    await session.cursor.append_message({"role": "user", "content": "I like it. Do it, mind it!"})
 
     await _call(session, "knights_of_ni")
     await _turn_edge(session)
 
     assert session.pending_request is None
-    notes = [e for e in session._session_log.entries() if e.get("customType") == "knights_of_ni"]
+    notes = [e for e in session.session_log.entries() if e.get("customType") == "knights_of_ni"]
     assert len(notes) == 1
     text = notes[0]["message"]["content"][0]["text"]
     assert text.startswith(("Ni!", "Ecky-ecky-ecky-ecky-pikang ZOOM-ping"))
@@ -203,7 +203,7 @@ async def test_adopting_an_idiom_puts_a_model_visible_message_in_context() -> No
     result = await session.answer_request(request.entry_id, "Adopt", {"character": "Herbert"})
     assert result.output == "Now doing Herbert."
 
-    injected = [e for e in session._session_log.entries() if e.get("customType") == "idiom"]
+    injected = [e for e in session.session_log.entries() if e.get("customType") == "idiom"]
     assert len(injected) == 1
     message = injected[0]["message"]
     assert message["visibleToModel"] is True
@@ -212,18 +212,18 @@ async def test_adopting_an_idiom_puts_a_model_visible_message_in_context() -> No
 
 
 async def test_dismissing_the_idiom_ask_changes_nothing() -> None:
-    """Navigating off an unanswered ask leaves no idiom message behind."""
+    """Moving the cursor off an unanswered ask leaves no idiom message behind."""
     session = await _session()
     await session.run_extension_command("idiom", "")
     request = session.pending_request
     assert request is not None
 
-    entries = session._session_log.entries()
+    entries = session.session_log.entries()
     parent = next(e["parentId"] for e in entries if str(e["id"]) == request.entry_id)
-    await session._session_log.append_navigate(str(parent))
+    session.cursor.move(str(parent))
 
     assert session.pending_request is None
-    assert not [e for e in session._session_log.entries() if e.get("customType") == "idiom"]
+    assert not [e for e in session.session_log.entries() if e.get("customType") == "idiom"]
 
 
 async def test_answering_the_bridgekeeper_submits_the_answers_for_grading() -> None:
@@ -264,7 +264,7 @@ async def test_the_answers_are_readable_off_the_tree_after_the_fact() -> None:
     assert request is not None
 
     await session.answer_request(request.entry_id, "Adopt", {"character": "Lancelot"})
-    entries = session._session_log.entries()
+    entries = session.session_log.entries()
     responses = [e for e in entries if e.get("customType") == RESPONSE_ENTRY_TYPE]
     assert responses[-1]["data"]["values"] == {"character": "Lancelot"}
 
@@ -279,9 +279,8 @@ async def test_a_lock_survives_a_reload_with_the_extension_gone() -> None:
     await _turn_edge(session)
 
     reloaded_log = InMemorySessionLog()
-    reloaded_log._entries = session._session_log.entries()
+    reloaded_log._entries = session.session_log.entries()
     reloaded_log._ids = {str(e["id"]) for e in reloaded_log._entries}
-    reloaded_log._leaf_id = resolve_cursor(reloaded_log._entries)
     reloaded = AgentSession(session_log=reloaded_log, model=_model(), extensions=[])
 
     request = reloaded.pending_request

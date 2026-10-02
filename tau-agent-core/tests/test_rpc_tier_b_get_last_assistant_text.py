@@ -318,7 +318,7 @@ def _mock_session(**overrides: Any) -> MagicMock:
     session.messages = []
     session.get_last_assistant_text.side_effect = lambda: last_assistant_text(session.messages)
     session.session_log = MagicMock()
-    session.session_log.cursor = "leaf-1"
+    session.cursor.leaf = "leaf-1"
     session.subscribe.return_value = MagicMock()
     for key, value in overrides.items():
         setattr(session, key, value)

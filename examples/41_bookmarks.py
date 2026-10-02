@@ -7,9 +7,8 @@ scalar state (contrast ``38_todo``, which uses the same primitive for a list).
 
 ## What this shows
 
-``/bookmark <label>`` records "here" — the CURRENT active-path leaf id
-(:func:`ext_kit.state.active_cursor` replayed over ``ctx.entries()``, S56) — as
-a labeled waypoint, persisted via :class:`ext_kit.state.TreeStore` (S56) under
+``/bookmark <label>`` records "here" — the cursor's leaf, ``ctx.cursor.leaf`` —
+as a labeled waypoint, persisted via :class:`ext_kit.state.TreeStore` (S56) under
 its own ``customEntry`` type. Because ``customEntry`` is excluded from
 ``convert_to_llm``, the bookmark list is backplane state: durable, rendered in
 the tree, reload-invariant, but never model input. ``/goto <label>`` moves the
@@ -20,19 +19,13 @@ a display-only report of every waypoint, the same command-output channel
 ``38_todo``'s ``/todos`` and ``40_handoff`` use in place of pi's
 ``ctx.ui.custom`` (roadmap §6.1).
 
-## Why ``active_cursor`` and not ``ctx.entries()[-1]``
+## Why ``ctx.cursor.leaf`` and not ``ctx.entries()[-1]``
 
-The naive "bookmark the last entry" is wrong once the user has already
-navigated away from the tip: the last RAW entry in the log is then the
-``navigate`` entry itself, whose ``targetId`` (not its own id) is where the
-conversation actually sits. :func:`ext_kit.state.active_cursor` replays the
-log's append/navigate algebra exactly like a live ``SessionLog.cursor`` would,
-so a bookmark always names the entry the user is actually looking at, not the
-bookkeeping entry that moved them there. This is the same primitive
-:class:`ext_kit.state.TreeStore` uses internally to find the active path,
-promoted to a public helper (S64) because ``41_bookmarks`` needs the identical
-"where am I now" answer for a different purpose (recording a position, not
-filtering records).
+The naive "bookmark the last entry" is wrong once the user has moved away from
+the tip, or a sub-agent has written since: the newest entry in the log is then
+somewhere else in the tree. Only the cursor knows where the conversation sits,
+and a cursor is not durable, so it cannot be read back out of the log
+(docs/CURSORS.md §4).
 
 ## Usage
 
@@ -57,7 +50,7 @@ _EXAMPLES_DIR = str(Path(__file__).resolve().parent)
 if _EXAMPLES_DIR not in sys.path:
     sys.path.insert(0, _EXAMPLES_DIR)
 
-from ext_kit.state import TreeStore, active_cursor  # noqa: E402  (path insertion must precede this)
+from ext_kit.state import TreeStore  # noqa: E402  (path insertion must precede this)
 
 #: The ``customEntry`` type this demo's records live under (S39/S56).
 BOOKMARK_CUSTOM_TYPE = "bookmark"
@@ -82,10 +75,10 @@ async def _bookmark_command(args: str, ctx: Any, *, store: TreeStore[dict[str, A
     entries = ctx.entries()
     if not any(e.get("type") in ("message", "customMessage") for e in entries):
         return "Nothing to bookmark yet — start a conversation first."
-    cursor = active_cursor(entries)
+    leaf = ctx.cursor.leaf
 
-    await store.append({"label": label, "entry_id": cursor})
-    return f"Bookmarked '{label}' at {cursor}"
+    await store.append({"label": label, "entry_id": leaf})
+    return f"Bookmarked '{label}' at {leaf}"
 
 
 def _bookmarks_command(args: str, ctx: Any, *, store: TreeStore[dict[str, Any]]) -> str:

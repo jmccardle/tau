@@ -182,11 +182,11 @@ get_session_name() -> str | None
 
 `tau_agent_core.extension_types.ExtensionAPI.get_session_name`
 
-Read the session's current display name (pi ``getSessionName``), or
-``None`` if never set.
+The session's name (:func:`read_session_name`), or ``None`` if never set.
 
-Thin delegator to module-level :func:`read_session_name` — see B5's
-note on :func:`apply_session_name` for why this is factored out.
+**Raises**
+
+- `RuntimeError` — this api is not bound to a session.
 
 ### on
 
@@ -543,22 +543,20 @@ Enable/disable tools by name (forwards to the registry).
 ### set_session_name
 
 ```python
-set_session_name(name: str) -> None
+async set_session_name(name: str) -> None
 ```
 
 `tau_agent_core.extension_types.ExtensionAPI.set_session_name`
 
-Set the session's durable display name (pi ``setSessionName``, E9 / S64).
-
-Thin delegator to module-level :func:`apply_session_name` — docs/
-RPC-TIER-B.md B5 factors this body out to ONE definition shared with
-the RPC ``set_session_name`` verb, rather than each maintaining its
-own copy of the Fail-Early raise. See that function's docstring for
-the full behavior and the raise conditions.
+Name the session (:func:`apply_session_name`, shared with the RPC verb).
 
 **Parameters**
 
 - `name: str` — *(no description)*
+
+**Raises**
+
+- `RuntimeError` — this api is not bound to a session.
 
 ### submit
 
@@ -854,6 +852,15 @@ never produced — and one that fails the very membership check it just passed.
 - `constraints: Any = None` — *(no description)*
 - `api_key: str | None = None` — *(no description)*
 
+### cursor
+
+`tau_agent_core.extension_types.ExtensionContext.cursor: Any`
+
+The :class:`~tau_agent_core.cursor.Cursor` the bound session extends.
+
+``ctx.cursor.leaf`` is "where am I": a cursor is not durable, so it cannot
+be recovered from :meth:`entries` (docs/CURSORS.md §4).
+
 ### emit_veto_record
 
 ```python
@@ -901,14 +908,12 @@ async fork(entry_id: str | None = None, mode: Literal['in_place', 'export'] = 'i
 
 Fork the conversation — one op, two modes (plan §7 decision E3-b).
 
-- ``mode="in_place"`` (default): branch WITHIN the one session log by
-  APPENDing a ``navigate`` to ``entry_id`` (``entry_id=None`` → pre-root),
-  so the next turn appends a sibling branch off that point. Returns the
-  re-rendered active-path messages (``ConversationTree.context_for``). This
-  is the ``navigate+append`` in-place fork.
+- ``mode="in_place"`` (default): move the session's cursor to ``entry_id``
+  (``None`` → before the root), so the next turn appends a sibling branch
+  there. Returns the context at the new position.
 - ``mode="export"``: copy the session into a NEW file via ``Session.fork``
-  (session_store.py:347; the source log is never touched), optionally
-  positioning the new file's cursor at ``entry_id``. Returns the new
+  (the source is never touched). With ``entry_id``, only the path to that
+  entry is copied, so the new session continues from it. Returns the new
   session file path as a string.
 
 ``defer=True`` (S20 / decision 3): a tool calling this mid-turn cannot
@@ -998,14 +1003,11 @@ async navigate(target_id: str | None, summarize: bool = False, custom_instructio
 
 Move the bound session's cursor to ``target_id`` and return the new context.
 
-Binds :func:`tau_agent_core.tree_ops.navigate` to the extension's own session.
-``summarize=False`` APPENDs a ``navigate`` entry (zero LLM calls); the abandoned
-branch drops out of context via the ``parentId`` walk but stays on disk.
-``summarize=True`` delegates to :meth:`summarize_branch` (append a
-``branch_summary`` at the branch point). A ``target_id`` already at the cursor is
-a no-op.
+``summarize=False`` writes nothing; the branch left behind drops out of
+context by ancestry. ``summarize=True`` delegates to :meth:`summarize_branch`,
+unless the cursor is already at ``target_id``.
 
-Returns the re-rendered active-path messages (``ConversationTree.context_for``).
+Returns the context at the new position (``ConversationTree.context_for``).
 
 **Parameters**
 
@@ -1210,14 +1212,13 @@ async spawn_branch(parent_id: str | None, prompt: str, *, tools: list[str], mode
 
 `tau_agent_core.extension_types.ExtensionContext.spawn_branch`
 
-Run a tool-using sub-agent in its own lane of THIS conversation (C2/W14).
+Run a tool-using sub-agent on its own cursor in THIS conversation (C2/W14).
 
-The sub-agent is a real ``AgentSession`` whose log is a
-:class:`~tau_agent_core.session_log.BranchView` — a second cursor over the same
-entry log. Its turns are recorded as a real in-tree branch (not an ephemeral
-side-session grafted back as a blob), so the session tree stays the single truth
-for everything the agent did, and on the JMFTS store the finished branch is
-already a searchable subtree.
+The sub-agent is a real ``AgentSession`` over a second
+:class:`~tau_agent_core.cursor.Cursor` on the same log, owned by this
+session's cursor. Its turns are a real in-tree branch, so the tree stays the
+single truth for everything the agent did, and on the JMFTS store the
+finished branch is already a searchable subtree.
 
 ``parent_id`` chooses the inherited context: the fold walks up from it, so the
 sub-agent sees exactly the shared conversation prefix down to that point, plus
@@ -1793,27 +1794,17 @@ partition key).
 <!-- agent: yes -->
 
 ```python
-apply_session_name(session: Any, name: str) -> None
+async apply_session_name(session: Any, name: str) -> None
 ```
 
 `tau_agent_core.extension_types.apply_session_name`
 
-Persist ``name`` as ``session``'s durable display name via
-``append_session_info`` — the SAME entry kind the file-backed
-``tau_coding_agent.session_store.Session`` already exposes through its
-``.name`` property (and ``display_title()``'s "name, else first user
-message" fallback), so a name set here shows up in the session
-selector / TUI title exactly like a manually-renamed session file.
-``ConversationTree`` never folds a ``session_info`` entry into context
-(the same non-message treatment as ``model_change``/``thinking_change``),
-so this is ambient, reload-invariant metadata: persisted, but never model
-input.
+Append a ``session_info`` entry naming ``session``, at its cursor.
 
-The prior implementation looked for a ``_session_name`` attribute that
-``AgentSession`` never defines — a silent no-op on every real session
-(only a ``MagicMock``'s auto-vivified attributes made the old tests
-pass). This corrects it to actually persist (Fail-Early: raise instead
-of silently doing nothing).
+The model never sees a ``session_info``; the picker and the TUI title read
+the newest one (:func:`~tau_agent_core.session_log.session_name`). Whether
+the name outlives the process is the store's property: a host that must
+promise durability checks first (``rpc.commands.require_durable_session``).
 
 **Parameters**
 
@@ -1822,7 +1813,6 @@ of silently doing nothing).
 
 **Raises**
 
-- `RuntimeError` — no session is bound, or the bound session's log has no ``append_session_info`` (e.g. the SDK's RAM-only ``InMemorySessionLog`` — session naming needs a file-backed log).
 - `ValueError` — ``name`` is empty.
 
 ## ext_channel
@@ -1879,21 +1869,11 @@ read_session_name(session: Any) -> str | None
 
 `tau_agent_core.extension_types.read_session_name`
 
-Read ``session``'s current durable display name, or ``None`` if never
-set.
-
-Reads the SAME ``.name`` property the file-backed ``Session`` already
-derives from its latest ``session_info`` entry, so a fresh call always
-reflects the persisted log rather than a cached value — correct across
-a reload.
+``session``'s name (:func:`~tau_agent_core.session_log.session_name`), or ``None``.
 
 **Parameters**
 
 - `session: Any` — *(no description)*
-
-**Raises**
-
-- `RuntimeError` — no session is bound, or the bound session's log has no ``name`` (e.g. an in-memory SDK session).
 
 ## summarize_extensions
 <!-- agent: yes -->

@@ -617,10 +617,10 @@ async def test_compact_writes_a_compaction_entry_the_next_turn_cannot_undo(app, 
             reserve_tokens=256, keep_recent_tokens=200
         )
         for i in range(3):
-            await session.append_message(
+            await app._cursor.append_message(
                 {"role": "user", "content": [{"type": "text", "text": f"q{i} " + "x" * 400}]}
             )
-            await session.append_message(
+            await app._cursor.append_message(
                 {"role": "assistant", "content": [{"type": "text", "text": f"a{i} " + "y" * 400}]}
             )
 
@@ -630,7 +630,7 @@ async def test_compact_writes_a_compaction_entry_the_next_turn_cannot_undo(app, 
         entries = [e for e in session.entries() if e.get("type") == "compaction"]
         assert len(entries) == 1, "the cut has to be on the record, not only in memory"
 
-        # Re-deriving from the session — what completion_end does — keeps the cut.
-        rederived = list(session.context)
+        # Re-deriving from the cursor — what completion_end does — keeps the cut.
+        rederived = app._cursor.context()
         assert len(rederived) == len(app.messages)
         assert any("[[Compaction summary:" in str(m.get("content")) for m in rederived)

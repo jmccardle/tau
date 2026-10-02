@@ -359,7 +359,7 @@ async def test_a_failed_fork_closes_its_lane_instead_of_hanging_on_working(scrip
 
         monkeypatch.setattr(AgentSession, "prompt", _boom)
         result = await session._extension_api.context.spawn_branch(
-            session.session_log.cursor, "explore", tools=[]
+            session.cursor.leaf, "explore", tools=[]
         )
         await pilot.pause()
 

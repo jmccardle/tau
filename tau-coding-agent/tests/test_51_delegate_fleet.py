@@ -311,7 +311,7 @@ async def _session(tmp_path: Path, monkeypatch) -> tuple[AgentSession, Session]:
     live = Session.create("/tmp", "gpt-4o", "openai", base_dir=tmp_path)
     agent = AgentSession(session_log=live, model=_model(), extensions=[])
     fleet_mod.delegate_fleet_extension(agent._bind_extension_api("examples/51_delegate_fleet.py"))
-    await live.append_message(_msg("user", "run a fleet"))
+    await agent.cursor.append_message(_msg("user", "run a fleet"))
     return agent, live
 
 
@@ -420,7 +420,7 @@ async def test_ledger_dir_config_routes_the_ledger(tmp_path, monkeypatch) -> Non
         "51_delegate_fleet": {"ledger_dir": str(ledger_root), "ledger_name": "fleet-run"}
     }
     fleet_mod.delegate_fleet_extension(agent._bind_extension_api("examples/51_delegate_fleet.py"))
-    await live.append_message(_msg("user", "go"))
+    await agent.cursor.append_message(_msg("user", "go"))
     monkeypatch.setattr(fleet_mod.spawn, "stream_tau", _scripted_stream([[_turn(), _end()]]))
 
     await agent.run_extension_command("fleet", "one task")

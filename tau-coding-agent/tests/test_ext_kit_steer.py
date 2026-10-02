@@ -540,7 +540,7 @@ async def test_reminderbank_edit_is_durable_in_tree_and_reload() -> None:
     assert reminder_text in _message_text_blob(wire_payloads[-1])
 
     # ── surface 2: the persisted tree (a toolResult message node) ──
-    entries = session._session_log.entries()
+    entries = session.session_log.entries()
     tool_result_entries = [
         e
         for e in entries
@@ -550,5 +550,5 @@ async def test_reminderbank_edit_is_durable_in_tree_and_reload() -> None:
     assert any(reminder_text in _entry_message_text(e) for e in tool_result_entries)
 
     # ── surface 3: a reload (fold a fresh tree over the persisted entries) ──
-    reloaded = ConversationTree(session._session_log.entries(), session._session_log.cursor)
+    reloaded = ConversationTree(session.session_log.entries(), session.cursor.leaf)
     assert reminder_text in _message_text_blob(reloaded.context_for())

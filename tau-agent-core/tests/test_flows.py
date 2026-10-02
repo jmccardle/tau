@@ -102,20 +102,22 @@ class _Resolver:
         raise AssertionError
 
 
-class _Log:
-    def __init__(self, entries, cursor):
-        self._entries = entries
-        self.cursor = cursor
+class _Cursor:
+    """The one member the message reader uses: the tree folded at a leaf."""
 
-    def entries(self):
-        return list(self._entries)
+    def __init__(self, entries, leaf):
+        self._entries = entries
+        self.leaf = leaf
+
+    def tree(self):
+        return ConversationTree(list(self._entries), self.leaf)
 
 
 class _Session:
-    def __init__(self, *, resolver=None, extensions=(), log=None):
+    def __init__(self, *, resolver=None, extensions=(), cursor=None):
         self.model_resolver = resolver
         self._extensions = list(extensions)
-        self.session_log = log
+        self.cursor = cursor
 
     def list_managed_extensions(self):
         return list(self._extensions)
@@ -169,7 +171,7 @@ class TestEnumerateDomain:
         ]
 
     def test_message_ids_come_with_their_text(self):
-        session = _Session(log=_Log(_entries(), "e2"))
+        session = _Session(cursor=_Cursor(_entries(), "e2"))
         found = enumerate_domain("message_id", session=session)
         assert [(v.value, v.label) for v in found.values] == [
             ("e1", "run the tests"),
@@ -177,14 +179,14 @@ class TestEnumerateDomain:
         ]
 
     def test_a_message_id_scope_is_honoured(self):
-        session = _Session(log=_Log(_entries(), "e2"))
+        session = _Session(cursor=_Cursor(_entries(), "e2"))
         found = enumerate_domain(
             "message_id", session=session, scope="descendants_of_cursor", cursor="e1"
         )
         assert [v.value for v in found.values] == ["e2"]
 
     def test_the_query_searches_labels_case_insensitively(self):
-        session = _Session(log=_Log(_entries(), "e2"))
+        session = _Session(cursor=_Cursor(_entries(), "e2"))
         found = enumerate_domain("message_id", session=session, query="PASS")
         assert [v.value for v in found.values] == ["e2"]
 
@@ -204,7 +206,7 @@ class TestEnumerateDomain:
 
     def test_the_tree_reader_is_the_same_one_the_tree_exposes(self):
         """No second implementation: the dispatch calls complete_message_id."""
-        session = _Session(log=_Log(_entries(), "e2"))
+        session = _Session(cursor=_Cursor(_entries(), "e2"))
         direct = ConversationTree(_entries(), "e2").complete_message_id()
         found = enumerate_domain("message_id", session=session)
         assert [v.value for v in found.values] == [m.entry_id for m in direct.matches]

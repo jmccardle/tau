@@ -23,6 +23,7 @@ from tau_agent_core.commands import FRONTEND_COMMANDS
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Input, Static
 
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_catalog import SessionInfo
 from tau_coding_agent.app import TauApp
 from tau_coding_agent.backends import create_backend
@@ -68,9 +69,12 @@ async def submit(app: TauApp, text: str):
 async def seed(app: TauApp, cwd: str, name: str, *, turns: int = 1):
     """Write one named session for *cwd* through the app's own catalog."""
     session = app.session_catalog.create(cwd, "m", "openai", system_prompt="sys", name=name)
+    cursor = Cursor.newest(session)
     for index in range(turns):
-        await session.append_message({"role": "user", "content": f"turn {index}"})
-        await session.append_message({"role": "assistant", "content": [{"type": "text", "text": "ok"}]})
+        await cursor.append_message({"role": "user", "content": f"turn {index}"})
+        await cursor.append_message(
+            {"role": "assistant", "content": [{"type": "text", "text": "ok"}]}
+        )
     return session
 
 
@@ -450,7 +454,9 @@ async def test_a_long_title_is_elided_rather_than_wrapped(app) -> None:
     turns a single session into three rows and pushes the rest off the screen."""
     async with app.run_test() as pilot:
         await pilot.pause()
-        await seed(app, os.getcwd(), "a session name far longer than any column this dialog can give it")
+        await seed(
+            app, os.getcwd(), "a session name far longer than any column this dialog can give it"
+        )
 
         modal = await open_picker(app, pilot)
         table = modal.query_one(DataTable)

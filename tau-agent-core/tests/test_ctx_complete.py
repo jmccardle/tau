@@ -103,12 +103,12 @@ class TestStatelessness:
         """C1 is session-free: no entries, no cursor move. This is what makes the
         fan-out safe under asyncio.gather."""
         ctx, log, _ = ctx_and_log
-        before_entries, before_cursor = log.entries(), log.cursor
+        before_entries, before_leaf = log.entries(), ctx.cursor.leaf
 
         await ctx.complete([{"role": "user", "content": "hi"}])
 
         assert log.entries() == before_entries
-        assert log.cursor == before_cursor
+        assert ctx.cursor.leaf == before_leaf
 
     async def test_concurrent_fan_out(self, ctx_and_log):
         """The retrieval-review shape: N concurrent completions over one session."""

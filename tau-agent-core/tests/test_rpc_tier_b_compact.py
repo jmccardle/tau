@@ -83,6 +83,7 @@ from tau_agent_core.rpc import RPCHandler
 from tau_agent_core.rpc import commands
 from tau_agent_core.rpc.commands import RPCError
 from tau_agent_core.rpc.dialect import SESSION_NOT_PERSISTED, TURN_STILL_RUNNING
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_llm.types import Model
 
@@ -128,7 +129,7 @@ class _PersistedLog(InMemorySessionLog):
 
 
 def _msg(role: str, text: str, **extra: object) -> dict:
-    """A bare message dict for InMemorySessionLog.append_message (mirrors
+    """A bare message dict for Cursor.append_message (mirrors
     test_compaction_engine.py's local helper of the same name — no cross-
     test-file import, per test_rpc_tier_b_scaffolding.py's stated precedent)."""
     msg: dict = {"role": role, "content": [{"type": "text", "text": text}]}
@@ -172,9 +173,10 @@ async def _multi_turn_session(settings: CompactionSettings) -> AgentSession:
     to find a cut point once `keep_recent_tokens` forces one (same recipe as
     test_compaction_engine.py's module-local `_session`)."""
     log = _PersistedLog()
-    await log.append_message(_msg("user", "old question"))
-    await log.append_message(_msg("assistant", "old answer", stop_reason="stop"))
-    await log.append_message(_msg("user", "current"))
+    cursor = Cursor.newest(log)
+    await cursor.append_message(_msg("user", "old question"))
+    await cursor.append_message(_msg("assistant", "old answer", stop_reason="stop"))
+    await cursor.append_message(_msg("user", "current"))
     return AgentSession(
         session_log=log, model=_model(), api_key="sk-test", compaction_settings=settings
     )
@@ -357,7 +359,7 @@ async def test_compaction_end_correlates_to_the_request_that_started_it(
 async def test_compact_on_empty_session_reports_performed_false(
     empty_session: AgentSession, empty_handler: RPCHandler
 ) -> None:
-    cursor_before = empty_session.session_log.cursor
+    cursor_before = empty_session.cursor.leaf
     _ack, end = await _compact(empty_handler)
     assert end["performed"] is False
     assert end["cursor"] == cursor_before
@@ -401,7 +403,7 @@ async def test_compact_under_the_shipped_settings_reports_performed_false(
     monkeypatch.setattr("tau_agent_core.compaction.complete_simple", _boom)
     session = await _multi_turn_session(CompactionSettings())  # the SHIPPED settings
     handler = RPCHandler(session)
-    cursor_before = session.session_log.cursor
+    cursor_before = session.cursor.leaf
     entries_before = list(session.session_log.entries())
 
     _ack, end = await _compact(handler)
@@ -424,7 +426,7 @@ async def test_compact_performed_true_reports_full_result_and_new_cursor(
     )
     session = await _multi_turn_session(CompactionSettings(keep_recent_tokens=1))
     handler = RPCHandler(session)
-    cursor_before = session.session_log.cursor
+    cursor_before = session.cursor.leaf
 
     _ack, end = await _compact(handler, {"custom_instructions": "be terse"})
 
@@ -438,7 +440,7 @@ async def test_compact_performed_true_reports_full_result_and_new_cursor(
     assert end["modified_files"] == []
     assert isinstance(end["usage"], dict)
     assert end["cursor"] != cursor_before
-    assert end["cursor"] == session.session_log.cursor
+    assert end["cursor"] == session.cursor.leaf
     # The mutation actually landed on the session (not just reported).
     assert any(
         "[[Compaction summary:" in m["content"][0]["text"]
@@ -470,7 +472,7 @@ async def test_compact_that_raises_reports_is_error_and_omits_performed(
     assert end["is_error"] is True
     assert "summarizer said no" in end["error"]
     assert "performed" not in end
-    assert end["cursor"] == empty_session.session_log.cursor
+    assert end["cursor"] == empty_session.cursor.leaf
     # The single-flight slot is released even on the failure path.
     assert empty_handler.compaction_in_flight is None
 
@@ -755,7 +757,7 @@ async def test_compact_and_set_auto_compaction_disagree_on_purpose(
 
     result = await commands._handle_set_auto_compaction(empty_handler, 2, {"enabled": True})
     assert result["enabled"] is True
-    assert result["cursor"] == empty_session.session_log.cursor
+    assert result["cursor"] == empty_session.cursor.leaf
 
 
 # ── finding 5: abort reaches an in-flight compaction ───────────────────────
@@ -810,7 +812,7 @@ async def test_abort_cancels_an_in_flight_compaction_and_says_which(
     assert params["is_error"] is False
     assert params["error"] is None
     assert "performed" not in params
-    assert params["cursor"] == empty_session.session_log.cursor
+    assert params["cursor"] == empty_session.cursor.leaf
     assert empty_handler.compaction_in_flight is None
     assert not empty_session.turn_lock.locked()
 
@@ -833,7 +835,7 @@ async def test_an_aborted_compaction_writes_nothing(
     never the close would believe work was still running on a session that
     has none — a second way to be told nothing true.
 
-    MUTATION TARGET: move ``session_log.append_compaction`` in
+    MUTATION TARGET: move ``cursor.append_compaction`` in
     ``agent_session._perform_compaction`` ahead of ``run_compaction`` — the
     entry-list assertion goes red."""
     provider_reached = asyncio.Event()
@@ -847,7 +849,7 @@ async def test_an_aborted_compaction_writes_nothing(
     session = await _multi_turn_session(CompactionSettings(keep_recent_tokens=1))
     handler = RPCHandler(session)
     entries_before = list(session.session_log.entries())
-    cursor_before = session.session_log.cursor
+    cursor_before = session.cursor.leaf
 
     await commands._handle_compact(handler, 1, {})
     await asyncio.wait_for(provider_reached.wait(), timeout=5.0)
@@ -860,7 +862,7 @@ async def test_an_aborted_compaction_writes_nothing(
     end = [i for i in items if i.get("method") == commands.COMPACTION_END_METHOD]
     assert len(end) == 1 and end[0]["params"]["cancelled"] is True
     assert session.session_log.entries() == entries_before
-    assert session.session_log.cursor == cursor_before
+    assert session.cursor.leaf == cursor_before
 
     lifecycle = [
         i["params"]["type"]

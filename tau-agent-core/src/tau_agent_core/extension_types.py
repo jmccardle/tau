@@ -1125,6 +1125,15 @@ class ExtensionContext:
             return None
         return await session.compact(custom_instructions=custom_instructions)
 
+    @property
+    def cursor(self) -> Any:
+        """The :class:`~tau_agent_core.cursor.Cursor` the bound session extends.
+
+        ``ctx.cursor.leaf`` is "where am I": a cursor is not durable, so it cannot
+        be recovered from :meth:`entries` (docs/CURSORS.md §4).
+        """
+        return self._require_session().cursor
+
     def entries(self) -> list[dict[str, Any]]:
         """The bound session log's raw, append-only entries (all kinds).
 
@@ -1280,14 +1289,13 @@ class ExtensionContext:
         label: str | None = None,
         system_prompt: str | None = None,
     ) -> "BranchResult":
-        """Run a tool-using sub-agent in its own lane of THIS conversation (C2/W14).
+        """Run a tool-using sub-agent on its own cursor in THIS conversation (C2/W14).
 
-        The sub-agent is a real ``AgentSession`` whose log is a
-        :class:`~tau_agent_core.session_log.BranchView` — a second cursor over the same
-        entry log. Its turns are recorded as a real in-tree branch (not an ephemeral
-        side-session grafted back as a blob), so the session tree stays the single truth
-        for everything the agent did, and on the JMFTS store the finished branch is
-        already a searchable subtree.
+        The sub-agent is a real ``AgentSession`` over a second
+        :class:`~tau_agent_core.cursor.Cursor` on the same log, owned by this
+        session's cursor. Its turns are a real in-tree branch, so the tree stays the
+        single truth for everything the agent did, and on the JMFTS store the
+        finished branch is already a searchable subtree.
 
         ``parent_id`` chooses the inherited context: the fold walks up from it, so the
         sub-agent sees exactly the shared conversation prefix down to that point, plus
@@ -1341,11 +1349,12 @@ class ExtensionContext:
             it does not raise.
         """
         from tau_agent_core.agent_session import AgentSession
-        from tau_agent_core.session_log import open_branch
+        from tau_agent_core.cursor import Cursor
 
         session = self._require_session()
-        log = session.session_log
-        branch = open_branch(log, parent_id, label=label or prompt[:60])
+        branch = Cursor(
+            session.session_log, parent_id, owner=session.cursor, label=label or prompt[:60]
+        )
 
         available_tools = session._build_turn_tools()
 
@@ -1360,7 +1369,7 @@ class ExtensionContext:
         scoped = [t for t in available_tools if getattr(t, "name", None) in set(tools)]
 
         sub = AgentSession(
-            session_log=branch,
+            cursor=branch,
             model=self.resolve_model(model),
             system_prompt=session._system_prompt if system_prompt is None else system_prompt,
             tools=scoped,
@@ -1371,7 +1380,7 @@ class ExtensionContext:
 
         async def _forward(event: Any) -> None:
             await session._events.emit_channel(
-                "branch_event", lane=branch.lane, label=branch.label, event=event
+                "branch_event", lane=branch.id, label=branch.label, event=event
             )
 
         sub.subscribe(_forward)
@@ -1383,13 +1392,13 @@ class ExtensionContext:
             except Exception as exc:  # noqa: BLE001 — containment is the point (§9.2/5)
                 branch_error = str(exc)
                 await branch.append_custom_entry(
-                    "branch_error", {"lane": branch.lane, "label": branch.label, "error": str(exc)}
+                    "branch_error", {"label": branch.label, "error": str(exc)}
                 )
                 return BranchResult(
                     ok=False,
-                    lane=branch.lane,
+                    lane=branch.id,
                     label=branch.label,
-                    leaf=branch.cursor,
+                    leaf=branch.leaf,
                     messages=[],
                     error=str(exc),
                 )
@@ -1398,14 +1407,14 @@ class ExtensionContext:
                 raise
         finally:
             await session._events.emit_channel(
-                "branch_end", lane=branch.lane, label=branch.label, error=branch_error
+                "branch_end", lane=branch.id, label=branch.label, error=branch_error
             )
 
         return BranchResult(
             ok=True,
-            lane=branch.lane,
+            lane=branch.id,
             label=branch.label,
-            leaf=branch.cursor,
+            leaf=branch.leaf,
             messages=messages,
             error=None,
         )
@@ -1428,7 +1437,7 @@ class ExtensionContext:
 
         session = self._require_session()
         messages, summary_usage = await summarize_and_navigate(
-            session.session_log,
+            session.cursor,
             from_entry,
             session._model,
             api_key=session._api_key,
@@ -1445,24 +1454,20 @@ class ExtensionContext:
     ) -> list[dict[str, Any]]:
         """Move the bound session's cursor to ``target_id`` and return the new context.
 
-        Binds :func:`tau_agent_core.tree_ops.navigate` to the extension's own session.
-        ``summarize=False`` APPENDs a ``navigate`` entry (zero LLM calls); the abandoned
-        branch drops out of context via the ``parentId`` walk but stays on disk.
-        ``summarize=True`` delegates to :meth:`summarize_branch` (append a
-        ``branch_summary`` at the branch point). A ``target_id`` already at the cursor is
-        a no-op.
+        ``summarize=False`` writes nothing; the branch left behind drops out of
+        context by ancestry. ``summarize=True`` delegates to :meth:`summarize_branch`,
+        unless the cursor is already at ``target_id``.
 
-        Returns the re-rendered active-path messages (``ConversationTree.context_for``).
+        Returns the context at the new position (``ConversationTree.context_for``).
         """
         from tau_agent_core.tree_ops import navigate as _navigate
 
         session = self._require_session()
-        log = session.session_log
-        if summarize and target_id != log.cursor:
+        if summarize and target_id != session.cursor.leaf:
             if target_id is None:
                 raise ValueError("navigate(summarize=True) requires a target_id to summarize")
             return await self.summarize_branch(target_id, custom_instructions=custom_instructions)
-        return await _navigate(log, target_id)
+        return _navigate(session.cursor, target_id)
 
     async def fork(
         self,
@@ -1472,14 +1477,12 @@ class ExtensionContext:
     ) -> Any:
         """Fork the conversation — one op, two modes (plan §7 decision E3-b).
 
-        - ``mode="in_place"`` (default): branch WITHIN the one session log by
-          APPENDing a ``navigate`` to ``entry_id`` (``entry_id=None`` → pre-root),
-          so the next turn appends a sibling branch off that point. Returns the
-          re-rendered active-path messages (``ConversationTree.context_for``). This
-          is the ``navigate+append`` in-place fork.
+        - ``mode="in_place"`` (default): move the session's cursor to ``entry_id``
+          (``None`` → before the root), so the next turn appends a sibling branch
+          there. Returns the context at the new position.
         - ``mode="export"``: copy the session into a NEW file via ``Session.fork``
-          (session_store.py:347; the source log is never touched), optionally
-          positioning the new file's cursor at ``entry_id``. Returns the new
+          (the source is never touched). With ``entry_id``, only the path to that
+          entry is copied, so the new session continues from it. Returns the new
           session file path as a string.
 
         ``defer=True`` (S20 / decision 3): a tool calling this mid-turn cannot
@@ -1491,16 +1494,14 @@ class ExtensionContext:
         in-memory SDK log cannot be exported to a file and RAISES rather than
         fabricating one.
         """
-        from tau_agent_core.conversation_tree import ConversationTree
-
         session = self._require_session()
         if defer:
             session._defer_fork(entry_id=entry_id, mode=mode)
             return None
         log = session.session_log
         if mode == "in_place":
-            await log.append_navigate(entry_id)
-            return ConversationTree(log.entries(), log.cursor).context_for()
+            session.cursor.move(entry_id)
+            return session.cursor.context()
         if mode == "export":
             fork_classmethod = getattr(type(log), "fork", None)
             if fork_classmethod is None:
@@ -1509,9 +1510,7 @@ class ExtensionContext:
                     "cannot be exported to a new file"
                 )
             cwd = getattr(log, "cwd", None) or self._cwd
-            forked = fork_classmethod(log, cwd)
-            if entry_id is not None:
-                await forked.append_navigate(entry_id)
+            forked = fork_classmethod(log, cwd, at=entry_id)
             return str(forked.path)
         raise ValueError(f"fork: unknown mode {mode!r} (expected 'in_place' or 'export')")
 
@@ -1564,63 +1563,28 @@ class ExtensionContext:
 
 
 @agent_facing(topic="extensions")
-def apply_session_name(session: Any, name: str) -> None:
-    """Persist ``name`` as ``session``'s durable display name via
-    ``append_session_info`` — the SAME entry kind the file-backed
-    ``tau_coding_agent.session_store.Session`` already exposes through its
-    ``.name`` property (and ``display_title()``'s "name, else first user
-    message" fallback), so a name set here shows up in the session
-    selector / TUI title exactly like a manually-renamed session file.
-    ``ConversationTree`` never folds a ``session_info`` entry into context
-    (the same non-message treatment as ``model_change``/``thinking_change``),
-    so this is ambient, reload-invariant metadata: persisted, but never model
-    input.
+async def apply_session_name(session: Any, name: str) -> None:
+    """Append a ``session_info`` entry naming ``session``, at its cursor.
 
-    The prior implementation looked for a ``_session_name`` attribute that
-    ``AgentSession`` never defines — a silent no-op on every real session
-    (only a ``MagicMock``'s auto-vivified attributes made the old tests
-    pass). This corrects it to actually persist (Fail-Early: raise instead
-    of silently doing nothing).
+    The model never sees a ``session_info``; the picker and the TUI title read
+    the newest one (:func:`~tau_agent_core.session_log.session_name`). Whether
+    the name outlives the process is the store's property: a host that must
+    promise durability checks first (``rpc.commands.require_durable_session``).
 
     Raises:
-        RuntimeError: no session is bound, or the bound session's log has no
-            ``append_session_info`` (e.g. the SDK's RAM-only
-            ``InMemorySessionLog`` — session naming needs a file-backed log).
         ValueError: ``name`` is empty.
     """
     if not name:
         raise ValueError("set_session_name: name must be a non-empty string")
-    log = getattr(session, "session_log", None)
-    if log is None or not hasattr(log, "append_session_info"):
-        raise RuntimeError(
-            "set_session_name: the bound session has no append_session_info "
-            "log (e.g. an in-memory SDK session) — nowhere durable to land the name"
-        )
-    log.append_session_info(name)
+    await session.cursor.append("session_info", name=name)
 
 
 @agent_facing(topic="extensions")
 def read_session_name(session: Any) -> str | None:
-    """Read ``session``'s current durable display name, or ``None`` if never
-    set.
+    """``session``'s name (:func:`~tau_agent_core.session_log.session_name`), or ``None``."""
+    from tau_agent_core.session_log import session_name
 
-    Reads the SAME ``.name`` property the file-backed ``Session`` already
-    derives from its latest ``session_info`` entry, so a fresh call always
-    reflects the persisted log rather than a cached value — correct across
-    a reload.
-
-    Raises:
-        RuntimeError: no session is bound, or the bound session's log has no
-            ``name`` (e.g. an in-memory SDK session).
-    """
-    log = getattr(session, "session_log", None)
-    if log is None or not hasattr(log, "name"):
-        raise RuntimeError(
-            "get_session_name: the bound session has no durable name to read "
-            "(e.g. an in-memory SDK session)"
-        )
-    name = log.name
-    return str(name) if name else None
+    return session_name(session.session_log.entries())
 
 
 @agent_facing(topic="extensions")
@@ -2461,25 +2425,27 @@ class ExtensionAPI:
         entry_id: str = await self._session._append_custom_entry(REQUEST_ENTRY_TYPE, data)
         return entry_id
 
-    def set_session_name(self, name: str) -> None:
-        """Set the session's durable display name (pi ``setSessionName``, E9 / S64).
+    async def set_session_name(self, name: str) -> None:
+        """Name the session (:func:`apply_session_name`, shared with the RPC verb).
 
-        Thin delegator to module-level :func:`apply_session_name` — docs/
-        RPC-TIER-B.md B5 factors this body out to ONE definition shared with
-        the RPC ``set_session_name`` verb, rather than each maintaining its
-        own copy of the Fail-Early raise. See that function's docstring for
-        the full behavior and the raise conditions.
+        Raises:
+            RuntimeError: this api is not bound to a session.
         """
-        apply_session_name(self._session, name)
+        await apply_session_name(self._bound_session("set_session_name"), name)
 
     def get_session_name(self) -> str | None:
-        """Read the session's current display name (pi ``getSessionName``), or
-        ``None`` if never set.
+        """The session's name (:func:`read_session_name`), or ``None`` if never set.
 
-        Thin delegator to module-level :func:`read_session_name` — see B5's
-        note on :func:`apply_session_name` for why this is factored out.
+        Raises:
+            RuntimeError: this api is not bound to a session.
         """
-        return read_session_name(self._session)
+        return read_session_name(self._bound_session("get_session_name"))
+
+    def _bound_session(self, verb: str) -> Any:
+        """The bound ``AgentSession``, or raise naming ``verb`` (Fail-Early)."""
+        if self._session is None:
+            raise RuntimeError(f"api.{verb}: this ExtensionAPI is not bound to an AgentSession")
+        return self._session
 
     def send_user_message(self, content: str, deliver_as: str = "followUp") -> None:
         """Queue a user message for the agent (pi ``sendUserMessage``).

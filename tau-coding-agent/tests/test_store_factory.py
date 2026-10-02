@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import pytest
 
+from tau_agent_core.cursor import Cursor
+
 from tau_coding_agent.session_store import FileSessionCatalog
 from tau_coding_agent.store_factory import (
     StoreError,
@@ -112,8 +114,9 @@ async def test_no_session_does_not_contact_an_unreachable_jmfts_store():
         {"session_store": {"backend": "jmfts", "url": UNREACHABLE_URL}}, None, persist=False
     )
     session = catalog.create_ephemeral("/tmp/anywhere", "m", "openai")
-    await session.append_message({"role": "user", "content": "no server was ever contacted"})
-    assert [m["content"] for m in session.messages] == ["no server was ever contacted"]
+    cursor = Cursor.newest(session)
+    await cursor.append_message({"role": "user", "content": "no server was ever contacted"})
+    assert [m["content"] for m in cursor.context()] == ["no server was ever contacted"]
 
 
 def test_no_session_still_refuses_a_misconfigured_store():

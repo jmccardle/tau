@@ -43,6 +43,8 @@ from pathlib import Path
 
 import pytest
 
+from tau_agent_core.cursor import Cursor
+
 from tau_coding_agent.session_store import (
     Session,
     most_recent,
@@ -112,9 +114,12 @@ async def _plant_real_session(env: dict[str, Path]) -> Session:
         "openai",
         base_dir=_user_sessions(env),
     )
-    session.append_session_info("my real work")
-    await session.append_message({"role": "user", "content": "the actual question"})
-    await session.append_message({"role": "assistant", "content": [{"type": "text", "text": "answer"}]})
+    cursor = Cursor.newest(session)
+    await cursor.append("session_info", name="my real work")
+    await cursor.append_message({"role": "user", "content": "the actual question"})
+    await cursor.append_message(
+        {"role": "assistant", "content": [{"type": "text", "text": "answer"}]}
+    )
     return session
 
 

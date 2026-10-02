@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from tau_agent_core.cursor import Cursor
 from tau_jmfts.store import JmftsSessionLog, _content_for
 
 _ELIDE_PROV = {"covered_entries": 1, "covered_tokens": 50, "agent_spec_id": None}
@@ -42,12 +43,10 @@ class RecordingClient:
 
 
 def test_message_and_summary_projections_are_unchanged() -> None:
-    assert (
-        _content_for("message", {"message": {"role": "user", "content": "hi"}}) == "hi"
-    )
+    assert _content_for("message", {"message": {"role": "user", "content": "hi"}}) == "hi"
     assert _content_for("compaction", {"summary": "S", "firstKeptId": "7"}) == "S"
     assert _content_for("branch_summary", {"summary": "S", "fromId": "7"}) == "S"
-    assert _content_for("navigate", {"targetId": "7"}) == ""
+    assert _content_for("navigate", {"targetId": "7"}) == ""  # legacy kind, still imported
 
 
 def test_elide_projects_searchable_text_naming_its_resume_point() -> None:
@@ -78,8 +77,9 @@ def test_elide_projection_invents_no_count() -> None:
 async def test_appended_elide_document_carries_the_searchable_content() -> None:
     client = RecordingClient()
     log = JmftsSessionLog.create(client, cwd=".", model="m", backend="b")  # type: ignore[arg-type]
-    anchor = await log.append_message({"role": "user", "content": "keep me"})
-    elide_id = await log.append_elide(anchor, **_ELIDE_PROV)
+    cursor = Cursor.newest(log)
+    anchor = await cursor.append_message({"role": "user", "content": "keep me"})
+    elide_id = await cursor.append_elide(anchor, **_ELIDE_PROV)
 
     doc = next(d for d in client.docs if d["id"] == int(elide_id))
     assert doc["usetype"] == "tau:elide"

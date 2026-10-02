@@ -17,7 +17,6 @@ Reference: PHASE-3-SUBPHASE-0.md, Extension API Surface contract
 """
 
 import io
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -416,46 +415,37 @@ class TestExtensionAPIAppendEntry:
 class TestExtensionAPISession:
     """Tests for ExtensionAPI session methods."""
 
-    def test_set_session_name_raises_without_session(self):
-        """ExtensionAPI.set_session_name() Fail-Early raises without a bound
-        session (S64: the old ``_session_name``-attribute check was a silent
-        no-op on every real session; a bare API has nowhere durable to land
-        the name either, so it raises like its sibling durable-write ops)."""
+    async def test_set_session_name_raises_without_session(self):
+        """Fail-Early: a bare API has no cursor to append the name at."""
         api = ExtensionAPI()
         with pytest.raises(RuntimeError):
-            api.set_session_name("My Session")
+            await api.set_session_name("My Session")
 
-    def test_set_session_name_with_session(self):
-        """ExtensionAPI.set_session_name() forwards to the session log's
-        append_session_info (S64). Reads ``session.session_log`` — the
-        PUBLIC property (docs/RPC-TIER-B.md B5's shared
-        extension_types.apply_session_name, which the RPC set_session_name
-        verb also calls, reads the same public property require_log_appender
-        and get_state's own cursor read already use — not the private
-        ``_session_log`` attribute the pre-refactor inline body read)."""
+    async def test_set_session_name_with_session(self):
+        """Appends a ``session_info`` at the session's cursor (``apply_session_name``)."""
         mock_session = MagicMock()
+        mock_session.cursor.append = AsyncMock(return_value="e1")
         api = ExtensionAPI(session=mock_session)
-        api.set_session_name("new_name")
-        mock_session.session_log.append_session_info.assert_called_once_with("new_name")
+        await api.set_session_name("new_name")
+        mock_session.cursor.append.assert_awaited_once_with("session_info", name="new_name")
 
     def test_get_session_name_raises_without_session(self):
-        """ExtensionAPI.get_session_name() Fail-Early raises without a bound
-        session (no durable name to read)."""
+        """Fail-Early: a bare API has no tree to read a name from."""
         api = ExtensionAPI()
         with pytest.raises(RuntimeError):
             api.get_session_name()
 
     def test_get_session_name_reads_the_session_log(self):
-        """ExtensionAPI.get_session_name() reads the session log's ``.name``,
-        returning ``None`` for a falsy (unset) name rather than the raw
-        value. Public ``session.session_log`` — see
-        test_set_session_name_with_session's note."""
+        """The newest ``session_info`` in the session's entries, else ``None``."""
         mock_session = MagicMock()
-        mock_session.session_log.name = None
+        mock_session.session_log.entries.return_value = []
         api = ExtensionAPI(session=mock_session)
         assert api.get_session_name() is None
 
-        mock_session.session_log.name = "existing-name"
+        mock_session.session_log.entries.return_value = [
+            {"id": "a", "parentId": None, "type": "session_info", "name": "old-name"},
+            {"id": "b", "parentId": "a", "type": "session_info", "name": "existing-name"},
+        ]
         assert api.get_session_name() == "existing-name"
 
     def test_send_user_message_raises_without_queue(self):
@@ -1255,7 +1245,7 @@ class TestExtensionAPIIntegration:
                 pass
 
         ctx = ExtensionContext()
-        api_tui = ExtensionAPI(context=ctx)
+        ExtensionAPI(context=ctx)
         ctx.set_ui_delegate(MockTUI())
         assert ctx._ui.interactive is True
         assert ctx._ui._tui_delegate is not None

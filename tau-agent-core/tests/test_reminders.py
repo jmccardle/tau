@@ -293,7 +293,7 @@ async def test_both_reminder_channels_are_durable_in_tree_transcript_and_reload(
     assert preamble in _message_text_blob(wire_payloads[0])
 
     # ── surface 2: the TREE (the persisted session_log entries) ──
-    entries = session._session_log.entries()
+    entries = session.session_log.entries()
 
     # the preamble is a durable customMessage node with the reminder-bank origin type.
     custom_entries = [e for e in entries if e.get("type") == "customMessage"]
@@ -311,7 +311,7 @@ async def test_both_reminder_channels_are_durable_in_tree_transcript_and_reload(
     assert any(tests_ro in _entry_message_text(e) for e in tool_result_entries)
 
     # ── surface 3: a RELOAD (fold a fresh tree over the persisted entries) ──
-    reloaded = ConversationTree(session._session_log.entries(), session._session_log.cursor)
+    reloaded = ConversationTree(session.session_log.entries(), session.cursor.leaf)
     reload_blob = _message_text_blob(reloaded.context_for())
     assert preamble in reload_blob
     assert tests_ro in reload_blob

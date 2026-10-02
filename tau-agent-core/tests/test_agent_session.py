@@ -30,12 +30,10 @@ from tau_agent_core.session import SessionState
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
 from tau_agent_core.sdk import (
-    AgentSession as SDKAgentSession,
     create_agent_session,
     resolve_model,
     _resolve_tools,
     _build_system_prompt,
-    _load_extensions,
 )
 
 #: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
@@ -689,7 +687,7 @@ class TestAbortDuringPrompt:
             await asyncio.wait_for(task, timeout=2.0)
             return messages
 
-        messages = asyncio.run(abort_then_prompt())
+        asyncio.run(abort_then_prompt())
         assert session.is_streaming is False
 
     def test_abort_sets_is_streaming_false(self):
@@ -742,7 +740,7 @@ class TestContinueConversation:
         msg_count_1 = len(session.messages)
 
         # Continue
-        messages = asyncio.run(session.continue_conversation())
+        asyncio.run(session.continue_conversation())
         msg_count_2 = len(session.messages)
         assert msg_count_2 > msg_count_1
 
@@ -983,7 +981,7 @@ class TestExtensions:
         def my_ext(api):
             ext_called.append(api)
 
-        session = self.create_session(extensions=[my_ext])
+        self.create_session(extensions=[my_ext])
         assert len(ext_called) == 1
         assert isinstance(ext_called[0], ExtensionAPI)
 
@@ -1149,7 +1147,7 @@ class TestExtensions:
         def ext2(api):
             call_order.append("ext2")
 
-        session = self.create_session(extensions=[ext1, ext2])
+        self.create_session(extensions=[ext1, ext2])
         assert call_order == ["ext1", "ext2"]
 
     def test_empty_extensions_list(self):
@@ -1182,19 +1180,21 @@ class TestExtensions:
             ui = api.ui
             assert ui is not None
 
-        session = self.create_session(extensions=[my_ext])
+        self.create_session(extensions=[my_ext])
 
-    def test_extension_api_set_session_name_raises_on_in_memory_session(self):
-        """ExtensionAPI.set_session_name() Fail-Early raises when the bound
-        session's log has no durable name slot (the SDK's in-memory log, as
-        this fixture uses) — session naming needs a file-backed log (S64)."""
+    async def test_extension_api_set_session_name_names_an_in_memory_session(self):
+        """Naming works on any store: a ``session_info`` lands at the session's cursor."""
+        captured = []
 
         def my_ext(api):
-            assert api._session is not None
-            with pytest.raises(RuntimeError):
-                api.set_session_name("test-session")
+            captured.append(api)
 
-        self.create_session(extensions=[my_ext])
+        session = self.create_session(extensions=[my_ext])
+        await captured[0].set_session_name("test-session")
+
+        assert captured[0].get_session_name() == "test-session"
+        leaf = next(e for e in session.session_log.entries() if e["id"] == session.cursor.leaf)
+        assert leaf["type"] == "session_info"
 
     def test_extension_api_can_register_command(self):
         """ExtensionAPI.register_command() lands in the session-owned registry."""

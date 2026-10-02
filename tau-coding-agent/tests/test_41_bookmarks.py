@@ -5,15 +5,14 @@ see the module docstring for why).
 
 Proves:
 
-* ``/bookmark <label>`` records the CURRENT active-path leaf (via
-  ``ext_kit.state.active_cursor``, not the raw last log entry) as a durable
-  ``customEntry`` waypoint (``ext_kit.state.TreeStore``, S56);
+* ``/bookmark <label>`` records the session cursor's leaf (``ctx.cursor.leaf``,
+  not the newest log entry) as a durable ``customEntry`` waypoint
+  (``ext_kit.state.TreeStore``, S56);
 * ``/bookmarks`` reports every waypoint through the S46 command-output channel;
 * ``/goto <label>`` moves the session cursor via ``ctx.navigate`` — zero LLM
   calls — to exactly the bookmarked entry;
-* bookmarking after a ``navigate`` away from the tip names the entry the user
-  is actually looking at, not the ``navigate`` bookkeeping entry itself (the
-  reason ``active_cursor`` exists instead of ``ctx.entries()[-1]``);
+* bookmarking after the cursor moves off the tip names where the cursor sits,
+  not the newest entry (why it reads ``ctx.cursor.leaf``, not ``ctx.entries()[-1]``);
 * RELOAD-INVARIANCE: a fresh extension instance over a reloaded on-disk
   ``Session`` reports the exact same bookmarks.
 """
@@ -75,16 +74,16 @@ async def test_bookmark_with_no_history_reports_and_does_not_crash(tmp_path):
 
 
 async def test_bookmark_requires_a_label(tmp_path):
-    agent, live = _session_with_bookmarks(tmp_path)
-    await live.append_message(_msg("user", "hi"))
+    agent, _live = _session_with_bookmarks(tmp_path)
+    await agent.cursor.append_message(_msg("user", "hi"))
     result = await agent.run_extension_command("bookmark", "   ")
     assert result.output == "Usage: /bookmark <label>"
 
 
 async def test_bookmark_records_current_leaf_and_bookmarks_lists_it(tmp_path):
-    agent, live = _session_with_bookmarks(tmp_path)
-    await live.append_message(_msg("user", "hello"))
-    leaf_id = await live.append_message(_msg("assistant", "hi there"))
+    agent, _live = _session_with_bookmarks(tmp_path)
+    await agent.cursor.append_message(_msg("user", "hello"))
+    leaf_id = await agent.cursor.append_message(_msg("assistant", "hi there"))
 
     bookmark_result = await agent.run_extension_command("bookmark", "greeting")
     assert bookmark_result.output == f"Bookmarked 'greeting' at {leaf_id}"
@@ -100,10 +99,10 @@ async def test_bookmarks_empty_report(tmp_path):
 
 
 async def test_rebookmarking_a_label_moves_it_not_duplicates(tmp_path):
-    agent, live = _session_with_bookmarks(tmp_path)
-    first_id = await live.append_message(_msg("user", "u0"))
+    agent, _live = _session_with_bookmarks(tmp_path)
+    first_id = await agent.cursor.append_message(_msg("user", "u0"))
     await agent.run_extension_command("bookmark", "here")
-    second_id = await live.append_message(_msg("assistant", "a0"))
+    second_id = await agent.cursor.append_message(_msg("assistant", "a0"))
     await agent.run_extension_command("bookmark", "here")
 
     result = await agent.run_extension_command("bookmarks", "")
@@ -112,20 +111,20 @@ async def test_rebookmarking_a_label_moves_it_not_duplicates(tmp_path):
 
 
 async def test_goto_moves_the_cursor_to_the_bookmarked_entry(tmp_path):
-    agent, live = _session_with_bookmarks(tmp_path)
-    branch_point = await live.append_message(_msg("user", "before"))
+    agent, _live = _session_with_bookmarks(tmp_path)
+    branch_point = await agent.cursor.append_message(_msg("user", "before"))
     await agent.run_extension_command("bookmark", "before-point")
-    await live.append_message(_msg("assistant", "after"))
-    assert live.cursor != branch_point
+    await agent.cursor.append_message(_msg("assistant", "after"))
+    assert agent.cursor.leaf != branch_point
 
     goto_result = await agent.run_extension_command("goto", "before-point")
     assert goto_result.output == f"Jumped to bookmark 'before-point' ({branch_point})"
-    assert live.cursor == branch_point
+    assert agent.cursor.leaf == branch_point
 
 
 async def test_goto_unknown_label_reports_error(tmp_path):
-    agent, live = _session_with_bookmarks(tmp_path)
-    await live.append_message(_msg("user", "hi"))
+    agent, _live = _session_with_bookmarks(tmp_path)
+    await agent.cursor.append_message(_msg("user", "hi"))
     result = await agent.run_extension_command("goto", "nope")
     assert result.output == "No bookmark named 'nope'"
 
@@ -136,15 +135,13 @@ async def test_goto_requires_a_label(tmp_path):
     assert result.output == "Usage: /goto <label>"
 
 
-async def test_bookmark_after_navigate_names_the_target_not_the_navigate_entry(tmp_path):
-    """The reason ``active_cursor`` exists instead of ``ctx.entries()[-1]``: once
-    the user has navigated away from the tip, the last RAW entry is the
-    ``navigate`` bookkeeping node itself — a bookmark must name where the user
-    actually is (the navigate's target), not that node."""
-    agent, live = _session_with_bookmarks(tmp_path)
-    root_id = await live.append_message(_msg("user", "root"))
-    await live.append_message(_msg("assistant", "branch A"))
-    await live.append_navigate(root_id)  # cursor now sits at root_id, last raw entry is "navigate"
+async def test_bookmark_after_a_move_names_the_cursor_leaf_not_the_newest_entry(tmp_path):
+    """After the cursor moves off the tip, the newest entry is not where the user
+    is; a bookmark names ``ctx.cursor.leaf``."""
+    agent, _live = _session_with_bookmarks(tmp_path)
+    root_id = await agent.cursor.append_message(_msg("user", "root"))
+    await agent.cursor.append_message(_msg("assistant", "branch A"))
+    agent.cursor.move(root_id)
 
     result = await agent.run_extension_command("bookmark", "back-at-root")
     assert result.output == f"Bookmarked 'back-at-root' at {root_id}"
@@ -154,7 +151,7 @@ async def test_bookmarks_survive_reload(tmp_path):
     """Reload-invariance: a fresh AgentSession/extension over the reloaded
     on-disk Session reports the exact same bookmarks."""
     agent, live = _session_with_bookmarks(tmp_path)
-    leaf_id = await live.append_message(_msg("user", "hello"))
+    leaf_id = await agent.cursor.append_message(_msg("user", "hello"))
     await agent.run_extension_command("bookmark", "greeting")
     session_path = live.path
     assert session_path is not None

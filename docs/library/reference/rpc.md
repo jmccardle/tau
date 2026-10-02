@@ -134,12 +134,12 @@ It blocks the writer, not just this item, for as long as persistence
 takes. That is the right trade and not a new one: the queue is FIFO, so
 everything behind an ``agent_end`` was already behind it.
 
-It waits only when the item's captured ``_cursor_log`` is still the
-session's live log. A swap that landed since the enqueue held
+It waits only when the item's captured ``_cursor`` is still the
+session's live cursor. A swap that landed since the enqueue held
 ``turn_lock``, so that turn's persistence is already finished, and
 waiting on the CURRENT session would be waiting on an unrelated turn —
 the same wrong-session hazard :meth:`_stamp_agent_end_cursor` guards
-against by stamping the captured log rather than the live one.
+against by stamping the captured cursor rather than the live one.
 
 **Parameters**
 

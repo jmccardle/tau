@@ -43,34 +43,16 @@ from tau_llm.docs import agent_facing
 @agent_facing(topic="sessions")
 @runtime_checkable
 class ConversationSession(SessionLog, Protocol):
-    """The frontend surface the concrete file ``Session`` already has, as a Protocol.
+    """A stored session as a catalog hands it to a head: storage plus listing reads.
 
-    A **derived** Protocol (``SessionLog`` plus more), not a widening of
-    ``SessionLog`` itself: ``AgentSession`` never calls ``header``/``messages``/
-    ``context``/``model``/``backend``/``display_title``/``append_model_change``/
-    ``append_session_info`` (it only touches the members on ``SessionLog``), so
-    keeping them off ``SessionLog`` avoids forcing ``InMemorySessionLog`` — the SDK's
-    default, no-frontend log — to grow members it would never use. They live here
-    instead because the TUI (``app.py``) and headless (``headless.py``) DO call them,
-    through whatever :class:`SessionCatalog` handed them the session.
+    Kept off :class:`SessionLog` so the SDK's ``InMemorySessionLog`` need not grow
+    members only a head calls. The views read at
+    :func:`~tau_agent_core.session_log.default_leaf`, which is where a reopened
+    session continues. A head reads position-dependent state from its own
+    :class:`~tau_agent_core.cursor.Cursor`, never from these.
 
-    That same rule is why this Protocol is SMALLER than the concrete file
-    ``Session``. ``Session`` also has ``cwd``, ``name``, ``shutdown()`` and
-    ``append_thinking_change()`` — all four have **zero callers** anywhere in
-    ``src`` (``shutdown()`` in particular is shadowed by the unrelated
-    ``AgentSession.emit_session_shutdown``, which is what the frontends actually
-    call). Putting them here would force every future store — the JMFTS one next —
-    to implement four members nobody invokes, which is precisely the cost
-    ``SessionLog``'s docstring exists to avoid. Add a member here when a caller
-    appears, not before.
-
-    ``@runtime_checkable`` only verifies member NAMES are present (via
-    ``isinstance``/``hasattr``), never signatures — an ``isinstance(x,
-    ConversationSession)`` pass is not a contract pass. It does not check that
-    ``display_title`` takes no arguments, that ``model`` raises rather than
-    returning ``None``, or any other behavioural promise; that is what a contract
-    test suite (in the spirit of the W5 ``SessionLog`` suite) is for, not this
-    Protocol.
+    ``@runtime_checkable`` checks member names only; behaviour is the contract
+    suite's job (``tau_agent_core.testing.session_catalog_contract``).
     """
 
     @property
@@ -80,12 +62,12 @@ class ConversationSession(SessionLog, Protocol):
 
     @property
     def messages(self) -> list[dict[str, Any]]:
-        """Raw linear fold: every ``message`` entry in load order (ignores cursor)."""
+        """Unspliced ``message`` entries on the path to the default leaf."""
         ...
 
     @property
     def context(self) -> list[dict[str, Any]]:
-        """The active-path context at the current cursor — the model-input source."""
+        """The folded context at the default leaf."""
         ...
 
     @property
@@ -101,10 +83,6 @@ class ConversationSession(SessionLog, Protocol):
     def display_title(self) -> str:
         """A short human label: the name, else the first user message, else model."""
         ...
-
-    def append_model_change(self, model: str, backend: str) -> str: ...
-
-    def append_session_info(self, name: str) -> str: ...
 
 
 @agent_facing(topic="sessions")
@@ -160,7 +138,7 @@ class SessionCatalog(ABC):
 
     - ``create`` / ``create_ephemeral`` — new persisted / in-memory session.
     - ``load(ref)`` — reconstruct a session from a :class:`SessionInfo`'s ``ref``.
-    - ``fork(source, cwd)`` — a new session carrying ``source``'s history.
+    - ``fork(source, cwd, at=)`` — a new session carrying ``source``'s history.
     - ``list(cwd)`` — newest-first listing metadata, ``cwd=None`` for every dir.
     """
 
@@ -196,8 +174,17 @@ class SessionCatalog(ABC):
         """
 
     @abstractmethod
-    def fork(self, source: ConversationSession, cwd: str) -> ConversationSession:
-        """A new session carrying ``source``'s history; ``source`` is untouched."""
+    def fork(
+        self, source: ConversationSession, cwd: str, *, at: str | None = None
+    ) -> ConversationSession:
+        """A new session carrying ``source``'s history; ``source`` is untouched.
+
+        ``at`` given → only the path to that entry, so the fork continues from it.
+        ``None`` → every entry.
+
+        Raises:
+            ValueError: ``at`` names no entry of ``source``.
+        """
 
     @abstractmethod
     def list(self, cwd: str | None = None) -> list[SessionInfo]:

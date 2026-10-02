@@ -56,11 +56,12 @@ import pytest
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.agent_session_runtime import AgentSessionRuntime
 from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.rpc import commands, dialect
 from tau_agent_core.rpc.dialect import SESSION_NOT_PERSISTED
 from tau_agent_core.rpc.handler import RPCHandler
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, SessionInfo
-from tau_agent_core.session_log import InMemorySessionLog
+from tau_agent_core.session_log import InMemorySessionLog, default_leaf
 from tau_llm.types import Model
 
 _CWD = "/work"
@@ -116,80 +117,31 @@ class _FakeConversationSession:
     def id(self) -> str:
         return self._log.id
 
-    @property
-    def cursor(self) -> str | None:
-        return self._log.cursor
-
     def entries(self) -> list[dict[str, Any]]:
         return self._log.entries()
 
-    async def append_message(self, message: dict[str, Any]) -> str:
-        return await self._log.append_message(message)
-
-    async def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
-        return await self._log.append_custom_message(message, custom_type)
-
-    async def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
-        return await self._log.append_custom_entry(custom_type, data)
-
-    async def append_compaction(
-        self,
-        summary: str,
-        first_kept_id: str,
-        tokens_before: int,
-        *,
-        summarizer_model_id: str,
-        summary_usage: dict[str, int],
-        covered_entries: int,
-        covered_tokens: int,
-        agent_spec_id: str | None,
-    ) -> str:
-        return await self._log.append_compaction(
-            summary,
-            first_kept_id,
-            tokens_before,
-            summarizer_model_id=summarizer_model_id,
-            summary_usage=summary_usage,
-            covered_entries=covered_entries,
-            covered_tokens=covered_tokens,
-            agent_spec_id=agent_spec_id,
-        )
-
-    async def append_elide(
-        self,
-        first_kept_id: str,
-        *,
-        covered_entries: int,
-        covered_tokens: int,
-        agent_spec_id: str | None,
-    ) -> str:
-        return await self._log.append_elide(
-            first_kept_id,
-            covered_entries=covered_entries,
-            covered_tokens=covered_tokens,
-            agent_spec_id=agent_spec_id,
-        )
-
-    async def append_navigate(self, target_id: str | None) -> str:
-        return await self._log.append_navigate(target_id)
-
-    async def append_branch_summary(self, summary: str, from_id: str | None) -> str:
-        return await self._log.append_branch_summary(summary, from_id)
-
     async def append_at(self, parent_id, entry_type, payload) -> str:
-        return await self._log.append_at(parent_id, entry_type, payload)
+        return self._append_at_now(parent_id, entry_type, payload)
+
+    def _append_at_now(self, parent_id, entry_type, payload) -> str:
+        """Synchronous write for ``create``/``fork``, which are not coroutines."""
+        return self._log.append_at_now(parent_id, entry_type, payload)
 
     @property
     def header(self) -> dict[str, Any]:
         return {"type": "session", "id": self.id, "cwd": self._cwd}
 
+    def _tree(self) -> ConversationTree:
+        entries = self.entries()
+        return ConversationTree(entries, default_leaf(entries))
+
     @property
     def messages(self) -> list[dict[str, Any]]:
-        return [e["message"] for e in self._log.entries() if e.get("type") == "message"]
+        return [e["message"] for e in self._tree().path() if e.get("type") == "message"]
 
     @property
     def context(self) -> list[dict[str, Any]]:
-        return ConversationTree(self.entries(), self.cursor).context_for()
+        return self._tree().context_for()
 
     @property
     def model(self) -> str:
@@ -203,14 +155,6 @@ class _FakeConversationSession:
         if self._error:
             return f"⚠ unreadable session ({self.path}) — {self._error}"
         return self._name or f"Session ({self.id[:8]})"
-
-    def append_model_change(self, model: str, backend: str) -> str:
-        self._model, self._backend = model, backend
-        return "model-change"
-
-    def append_session_info(self, name: str) -> str:
-        self._name = name
-        return "session-info"
 
 
 class _FakeCatalog(SessionCatalog):
@@ -238,8 +182,8 @@ class _FakeCatalog(SessionCatalog):
         session.path = self._path_for(cwd, session.id)
         if system_prompt:
             # Sync core: `create` is not a coroutine on the ABC or either store.
-            session._log._append_now(
-                "message", message={"role": "system", "content": system_prompt}
+            session._append_at_now(
+                None, "message", {"message": {"role": "system", "content": system_prompt}}
             )
         self._sessions[session.id] = session
         return session
@@ -249,8 +193,8 @@ class _FakeCatalog(SessionCatalog):
     ) -> ConversationSession:
         session = _FakeConversationSession(cwd, model, backend, name, path=None)
         if system_prompt:
-            session._log._append_now(
-                "message", message={"role": "system", "content": system_prompt}
+            session._append_at_now(
+                None, "message", {"message": {"role": "system", "content": system_prompt}}
             )
         return session
 
@@ -260,14 +204,27 @@ class _FakeCatalog(SessionCatalog):
                 return session
         raise FileNotFoundError(f"no session at {ref!r}")
 
-    def fork(self, source: ConversationSession, cwd: str) -> ConversationSession:
+    def fork(
+        self, source: ConversationSession, cwd: str, *, at: str | None = None
+    ) -> ConversationSession:
         assert isinstance(source, _FakeConversationSession)
+        entries = source.entries()
+        if at is not None:
+            tree = ConversationTree(entries, at)
+            if not tree.contains(at):
+                raise ValueError(f"fork point {at!r} not found")
+            entries = tree.path()
         forked = _FakeConversationSession(cwd, source.model, source.backend, path=None)
         forked.path = self._path_for(cwd, forked.id)
         forked._parent = source.id
-        for entry in source.entries():
-            if entry.get("type") == "message":
-                forked._log._append_now("message", message=entry["message"])
+        new_ids: dict[str | None, str | None] = {None: None}
+        for entry in entries:
+            payload = {
+                k: v for k, v in entry.items() if k not in ("type", "id", "parentId", "timestamp")
+            }
+            new_ids[entry["id"]] = forked._append_at_now(
+                new_ids[entry.get("parentId")], entry["type"], payload
+            )
         self._sessions[forked.id] = forked
         return forked
 
@@ -359,7 +316,7 @@ async def test_lists_this_cwds_sessions_newest_first_with_the_published_projecti
     names, no more, and newest-modified first."""
     older = catalog.create(_CWD, "m", "openai", name="the older one")
     newer = catalog.create(_CWD, "m", "openai")
-    await newer.append_message({"role": "user", "content": "hello"})
+    await Cursor.newest(newer).append_message({"role": "user", "content": "hello"})
     older._modified = newer._modified - timedelta(minutes=5)
     older._parent = "parent-id"
 
@@ -631,18 +588,18 @@ async def test_the_lifecycle_schema_describes_every_field_the_tuple_carries(
 # ── the predicate itself ─────────────────────────────────────────────────
 
 
-class _DeclaresNothing:
+class _DeclaresNothing(InMemorySessionLog):
     """The JMFTS ephemeral shape (`tau_jmfts.catalog._EphemeralConversation
     Session`): neither `path` nor `root_doc_id`."""
 
 
-class _DeclaresNone:
+class _DeclaresNone(InMemorySessionLog):
     """The file store's in-memory product: declares `path`, set to None."""
 
     path = None
 
 
-class _DeclaresARootDoc:
+class _DeclaresARootDoc(InMemorySessionLog):
     """The JMFTS persisted shape: the OTHER name in
     `_DURABLE_LOCATION_ATTRS`, so the predicate cannot be a `path` check."""
 
@@ -658,7 +615,7 @@ class _DeclaresARootDoc:
     ],
 )
 def test_session_log_is_addressable_asks_the_same_question_d7_asks(
-    log: object, expected: bool
+    log: InMemorySessionLog, expected: bool
 ) -> None:
     """`session_log_is_addressable` and `require_durable_session` read the
     same `_DURABLE_LOCATION_ATTRS` through the same helper, which is the
@@ -672,7 +629,7 @@ def test_session_log_is_addressable_asks_the_same_question_d7_asks(
 
     # ... and the same object, run through D-7's guard, agrees.
     guarded = AgentSession(session_log=InMemorySessionLog(), model=_model(), tools=[])
-    guarded.session_log = log  # type: ignore[assignment]
+    guarded.session_log = log
     if expected:
         commands.require_durable_session(guarded, verb="probe")
     else:

@@ -63,7 +63,7 @@ async def test_append_entry_persists_a_custom_entry_node() -> None:
 
     await api.append_entry("todo", {"text": "buy milk", "done": False})
 
-    entries = session._session_log.entries()
+    entries = session.session_log.entries()
     custom = [
         e for e in entries if e.get("type") == "customEntry" and e.get("customType") == "todo"
     ]
@@ -71,7 +71,7 @@ async def test_append_entry_persists_a_custom_entry_node() -> None:
     assert custom[0]["customType"] == "todo"
     assert custom[0]["data"] == {"text": "buy milk", "done": False}
     # A real tree node: it advanced the leaf and sits on the parentId chain.
-    assert session._session_log.cursor == custom[0]["id"]
+    assert session.cursor.leaf == custom[0]["id"]
 
 
 async def test_append_entry_excluded_from_context_and_wire() -> None:
@@ -81,7 +81,7 @@ async def test_append_entry_excluded_from_context_and_wire() -> None:
 
     await api.append_entry("secret", {"payload": "MODEL MUST NOT SEE THIS"})
 
-    tree = ConversationTree(session._session_log.entries(), session._session_log.cursor)
+    tree = ConversationTree(session.session_log.entries(), session.cursor.leaf)
     # It emits NO loop message (context_for skips the non-message kind)…
     context = tree.context_for()
     assert "MODEL MUST NOT SEE THIS" not in _text_blob(context)
@@ -110,13 +110,13 @@ async def test_append_entry_survives_reload() -> None:
     api = ExtensionAPI(session=session)
     await api.append_entry("counter", {"value": 42})
 
-    persisted = session._session_log.entries()
+    persisted = session.session_log.entries()
     reloaded = [e for e in persisted if e.get("customType") == "counter"]
     assert len(reloaded) == 1
     assert reloaded[0]["customType"] == "counter"
     assert reloaded[0]["data"] == {"value": 42}
     # Still excluded from a post-reload fold (no message leaks).
-    context = ConversationTree(persisted, session._session_log.cursor).context_for()
+    context = ConversationTree(persisted, session.cursor.leaf).context_for()
     assert "42" not in _text_blob(context)
 
 
@@ -125,13 +125,11 @@ async def test_append_entry_interleaves_with_messages_without_polluting_context(
     session = _make_session()
     api = ExtensionAPI(session=session)
 
-    await session._session_log.append_message({"role": "user", "content": "hello"})
+    await session.cursor.append_message({"role": "user", "content": "hello"})
     await api.append_entry("trace", {"step": 1})
-    await session._session_log.append_message({"role": "assistant", "content": "hi there"})
+    await session.cursor.append_message({"role": "assistant", "content": "hi there"})
 
-    context = ConversationTree(
-        session._session_log.entries(), session._session_log.cursor
-    ).context_for()
+    context = ConversationTree(session.session_log.entries(), session.cursor.leaf).context_for()
     blob = _text_blob(context)
     # The real turns fold onto the path…
     assert "hello" in blob and "hi there" in blob

@@ -105,7 +105,7 @@ def _auto_name(text: str) -> str:
 def _make_message_end_handler(api: Any) -> Any:
     """The ``message_end`` observer: auto-name once, off the first user turn."""
 
-    def on_message_end(event: Any) -> None:
+    async def on_message_end(event: Any) -> None:
         message = getattr(event, "message", None)
         if not isinstance(message, dict) or message.get("role") != "assistant":
             return
@@ -114,7 +114,7 @@ def _make_message_end_handler(api: Any) -> Any:
         text = _first_user_text(api.context.entries())
         if not text:
             return
-        api.set_session_name(_auto_name(text))
+        await api.set_session_name(_auto_name(text))
 
     return on_message_end
 
@@ -123,10 +123,10 @@ def _make_session_name_command(api: Any) -> Any:
     """The ``/session-name [name]`` handler (pi port): set with an argument,
     show the current value with none."""
 
-    def session_name_command(args: str, ctx: Any) -> str:
+    async def session_name_command(args: str, ctx: Any) -> str:
         name = args.strip()
         if name:
-            api.set_session_name(name)
+            await api.set_session_name(name)
             return f"Session named: {name}"
         current = api.get_session_name()
         return f"Session: {current}" if current else "No session name set"

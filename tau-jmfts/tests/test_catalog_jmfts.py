@@ -26,8 +26,9 @@ from typing import Any
 
 import pytest
 
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_catalog import ConversationSession
-from tau_agent_core.session_log import InMemorySessionLog
+from tau_agent_core.session_log import InMemorySessionLog, SessionLog
 from tau_jmfts.catalog import JmftsSessionCatalog, _EphemeralConversationSession
 from tau_jmfts.client import JmftsClient, JmftsError
 from tau_jmfts.store import JmftsSessionLog
@@ -43,6 +44,13 @@ def _cwd(run_id: str) -> str:
 
 def _msg(role: str, text: str) -> dict[str, Any]:
     return {"role": role, "content": [{"type": "text", "text": text}]}
+
+
+async def _append(log: SessionLog, *messages: dict[str, Any]) -> None:
+    """Append ``messages`` in order on a cursor opened at ``log``'s default leaf."""
+    cursor = Cursor.newest(log)
+    for message in messages:
+        await cursor.append_message(message)
 
 
 @pytest.fixture
@@ -80,10 +88,10 @@ async def test_create_ephemeral_writes_nothing_to_jmfts(
     before = client.list_documents(usetype="tau:conversation", title_prefix=f"[{TEST_PREFIX}]")
 
     session = catalog.create_ephemeral(scope, "test-model", "test-backend", system_prompt="sys")
-    await session.append_message(_msg("user", "hello"))
-    await session.append_message(_msg("assistant", "hi"))
-    await session.append_navigate(None)
-    session.append_session_info("renamed")
+    cursor = Cursor.newest(session)
+    await cursor.append_message(_msg("user", "hello"))
+    await cursor.append_message(_msg("assistant", "hi"))
+    await cursor.append("session_info", name="renamed")
 
     after = client.list_documents(usetype="tau:conversation", title_prefix=f"[{TEST_PREFIX}]")
     assert before == after
@@ -96,10 +104,9 @@ async def test_create_ephemeral_writes_nothing_to_jmfts(
 
 
 def test_create_ephemeral_not_backed_by_in_memory_session_log_alone() -> None:
-    """Confirms the documented reason ``create_ephemeral`` needed its own
-    wrapper: a bare ``InMemorySessionLog`` does NOT satisfy
-    ``ConversationSession`` (no header/messages/context/model/backend/
-    display_title/append_model_change/append_session_info)."""
+    """Why ``create_ephemeral`` needs its own wrapper: a bare ``InMemorySessionLog``
+    is not a ``ConversationSession`` (no header/messages/context/model/backend/
+    display_title)."""
     assert not isinstance(InMemorySessionLog(), ConversationSession)
 
 
@@ -199,8 +206,7 @@ async def test_list_cost_for_twenty_sessions(
     try:
         for i in range(20):
             s = catalog.create(scope, "test-model", "test-backend", system_prompt="sys")
-            await s.append_message(_msg("user", f"question {i}"))
-            await s.append_message(_msg("assistant", f"answer {i}"))
+            await _append(s, _msg("user", f"question {i}"), _msg("assistant", f"answer {i}"))
             created.append(s)
 
         start = time.perf_counter()
@@ -246,7 +252,7 @@ async def test_a_corrupt_session_surfaces_as_an_error_row_and_does_not_vanish(
 ) -> None:
     """The bug: an integrity violation made the session SILENTLY DISAPPEAR from the
     picker. The store raises that ValueError specifically to "fail loudly rather
-    than silently resolving the wrong cursor" -- and the catalog swallowed it.
+    than silently loading a misordered tree" -- and the catalog swallowed it.
 
     It must not vanish, and it must not brick the picker either: the healthy
     session listed beside it still loads.
@@ -255,8 +261,8 @@ async def test_a_corrupt_session_surfaces_as_an_error_row_and_does_not_vanish(
     healthy = catalog.create(scope, "test-model", "test-backend", system_prompt="sys")
     broken = catalog.create(scope, "test-model", "test-backend", system_prompt="sys")
     try:
-        await healthy.append_message(_msg("user", "i am fine"))
-        await broken.append_message(_msg("user", "i am about to be corrupted"))
+        await _append(healthy, _msg("user", "i am fine"))
+        await _append(broken, _msg("user", "i am about to be corrupted"))
         _forge_second_writer(client, broken)
 
         infos = {i.ref: i for i in catalog.list(scope)}
@@ -281,7 +287,7 @@ async def test_opening_a_corrupt_session_still_raises_the_real_reason(
     Fail-Early: the corrupt tree is never opened and silently mis-folded."""
     broken = catalog.create(_cwd(run_id), "test-model", "test-backend", system_prompt="sys")
     try:
-        await broken.append_message(_msg("user", "hi"))
+        await _append(broken, _msg("user", "hi"))
         _forge_second_writer(client, broken)
 
         with pytest.raises(ValueError, match="second writer"):
@@ -300,8 +306,8 @@ async def test_a_session_deleted_mid_listing_is_the_one_legitimate_skip(
     healthy = catalog.create(scope, "test-model", "test-backend", system_prompt="sys")
     doomed = catalog.create(scope, "test-model", "test-backend", system_prompt="sys")
     try:
-        await healthy.append_message(_msg("user", "i am fine"))
-        await doomed.append_message(_msg("user", "i am about to be deleted"))
+        await _append(healthy, _msg("user", "i am fine"))
+        await _append(doomed, _msg("user", "i am about to be deleted"))
 
         real_roots = catalog._list_conversation_roots
 
@@ -329,7 +335,7 @@ async def test_a_server_failure_mid_listing_raises_rather_than_reporting_a_parti
     scope = _cwd(run_id)
     session = catalog.create(scope, "test-model", "test-backend", system_prompt="sys")
     try:
-        await session.append_message(_msg("user", "hi"))
+        await _append(session, _msg("user", "hi"))
 
         def _boom(*a, **k):
             raise JmftsError(500, "upstream exploded", url="http://x", method="GET")

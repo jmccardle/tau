@@ -291,7 +291,7 @@ async def test_admission_ack_wins_the_race_against_agent_start_for_the_one_free_
 
 async def test_agent_end_cursor_stays_correct_under_genuine_backpressure():
     """Site 3 (phase-4 spec): confirm the phase-3 cursor fix
-    (`RPCHandler._stamp_agent_end_cursor`'s `_cursor_log` captured at
+    (`RPCHandler._stamp_agent_end_cursor` reads the `Cursor` captured at
     enqueue time) holds when `_forward_event`'s OWN wait for a credit is
     what suspends the turn, not merely when a peer is slow to READ an
     already-enqueued item (the scenario the original,
@@ -303,7 +303,7 @@ async def test_agent_end_cursor_stays_correct_under_genuine_backpressure():
     session = AgentSession(session_log=InMemorySessionLog(), model=_model(), tools=[])
     handler = RPCHandler(session, output_queue_event_bound=1)
 
-    pre_turn_cursor = session.session_log.cursor
+    pre_turn_cursor = session.cursor.leaf
 
     async def _fast_stream_simple(model, context, options=None):
         return _Stream("hi there")
@@ -340,7 +340,7 @@ async def test_agent_end_cursor_stays_correct_under_genuine_backpressure():
         for line in recorder.lines
         if line.get("method") == "event" and line["params"].get("type") == "agent_end"
     ]
-    post_turn_cursor = session.session_log.cursor
+    post_turn_cursor = session.cursor.leaf
     assert post_turn_cursor != pre_turn_cursor
     assert agent_end["params"]["cursor"] == post_turn_cursor
 

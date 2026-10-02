@@ -1,19 +1,12 @@
 """B5 — RPC Tier B verb `set_session_name` (+ the `get_session_name` read).
 
-Reference: docs/RPC-TIER-B.md B5, D-1, §1.1.
+Reference: docs/RPC-TIER-B.md B5, D-1, D-7.
 
-`set_session_name` is MUTATING (D-1): it takes `commands.turn_safety_guard`
-before writing, and its handler reuses
-`tau_agent_core.extension_types.apply_session_name` — the SAME body
-`ExtensionAPI.set_session_name` calls — rather than a second, hand-rolled
-copy of the §1.1 "raise if the log has no durable slot" guard.
+`set_session_name` is MUTATING (D-1): it takes `commands.turn_safety_guard`,
+refuses an unpersisted session (D-7 rule 1), and reuses
+`extension_types.apply_session_name`, the same body `ExtensionAPI.set_session_name`
+calls. That body appends `session_info` at the session's cursor, on any store.
 `get_session_name` is read-only: no turn guard, no cursor in its result.
-
-Own file (docs/RPC-TIER-B.md §3 "a new file, so no unit contends on it") —
-mirrors test_rpc_tier_b_scaffolding.py's self-contained-fake convention
-(`_FakeNamedLog` below) rather than importing across test files or across
-packages (this file lives in tau-agent-core, which must not depend on
-tau-coding-agent's `session_store.Session` one layer up).
 """
 
 from __future__ import annotations
@@ -26,9 +19,9 @@ import pytest
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core import extension_types
-from tau_agent_core.rpc import commands, dialect
+from tau_agent_core.rpc import dialect
 from tau_agent_core.rpc.handler import RPCHandler
-from tau_agent_core.session_log import InMemorySessionLog
+from tau_agent_core.session_log import InMemorySessionLog, session_name
 from tau_llm.types import Model
 
 
@@ -44,42 +37,16 @@ def _model() -> Model:
     )
 
 
-class _FakeNamedLog:
-    """A minimal stand-in for the file-backed `tau_coding_agent
-    .session_store.Session` log, carrying exactly the surfaces
-    `apply_session_name`/`read_session_name` need: `append_session_info`
-    (§1.1's appender) and the derived `.name`/`.cursor` reads
-    (session_store.py:264-271, 197) — the real `Session` computes both from
-    its entry list; this fake tracks the same two facts directly rather than
-    replaying that scan.
+class _DurableLog(InMemorySessionLog):
+    """`InMemorySessionLog` that declares where it lives, as the file store does.
 
-    Plus `path`, which is what Blocker 2's `require_durable_session` reads:
-    the real `Session` declares where it durably lives, and a fake standing
-    in for the SUCCESS path has to answer that question the same way (a
-    non-`None` path). `path=None` is the same object with the durability
-    taken away — the unpersisted session every RPC run used to start on.
+    `path=None` is the same log with the durability taken away: what
+    `create_ephemeral` produces.
     """
 
     def __init__(self, path: Path | None = Path("/tmp/does-not-need-to-exist.jsonl")) -> None:
+        super().__init__()
         self.path = path
-        self._names: list[str] = []
-        self._cursor: str | None = None
-        self._next_id = 0
-
-    def append_session_info(self, name: str) -> str:
-        self._next_id += 1
-        entry_id = f"entry-{self._next_id}"
-        self._names.append(name)
-        self._cursor = entry_id
-        return entry_id
-
-    @property
-    def name(self) -> str | None:
-        return self._names[-1] if self._names else None
-
-    @property
-    def cursor(self) -> str | None:
-        return self._cursor
 
 
 @pytest.fixture
@@ -89,17 +56,18 @@ def real_session() -> AgentSession:
 
 @pytest.fixture
 def named_session(real_session: AgentSession) -> AgentSession:
-    """A session bound to a log that DOES support durable naming — the
-    success-path fixture. `real_session` (bare `InMemorySessionLog`) is the
-    failure-path fixture instead: it deliberately has neither appender
-    (session_log.py:38-48)."""
-    real_session.session_log = _FakeNamedLog()  # type: ignore[assignment]
+    """The success-path fixture: a session on a log that declares a durable location."""
+    real_session.session_log = _DurableLog()
     return real_session
 
 
 @pytest.fixture
 def handler(named_session: AgentSession) -> RPCHandler:
     return RPCHandler(named_session)
+
+
+def _name_on_log(session: AgentSession) -> str | None:
+    return session_name(session.session_log.entries())
 
 
 async def _dispatch(handler: RPCHandler, method: str, params: dict) -> dict:
@@ -116,18 +84,19 @@ async def test_set_session_name_persists_and_returns_name_and_cursor(handler: RP
     response = await _dispatch(handler, "set_session_name", {"name": "My Session"})
     assert "error" not in response
     assert response["result"]["name"] == "My Session"
-    assert response["result"]["cursor"] == "entry-1"
-    # Actually landed on the log, not merely echoed back unpersisted.
-    assert handler.session.session_log.name == "My Session"  # type: ignore[attr-defined]
+    cursor = response["result"]["cursor"]
+    assert cursor == handler.session.cursor.leaf
+    (entry,) = [e for e in handler.session.session_log.entries() if e["id"] == cursor]
+    assert entry["type"] == "session_info"
+    assert _name_on_log(handler.session) == "My Session"
 
 
 async def test_set_session_name_cursor_advances_on_a_second_call(handler: RPCHandler) -> None:
-    """E5: the cursor returned is the log's own tip after THIS write, not a
-    constant — a second rename produces a different cursor."""
+    """E5: the cursor returned is the session cursor's leaf after THIS write."""
     first = await _dispatch(handler, "set_session_name", {"name": "one"})
     second = await _dispatch(handler, "set_session_name", {"name": "two"})
     assert first["result"]["cursor"] != second["result"]["cursor"]
-    assert second["result"]["cursor"] == "entry-2"
+    assert second["result"]["cursor"] == handler.session.cursor.leaf
 
 
 # ── set_session_name: refusals ──────────────────────────────────────────
@@ -139,23 +108,14 @@ async def test_set_session_name_empty_name_is_invalid_params(handler: RPCHandler
     to INVALID_PARAMS the same way switch_session remaps a bad id."""
     response = await _dispatch(handler, "set_session_name", {"name": ""})
     assert response["error"]["code"] == dialect.INVALID_PARAMS
-    # And nothing was appended.
-    assert handler.session.session_log.name is None  # type: ignore[attr-defined]
+    assert handler.session.session_log.entries() == []
 
 
 async def test_set_session_name_on_an_in_memory_log_is_session_not_persisted(
     real_session: AgentSession,
 ) -> None:
-    """`InMemorySessionLog` declares no durable location AND has no
-    `append_session_info` — nowhere to land the name, by either measure.
-    Blocker 2's durability check runs FIRST, so it is the one that speaks,
-    and since round-3 finding 4 it speaks as `SESSION_NOT_PERSISTED` rather
-    than `INTERNAL_ERROR`: a host must be able to tell a considered refusal
-    from a τ crash without matching English. The appender-presence case —
-    which still surfaces as INTERNAL_ERROR, because a store missing the
-    method entirely is wired wrong rather than merely unpersisted — is
-    pinned separately in test_rpc_tier_b_scaffolding.py, on a log that HAS
-    a location."""
+    """`InMemorySessionLog` declares no durable location: `SESSION_NOT_PERSISTED`,
+    a code a host can tell from a τ crash without matching English."""
     handler = RPCHandler(real_session)
     response = await _dispatch(handler, "set_session_name", {"name": "x"})
     assert response["error"]["code"] == dialect.SESSION_NOT_PERSISTED
@@ -165,16 +125,11 @@ async def test_set_session_name_on_an_in_memory_log_is_session_not_persisted(
 async def test_set_session_name_refuses_an_unpersisted_session(
     real_session: AgentSession,
 ) -> None:
-    """Blocker 2, the defect by name: a log with a perfectly good
-    `append_session_info` whose writes reach no storage (`path is None` —
-    what `create_ephemeral` produces, which is what every RPC run started
-    on). §1.1's appender check passes here, so only a durability check can
-    fail this test.
-
-    A host must get an error, NOT `{name, cursor}`: the cursor would be a
-    durable-write promise for an entry no later replay can see.
+    """Blocker 2: a log that declares `path` but whose `path is None` (what
+    `create_ephemeral` produces). A host must get an error, NOT `{name, cursor}`:
+    the cursor would promise an entry no later replay can see.
     """
-    real_session.session_log = _FakeNamedLog(path=None)  # type: ignore[assignment]
+    real_session.session_log = _DurableLog(path=None)
     handler = RPCHandler(real_session)
 
     response = await _dispatch(handler, "set_session_name", {"name": "gone-on-exit"})
@@ -183,8 +138,7 @@ async def test_set_session_name_refuses_an_unpersisted_session(
     assert response["error"]["code"] == dialect.SESSION_NOT_PERSISTED
     assert response["error"]["data"]["method"] == "set_session_name"
     assert "unpersisted" in response["error"]["message"]
-    # Refused before the write: the name was never applied either.
-    assert real_session.session_log.name is None  # type: ignore[attr-defined]
+    assert real_session.session_log.entries() == []
 
 
 async def test_set_session_name_respects_turn_safety_guard(handler: RPCHandler) -> None:
@@ -196,7 +150,7 @@ async def test_set_session_name_respects_turn_safety_guard(handler: RPCHandler) 
     finally:
         handler.session.turn_lock.release()
     assert response["error"]["code"] == dialect.TURN_STILL_RUNNING
-    assert handler.session.session_log.name is None  # type: ignore[attr-defined]
+    assert handler.session.session_log.entries() == []
 
 
 # ── get_session_name ─────────────────────────────────────────────────────
@@ -221,14 +175,18 @@ async def test_get_session_name_result_carries_no_cursor(handler: RPCHandler) ->
     assert "cursor" not in response["result"]
 
 
-async def test_get_session_name_on_an_in_memory_log_is_internal_error(
+async def test_get_session_name_reads_an_in_memory_log_too(
     real_session: AgentSession,
 ) -> None:
-    """§1.1's raise on the read side: `InMemorySessionLog` has no `.name`."""
+    """The read appends nothing, so durability is not its question (D-7 rule 2):
+    it answers on an `InMemorySessionLog` like on any other store."""
     handler = RPCHandler(real_session)
+    assert (await _dispatch(handler, "get_session_name", {}))["result"]["name"] is None
+
+    await real_session.set_session_name("unpersisted but named")
+
     response = await _dispatch(handler, "get_session_name", {})
-    assert response["error"]["code"] == dialect.INTERNAL_ERROR
-    assert "durable name" in response["error"]["message"]
+    assert response["result"]["name"] == "unpersisted but named"
 
 
 async def test_get_session_name_takes_no_turn_guard(handler: RPCHandler) -> None:
@@ -255,7 +213,7 @@ async def test_rpc_verb_and_extension_api_share_one_apply_function(
     """
     calls: list[tuple[object, str]] = []
 
-    def _fake_apply(session: object, name: str) -> None:
+    async def _fake_apply(session: object, name: str) -> None:
         calls.append((session, name))
 
     monkeypatch.setattr(extension_types, "apply_session_name", _fake_apply)
@@ -264,11 +222,10 @@ async def test_rpc_verb_and_extension_api_share_one_apply_function(
     await _dispatch(handler, "set_session_name", {"name": "via-rpc"})
     # Route 2: the extension API, on the same underlying session.
     api = ExtensionAPI(session=handler.session)
-    api.set_session_name("via-extension-api")
+    await api.set_session_name("via-extension-api")
 
     assert [name for _session, name in calls] == ["via-rpc", "via-extension-api"]
-    # And, since the fake never touched the log, nothing was actually appended.
-    assert handler.session.session_log.name is None  # type: ignore[attr-defined]
+    assert handler.session.session_log.entries() == []
 
 
 async def test_rpc_verb_and_extension_api_share_one_read_function(

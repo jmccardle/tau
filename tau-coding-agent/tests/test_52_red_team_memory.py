@@ -74,7 +74,7 @@ async def _session(tmp_path: Path, corpus_dir: Path | None = None) -> tuple[Agen
     agent = AgentSession(session_log=live, model=_model(), extensions=[])
     agent._extensions_config = {_STEM: {"corpus_dir": str(corpus_dir)}}
     rt_mod.red_team_memory_extension(agent._bind_extension_api("examples/52_red_team_memory.py"))
-    await live.append_message(_msg("user", "review my changes"))
+    await agent.cursor.append_message(_msg("user", "review my changes"))
     return agent, live
 
 

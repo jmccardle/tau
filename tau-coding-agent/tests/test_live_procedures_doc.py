@@ -41,7 +41,7 @@ from unittest.mock import patch
 
 
 from tau_agent_core.agent_session import AgentSession
-from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.messages import convert_to_llm
 from tau_agent_core.sdk import _load_extensions, summarize_extensions
 from tau_agent_core.session_log import InMemorySessionLog
@@ -344,8 +344,9 @@ async def test_reload_check_node_survives_byte_identical(tmp_path):
         system_prompt="You are helpful.",
         base_dir=tmp_path / "sessions",
     )
-    await session.append_message({"role": "user", "content": "hello there"})
-    await session.append_custom_message(
+    cursor = Cursor.newest(session)
+    await cursor.append_message({"role": "user", "content": "hello there"})
+    await cursor.append_custom_message(
         {"role": "custom", "content": [{"type": "text", "text": preamble}]},
         "reminder-preamble",
     )
@@ -360,8 +361,8 @@ async def test_reload_check_node_survives_byte_identical(tmp_path):
     # Two independent reloads yield identical entries AND identical model context.
     second = Session.load(path)
     assert first.entries() == second.entries()
-    ctx_first = ConversationTree(first.entries(), first.cursor).context_for()
-    ctx_second = ConversationTree(second.entries(), second.cursor).context_for()
+    ctx_first = Cursor.newest(first).context()
+    ctx_second = Cursor.newest(second).context()
     assert ctx_first == ctx_second
 
     # Exactly ONE injected node survives — no forked "second history".

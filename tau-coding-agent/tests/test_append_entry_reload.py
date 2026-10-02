@@ -13,7 +13,7 @@ context and the LLM wire.
 from __future__ import annotations
 
 from tau_agent_core.agent_session import AgentSession
-from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.messages import convert_to_llm
 from tau_llm.types import Model
 from tau_coding_agent.session_store import Session
@@ -66,11 +66,11 @@ async def test_custom_entry_off_the_wire_after_reload(tmp_path) -> None:
     """The reloaded backplane node stays out of the context and the LLM wire."""
     store = Session.create("/tmp", "gpt-4o", "openai", base_dir=tmp_path)
     session = AgentSession(session_log=store, model=_model(), extensions=[])
-    await session._session_log.append_message({"role": "user", "content": "hello"})
+    await session.cursor.append_message({"role": "user", "content": "hello"})
     await session._append_custom_entry("secret", {"payload": "MODEL MUST NOT SEE THIS"})
 
     reloaded = Session.load(store.path)
-    context = ConversationTree(reloaded.entries(), reloaded.cursor).context_for()
+    context = Cursor.newest(reloaded).context()
     # The real turn folds back…
     assert "hello" in _text_blob(context)
     # …but the customEntry never becomes a message, so it never reaches the wire.

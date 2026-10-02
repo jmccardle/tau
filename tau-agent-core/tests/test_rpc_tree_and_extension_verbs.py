@@ -79,18 +79,24 @@ def log() -> _DurableLog:
 
 
 @pytest.fixture
-async def entries(log: _DurableLog) -> list[str]:
-    """Three messages, so a navigate has somewhere to go and a paste something to copy."""
-    return [
-        await log.append_message({"role": "user", "content": [{"type": "text", "text": "one"}]}),
-        await log.append_message({"role": "assistant", "content": [{"type": "text", "text": "two"}]}),
-        await log.append_message({"role": "user", "content": [{"type": "text", "text": "three"}]}),
-    ]
+def handler(log: _DurableLog) -> RPCHandler:
+    return RPCHandler(_session(log))
 
 
 @pytest.fixture
-def handler(log: _DurableLog) -> RPCHandler:
-    return RPCHandler(_session(log))
+async def entries(handler: RPCHandler) -> list[str]:
+    """Three messages at the session's cursor, so a navigate has somewhere to go
+    and a paste something to copy."""
+    cursor = handler.session.cursor
+    return [
+        await cursor.append_message({"role": "user", "content": [{"type": "text", "text": "one"}]}),
+        await cursor.append_message(
+            {"role": "assistant", "content": [{"type": "text", "text": "two"}]}
+        ),
+        await cursor.append_message(
+            {"role": "user", "content": [{"type": "text", "text": "three"}]}
+        ),
+    ]
 
 
 @pytest.fixture
@@ -172,18 +178,20 @@ def test_no_new_read_carries_a_cursor(verb: str) -> None:
 def test_d7_is_answered_by_who_appends_and_nothing_else() -> None:
     """D-7 rule 1 over the new verbs, read out of the shipped handler sources.
 
-    The five tree mutations append, so all five must reach
-    `require_durable_session` — they do it through `tree_mutation_guard`, which is
-    the one place that call appears for them. The three extension mutations append
-    nothing, so none of them may call it: refusing an extension reload because the
-    session is ephemeral would deny a working capability over a promise it never
-    made, which is exactly the line `set_auto_compaction` drew in Tier B.
+    Every tree mutation goes through `tree_mutation_guard`, the one place
+    `require_durable_session` appears for them, and all but `navigate` declare
+    that they append; a cursor move writes nothing (docs/CURSORS.md §4). The
+    extension mutations append nothing, so none may call it: refusing an
+    extension reload on an ephemeral session would deny a working capability
+    over a promise it never made, the line `set_auto_compaction` drew in Tier B.
 
-    Mutation this reddens: give `enable_extension` the tree guard, or open a tree
-    verb's body with a bare `turn_safety_guard`.
+    Mutation this reddens: give `enable_extension` the tree guard, open a tree
+    verb's body with a bare `turn_safety_guard`, or flip a verb's `appends`.
     """
     for verb in TREE_MUTATIONS:
-        assert "tree_mutation_guard" in _body(verb), verb
+        source = _body(verb)
+        assert "tree_mutation_guard" in source, verb
+        assert f"appends={verb != 'navigate'}" in source, verb
     for verb in EXTENSION_MUTATIONS:
         source = _body(verb)
         assert "turn_safety_guard" in source, verb
@@ -208,17 +216,21 @@ def test_no_new_read_takes_a_guard(verb: str) -> None:
 async def test_navigate_moves_the_cursor_and_returns_the_new_context(
     handler: RPCHandler, log: _DurableLog, entries: list[str]
 ) -> None:
-    """The result is the context the move PRODUCED, not the one it left.
+    """The result is the context the move PRODUCED, not the one it left, and the
+    move writes nothing.
 
-    Mutation this kills: returning `session.messages` read before the append, or
+    Mutation this kills: returning `session.messages` read before the move, or
     dropping `messages` and leaving the host to call get_messages — which would
     let it render the pre-navigate transcript in between.
     """
+    before = log.entries()
+
     response = await _call(handler, "navigate", {"target_id": entries[0]})
 
     assert response["result"]["cursor"] == entries[0]
-    assert log.cursor == entries[0]
+    assert handler.session.cursor.leaf == entries[0]
     assert [m["content"][0]["text"] for m in response["result"]["messages"]] == ["one"]
+    assert log.entries() == before
 
 
 async def test_navigate_to_an_unknown_entry_is_invalid_params(handler: RPCHandler) -> None:
@@ -243,12 +255,35 @@ async def test_a_tree_mutation_refuses_an_unpersisted_session(
     can never load again — a worse version of the promise `set_model` already
     refuses to make.
     """
-    entry_id = await ephemeral_handler.session.session_log.append_message(
+    cursor = ephemeral_handler.session.cursor
+    first = await cursor.append_message(
         {"role": "user", "content": [{"type": "text", "text": "one"}]}
     )
-    response = await _call(ephemeral_handler, "navigate", {"target_id": entry_id})
+    second = await cursor.append_message(
+        {"role": "assistant", "content": [{"type": "text", "text": "two"}]}
+    )
+    before = cursor.entries()
+
+    response = await _call(
+        ephemeral_handler, "paste_subtree", {"source_id": second, "target_id": first}
+    )
 
     assert response["error"]["code"] == dialect.SESSION_NOT_PERSISTED
+    assert cursor.entries() == before
+
+
+async def test_navigate_runs_on_an_unpersisted_session(ephemeral_handler: RPCHandler) -> None:
+    """A move writes nothing (docs/CURSORS.md §4), so it has no durability to promise."""
+    cursor = ephemeral_handler.session.cursor
+    first = await cursor.append_message(
+        {"role": "user", "content": [{"type": "text", "text": "one"}]}
+    )
+    await cursor.append_message({"role": "assistant", "content": [{"type": "text", "text": "two"}]})
+
+    response = await _call(ephemeral_handler, "navigate", {"target_id": first})
+
+    assert response["result"]["cursor"] == first
+    assert cursor.leaf == first
 
 
 async def test_paste_subtree_returns_minted_ids_and_leaves_the_cursor_alone(
@@ -263,7 +298,7 @@ async def test_paste_subtree_returns_minted_ids_and_leaves_the_cursor_alone(
     Mutation this kills: giving `paste_subtree` the shared context result schema,
     which would report a re-render that did not happen.
     """
-    before = log.cursor
+    before = handler.session.cursor.leaf
 
     response = await _call(
         handler, "paste_subtree", {"source_id": entries[1], "target_id": entries[0]}
@@ -272,7 +307,7 @@ async def test_paste_subtree_returns_minted_ids_and_leaves_the_cursor_alone(
     minted = response["result"]["minted_ids"]
     assert len(minted) == 2  # the assistant message and the user message under it
     assert response["result"]["cursor"] == before
-    assert log.cursor == before
+    assert handler.session.cursor.leaf == before
     assert {e["id"] for e in log.entries()} >= set(minted)
 
 

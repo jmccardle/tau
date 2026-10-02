@@ -5,14 +5,10 @@ exists yet to exercise them through the wire.
 - ``commands.turn_safety_guard`` — D-1's bounded ``turn_lock`` acquire,
   raising ``RPCError(TURN_STILL_RUNNING, ...)`` on timeout rather than
   proceeding.
-- ``commands.require_log_appender`` — §1.1's "the bound log must have this
-  appender, else raise".
 - ``commands.require_durable_session`` — the corrected §1.1 guard (Blocker 2
   of the Tier B review): "the bound log must be able to KEEP the entry".
-  Added later than the other two, and it is the one that actually holds the
-  line: every real ``ConversationSession`` has every appender, so the
-  method-presence check above passes on precisely the unpersisted session
-  whose appends go nowhere.
+  Every cursor can append every kind to every store, so durability is the
+  only question left to ask (docs/CURSORS.md §3).
 
 It also carries the TWO tier-wide pins no single verb's file could own:
 
@@ -52,7 +48,6 @@ from tau_agent_core.rpc.commands import (
     DURABLE_LOCATION_ATTRS,
     RPCError,
     require_durable_session,
-    require_log_appender,
     turn_safety_guard,
 )
 from tau_agent_core.rpc.dialect import SESSION_NOT_PERSISTED, TURN_STILL_RUNNING
@@ -75,26 +70,6 @@ def _model() -> Model:
 @pytest.fixture
 def real_session() -> AgentSession:
     return AgentSession(session_log=InMemorySessionLog(), model=_model(), tools=[])
-
-
-class _LogWithAppenders:
-    """A minimal stand-in log carrying the two §1.1 appenders — mirrors
-    ``test_agent_session_runtime.py``'s ``_FakeConversationSession`` (a
-    small test-local fake rather than a cross-test-file import; that file's
-    own docstring states cross-test-file imports have no precedent in this
-    suite)."""
-
-    def __init__(self) -> None:
-        self.model_changes: list[tuple[str, str]] = []
-        self.session_infos: list[str] = []
-
-    def append_model_change(self, model: str, backend: str) -> str:
-        self.model_changes.append((model, backend))
-        return "model-change-id"
-
-    def append_session_info(self, name: str) -> str:
-        self.session_infos.append(name)
-        return "session-info-id"
 
 
 # ── turn_safety_guard (D-1) ─────────────────────────────────────────────
@@ -152,65 +127,17 @@ async def test_turn_safety_guard_does_not_touch_a_lock_it_never_acquired(
     real_session.turn_lock.release()
 
 
-# ── require_log_appender (§1.1) ─────────────────────────────────────────
-
-
-def test_require_log_appender_passes_silently_when_the_log_has_it(
-    real_session: AgentSession,
-) -> None:
-    real_session.session_log = _LogWithAppenders()  # type: ignore[assignment]
-    require_log_appender(real_session, "append_model_change", verb="set_model")
-    require_log_appender(real_session, "append_session_info", verb="set_session_name")
-
-
-def test_require_log_appender_raises_when_the_log_lacks_it(
-    real_session: AgentSession,
-) -> None:
-    """``InMemorySessionLog`` deliberately has neither appender
-    (session_log.py:38-48) — the real "nowhere durable to land this" case,
-    not a contrived fake."""
-    with pytest.raises(RuntimeError, match="append_model_change"):
-        require_log_appender(real_session, "append_model_change", verb="set_model")
-    with pytest.raises(RuntimeError, match="append_session_info"):
-        require_log_appender(real_session, "append_session_info", verb="set_session_name")
-
-
-def test_require_log_appender_passes_on_an_unpersisted_log(
-    real_session: AgentSession,
-) -> None:
-    """The premise Blocker 2 rests on, pinned rather than asserted in prose:
-    this guard is about METHOD PRESENCE and says nothing about durability.
-    An unpersisted file-store session (``path is None``) has every appender,
-    so this passes — which is exactly why the RPC verbs cannot rely on it
-    alone, and why ``require_durable_session`` exists below.
-
-    Delete ``require_durable_session``'s call sites and no test in this
-    section notices; that is the point of keeping the two apart.
-    """
-    log = _LogWithAppenders()
-    log.path = None  # type: ignore[attr-defined]
-    real_session.session_log = log  # type: ignore[assignment]
-
-    require_log_appender(real_session, "append_model_change", verb="set_model")
-    require_log_appender(real_session, "append_session_info", verb="set_session_name")
-
-    # ... and the durability guard, asked the same question, says no.
-    with pytest.raises(RPCError, match="unpersisted") as refusal:
-        require_durable_session(real_session, verb="set_model")
-    assert refusal.value.code == SESSION_NOT_PERSISTED
-
-
 # ── require_durable_session (Blocker 2, the corrected §1.1) ─────────────
 
 
-class _DurableFileishLog(_LogWithAppenders):
+class _DurableFileishLog(InMemorySessionLog):
     """Declares a durable location the way the file store does — a
     non-``None`` ``path`` (``tau_coding_agent.session_store.Session``)."""
 
-    path = Path("/tmp/does-not-need-to-exist.jsonl")
+    path: Path | None = Path("/tmp/does-not-need-to-exist.jsonl")
 
 
-class _DurableDocLog(_LogWithAppenders):
+class _DurableDocLog(InMemorySessionLog):
     """Declares one the way the JMFTS store does — ``root_doc_id``
     (``tau_jmfts.store.JmftsSessionLog``), and NO ``path`` at all: proof
     the guard is not secretly file-store-only."""
@@ -221,14 +148,14 @@ class _DurableDocLog(_LogWithAppenders):
 def test_require_durable_session_passes_on_a_file_backed_location(
     real_session: AgentSession,
 ) -> None:
-    real_session.session_log = _DurableFileishLog()  # type: ignore[assignment]
+    real_session.session_log = _DurableFileishLog()
     require_durable_session(real_session, verb="set_model")
 
 
 def test_require_durable_session_passes_on_a_document_backed_location(
     real_session: AgentSession,
 ) -> None:
-    real_session.session_log = _DurableDocLog()  # type: ignore[assignment]
+    real_session.session_log = _DurableDocLog()
     require_durable_session(real_session, verb="set_session_name")
 
 
@@ -240,8 +167,8 @@ def test_require_durable_session_raises_on_an_unpersisted_location(
     (session_store.py:585,593). The message names the condition, so a host
     reading stderr/the error can tell this from "unknown store"."""
     log = _DurableFileishLog()
-    log.path = None  # type: ignore[assignment]
-    real_session.session_log = log  # type: ignore[assignment]
+    log.path = None
+    real_session.session_log = log
 
     with pytest.raises(RPCError, match="unpersisted") as refusal:
         require_durable_session(real_session, verb="set_model")

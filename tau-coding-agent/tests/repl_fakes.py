@@ -2,7 +2,7 @@
 
 The idiom ``test_headless_lifecycle.py`` established — a recording double
 installed over ``tau_coding_agent.backends.create_backend`` — with the two extra
-seams the REPL uses and print mode does not: it BINDS a session log, and it
+seams the REPL uses and print mode does not: it BINDS a cursor, and it
 renders from a persistent ``subscribe_render`` subscription rather than from a
 per-turn stream. So the double records the bind, hands the head a router, and
 replays a scripted render stream while a turn is awaited.
@@ -58,10 +58,12 @@ class FakeAgentSession:
             ``run_repl`` binds, kept rather than dropped.
         extension_state: What the ``/extensions`` listing is built from.
         compactions: Every ``custom_instructions`` ``/compact`` was run with.
+        cursor: The cursor the head bound, or ``None`` before the bind.
     """
 
     def __init__(self, events: list[str]) -> None:
         self.events = events
+        self.cursor: Any = None
         self.shutdown_requested = False
         self.routed: list[dict] = []
         self.vocabulary: Vocabulary = BUILTIN
@@ -69,6 +71,11 @@ class FakeAgentSession:
         self.extension_state = LoadExtensionsResult()
         self.compactions: list[str | None] = []
         self.compaction_result: CompactionResult | None = None
+
+    @property
+    def messages(self) -> list[dict[str, Any]]:
+        """The context at the bound cursor, as ``AgentSession.messages`` reads it."""
+        return self.cursor.context()
 
     def set_model_resolver(self, resolver: Any) -> None:
         self.events.append("set_model_resolver")
@@ -163,11 +170,12 @@ class FakeBackend:
     def get_extension_shortcuts(self) -> list[tuple[str, str, str, str]]:
         return list(self.shortcuts)
 
-    def bind_session_log(self, session_log: Any) -> None:
-        self.events.append("bind_session_log")
-        self.bound.append(session_log)
+    def bind_cursor(self, cursor: Any) -> None:
+        self.events.append("bind_cursor")
+        self.bound.append(cursor)
+        self.agent_session.cursor = cursor
 
-    def set_session_name(self, name: str) -> Performed:
+    async def set_session_name(self, name: str) -> Performed:
         self.events.append(f"set_session_name:{name}")
         return Performed(flow=None, mutation="set_session_name", data={"name": name})
 
@@ -179,7 +187,7 @@ class FakeBackend:
         self.extension_runs.append((name, args))
         return ExtensionCommandResult(handled=True, output=self.extension_output)
 
-    def record_model_change(self, name: str) -> None:
+    async def record_model_change(self, name: str) -> None:
         self.events.append(f"record_model_change:{name}")
 
     def subscribe_render(self, handler: Any, *, on_orphan: Any = None) -> FakeRouter:

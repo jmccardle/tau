@@ -223,7 +223,5 @@ async def test_expansion_survives_reload() -> None:
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_fake_text_reply([])):
         await session.prompt("value=!{echo 42}")
 
-    reloaded = ConversationTree(
-        session.session_log.entries(), session.session_log.cursor
-    ).context_for()
+    reloaded = ConversationTree(session.session_log.entries(), session.cursor.leaf).context_for()
     assert _user_texts(reloaded) == ["value=42"]

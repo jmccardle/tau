@@ -56,13 +56,13 @@ async def test_send_message_appends_durable_custom_message_node() -> None:
 
     await api.send_message({"customType": "gate-note", "content": "policy applied"})
 
-    entries = session._session_log.entries()
+    entries = session.session_log.entries()
     custom = [e for e in entries if e.get("type") == "customMessage"]
     assert len(custom) == 1
     assert custom[0]["customType"] == "gate-note"
     assert custom[0]["message"]["role"] == "custom"
     # Rendered on the active path (persisted == rendered).
-    path = ConversationTree(entries, session._session_log.cursor).context_for()
+    path = ConversationTree(entries, session.cursor.leaf).context_for()
     assert "policy applied" in _text_blob(path)
 
 
@@ -73,9 +73,7 @@ async def test_send_message_display_only_by_default_off_the_wire() -> None:
 
     await api.send_message({"customType": "gate-note", "content": "secret to the model"})
 
-    path = ConversationTree(
-        session._session_log.entries(), session._session_log.cursor
-    ).context_for()
+    path = ConversationTree(session.session_log.entries(), session.cursor.leaf).context_for()
     # On the rendered path…
     assert "secret to the model" in _text_blob(path)
     # …but NOT on the wire — the display-only custom node is dropped.
@@ -94,9 +92,7 @@ async def test_send_message_visible_to_model_opt_in_reaches_the_wire() -> None:
         {"visible_to_model": True},
     )
 
-    path = ConversationTree(
-        session._session_log.entries(), session._session_log.cursor
-    ).context_for()
+    path = ConversationTree(session.session_log.entries(), session.cursor.leaf).context_for()
     wire = convert_to_llm(path)
     assert "the model should read this" in _text_blob(wire)
     # Remapped to a real user message the provider accepts.
@@ -110,8 +106,8 @@ async def test_send_message_survives_reload() -> None:
     await api.send_message({"customType": "gate-note", "content": "durable across reload"})
 
     # Simulate a reload: rebuild the tree from the persisted entries alone.
-    persisted = session._session_log.entries()
-    reloaded = ConversationTree(persisted, session._session_log.cursor)
+    persisted = session.session_log.entries()
+    reloaded = ConversationTree(persisted, session.cursor.leaf)
     assert "durable across reload" in _text_blob(reloaded.context_for())
     # The visibleToModel flag also round-trips (still display-only on the wire).
     assert "durable across reload" not in _text_blob(convert_to_llm(reloaded.context_for()))
@@ -152,7 +148,7 @@ async def test_send_message_announces_the_append_on_its_channel() -> None:
     assert len(seen) == 1
     assert seen[0]["m"]["customType"] == "gate-note"
     assert seen[0]["m"]["content"][0]["text"] == "announced"
-    assert seen[0]["id"] in {str(e["id"]) for e in session._session_log.entries()}
+    assert seen[0]["id"] in {str(e["id"]) for e in session.session_log.entries()}
 
 
 async def test_an_unreachable_announcement_raises_rather_than_vanishing() -> None:
@@ -187,7 +183,7 @@ async def test_no_subscriber_off_the_loop_is_not_an_error() -> None:
     session = _make_session()
     api = ExtensionAPI(session=session)
     await api.send_message({"customType": "gate-note", "content": "fine"})
-    assert any(e.get("customType") == "gate-note" for e in session._session_log.entries())
+    assert any(e.get("customType") == "gate-note" for e in session.session_log.entries())
 
     # The same no-subscriber case at the guard itself, where it is still reachable.
     await asyncio.to_thread(session._announce_append, "custom_message", entry_id="e1")

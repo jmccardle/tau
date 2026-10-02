@@ -159,7 +159,7 @@ async def test_appending_messages_raises_context_tokens_and_lowers_headroom(
     This test goes red — `after["context_headroom"] == before["context_headroom"]`
     fails — because headroom would stop tracking context growth at all."""
     before = await _call(handler)
-    await session.session_log.append_message(_user_message("x" * 400))
+    await session.cursor.append_message(_user_message("x" * 400))
     after = await _call(handler)
     assert after["context"]["tokens"] > before["context"]["tokens"]
     assert after["context_headroom"] < before["context_headroom"]
@@ -191,9 +191,9 @@ async def test_context_headroom_is_negative_on_an_over_budget_session() -> None:
     this file stays green, because every other session in it is under
     budget and `max(0, ...)` is the identity there."""
     session = _session(model=_model(context_window=8192))
-    await session.session_log.append_message(_user_message("hello"))
-    await session.session_log.append_message(_assistant_message_with_usage(9000))
-    await session.session_log.append_message(_user_message("y" * 400))
+    await session.cursor.append_message(_user_message("hello"))
+    await session.cursor.append_message(_assistant_message_with_usage(9000))
+    await session.cursor.append_message(_user_message("y" * 400))
 
     result = await _call(RPCHandler(session))
 
@@ -222,9 +222,9 @@ async def test_context_projects_the_usage_anchor_and_the_trailing_estimate() -> 
     MUTATION TARGET 7: hardcode `"last_usage_index": None`. Both redden
     this test; the empty-session and no-usage tests cannot see either one."""
     session = _session(model=_model(context_window=8192))
-    await session.session_log.append_message(_user_message("hello"))
-    await session.session_log.append_message(_assistant_message_with_usage(500))
-    await session.session_log.append_message(_user_message("y" * 400))
+    await session.cursor.append_message(_user_message("hello"))
+    await session.cursor.append_message(_assistant_message_with_usage(500))
+    await session.cursor.append_message(_user_message("y" * 400))
 
     result = await _call(RPCHandler(session))
 
@@ -256,7 +256,7 @@ async def test_a_session_with_no_assistant_usage_is_estimated_end_to_end() -> No
     session (0 or 0) and on the anchored session (500 is truthy); only
     here does it turn the honest 0 into 100."""
     session = _session()
-    await session.session_log.append_message(_user_message("z" * 400))
+    await session.cursor.append_message(_user_message("z" * 400))
 
     result = await _call(RPCHandler(session))
 
@@ -343,12 +343,12 @@ async def test_last_compaction_is_null_before_any_compaction(handler: RPCHandler
 async def test_last_compaction_reflects_the_newest_compaction_entry(
     session: AgentSession, handler: RPCHandler
 ) -> None:
-    first_id = await session.session_log.append_message(_user_message("hello"))
-    await session.session_log.append_compaction(
+    first_id = await session.cursor.append_message(_user_message("hello"))
+    await session.cursor.append_compaction(
         summary="first summary", first_kept_id=first_id, tokens_before=100, **_PROV
     )
-    second_id = await session.session_log.append_message(_user_message("later"))
-    await session.session_log.append_compaction(
+    second_id = await session.cursor.append_message(_user_message("later"))
+    await session.cursor.append_compaction(
         summary="second summary", first_kept_id=second_id, tokens_before=200, **_PROV
     )
 
@@ -377,8 +377,8 @@ async def test_last_compaction_carries_the_entry_id_and_timestamp(
     MUTATION TARGET 9: delete the `"id": entry.get("id"),` line from
     `_last_compaction_state`. MUTATION TARGET 10: replace
     `entry.get("timestamp")` with `None`. Each reddens this test alone."""
-    first_id = await session.session_log.append_message(_user_message("hello"))
-    compaction_id = await session.session_log.append_compaction(
+    first_id = await session.cursor.append_message(_user_message("hello"))
+    compaction_id = await session.cursor.append_compaction(
         summary="only summary", first_kept_id=first_id, tokens_before=100, **_PROV
     )
     written = [e for e in session.session_log.entries() if e.get("type") == "compaction"]
@@ -394,16 +394,16 @@ async def test_last_compaction_state_helper_directly() -> None:
     """`AgentSession.get_last_compaction` in isolation (the handler-level
     tests above exercise it through the wire; this pins its own contract).
 
-    MUTATION TARGET 3: change `reversed(self._session_log.entries())` to
-    a forward scan (drop `reversed`). This test goes red — it would then
-    return the FIRST compaction entry ("old"), not the newest ("new")."""
+    MUTATION TARGET 3: change `reversed(self._cursor.tree().path())` to a
+    forward scan (drop `reversed`). This test goes red — it would then return
+    the FIRST compaction entry ("old"), not the newest ("new")."""
     session = _session()
-    first_id = await session.session_log.append_message(_user_message("a"))
-    await session.session_log.append_compaction(
+    first_id = await session.cursor.append_message(_user_message("a"))
+    await session.cursor.append_compaction(
         summary="old", first_kept_id=first_id, tokens_before=1, **_PROV
     )
-    second_id = await session.session_log.append_message(_user_message("b"))
-    await session.session_log.append_compaction(
+    second_id = await session.cursor.append_message(_user_message("b"))
+    await session.cursor.append_compaction(
         summary="new", first_kept_id=second_id, tokens_before=2, **_PROV
     )
 
@@ -412,6 +412,26 @@ async def test_last_compaction_state_helper_directly() -> None:
     assert state is not None
     assert state.summary == "new"
     assert state.first_kept_id == second_id
+
+
+async def test_last_compaction_is_read_from_the_cursor_path_not_the_log() -> None:
+    """A compaction the cursor has moved off never shaped its context, so it is
+    not this session's last compaction, although it is the log's newest."""
+    session = _session()
+    first_id = await session.cursor.append_message(_user_message("a"))
+    await session.cursor.append_compaction(
+        summary="on the path", first_kept_id=first_id, tokens_before=1, **_PROV
+    )
+    branch_point = await session.cursor.append_message(_user_message("b"))
+    await session.cursor.append_compaction(
+        summary="moved off", first_kept_id=branch_point, tokens_before=2, **_PROV
+    )
+
+    session.cursor.move(branch_point)
+
+    state = session.get_last_compaction()
+    assert state is not None
+    assert state.summary == "on the path"
 
 
 def test_last_compaction_state_helper_on_an_empty_log() -> None:

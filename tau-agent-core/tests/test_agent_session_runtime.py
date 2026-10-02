@@ -33,8 +33,9 @@ from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.agent_session_runtime import AgentSessionRuntime
 from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, SessionInfo
-from tau_agent_core.session_log import InMemorySessionLog
+from tau_agent_core.session_log import InMemorySessionLog, default_leaf
 from tau_agent_core.submission import Submission
 
 #: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
@@ -53,8 +54,8 @@ _PROV = {
 
 
 class _FakeConversationSession:
-    """A RAM-only ``ConversationSession`` — wraps ``InMemorySessionLog`` for
-    the entry/cursor algebra and layers the config reads on top."""
+    """A RAM-only ``ConversationSession``: an ``InMemorySessionLog`` with the
+    config reads layered on top as plain state."""
 
     def __init__(self, cwd: str, model: str, backend: str, name: str | None = None) -> None:
         self._log = InMemorySessionLog()
@@ -70,80 +71,31 @@ class _FakeConversationSession:
     def id(self) -> str:
         return self._log.id
 
-    @property
-    def cursor(self) -> str | None:
-        return self._log.cursor
-
     def entries(self) -> list[dict[str, Any]]:
         return self._log.entries()
 
-    async def append_message(self, message: dict[str, Any]) -> str:
-        return await self._log.append_message(message)
-
-    async def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
-        return await self._log.append_custom_message(message, custom_type)
-
-    async def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
-        return await self._log.append_custom_entry(custom_type, data)
-
-    async def append_compaction(
-        self,
-        summary: str,
-        first_kept_id: str,
-        tokens_before: int,
-        *,
-        summarizer_model_id: str,
-        summary_usage: dict[str, int],
-        covered_entries: int,
-        covered_tokens: int,
-        agent_spec_id: str | None,
-    ) -> str:
-        return await self._log.append_compaction(
-            summary,
-            first_kept_id,
-            tokens_before,
-            summarizer_model_id=summarizer_model_id,
-            summary_usage=summary_usage,
-            covered_entries=covered_entries,
-            covered_tokens=covered_tokens,
-            agent_spec_id=agent_spec_id,
-        )
-
-    async def append_elide(
-        self,
-        first_kept_id: str,
-        *,
-        covered_entries: int,
-        covered_tokens: int,
-        agent_spec_id: str | None,
-    ) -> str:
-        return await self._log.append_elide(
-            first_kept_id,
-            covered_entries=covered_entries,
-            covered_tokens=covered_tokens,
-            agent_spec_id=agent_spec_id,
-        )
-
-    async def append_navigate(self, target_id: str | None) -> str:
-        return await self._log.append_navigate(target_id)
-
-    async def append_branch_summary(self, summary: str, from_id: str | None) -> str:
-        return await self._log.append_branch_summary(summary, from_id)
-
     async def append_at(self, parent_id, entry_type, payload) -> str:
-        return await self._log.append_at(parent_id, entry_type, payload)
+        return self._append_at_now(parent_id, entry_type, payload)
+
+    def _append_at_now(self, parent_id, entry_type, payload) -> str:
+        """Synchronous write for ``create``/``fork``, which are not coroutines."""
+        return self._log.append_at_now(parent_id, entry_type, payload)
 
     @property
     def header(self) -> dict[str, Any]:
         return {"type": "session", "id": self.id, "cwd": self._cwd}
 
+    def _tree(self) -> ConversationTree:
+        entries = self.entries()
+        return ConversationTree(entries, default_leaf(entries))
+
     @property
     def messages(self) -> list[dict[str, Any]]:
-        return [e["message"] for e in self._log.entries() if e.get("type") == "message"]
+        return [e["message"] for e in self._tree().path() if e.get("type") == "message"]
 
     @property
     def context(self) -> list[dict[str, Any]]:
-        return ConversationTree(self.entries(), self.cursor).context_for()
+        return self._tree().context_for()
 
     @property
     def model(self) -> str:
@@ -155,14 +107,6 @@ class _FakeConversationSession:
 
     def display_title(self) -> str:
         return self._name or f"Session ({self._model})"
-
-    def append_model_change(self, model: str, backend: str) -> str:
-        self._model, self._backend = model, backend
-        return "model-change"
-
-    def append_session_info(self, name: str) -> str:
-        self._name = name
-        return "session-info"
 
 
 class _FakeCatalog(SessionCatalog):
@@ -178,8 +122,8 @@ class _FakeCatalog(SessionCatalog):
         session = _FakeConversationSession(cwd, model, backend, name)
         if system_prompt:
             # Sync core, like every real catalog: `create` is not a coroutine.
-            session._log._append_now(
-                "message", message={"role": "system", "content": system_prompt}
+            session._append_at_now(
+                None, "message", {"message": {"role": "system", "content": system_prompt}}
             )
         self._sessions[session.id] = session
         return session
@@ -190,8 +134,8 @@ class _FakeCatalog(SessionCatalog):
         # Mirrors FileSessionCatalog: same construction, never registered.
         session = _FakeConversationSession(cwd, model, backend, name)
         if system_prompt:
-            session._log._append_now(
-                "message", message={"role": "system", "content": system_prompt}
+            session._append_at_now(
+                None, "message", {"message": {"role": "system", "content": system_prompt}}
             )
         return session
 
@@ -201,13 +145,25 @@ class _FakeCatalog(SessionCatalog):
         except KeyError:
             raise FileNotFoundError(f"no in-memory session {ref!r}") from None
 
-    def fork(self, source: ConversationSession, cwd: str) -> ConversationSession:
+    def fork(
+        self, source: ConversationSession, cwd: str, *, at: str | None = None
+    ) -> ConversationSession:
         assert isinstance(source, _FakeConversationSession)
+        entries = source.entries()
+        if at is not None:
+            tree = ConversationTree(entries, at)
+            if not tree.contains(at):
+                raise ValueError(f"fork point {at!r} not found")
+            entries = tree.path()
         forked = _FakeConversationSession(cwd, source.model, source.backend)
-        for entry in source.entries():
-            if entry.get("type") == "message":
-                # Sync core: `fork` is not a coroutine on the ABC or either store.
-                forked._log._append_now("message", message=entry["message"])
+        new_ids: dict[str | None, str | None] = {None: None}
+        for entry in entries:
+            payload = {
+                k: v for k, v in entry.items() if k not in ("type", "id", "parentId", "timestamp")
+            }
+            new_ids[entry["id"]] = forked._append_at_now(
+                new_ids[entry.get("parentId")], entry["type"], payload
+            )
         self._sessions[forked.id] = forked
         return forked
 
@@ -310,7 +266,7 @@ def runtime(session: AgentSession, catalog: _FakeCatalog) -> AgentSessionRuntime
 async def test_new_session_resets_the_documented_set(session: AgentSession, runtime):
     """Every H3 item, driven dirty, then proven clean after new_session()."""
     old_log = session.session_log
-    await old_log.append_message({"role": "user", "content": "hi"})
+    await session.cursor.append_message({"role": "user", "content": "hi"})
 
     session._last_usage = {"input_tokens": 5}
     session.record_side_usage({"input_tokens": 3, "output_tokens": 2, "total_tokens": 5})
@@ -325,7 +281,7 @@ async def test_new_session_resets_the_documented_set(session: AgentSession, runt
     )
     session._deferred_ops.append({"kind": "compact", "custom_instructions": None})
     session._is_streaming = True
-    session._pre_turn_leaf = old_log.cursor
+    session._pre_turn_leaf = session.cursor.leaf
 
     result = await runtime.new_session(persist=False)
 
@@ -340,9 +296,9 @@ async def test_new_session_resets_the_documented_set(session: AgentSession, runt
     assert session._deferred_ops == []
     assert session.is_streaming is False
     assert session._pre_turn_leaf is None
-    # log + cursor: a brand new, empty log — not the dirty one.
+    # log + cursor: a cursor on a brand new, empty log — not the dirty one.
     assert session.session_log is not old_log
-    assert session.session_log.cursor is None
+    assert session.cursor.leaf is None
     assert session.session_log.entries() == []
 
 
@@ -368,21 +324,19 @@ async def test_survivors_are_left_alone(session: AgentSession, catalog, runtime)
 async def test_last_compaction_anchor_is_cleared_not_rederived(session: AgentSession, runtime):
     """§10 'resolved': a fresh log has no compaction to anchor to — this
     proves it is genuinely GONE, not carried over or recomputed."""
-    log = session.session_log
-    first = await log.append_message({"role": "user", "content": "turn one"})
-    await log.append_compaction(
+    first = await session.cursor.append_message({"role": "user", "content": "turn one"})
+    await session.cursor.append_compaction(
         summary="a summary", first_kept_id=first, tokens_before=100, **_PROV
     )
-    # Sanity: the OLD log really does have a splice anchor before the reset.
-    old_active = ConversationTree(log.entries(), log.cursor).context_for()
+    # Sanity: the OLD cursor really does sit below a splice anchor before the reset.
+    old_active = session.cursor.context()
     assert any(m.get("role") == "user" and "summary" in str(m.get("content")) for m in old_active)
 
     await runtime.new_session(persist=False)
 
-    new_log = session.session_log
-    assert new_log.entries() == []
-    active = ConversationTree(new_log.entries(), new_log.cursor).context_for()
-    assert active == []
+    assert session.session_log.entries() == []
+    assert session.cursor.context() == []
+    assert session.get_last_compaction() is None
 
 
 # ── H2: the veto hook ────────────────────────────────────────────────────
@@ -543,9 +497,13 @@ async def test_new_session_refuses_rather_than_hanging_when_the_turn_never_stops
 async def test_fork_carries_history_and_leaves_the_source_untouched(
     session: AgentSession, catalog, runtime
 ):
+    """The fork is taken at the session cursor's leaf: a branch the cursor moved
+    off stays behind in the source."""
     session.session_log = catalog.create_ephemeral("/work", "m", "openai")
     source_log = session.session_log
-    await source_log.append_message({"role": "user", "content": "hello"})
+    hello = await session.cursor.append_message({"role": "user", "content": "hello"})
+    await session.cursor.append_message({"role": "assistant", "content": "moved off"})
+    session.cursor.move(hello)
     source_before = list(source_log.entries())
 
     result = await runtime.fork()
@@ -573,14 +531,16 @@ async def test_switch_session_loads_a_different_session(
     session: AgentSession, catalog: _FakeCatalog, runtime
 ):
     other = catalog.create("/work", "m", "openai")
-    await other.append_message({"role": "user", "content": "over there"})
+    over_there = await Cursor.newest(other).append_message(
+        {"role": "user", "content": "over there"}
+    )
 
     result = await runtime.switch_session(other.id)
 
     assert result["cancelled"] is False
     assert session.session_log is other
     assert result["session_id"] == other.id
-    assert result["cursor"] == other.cursor
+    assert result["cursor"] == over_there == session.cursor.leaf
 
 
 async def test_switch_session_bad_ref_raises_and_touches_nothing(session: AgentSession, runtime):

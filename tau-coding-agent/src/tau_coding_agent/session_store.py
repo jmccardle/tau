@@ -32,7 +32,7 @@ from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, 
 from tau_agent_core.session_log import (
     event_iso,
     normalize_loaded_entries,
-    resolve_cursor,
+    default_leaf,
 )
 
 from tau_coding_agent.config import TAU_DIR, ConfigError
@@ -249,17 +249,6 @@ class Session:
         self._header = header
         self._entries = entries
         self._ids: set[str] = {e["id"] for e in entries if "id" in e}
-        self._leaf_id: str | None = self._resolve_cursor(entries)
-
-    @staticmethod
-    def _resolve_cursor(entries: list[dict[str, Any]]) -> str | None:
-        """Resolve the persisted cursor — delegates to the shared entry algebra.
-
-        The rule lives in ``tau_agent_core.session_log.resolve_cursor`` so every store
-        (in-memory, file, database-backed) resolves the cursor identically; it is part
-        of the entry algebra, not of any one durability layer.
-        """
-        return resolve_cursor(entries)
 
     # --- identity / header -------------------------------------------------
 
@@ -276,16 +265,6 @@ class Session:
         return self._header.get("parent")
 
     @property
-    def cursor(self) -> str | None:
-        """The current leaf (tip) entry id; ``None`` before the first entry.
-
-        Exposes ``_leaf_id`` under the name the ``tau_agent_core.session_log``
-        ``SessionLog`` Protocol reads, so ``Session`` satisfies that facade
-        structurally and ``AgentSession`` can build a ``ConversationTree`` view
-        over the live session (§2.6, §4.2)."""
-        return self._leaf_id
-
-    @property
     def header(self) -> dict[str, Any]:
         """The line-1 header (seam 2: export + pi-faithful json need it raw)."""
         return dict(self._header)
@@ -294,44 +273,22 @@ class Session:
 
     @property
     def messages(self) -> list[dict[str, Any]]:
-        """Every ``message`` entry on the CURSOR'S ANCESTRY, in root→leaf order.
+        """Every ``message`` entry on the path to the default leaf, root first.
 
-        Unspliced: unlike ``context``, no compaction / ``branch_summary`` boundary is
-        applied, so a compacted session still shows its dropped history here. This is
-        *not* what the user sees or the model receives — use ``context`` for that. Kept
-        because a few callers want the flat message list.
-
-        **Ancestry, not a filter** (docs/LANE-REMOVAL.md §3.2). This used to be a flat
-        scan of every entry with a ``branchOf``-tag exclusion, which asked "who wrote
-        it?" when the question is "does it belong to the conversation being looked at?".
-        Those coincide for a sub-agent and diverge for a fork: a three-way fork returned
-        three mutually exclusive alternatives concatenated as one conversation, and the
-        callers are exactly the places a user would notice and mistrust —
-        ``display_title()``, ``read_session_info``'s ``message_count``/``first_message``
-        in the picker, and ``rpc``'s ``message_count``. Walking up from the cursor
-        answers the real question, and answers it identically for a sub-agent branch and
-        a user's fork, which are the same shape. Anything wanting the true raw log still
-        has ``entries()``.
+        Unspliced: compacted history still shows here, so this is neither what a
+        user sees nor what the model receives — that is :attr:`context`. Read by
+        the picker's title and counts. A head reads its own cursor, not this.
         """
         return [
             e["message"]
-            for e in ConversationTree(self._entries, self._leaf_id).path()
+            for e in ConversationTree(self._entries, default_leaf(self._entries)).path()
             if e.get("type") == "message"
         ]
 
     @property
     def context(self) -> list[dict[str, Any]]:
-        """The active-path context at the current cursor — the pi-faithful render
-        and model-input source (pi ``buildSessionContext``, session-manager.ts:325).
-
-        The ``ConversationTree`` fold over this session's entries: compaction /
-        ``branch_summary`` splices applied, abandoned branches dropped via the
-        ``parentId`` walk. Unlike ``messages`` (the raw linear fold, which shows a
-        compacted session's dropped history and hides the summary), this is what
-        must seed the TUI/headless transcript and the LLM context on load, new,
-        fork, and resume. Reference: docs/SESSION-TREE-IMPLEMENTATION.md §2.6.
-        """
-        return ConversationTree(self.entries(), self.cursor).context_for()
+        """The folded context at the default leaf: where a reopened tree continues."""
+        return ConversationTree(self.entries(), default_leaf(self._entries)).context_for()
 
     @property
     def model(self) -> str:
@@ -455,11 +412,17 @@ class Session:
         cwd: str,
         *,
         base_dir: Path | None = None,  # seam 1
+        at: str | None = None,
     ) -> "Session":
         """Fork ``source`` into a new file whose header ``parent`` is the source id.
 
-        Copies the source's entries (self-contained — no cross-file chaining), then
-        new turns append. The source file is never touched (§5.5)."""
+        Copies every entry, or with ``at`` only the path to that entry, so the
+        fork's default leaf is ``at`` (docs/CURSORS.md §4). The copy is
+        self-contained and the source file is never touched (§5.5).
+
+        Raises:
+            ValueError: ``at`` names no entry of ``source``.
+        """
         _emit_session_event(SESSION_BEFORE_FORK, source, cwd=cwd)
         timestamp = _now_iso()
         session_id = uuid.uuid4().hex
@@ -467,181 +430,18 @@ class Session:
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / _session_filename(timestamp, session_id)
         header = cls._build_header(session_id, timestamp, os.path.abspath(cwd), parent=source.id)
-        copied = [dict(e) for e in source._entries]
+        if at is None:
+            copied = [dict(e) for e in source._entries]
+        else:
+            if at not in source._ids:
+                raise ValueError(f"fork point {at!r} not found")
+            on_path = {e["id"] for e in ConversationTree(source._entries, at).path()}
+            copied = [dict(e) for e in source._entries if e.get("id") in on_path]
         session = cls(path, header, copied)
         session._persist_header()
         for entry in copied:
             session._persist_entry(entry)
         return session
-
-    # --- append API (append-on-message; §5.4) ------------------------------
-
-    async def append_message(self, message: dict[str, Any]) -> str:
-        return self._append_now("message", message=message)
-
-    async def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
-        """Persist an extension-injected custom message as a ``customMessage`` node.
-
-        The on-disk counterpart of ``InMemorySessionLog.append_custom_message``
-        (E5 §3.1 / S29): the durable, reloadable form of a ``before_agent_start``
-        injection. Its own entry KIND carrying the stored ``message`` (``role:
-        "custom"``) and the top-level ``customType`` — folded onto the active path
-        by ``ConversationTree`` and remapped custom→user on the wire."""
-        return self._append_now("customMessage", customType=custom_type, message=message)
-
-    async def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
-        """Persist a durable, NON-message ``customEntry`` node (E6 §2 / S39).
-
-        The on-disk counterpart of ``InMemorySessionLog.append_custom_entry``: the
-        reloadable backing for ``api.append_entry`` (was the RAM-only registry
-        ``_entry_store``, lost on restart — G4). Its own entry KIND carrying the
-        extension's ``{customType, data}`` — flushed to the ``.jsonl`` on append and
-        reconstructed by ``load`` like every other entry, so it round-trips a
-        reload. It is NOT a ``message``/``customMessage`` node, so ``ConversationTree``
-        never folds it into context and ``convert_to_llm`` never sees it (tree-as-
-        backplane state: on the durable path, excluded from model input)."""
-        return self._append_now("customEntry", customType=custom_type, data=data)
-
-    def append_model_change(self, model: str, backend: str) -> str:
-        return self._append_now("model_change", model=model, backend=backend)
-
-    def append_thinking_change(self, level: str) -> str:
-        return self._append_now("thinking_change", level=level)
-
-    def append_session_info(self, name: str) -> str:
-        return self._append_now("session_info", name=name)
-
-    async def append_compaction(
-        self,
-        summary: str,
-        first_kept_id: str,
-        tokens_before: int,
-        *,
-        summarizer_model_id: str,
-        summary_usage: dict[str, int],
-        covered_entries: int,
-        covered_tokens: int,
-        agent_spec_id: str | None,
-    ) -> str:
-        """Persist a compaction splice anchored at ``first_kept_id``.
-
-        The five keyword-only provenance fields are TREE-BROWSER-AS-EDITOR.md §8's
-        decision as §11.3 widened it onto the Protocol: which model wrote the
-        summary, what that cost, how big the folded span was, and which
-        ``agent_spec`` was in force. None of them has a default — every one existed
-        at the call site and was being dropped on the floor (§8.1), so a caller that
-        cannot name one must fail there rather than persist a ``None`` that reads as
-        a recorded unknown.
-
-        Fail-Early on an unknown anchor, exactly as ``append_navigate`` and
-        ``append_branch_summary`` already do. This one was missing, and it is the most
-        damaging of the three to get wrong: ``ConversationTree._active_path_entries``
-        walks the path looking for the anchor and only starts keeping entries once it
-        finds it, so an id that matches nothing means the anchor is *never* found and
-        the ENTIRE kept region is silently dropped from the fold. The context comes
-        back as ``[summary] + whatever_was_appended_after`` and the conversation
-        quietly loses its recent history — no error, no warning.
-        """
-        if first_kept_id not in self._ids:
-            raise ValueError(
-                f"compaction first_kept_id {first_kept_id!r} not found; the splice anchor "
-                "must name a real entry, or the whole kept region silently drops out of "
-                "the context fold"
-            )
-        _emit_session_event(SESSION_BEFORE_COMPACT, self, first_kept_id=first_kept_id)
-        return self._append_now(
-            "compaction",
-            summary=summary,
-            firstKeptId=first_kept_id,
-            tokensBefore=tokens_before,
-            summarizerModelId=summarizer_model_id,
-            summaryUsage=dict(summary_usage),
-            coveredEntries=covered_entries,
-            coveredTokens=covered_tokens,
-            agentSpecId=agent_spec_id,
-        )
-
-    async def append_elide(
-        self,
-        first_kept_id: str,
-        *,
-        covered_entries: int,
-        covered_tokens: int,
-        agent_spec_id: str | None,
-    ) -> str:
-        """Persist a summary-less splice anchor (W3, NODE-ADDRESSABLE-AGENTS.md).
-
-        The same splice ``ConversationTree._active_path_entries`` runs for
-        ``compaction`` — anchor on the last of ``{"compaction", "elide"}`` in the
-        path, drop everything before ``firstKeptId`` — with the ``summary`` and
-        ``tokensBefore`` fields dropped: there is nothing to render, only a span to
-        exclude. No ``SESSION_BEFORE_COMPACT`` event here — it names a compaction
-        run specifically, and an ``elide`` is not one.
-
-        Fail-Early on an unknown anchor, exactly as ``append_compaction`` does: an
-        id matching nothing is never found by the fold's forward scan, so the
-        entire kept region would silently drop out of context rather than raise.
-
-        Three provenance fields rather than ``append_compaction``'s five (§8.2,
-        §8.3): an elide has a covered span and an ``agent_spec``, but no summary and
-        therefore neither a summarizer nor a summary cost. Until now it recorded
-        only ``firstKeptId`` — less than a compaction, which at least carried
-        ``tokensBefore`` — and ``coveredTokens`` in particular is the one figure that
-        is NOT recomputable from the tree afterwards.
-        """
-        if first_kept_id not in self._ids:
-            raise ValueError(
-                f"elide first_kept_id {first_kept_id!r} not found; the splice anchor "
-                "must name a real entry, or the whole kept region silently drops out of "
-                "the context fold"
-            )
-        return self._append_now(
-            "elide",
-            firstKeptId=first_kept_id,
-            coveredEntries=covered_entries,
-            coveredTokens=covered_tokens,
-            agentSpecId=agent_spec_id,
-        )
-
-    async def append_navigate(self, target_id: str | None) -> str:
-        """Persist a cursor move as a first-class ``navigate`` entry (§2.2).
-
-        pi's ``leafId`` is in-memory only and evaporates on quit (branch() moves
-        the cursor without appending, session-manager.ts:1241-1246); τ diverges so
-        an agent (or the tree-browser) can move the tip *without* new content and
-        have it survive a reload. The entry's ``parentId`` is the previous leaf;
-        ``targetId`` (``None`` = before-first-entry) is where the cursor now sits,
-        and the in-memory leaf advances to it (not to the navigate entry itself).
-
-        Fail-Early: a non-``None`` target must name a real entry, mirroring pi's
-        ``branch()`` "Entry ... not found" throw (session-manager.ts:1242-1244)
-        and ``ConversationTree.navigate`` (conversation_tree.py:121-125); persisting
-        a dangling cursor would silently drop the whole conversation at read time."""
-        if target_id is not None and target_id not in self._ids:
-            raise ValueError(f"navigate target {target_id!r} not found")
-        entry_id = self._append_now("navigate", targetId=target_id)
-        self._leaf_id = target_id
-        return entry_id
-
-    async def append_branch_summary(self, summary: str, from_id: str | None) -> str:
-        """Persist a ``branch_summary`` inline node at the branch point (§2.4, §5).
-
-        pi ``branchWithSummary`` (session-manager.ts:1262-1279) sets
-        ``this.leafId = branchFromId`` *first*, then appends — so the summary parents
-        at the branch point and the abandoned children become a **sibling branch off
-        the active path** (Decision 5, fix 1). We mirror that: move the in-memory leaf
-        to ``from_id`` before appending, so ``parentId == from_id``. The abandoned
-        branch then drops out of ``context_for`` purely via the ``parentId`` walk —
-        ``branch_summary`` is a plain inline node at read time, NOT a splice anchor
-        (Decision 5, fix 2; ``ConversationTree`` §5). The leaf then advances to this
-        entry (pi ``_appendEntry``, session-manager.ts:937-942).
-
-        Fail-Early: a non-``None`` ``from_id`` must name a real entry, mirroring pi's
-        ``branchWithSummary`` "Entry ... not found" throw (session-manager.ts:1266-1268)."""
-        if from_id is not None and from_id not in self._ids:
-            raise ValueError(f"branch_summary from {from_id!r} not found")
-        self._leaf_id = from_id  # branch point, not the current leaf (pi :1272)
-        return self._append_now("branch_summary", summary=summary, fromId=from_id)
 
     def shutdown(self) -> None:
         """Signal end-of-session (seam 3). Emits ``session_shutdown``; no disk
@@ -666,17 +466,19 @@ class Session:
     def _init_state(
         self, model: str, backend: str, system_prompt: str | None, name: str | None
     ) -> None:
-        """Write the entries every new session carries: model, optional name, and
-        the system prompt as the first ``message`` entry (uniform reconstruction).
+        """Write a new session's opening chain: model, optional name, system prompt.
 
-        Through :meth:`_append_now`, never the ``async`` Protocol appenders: this
-        runs inside a synchronous ``create``/``fork``, which a head may call before
-        it has a loop."""
-        self.append_model_change(model, backend)
+        Synchronous, because ``create``/``fork`` are classmethods a head may call
+        before it has an event loop. The chain is parented entry to entry; there is
+        no stored leaf to move.
+        """
+        parent = self._append_at_now(None, "model_change", {"model": model, "backend": backend})
         if name is not None:
-            self.append_session_info(name)
+            parent = self._append_at_now(parent, "session_info", {"name": name})
         if system_prompt:
-            self._append_now("message", message={"role": "system", "content": system_prompt})
+            self._append_at_now(
+                parent, "message", {"message": {"role": "system", "content": system_prompt}}
+            )
 
     async def append_at(
         self,
@@ -684,15 +486,16 @@ class Session:
         entry_type: str,
         payload: dict[str, Any],
     ) -> str:
-        """Explicit-parent append — the C2/W14 branch primitive (see the ``SessionLog``
-        Protocol). Parents where it is TOLD and does **not** move this log's leaf: a
-        sub-agent's writes must never drag the spawning cursor along with them.
+        """Write one entry at ``parent_id`` (the ``SessionLog`` contract).
 
-        The interleaving this allows (a branch's lines landing between two primary lines
-        in one JSONL file) is already valid on disk — entries carry an explicit
-        ``parentId``, so load order was never what defined the tree. Only the *writer*
-        convenience of chaining off a single ``_leaf_id`` ever assumed one cursor.
+        Entries from several cursors interleave in the file; ``parentId``, not line
+        order, defines the tree. A ``compaction`` emits ``session_before_compact``
+        first, for ``subscribe_session_events`` listeners.
         """
+        if entry_type == "compaction":
+            _emit_session_event(
+                SESSION_BEFORE_COMPACT, self, first_kept_id=payload.get("firstKeptId")
+            )
         return self._append_at_now(parent_id, entry_type, payload)
 
     def _append_at_now(
@@ -722,12 +525,6 @@ class Session:
         self._ids.add(entry["id"])
         self._persist_entry(entry)
         return str(entry["id"])
-
-    def _append_now(self, kind: str, **payload: Any) -> str:
-        """The ordinary append: write at the current leaf, then move the leaf."""
-        entry_id = self._append_at_now(self._leaf_id, kind, payload)
-        self._leaf_id = entry_id
-        return entry_id
 
     def _persist_header(self) -> None:
         if self.path is None:
@@ -793,7 +590,7 @@ def read_session_info(path: Path) -> SessionInfo | None:
         if header is None:
             return None
 
-        for entry in ConversationTree(entries, resolve_cursor(entries)).path():
+        for entry in ConversationTree(entries, default_leaf(entries)).path():
             if entry.get("type") != "message":
                 continue
             message = entry.get("message", {})
@@ -900,12 +697,12 @@ class FileSessionCatalog(SessionCatalog):
     def load(self, ref: str) -> Session:
         return Session.load(Path(ref))
 
-    def fork(self, source: ConversationSession, cwd: str) -> Session:
+    def fork(self, source: ConversationSession, cwd: str, *, at: str | None = None) -> Session:
         if not isinstance(source, Session):
             raise TypeError(
                 f"FileSessionCatalog.fork requires a file-backed Session, got {type(source)!r}"
             )
-        return Session.fork(source, cwd, base_dir=self._base_dir)
+        return Session.fork(source, cwd, base_dir=self._base_dir, at=at)
 
     def list(self, cwd: str | None = None) -> list[SessionInfo]:
         return list_sessions(cwd, base_dir=self._base_dir)

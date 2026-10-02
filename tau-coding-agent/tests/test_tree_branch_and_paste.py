@@ -27,7 +27,6 @@ import pytest
 from textual.app import App
 from textual.widgets import Static, Tree
 
-from tau_agent_core.conversation_tree import ConversationTree
 from tau_coding_agent.app import TauApp
 from tau_coding_agent.backends import TauBackend
 from tau_coding_agent import transcript, tree_browser
@@ -128,36 +127,44 @@ def _texts(messages: list[dict]) -> list[str]:
 
 
 async def _linear_log():
-    """``sys → m0 → m1 → m2 → m3 → m4`` on an in-memory log."""
+    """``sys → m0 → m1 → m2 → m3 → m4`` on an in-memory log; a cursor at ``m4`` + the ids."""
+    from tau_agent_core.cursor import Cursor
     from tau_agent_core.session_log import InMemorySessionLog
 
-    log = InMemorySessionLog()
-    await log.append_message({"role": "system", "content": "SYS"})
-    ids = [await log.append_message({"role": "user", "content": f"m{i}"}) for i in range(5)]
-    return log, ids
+    cursor = Cursor.newest(InMemorySessionLog())
+    await cursor.append_message({"role": "system", "content": "SYS"})
+    ids = [await cursor.append_message({"role": "user", "content": f"m{i}"}) for i in range(5)]
+    return cursor, ids
+
+
+def _bound_backend(cursor) -> TauBackend:
+    """A real backend whose session extends ``cursor``."""
+    backend = _backend()
+    backend.bind_cursor(cursor)
+    return backend
 
 
 async def _seeded(app: TauApp) -> tuple[Any, list[str]]:
-    """A fresh chat with three user/assistant pairs; returns the session + ids."""
+    """A fresh chat with three user/assistant pairs at the app's cursor; returns the store + ids."""
     await app.action_new_chat()
-    session = app.current_session
+    cursor = app._cursor
     ids = [
-        await session.append_message({"role": "user", "content": "u1"}),
-        await session.append_message({"role": "assistant", "content": "a1"}),
-        await session.append_message({"role": "user", "content": "u2"}),
-        await session.append_message({"role": "assistant", "content": "a2"}),
-        await session.append_message({"role": "user", "content": "u3"}),
-        await session.append_message({"role": "assistant", "content": "a3"}),
+        await cursor.append_message({"role": "user", "content": "u1"}),
+        await cursor.append_message({"role": "assistant", "content": "a1"}),
+        await cursor.append_message({"role": "user", "content": "u2"}),
+        await cursor.append_message({"role": "assistant", "content": "a2"}),
+        await cursor.append_message({"role": "user", "content": "u3"}),
+        await cursor.append_message({"role": "assistant", "content": "a3"}),
     ]
-    return session, ids
+    return app.current_session, ids
 
 
 # --- the browser gestures ---------------------------------------------------
 
 
 async def test_ctrl_b_answers_with_every_marked_id_in_row_order():
-    log, ids = await _linear_log()
-    modal = tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor))
+    cursor, ids = await _linear_log()
+    modal = tree_browser.SessionTreeModal(cursor.tree())
     harness = _ModalHarness(modal)
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -171,8 +178,8 @@ async def test_ctrl_b_answers_with_every_marked_id_in_row_order():
 
 
 async def test_ctrl_b_with_nothing_marked_says_so_and_stays_open():
-    log, _ids = await _linear_log()
-    modal = tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor))
+    cursor, _ids = await _linear_log()
+    modal = tree_browser.SessionTreeModal(cursor.tree())
     harness = _ModalHarness(modal)
     said: list[str] = []
     async with harness.run_test() as pilot:
@@ -189,22 +196,24 @@ async def test_marking_an_assistant_marks_its_tool_result_too():
     """The select-time pairing: an assistant that made a call and the result
     answering it are one unit, so the rows light up together and a reader cannot
     build the half-selection the commit would have to refuse."""
+    from tau_agent_core.cursor import Cursor
     from tau_agent_core.session_log import InMemorySessionLog
 
     log = InMemorySessionLog()
-    await log.append_message({"role": "system", "content": "SYS"})
-    await log.append_message({"role": "user", "content": "u1"})
-    call = await log.append_message(
+    cursor = Cursor.newest(log)
+    await cursor.append_message({"role": "system", "content": "SYS"})
+    await cursor.append_message({"role": "user", "content": "u1"})
+    call = await cursor.append_message(
         {
             "role": "assistant",
             "content": [{"type": "toolCall", "id": "c1", "name": "read", "arguments": {}}],
         }
     )
-    result = await log.append_message(
+    result = await cursor.append_message(
         {"role": "toolResult", "tool_call_id": "c1", "content": [{"type": "text", "text": "ok"}]}
     )
 
-    modal = tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor))
+    modal = tree_browser.SessionTreeModal(cursor.tree())
     harness = _ModalHarness(modal)
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -217,15 +226,17 @@ async def test_marking_an_assistant_marks_its_tool_result_too():
 
 
 async def test_c_paints_the_copied_subtree_and_v_offers_to_paste_it():
+    from tau_agent_core.cursor import Cursor
     from tau_agent_core.session_log import InMemorySessionLog
 
     log = InMemorySessionLog()
-    await log.append_message({"role": "system", "content": "SYS"})
-    u1 = await log.append_message({"role": "user", "content": "u1"})
-    a1 = await log.append_message({"role": "assistant", "content": "a1"})
-    u2 = await log.append_message({"role": "user", "content": "u2"})
+    cursor = Cursor.newest(log)
+    await cursor.append_message({"role": "system", "content": "SYS"})
+    u1 = await cursor.append_message({"role": "user", "content": "u1"})
+    a1 = await cursor.append_message({"role": "assistant", "content": "a1"})
+    u2 = await cursor.append_message({"role": "user", "content": "u2"})
 
-    modal = tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor))
+    modal = tree_browser.SessionTreeModal(cursor.tree())
     harness = _ModalHarness(modal)
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -246,13 +257,15 @@ async def test_c_paints_the_copied_subtree_and_v_offers_to_paste_it():
 
 
 async def test_v_answers_with_the_copied_node_and_the_target():
+    from tau_agent_core.cursor import Cursor
     from tau_agent_core.session_log import InMemorySessionLog
 
     log = InMemorySessionLog()
-    u1 = await log.append_message({"role": "user", "content": "u1"})
-    a1 = await log.append_message({"role": "assistant", "content": "a1"})
+    cursor = Cursor.newest(log)
+    u1 = await cursor.append_message({"role": "user", "content": "u1"})
+    a1 = await cursor.append_message({"role": "assistant", "content": "a1"})
 
-    modal = tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor))
+    modal = tree_browser.SessionTreeModal(cursor.tree())
     harness = _ModalHarness(modal)
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -266,8 +279,8 @@ async def test_v_answers_with_the_copied_node_and_the_target():
 
 
 async def test_v_with_nothing_copied_says_what_c_is_for():
-    log, ids = await _linear_log()
-    modal = tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor))
+    cursor, ids = await _linear_log()
+    modal = tree_browser.SessionTreeModal(cursor.tree())
     harness = _ModalHarness(modal)
     said: list[str] = []
     async with harness.run_test() as pilot:
@@ -282,11 +295,11 @@ async def test_v_with_nothing_copied_says_what_c_is_for():
 
 
 async def test_a_structural_row_cannot_be_copied():
-    log, ids = await _linear_log()
-    await log.append_elide(ids[2], covered_entries=1, covered_tokens=4, agent_spec_id=None)
-    elide_id = next(e["id"] for e in log.entries() if e["type"] == "elide")
+    cursor, ids = await _linear_log()
+    await cursor.append_elide(ids[2], covered_entries=1, covered_tokens=4, agent_spec_id=None)
+    elide_id = next(e["id"] for e in cursor.entries() if e["type"] == "elide")
 
-    modal = tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor))
+    modal = tree_browser.SessionTreeModal(cursor.tree())
     harness = _ModalHarness(modal)
     said: list[str] = []
     async with harness.run_test() as pilot:
@@ -303,8 +316,8 @@ async def test_a_structural_row_cannot_be_copied():
 async def test_the_clipboard_can_be_handed_back_when_the_browser_re_opens():
     """How one copy reaches two destinations: the CALLER carries the clipboard
     across the re-open, because the modal owns nothing durable (§11.1)."""
-    log, ids = await _linear_log()
-    modal = tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor), copied=ids[1])
+    cursor, ids = await _linear_log()
+    modal = tree_browser.SessionTreeModal(cursor.tree(), copied=ids[1])
     harness = _ModalHarness(modal)
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -316,8 +329,8 @@ async def test_a_clipboard_naming_a_vanished_entry_is_dropped():
     """Fail-Early's other half: the id is checked against the tree it is handed
     to, so a stale clipboard paints nothing rather than raising on the first
     repaint."""
-    log, _ids = await _linear_log()
-    modal = tree_browser.SessionTreeModal(ConversationTree(log.entries(), log.cursor), copied="gone")
+    cursor, _ids = await _linear_log()
+    modal = tree_browser.SessionTreeModal(cursor.tree(), copied="gone")
     harness = _ModalHarness(modal)
     async with harness.run_test() as pilot:
         for _ in range(4):
@@ -329,105 +342,111 @@ async def test_a_clipboard_naming_a_vanished_entry_is_dropped():
 
 
 async def test_commit_branch_keeps_the_prefix_and_mints_the_rest():
-    log, ids = await _linear_log()
-    backend = _backend()
+    cursor, ids = await _linear_log()
+    backend = _bound_backend(cursor)
 
-    messages = await backend.commit_branch(log, [ids[0], ids[3], ids[4]], drop_context=False)
+    messages = await backend.commit_branch([ids[0], ids[3], ids[4]], drop_context=False)
 
     assert _texts(messages) == ["SYS", "m0", "m3", "m4"]
     # m0 is used in place; m3 and m4 are copies naming their sources.
-    copies = [e for e in log.entries() if e.get("copiedFrom")]
+    copies = [e for e in cursor.entries() if e.get("copiedFrom")]
     assert [e["copiedFrom"] for e in copies] == [ids[3], ids[4]]
     # Nothing was re-parented and nothing was erased (I1, T5).
-    assert {e["id"] for e in log.entries()} >= set(ids)
-    assert log.entries()[4]["parentId"] == ids[2]
+    assert {e["id"] for e in cursor.entries()} >= set(ids)
+    assert cursor.entries()[4]["parentId"] == ids[2]
 
 
 async def test_commit_branch_with_drop_context_leaves_the_system_prompt_and_the_branch():
-    log, ids = await _linear_log()
-    backend = _backend()
+    cursor, ids = await _linear_log()
+    backend = _bound_backend(cursor)
 
-    messages = await backend.commit_branch(log, [ids[1], ids[3]], drop_context=True)
+    messages = await backend.commit_branch([ids[1], ids[3]], drop_context=True)
 
     assert _texts(messages) == ["SYS", "m1", "m3"]
-    assert [e["type"] for e in log.entries()][-1] == "elide"
+    assert [e["type"] for e in cursor.entries()][-1] == "elide"
 
 
 async def test_commit_branch_mints_nothing_for_a_contiguous_selection():
     """§6.3 case A: the selection is already an ancestor chain, so the branch is a
     cursor move plus an elide. This is why the elide survives §6 — it is the one
     form that preserves every id's identity."""
-    log, ids = await _linear_log()
-    backend = _backend()
+    cursor, ids = await _linear_log()
+    backend = _bound_backend(cursor)
 
-    messages = await backend.commit_branch(log, ids[2:], drop_context=True)
+    messages = await backend.commit_branch(ids[2:], drop_context=True)
 
     assert _texts(messages) == ["SYS", "m2", "m3", "m4"]
-    assert [e for e in log.entries() if e.get("copiedFrom")] == []
-    tip = log.entries()[-1]
+    assert [e for e in cursor.entries() if e.get("copiedFrom")] == []
+    tip = cursor.entries()[-1]
     assert tip["type"] == "elide" and tip["parentId"] == ids[4]
-    assert log.cursor == tip["id"]
+    assert cursor.leaf == tip["id"]
 
 
 async def test_commit_branch_refuses_half_a_tool_call_and_appends_nothing():
+    from tau_agent_core.cursor import Cursor
     from tau_agent_core.session_log import InMemorySessionLog
 
     log = InMemorySessionLog()
-    await log.append_message({"role": "system", "content": "SYS"})
-    u1 = await log.append_message({"role": "user", "content": "u1"})
-    call = await log.append_message(
+    cursor = Cursor.newest(log)
+    await cursor.append_message({"role": "system", "content": "SYS"})
+    u1 = await cursor.append_message({"role": "user", "content": "u1"})
+    call = await cursor.append_message(
         {
             "role": "assistant",
             "content": [{"type": "toolCall", "id": "c1", "name": "read", "arguments": {}}],
         }
     )
-    await log.append_message(
+    await cursor.append_message(
         {"role": "toolResult", "tool_call_id": "c1", "content": [{"type": "text", "text": "ok"}]}
     )
-    before = [dict(e) for e in log.entries()]
+    before = [dict(e) for e in cursor.entries()]
 
     with pytest.raises(ValueError, match="unanswered tool call"):
-        await _backend().commit_branch(log, [u1, call], drop_context=False)
+        await _bound_backend(cursor).commit_branch([u1, call], drop_context=False)
 
-    assert log.entries() == before
+    assert cursor.entries() == before
 
 
 async def test_paste_subtree_recreates_the_shape_without_moving_the_cursor():
+    from tau_agent_core.cursor import Cursor
     from tau_agent_core.session_log import InMemorySessionLog
 
     log = InMemorySessionLog()
-    await log.append_message({"role": "system", "content": "SYS"})
-    u1 = await log.append_message({"role": "user", "content": "u1"})
-    a1 = await log.append_message({"role": "assistant", "content": "a1"})
-    u2 = await log.append_message({"role": "user", "content": "u2"})
+    cursor = Cursor.newest(log)
+    await cursor.append_message({"role": "system", "content": "SYS"})
+    u1 = await cursor.append_message({"role": "user", "content": "u1"})
+    a1 = await cursor.append_message({"role": "assistant", "content": "a1"})
+    u2 = await cursor.append_message({"role": "user", "content": "u2"})
     fork = await log.append_at(a1, "message", {"message": {"role": "user", "content": "u2-alt"}})
-    cursor_before = log.cursor
-    context_before = ConversationTree(log.entries(), log.cursor).context_for()
+    cursor_before = cursor.leaf
+    context_before = cursor.tree().context_for()
 
-    minted = await _backend().paste_subtree(log, a1, u1)
+    minted = await _bound_backend(cursor).paste_subtree(a1, u1)
 
     assert len(minted) == 3  # a1 and its two children
-    by_id = {e["id"]: e for e in log.entries()}
+    by_id = {e["id"]: e for e in cursor.entries()}
     assert by_id[minted[0]]["parentId"] == u1
     assert {by_id[m]["parentId"] for m in minted[1:]} == {minted[0]}
     assert [by_id[m]["copiedFrom"] for m in minted] == [a1, u2, fork]
     # The tree grew; the conversation did not move.
-    assert log.cursor == cursor_before
-    assert ConversationTree(log.entries(), log.cursor).context_for() == context_before
+    assert cursor.leaf == cursor_before
+    assert cursor.tree().context_for() == context_before
 
 
 async def test_paste_subtree_refuses_to_paste_into_itself():
+    from tau_agent_core.cursor import Cursor
     from tau_agent_core.session_log import InMemorySessionLog
 
     log = InMemorySessionLog()
-    a1 = await log.append_message({"role": "assistant", "content": "a1"})
-    u2 = await log.append_message({"role": "user", "content": "u2"})
-    before = [dict(e) for e in log.entries()]
+    cursor = Cursor.newest(log)
+    a1 = await cursor.append_message({"role": "assistant", "content": "a1"})
+    u2 = await cursor.append_message({"role": "user", "content": "u2"})
+    before = [dict(e) for e in cursor.entries()]
 
     with pytest.raises(ValueError, match="into its own subtree"):
-        await _backend().paste_subtree(log, a1, u2)
+        await _bound_backend(cursor).paste_subtree(a1, u2)
 
-    assert log.entries() == before
+    assert cursor.entries() == before
 
 
 # --- the flows (TauApp.action_browse_tree) ----------------------------------
@@ -447,9 +466,12 @@ async def test_the_branch_flow_asks_for_a_mode_then_re_renders(app, wait_for_wor
         await wait_for_workers_settled(app)
         await pilot.pause()
 
-        assert [type(screen) for screen in pushed] == [tree_browser.SessionTreeModal, tree_browser.BranchModeModal]
+        assert [type(screen) for screen in pushed] == [
+            tree_browser.SessionTreeModal,
+            tree_browser.BranchModeModal,
+        ]
         assert _texts(app.messages)[-3:] == ["u1", "u3", "a3"]
-        assert app.messages == ConversationTree(session.entries(), session.cursor).context_for()
+        assert app.messages == app._cursor.context()
         assert app.query_one(transcript.ChatDisplay) is not None
         assert any("Branched from 3 marked messages" in m for m, _ in notes)
 
@@ -480,13 +502,19 @@ async def test_the_paste_flow_re_opens_the_browser_on_the_grown_tree(app, wait_f
 
         pushed = _script(
             app,
-            [tree_browser.TreeIntent("paste", (ids[4], ids[0])), None],  # paste, then cancel the re-open
+            [
+                tree_browser.TreeIntent("paste", (ids[4], ids[0])),
+                None,
+            ],  # paste, then cancel the re-open
         )
         app.action_browse_tree()
         await wait_for_workers_settled(app)
         await pilot.pause()
 
-        assert [type(screen) for screen in pushed] == [tree_browser.SessionTreeModal, tree_browser.SessionTreeModal]
+        assert [type(screen) for screen in pushed] == [
+            tree_browser.SessionTreeModal,
+            tree_browser.SessionTreeModal,
+        ]
         assert pushed[1]._copied == ids[4]
         assert [e.get("copiedFrom") for e in session.entries() if e.get("copiedFrom")] == [
             ids[4],

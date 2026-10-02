@@ -58,7 +58,7 @@ from tau_agent_core.session_log import (
     agent_spec_in_force,
     session_log_is_addressable,
 )
-from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.agent_loop import AgentLoop, completed_messages
 from tau_agent_core.agent_loop_types import AgentLoopConfig
 from tau_agent_core.capabilities import BUILTIN, CAPABILITIES, Vocabulary
@@ -182,7 +182,7 @@ class ExtensionActionResult:
     There is no ``cursor`` field, though one action moves it: disabling an
     extension whose lock is the cursor releases it (docs/EXTENSION-LOCKS.md §6).
     Both projections of this record already carry the LIVE cursor — the RPC verb
-    reads ``session.session_log.cursor``, and ``AgentSession.performed`` writes it
+    reads ``session.cursor.leaf``, and ``AgentSession.performed`` writes it
     and refuses a caller that hands it one — so a second copy here would be the
     two-writers drift that method exists to remove. The move is visible in
     ``message``.
@@ -450,15 +450,13 @@ class AgentSession:
 
     This is the primary entry point for both SDK and TUI usage.
 
-    Persistence goes through a :class:`~tau_agent_core.session_log.SessionLog`
-    (the coding-agent's file ``Session`` on the live path, an
-    :class:`~tau_agent_core.session_log.InMemorySessionLog` on the SDK default
-    path); context is rebuilt from the log's entries + cursor via
-    :class:`~tau_agent_core.conversation_tree.ConversationTree` — the retired
-    System-A ``SessionManager`` no longer participates (§2.6).
+    Every turn extends one :class:`~tau_agent_core.cursor.Cursor` over a
+    :class:`~tau_agent_core.session_log.SessionLog`. Construct with ``session_log``
+    to open a cursor at the log's default leaf, or with ``cursor`` to extend a
+    position someone already holds.
 
     Attributes:
-        _session_log: SessionLog the turn's messages/compactions append to.
+        _cursor: The position this session's turns extend (docs/CURSORS.md).
         _model: Model configuration for LLM calls.
         _system_prompt: System prompt for the agent.
         _tools: List of AgentTool instances.
@@ -527,8 +525,8 @@ class AgentSession:
             a conversation the submitter rolled back past.
         _forked_tasks: The supervised registry for ``multitask_strategy="fork"``
             submissions (docs/SUBMISSION-LIFECYCLE.md "fork"), keyed by
-            ``submission_id`` (chosen up front — unlike the branch's ``lane``,
-            which ``spawn_branch`` only mints once the task is already running).
+            ``submission_id`` (chosen up front — unlike the sub-agent's cursor,
+            which ``spawn_branch`` only opens once the task is already running).
             Cancelled by :meth:`abort` and drained by :meth:`emit_session_shutdown`
             so a forked branch cannot outlive the session that spawned it.
         _loop: The event loop this session is BOUND to — the only one allowed to
@@ -547,8 +545,10 @@ class AgentSession:
 
     def __init__(
         self,
-        session_log: SessionLog,
+        *,
         model: Model,
+        session_log: SessionLog | None = None,
+        cursor: Cursor | None = None,
         system_prompt: str = "",
         tools: list[AgentTool] | None = None,
         extensions: list[Callable] | None = None,
@@ -563,8 +563,14 @@ class AgentSession:
         bus_available: bool = False,
         no_tools: Literal["all", "builtin"] | None = None,
     ) -> None:
+        if cursor is not None and session_log is not None:
+            raise ValueError("pass session_log or cursor, not both")
+        if cursor is None:
+            if session_log is None:
+                raise ValueError("pass session_log or cursor: a session needs a tree to extend")
+            cursor = Cursor.newest(session_log)
         self._bus_available = bus_available
-        self._session_log = session_log
+        self._cursor = cursor
         self._model = model
         self._system_prompt = system_prompt
         self._tools: list[AgentTool] = tools or []
@@ -630,7 +636,7 @@ class AgentSession:
         self._calibration_seen: set[tuple[int, int]] = set()
         self._turn_persistence: _TurnPersistence | None = None
         self._in_flight_context: list[dict[str, Any]] | None = None
-        self._usage_valid_after = _newest_compaction_ms(self._session_log.entries())
+        self._usage_valid_after = _newest_compaction_ms(self._cursor.entries())
 
         self._side_usage: dict[str, int] = zero_usage()
 
@@ -760,7 +766,7 @@ class AgentSession:
         """
         pending, self._pending_agent_specs = self._pending_agent_specs, []
         for spec in pending:
-            await self._session_log.append_custom_entry("agent_spec", spec)
+            await self._cursor.append_custom_entry("agent_spec", spec)
 
     @agent_facing(topic="sessions")
     async def start(self) -> None:
@@ -778,39 +784,39 @@ class AgentSession:
 
     @property
     def messages(self) -> list[dict[str, Any]]:
-        """Current conversation messages (active path).
+        """The model-input context at this session's cursor."""
+        return self._cursor.context()
 
-        Built at read time from the log's raw entries + persisted cursor by
-        ``ConversationTree.context_for`` — the leaf→root walk plus the
-        compaction/branch_summary splice (§2.1, §2.6).
+    @property
+    def cursor(self) -> Cursor:
+        """The position this session's turns extend. Read position from here, never the log.
+
+        Settable: a head that owns its cursor attaches this session to it.
         """
-        return ConversationTree(self._session_log.entries(), self._session_log.cursor).context_for()
+        return self._cursor
+
+    @cursor.setter
+    def cursor(self, cursor: Cursor) -> None:
+        self._cursor = cursor
 
     @property
     def session_log(self) -> SessionLog:
-        """The persistence facade this session reads from and appends to.
+        """The storage under :attr:`cursor`.
 
-        Exposed as a *settable* seam so a caller that OWNS the authoritative log —
-        the TUI, whose live ``session_store.Session`` object is swapped on new-chat
-        / clear / resume — can rebind this ``AgentSession`` onto the live session
-        (``TauBackend.bind_session_log``). That makes ``AgentSession`` the SOLE
-        persister on the live path (E3-ctx / D3): the turn's messages, compactions,
-        and cursor moves all append through the one on-disk log the TUI reads back.
-        pi keeps a single session per process; τ's TUI replaces the file ``Session``
-        object, so the seam is a rebindable property rather than a
-        construction-only argument.
+        Settable: a head that swaps sessions (new chat, resume) rebinds this
+        session onto another store, and a fresh cursor opens at its default leaf.
         """
-        return self._session_log
+        return self._cursor.log
 
     @session_log.setter
     def session_log(self, log: SessionLog) -> None:
-        self._session_log = log
+        self._cursor = Cursor.newest(log)
 
     @property
     def state(self) -> SessionState:
         """Read-only access to session state. Identity is the session UUID (§4.2)."""
         return SessionState(
-            session_id=self._session_log.id,
+            session_id=self._cursor.session_id,
             status="running" if self._is_streaming else "idle",
         )
 
@@ -868,7 +874,7 @@ class AgentSession:
         """Set except while a turn is between emitting ``agent_end`` and persisting.
 
         docs/ASYNC-SESSION-LOG.md §3.3. ``RPCHandler._stamp_agent_end_cursor``
-        reads ``session_log.cursor`` when the writer task dequeues an
+        reads the captured cursor's leaf when the writer task dequeues an
         ``agent_end``, and that read is only right if this turn's messages are
         already written. Until the appenders became coroutines that was free:
         :meth:`_run_one_turn` ran from the enqueue through persistence without
@@ -1036,7 +1042,7 @@ class AgentSession:
                 f"performed({mutation!r}) was handed a cursor in `data`. This method is "
                 "what puts it there, and two writers of one field is the drift it removes."
             )
-        cursor = self._session_log.cursor
+        cursor = self._cursor.leaf
         returns = declared.returns or {}
         carries = "cursor" in returns.get("properties", {})
         return Performed(
@@ -1048,41 +1054,20 @@ class AgentSession:
 
     @agent_facing(topic="sessions")
     def get_session_name(self) -> str | None:
-        """This session's durable display name, or ``None`` if it was never named.
-
-        Derived from the log's latest ``session_info`` entry at call time, so it is
-        correct across a reload and after another writer renamed the session.
-
-        Returns:
-            The name, or ``None``.
-
-        Raises:
-            RuntimeError: The bound log has no name to read — an in-memory log has
-                nowhere for a ``session_info`` entry to live. Distinct from "never
-                named", which is ``None``.
-        """
+        """The newest ``session_info`` name in the log, or ``None`` if never named."""
         from tau_agent_core.extension_types import read_session_name
 
         return read_session_name(self)
 
-    def set_session_name(self, name: str) -> None:
-        """Give this session a durable display name.
-
-        Appends a ``session_info`` entry, which is ambient metadata:
-        :class:`~tau_agent_core.conversation_tree.ConversationTree` never folds one
-        into context, so a rename is persisted and is never model input.
-
-        Args:
-            name: The name to give it. Empty is refused rather than stored.
+    async def set_session_name(self, name: str) -> None:
+        """Name this session: a ``session_info`` entry at the cursor, never model input.
 
         Raises:
             ValueError: ``name`` is empty.
-            RuntimeError: The bound log has no ``append_session_info`` — session
-                naming needs a log with somewhere durable to put it.
         """
         from tau_agent_core.extension_types import apply_session_name
 
-        apply_session_name(self, name)
+        await apply_session_name(self, name)
 
     def set_model(self, name: str) -> dict[str, Any]:
         """Switch the active model by NAME, effective on the NEXT turn (S45).
@@ -1263,7 +1248,7 @@ class AgentSession:
         bound log. Not a constant: a ``switch_session`` onto an ephemeral session
         changes it under a reader's feet, exactly as the active model does.
         """
-        return session_log_is_addressable(self._session_log)
+        return session_log_is_addressable(self._cursor.log)
 
     @agent_facing(topic="sessions")
     def get_last_assistant_text(self) -> str | None:
@@ -1312,7 +1297,7 @@ class AgentSession:
 
         model, api_key = self._summarizer()
         messages, usage = await summarize_and_navigate(
-            self._session_log,
+            self._cursor,
             target_id,
             model,
             api_key=api_key,
@@ -1323,19 +1308,15 @@ class AgentSession:
 
     @agent_facing(topic="sessions")
     def get_last_compaction(self) -> CompactionRecord | None:
-        """The newest ``compaction`` entry in the bound log, or ``None``.
+        """The newest ``compaction`` on this session's cursor path, or ``None``.
 
-        Scans ``session_log.entries()`` in append order rather than the
-        :class:`~tau_agent_core.conversation_tree.ConversationTree` active path.
-        Stated as a scope note rather than hidden: on a session with a second open
-        lane this would report a compaction that happened on the other lane, and a
-        lane-aware caller wants ``ConversationTree.context_entries`` instead.
+        The path, not the log: a compaction on a sibling branch never shaped this
+        cursor's context (docs/CURSORS.md §2).
 
         Returns:
-            A :class:`CompactionRecord`, or ``None`` if this session has never
-            compacted — an honest absence, never a fabricated entry.
+            A :class:`CompactionRecord`, or ``None`` if this path never compacted.
         """
-        for entry in reversed(self._session_log.entries()):
+        for entry in reversed(self._cursor.tree().path()):
             if entry.get("type") != "compaction":
                 continue
             return CompactionRecord(
@@ -1777,8 +1758,8 @@ class AgentSession:
         Returns whether it moved anything — false in the ordinary case, where the
         extension held no lock.
         """
-        entries = self._session_log.entries()
-        request = request_at_cursor(entries, self._session_log.cursor)
+        entries = self._cursor.entries()
+        request = request_at_cursor(entries, self._cursor.leaf)
         if request is None or not request.lock or request.extension != path:
             return False
         # The REQUEST's parent, not the cursor's: the cursor may be a provenance node above it.
@@ -1787,7 +1768,7 @@ class AgentSession:
             None,
         )
         await self._flush_pending_agent_specs()
-        await self._session_log.append_navigate(str(parent) if parent is not None else None)
+        self._cursor.move(str(parent) if parent is not None else None)
         return True
 
     async def enable_extension(self, path: str) -> ExtensionActionResult:
@@ -2320,7 +2301,7 @@ class AgentSession:
             dispatched = dispatch_builtin(
                 invocation.name,
                 invocation.args,
-                cursor=self._session_log.cursor,
+                cursor=self._cursor.leaf,
                 vocabulary=vocabulary,
             )
             if isinstance(dispatched, Ready) and invocation.origin == "extension":
@@ -2464,11 +2445,9 @@ class AgentSession:
              exactly like ``"enqueue"``. Once acquired, it navigates the log back
              to the leaf THAT turn recorded at ITS OWN admission
              (:attr:`_pre_turn_leaf`, read BEFORE this call's own admission
-             overwrites it) via ``append_navigate`` — the same "move the cursor,
-             the abandoned suffix falls off the ``parentId`` walk" mechanism
-             ``append_branch_summary`` uses (minus the summary; see
-             :meth:`~tau_agent_core.session_log.SessionLog.append_navigate` and
-             ``ctx.fork(mode="in_place")``, which is the identical shape). If NO
+             overwrites it) by moving the cursor — the abandoned suffix falls off
+             the ``parentId`` walk, the shape ``ctx.fork(mode="in_place")`` also
+             has. If NO
              turn is in flight there is nothing to discard, so this degrades to a
              plain admission at the current cursor — no navigate, no signal.
              **Known limitation:** ``asyncio.Lock`` is FIFO; a rollback queued
@@ -2484,15 +2463,14 @@ class AgentSession:
              queue-jump gap stands, but it now fails safely instead of silently.
            - ``"fork"`` (decision 2): does **not** touch :attr:`_turn_lock` at
              all — the in-flight turn, if any, is genuinely untouched. The fork
-             point is the log's current committed tip
-             (:attr:`~tau_agent_core.session_log.SessionLog.cursor`); admission
+             point is this session's cursor leaf; admission
              checks it is TURN-COMPLETE
              (:meth:`~tau_agent_core.conversation_tree.ConversationTree.fork_admission_reason`)
              and returns ``accepted=False`` with a clear reason rather than
              producing a bad prefix. On success, a second agent is spawned in a
              SUPERVISED background task (:meth:`_spawn_fork`,
              :attr:`_forked_tasks`) — reusing ``ctx.spawn_branch``'s entire
-             mechanism (``BranchView``, tool scoping, failure containment,
+             mechanism (a second cursor, tool scoping, failure containment,
              ``branch_event`` forwarding) — and ``submit()`` returns
              ``accepted=True`` immediately, before the branch's turn finishes;
              there is no caller left to await it the way ``spawn_branch``'s
@@ -2774,12 +2752,10 @@ class AgentSession:
                             "aborted turn's"
                         ),
                     )
-                await self._session_log.append_navigate(rollback_target)
+                self._cursor.move(rollback_target)
         elif sub.multitask_strategy == "fork":
-            fork_point = self._session_log.cursor
-            reason = ConversationTree(
-                self._session_log.entries(), fork_point
-            ).fork_admission_reason(fork_point)
+            fork_point = self._cursor.leaf
+            reason = self._cursor.tree().fork_admission_reason(fork_point)
             if reason is not None:
                 return SubmissionResult(
                     accepted=False, submission_id=sub.submission_id, rejection_reason=reason
@@ -2807,7 +2783,7 @@ class AgentSession:
             self._current_turn_token = self._turn_token_counter
             if self._submission_runs_a_turn(sub):
                 await self._flush_pending_agent_specs()
-            self._pre_turn_leaf = self._session_log.cursor
+            self._pre_turn_leaf = self._cursor.leaf
 
             self._is_streaming = True
             self._abort_signal = AbortSignal()
@@ -2884,14 +2860,14 @@ class AgentSession:
 
         docs/SUBMISSION-LIFECYCLE.md "fork" / NODE-ADDRESSABLE-AGENTS.md §5: the
         cost of ``fork`` is not tree work (``ctx.spawn_branch`` already does all
-        of it — ``BranchView``, tool scoping, failure containment, forwarding the
+        of it — a second cursor, tool scoping, failure containment, forwarding the
         branch's own events onto the ``branch_event`` channel) — it is lifecycle.
         ``spawn_branch`` is designed to be awaited by its caller; a fork
         submission has none, so this wraps the SAME coroutine in an
         ``asyncio.Task`` and tracks it in :attr:`_forked_tasks`, keyed by
-        ``sub.submission_id`` (chosen up front — the branch's own ``lane`` does
-        not exist until ``open_branch`` runs INSIDE the coroutine, which is too
-        late to key a registry meant to reference the task before it finishes).
+        ``sub.submission_id`` (chosen up front — the sub-agent's cursor does not
+        exist until the coroutine opens it, which is too late to key a registry
+        meant to reference the task before it finishes).
 
         The forked session runs with THIS session's own tools (a second full
         agent, not a scoped-down evaluator — spawn_branch's allowlist exists to
@@ -3101,7 +3077,7 @@ class AgentSession:
         ``True``, byte-for-byte the pre-existing behaviour). ``False`` (a
         submission with ``store_history=False``/``silent=True``) still builds the
         user message, runs the real loop, and returns the produced messages, but
-        writes NONE of it to ``self._session_log`` — the model sees and answers
+        writes NONE of it to the log — the model sees and answers
         the turn; the durable tree never does.
 
         Returns THIS turn's new messages only — the user message, any ``queued``
@@ -3259,27 +3235,25 @@ class AgentSession:
             await self._flush_pending_agent_specs()
         for pre_msg in pre_user_messages:
             if persist:
-                await self._session_log.append_custom_message(
+                await self._cursor.append_custom_message(
                     pre_msg, custom_type=str(pre_msg["customType"])
                 )
             turn_messages.append(pre_msg)
 
         user_dict = user_msg.model_dump()
         if persist:
-            await self._session_log.append_message(user_dict)
+            await self._cursor.append_message(user_dict)
         turn_messages.append(user_dict)
 
         for qmsg in queued:
             qdict = qmsg.model_dump()
             if persist:
-                await self._session_log.append_message(qdict)
+                await self._cursor.append_message(qdict)
             turn_messages.append(qdict)
 
         for cmsg in post_user_messages:
             if persist:
-                await self._session_log.append_custom_message(
-                    cmsg, custom_type=str(cmsg["customType"])
-                )
+                await self._cursor.append_custom_message(cmsg, custom_type=str(cmsg["customType"]))
             turn_messages.append(cmsg)
 
     async def _end_of_prompt_drain(self, turn_messages: list[dict[str, Any]]) -> None:
@@ -3344,7 +3318,7 @@ class AgentSession:
         )
         for raw in injected:
             node = self._custom_message_node(raw, hook="user_turn_end")
-            await self._session_log.append_custom_message(node, custom_type=str(node["customType"]))
+            await self._cursor.append_custom_message(node, custom_type=str(node["customType"]))
             turn_messages.append(node)
 
     async def continue_conversation(self) -> list[dict[str, Any]]:
@@ -3387,7 +3361,7 @@ class AgentSession:
         self._current_turn_token = self._turn_token_counter
         # Before the leaf is read: the record belongs ahead of the turn, not in it.
         await self._flush_pending_agent_specs()
-        self._pre_turn_leaf = self._session_log.cursor
+        self._pre_turn_leaf = self._cursor.leaf
 
         try:
             # Get existing messages from session for context
@@ -3548,9 +3522,7 @@ class AgentSession:
         were spent and no text was produced, so a start with no end would leave
         every renderer holding an open box forever.
         """
-        path_entries = ConversationTree(
-            self._session_log.entries(), self._session_log.cursor
-        ).context_entries()
+        path_entries = self._cursor.tree().context_entries()
         if not any(e.get("type") in ("message", "customMessage") for e in path_entries):
             return None
         preparation = prepare_compaction(path_entries, self._compaction_settings)
@@ -3572,7 +3544,7 @@ class AgentSession:
         self._usage_valid_after = self._timestamp()
         covered = _covered_span(path_entries, result.first_kept_entry_id)
         await self._flush_pending_agent_specs()
-        await self._session_log.append_compaction(
+        await self._cursor.append_compaction(
             summary=result.summary,
             first_kept_id=result.first_kept_entry_id,
             tokens_before=result.tokens_before,
@@ -3580,9 +3552,7 @@ class AgentSession:
             summary_usage=result.usage,
             covered_entries=len(covered),
             covered_tokens=estimate_span_tokens(covered),
-            agent_spec_id=agent_spec_in_force(
-                self._session_log.entries(), self._session_log.cursor
-            ),
+            agent_spec_id=agent_spec_in_force(self._cursor.entries(), self._cursor.leaf),
         )
         return result
 
@@ -3962,12 +3932,10 @@ class AgentSession:
                         "extension-origin type is required (Fail-Early)"
                     )
                 if persist:
-                    await self._session_log.append_custom_message(
-                        msg_dict, custom_type=str(custom_type)
-                    )
+                    await self._cursor.append_custom_message(msg_dict, custom_type=str(custom_type))
             else:
                 if persist:
-                    await self._session_log.append_message(msg_dict)
+                    await self._cursor.append_message(msg_dict)
             turn_messages.append(msg_dict)
 
     def _custom_message_node(
@@ -4058,7 +4026,7 @@ class AgentSession:
             timestamp=self._timestamp(),
         )
         await self._flush_pending_agent_specs()
-        entry_id = await self._session_log.append_custom_message(
+        entry_id = await self._cursor.append_custom_message(
             node, custom_type=str(message["customType"])
         )
         self._announce_append("custom_message", entry_id=entry_id, message=node)
@@ -4118,7 +4086,7 @@ class AgentSession:
         if not isinstance(data, dict):
             raise ValueError(f"append_entry: data must be a dict, got {type(data).__name__}")
         await self._flush_pending_agent_specs()
-        return await self._session_log.append_custom_entry(custom_type, data)
+        return await self._cursor.append_custom_entry(custom_type, data)
 
     @property
     def pending_request(self) -> ExtensionRequest | None:
@@ -4128,7 +4096,7 @@ class AgentSession:
         draw, and :meth:`submit` reads it to decide whether to refuse, so the
         thing a user is looking at and the thing that refused them are one entry.
         """
-        return request_at_cursor(self._session_log.entries(), self._session_log.cursor)
+        return request_at_cursor(self._cursor.entries(), self._cursor.leaf)
 
     async def answer_request(
         self, request_id: str, action: str, values: dict[str, Any] | None = None
@@ -4159,7 +4127,7 @@ class AgentSession:
                 rejects. Fail-Early: nothing is coerced and no partial answer is
                 persisted.
         """
-        request = find_request(self._session_log.entries(), request_id)
+        request = find_request(self._cursor.entries(), request_id)
         if request is None:
             raise ValueError(f"answer_request: no extension request with id {request_id!r}")
         if request.ask is None:

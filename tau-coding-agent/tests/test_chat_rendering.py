@@ -31,6 +31,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Markdown
 from textual.widgets._markdown import MarkdownBlock
 
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.submission import SubmissionResult
 from tau_coding_agent.backends import DEFAULT_LANE
 from tau_coding_agent.chat_widgets import ExchangeBox, ToolBox, MessageBox
@@ -770,7 +771,8 @@ async def test_headless_saved_session_round_trips(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "TAU_DIR", tmp_path)
 
     session = store.Session.create("/proj", "local-llm", "openai", system_prompt="sys")
-    await session.append_message({"role": "user", "content": "run date"})
+    cursor = Cursor.newest(session)
+    await cursor.append_message({"role": "user", "content": "run date"})
     for msg in [
         {
             "role": "assistant",
@@ -788,7 +790,7 @@ async def test_headless_saved_session_round_trips(tmp_path, monkeypatch):
         },
         {"role": "assistant", "content": [{"type": "text", "text": "It's Thursday."}]},
     ]:
-        await session.append_message(msg)
+        await cursor.append_message(msg)
 
     loaded = store.Session.load(session.path)
     assert loaded.model == "local-llm"  # resolvable config key -> resumable

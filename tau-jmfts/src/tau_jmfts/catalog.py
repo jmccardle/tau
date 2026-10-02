@@ -45,7 +45,7 @@ from typing import Tuple as _Tuple
 
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, SessionInfo
-from tau_agent_core.session_log import InMemorySessionLog
+from tau_agent_core.session_log import InMemorySessionLog, default_leaf
 from tau_jmfts.client import JmftsClient, JmftsError
 from tau_jmfts.store import _HEADER_REQUIRED, SESSION_VERSION, _extract_text
 from tau_jmfts.store import JmftsSessionLog
@@ -118,10 +118,9 @@ class _EphemeralConversationSession:
     The honest reading: "ephemeral" is a property of every backend alike --
     RAM-only, no durability layer touched at all, full stop. That is exactly
     what ``tau_agent_core.session_log.InMemorySessionLog`` already is, but it
-    alone does NOT satisfy ``ConversationSession`` (checked against the
-    Protocol in ``session_catalog.py``: no ``header``/``messages``/``context``/
-    ``model``/``backend``/``display_title``/``append_model_change``/
-    ``append_session_info``). This class layers exactly those on top of an
+    alone does NOT satisfy ``ConversationSession`` (no ``header``/``messages``/
+    ``context``/``model``/``backend``/``display_title``). This class layers
+    exactly those on top of an
     ``InMemorySessionLog`` -- the same composition
     ``tau_coding_agent.session_store.Session.create_in_memory`` and the
     tau-agent-core test double (``_InMemoryConversationSession``,
@@ -132,20 +131,9 @@ class _EphemeralConversationSession:
     (``tau_agent_core``), with zero JMFTS I/O anywhere in it.
     """
 
-    def __init__(
-        self,
-        cwd: str,
-        model: str,
-        backend: str,
-        *,
-        name: str | None = None,
-        id: str | None = None,
-    ) -> None:
+    def __init__(self, cwd: str, *, id: str | None = None) -> None:
         self._log = InMemorySessionLog(id=id)
         self._cwd = os.path.abspath(cwd)
-        self._model = model
-        self._backend = backend
-        self._name = name
 
     @classmethod
     def create(
@@ -157,86 +145,24 @@ class _EphemeralConversationSession:
         system_prompt: str | None = None,
         name: str | None = None,
     ) -> "_EphemeralConversationSession":
-        session = cls(cwd, model, backend, name=name)
+        """Write the same opening chain every store writes, with no I/O."""
+        session = cls(cwd)
+        log = session._log
+        parent = log.append_at_now(None, "model_change", {"model": model, "backend": backend})
+        if name is not None:
+            parent = log.append_at_now(parent, "session_info", {"name": name})
         if system_prompt:
-            # Sync core, not the async appender: `create` has no loop to await on.
-            session._log._append_now(
-                "message", message={"role": "system", "content": system_prompt}
+            log.append_at_now(
+                parent, "message", {"message": {"role": "system", "content": system_prompt}}
             )
         return session
-
-    # -- SessionLog surface (delegates to the wrapped in-memory log) --------
 
     @property
     def id(self) -> str:
         return self._log.id
 
-    @property
-    def cursor(self) -> str | None:
-        return self._log.cursor
-
     def entries(self) -> list[dict[str, Any]]:
         return self._log.entries()
-
-    async def append_message(self, message: dict[str, Any]) -> str:
-        return await self._log.append_message(message)
-
-    async def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
-        return await self._log.append_custom_message(message, custom_type)
-
-    async def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
-        return await self._log.append_custom_entry(custom_type, data)
-
-    async def append_compaction(
-        self,
-        summary: str,
-        first_kept_id: str,
-        tokens_before: int,
-        *,
-        summarizer_model_id: str,
-        summary_usage: dict[str, int],
-        covered_entries: int,
-        covered_tokens: int,
-        agent_spec_id: str | None,
-    ) -> str:
-        """Delegated verbatim, provenance included (TREE-BROWSER-AS-EDITOR.md §8).
-
-        A pure delegator has nothing to add and must subtract nothing: the five §8
-        fields are named here only because §11.3 made them required keywords, which
-        is what forces a re-export like this one to be updated in step rather than
-        quietly dropping them."""
-        return await self._log.append_compaction(
-            summary,
-            first_kept_id,
-            tokens_before,
-            summarizer_model_id=summarizer_model_id,
-            summary_usage=summary_usage,
-            covered_entries=covered_entries,
-            covered_tokens=covered_tokens,
-            agent_spec_id=agent_spec_id,
-        )
-
-    async def append_elide(
-        self,
-        first_kept_id: str,
-        *,
-        covered_entries: int,
-        covered_tokens: int,
-        agent_spec_id: str | None,
-    ) -> str:
-        """W3 splice anchor, delegated like every other appender (§ ``SessionLog``)."""
-        return await self._log.append_elide(
-            first_kept_id,
-            covered_entries=covered_entries,
-            covered_tokens=covered_tokens,
-            agent_spec_id=agent_spec_id,
-        )
-
-    async def append_navigate(self, target_id: str | None) -> str:
-        return await self._log.append_navigate(target_id)
-
-    async def append_branch_summary(self, summary: str, from_id: str | None) -> str:
-        return await self._log.append_branch_summary(summary, from_id)
 
     async def append_at(
         self,
@@ -244,12 +170,7 @@ class _EphemeralConversationSession:
         entry_type: str,
         payload: dict[str, Any],
     ) -> str:
-        """The C2/W14 explicit-parent append. Delegated like every other appender, so a
-        branch sub-agent works in an ephemeral session too -- branching is a property of
-        the entry algebra, not of durability."""
         return await self._log.append_at(parent_id, entry_type, payload)
-
-    # -- ConversationSession additions --------------------------------------
 
     @property
     def header(self) -> dict[str, Any]:
@@ -263,37 +184,46 @@ class _EphemeralConversationSession:
 
     @property
     def messages(self) -> list[dict[str, Any]]:
-        return [e["message"] for e in self._log.entries() if e.get("type") == "message"]
+        entries = self._log.entries()
+        path = ConversationTree(entries, default_leaf(entries)).path()
+        return [e["message"] for e in path if e.get("type") == "message"]
 
     @property
     def context(self) -> list[dict[str, Any]]:
-        return ConversationTree(self.entries(), self.cursor).context_for()
+        entries = self._log.entries()
+        return ConversationTree(entries, default_leaf(entries)).context_for()
+
+    def _latest(self, kind: str, field: str) -> str | None:
+        for entry in reversed(self._log.entries()):
+            if entry.get("type") == kind:
+                value = entry.get(field)
+                return str(value) if value else None
+        return None
 
     @property
     def model(self) -> str:
-        return self._model
+        model = self._latest("model_change", "model")
+        if model is None:
+            raise ValueError(f"session {self.id} has no model_change entry")
+        return model
 
     @property
     def backend(self) -> str:
-        return self._backend
+        backend = self._latest("model_change", "backend")
+        if backend is None:
+            raise ValueError(f"session {self.id} has no model_change entry")
+        return backend
 
     def display_title(self) -> str:
-        if self._name:
-            return self._name
+        name = self._latest("session_info", "name")
+        if name:
+            return name
         for message in self.messages:
             if message.get("role") == "user":
                 text = _extract_text(message).replace("\n", " ")
                 if text:
                     return text[:50] + ("..." if len(text) > 50 else "")
-        return f"Session ({self._model})"
-
-    def append_model_change(self, model: str, backend: str) -> str:
-        self._model, self._backend = model, backend
-        return "model-change"
-
-    def append_session_info(self, name: str) -> str:
-        self._name = name
-        return "session-info"
+        return f"Session ({self.model})"
 
 
 class JmftsSessionCatalog(SessionCatalog):
@@ -359,13 +289,17 @@ class JmftsSessionCatalog(SessionCatalog):
     def load(self, ref: str) -> JmftsSessionLog:
         return JmftsSessionLog.load(self._client, ref)
 
-    def fork(self, source: ConversationSession, cwd: str) -> JmftsSessionLog:
+    def fork(
+        self, source: ConversationSession, cwd: str, *, at: str | None = None
+    ) -> JmftsSessionLog:
         if not isinstance(source, JmftsSessionLog):
             raise TypeError(
                 f"JmftsSessionCatalog.fork requires a JMFTS-backed JmftsSessionLog, "
                 f"got {type(source)!r}"
             )
-        return JmftsSessionLog.fork(self._client, source, cwd, host_parent_id=self._host_parent_id)
+        return JmftsSessionLog.fork(
+            self._client, source, cwd, host_parent_id=self._host_parent_id, at=at
+        )
 
     def list(self, cwd: str | None = None) -> list[SessionInfo]:
         scope_cwd = os.path.abspath(cwd) if cwd is not None else None
@@ -472,8 +406,8 @@ class JmftsSessionCatalog(SessionCatalog):
           non-``tau:conversation`` roots from the cheap list response, so the
           only ``ValueError`` ``load`` has left to raise is the seq/doc-id
           cross-check at ``store.py``: **a second writer touched the tree.** That
-          check exists to "fail loudly rather than silently resolving the wrong
-          cursor" (its own docstring) -- and swallowing it here was the exact
+          check exists to "fail loudly rather than silently loading a misordered
+          tree" (its own docstring) -- and swallowing it here was the exact
           silent failure it was written to prevent. It surfaces as an error ROW:
           the header data we already hold is enough to identify the session, and
           ``load()`` still raises the real reason if the user opens it.

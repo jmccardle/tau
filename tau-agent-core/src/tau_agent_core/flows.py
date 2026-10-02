@@ -43,7 +43,7 @@ from typing import Any
 from tau_llm.docs import agent_facing
 
 from tau_agent_core.capabilities import BUILTIN, Argument, Domain, Flow, Vocabulary
-from tau_agent_core.conversation_tree import ConversationTree, MessageIdScope
+from tau_agent_core.conversation_tree import MessageIdScope
 
 _ENUMERATION_LIMIT = 50
 
@@ -594,8 +594,7 @@ def _extension_values(session: Any) -> list[DomainValue]:
 
 
 def _message_values(session: Any, scope: str | None, cursor: str | None, query: str, limit: int):
-    log = session.session_log
-    tree = ConversationTree(log.entries(), log.cursor)
+    tree = session.cursor.tree()
     found = tree.complete_message_id(
         scope=scope or "in_session",  # type: ignore[arg-type]
         cursor=cursor,

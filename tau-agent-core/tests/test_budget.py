@@ -46,7 +46,7 @@ from tau_llm.types import AssistantMessage, Model, ToolCall, Usage
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
-from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import InMemorySessionLog
 
 #: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
@@ -128,15 +128,12 @@ def _message_text_blob(messages: list[Any]) -> str:
 
 
 def _reloaded_warning_node(session: AgentSession, needle: str) -> dict[str, Any] | None:
-    """Rebuild the tree from the persisted entries alone, as a reload from disk would.
+    """The reloaded ``toolResult`` carrying ``needle``, or ``None``.
 
-    A *fresh* ``ConversationTree`` folded from ``session_log.entries()`` + its cursor —
-    no in-memory session state — so a durable warning must be baked into the persisted
-    nodes to survive. Returns the reloaded ``toolResult`` node carrying ``needle`` in its
-    content (proving the warning rides a real tree node, not an ephemeral copy), or None.
+    A fresh cursor on the stored entries, as a reload from disk opens one, so a
+    durable warning must ride a persisted node to be found.
     """
-    log = session._session_log
-    reloaded = ConversationTree(log.entries(), log.cursor).context_for()
+    reloaded = Cursor.newest(session.session_log).context()
     for message in reloaded:
         if message.get("role") != "toolResult":
             continue

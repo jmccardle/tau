@@ -1,13 +1,12 @@
 """E3-ctx / step S19 — the ``ExtensionContext`` session-control op surface.
 
-Verifies each ``ctx`` op (``compact`` / ``entries`` / ``summarize_branch`` /
-``navigate`` / ``fork``) mutates the ONE authoritative session log the bound
-``AgentSession`` persists through, and re-renders context (``context_for``).
+Each ``ctx`` op (``compact`` / ``entries`` / ``summarize_branch`` / ``navigate`` /
+``fork``) acts at the bound session's cursor and returns the re-rendered context.
+``navigate`` and in-place ``fork`` move the cursor and write nothing
+(docs/CURSORS.md §4); ``compact`` and ``summarize_branch`` append at it.
 
-The zero-LLM ops (``entries``/``navigate``/``fork`` in-place) run over a session
-built through the REAL agent loop via the ``fake_llm`` fixture; the LLM-backed ops
-(``compact``/``summarize_branch``) patch the summarizer ``complete_simple`` so the
-append + re-render is exercised without a network call.
+The zero-LLM ops run over a session built through the real agent loop
+(``fake_llm``); the LLM-backed ops patch the summarizer ``complete_simple``.
 """
 
 from __future__ import annotations
@@ -94,13 +93,10 @@ class TestZeroLlmOps:
 
         rendered = await ctx.navigate(target)
 
-        # A navigate entry was APPENDED to the one log …
-        log_entries = session.session_log.entries()
-        assert len(log_entries) == 6
-        assert log_entries[-1]["type"] == "navigate"
-        assert log_entries[-1]["targetId"] == target
+        # Nothing is written …
+        assert session.session_log.entries() == entries
         # … the cursor moved to the target …
-        assert session.session_log.cursor == target
+        assert session.cursor.leaf == target
         # … and context re-rendered to the truncated path (root → target).
         assert len(rendered) == 2
         assert rendered == session.messages
@@ -109,23 +105,22 @@ class TestZeroLlmOps:
         session = await self._seeded()
         ctx = _ctx(session)
         before = session.session_log.entries()
-        rendered = await ctx.navigate(session.session_log.cursor)
+        rendered = await ctx.navigate(session.cursor.leaf)
         # No entry appended; context unchanged.
         assert session.session_log.entries() == before
         assert rendered == session.messages
 
-    async def test_fork_in_place_navigates_and_appends(self):
+    async def test_fork_in_place_moves_the_cursor_and_writes_nothing(self):
         session = await self._seeded()
         ctx = _ctx(session)
         # entries()[0] is construction's own `agent_spec` provenance record (W2).
-        target = session.session_log.entries()[2]["id"]
+        before = session.session_log.entries()
+        target = before[2]["id"]
 
         rendered = await ctx.fork(target, mode="in_place")
 
-        log_entries = session.session_log.entries()
-        assert log_entries[-1]["type"] == "navigate"
-        assert log_entries[-1]["targetId"] == target
-        assert session.session_log.cursor == target
+        assert session.session_log.entries() == before
+        assert session.cursor.leaf == target
         assert len(rendered) == 2
         assert rendered == session.messages
 
@@ -178,8 +173,8 @@ class TestCompact:
         await session.start()
         # Three turns so the cut keeps the most recent and summarizes the prefix.
         for i in range(3):
-            await log.append_message(_msg("user", f"u{i}"))
-            await log.append_message(_msg("assistant", f"a{i}"))
+            await session.cursor.append_message(_msg("user", f"u{i}"))
+            await session.cursor.append_message(_msg("assistant", f"a{i}"))
         before = len(log.entries())
 
         result = await _ctx(session).compact()
@@ -205,10 +200,11 @@ class TestSummarizeBranch:
             compaction_settings=CompactionSettings(enabled=False),
         )
         log = session.session_log
-        await log.append_message(_msg("user", "u0"))
-        first_asst = await log.append_message(_msg("assistant", "a0"))
-        await log.append_message(_msg("user", "u1"))
-        await log.append_message(_msg("assistant", "a1"))
+        cursor = session.cursor
+        await cursor.append_message(_msg("user", "u0"))
+        first_asst = await cursor.append_message(_msg("assistant", "a0"))
+        await cursor.append_message(_msg("user", "u1"))
+        await cursor.append_message(_msg("assistant", "a1"))
         assert len(session.messages) == 4
 
         rendered = await _ctx(session).summarize_branch(first_asst)
@@ -216,8 +212,8 @@ class TestSummarizeBranch:
         entries = log.entries()
         assert entries[-1]["type"] == "branch_summary"
         assert entries[-1]["fromId"] == first_asst
-        # Cursor now sits on the branch_summary; the u1/a1 siblings dropped out.
-        assert log.cursor == entries[-1]["id"]
+        # The cursor now sits on the branch_summary; the u1/a1 siblings dropped out.
+        assert session.cursor.leaf == entries[-1]["id"]
         assert len(rendered) == 3
         assert any("[[Branch summary: BRANCH]]" in _text(m) for m in rendered)
         assert rendered == session.messages
@@ -230,10 +226,11 @@ class TestSummarizeBranch:
             compaction_settings=CompactionSettings(enabled=False),
         )
         log = session.session_log
-        await log.append_message(_msg("user", "u0"))
-        first_asst = await log.append_message(_msg("assistant", "a0"))
-        await log.append_message(_msg("user", "u1"))
-        await log.append_message(_msg("assistant", "a1"))
+        cursor = session.cursor
+        await cursor.append_message(_msg("user", "u0"))
+        first_asst = await cursor.append_message(_msg("assistant", "a0"))
+        await cursor.append_message(_msg("user", "u1"))
+        await cursor.append_message(_msg("assistant", "a1"))
 
         rendered = await _ctx(session).navigate(first_asst, summarize=True)
 

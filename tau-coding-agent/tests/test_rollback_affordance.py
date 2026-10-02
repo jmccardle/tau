@@ -51,11 +51,11 @@ class _RollbackBackend:
         self.rollback_calls: list[str] = []
         self.submissions: list[Any] = []
         self._released = asyncio.Event()
-        self._log: Any = None
+        self._cursor: Any = None
         self._result = result or SubmissionResult(accepted=True, submission_id="s1")
 
-    def bind_session_log(self, session_log) -> None:
-        self._log = session_log
+    def bind_cursor(self, cursor) -> None:
+        self._cursor = cursor
 
     def abort(self) -> None:
         self.aborted = True
@@ -65,7 +65,7 @@ class _RollbackBackend:
         self.submissions.append(submission)
         await self._released.wait()
         partial = {"role": "assistant", "content": [{"type": "text", "text": "partial"}]}
-        await self._log.append_message(partial)
+        await self._cursor.append_message(partial)
         return SubmissionResult(accepted=True, submission_id=submission.submission_id)
 
     async def rollback_turn(self, text: str) -> SubmissionResult:
@@ -74,8 +74,8 @@ class _RollbackBackend:
             self.aborted = True
             self._released.set()
             await asyncio.sleep(0)
-            await self._log.append_message({"role": "user", "content": text})
-            await self._log.append_message({"role": "assistant", "content": "replacement"})
+            await self._cursor.append_message({"role": "user", "content": text})
+            await self._cursor.append_message({"role": "assistant", "content": "replacement"})
         return self._result
 
 

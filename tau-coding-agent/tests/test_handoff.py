@@ -17,10 +17,9 @@ Layers:
   ``register_command`` handler runs standalone, not under the live agent loop
   — no need to fake the provider network boundary at all, only the branch
   summarizer LLM call);
-* **reload-invariance**: the exported file is re-loaded from disk via a fresh
-  ``Session.load`` + ``ConversationTree`` fold, and the summary text on the
-  new file's active path is asserted byte-identical to what the command
-  reported — the handoff file is not a snapshot-in-RAM, it is durable.
+* **reload-invariance**: the exported file is re-loaded from disk and folded at
+  its default leaf; the summary is on that path — the handoff file is durable,
+  not a snapshot in RAM.
 """
 
 from __future__ import annotations
@@ -36,7 +35,7 @@ from tau_llm.types import Model
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
-from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
 
 from tau_coding_agent.session_store import Session
 
@@ -127,10 +126,10 @@ async def test_handoff_reports_new_session_and_summary(monkeypatch, isolate_tau_
     monkeypatch.setattr("tau_llm.client.complete_simple", _summary_response("HANDOFF-SUMMARY"))
     tmp_path = isolate_tau_dir
     agent, live = _file_session(tmp_path)
-    await live.append_message(_msg("user", "let's refactor auth"))
-    await live.append_message(_msg("assistant", "sure, starting now"))
-    await live.append_message(_msg("user", "use JWT"))
-    await live.append_message(_msg("assistant", "done, switched to JWT"))
+    await agent.cursor.append_message(_msg("user", "let's refactor auth"))
+    await agent.cursor.append_message(_msg("assistant", "sure, starting now"))
+    await agent.cursor.append_message(_msg("user", "use JWT"))
+    await agent.cursor.append_message(_msg("assistant", "done, switched to JWT"))
 
     result = await agent.run_extension_command("handoff", "focus on the auth decisions")
 
@@ -147,13 +146,13 @@ async def test_handoff_reports_new_session_and_summary(monkeypatch, isolate_tau_
 
 
 async def test_handoff_condenses_the_source_session(monkeypatch, isolate_tau_dir) -> None:
-    """The SOURCE session's active path collapses to the summary (summarize_branch
-    mutates the live log — the same tradeoff ``ctx.compact`` makes)."""
+    """The source session's cursor path collapses to the summary (summarize_branch
+    writes to the source log — the same tradeoff ``ctx.compact`` makes)."""
     monkeypatch.setattr("tau_llm.client.complete_simple", _summary_response("HANDOFF-SUMMARY"))
     tmp_path = isolate_tau_dir
     agent, live = _file_session(tmp_path)
-    await live.append_message(_msg("user", "u0"))
-    await live.append_message(_msg("assistant", "a0"))
+    await agent.cursor.append_message(_msg("user", "u0"))
+    await agent.cursor.append_message(_msg("assistant", "a0"))
 
     await agent.run_extension_command("handoff", "")
 
@@ -161,7 +160,7 @@ async def test_handoff_condenses_the_source_session(monkeypatch, isolate_tau_dir
     assert len(branch_summaries) == 1
     assert "HANDOFF-SUMMARY" in branch_summaries[0]["summary"]
     # The active path no longer carries the raw prior turns.
-    active = ConversationTree(live.entries(), live.cursor).context_for()
+    active = agent.cursor.context()
     assert "u0" not in _text_of(active)
 
 
@@ -169,16 +168,14 @@ async def test_handoff_new_session_survives_reload(monkeypatch, isolate_tau_dir)
     """Reload-invariance: the exported file's summary is durable, not RAM-only."""
     monkeypatch.setattr("tau_llm.client.complete_simple", _summary_response("HANDOFF-SUMMARY"))
     tmp_path = isolate_tau_dir
-    agent, live = _file_session(tmp_path)
-    await live.append_message(_msg("user", "u0"))
-    await live.append_message(_msg("assistant", "a0"))
+    agent, _live = _file_session(tmp_path)
+    await agent.cursor.append_message(_msg("user", "u0"))
+    await agent.cursor.append_message(_msg("assistant", "a0"))
 
     result = await agent.run_extension_command("handoff", "")
     new_path = _reported_new_path(result.output)
 
-    reloaded_session = Session.load(Path(new_path))
-    reloaded_tree = ConversationTree(reloaded_session.entries(), reloaded_session.cursor)
-    reloaded_active = reloaded_tree.context_for()
+    reloaded_active = Cursor.newest(Session.load(Path(new_path))).context()
     assert "HANDOFF-SUMMARY" in _text_of(reloaded_active)
 
 

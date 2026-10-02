@@ -7,14 +7,14 @@ nothing. §1 is ``display``; §3 is the row that named the kind and nothing else
 
 from __future__ import annotations
 
-from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.extension_locks import REQUEST_ENTRY_TYPE, build_request_data
 from tau_agent_core.messages import create_custom_message, is_displayed
 from tau_agent_core.session_log import InMemorySessionLog
 
 
-def _preview(log: InMemorySessionLog) -> str:
-    return ConversationTree(log.entries(), log.cursor).tree()[0].preview
+def _preview(cursor: Cursor) -> str:
+    return cursor.tree().tree()[0].preview
 
 
 def test_a_hidden_custom_message_is_not_displayed() -> None:
@@ -44,52 +44,56 @@ def test_visible_to_model_is_a_different_question() -> None:
 
 async def test_a_hidden_node_still_has_a_row_and_says_so() -> None:
     """The transcript obeys the flag; the tree is where the node stays visible."""
-    log = InMemorySessionLog()
-    await log.append_custom_message(create_custom_message("probe", "the note", display=False), "probe")
-    assert _preview(log) == "probe (hidden): the note"
+    cursor = Cursor.newest(InMemorySessionLog())
+    await cursor.append_custom_message(
+        create_custom_message("probe", "the note", display=False), "probe"
+    )
+    assert _preview(cursor) == "probe (hidden): the note"
 
 
 async def test_a_displayed_node_names_the_extension_type() -> None:
-    log = InMemorySessionLog()
-    await log.append_custom_message(create_custom_message("tectum_note", "the build failed"), "tectum_note")
-    assert _preview(log) == "tectum_note: the build failed"
+    cursor = Cursor.newest(InMemorySessionLog())
+    await cursor.append_custom_message(
+        create_custom_message("tectum_note", "the build failed"), "tectum_note"
+    )
+    assert _preview(cursor) == "tectum_note: the build failed"
 
 
 async def test_a_node_with_no_text_summarizes_its_details() -> None:
     """``(customMessage)`` was the whole row when the content held no text block."""
-    log = InMemorySessionLog()
+    cursor = Cursor.newest(InMemorySessionLog())
     message = create_custom_message("edit", [], details={"path": "/a/b.py", "line": 42})
-    await log.append_custom_message(message, "edit")
-    assert _preview(log) == "edit: path=/a/b.py, line=42"
+    await cursor.append_custom_message(message, "edit")
+    assert _preview(cursor) == "edit: path=/a/b.py, line=42"
 
 
 async def test_a_node_with_nothing_at_all_says_so() -> None:
-    log = InMemorySessionLog()
-    await log.append_custom_message(create_custom_message("ni", []), "ni")
-    assert _preview(log) == "ni: no content"
+    cursor = Cursor.newest(InMemorySessionLog())
+    await cursor.append_custom_message(create_custom_message("ni", []), "ni")
+    assert _preview(cursor) == "ni: no content"
 
 
 async def test_a_request_entry_reads_as_its_state_and_its_sentence() -> None:
     """The four states of docs/EXTENSION-LOCKS.md §3, legible from the row."""
-    log = InMemorySessionLog()
-    await log.append_custom_entry(
+    cursor = Cursor.newest(InMemorySessionLog())
+    await cursor.append_custom_entry(
         REQUEST_ENTRY_TYPE,
         build_request_data("/home/j/tectum.py", "Approve rm -rf build?", lock=True),
     )
-    assert _preview(log) == "Extension tectum requires intervention: Approve rm -rf build?"
+    assert _preview(cursor) == "Extension tectum requires intervention: Approve rm -rf build?"
 
 
 async def test_a_malformed_request_falls_back_rather_than_raising() -> None:
     """A browser reads a hand-edited log; it does not enforce against one."""
-    log = InMemorySessionLog()
-    await log.append_custom_entry(REQUEST_ENTRY_TYPE, {"sentence": "no extension key"})
-    assert _preview(log) == "extension_request — sentence=no extension key"
+    cursor = Cursor.newest(InMemorySessionLog())
+    await cursor.append_custom_entry(REQUEST_ENTRY_TYPE, {"sentence": "no extension key"})
+    assert _preview(cursor) == "extension_request — sentence=no extension key"
 
 
 async def test_a_payload_is_summarized_and_never_dumped() -> None:
     """Four fields named, the rest counted, and a long value cut."""
-    log = InMemorySessionLog()
-    await log.append_custom_entry("state", {"a": "x" * 90, "b": 2, "c": [1, 2], "d": {}, "e": 5})
-    preview = _preview(log)
+    cursor = Cursor.newest(InMemorySessionLog())
+    await cursor.append_custom_entry("state", {"a": "x" * 90, "b": 2, "c": [1, 2], "d": {}, "e": 5})
+    preview = _preview(cursor)
     assert preview.startswith("state — a=" + "x" * 39 + "…, b=2, c=[2], d={0 keys}")
     assert preview.endswith("+1 more")

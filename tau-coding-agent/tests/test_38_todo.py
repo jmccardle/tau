@@ -142,17 +142,16 @@ async def test_unknown_action_reports_error_and_makes_no_record(tmp_path):
 
 
 async def test_state_is_branch_correct(tmp_path):
-    """Navigating the cursor away from a mutation makes that mutation invisible —
-    exactly the S56 active-path guarantee, proven through this extension's own
-    read (``_current_state``), not just the underlying store."""
-    session_log = _session(tmp_path)
-    api = _api_for(session_log)
+    """Moving the session's cursor off a mutation hides it from this extension's
+    own read (``_current_state``) — the S56 active-path guarantee."""
+    api = _api_for(_session(tmp_path))
+    cursor = api.context.cursor
     store = todo_mod.TreeStore(api, todo_mod.TODO_CUSTOM_TYPE)
 
-    root_id = await session_log.append_message({"role": "user", "content": "root"})
+    root_id = await cursor.append_message({"role": "user", "content": "root"})
     await _call(store, "add", text="on-main")
 
-    await session_log.append_navigate(root_id)
+    cursor.move(root_id)
     fresh_store = todo_mod.TreeStore(api, todo_mod.TODO_CUSTOM_TYPE)
     todos, next_id = todo_mod._current_state(fresh_store)
     assert todos == []

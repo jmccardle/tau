@@ -4,12 +4,12 @@ Reference: docs/SUBMISSION-LIFECYCLE.md, "fork" / decision 2 (phase 2, parts 2-3
 Reference: docs/NODE-ADDRESSABLE-AGENTS.md §2 (I1), decision 7 / T5 (entries() is
 total).
 
-fork's tree/session machinery (BranchView, open_branch, ctx.spawn_branch) is
-already covered by test_spawn_branch.py; these tests pin submit()'s OWN
+fork's sub-agent machinery (ctx.spawn_branch, a Cursor owned by the session's)
+is covered by test_spawn_branch.py; these tests pin submit()'s OWN
 responsibilities: the turn-complete admission check, scheduling a SUPERVISED
 background task rather than awaiting one, and not touching the in-flight turn.
 rollback is exercised end-to-end (real _turn_lock contention, a real abort, a
-real navigate) because its correctness is entirely about that interleaving.
+real cursor move) because its correctness is entirely about that interleaving.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import pytest
 from tau_llm.streaming import TextDeltaEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 from tau_agent_core.agent_session import AgentSession
-from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.submission import Submission
 
@@ -91,8 +91,9 @@ class TestForkAdmission:
         """The concrete admission check the spec requires: an assistant message
         with a dangling toolCall must not become a fork point."""
         log = InMemorySessionLog()
-        await log.append_message({"role": "user", "content": [{"type": "text", "text": "go"}]})
-        await log.append_message(
+        seed = Cursor.newest(log)
+        await seed.append_message({"role": "user", "content": [{"type": "text", "text": "go"}]})
+        await seed.append_message(
             {
                 "role": "assistant",
                 "content": [{"type": "toolCall", "id": "call_1", "name": "read", "arguments": {}}],
@@ -112,7 +113,9 @@ class TestForkAdmission:
         """accepted=True comes back before the branch's own turn has run at
         all — there is no caller left to await it (decision 2)."""
         log = InMemorySessionLog()
-        await log.append_message({"role": "user", "content": [{"type": "text", "text": "hi"}]})
+        await Cursor.newest(log).append_message(
+            {"role": "user", "content": [{"type": "text", "text": "hi"}]}
+        )
         session = AgentSession(session_log=log, model=_model(), tools=[])
 
         started = asyncio.Event()
@@ -148,7 +151,9 @@ class TestForkAdmission:
         any part of what it was forked to continue, and nothing anywhere says so.
         """
         log = InMemorySessionLog()
-        await log.append_message({"role": "user", "content": [{"type": "text", "text": "hi"}]})
+        await Cursor.newest(log).append_message(
+            {"role": "user", "content": [{"type": "text", "text": "hi"}]}
+        )
         session = AgentSession(session_log=log, model=_model(), tools=[], no_tools="builtin")
 
         async def _execute(tool_call_id, params, signal, on_update, ctx):
@@ -177,14 +182,16 @@ class TestForkAdmission:
 
         assert captured["tools"] == ["say"], "the fork must be able to do the job"
 
-    async def test_fork_does_not_move_or_touch_the_primary_cursor(self, monkeypatch):
+    async def test_fork_does_not_move_the_sessions_cursor(self, monkeypatch):
         log = InMemorySessionLog()
-        await log.append_message({"role": "user", "content": [{"type": "text", "text": "hi"}]})
+        await Cursor.newest(log).append_message(
+            {"role": "user", "content": [{"type": "text", "text": "hi"}]}
+        )
         session = AgentSession(session_log=log, model=_model(), tools=[])
-        tip = log.cursor
+        tip = session.cursor.leaf
 
         async def _work(self, text, images=None, context=None):
-            await self._session_log.append_message(
+            await self.cursor.append_message(
                 {"role": "assistant", "content": [{"type": "text", "text": "BRANCH ONLY"}]}
             )
             return []
@@ -195,10 +202,9 @@ class TestForkAdmission:
         assert result.accepted is True
         await asyncio.wait_for(session._forked_tasks["fork-3"], timeout=1.0)
 
-        assert log.cursor == tip, "fork must never move the primary cursor"
+        assert session.cursor.leaf == tip, "fork must never move the session's cursor"
         assert "BRANCH ONLY" in str(log.entries()), "the branch's work IS in the log"
-        primary = ConversationTree(log.entries(), log.cursor).context_for()
-        assert "BRANCH ONLY" not in str(primary)
+        assert "BRANCH ONLY" not in str(session.cursor.context())
 
     async def test_fork_before_root_is_admitted(self, monkeypatch):
         """target_id=None (no messages yet) is trivially turn-complete."""
@@ -288,8 +294,8 @@ class TestForkTaskRegistry:
 
 class TestRollback:
     async def test_rollback_with_nothing_in_flight_is_a_plain_admission(self):
-        """No turn running -> nothing to discard: no navigate entry, the new
-        turn simply appends at the current cursor."""
+        """No turn running -> nothing to discard: the new turn simply appends
+        at the session cursor's leaf."""
         log = InMemorySessionLog()
         session = AgentSession(session_log=log, model=_model(), tools=[])
 
@@ -300,13 +306,16 @@ class TestRollback:
             result = await session.submit(_sub("hello", "r-1", multitask_strategy="rollback"))
 
         assert result.accepted is True
-        assert not any(e.get("type") == "navigate" for e in log.entries())
+        entries = log.entries()
+        (at,) = [i for i, e in enumerate(entries) if "hello" in str(e.get("message", {}))]
+        assert entries[at]["parentId"] == entries[at - 1]["id"], "appended where it stood"
 
     async def test_rollback_aborts_the_in_flight_turn_and_resumes_from_pre_turn_leaf(self):
         """The full interleaving: submission A is genuinely in flight (blocked
         on the fake provider), submission B rolls back — aborting A, waiting
-        for it to unwind (which still persists whatever A produced), then
-        navigating back to A's OWN pre-turn leaf and running there."""
+        for it to unwind (which still persists whatever A produced), then moving
+        the cursor back to A's OWN pre-turn leaf and running there. The move
+        writes nothing (docs/CURSORS.md §4)."""
         log = InMemorySessionLog()
         session = AgentSession(session_log=log, model=_model(), tools=[])
 
@@ -347,9 +356,10 @@ class TestRollback:
             and "turn A" in str(e["message"]["content"])
         ]
         assert a_user, "A's user message must still be in entries() — nothing was un-said"
-        assert any(e.get("type") == "navigate" for e in entries), "rollback's marker is on-disk"
+        assert not any(e.get("type") == "navigate" for e in entries), "a move writes nothing"
+        assert [e["type"] for e in entries].count("message") == 4, "A and B, user + reply each"
 
-        active = ConversationTree(entries, log.cursor).context_for()
+        active = session.cursor.context()
         assert "turn A" not in str(active)
         assert "A's reply" not in str(active)
         assert "turn B" in str(active)
@@ -366,11 +376,13 @@ class TestRollback:
         never recorded ``_pre_turn_leaf`` at all, so a rollback submitted while
         it was in flight read whatever the session-level slot last held (stale,
         or ``None`` on a session that had never run a ``submit()``-driven turn)
-        and silently un-pathed the conversation via ``append_navigate(None)``.
-        It must now target the cursor immediately before THIS continuation
+        and silently un-pathed the conversation by moving the cursor to ``None``.
+        It must now target the leaf immediately before THIS continuation
         started, exactly as it does for a submit()-driven turn."""
         log = InMemorySessionLog()
-        await log.append_message({"role": "user", "content": [{"type": "text", "text": "seed"}]})
+        await Cursor.newest(log).append_message(
+            {"role": "user", "content": [{"type": "text", "text": "seed"}]}
+        )
         session = AgentSession(session_log=log, model=_model(), tools=[])
 
         gate = asyncio.Event()
@@ -405,7 +417,7 @@ class TestRollback:
         assert result.accepted is True
 
         entries = log.entries()
-        active = ConversationTree(entries, log.cursor).context_for()
+        active = session.cursor.context()
         assert "steer away" in str(active)
         assert "continued" not in str(active), (
             "the continuation's reply must fall off the active path"
@@ -427,7 +439,7 @@ class TestRollback:
         SLOT — once A unwinds — is granted to B (queued first), which runs a
         FULL turn to completion before C ever resumes. C must detect that the
         turn it aborted (A) is no longer the turn whose slot it just acquired
-        and refuse, rather than navigating back to A's pre-turn leaf and
+        and refuse, rather than moving back to A's pre-turn leaf and
         silently discarding B's successfully-completed turn from the active
         path."""
         log = InMemorySessionLog()
@@ -471,11 +483,11 @@ class TestRollback:
 
         assert result_b.accepted is True
         assert result_c.accepted is False, (
-            "C must refuse: navigating to A's pre-turn leaf here would discard "
+            "C must refuse: moving to A's pre-turn leaf here would discard "
             "B's already-completed turn from the active path"
         )
         assert result_c.rejection_reason is not None
 
-        active = ConversationTree(log.entries(), log.cursor).context_for()
+        active = session.cursor.context()
         assert "turn B" in str(active), "B's completed turn must still be on the active path"
         assert "B's reply" in str(active)

@@ -42,6 +42,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from tau_agent_core.agent_session_runtime import AgentSessionRuntime
+from tau_agent_core.cursor import Cursor
 from tau_agent_core.attachments import (
     DEFAULT_INLINE_LIMIT,
     SENDABLE_KINDS,
@@ -1509,7 +1510,7 @@ async def run_repl(
     else:
         session = prior
 
-    _require(backend, "bind_session_log")(session)
+    _require(backend, "bind_cursor")(Cursor.newest(session))
     runtime = AgentSessionRuntime(
         agent_session,
         catalog,
@@ -1522,9 +1523,9 @@ async def run_repl(
 
     if prior is not None:
         if args.name is not None:
-            _require(backend, "set_session_name")(args.name)
+            await _require(backend, "set_session_name")(args.name)
         if model_name != prior.model or backend_name != prior.backend:
-            _require(backend, "record_model_change")(model_name)
+            await _require(backend, "record_model_change")(model_name)
 
     unsubscribe = subscribe_session_events(agent_session.route_session_event)
     loop: ReplLoop | None = None
@@ -1568,7 +1569,7 @@ async def run_repl(
         router = backend.subscribe_render(renderer, on_orphan=renderer.on_orphan)
         await _require(backend, "emit_session_start")("startup")
         if prior is not None:
-            loop.replay(session.context)
+            loop.replay(agent_session.messages)
         await loop.run()
         return 0
     finally:
@@ -2379,7 +2380,7 @@ class ReplLoop:
         streamed one cannot drift apart in how they read (docs/REPL-HEAD.md §4).
 
         Args:
-            messages: The folded active path — ``session.context``.
+            messages: The folded context at the cursor — ``AgentSession.messages``.
         """
         from tau_coding_agent.backends import replay_render_events
 

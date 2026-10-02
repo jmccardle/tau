@@ -41,11 +41,11 @@ class _SteerBackend:
     def __init__(self) -> None:
         self.aborted = False
         self._released = asyncio.Event()
-        self._log: Any = None
+        self._cursor: Any = None
         self.submissions: list[Any] = []
 
-    def bind_session_log(self, session_log) -> None:
-        self._log = session_log
+    def bind_cursor(self, cursor) -> None:
+        self._cursor = cursor
 
     def abort(self) -> None:
         self.aborted = True
@@ -68,7 +68,7 @@ class _SteerBackend:
             return SubmissionResult(accepted=True, submission_id=submission.submission_id)
         await self._released.wait()
         self._released.clear()
-        await self._log.append_message(
+        await self._cursor.append_message(
             {"role": "assistant", "content": [{"type": "text", "text": "partial"}]}
         )
         return SubmissionResult(accepted=True, submission_id=submission.submission_id)

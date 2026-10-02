@@ -3,10 +3,9 @@
 "Lossless" here (see importer.py's module docstring for the full argument) is
 NOT byte-identity -- entry ids necessarily change (8-hex file ids -> JMFTS
 numeric doc ids). It means: topology (the ``parentId`` chain), every
-cross-reference (``navigate.targetId`` / ``compaction.firstKeptId`` /
+cross-reference (a legacy ``navigate.targetId`` / ``compaction.firstKeptId`` /
 ``branch_summary.fromId``), and the ``ConversationTree`` context fold at every
-interesting cursor position round-trip exactly, and the τ session uuid is
-preserved. This suite proves all three, not just asserts them:
+interesting leaf round-trip exactly, and the τ session uuid is preserved. This suite proves all three, not just asserts them:
 
 1. A positional "topology signature" (kind + parent's POSITION, ids erased)
    equality across the original file entries, the live JMFTS entries, and the
@@ -15,7 +14,7 @@ preserved. This suite proves all three, not just asserts them:
    targetId/firstKeptId/fromId) -- the direct proof that remapping happened
    and landed on the RIGHT new id, not just some id.
 3. ``ConversationTree(...).context_for(leaf=...)`` equality at several
-   cursors (including one anchored past the compaction splice and one inside
+   leaves (including one anchored past the compaction splice and one inside
    the abandoned/branch-summarized branch), which is what would visibly break
    for an end user if either of the above were wrong.
 
@@ -34,6 +33,7 @@ import pytest
 
 import tau_coding_agent.session_store as _session_store_module
 from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.cursor import Cursor
 from tau_coding_agent.session_store import Session
 from tau_jmfts.client import JmftsClient
 from tau_jmfts.importer import export_session, import_session
@@ -129,10 +129,13 @@ def _path_of(session: Session) -> Path:
 
 
 async def _build_rich_source_session(tmp_path: Path) -> Session:
-    """A file-store session exercising every cross-reference kind: branching
-    (navigate to an ancestor), a branch_summary (re-parenting re-branch), a
-    compaction (splice anchor), and a final root-level re-branch
-    (navigate(None))."""
+    """A file-store session exercising every cross-reference kind.
+
+    Branching back to an ancestor, a branch_summary, a compaction and a final
+    root-level branch. Each move is preceded by the ``navigate`` entry a log
+    written before docs/CURSORS.md carries, so the importer's ``targetId`` remap
+    stays covered for the logs that still hold one.
+    """
     session = Session.create(
         "/tmp/tau-jmfts-importer-source",
         "test-model",
@@ -140,28 +143,32 @@ async def _build_rich_source_session(tmp_path: Path) -> Session:
         base_dir=tmp_path / "sessions",
         system_prompt="sys",
     )
-    # entries(): [0]=model_change, [1]=message(system, "sys")
-    await session.append_message(_msg("user", "hello"))  # [2]
-    await session.append_message(_msg("assistant", "hi"))  # [3] branch A tip
+    cursor = Cursor.newest(session)
 
-    # Branch B: navigate back to "hello" ([2]), diverge.
-    hello_id = session.entries()[2]["id"]
-    await session.append_navigate(hello_id)  # [4]
-    alt_id = await session.append_message(_msg("assistant", "alt reply"))  # [5]
-    await session.append_branch_summary("summarized the alt branch", from_id=alt_id)  # [6]
-    await session.append_message(_msg("user", "back on track"))  # [7]
+    async def _legacy_move(target: str | None) -> None:
+        await session.append_at(cursor.leaf, "navigate", {"targetId": target})
+        cursor.move(target)
+
+    # entries(): [0]=model_change, [1]=message(system, "sys")
+    hello_id = await cursor.append_message(_msg("user", "hello"))  # [2]
+    hi_id = await cursor.append_message(_msg("assistant", "hi"))  # [3] branch A tip
+
+    # Branch B: back to "hello" ([2]), diverge.
+    await _legacy_move(hello_id)  # [4]
+    alt_id = await cursor.append_message(_msg("assistant", "alt reply"))  # [5]
+    await cursor.append_branch_summary("summarized the alt branch", from_id=alt_id)  # [6]
+    await cursor.append_message(_msg("user", "back on track"))  # [7]
 
     # Back to branch A ([3]): append a compaction anchored at "hi".
-    hi_id = session.entries()[3]["id"]
-    await session.append_navigate(hi_id)  # [8]
-    await session.append_compaction(
+    await _legacy_move(hi_id)  # [8]
+    await cursor.append_compaction(
         "early chat summary", first_kept_id=hi_id, tokens_before=500, **_PROV
     )  # [9]
-    await session.append_message(_msg("user", "continue after compaction"))  # [10]
+    await cursor.append_message(_msg("user", "continue after compaction"))  # [10]
 
     # A brand-new root-level branch.
-    await session.append_navigate(None)  # [11]
-    await session.append_message(_msg("user", "fresh root-level branch"))  # [12]
+    await _legacy_move(None)  # [11]
+    await cursor.append_message(_msg("user", "fresh root-level branch"))  # [12]
     return session
 
 
@@ -177,10 +184,11 @@ async def test_import_preserves_uuid_and_topology(client: JmftsClient, tmp_path:
         "test-backend",
         base_dir=tmp_path / "sessions",
     )
-    a = await session.append_message(_msg("user", "hi"))
-    await session.append_message(_msg("assistant", "yo"))
-    await session.append_navigate(a)
-    await session.append_message(_msg("assistant", "alt"))
+    cursor = Cursor.newest(session)
+    a = await cursor.append_message(_msg("user", "hi"))
+    await cursor.append_message(_msg("assistant", "yo"))
+    cursor.move(a)
+    await cursor.append_message(_msg("assistant", "alt"))
 
     log: JmftsSessionLog | None = None
     try:
@@ -286,8 +294,8 @@ async def test_import_preserves_elide_crossref_and_context_fold(
     never matches anything in the JMFTS-id-keyed tree, so ``found`` stays
     ``False`` for the entire pre-anchor span and every ancestor of the anchor
     silently drops out of ``context_for`` -- no exception, exactly the
-    corruption ``append_elide``'s own ValueError exists to prevent
-    (session_store.py), reintroduced through the import path. Proven two ways:
+    corruption ``Cursor.append_elide``'s own ValueError exists to prevent,
+    reintroduced through the import path. Proven two ways:
     the crossref signature (position-based, ids erased) and the actual folded
     context at the leaf.
     """
@@ -297,11 +305,11 @@ async def test_import_preserves_elide_crossref_and_context_fold(
         "test-backend",
         base_dir=tmp_path / "sessions",
     )
-    await session.append_message(_msg("user", "before the elide"))  # dropped by the fold
-    kept_id = await session.append_message(_msg("assistant", "kept from here"))
-    await session.append_navigate(kept_id)
-    await session.append_elide(first_kept_id=kept_id, **_ELIDE_PROV)
-    await session.append_message(_msg("user", "after the elide"))
+    cursor = Cursor.newest(session)
+    await cursor.append_message(_msg("user", "before the elide"))  # dropped by the fold
+    kept_id = await cursor.append_message(_msg("assistant", "kept from here"))
+    await cursor.append_elide(first_kept_id=kept_id, **_ELIDE_PROV)
+    await cursor.append_message(_msg("user", "after the elide"))
 
     original_entries = session.entries()
 
@@ -332,7 +340,9 @@ async def test_import_preserves_elide_crossref_and_context_fold(
             client.delete_document(log.root_doc_id)
 
 
-async def test_export_output_is_loadable_by_file_session(client: JmftsClient, tmp_path: Path) -> None:
+async def test_export_output_is_loadable_by_file_session(
+    client: JmftsClient, tmp_path: Path
+) -> None:
     log = JmftsSessionLog.create(
         client,
         cwd="/tmp/tau-jmfts-importer-export",
@@ -340,8 +350,9 @@ async def test_export_output_is_loadable_by_file_session(client: JmftsClient, tm
         backend="test-backend",
     )
     try:
-        await log.append_message(_msg("user", "hello"))
-        await log.append_message(_msg("assistant", "hi"))
+        cursor = Cursor.newest(log)
+        await cursor.append_message(_msg("user", "hello"))
+        await cursor.append_message(_msg("assistant", "hi"))
 
         path = tmp_path / "exported.jsonl"
         export_session(log, path)
