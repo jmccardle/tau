@@ -56,7 +56,7 @@ import random
 import re
 from typing import Any
 
-from tau_agent_core.extension_locks import RESPONSE_ENTRY_TYPE, request_at_cursor
+from tau_agent_core.extension_locks import RESPONSE_ENTRY_TYPE, request_at
 
 #: The word the Knights of Ni cannot bear, with the punctuation that can follow it.
 IT = re.compile(r" it[ ,.?!']")
@@ -279,7 +279,7 @@ def holy_grail_extension(api: Any) -> None:
         message before it" escape lands on.
         """
         entries = ctx.entries()
-        request = request_at_cursor(entries, ctx.cursor.leaf)
+        request = request_at(entries, ctx.cursor.leaf)
         if request is None:
             return "There is nothing at the cursor. 'Tis but a scratch."
         parent = next(e["parentId"] for e in entries if str(e["id"]) == request.entry_id)

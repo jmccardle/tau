@@ -281,7 +281,7 @@ async def test_a_starting_turn_snaps_the_window_back_to_the_tail(loaded):
     assert isinstance(_content(display)[-1], ExchangeBox)
 
 
-async def test_the_window_does_not_move_while_a_lane_streams(loaded):
+async def test_the_window_does_not_move_while_a_stream_streams(loaded):
     display, pilot, _ = loaded
     await display.begin_exchange("other", label="agent · fork")
     await pilot.pause()

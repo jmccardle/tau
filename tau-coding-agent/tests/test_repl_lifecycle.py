@@ -216,12 +216,12 @@ async def test_a_command_the_core_refuses_by_raising_is_one_line(env: ReplEnv) -
 
 #: A turn with a delivery point in it, so a mid-turn line becomes a steering task.
 _TURN: list[dict[str, Any]] = [
-    {"kind": "lane_start", "source": "interactive", "submitter": "human", "text": "do it"},
+    {"kind": "stream_start", "source": "interactive", "submitter": "human", "text": "do it"},
     {"kind": "text_delta", "delta": "Looking.\n"},
     {"kind": "tool_call", "id": "t1", "name": "read", "arguments": {"path": "main.py"}},
     {"kind": "tool_result", "id": "t1", "name": "read", "result": "ok", "is_error": False},
     {"kind": "completion_end", "output": 12, "context": 30, "stop_reason": "stop"},
-    {"kind": "lane_end", "context": 30, "output": 12, "seconds": 0.4},
+    {"kind": "stream_end", "context": 30, "output": 12, "seconds": 0.4},
 ]
 
 

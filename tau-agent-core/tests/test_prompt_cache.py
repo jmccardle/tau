@@ -179,7 +179,7 @@ class TestTheLatch:
 
 class TestTheClockIsPerPrefix:
     """The fault this replaced: one ``_last_completion_ms`` on the TUI's router,
-    written by every lane, so a sub-agent closing 9s before a user turn made that
+    written by every stream, so a sub-agent closing 9s before a user turn made that
     turn's gap describe a prefix it shares nothing with."""
 
     def test_the_conversation_compares_against_its_own_previous_turn(self):
@@ -226,7 +226,7 @@ class TestTheClockIsPerPrefix:
 
 class TestFeedEvent:
     """The event-stream entry point, which the RPC handler uses because it holds
-    no per-lane collector of its own."""
+    no per-stream collector of its own."""
 
     def test_a_turn_answers_only_on_agent_end(self):
         observer = PromptCacheObserver()

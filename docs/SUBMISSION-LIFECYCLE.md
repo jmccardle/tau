@@ -11,6 +11,8 @@ cross-loop callers. The phasing table below is the record of what was built,
 not a plan — see `ROADMAP.md`'s "Submission lifecycle" entry for the
 compressed shipped-state summary.
 
+> **Amended 2026-10-02.** `BranchView`, `open_branch`, `LANE_KEY` and the `branch_event` channel are gone (`docs/CURSORS.md` §6). `ctx.spawn_branch` delegates to `AgentSession.spawn`, which opens an owned cursor.
+
 ## The problem
 
 Today only a human typing into the TUI can start a turn, and *what submitting text means* is

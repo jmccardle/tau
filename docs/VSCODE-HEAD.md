@@ -7,6 +7,8 @@ survey the VS Code webview API". Every platform claim below was read from a
 vendor page or a repository this session; every claim I could not check is
 marked in §9.
 
+> **Amended 2026-10-02.** §5.1's "lanes" are cursors in `docs/CURSORS.md` terms: one per sub-agent, identified by `cursor_id` on every wire event.
+
 **Provenance.** Platform sources are web pages fetched 2026-08-31, listed at the
 end. I did not run VS Code, did not build an extension, and did not read the
 Cline or Continue source trees directly — the architecture claims about those two

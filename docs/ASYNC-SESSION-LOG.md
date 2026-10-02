@@ -7,6 +7,8 @@ A and C were rejected. This one holds what the change actually reached, the
 three consequences it forced that §3 did not anticipate, and what breaks for
 whom.
 
+> **Amended 2026-10-02.** The table's `append_navigate` and the store's leaf-moving appenders left `SessionLog` (`docs/CURSORS.md` §3). The protocol is `id`, `entries()` and `async append_at`; the typed appenders are on `Cursor`.
+
 ---
 
 ## 1. What changed

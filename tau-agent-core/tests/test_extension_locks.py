@@ -19,7 +19,7 @@ from tau_agent_core.extension_locks import (
     build_request_data,
     read_request,
     refusal_reason,
-    request_at_cursor,
+    request_at,
 )
 from tau_agent_core.extension_types import ExtensionAPI, validate_ask_spec
 from tau_agent_core.messages import convert_to_llm
@@ -398,5 +398,5 @@ def test_refusal_reason_names_the_owner_and_an_escape() -> None:
     assert "branch to the parent node" in reason
 
 
-def test_request_at_cursor_is_none_pre_root() -> None:
-    assert request_at_cursor([], None) is None
+def test_request_at_is_none_pre_root() -> None:
+    assert request_at([], None) is None

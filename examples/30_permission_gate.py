@@ -68,7 +68,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from tau_agent_core.extension_locks import request_at_cursor
+from tau_agent_core.extension_locks import request_at
 
 DANGEROUS_PATTERNS = [
     re.compile(r"\brm\s+(-rf?|--recursive)", re.IGNORECASE),
@@ -142,7 +142,7 @@ def permission_gate_extension(api: Any) -> None:
         """
         asked.pop(args.strip(), None)
         entries = ctx.entries()
-        request = request_at_cursor(entries, ctx.cursor.leaf)
+        request = request_at(entries, ctx.cursor.leaf)
         if request is not None:
             parent = next(e["parentId"] for e in entries if str(e["id"]) == request.entry_id)
             await ctx.navigate(str(parent) if parent is not None else None)

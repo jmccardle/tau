@@ -163,7 +163,8 @@ class TreeRow:
 def _row_is_hidden(node: TreeNode) -> bool:
     """Whether this entry gets no row at all (PLAN-0.9.4 §4, item 4).
 
-    A ``navigate`` entry records that the cursor moved. It carries no message, it
+    A ``navigate`` entry is a cursor move that logs written before 2026-10 recorded
+    (docs/CURSORS.md: moves are no longer written). It carries no message, it
     is not a branch target worth naming, and it sits between an assistant message
     and the user message that forked off it — which is the one place an extra row
     does the most damage to the shape the reader is trying to read. Its children
@@ -1293,7 +1294,7 @@ class SessionTreeModal(TauDialog[Optional[TreeIntent]]):
             first_kept=first_kept,
             folded=len(folded),
             dropped=len(dropped),
-            moves_cursor=anchor != self._tree.cursor,
+            moves_cursor=anchor != self._tree.leaf,
         )
 
     def action_elide(self) -> None:

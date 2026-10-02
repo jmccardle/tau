@@ -141,7 +141,7 @@ def test_the_stream_puts_the_count_on_completion_end():
         def __init__(self, message):
             self.message = message
 
-    stream = TurnStream(lane="main")
+    stream = TurnStream(stream_id="main")
     events = stream.feed(
         _Event(
             {

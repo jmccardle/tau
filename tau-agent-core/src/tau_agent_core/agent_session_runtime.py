@@ -211,7 +211,7 @@ class AgentSessionRuntime:
                 provider-backend config key, e.g. ``"openai"``).
             store: The catalog's storage-backend label (``"file"``/
                 ``"jmfts"``) — carried only so a caller building the F2 wire
-                tuple (``{store, session_id, lane, cursor}``,
+                tuple (``{store, session_id, cursor_id, cursor}``,
                 docs/REMOTE-CONTROL.md §7.2 F2) has it without reaching into
                 ``session_catalog``'s concrete type. Purely descriptive; this
                 class does no behaviour on it.
@@ -257,7 +257,7 @@ class AgentSessionRuntime:
         """The catalog's storage-backend label, the first field of a session ref.
 
         Purely descriptive — this class never branches on it. Published because a
-        caller building a ref (``{store, session_id, lane, cursor}``) needs the same
+        caller building a ref (``{store, session_id, cursor_id, cursor}``) needs the same
         label this runtime stamps, not one it guessed.
         """
         return self._store

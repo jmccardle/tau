@@ -3,6 +3,8 @@
 Status: **built, 2026-08-21.** §1–§5 as designed; §6's three open questions are
 answered in §8 with what the code actually did.
 
+> **Amended 2026-10-02.** §5 and §7 are superseded by `docs/CURSORS.md`. The store no longer owns a leaf; every writer is a `Cursor`, and §7's rejected "durable cursor" stays rejected because a cursor is not durable at all. "Lane" no longer names anything in code: a sub-agent is a cursor (`cursor_id`) and the TUI's per-submission render unit is a stream.
+
 Revised the same day it was written. The first revision designed a *durable
 cursor* to replace the lane tag; §7 records why that was dropped, because the
 reason is itself the decision.

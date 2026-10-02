@@ -56,7 +56,7 @@ def _linear_then_appended_compaction() -> list[dict[str, Any]]:
 
 def test_context_for_splices_tip_appended_compaction() -> None:
     entries = _linear_then_appended_compaction()
-    tree = ConversationTree(entries, cursor="c06")
+    tree = ConversationTree(entries, leaf="c06")
     msgs = tree.context_for()
     assert msgs[0] == {"role": "system", "content": [{"type": "text", "text": "sys"}]}
     assert msgs[1] == {
@@ -66,10 +66,9 @@ def test_context_for_splices_tip_appended_compaction() -> None:
     assert [m["content"][0]["text"] for m in msgs[2:]] == ["u2", "a2"]
 
 
-def test_navigate_behind_boundary_restores_pre_compaction_messages() -> None:
+def test_a_leaf_behind_the_boundary_reads_pre_compaction_messages() -> None:
     entries = _linear_then_appended_compaction()
-    tree = ConversationTree(entries, cursor="c06")
-    tree.navigate("e05")
+    tree = ConversationTree(entries, leaf="e05")
     assert [m["content"][0]["text"] for m in tree.context_for()] == [
         "sys",
         "u1",
@@ -90,7 +89,7 @@ def test_branch_summary_appended_at_tip_is_inline_not_a_splice() -> None:
             "fromId": "e04",
         }
     ]
-    msgs = ConversationTree(branch, cursor="c06").context_for()
+    msgs = ConversationTree(branch, leaf="c06").context_for()
     # Full linear prefix survives; the summary is appended inline (no drop-prefix).
     assert [m["content"][0]["text"] for m in msgs] == [
         "sys",

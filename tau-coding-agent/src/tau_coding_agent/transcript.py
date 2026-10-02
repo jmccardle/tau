@@ -10,7 +10,7 @@ from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Static
 from tau_coding_agent.backends import (
-    DEFAULT_LANE,
+    DEFAULT_STREAM,
     prompt_tokens,
     resolve_tool_names,
     span_seconds,
@@ -39,17 +39,17 @@ from rich.text import Text
 from pathlib import Path
 
 
-LANE_FOREIGN_CLASS = "lane-foreign"
+STREAM_FOREIGN_CLASS = "stream-foreign"
 
 
-class _LaneRender:
-    """One render lane's live exchange state (B3-a).
+class _StreamRender:
+    """One render stream's live exchange state (B3-a).
 
     Was five instance attributes on :class:`ChatDisplay`, which is precisely why
     the display could render one turn at a time: ``begin_exchange`` reset them and
     ``finalize_exchange`` closed whatever they currently pointed at, so two
     overlapping turns interleaved into one exchange and finalized each other's.
-    As a per-lane record the same state exists once per concurrently-streaming
+    As a per-stream record the same state exists once per concurrently-streaming
     turn — a forked sub-agent, or a bus submission arriving mid-answer.
     """
 
@@ -568,13 +568,13 @@ class ChatDisplay(MessageList):
     """Main chat display area with incremental, arrival-ordered rendering.
 
     One user→answer span is an **exchange**, and each concurrently-streaming turn
-    is a **lane** (B3-a) — keyed by ``submission_id``, a sub-agent's included,
-    since its turn is a submission on its own cursor (docs/CURSORS.md §6). Lanes
-    render side by side without interleaving; a lane
-    nobody named is :data:`DEFAULT_LANE`, which is what every pre-B3-a caller (the
+    is a **stream** (B3-a) — keyed by ``submission_id``, a sub-agent's included,
+    since its turn is a submission on its own cursor (docs/CURSORS.md §6). Streams
+    render side by side without interleaving; a stream
+    nobody named is :data:`DEFAULT_STREAM`, which is what every pre-B3-a caller (the
     reload path, a test replaying widget events) implicitly used.
 
-    While the agent loop streams, each lane runs a state machine driven by
+    While the agent loop streams, each stream runs a state machine driven by
     normalized backend events (see ``RenderRouter`` in ``backends.py``) that groups
     the span under one collapsible :class:`ExchangeBox`:
 
@@ -591,9 +591,9 @@ class ChatDisplay(MessageList):
       summary (``N tools · X tok · M:SS``). A trivial no-tool exchange is
       unwrapped entirely — just the plain answer, no grouping. ONE reparent, at
       the end (Textual has no live reparent, so the answer is reconstructed).
-    - while any lane is open, a timer repaints each exchange's ``Working…``
+    - while any stream is open, a timer repaints each exchange's ``Working…``
       title with a measured token count, the in-flight chunk count and the
-      elapsed time (:meth:`_tick_live_counters`). Per lane rather than one
+      elapsed time (:meth:`_tick_live_counters`). Per stream rather than one
       global readout: two concurrent turns have two different answers, and the
       one line a header subtitle has could only report one of them.
 
@@ -604,7 +604,7 @@ class ChatDisplay(MessageList):
 
     def __init__(self, facts: Callable[[], SessionFacts] | None = None):
         super().__init__(id="chat-display")
-        self._lanes: dict[str, _LaneRender] = {}
+        self._streams: dict[str, _StreamRender] = {}
         self._facts_source = facts
         self._placeholder: ChatPlaceholder | None = None
         self._reload_source: list[dict] = []
@@ -629,7 +629,7 @@ class ChatDisplay(MessageList):
         """Create the (paused) live-counter timer.
 
         Paused, because it is started by :meth:`begin_exchange` and stopped again
-        when the last lane closes — a chat with nothing streaming does no work.
+        when the last stream closes — a chat with nothing streaming does no work.
         """
         self._live_timer = self.set_interval(
             self.LIVE_TICK_SECONDS, self._tick_live_counters, pause=True
@@ -638,12 +638,12 @@ class ChatDisplay(MessageList):
     def _tick_live_counters(self) -> None:
         """Repaint every open exchange's ``Working…`` line.
 
-        Reads the lane state and writes the title; it measures nothing itself, so
-        a lane whose provider reports no usage shows the duration and the chunk
+        Reads the stream state and writes the title; it measures nothing itself, so
+        a stream whose provider reports no usage shows the duration and the chunk
         count and makes no token claim.
         """
         now = time.monotonic()
-        for state in self._lanes.values():
+        for state in self._streams.values():
             if state.exchange is None:
                 continue
             state.exchange.set_live(
@@ -653,10 +653,10 @@ class ChatDisplay(MessageList):
             )
 
     def _sync_live_timer(self) -> None:
-        """Run the counter timer exactly while at least one lane is open."""
+        """Run the counter timer exactly while at least one stream is open."""
         if self._live_timer is None:
             return
-        if self._lanes:
+        if self._streams:
             self._live_timer.resume()
         else:
             self._live_timer.pause()
@@ -727,15 +727,15 @@ class ChatDisplay(MessageList):
 
         Async: a chat cleared *mid-stream* (new-chat/clear-chat while a turn is
         still streaming) can have an open ``MarkdownStream`` on the active
-        lane's step (content and/or reasoning) -- ``.remove()``ing that box out
+        stream's step (content and/or reasoning) -- ``.remove()``ing that box out
         without stopping its stream first would leave the stream's background
         task referencing a detached widget forever (a leaked task, and the
         exact "left open on a box that gets removed" case the streaming
         redesign has to not raise on). Stopping first, via the same
-        ``finish_stream`` every other lane-transition point uses, makes the
+        ``finish_stream`` every other stream-transition point uses, makes the
         ensuing ``.remove()`` calls safe.
         """
-        for state in self._lanes.values():
+        for state in self._streams.values():
             box = state.active_box
             if box is None:
                 continue
@@ -751,38 +751,40 @@ class ChatDisplay(MessageList):
         self._window_end = 0
         self._turn_anchors = {}
         self._trim_deferred = False
-        self._lanes = {}
+        self._streams = {}
         # Every exchange the counter had to draw has just been removed.
         self._sync_live_timer()
         self._sync_placeholder()
 
-    def _lane(self, lane: str) -> _LaneRender:
-        """This lane's render state, created on demand.
+    def _stream(self, stream: str) -> _StreamRender:
+        """This stream's render state, created on demand.
 
         On demand rather than "raise if absent": the display has always tolerated
         an event with no exchange open (``_start_step`` mounts at top level), and
         that tolerance is what keeps a chat cleared mid-turn from turning every
         subsequent delta into an error.
         """
-        state = self._lanes.get(lane)
+        state = self._streams.get(stream)
         if state is None:
-            state = _LaneRender()
-            self._lanes[lane] = state
+            state = _StreamRender()
+            self._streams[stream] = state
         return state
 
-    def active_step(self, lane: str = DEFAULT_LANE) -> Optional[MessageBox]:
-        """The step box a lane is currently streaming into, if any.
+    def active_step(self, stream: str = DEFAULT_STREAM) -> Optional[MessageBox]:
+        """The step box a stream is currently streaming into, if any.
 
-        The one piece of lane state anything outside this class reads (tests
-        asserting where reasoning/tool output landed). Public and lane-addressed
+        The one piece of stream state anything outside this class reads (tests
+        asserting where reasoning/tool output landed). Public and stream-addressed
         rather than a poked-at private attribute, because "which box is live" is
-        now a question that has a different answer per lane.
+        now a question that has a different answer per stream.
         """
-        state = self._lanes.get(lane)
+        state = self._streams.get(stream)
         return None if state is None else state.active_box
 
-    async def begin_exchange(self, lane: str = DEFAULT_LANE, *, label: str | None = None) -> None:
-        """Open a new exchange for ``lane`` before its agent loop runs.
+    async def begin_exchange(
+        self, stream: str = DEFAULT_STREAM, *, label: str | None = None
+    ) -> None:
+        """Open a new exchange for ``stream`` before its agent loop runs.
 
         Awaits the mount so the exchange's collapsible body has composed before
         the first ``turn_start`` adds a step into it (begin→turn_start has no
@@ -790,25 +792,25 @@ class ChatDisplay(MessageList):
         follow). Steps mount into the expanded ``ExchangeBox`` as the loop
         streams; :meth:`finalize_exchange` later collapses it to a summary line.
 
-        ``label`` marks a lane that is NOT this frontend's own typed turn — a bus
+        ``label`` marks a stream that is NOT this frontend's own typed turn — a bus
         or timer submission, a forked sub-agent — so the reader can tell it apart
         (Jupyter's rule: render every source, differently). ``None`` renders
-        exactly as it always has. It is kept on the lane as well as on the
-        exchange, because every box the lane mounts wears it (B3-b): the exchange
+        exactly as it always has. It is kept on the stream as well as on the
+        exchange, because every box the stream mounts wears it (B3-b): the exchange
         outlives neither the promoted answer nor, for a no-tool span, itself.
 
         A turn start is the SECOND window point, and it is the one that bounds a
         reader who does not come back: see :meth:`_claim_tail_for_trim`. Both run
-        before the lane is registered, because :meth:`_maybe_trim` declines to
-        evict while any lane is open and this one is about to be.
+        before the stream is registered, because :meth:`_maybe_trim` declines to
+        evict while any stream is open and this one is about to be.
         """
         await self.snap_window_to_tail()
         self._claim_tail_for_trim()
         await self._maybe_trim()
         exchange = ExchangeBox(label=label)
-        state = _LaneRender(exchange, label)
+        state = _StreamRender(exchange, label)
         state.started = time.monotonic()
-        self._lanes[lane] = state
+        self._streams[stream] = state
         await self.mount(exchange)
         self._sync_live_timer()
         self.scroll_to_tail()
@@ -843,8 +845,8 @@ class ChatDisplay(MessageList):
     async def handle_stream_event(self, event: dict) -> None:
         """Render one normalized backend lifecycle event in arrival order.
 
-        The event names its lane; an event that names none belongs to
-        :data:`DEFAULT_LANE`, the one implicit lane every pre-B3-a caller used.
+        The event names its stream; an event that names none belongs to
+        :data:`DEFAULT_STREAM`, the one implicit stream every pre-B3-a caller used.
 
         Async because reasoning/text deltas now stream through a
         ``MarkdownStream`` (``MessageBox.append_content_delta`` /
@@ -855,7 +857,7 @@ class ChatDisplay(MessageList):
         if event.get("kind") == "custom_message":
             await self._on_custom_message(event.get("message") or {})
             return
-        state = self._lane(event.get("lane") or DEFAULT_LANE)
+        state = self._stream(event.get("stream") or DEFAULT_STREAM)
         kind = event.get("kind")
         if kind == "turn_start":
             await self._on_turn_start(state)
@@ -885,7 +887,7 @@ class ChatDisplay(MessageList):
 
         Rendered through :meth:`add_persisted_message`, the same call the reload
         path makes, so the live box and the reloaded one are one widget. Mounted
-        at top level rather than into an open lane's exchange: it belongs to no
+        at top level rather than into an open stream's exchange: it belongs to no
         completion, and the exchange closes above it, which leaves it after the
         turn it was appended during.
 
@@ -898,14 +900,14 @@ class ChatDisplay(MessageList):
             return
         self.add_persisted_message(message)
 
-    def _start_step(self, state: _LaneRender) -> MessageBox:
-        """Mount a fresh assistant step box for this lane's current turn.
+    def _start_step(self, state: _StreamRender) -> MessageBox:
+        """Mount a fresh assistant step box for this stream's current turn.
 
-        Steps live inside the lane's exchange so the whole span groups under one
+        Steps live inside the stream's exchange so the whole span groups under one
         summary. If no exchange is open (defensive — the live path always calls
         :meth:`begin_exchange` first), the step mounts at top level.
 
-        A foreign lane's step is badged and class-marked (B3-b). The step is an
+        A foreign stream's step is badged and class-marked (B3-b). The step is an
         ``assistant`` message either way — a forked sub-agent's answer really is
         an assistant message — but WHOSE assistant it is has to be on the box
         itself, not only on the enclosing exchange, or a reader scrolling past a
@@ -913,15 +915,15 @@ class ChatDisplay(MessageList):
         """
         box = MessageBox("assistant", "", state.label or "", source="markdown")
         if state.label is not None:
-            box.add_class(LANE_FOREIGN_CLASS)
+            box.add_class(STREAM_FOREIGN_CLASS)
         if state.exchange is not None:
             state.exchange.add_step(box)
         else:
             self.mount(box)
         return box
 
-    async def _flush(self, state: _LaneRender) -> None:
-        """Stop the lane's active step's streams and show all accumulated text.
+    async def _flush(self, state: _StreamRender) -> None:
+        """Stop the stream's active step's streams and show all accumulated text.
 
         Every stream write is applied as it arrives now (no throttle to skip a
         final delta), so by the time this runs ``self._text``/``self._content``
@@ -944,8 +946,8 @@ class ChatDisplay(MessageList):
             box.update_content(state.active_text)
         self.scroll_to_tail()
 
-    async def _collapse_active_reasoning(self, state: _LaneRender) -> None:
-        """Freeze + collapse the lane's active reasoning once the answer begins.
+    async def _collapse_active_reasoning(self, state: _StreamRender) -> None:
+        """Freeze + collapse the stream's active reasoning once the answer begins.
 
         Reasoning precedes a completion's answer/tool calls, so the first text
         or tool event marks it complete. Runs once per step (a collapsed region
@@ -960,7 +962,7 @@ class ChatDisplay(MessageList):
             box.reasoning.mark_done()
             box.reasoning.collapsed = True
 
-    async def _on_turn_start(self, state: _LaneRender) -> None:
+    async def _on_turn_start(self, state: _StreamRender) -> None:
         await self._flush(state)
         await self._collapse_active_reasoning(state)
         state.active_text = ""
@@ -968,7 +970,7 @@ class ChatDisplay(MessageList):
         state.active_box = self._start_step(state)
         self.scroll_to_tail()
 
-    async def _on_reasoning_delta(self, state: _LaneRender, delta: str) -> None:
+    async def _on_reasoning_delta(self, state: _StreamRender, delta: str) -> None:
         if not delta or state.active_box is None:
             return
         state.active_reasoning += delta
@@ -976,7 +978,7 @@ class ChatDisplay(MessageList):
         await region.append_delta(delta)
         self.scroll_to_tail()
 
-    async def _on_text_delta(self, state: _LaneRender, delta: str) -> None:
+    async def _on_text_delta(self, state: _StreamRender, delta: str) -> None:
         if not delta or state.active_box is None:
             return
         # Answer content has begun — this step's reasoning is complete.
@@ -985,7 +987,7 @@ class ChatDisplay(MessageList):
         await state.active_box.append_content_delta(delta)
         self.scroll_to_tail()
 
-    async def _on_steer_message(self, state: _LaneRender, text: str) -> None:
+    async def _on_steer_message(self, state: _StreamRender, text: str) -> None:
         """Show a steering message the running turn has just been given.
 
         Reference: docs/TUI-STEERING.md §5. The core weaves it into the context
@@ -1010,7 +1012,7 @@ class ChatDisplay(MessageList):
         state.active_box = None
         self.scroll_to_tail()
 
-    async def _on_tool_call(self, state: _LaneRender, event: dict) -> None:
+    async def _on_tool_call(self, state: _StreamRender, event: dict) -> None:
         if state.active_box is None:
             state.active_box = self._start_step(state)
         await self._flush(state)
@@ -1021,7 +1023,7 @@ class ChatDisplay(MessageList):
             state.tool_routes[tc_id] = state.active_box
         self.scroll_to_tail()
 
-    def _on_tool_result(self, state: _LaneRender, event: dict) -> None:
+    def _on_tool_result(self, state: _StreamRender, event: dict) -> None:
         tc_id = event.get("id", "") or ""
         result_text = str(event.get("result", ""))
         is_error = bool(event.get("is_error", False))
@@ -1042,9 +1044,9 @@ class ChatDisplay(MessageList):
         output: int,
         seconds: float | None,
         telemetry: str | None = None,
-        lane: str = DEFAULT_LANE,
+        stream: str = DEFAULT_STREAM,
     ) -> None:
-        """Close ``lane``'s exchange after its agent loop finishes.
+        """Close ``stream``'s exchange after its agent loop finishes.
 
         Flushes tails, then snaps the final text-only answer OUT below the
         collapsed summary so it stays visible. A trivial exchange (no tools) is
@@ -1056,10 +1058,10 @@ class ChatDisplay(MessageList):
         :func:`format_telemetry`), appended to the summary/subtitle when present;
         ``None`` (a provider that reported no timings) leaves the summary unchanged.
         """
-        state = self._lanes.pop(lane, None)
+        state = self._streams.pop(stream, None)
         self._sync_live_timer()
         if state is None:
-            self.app.log(f"finalize_exchange for lane {lane!r} with no open exchange")
+            self.app.log(f"finalize_exchange for stream {stream!r} with no open exchange")
             return
         await self._flush(state)
         await self._collapse_active_reasoning(state)  # freeze the last step's reasoning
@@ -1088,9 +1090,9 @@ class ChatDisplay(MessageList):
         Two conditions, and both are about not moving something a reader or a
         renderer is holding:
 
-        * every lane must be closed. Evicting while another lane streams could
-          take out that lane's own exchange, and :meth:`trim_to_cap` cuts by
-          transcript position, which says nothing about which lane a widget
+        * every stream must be closed. Evicting while another stream is rendering could
+          take out that stream's own exchange, and :meth:`trim_to_cap` cuts by
+          transcript position, which says nothing about which stream a widget
           belongs to.
         * the reader must be at the tail. Removing the head shifts every row
           under someone who scrolled up to read, which is precisely what
@@ -1103,7 +1105,7 @@ class ChatDisplay(MessageList):
         the reader last stood at the bottom.
         """
         self._refresh_transcript()
-        if self._lanes:
+        if self._streams:
             return
         if not self._follow_tail:
             self._trim_deferred = True
@@ -1116,7 +1118,7 @@ class ChatDisplay(MessageList):
 
         :meth:`_maybe_trim` defers an eviction while the reader is up in history,
         and :meth:`watch_scroll_y` is the only thing that clears the deferral —
-        which it cannot do during a turn, because it returns early while a lane is
+        which it cannot do during a turn, because it returns early while a stream is
         open. So a reader who scrolls up once and then keeps prompting had an
         UNBOUNDED transcript again: measured over five 40-tool turns, 372 → 1860
         mounted widgets with the deferral still set at every turn edge
@@ -1144,7 +1146,7 @@ class ChatDisplay(MessageList):
         why a scroll position is the wrong signal for it.
         """
         super().watch_scroll_y(old_value, new_value)
-        if self._window_moving or self._lanes:
+        if self._window_moving or self._streams:
             return
         if self._trim_deferred and self._follow_tail:
             self._trim_deferred = False
@@ -1206,7 +1208,7 @@ class ChatDisplay(MessageList):
         The claim is taken here, synchronously, for the reason
         :attr:`_window_moving` exists: one flick of a wheel is several events.
         """
-        if self._window_moving or self._lanes:
+        if self._window_moving or self._streams:
             return False
         if turns < 0:
             if self.scroll_offset.y > 0 or self._window_start <= 0:
@@ -1266,7 +1268,7 @@ class ChatDisplay(MessageList):
         ``telemetry`` is the last completion's G4 readout, appended as one more
         ``·`` part when present; ``None`` appends nothing.
 
-        ``label`` is the lane's origin badge and leads the line when present
+        ``label`` is the stream's origin badge and leads the line when present
         (B3-b), because this subtitle is the ONLY chrome an unwrapped answer has
         left: the exchange that carried the badge is removed on this path."""
         parts = [f"{format_tokens(context)} ctx", f"{format_tokens(output)} out"]
@@ -1344,13 +1346,13 @@ class ChatDisplay(MessageList):
         immediately either way -- only the widget-side parse is deferred.
 
         ``label`` is copied too (B3-b). Promotion moves the answer OUT of the
-        exchange to top level, where the primary transcript lives; a fork's
+        exchange to top level, where the head cursor's transcript lives; a fork's
         answer arriving there unbadged is the one place a sub-agent's text could
         be read as the main agent's.
         """
         new = MessageBox("assistant", src.content_text, label or "", source="markdown")
         if label is not None:
-            new.add_class(LANE_FOREIGN_CLASS)
+            new.add_class(STREAM_FOREIGN_CLASS)
         await self.mount(new, after=after)
         if src.reasoning is not None:
             region = new.ensure_reasoning()
@@ -1515,7 +1517,7 @@ class ChatDisplay(MessageList):
 
         Negative moves back into history, positive forward toward the tail.
         Returns whether it actually moved: at either end of the transcript, with
-        a lane still streaming, during another move, or — when *generation* is
+        a stream still streaming, during another move, or — when *generation* is
         given — if the window has been rebuilt since the move was decided on.
 
         *generation* is how :meth:`watch_scroll_y` says "act on the window I saw".
@@ -1545,7 +1547,7 @@ class ChatDisplay(MessageList):
         try:
             if generation is not None and generation != self._window_generation:
                 return False
-            if self._lanes:
+            if self._streams:
                 return False
             messages = self._reload_source
             if not messages:
@@ -1749,7 +1751,7 @@ class ChatDisplay(MessageList):
 
         Streams are stopped before the removal, exactly as
         :meth:`clear_messages` does it. Nothing should be streaming here (the
-        caller only trims with every lane closed), so this is belt and braces
+        caller only trims with every stream closed), so this is belt and braces
         rather than a live case — but a ``MarkdownStream`` left running on a
         removed box leaks its task forever, and that is not a failure worth
         risking on a should.

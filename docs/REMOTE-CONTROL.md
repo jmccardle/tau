@@ -13,6 +13,8 @@ evidence citations. The three deferrals stated in §1 ("Out of scope,
 deliberately") are still accurate: no reverse channel, no socket/TCP
 transport.
 
+> **Amended 2026-10-02.** F1 and F2 are restated by `docs/CURSORS.md`. Multi-agent-on-one-tree ships as cursors in one process, not lanes; the session tuple is `{store, session_id, cursor_id, cursor}` and `WireEvent` carries `cursor_id` (protocol 1.8).
+
 **Relationship to existing docs.** `RPC-PROTOCOL.md` documents the protocol
 `rpc.py` speaks *today* — six methods, JSON-RPC 2.0, and no way to reach it from
 the CLI. This document states what that surface must become to be a product, and

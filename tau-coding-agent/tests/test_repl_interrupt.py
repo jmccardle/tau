@@ -39,7 +39,7 @@ async def test_ctrl_c_at_an_idle_prompt_exits_cleanly(env: ReplEnv) -> None:
 
 async def test_ctrl_c_during_a_turn_aborts_it_and_says_so(env: ReplEnv) -> None:
     """Nothing on the render stream says a turn was aborted, so the head does —
-    at ``lane_end``, where the partial answer has already been persisted."""
+    at ``stream_end``, where the partial answer has already been persisted."""
     env.install(_arm(TURN_WITH_A_TOOL))
     rc = await _run(env, ["do it", INTERRUPT])
     assert rc == 0

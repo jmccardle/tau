@@ -491,7 +491,7 @@ def test_no_capability_text_calls_a_SHIPPED_verb_unwired():
     `scripts/generate_rpc_protocol_doc.py` publishes, so regeneration
     propagates a stale claim faithfully and a host acts on it. A verb
     describing a NOT-yet-shipped thing as unwired stays legal — Tier C's
-    lane verbs are honestly described that way today; what this forbids is
+    unbuilt verbs are honestly described that way today; what this forbids is
     naming a verb that has a handler right now.
 
     Scans every entry's prose, not a list of known-stale strings: the next

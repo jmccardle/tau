@@ -1,7 +1,7 @@
 # A conversation is a tree; every writer is a cursor
 
-Step 1 built (2026-10-02): `Cursor`, the leafless store and `default_leaf`
-(§3, §4); the rest is a position and cost record, nothing built. It replaces the store-owned
+Built 2026-10-02, all six steps of §10; each **Built:** note below records where
+the build diverged from the design. It replaces the store-owned
 leaf, `BranchView`, the name "lane" and the frame-only agent config with one model:
 a **tree** of entries, and **cursors** that extend it. It is the first of three
 records. *Durable writes* (incomplete → finalize) and *the web head* (a fourth
@@ -37,13 +37,13 @@ Three defects follow from this, and each one is measured.
    followUp and nextTurn queues live on `AgentSession`, and so does the head's
    position. `_reset_transient_state` clears all three queues on every
    `new_session`, `fork` and `switch_session`. Strict xfail
-   `test_a_swap_never_discards_a_queued_message_without_a_trace` pins this
-   (`9a16771`).
+   `test_a_swap_never_discards_a_queued_message_without_a_trace` pinned this
+   (`9a16771`). Fixed by step 2 (§8); the test is no longer an xfail.
 3. **One extension context serves every cursor.** The context's `_signal` is
    overwritten when each turn starts (`agent_session.py:2798`). A hook running for
    one cursor would therefore read another cursor's abort. This is inferred, not
    run: `spawn_branch` avoids the case only because sub-agents start with no
-   extensions (`extension_types.py:1330-1337`).
+   extensions (`extension_types.py:1330-1337`). Fixed by step 5 (§7).
 
 The vocabulary did not follow the model. `LANE-REMOVAL.md` (2026-08-21) took the
 lane tag off disk, but "lane" is still on these lines:
@@ -86,6 +86,12 @@ The two terms are defined as follows.
 - **A cursor is not durable.** It is the connection between something that can
   become busy and the place its results land. A process exit ends every cursor.
   Reopening a tree places a new cursor (§4).
+
+**Built:** there is no `Tree` class. `AgentSession` holds the tree's half of the
+table: the log, the extension runner, the bus, and the registry of live cursors
+(`open_cursor`, `close_cursor`, `cursors`). A `Tree` object would have been a
+second owner of the same four things. The cursor's half is `tau_agent_core.cursor.Cursor`,
+and the turn running now names its cursor through the `TURN_CURSOR` context variable.
 
 The TUI's position, `tau -p`'s position, an RPC client's position and a sub-agent
 are all instances of the same `Cursor` class. None of them is "primary":
@@ -136,7 +142,10 @@ from τ's own concurrency, not against operator error.
 ## 4. Where a reopened tree places its cursor
 
 The default leaf is **the newest entry that is not a `navigate`**
-(`session_log.default_leaf`).
+(`session_log.default_leaf`). **Built:** it also skips a namespaced kind, one whose
+type contains `:` such as `jmfts:document`. The JMFTS store files such entries
+under the newest entry, not at a cursor's leaf, so a reopened cursor landed on a
+document instead of the conversation.
 
 Every other kind is written at some cursor's leaf, so it lies on that cursor's
 path, and a cursor placed on it sees that path's context. A `navigate` is the one
@@ -186,6 +195,15 @@ The effective config at a leaf is the fold of `config` entries on its path. A
 
 A head shows the effective config. The status line already shows the model.
 
+**Built:** there is no per-cursor pending config. `AgentSession._record_config`
+compares the session's frame with `config_at(entries, leaf)` before a turn's first
+append, and writes only the keys that differ. The effect matches the design,
+because config is recorded where it takes effect. A move needs no reset, because
+the walk at the new leaf is the comparison. The keys are `CONFIG_KEYS`
+(`session_log.py`). The prompt is recorded as `system_prompt_digest`, a sha256 and
+never the text, and the model as `model_spec`. Resume reads `thinking` back
+through `resolve_model_config(prior_config=…)`.
+
 **The alternative loses.** That alternative is reading the newest `model_change` in
 log order (`Session.model`, `session_store.py:337-350`). It makes a branch's
 behaviour depend on edits made in an unrelated branch, because log order is not
@@ -199,7 +217,7 @@ conversation order. The answer each model gave is already on the path in
 - the header `cwd` is read as the root's `{cwd}`.
 
 No new writer emits these kinds. The `thinking_change` appender has no callers and
-is deleted.
+is deleted; the fold still reads old `thinking_change` entries as `{thinking}`.
 
 **This reverses three `NODE-ADDRESSABLE-AGENTS.md` decisions:**
 
@@ -236,6 +254,17 @@ spawner's own tree. Its owner is the cursor of the turn that asked.
   and `branch_end` channels, which re-emit a sub-session's events under a lane key,
   are deleted. A cursor's lifetime is bracketed by `cursor_open` and `cursor_close`.
 
+**Built:** the operation is `AgentSession.spawn`. `ctx.spawn_branch` keeps its
+name for extensions and delegates to it. The sub-agent's differences from its
+session are a `TurnFrame(tools, model, system_prompt, max_turns, hooks=False)` on
+its cursor. The frame has no thinking field, so a sub-agent runs at its session's
+thinking level, and `_record_config` records that level. `BranchResult.cursor_id`
+replaces `lane`.
+
+**A consequence of §4:** a sub-agent writes entries into the shared log. If it is
+the last writer, a reopened tree places its cursor on the sub-agent's newest entry.
+That entry is a real leaf of the conversation, and §4 is the agreed rule.
+
 `fork` as a `multitask_strategy` is the same operation started by a submission,
 rather than by a tool.
 
@@ -256,6 +285,12 @@ The registrations stay on the tree:
 - `register_tool`
 - commands
 
+**Built:** there is still one `ExtensionContext` per session. `ctx.signal` and
+`ctx.cursor` resolve through `TURN_CURSOR`, so a handler reads the cursor of the
+turn it runs in. That gives the per-cursor reading without building a context per
+cursor. There is no `ctx.tree`. Tree-wide operations stay on `ctx` and act on the
+current cursor's tree.
+
 An extension's module-level state is shared by every cursor, the way a web
 application's globals are shared by concurrent requests. An extension that keeps
 per-conversation state keys it by `ctx.cursor.id` or stores it in the tree.
@@ -271,6 +306,10 @@ A head holds a cursor, and it does not own the queues on that cursor.
   is the same thing a sub-agent does. It closes once its queues are empty.
 - The §1.2 xfail test therefore passes, by construction. It is deliberately neutral
   about which fix makes it pass.
+- **Built:** a swap aborts the old cursor only when it is busy, attaches the head
+  to a fresh cursor, and then calls `deliver_queued(old)`. Each queued text runs as
+  a turn with source `"extension"` and submitter `"cursor:<id>"`, and the cursor
+  closes afterwards. `wait_for_deliveries()` lets a caller wait for those turns.
 - `abort()` and `rollback` still clear the steer queue. That behaviour is designed
   and is tested in `test_submit_steer.py` `TestAbortAndRollback`.
 
@@ -284,27 +323,29 @@ still pass does not make it one less.
 | Today | Becomes | Note |
 |---|---|---|
 | `BranchView`, `open_branch` | `Cursor`, `Tree.open_cursor(at=, owner=)` | `test_branch_view.py` becomes `test_cursor.py` |
-| store `_leaf_id`, `SessionLog.cursor` | `Cursor.leaf` | the entry-id meaning of "cursor" is retired |
+| store `_leaf_id`, `SessionLog.cursor`, `ConversationTree.cursor` | `Cursor.leaf`, `ConversationTree.leaf` | the entry-id meaning of "cursor" is retired in Python. `ConversationTree.navigate` is deleted: a tree is read at one leaf |
 | `resolve_cursor` | `default_leaf(entries)` | the §4 rule |
 | `append_navigate`, `navigate` entries | assigning `cursor.leaf`; no entry | old entries are inert |
 | `lane` (sub-agent identity) | `cursor.id`, `cursor_id` on events | |
 | `lane` (TUI render stream per submission) | a turn stream keyed by `submission_id` within the cursor's stream | `TurnStream` already names it |
-| `RenderRouter`'s lanes, `open_lane`, `lane_start`/`lane_end` | streams keyed by `cursor_id`; `submission_start`/`submission_end` brackets | the bracket names come from the bus channels they are built from (`backends.py:475-493`); `turn_start`/`turn_end` are already `AgentEvent` types and are not reused. `test_tui_multi_lane_render.py` is renamed to match |
+| `RenderRouter`'s lanes, `open_lane`, `lane_start`/`lane_end` | streams keyed by `submission_id`; `stream_start`/`stream_end` render events; `StreamStrip` | **Built** differently from the draft, which named the brackets after the bus channels. A render dict named `submission_start` would share a name with the channel it is built from and carry a different payload. `turn_start`/`turn_end` are `AgentEvent` types and are not reused. `test_tui_multi_lane_render.py` is now `test_tui_multi_stream_render.py` |
 | `branch_event`, `branch_end` channels | `cursor_id` on every event; `cursor_open`/`cursor_close` | §6 |
 | `BranchResult.lane` | the result's `cursor_id` | |
-| "primary cursor", "primary leaf" | "the head's cursor" | 42 `src` lines say "primary"; some mean "primary bus" and stay |
+| "primary cursor", "primary leaf" | "the head's cursor" | "primary bus", theme tokens and "primary output" stay |
 | `agent_spec`, `agent_spec_in_force` | `config` entries, `config_at(entries, leaf)` | legacy kind still read, §5 |
-| RPC `lane: "primary"`, `get_state.cursor` | `cursor: {id, leaf}` | protocol minor bump |
+| RPC `lane: "primary"` | `cursor_id` on the session tuple and on `WireEvent` | protocol 1.7 → 1.8. **Built:** the wire keeps `cursor` as an entry id (`get_state.cursor`, `navigate`'s result, `complete_message_id`'s `cursor` and scopes, `is_cursor`). On the wire it names the RPC session's cursor's position. Renaming it would break tau-code for no change in meaning, so the wire rename was postponed |
 
 "Branch" keeps one meaning: the shape of the tree, as in "a branch of the
 conversation". It does not name an object.
 
-Records amended, each with a dated note at the top pointing here:
+Records amended, each with a dated note pointing here:
 
 - `LANE-REMOVAL.md` §5 and §7
 - `NODE-ADDRESSABLE-AGENTS.md` I2 and decisions 1, 3, 4 and 6
 - `SESSION-TREE-IMPLEMENTATION.md` §2.2 (durable navigate)
 - `REMOTE-CONTROL.md` F1 and F2 (lanes on the wire)
+- stale references in `HEADS-AND-MULTIPLEXER.md`, `SUBMISSION-LIFECYCLE.md`,
+  `ASYNC-SESSION-LOG.md`, `EXTENSION-LOCKS.md` and `VSCODE-HEAD.md` §5.1
 
 ## 10. Order and cost
 
@@ -324,8 +365,10 @@ Each step leaves the suite green and the gates clean.
    `docs/`. It is mostly mechanical but large. It lands with steps 1–5 where it
    touches their code, and the remainder lands last.
 
-I did not measure the total. The rename alone touches about 600 lines that say
-"lane" and about 290 that read `.cursor`. Those are line counts, not edits.
+The build landed as five commits. Step 5 came with step 2, because
+`TURN_CURSOR` is what both need. Step 6's rename went into the commit whose code it
+touched, and the remainder landed last. After it, "lane" survives in the five
+`src` trees only as a citation of `LANE-REMOVAL.md`.
 
 ## 11. Absent
 
@@ -337,6 +380,7 @@ I did not measure the total. The rename alone touches about 600 lines that say
 - **Cursor persistence.** Cursors are not durable, by decision.
 - **A cross-process lock.** It is out of scope (§3).
 - **Hooks in sub-agents by default.** They are opt-in (§6).
+- **The wire rename of `cursor` to a leaf name.** §9 records why.
 - **A cursor ownership tree beyond abort.** That would mean durable tasks,
   background ownership or timers. This is the smallest piece of Pi Durable's task
   tree that fixes a measured defect, and nothing more of it is adopted.

@@ -18,9 +18,9 @@ What these pin:
 * Esc still aborts the turn that is generating, and only it.
 
 B3-b continues in the same file, because it is the same subject: having made a
-foreign lane *renderable*, make it *unmistakable*. Its additions pin that a lane's
+foreign stream *renderable*, make it *unmistakable*. Its additions pin that a stream's
 origin survives every stage of the render — the bubble is typed by its source, the
-streaming steps and the promoted answer wear the lane's badge and its CSS class,
+streaming steps and the promoted answer wear the stream's badge and its CSS class,
 and a strip above the footer says out loud that something the user did not type is
 running. Plus the negative half, which is just as load-bearing: an ordinary typed
 turn is left completely unbadged, and a source this build has never heard of
@@ -61,8 +61,8 @@ def _script(backend: TauBackend, gate: asyncio.Event | None = None) -> None:
     """Replace the agent loop with a scripted emit, keeping REAL admission.
 
     ``submit()`` — the turn lock, the provenance stamp, the ``submission_start`` /
-    ``submission_end`` span the router brackets a lane with — runs for real. When
-    ``gate`` is given the turn blocks on it, which is how a test observes two lanes
+    ``submission_end`` span the router brackets a stream with — runs for real. When
+    ``gate`` is given the turn blocks on it, which is how a test observes two streams
     live at once.
     """
     session = backend.agent_session
@@ -158,14 +158,14 @@ _NOT_A_BUBBLE = {"assistant", "pending", "toolCall", "toolResult", "system", "cu
 
 
 def _user_boxes(display: transcript.ChatDisplay) -> list[MessageBox]:
-    """Every submission bubble, whatever source opened its lane."""
+    """Every submission bubble, whatever source opened its stream."""
     return [b for b in display.query(MessageBox) if b.role not in _NOT_A_BUBBLE]
 
 
 async def test_one_ordinary_turn_renders_exactly_as_before(scripted, wait_for_workers_settled):
     """One user bubble, then the answer promoted out below the (unwrapped, no-tool)
     exchange, with the real token count on it. The user bubble now arrives via
-    ``lane_start`` rather than being drawn by ``on_input_submitted``, which is the
+    ``stream_start`` rather than being drawn by ``on_input_submitted``, which is the
     change; that it is indistinguishable from before is the requirement."""
     app, _holder, _gate = scripted
     async with app.run_test() as pilot:
@@ -191,7 +191,7 @@ async def test_one_ordinary_turn_renders_exactly_as_before(scripted, wait_for_wo
 
 
 async def test_a_dispatched_command_still_renders_no_user_turn(scripted):
-    """``submit()`` emits no span for a command, so nothing opens a lane — which is
+    """``submit()`` emits no span for a command, so nothing opens a stream — which is
     what replaces ``on_input_submitted``'s peek-then-render dance."""
     app, _holder, _gate = scripted
     async with app.run_test() as pilot:
@@ -206,7 +206,7 @@ async def test_a_dispatched_command_still_renders_no_user_turn(scripted):
         assert app.is_generating is False
 
 
-async def test_two_lanes_do_not_interleave_into_one_transcript(scripted):
+async def test_two_streams_do_not_interleave_into_one_transcript(scripted):
     """The defect. Two turns streaming at once used to share one ``_exchange``,
     one ``_active_box`` and one tool-route table, so their deltas landed in
     whichever box was current and each finalized the other's exchange."""
@@ -215,22 +215,22 @@ async def test_two_lanes_do_not_interleave_into_one_transcript(scripted):
         await pilot.pause()
         await app.action_new_chat()
 
-        a = {"kind": "lane_start", "lane": "a", "source": "interactive", "submitter": "human"}
-        b = {"kind": "lane_start", "lane": "b", "source": "bus", "submitter": "nats"}
+        a = {"kind": "stream_start", "stream": "a", "source": "interactive", "submitter": "human"}
+        b = {"kind": "stream_start", "stream": "b", "source": "bus", "submitter": "nats"}
         await app._on_render_event({**a, "text": "first"})
         await app._on_render_event({**b, "text": "second"})
-        for lane in ("a", "b"):
-            await app._on_render_event({"kind": "turn_start", "lane": lane, "turn_index": 0})
+        for stream in ("a", "b"):
+            await app._on_render_event({"kind": "turn_start", "stream": stream, "turn_index": 0})
         # Interleaved deltas, the shape two concurrent streams actually produce.
-        await app._on_render_event({"kind": "text_delta", "lane": "a", "delta": "AAA"})
-        await app._on_render_event({"kind": "text_delta", "lane": "b", "delta": "BBB"})
-        await app._on_render_event({"kind": "text_delta", "lane": "a", "delta": "aaa"})
+        await app._on_render_event({"kind": "text_delta", "stream": "a", "delta": "AAA"})
+        await app._on_render_event({"kind": "text_delta", "stream": "b", "delta": "BBB"})
+        await app._on_render_event({"kind": "text_delta", "stream": "a", "delta": "aaa"})
         await pilot.pause()
         await app._on_render_event(
-            {"kind": "lane_end", "lane": "a", "context": 90, "output": 3, "extra": {}}
+            {"kind": "stream_end", "stream": "a", "context": 90, "output": 3, "extra": {}}
         )
         await app._on_render_event(
-            {"kind": "lane_end", "lane": "b", "context": 90, "output": 5, "extra": {}}
+            {"kind": "stream_end", "stream": "b", "context": 90, "output": 5, "extra": {}}
         )
         await pilot.pause()
 
@@ -238,48 +238,48 @@ async def test_two_lanes_do_not_interleave_into_one_transcript(scripted):
         answers = [b.content_text for b in display.query(MessageBox) if b.role == "assistant"]
         assert "AAAaaa" in answers, answers
         assert "BBB" in answers, answers
-        # Neither lane's text leaked into the other's box.
+        # Neither stream's text leaked into the other's box.
         assert not any("BBB" in text and "AAA" in text for text in answers)
         # Two user bubbles, in submission order, each with its own origin.
         users = _user_boxes(display)
         assert [u.content_text for u in users] == ["first", "second"]
 
 
-async def test_a_tool_result_folds_into_its_own_lanes_box(scripted):
-    """Two lanes with the SAME tool_call_id: a shared route table would fold one
-    lane's result into the other's box."""
+async def test_a_tool_result_folds_into_its_own_streams_box(scripted):
+    """Two streams with the SAME tool_call_id: a shared route table would fold one
+    stream's result into the other's box."""
     app, _holder, _gate = scripted
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.action_new_chat()
 
-        for lane, source in (("a", "interactive"), ("b", "bus")):
+        for stream, source in (("a", "interactive"), ("b", "bus")):
             await app._on_render_event(
                 {
-                    "kind": "lane_start",
-                    "lane": lane,
+                    "kind": "stream_start",
+                    "stream": stream,
                     "source": source,
                     "submitter": "human" if source == "interactive" else "nats",
-                    "text": lane,
+                    "text": stream,
                 }
             )
-            await app._on_render_event({"kind": "turn_start", "lane": lane, "turn_index": 0})
+            await app._on_render_event({"kind": "turn_start", "stream": stream, "turn_index": 0})
             await pilot.pause()
             await app._on_render_event(
-                {"kind": "tool_call", "lane": lane, "id": "c1", "name": "ls", "arguments": {}}
+                {"kind": "tool_call", "stream": stream, "id": "c1", "name": "ls", "arguments": {}}
             )
             await pilot.pause()
         await app._on_render_event(
-            {"kind": "tool_result", "lane": "a", "id": "c1", "name": "ls", "result": "A-RESULT"}
+            {"kind": "tool_result", "stream": "a", "id": "c1", "name": "ls", "result": "A-RESULT"}
         )
         await pilot.pause()
 
         display = app.query_one(transcript.ChatDisplay)
-        lane_a = display.active_step("a")
-        lane_b = display.active_step("b")
-        assert lane_a is not None and lane_b is not None
-        assert lane_a.tool_boxes["c1"].has_result is True
-        assert lane_b.tool_boxes["c1"].has_result is False
+        stream_a = display.active_step("a")
+        stream_b = display.active_step("b")
+        assert stream_a is not None and stream_b is not None
+        assert stream_a.tool_boxes["c1"].has_result is True
+        assert stream_b.tool_boxes["c1"].has_result is False
 
 
 async def test_a_bus_submission_is_rendered_not_dropped(scripted):
@@ -311,9 +311,9 @@ async def test_a_bus_submission_is_rendered_not_dropped(scripted):
         assert "answer to run the nightly" in answers
 
 
-async def test_a_forked_branch_gets_its_own_labelled_lane(scripted):
+async def test_a_forked_branch_gets_its_own_labelled_stream(scripted):
     """A sub-agent's turn is an ordinary submission on the same bus, so it gets a
-    lane like any other — attributed to the agent (``agent · fork:<label>``), not
+    stream like any other — attributed to the agent (``agent · fork:<label>``), not
     to the human who typed the head's turn."""
     app, holder, _gate = scripted
     async with app.run_test() as pilot:
@@ -350,11 +350,11 @@ async def test_a_forked_branch_gets_its_own_labelled_lane(scripted):
         assert step is not None and step.content_text == "forked"
 
 
-async def test_a_failed_fork_closes_its_lane_instead_of_hanging_on_working(scripted):
+async def test_a_failed_fork_closes_its_stream_instead_of_hanging_on_working(scripted):
     """A sub-agent whose first provider call fails must not leave an ExchangeBox
-    titled "agent · fork:… · Working…" and a "⑂ 1 other lane" strip behind.
+    titled "agent · fork:… · Working…" and a "⑂ 1 other stream" strip behind.
 
-    ``submission_end`` is emitted from a ``finally``, so it closes the lane however
+    ``submission_end`` is emitted from a ``finally``, so it closes the stream however
     the turn ended. Driven through the real ``ctx.spawn_branch`` and the real
     agent loop, with only the provider call patched to fail.
     """
@@ -379,14 +379,14 @@ async def test_a_failed_fork_closes_its_lane_instead_of_hanging_on_working(scrip
 
         assert result.ok is False, "the failure is contained, as it always was"
         display = app.query_one(transcript.ChatDisplay)
-        assert display._lanes == {}, "the lane's render state must not be leaked"
+        assert display._streams == {}, "the stream's render state must not be leaked"
         titles = [e.title for e in display.query(ExchangeBox)]
         assert not any("Working…" in t for t in titles), titles
-        assert app.query_one(editor_widgets.LaneStrip).lanes == {}
-        assert app.query_one(editor_widgets.LaneStrip).display is False
+        assert app.query_one(editor_widgets.StreamStrip).streams == {}
+        assert app.query_one(editor_widgets.StreamStrip).display is False
 
 
-async def test_esc_aborts_the_generating_turn_and_leaves_a_foreign_lane_alone(
+async def test_esc_aborts_the_generating_turn_and_leaves_a_foreign_stream_alone(
     scripted, wait_for_workers_settled
 ):
     app, holder, gate = scripted
@@ -398,11 +398,11 @@ async def test_esc_aborts_the_generating_turn_and_leaves_a_foreign_lane_alone(
         await _until(pilot, lambda: app.is_generating)
         backend = holder["backend"]
 
-        # A second, foreign lane is live at the same time.
+        # A second, foreign stream is live at the same time.
         await app._on_render_event(
             {
-                "kind": "lane_start",
-                "lane": "bus-1",
+                "kind": "stream_start",
+                "stream": "bus-1",
                 "source": "bus",
                 "submitter": "nats",
                 "text": "from the bus",
@@ -425,50 +425,50 @@ async def test_esc_aborts_the_generating_turn_and_leaves_a_foreign_lane_alone(
         await pilot.pause()
 
         display = app.query_one(transcript.ChatDisplay)
-        # The foreign lane is untouched by the cancel: still open, still "Working…".
-        assert "bus-1" in display._lanes
+        # The foreign stream is untouched by the cancel: still open, still "Working…".
+        assert "bus-1" in display._streams
         titles = [e.title for e in display.query(ExchangeBox)]
         assert any("Working…" in t for t in titles), titles
         assert app.is_generating is False
 
 
-def test_lane_role_types_a_bubble_by_its_source_and_never_invents_one():
+def test_stream_role_types_a_bubble_by_its_source_and_never_invents_one():
     """Pure. The bubble's role IS the submission source, so ``ROLE_LABELS`` gives
     it a border title of its own; an unlisted source passes through verbatim (and
     ``MessageBox.on_mount`` capitalizes it) rather than being mapped to a known
     one, and a missing source says ``unknown`` rather than borrowing ``user``."""
-    assert TauApp._lane_role("bus") == "bus"
-    assert TauApp._lane_role("agent") == "agent"
+    assert TauApp._stream_role("bus") == "bus"
+    assert TauApp._stream_role("agent") == "agent"
     # Novel source: rendered generically, NOT dropped and NOT relabelled.
-    assert TauApp._lane_role("carrier-pigeon") == "carrier-pigeon"
-    assert TauApp._lane_role(None) == "unknown"
-    assert TauApp._lane_role("   ") == "unknown"
+    assert TauApp._stream_role("carrier-pigeon") == "carrier-pigeon"
+    assert TauApp._stream_role(None) == "unknown"
+    assert TauApp._stream_role("   ") == "unknown"
 
 
-def test_lane_strip_reports_only_foreign_lanes_and_collapses_when_idle():
+def test_stream_strip_reports_only_foreign_streams_and_collapses_when_idle():
     """Pure. The strip costs zero rows on an ordinary session: this frontend's own
-    typed lane (``label=None``) is not something it reports, because the reader is
+    typed stream (``label=None``) is not something it reports, because the reader is
     already looking at it and the input is already disabled."""
-    strip = editor_widgets.LaneStrip()
+    strip = editor_widgets.StreamStrip()
     assert strip.display is False
 
-    strip.open_lane("mine", None)
-    assert strip.lanes == {} and strip.display is False
+    strip.open_stream("mine", None)
+    assert strip.streams == {} and strip.display is False
 
-    strip.open_lane("b1", "bus · nats")
-    strip.open_lane("f1", "agent · fork:explore")
-    assert list(strip.lanes) == ["b1", "f1"]
+    strip.open_stream("b1", "bus · nats")
+    strip.open_stream("f1", "agent · fork:explore")
+    assert list(strip.streams) == ["b1", "f1"]
     assert strip.display is True
     rendered = strip.summary
     assert "bus · nats" in rendered and "agent · fork:explore" in rendered
-    assert "2 other lanes" in rendered
+    assert "2 other streams" in rendered
 
-    strip.close_lane("mine")  # never tracked — a no-op, not an error
-    strip.close_lane("b1")
-    assert "1 other lane" in strip.summary
+    strip.close_stream("mine")  # never tracked — a no-op, not an error
+    strip.close_stream("b1")
+    assert "1 other stream" in strip.summary
 
-    strip.close_lane("f1")
-    assert strip.display is False and strip.lanes == {}
+    strip.close_stream("f1")
+    assert strip.display is False and strip.streams == {}
 
 
 async def test_a_forks_answer_stays_attributed_after_its_exchange_is_unwrapped(scripted):
@@ -480,7 +480,7 @@ async def test_a_forks_answer_stays_attributed_after_its_exchange_is_unwrapped(s
 
     Driven through the bus channels a sub-agent's submission uses —
     ``submission_start`` with its owned cursor, its stamped events, and
-    ``submission_end`` — so the router's lane bracket is exercised too.
+    ``submission_end`` — so the router's stream bracket is exercised too.
     """
     app, holder, _gate = scripted
     async with app.run_test() as pilot:
@@ -505,7 +505,7 @@ async def test_a_forks_answer_stays_attributed_after_its_exchange_is_unwrapped(s
         display = app.query_one(transcript.ChatDisplay)
         step = display.active_step("sub-9")
         assert step is not None
-        assert step.has_class(transcript.LANE_FOREIGN_CLASS)
+        assert step.has_class(transcript.STREAM_FOREIGN_CLASS)
         assert step.border_subtitle == "agent · fork:explore"
 
         await branch(
@@ -525,7 +525,7 @@ async def test_a_forks_answer_stays_attributed_after_its_exchange_is_unwrapped(s
         # … and the answer it left behind still says whose it is.
         answers = [b for b in display.query(MessageBox) if b.role == "assistant"]
         assert [b.content_text for b in answers] == ["sub-answer"]
-        assert answers[0].has_class(transcript.LANE_FOREIGN_CLASS)
+        assert answers[0].has_class(transcript.STREAM_FOREIGN_CLASS)
         subtitle = answers[0].border_subtitle or ""
         assert subtitle.startswith("agent · fork:explore · ")
         assert "90 ctx · 11 out" in subtitle
@@ -534,7 +534,7 @@ async def test_a_forks_answer_stays_attributed_after_its_exchange_is_unwrapped(s
 async def test_an_ordinary_typed_turn_carries_no_badge_at_all(scripted, wait_for_workers_settled):
     """The quiet half of the rule. A badge on every message the user typed
     themselves is noise, so ``interactive``/``human`` renders exactly as it always
-    has — no lane class, no origin subtitle, no strip."""
+    has — no stream class, no origin subtitle, no strip."""
     app, _holder, _gate = scripted
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -546,20 +546,20 @@ async def test_an_ordinary_typed_turn_carries_no_badge_at_all(scripted, wait_for
         display = app.query_one(transcript.ChatDisplay)
         boxes = list(display.query(MessageBox))
         assert boxes, "the turn rendered"
-        assert not any(b.has_class(transcript.LANE_FOREIGN_CLASS) for b in boxes)
+        assert not any(b.has_class(transcript.STREAM_FOREIGN_CLASS) for b in boxes)
         bubble = _user_boxes(display)[0]
         assert bubble.role == "user"
         assert bubble.border_subtitle in (None, "")
         # The answer's subtitle is the stats line and ONLY the stats line.
         answer = [b for b in boxes if b.role == "assistant"][0]
         assert (answer.border_subtitle or "").startswith("80 ctx · 7 out")
-        assert app.query_one(editor_widgets.LaneStrip).display is False
+        assert app.query_one(editor_widgets.StreamStrip).display is False
 
 
 async def test_a_source_this_build_never_heard_of_still_renders(scripted):
     """Do not filter. A renderer that hides what it does not recognise is the
     failure mode the whole submission lifecycle exists to prevent, so an unknown
-    source gets a generic attribution — its own name — and every foreign-lane
+    source gets a generic attribution — its own name — and every foreign-stream
     affordance, rather than being dropped or quietly recoloured as a user turn."""
     app, _holder, _gate = scripted
     async with app.run_test() as pilot:
@@ -568,16 +568,16 @@ async def test_a_source_this_build_never_heard_of_still_renders(scripted):
 
         await app._on_render_event(
             {
-                "kind": "lane_start",
-                "lane": "x1",
+                "kind": "stream_start",
+                "stream": "x1",
                 "source": "carrier-pigeon",
                 "submitter": "coop-3",
                 "text": "a message arrived by bird",
             }
         )
-        await app._on_render_event({"kind": "turn_start", "lane": "x1", "turn_index": 0})
+        await app._on_render_event({"kind": "turn_start", "stream": "x1", "turn_index": 0})
         await pilot.pause()
-        await app._on_render_event({"kind": "text_delta", "lane": "x1", "delta": "coo"})
+        await app._on_render_event({"kind": "text_delta", "stream": "x1", "delta": "coo"})
         await pilot.pause()
 
         display = app.query_one(transcript.ChatDisplay)
@@ -586,27 +586,29 @@ async def test_a_source_this_build_never_heard_of_still_renders(scripted):
         assert bubble.role == "carrier-pigeon"
         assert bubble.border_title == "Carrier-pigeon"
         assert bubble.border_subtitle == "carrier-pigeon · coop-3"
-        assert bubble.has_class(transcript.LANE_FOREIGN_CLASS)
+        assert bubble.has_class(transcript.STREAM_FOREIGN_CLASS)
         step = display.active_step("x1")
-        assert step is not None and step.has_class(transcript.LANE_FOREIGN_CLASS)
-        assert app.query_one(editor_widgets.LaneStrip).lanes == {"x1": "carrier-pigeon · coop-3"}
+        assert step is not None and step.has_class(transcript.STREAM_FOREIGN_CLASS)
+        assert app.query_one(editor_widgets.StreamStrip).streams == {
+            "x1": "carrier-pigeon · coop-3"
+        }
 
 
-async def test_the_strip_announces_a_foreign_lane_for_exactly_as_long_as_it_runs(scripted):
+async def test_the_strip_announces_a_foreign_stream_for_exactly_as_long_as_it_runs(scripted):
     """Content scrolls; a fork running inside a collapsed exchange three screens up
-    is running invisibly. The strip is the ambient half — live while the lane is,
+    is running invisibly. The strip is the ambient half — live while the stream is,
     gone when it ends."""
     app, _holder, _gate = scripted
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.action_new_chat()
-        strip = app.query_one(editor_widgets.LaneStrip)
+        strip = app.query_one(editor_widgets.StreamStrip)
         assert strip.display is False
 
         await app._on_render_event(
             {
-                "kind": "lane_start",
-                "lane": "b1",
+                "kind": "stream_start",
+                "stream": "b1",
                 "source": "bus",
                 "submitter": "nats_bus",
                 "text": "deploy the thing",
@@ -614,12 +616,12 @@ async def test_the_strip_announces_a_foreign_lane_for_exactly_as_long_as_it_runs
         )
         await pilot.pause()
         assert strip.display is True
-        assert strip.lanes == {"b1": "bus · nats_bus"}
+        assert strip.streams == {"b1": "bus · nats_bus"}
         assert "bus · nats_bus" in strip.summary
 
         await app._on_render_event(
-            {"kind": "lane_end", "lane": "b1", "context": 90, "output": 3, "extra": {}}
+            {"kind": "stream_end", "stream": "b1", "context": 90, "output": 3, "extra": {}}
         )
         await pilot.pause()
-        assert strip.lanes == {}
+        assert strip.streams == {}
         assert strip.display is False

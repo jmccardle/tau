@@ -415,7 +415,7 @@ class SessionLogContractTests:
 
     async def test_branch_rooted_inside_an_elided_span_is_unaffected(self, log, cursor):
         """T3 -- a branch rooted INSIDE a later elided span. ``b`` sits in the
-        region the PRIMARY's own elide (appended after the branch already exists)
+        region the head cursor's own elide (appended after the branch already exists)
         will hide from ITS OWN ``context_for`` -- but the branch's ancestor chain
         stops at ``b`` and never reaches the elide entry (it was appended on a
         different path), so the branch's context is completely untouched. This is
@@ -426,12 +426,12 @@ class SessionLogContractTests:
         await cursor.append_message(_msg("user", "early"))
         b = await cursor.append_message(_msg("assistant", "branch point"))
 
-        # A branch forked off `b`, BEFORE the primary elides past it.
+        # A branch forked off `b`, BEFORE the head cursor elides past it.
         branch = Cursor(log, b, label="reviewer")
         branch_leaf = await branch.append_message(_msg("user", "branch content"))
         before = cursor.tree().context_for(branch_leaf)
 
-        keep = await cursor.append_message(_msg("user", "kept on primary"))
+        keep = await cursor.append_message(_msg("user", "kept on the head path"))
         await cursor.append_elide(keep, **_elide_provenance())
 
         primary_texts = _texts(cursor.tree().context_for())
@@ -711,14 +711,14 @@ class SessionLogContractTests:
         keep = await cursor.append_message(_msg("assistant", "kept"))
         await cursor.append_compaction("SUMMARY", keep, 99, **_compaction_provenance())
 
-        expected_entries, expected_cursor = log.entries(), cursor.leaf
-        expected_context = ConversationTree(expected_entries, expected_cursor).context_for()
+        expected_entries, expected_leaf = log.entries(), cursor.leaf
+        expected_context = ConversationTree(expected_entries, expected_leaf).context_for()
 
         reloaded = self.reload(log)
         assert reloaded is not None
 
         assert reloaded.entries() == expected_entries
-        assert default_leaf(reloaded.entries()) == expected_cursor
+        assert default_leaf(reloaded.entries()) == expected_leaf
         assert (
             ConversationTree(reloaded.entries(), default_leaf(reloaded.entries())).context_for()
             == expected_context

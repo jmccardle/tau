@@ -18,10 +18,10 @@ from repl_fakes import FakeBackend, ReplEnv, env  # noqa: F401
 
 #: A turn with a tool call in it — the ``"steer"`` strategy's delivery point.
 TURN_WITH_A_TOOL: list[dict[str, Any]] = [
-    {"kind": "lane_start", "source": "interactive", "submitter": "human", "text": "do it"},
+    {"kind": "stream_start", "source": "interactive", "submitter": "human", "text": "do it"},
     {"kind": "text_delta", "delta": "Looking.\n"},
     {"kind": "tool_call", "id": "t1", "name": "read", "arguments": {"path": "main.py"}},
-    {"kind": "lane_end", "context": 30, "output": 12, "seconds": 0.4},
+    {"kind": "stream_end", "context": 30, "output": 12, "seconds": 0.4},
 ]
 
 

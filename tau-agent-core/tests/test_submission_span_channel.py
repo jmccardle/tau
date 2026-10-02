@@ -67,7 +67,7 @@ class TestSubmissionSpan:
     async def test_the_span_encloses_that_turns_agent_events(self):
         """Ordering is the whole contract: a renderer opens on start, routes the
         events in between, closes on end. If an ``AgentEvent`` escaped the bracket
-        it would land in no lane (or the previous one's)."""
+        it would land in no stream (or the previous one's)."""
         session = _session()
         order: list[str] = []
         session.subscribe_channel("submission_start", lambda **kw: order.append("start"))

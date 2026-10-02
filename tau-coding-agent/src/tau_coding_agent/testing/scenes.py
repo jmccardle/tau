@@ -261,7 +261,7 @@ def _tree_session() -> Any:
         {"id": "r2", "parentId": "r1", "type": "message", "timestamp": 6, "message": grep_result},
         {"id": "n4", "parentId": "r2", "type": "message", "timestamp": 7, "message": answer},
     ]
-    return ConversationTree(entries, cursor="n4")
+    return ConversationTree(entries, leaf="n4")
 
 
 _PANEL_SPEC = {

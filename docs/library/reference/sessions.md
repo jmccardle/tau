@@ -1990,7 +1990,7 @@ A body is fetched per node, the way the TUI's detail pane calls
 - `kind: str` — The entry's ``type`` — ``message``, ``compaction``, ``elide``, ``branch_summary``, ``navigate``, ``customEntry`` and the rest.
 - `role: str | None` — ``user`` / ``assistant`` / ``toolResult`` / ``system`` on a message entry, ``None`` on every bookkeeping kind.
 - `preview: str` — The entry's first line, cut nowhere — the caller elides to width.
-- `is_cursor: bool` — Whether this entry is the session's current cursor.
+- `is_cursor: bool` — Whether this entry is the tree's leaf — the wire's name for the head cursor's position.
 - `timestamp: int | None` — Epoch milliseconds, or ``None`` when no clock applies. This is the key children are sorted by, so a caller re-sorting gets this order.
 - `first_kept_id: str | None` — On a splice anchor (``compaction`` / ``elide``), the oldest entry the fold keeps. ``None`` on every other kind, and on an anchor that names none. The fold's whole boundary, so a head computes the folded span rather than guessing at it.
 - `from_id: str | None` — On a ``branch_summary``, the head of the branch it summarizes.
@@ -2207,20 +2207,20 @@ The config's model name at the default leaf. Raises if there is none.
 <!-- agent: yes -->
 
 ```python
-class ConversationTree(entries: list[dict[str, Any]], cursor: str | None)
+class ConversationTree(entries: list[dict[str, Any]], leaf: str | None)
 ```
 
 `tau_agent_core.conversation_tree.ConversationTree`
 
-Pure, I/O-free view over an append-only session entry log + a cursor.
+Pure, I/O-free view over an append-only session entry log, read at one leaf.
 
-``entries`` are ``session_store``-shaped dicts (camelCase ``parentId``); the
-log is never mutated — ``navigate`` only moves the in-memory cursor.
+``entries`` are ``session_store``-shaped dicts (camelCase ``parentId``) and are
+never mutated. The leaf is fixed; a view at another leaf is another tree.
 
 **Constructor parameters**
 
 - `entries: list[dict[str, Any]]` — *(no description)*
-- `cursor: str | None` — *(no description)*
+- `leaf: str | None` — *(no description)*
 
 ### browse
 
@@ -2303,7 +2303,7 @@ a prefix of the answer rather than silently shown one (the G3 rule
 **Parameters**
 
 - `scope: MessageIdScope = 'in_session'` — Which entries are candidates. ``"in_session"`` is every entry; ``"ancestors_of_cursor"`` is the parent chain from the root to ``cursor`` inclusive; ``"descendants_of_cursor"`` is the subtree below it, excluding ``cursor`` itself.
-- `cursor: str | None = None` — The entry the two scoped variants are relative to. ``None`` uses this tree's own cursor. Passed rather than always read, so a caller enumerating for a sub-agent can scope to THAT agent's cursor.
+- `cursor: str | None = None` — The entry the two scoped variants are relative to (the wire's name for a leaf id). ``None`` uses this tree's leaf. Passed rather than always read, so a caller enumerating for a sub-agent can scope to THAT agent's cursor.
 - `query: str = ''` — The typed text. ``""`` matches everything in scope.
 - `limit: int = _COMPLETION_LIMIT` — How many matches to return at most.
 
@@ -2313,7 +2313,7 @@ class:`MessageIdCompletion`: the matches in tree order (root-most first), and th
 
 **Raises**
 
-- `KeyError` — ``cursor`` — or this tree's cursor, when ``cursor`` is None — names no entry, and the scope is one that needs it. Fail-Early: a scope relative to a node that does not exist would otherwise return an empty list, which reads as "nothing matched".
+- `KeyError` — ``cursor`` — or this tree's leaf, when ``cursor`` is None — names no entry, and the scope is one that needs it. Fail-Early: a scope relative to a node that does not exist would otherwise return an empty list, which reads as "nothing matched".
 
 ### contains
 
@@ -2352,7 +2352,7 @@ The entry-level counterpart of :meth:`context_for` (which converts these
 to loop messages). This is exactly what ``SessionManager._build_active_path``
 returned, so it feeds ``compaction.prepare_compaction`` unchanged — the
 AgentSession compaction path builds it over the live entries instead of
-the retired System-A manager (§2.6). ``leaf=None`` uses the stored cursor.
+the retired System-A manager (§2.6). ``leaf=None`` uses this tree's leaf.
 
 **Parameters**
 
@@ -2371,7 +2371,7 @@ Root→leaf message list with compaction/branch_summary splices applied.
 The entry-level fold is ``_build_active_path`` (anchor on the LAST summary
 in the path; drop kept-region entries whose linear order precedes the
 boundary); the entry→message conversion is ``get_active_messages``.
-``leaf=None`` uses the stored cursor.
+``leaf=None`` uses this tree's leaf.
 
 **Parameters**
 
@@ -2493,20 +2493,6 @@ one is asking about the wrong node rather than hitting an error.
 
 - `KeyError` — no entry has that id, same as :meth:`entry`.
 
-### navigate
-
-```python
-navigate(entry_id: str | None) -> None
-```
-
-`tau_agent_core.conversation_tree.ConversationTree.navigate`
-
-Move the cursor to ``entry_id`` (pi ``branch``). Raises if unknown.
-
-**Parameters**
-
-- `entry_id: str | None` — *(no description)*
-
 ### path
 
 ```python
@@ -2519,7 +2505,7 @@ The raw leaf→root entry chain, reversed to root→leaf order.
 
 No splicing — every entry on the ``parentId`` chain (all kinds). A cycle
 guard mirrors ``_build_active_path`` (``session_manager.py:571-579``).
-``leaf=None`` uses the stored cursor.
+``leaf=None`` uses this tree's leaf.
 
 **Parameters**
 
@@ -2541,12 +2527,12 @@ alongside ``compaction`` (§2.4). Feeds the "summarize branch" prompt.
 
 **The bound is structural: descendants of the node the caller named** — nothing
 else. It reaches down, never sideways: a sibling subtree, a concurrent branch
-rooted elsewhere, and the primary line above ``from_id`` are all outside it,
+rooted elsewhere, and the path above ``from_id`` are all outside it,
 because none of them is reachable by following ``parentId`` edges downward from
 ``from_id``.
 
 This is deliberately NOT the lane filter it replaces (docs/LANE-REMOVAL.md §6.2).
-That filter asked *who wrote this entry* and refused to descend from a primary
+That filter asked *who wrote this entry* and refused to descend from a head-written
 entry into a sub-agent branch hanging under it; this asks *what did the caller
 name*, and a sub-agent's subtree under ``from_id`` IS part of what happened
 there, so it is summarized with it. The difference is visible exactly when the
@@ -2554,7 +2540,7 @@ two disagree — and when they do, write provenance is the wrong answer: an
 extension that deliberately summarizes a region containing a sub-agent's work
 has said which region it means, while the old rule silently returned a different
 one. A caller that wants only the sub-agent's own work names the branch root; a
-caller that wants only the primary line asks for ``context_for``, not this.
+caller that wants only one path asks for ``context_for``, not this.
 
 **Parameters**
 
@@ -2573,7 +2559,7 @@ Parent/child ``TreeNode`` roots for the browser (pi ``getTree``).
 A well-formed session has one root (first entry with ``parentId is None``);
 orphaned entries (broken parent chain) are also returned as roots. Each
 node's children are sorted by timestamp (oldest first); ``is_leaf`` marks
-the current cursor. Roots keep load order.
+this tree's leaf. Roots keep load order.
 
 ## Cursor
 <!-- agent: yes -->

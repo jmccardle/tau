@@ -35,13 +35,15 @@ def _turn_messages(index: int) -> list[dict]:
     ]
 
 
-async def _live_turn(display: ChatDisplay, pilot, index: int, *, lane: str = "default") -> None:
+async def _live_turn(display: ChatDisplay, pilot, index: int, *, stream: str = "default") -> None:
     """Stream one complete no-tool turn through the live state machine."""
     display.add_message("user", f"q{index}", source="verbatim")
-    await display.begin_exchange(lane)
-    await display.handle_stream_event({"kind": "turn_start", "turn_index": 0, "lane": lane})
-    await display.handle_stream_event({"kind": "text_delta", "delta": f"a{index}", "lane": lane})
-    await display.finalize_exchange(context=100, output=10, seconds=1.0, lane=lane)
+    await display.begin_exchange(stream)
+    await display.handle_stream_event({"kind": "turn_start", "turn_index": 0, "stream": stream})
+    await display.handle_stream_event(
+        {"kind": "text_delta", "delta": f"a{index}", "stream": stream}
+    )
+    await display.finalize_exchange(context=100, output=10, seconds=1.0, stream=stream)
     await pilot.pause()
 
 
@@ -157,7 +159,7 @@ async def test_a_second_turn_runs_the_trim_the_first_one_held(transcript):
     """A reader who scrolls up and never scrolls back had an unbounded transcript.
 
     ``watch_scroll_y`` was the only thing that cleared a deferred trim, and it
-    returns early while a lane is open — so every further turn deferred again and
+    returns early while a stream is open — so every further turn deferred again and
     the tree grew for the rest of the session (measured: 372 → 1860 widgets over
     five 40-tool turns). Submitting is now the second release point.
 
@@ -187,9 +189,9 @@ async def test_a_second_turn_runs_the_trim_the_first_one_held(transcript):
         assert len(users) == ChatDisplay.RENDER_CAP_TURNS
 
 
-async def test_nothing_is_evicted_while_another_lane_streams(transcript):
+async def test_nothing_is_evicted_while_another_stream_streams(transcript):
     """trim_to_cap cuts by transcript position, which says nothing about which
-    lane a widget belongs to — so it must not run with one still open."""
+    stream a widget belongs to — so it must not run with one still open."""
     async with _Harness().run_test() as pilot:
         display = pilot.app.query_one(ChatDisplay)
         display.set_transcript_source(lambda: transcript)
@@ -198,9 +200,11 @@ async def test_nothing_is_evicted_while_another_lane_streams(transcript):
             await _live_turn(display, pilot, index)
         settled = len(_content_children(display))
 
-        # Open a second lane and leave it streaming, then close the first.
+        # Open a second stream and leave it streaming, then close the first.
         await display.begin_exchange("other", label="agent · fork")
-        await display.handle_stream_event({"kind": "turn_start", "turn_index": 0, "lane": "other"})
+        await display.handle_stream_event(
+            {"kind": "turn_start", "turn_index": 0, "stream": "other"}
+        )
         transcript.extend(_turn_messages(12))
         display.add_message("user", "q12", source="verbatim")
         await display.begin_exchange()
@@ -209,7 +213,7 @@ async def test_nothing_is_evicted_while_another_lane_streams(transcript):
         await display.finalize_exchange(context=100, output=10, seconds=1.0)
         await pilot.pause()
 
-        # The open lane held the trim off, so the transcript grew instead.
+        # The open stream held the trim off, so the transcript grew instead.
         assert len(_content_children(display)) > settled
 
 

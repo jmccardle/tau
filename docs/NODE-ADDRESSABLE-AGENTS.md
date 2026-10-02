@@ -12,6 +12,8 @@ see `ROADMAP.md`'s "Node-addressable agents" entry for the compressed
 shipped-state summary. Depends on nothing; `SUBMISSION-LIFECYCLE.md`'s
 `fork` strategy depends on §2 and §5 of this document.
 
+> **Amended 2026-10-02.** `docs/CURSORS.md` §5 reverses I2 (the frame is now recorded in the tree as `config` entries), decision 1 (config is reconstructable by ancestry) and decision 3 (`agent_spec` is a legacy kind, read as config). Decision 4 holds as `TurnFrame(hooks=False)`. Decision 6 holds, and its "concurrency inside a process" is now concurrent cursors on one log, each store safe under concurrent `append_at`. `resolve_cursor` is now `default_leaf`. I1 is unchanged.
+
 **Relationship to existing docs.** `SESSION-TREE-IMPLEMENTATION.md` records how the
 tree was built. This document states what the built tree *guarantees*, and what
 follows for running more than one agent over it. `JMFTS-INTEGRATION-PLAN.md` §7 owns

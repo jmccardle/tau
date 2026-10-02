@@ -199,21 +199,20 @@ still inert and a lock under a user message is still released.
 """
 
 
-def request_at_cursor(entries: list[dict[str, Any]], cursor: str | None) -> ExtensionRequest | None:
-    """The request entry at the cursor, past τ's own provenance nodes, or ``None``.
+def request_at(entries: list[dict[str, Any]], leaf: str | None) -> ExtensionRequest | None:
+    """The request entry at ``leaf``, past τ's own provenance nodes, or ``None``.
 
     The whole read: no ancestry search, and the only entries it steps over are
     :data:`PROVENANCE_ENTRY_TYPES`.
 
     Args:
         entries: The session log's entries.
-        cursor: The resolved cursor id (``SessionLog.cursor``), or ``None``
-            pre-root.
+        leaf: A cursor's ``leaf``, or ``None`` pre-root.
     """
-    if cursor is None:
+    if leaf is None:
         return None
     by_id = {str(e["id"]): e for e in entries if e.get("id") is not None}
-    current: str | None = cursor
+    current: str | None = leaf
     seen: set[str] = set()
     while current is not None and current not in seen:
         seen.add(current)  # cycle guard, mirroring ConversationTree._walk
@@ -231,7 +230,7 @@ def find_request(entries: list[dict[str, Any]], entry_id: str) -> ExtensionReque
     """The request entry with ``entry_id``, wherever it sits, or ``None``.
 
     For a head answering an ask it has already been shown — not for deciding
-    whether the session is locked, which is :func:`request_at_cursor` and only
+    whether the session is locked, which is :func:`request_at` and only
     that.
     """
     for entry in reversed(entries):

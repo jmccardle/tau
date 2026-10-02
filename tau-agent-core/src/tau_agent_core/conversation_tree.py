@@ -1,6 +1,6 @@
 """τ-agent-core conversation tree: the pure, I/O-free session-tree algebra.
 
-``ConversationTree`` is a side-effect-free function of ``(entries, cursor)`` over
+``ConversationTree`` is a side-effect-free function of ``(entries, leaf)`` over
 the raw ``session_store.Session.entries()`` dicts (camelCase ``parentId`` /
 ``firstKeptId`` / ``fromId``). It owns the *interpretive fold* — the leaf→root
 ``parentId`` walk plus the read-time compaction / ``branch_summary`` splice — that
@@ -28,10 +28,11 @@ Provenance (ported verbatim, only the field names reconciled camelCase):
   to be taught. Since it is additive (no existing appender ever produces one), it
   changes nothing about ``compaction``'s own behaviour.
 - ``tree`` ← pi ``getTree(): SessionTreeNode[]`` (``session-manager.ts:1191``):
-  parent/child nodes, children sorted by timestamp, ``is_leaf`` == the cursor.
+  parent/child nodes, children sorted by timestamp, ``is_leaf`` == the tree's leaf.
 - ``subtree_text`` ← ``SessionManager._extract_branch_messages``
   (``session_manager.py:627-702``).
-- ``navigate`` ← pi ``branch(id)`` (``session-manager.ts:1241``) — cursor move only.
+- pi ``branch(id)`` (``session-manager.ts:1241``) became ``Cursor.move``; a tree
+  never moves (docs/CURSORS.md).
 
 Reference: SESSION-TREE-IMPLEMENTATION.md §2.1, §2.5, §2.7 (step 1a); §5 Decision 5
 (branch_summary is an inline node, not a splice anchor — step 2);
@@ -377,7 +378,7 @@ class TreeNode:
     kind: str  # message | compaction | branch_summary | navigate | …
     role: str | None  # for message nodes
     preview: str  # first line of text (browser row)
-    is_leaf: bool  # == the current cursor
+    is_leaf: bool  # == the tree's leaf
     children: list[TreeNode] = field(default_factory=list)
 
 
@@ -406,7 +407,8 @@ class BrowseNode:
         role: ``user`` / ``assistant`` / ``toolResult`` / ``system`` on a message
             entry, ``None`` on every bookkeeping kind.
         preview: The entry's first line, cut nowhere — the caller elides to width.
-        is_cursor: Whether this entry is the session's current cursor.
+        is_cursor: Whether this entry is the tree's leaf — the wire's name for the
+            head cursor's position.
         timestamp: Epoch milliseconds, or ``None`` when no clock applies. This is
             the key children are sorted by, so a caller re-sorting gets this order.
         first_kept_id: On a splice anchor (``compaction`` / ``elide``), the oldest
@@ -475,40 +477,33 @@ class MessageIdCompletion:
 
 @agent_facing(topic="sessions")
 class ConversationTree:
-    """Pure, I/O-free view over an append-only session entry log + a cursor.
+    """Pure, I/O-free view over an append-only session entry log, read at one leaf.
 
-    ``entries`` are ``session_store``-shaped dicts (camelCase ``parentId``); the
-    log is never mutated — ``navigate`` only moves the in-memory cursor.
+    ``entries`` are ``session_store``-shaped dicts (camelCase ``parentId``) and are
+    never mutated. The leaf is fixed; a view at another leaf is another tree.
     """
 
-    def __init__(self, entries: list[dict[str, Any]], cursor: str | None) -> None:
+    def __init__(self, entries: list[dict[str, Any]], leaf: str | None) -> None:
         self._entries = entries  # append-only, load order
         self._by_id: dict[str, dict[str, Any]] = {e["id"]: e for e in entries}
         self._children: dict[str | None, list[str]] = {}
         for e in entries:
             self._children.setdefault(e.get("parentId"), []).append(e["id"])
-        self._cursor = cursor  # leaf pointer (None = pre-root fallback to root)
-
-    # --- navigation (cursor only; nothing is deleted or rewritten) ---------
+        self._leaf = leaf  # None = pre-root
 
     @property
-    def cursor(self) -> str | None:
-        return self._cursor
-
-    def navigate(self, entry_id: str | None) -> None:
-        """Move the cursor to ``entry_id`` (pi ``branch``). Raises if unknown."""
-        if entry_id is not None and entry_id not in self._by_id:
-            raise KeyError(f"Entry {entry_id} not found")
-        self._cursor = entry_id
+    def leaf(self) -> str | None:
+        """The entry id this view reads from; ``None`` before the first entry."""
+        return self._leaf
 
     def path(self, leaf: str | None = None) -> list[dict[str, Any]]:
         """The raw leaf→root entry chain, reversed to root→leaf order.
 
         No splicing — every entry on the ``parentId`` chain (all kinds). A cycle
         guard mirrors ``_build_active_path`` (``session_manager.py:571-579``).
-        ``leaf=None`` uses the stored cursor.
+        ``leaf=None`` uses this tree's leaf.
         """
-        leaf_id = self._cursor if leaf is None else leaf
+        leaf_id = self._leaf if leaf is None else leaf
         return list(self._walk(leaf_id))
 
     def fork_admission_reason(self, target_id: str | None) -> str | None:
@@ -589,7 +584,7 @@ class ConversationTree:
         The entry-level fold is ``_build_active_path`` (anchor on the LAST summary
         in the path; drop kept-region entries whose linear order precedes the
         boundary); the entry→message conversion is ``get_active_messages``.
-        ``leaf=None`` uses the stored cursor.
+        ``leaf=None`` uses this tree's leaf.
         """
         return entries_to_messages(self.context_entries(leaf))
 
@@ -600,9 +595,9 @@ class ConversationTree:
         to loop messages). This is exactly what ``SessionManager._build_active_path``
         returned, so it feeds ``compaction.prepare_compaction`` unchanged — the
         AgentSession compaction path builds it over the live entries instead of
-        the retired System-A manager (§2.6). ``leaf=None`` uses the stored cursor.
+        the retired System-A manager (§2.6). ``leaf=None`` uses this tree's leaf.
         """
-        leaf_id = self._cursor if leaf is None else leaf
+        leaf_id = self._leaf if leaf is None else leaf
         return self._active_path_entries(leaf_id)
 
     def _active_path_entries(self, leaf_id: str | None) -> list[dict[str, Any]]:
@@ -767,8 +762,8 @@ class ConversationTree:
                 ``"ancestors_of_cursor"`` is the parent chain from the root to
                 ``cursor`` inclusive; ``"descendants_of_cursor"`` is the subtree
                 below it, excluding ``cursor`` itself.
-            cursor: The entry the two scoped variants are relative to. ``None`` uses
-                this tree's own cursor. Passed rather than always read, so a caller
+            cursor: The entry the two scoped variants are relative to (the wire's
+                name for a leaf id). ``None`` uses this tree's leaf. Passed rather than always read, so a caller
                 enumerating for a sub-agent can scope to THAT agent's cursor.
             query: The typed text. ``""`` matches everything in scope.
             limit: How many matches to return at most.
@@ -778,7 +773,7 @@ class ConversationTree:
             first), and the true count before the limit was applied.
 
         Raises:
-            KeyError: ``cursor`` — or this tree's cursor, when ``cursor`` is None —
+            KeyError: ``cursor`` — or this tree's leaf, when ``cursor`` is None —
                 names no entry, and the scope is one that needs it. Fail-Early: a
                 scope relative to a node that does not exist would otherwise return
                 an empty list, which reads as "nothing matched".
@@ -786,7 +781,7 @@ class ConversationTree:
         if scope == "in_session":
             candidates = [e["id"] for e in self._entries]
         else:
-            anchor = self._cursor if cursor is None else cursor
+            anchor = self._leaf if cursor is None else cursor
             if anchor is None or anchor not in self._by_id:
                 raise KeyError(f"cannot scope {scope!r} to unknown entry {anchor!r}")
             if scope == "ancestors_of_cursor":
@@ -826,7 +821,7 @@ class ConversationTree:
         A well-formed session has one root (first entry with ``parentId is None``);
         orphaned entries (broken parent chain) are also returned as roots. Each
         node's children are sorted by timestamp (oldest first); ``is_leaf`` marks
-        the current cursor. Roots keep load order.
+        this tree's leaf. Roots keep load order.
         """
         nodes: dict[str, TreeNode] = {}
         for entry in self._entries:
@@ -836,7 +831,7 @@ class ConversationTree:
                 kind=str(entry.get("type", "")),
                 role=self._role_of(entry),
                 preview=self._preview_of(entry),
-                is_leaf=entry["id"] == self._cursor,
+                is_leaf=entry["id"] == self._leaf,
             )
 
         roots: list[TreeNode] = []
@@ -994,7 +989,7 @@ class ConversationTree:
 
         A root-level anchor (``parentId is None``) folds nothing, and is counted as
         such rather than passed to :meth:`context_entries`, whose ``leaf=None`` means
-        "use the cursor" — a different question with a plausible-looking wrong answer.
+        "use this tree's leaf" — a different question with a plausible-looking wrong answer.
         """
         kind = str(entry.get("type", ""))
         verb = _SPLICE_VERBS[kind]  # KeyError == a caller that is not an anchor
@@ -1142,12 +1137,12 @@ class ConversationTree:
 
         **The bound is structural: descendants of the node the caller named** — nothing
         else. It reaches down, never sideways: a sibling subtree, a concurrent branch
-        rooted elsewhere, and the primary line above ``from_id`` are all outside it,
+        rooted elsewhere, and the path above ``from_id`` are all outside it,
         because none of them is reachable by following ``parentId`` edges downward from
         ``from_id``.
 
         This is deliberately NOT the lane filter it replaces (docs/LANE-REMOVAL.md §6.2).
-        That filter asked *who wrote this entry* and refused to descend from a primary
+        That filter asked *who wrote this entry* and refused to descend from a head-written
         entry into a sub-agent branch hanging under it; this asks *what did the caller
         name*, and a sub-agent's subtree under ``from_id`` IS part of what happened
         there, so it is summarized with it. The difference is visible exactly when the
@@ -1155,7 +1150,7 @@ class ConversationTree:
         extension that deliberately summarizes a region containing a sub-agent's work
         has said which region it means, while the old rule silently returned a different
         one. A caller that wants only the sub-agent's own work names the branch root; a
-        caller that wants only the primary line asks for ``context_for``, not this.
+        caller that wants only one path asks for ``context_for``, not this.
         """
         if not self._entries:
             return ""

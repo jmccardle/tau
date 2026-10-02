@@ -7,6 +7,8 @@ opens a modal. §8's standardisation landed with it, including the two breaks.
 Each section below carries a built note where the build corrected the design;
 three did.
 
+> **Amended 2026-10-02.** `resolve_cursor` is now `session_log.default_leaf` and `request_at_cursor` is `request_at(entries, leaf)` (`docs/CURSORS.md` §4, §9). The last-entry rule this section relies on still holds, minus `navigate` and namespaced kinds.
+
 An extension can stop a session from being extended, and can put a request in
 front of whoever is attached, in a way that survives a restart and that every
 head can render. Both ride on one reserved `customEntry`.

@@ -153,10 +153,10 @@ Vertical.tau-dialog-buttons Button { width: 100%; margin: 0; }
 .box-blocked { border: solid $tau-role-blocked; }
 
 /* an extension veto (S50), not a tool failure */
-/* === Foreign lanes (B3-b) === */
+/* === Foreign streams (B3-b) === */
 
-.chat-message.lane-foreign { border: dashed $tau-role-foreign; margin: 1 0 1 2; }
-.chat-message.lane-foreign > .message-content { color: $tau-text-soft; }
+.chat-message.stream-foreign { border: dashed $tau-role-foreign; margin: 1 0 1 2; }
+.chat-message.stream-foreign > .message-content { color: $tau-text-soft; }
 .reasoning-region, .tool-box, .exchange-box { padding: 0; border: none; }
 .reasoning-region > Contents, .tool-box > Contents, .exchange-box > Contents { padding: 0 0 0 1; }
 
@@ -377,9 +377,9 @@ ZoneTree > .tree--kind-structural { color: $tau-text-quiet; text-style: italic; 
 .ext-request-locked { border: round $tau-role-error; }
 .ext-request-open { border: round $tau-accent; }
 
-/* === Foreign-lane strip (B3-b) === */
+/* === Foreign-stream strip (B3-b) === */
 
-#lane-strip {
+#stream-strip {
     height: 1;
     width: 100%;
     padding: 0 1;

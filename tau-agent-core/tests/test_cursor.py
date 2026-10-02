@@ -212,9 +212,7 @@ async def test_a_cursors_anchors_carry_their_full_provenance(head):
         covered_tokens=31,
         config_id=None,
     )
-    elide = await second.append_elide(
-        keep, covered_entries=1, covered_tokens=12, config_id=None
-    )
+    elide = await second.append_elide(keep, covered_entries=1, covered_tokens=12, config_id=None)
 
     by_id = {e["id"]: e for e in head.entries()}
     assert by_id[compaction]["summarizerModelId"] == "branch-summarizer"

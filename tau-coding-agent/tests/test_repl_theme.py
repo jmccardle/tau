@@ -70,12 +70,12 @@ def test_a_role_has_both_a_style_and_a_glyph() -> None:
     assert set(repl_theme.ROLE_STYLE) == set(repl_theme.GLYPH)
 
 
-def test_a_lane_a_human_typed_at_this_prompt_wears_no_badge() -> None:
-    assert repl_theme.lane_label("interactive", "human") is None
+def test_a_stream_a_human_typed_at_this_prompt_wears_no_badge() -> None:
+    assert repl_theme.stream_label("interactive", "human") is None
 
 
-def test_a_foreign_lane_is_badged_with_its_source_and_submitter() -> None:
+def test_a_foreign_stream_is_badged_with_its_source_and_submitter() -> None:
     """One badge, in the reader's vocabulary — a caller never composes a second."""
-    assert repl_theme.lane_label("timer", "cron:nightly") == "Timer · cron:nightly"
-    assert repl_theme.lane_label("agent", "fork:review") == "Sub-agent · fork:review"
-    assert repl_theme.lane_label("odd", "x") == "odd · x"
+    assert repl_theme.stream_label("timer", "cron:nightly") == "Timer · cron:nightly"
+    assert repl_theme.stream_label("agent", "fork:review") == "Sub-agent · fork:review"
+    assert repl_theme.stream_label("odd", "x") == "odd · x"

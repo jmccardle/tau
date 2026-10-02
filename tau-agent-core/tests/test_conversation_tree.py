@@ -93,7 +93,7 @@ def _expected_from_oracle(entries: list[dict[str, Any]], leaf: str | None) -> li
     other message, and their order, must still match System A exactly.
     """
     oracle = _oracle_messages(entries, leaf)
-    path = ConversationTree(entries, cursor=leaf).path()
+    path = ConversationTree(entries, leaf=leaf).path()
     carried = [e["message"] for e in path if is_system_message(e)]
     missing = [m for m in carried if m not in oracle]
     return [*missing, *oracle]
@@ -173,7 +173,7 @@ def _all_leaves(entries: list[dict[str, Any]]) -> list[str]:
 def test_context_for_matches_system_a_oracle(tree_name: str) -> None:
     entries = ALL_TREES[tree_name]()
     for leaf in _all_leaves(entries):
-        tree = ConversationTree(entries, cursor=leaf)
+        tree = ConversationTree(entries, leaf=leaf)
         assert tree.context_for() == _expected_from_oracle(entries, leaf), (
             f"{tree_name} @ leaf={leaf}"
         )
@@ -182,14 +182,14 @@ def test_context_for_matches_system_a_oracle(tree_name: str) -> None:
 @pytest.mark.parametrize("tree_name", list(ALL_TREES))
 def test_context_for_explicit_leaf_matches_oracle(tree_name: str) -> None:
     entries = ALL_TREES[tree_name]()
-    tree = ConversationTree(entries, cursor=None)
+    tree = ConversationTree(entries, leaf=None)
     for leaf in _all_leaves(entries):
         assert tree.context_for(leaf) == _expected_from_oracle(entries, leaf)
 
 
 def test_context_for_none_cursor_falls_back_to_root_like_oracle() -> None:
     entries = _linear()
-    tree = ConversationTree(entries, cursor=None)
+    tree = ConversationTree(entries, leaf=None)
     assert tree.context_for() == _oracle_messages(entries, None)
 
 
@@ -216,7 +216,7 @@ def test_the_only_divergence_from_the_oracle_is_the_carried_system_message() -> 
 
 
 def test_context_for_empty_tree() -> None:
-    assert ConversationTree([], cursor=None).context_for() == []
+    assert ConversationTree([], leaf=None).context_for() == []
 
 
 # --- the compaction splice, verified concretely -----------------------------
@@ -224,7 +224,7 @@ def test_context_for_empty_tree() -> None:
 
 def test_single_compaction_drops_pre_boundary_and_keeps_summary() -> None:
     entries = _single_compaction()
-    tree = ConversationTree(entries, cursor="e07")
+    tree = ConversationTree(entries, leaf="e07")
     msgs = tree.context_for()
     assert msgs[0] == {"role": "system", "content": [{"type": "text", "text": "sys"}]}
     assert msgs[1] == {
@@ -237,7 +237,7 @@ def test_single_compaction_drops_pre_boundary_and_keeps_summary() -> None:
 
 def test_multi_compaction_anchors_on_last() -> None:
     entries = _multi_compaction()
-    tree = ConversationTree(entries, cursor="e09")
+    tree = ConversationTree(entries, leaf="e09")
     msgs = tree.context_for()
     assert [m["content"][0]["text"] for m in msgs] == [
         "sys",
@@ -265,7 +265,7 @@ def test_elide_carries_the_system_prompt() -> None:
         _msg("e04", "e03", "user", "u2"),
         _elide("e05", "e04", "e04"),
     ]
-    msgs = ConversationTree(entries, cursor="e05").context_for()
+    msgs = ConversationTree(entries, leaf="e05").context_for()
     assert [(m["role"], m["content"][0]["text"]) for m in msgs] == [
         ("system", "sys"),
         ("user", "u2"),
@@ -285,7 +285,7 @@ def test_a_system_message_below_the_boundary_is_not_duplicated() -> None:
         _msg("e03", "e02", "assistant", "a1"),
         _elide("e04", "e03", "e02"),
     ]
-    msgs = ConversationTree(entries, cursor="e04").context_for()
+    msgs = ConversationTree(entries, leaf="e04").context_for()
     assert [(m["role"], m["content"][0]["text"]) for m in msgs] == [
         ("system", "sys"),
         ("assistant", "a1"),
@@ -307,7 +307,7 @@ def test_a_custom_message_is_not_carried() -> None:
         _msg("e03", "e02", "user", "u1"),
         _elide("e04", "e03", "e03"),
     ]
-    msgs = ConversationTree(entries, cursor="e04").context_for()
+    msgs = ConversationTree(entries, leaf="e04").context_for()
     assert [m["content"][0]["text"] for m in msgs] == ["sys", "u1"]
 
 
@@ -318,7 +318,7 @@ def test_branch_summary_is_inline_not_a_splice_yields_A_B_S() -> None:
         _msg("e03", "e02", "assistant", "abandonedC"),  # sibling of the summary
         _branch_summary("e04", "e02", "e02", "SUMMARY-S"),  # parented at B (fix 1)
     ]
-    msgs = ConversationTree(entries, cursor="e04").context_for()
+    msgs = ConversationTree(entries, leaf="e04").context_for()
     assert msgs == [
         {"role": "system", "content": [{"type": "text", "text": "rootA"}]},
         {"role": "user", "content": [{"type": "text", "text": "pointB"}]},
@@ -337,7 +337,7 @@ def test_mixed_compaction_and_branch_summary_path() -> None:
         _branch_summary("e07", "e06", "e05", "BR"),  # inline, after the compaction
         _msg("e08", "e07", "assistant", "a4"),
     ]
-    msgs = ConversationTree(entries, cursor="e08").context_for()
+    msgs = ConversationTree(entries, leaf="e08").context_for()
     texts = [m["content"][0]["text"] for m in msgs]
     assert texts == [
         "sys",  # carried across the compaction; u1/a1 were not
@@ -349,21 +349,21 @@ def test_mixed_compaction_and_branch_summary_path() -> None:
     ]
 
 
-# --- navigate / path --------------------------------------------------------
+# --- leaf / path ------------------------------------------------------------
 
 
-def test_navigate_moves_cursor_and_changes_context() -> None:
+def test_a_tree_at_another_leaf_reads_that_branch() -> None:
     entries = _branched()
-    tree = ConversationTree(entries, cursor="e05")  # branch A tip
-    assert [m["content"][0]["text"] for m in tree.context_for()] == [
+    at_a = ConversationTree(entries, leaf="e05")
+    at_b = ConversationTree(entries, leaf="e07")
+    assert [m["content"][0]["text"] for m in at_a.context_for()] == [
         "sys",
         "hello",
         "hi",
         "path A",
         "ansA",
     ]
-    tree.navigate("e07")  # branch B tip
-    assert [m["content"][0]["text"] for m in tree.context_for()] == [
+    assert [m["content"][0]["text"] for m in at_b.context_for()] == [
         "sys",
         "hello",
         "hi",
@@ -372,21 +372,9 @@ def test_navigate_moves_cursor_and_changes_context() -> None:
     ]
 
 
-def test_navigate_to_none_is_pre_root() -> None:
-    tree = ConversationTree(_linear(), cursor="e05")
-    tree.navigate(None)
-    assert tree.cursor is None
-
-
-def test_navigate_unknown_raises() -> None:
-    tree = ConversationTree(_linear(), cursor="e05")
-    with pytest.raises(KeyError):
-        tree.navigate("nope")
-
-
 def test_path_returns_root_to_leaf_chain() -> None:
     entries = _branched()
-    tree = ConversationTree(entries, cursor="e07")
+    tree = ConversationTree(entries, leaf="e07")
     assert [e["id"] for e in tree.path()] == ["e01", "e02", "e03", "e06", "e07"]
     # explicit leaf overrides the cursor
     assert [e["id"] for e in tree.path("e05")] == ["e01", "e02", "e03", "e04", "e05"]
@@ -397,7 +385,7 @@ def test_path_cycle_guard_stops() -> None:
         {"id": "a", "type": "message", "parentId": "b", "message": {"role": "user", "content": ""}},
         {"id": "b", "type": "message", "parentId": "a", "message": {"role": "user", "content": ""}},
     ]
-    tree = ConversationTree(entries, cursor="a")
+    tree = ConversationTree(entries, leaf="a")
     ids = [e["id"] for e in tree.path()]
     assert set(ids) == {"a", "b"} and len(ids) == 2
 
@@ -407,7 +395,7 @@ def test_path_cycle_guard_stops() -> None:
 
 def test_tree_structure_and_leaf_marker() -> None:
     entries = _branched()
-    roots = ConversationTree(entries, cursor="e07").tree()
+    roots = ConversationTree(entries, leaf="e07").tree()
     assert len(roots) == 1
     root = roots[0]
     assert root.id == "e01" and root.parent_id is None
@@ -422,7 +410,7 @@ def test_tree_structure_and_leaf_marker() -> None:
 
 def test_tree_node_previews_and_roles() -> None:
     entries = _single_compaction()
-    roots = ConversationTree(entries, cursor="e07").tree()
+    roots = ConversationTree(entries, leaf="e07").tree()
     by_id: dict[str, TreeNode] = {}
     _index(roots, by_id)
     assert by_id["e02"].role == "user" and by_id["e02"].preview == "u1"
@@ -433,7 +421,7 @@ def test_tree_node_previews_and_roles() -> None:
 
 def _preview(entries: list[dict[str, Any]], entry_id: str, cursor: str) -> str:
     by_id: dict[str, TreeNode] = {}
-    _index(ConversationTree(entries, cursor=cursor).tree(), by_id)
+    _index(ConversationTree(entries, leaf=cursor).tree(), by_id)
     return by_id[entry_id].preview
 
 
@@ -538,7 +526,7 @@ def test_tree_orphan_is_root() -> None:
         _msg("e02", "e01", "user", "hi"),
         _msg("e09", "missing", "assistant", "orphan"),
     ]
-    roots = ConversationTree(entries, cursor="e02").tree()
+    roots = ConversationTree(entries, leaf="e02").tree()
     assert {r.id for r in roots} == {"e01", "e09"}
 
 
@@ -562,20 +550,20 @@ def _index(nodes: list[TreeNode], out: dict[str, TreeNode]) -> None:
 
 def test_subtree_text_collects_descendants() -> None:
     entries = _branched()
-    text = ConversationTree(entries, cursor="e07").subtree_text("e04")
+    text = ConversationTree(entries, leaf="e07").subtree_text("e04")
     # e04 subtree = e04 → e05 (branch A only; branch B under e06 is excluded)
     assert text == "[user]: path A\n[assistant]: ansA"
 
 
 def test_subtree_text_includes_summary_nodes() -> None:
     entries = _single_compaction()
-    text = ConversationTree(entries, cursor="e07").subtree_text("e08")
+    text = ConversationTree(entries, leaf="e07").subtree_text("e08")
     assert text.startswith("[compaction]: SUMMARY-1")
     assert "[assistant]: a2" in text
 
 
 def test_subtree_text_unknown_id_is_empty() -> None:
-    tree = ConversationTree(_linear(), cursor="e05")
+    tree = ConversationTree(_linear(), leaf="e05")
     assert tree.subtree_text("does-not-exist") == ""
 
 
@@ -585,7 +573,7 @@ def test_subtree_text_unknown_id_is_empty() -> None:
 def test_reads_camelcase_parent_and_first_kept_fields() -> None:
     entries = _single_compaction()
     assert "parentId" in entries[1] and "firstKeptId" in entries[4]
-    msgs = ConversationTree(entries, cursor="e07").context_for()
+    msgs = ConversationTree(entries, leaf="e07").context_for()
     assert msgs[0]["content"][0]["text"] == "sys"  # carried across the splice
     assert msgs[1]["content"][0]["text"] == "[[Compaction summary: SUMMARY-1]]"
     assert [m["content"][0]["text"] for m in msgs[2:]] == ["a2", "u3", "a3"]
@@ -598,59 +586,57 @@ class TestCompleteMessageId:
     """The enumerator behind the ``message_id`` domain: scope, search, and bounds."""
 
     def test_in_session_offers_every_entry_with_its_text(self) -> None:
-        found = ConversationTree(_branched(), cursor="e05").complete_message_id()
+        found = ConversationTree(_branched(), leaf="e05").complete_message_id()
         assert [m.entry_id for m in found.matches] == [f"e0{n}" for n in range(1, 8)]
         assert found.total == 7
         assert found.matches[3].preview == "path A"
 
     def test_ancestors_scope_is_the_parent_chain_root_first(self) -> None:
-        found = ConversationTree(_branched(), cursor="e05").complete_message_id(
-            "ancestors_of_cursor"
-        )
+        found = ConversationTree(_branched(), leaf="e05").complete_message_id("ancestors_of_cursor")
         assert [m.entry_id for m in found.matches] == ["e01", "e02", "e03", "e04", "e05"]
 
     def test_descendants_scope_excludes_the_anchor_and_spans_both_forks(self) -> None:
-        found = ConversationTree(_branched(), cursor="e05").complete_message_id(
+        found = ConversationTree(_branched(), leaf="e05").complete_message_id(
             "descendants_of_cursor", "e03"
         )
         assert [m.entry_id for m in found.matches] == ["e04", "e06", "e05", "e07"]
 
     def test_a_passed_cursor_beats_the_trees_own(self) -> None:
         """A caller enumerating for a sub-agent scopes to THAT agent's cursor."""
-        tree = ConversationTree(_branched(), cursor="e05")
+        tree = ConversationTree(_branched(), leaf="e05")
         theirs = tree.complete_message_id("ancestors_of_cursor", "e07")
         assert [m.entry_id for m in theirs.matches] == ["e01", "e02", "e03", "e06", "e07"]
 
     def test_the_query_completes_an_id_by_prefix(self) -> None:
-        found = ConversationTree(_linear(), cursor="e05").complete_message_id(query="e04")
+        found = ConversationTree(_linear(), leaf="e05").complete_message_id(query="e04")
         assert [m.entry_id for m in found.matches] == ["e04"]
 
     def test_the_query_searches_the_text_case_insensitively(self) -> None:
-        found = ConversationTree(_branched(), cursor="e05").complete_message_id(query="PATH")
+        found = ConversationTree(_branched(), leaf="e05").complete_message_id(query="PATH")
         assert [m.entry_id for m in found.matches] == ["e04", "e06"]
 
     def test_an_empty_query_matches_everything_in_scope(self) -> None:
-        tree = ConversationTree(_linear(), cursor="e05")
+        tree = ConversationTree(_linear(), leaf="e05")
         assert tree.complete_message_id(query="").total == 5
 
     def test_the_limit_bounds_matches_while_total_reports_the_truth(self) -> None:
-        found = ConversationTree(_branched(), cursor="e05").complete_message_id(limit=2)
+        found = ConversationTree(_branched(), leaf="e05").complete_message_id(limit=2)
         assert len(found.matches) == 2
         assert found.total == 7
 
     def test_a_scope_anchored_on_an_unknown_entry_raises(self) -> None:
         """Fail-Early: an empty list here would read as 'nothing matched'."""
-        tree = ConversationTree(_linear(), cursor="e05")
+        tree = ConversationTree(_linear(), leaf="e05")
         with pytest.raises(KeyError, match="cannot scope"):
             tree.complete_message_id("ancestors_of_cursor", "nope")
 
     def test_in_session_needs_no_cursor_at_all(self) -> None:
-        assert ConversationTree(_linear(), cursor=None).complete_message_id().total == 5
+        assert ConversationTree(_linear(), leaf=None).complete_message_id().total == 5
 
 
 class TestDescendantsOf:
     def test_parents_come_before_their_children(self) -> None:
-        assert ConversationTree(_branched(), cursor="e05").descendants_of("e03") == [
+        assert ConversationTree(_branched(), leaf="e05").descendants_of("e03") == [
             "e04",
             "e06",
             "e05",
@@ -658,12 +644,12 @@ class TestDescendantsOf:
         ]
 
     def test_a_leaf_has_none_and_so_does_an_unknown_id(self) -> None:
-        tree = ConversationTree(_branched(), cursor="e05")
+        tree = ConversationTree(_branched(), leaf="e05")
         assert tree.descendants_of("e05") == []
         assert tree.descendants_of("nope") == []
 
     def test_none_is_the_whole_tree(self) -> None:
-        assert len(ConversationTree(_branched(), cursor="e05").descendants_of(None)) == 7
+        assert len(ConversationTree(_branched(), leaf="e05").descendants_of(None)) == 7
 
 
 # --- browse() ---------------------------------------------------------------
@@ -679,7 +665,7 @@ class TestBrowse:
 
     def test_the_order_is_the_order_tree_draws(self) -> None:
         """Preorder, so a subtree is contiguous and a fork's branches do not interleave."""
-        nodes = ConversationTree(_branched(), cursor="e07").browse()
+        nodes = ConversationTree(_branched(), leaf="e07").browse()
         assert [n.entry_id for n in nodes] == ["e01", "e02", "e03", "e04", "e05", "e06", "e07"]
 
     def test_every_entry_gets_a_node_including_the_undrawn_kinds(self) -> None:
@@ -698,14 +684,12 @@ class TestBrowse:
                 "targetId": "e03",
             }
         ]
-        nodes = ConversationTree(entries, cursor="e08").browse()
+        nodes = ConversationTree(entries, leaf="e08").browse()
         assert len(nodes) == len(entries)
         assert [n.entry_id for n in nodes if n.kind == "navigate"] == ["e08"]
 
     def test_a_splice_anchor_carries_its_boundary(self) -> None:
-        nodes = {
-            n.entry_id: n for n in ConversationTree(_single_compaction(), cursor="e07").browse()
-        }
+        nodes = {n.entry_id: n for n in ConversationTree(_single_compaction(), leaf="e07").browse()}
         assert nodes["e08"].kind == "compaction"
         assert nodes["e08"].first_kept_id == "e05"
         assert nodes["e02"].first_kept_id is None
@@ -716,13 +700,13 @@ class TestBrowse:
             _msg("e02", "e01", "assistant", "abandoned"),
             _branch_summary("e03", "e01", "e02", "what that branch tried"),
         ]
-        nodes = {n.entry_id: n for n in ConversationTree(entries, cursor="e03").browse()}
+        nodes = {n.entry_id: n for n in ConversationTree(entries, leaf="e03").browse()}
         assert nodes["e03"].from_id == "e02"
         assert nodes["e02"].from_id is None
 
     def test_the_system_prompt_says_so(self) -> None:
         """A fold carries it across, so a head computing the folded span excludes it."""
-        nodes = {n.entry_id: n for n in ConversationTree(_branched(), cursor="e07").browse()}
+        nodes = {n.entry_id: n for n in ConversationTree(_branched(), leaf="e07").browse()}
         assert nodes["e01"].is_system is True
         assert nodes["e02"].is_system is False
 
@@ -750,21 +734,19 @@ class TestBrowse:
                 "message": {"role": "toolResult", "tool_call_id": "c1", "content": []},
             },
         ]
-        nodes = {n.entry_id: n for n in ConversationTree(entries, cursor="e03").browse()}
+        nodes = {n.entry_id: n for n in ConversationTree(entries, leaf="e03").browse()}
         assert nodes["e02"].tool_call_ids == ("c1", "c2")
         assert nodes["e02"].tool_call_id is None
         assert nodes["e03"].tool_call_id == "c1"
         assert nodes["e03"].tool_call_ids == ()
 
     def test_copyable_follows_the_paste_source_rule(self) -> None:
-        nodes = {
-            n.entry_id: n for n in ConversationTree(_single_compaction(), cursor="e07").browse()
-        }
+        nodes = {n.entry_id: n for n in ConversationTree(_single_compaction(), leaf="e07").browse()}
         assert nodes["e02"].copyable is True
         assert nodes["e08"].copyable is False
 
     def test_exactly_the_cursor_is_flagged(self) -> None:
-        nodes = ConversationTree(_branched(), cursor="e05").browse()
+        nodes = ConversationTree(_branched(), leaf="e05").browse()
         assert [n.entry_id for n in nodes if n.is_cursor] == ["e05"]
 
     def test_an_orphan_is_a_root_here_too(self) -> None:
@@ -773,9 +755,9 @@ class TestBrowse:
             _msg("e01", None, "system", "sys"),
             _msg("e09", "missing", "assistant", "orphan"),
         ]
-        nodes = ConversationTree(entries, cursor="e01").browse()
+        nodes = ConversationTree(entries, leaf="e01").browse()
         assert {n.entry_id for n in nodes} == {"e01", "e09"}
         assert {n.entry_id: n.parent_id for n in nodes}["e09"] == "missing"
 
     def test_an_empty_log_browses_to_nothing(self) -> None:
-        assert ConversationTree([], cursor=None).browse() == ()
+        assert ConversationTree([], leaf=None).browse() == ()

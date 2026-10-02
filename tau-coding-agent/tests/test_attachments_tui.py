@@ -185,7 +185,9 @@ class TestRemovingAnAttachment:
             await pilot.pause()
 
             assert editor.text == "and @other.txt"
-            assert [a.token for a in app.query_one(editor_widgets.AttachmentBar).attachments] == ["other.txt"]
+            assert [a.token for a in app.query_one(editor_widgets.AttachmentBar).attachments] == [
+                "other.txt"
+            ]
 
     async def test_a_stale_span_warns_instead_of_cutting(self, app):
         """The human typed between the redraw and the click."""
@@ -361,9 +363,7 @@ class TestTheSubmission:
         async with app.run_test() as pilot:
             await app.on_input_submitted(_Submit("/compact @notes.txt"))
             await pilot.pause()
-            assert all(
-                "<attachment" not in s.text for s in app.current_backend.submissions
-            )
+            assert all("<attachment" not in s.text for s in app.current_backend.submissions)
 
     async def test_the_transcript_folds_the_body_it_sent(self, app):
         """The bubble is the record of what was sent, minus 10 KB of file."""
@@ -372,8 +372,8 @@ class TestTheSubmission:
             await pilot.pause()
             await app._on_render_event(
                 {
-                    "kind": "lane_start",
-                    "lane": "L",
+                    "kind": "stream_start",
+                    "stream": "L",
                     "source": "interactive",
                     "submitter": "human",
                     "text": '<attachment filename="notes.txt">\nhello\nworld\n</attachment>\nsummarise @notes.txt',
@@ -381,7 +381,8 @@ class TestTheSubmission:
             )
             await pilot.pause()
             bodies = [
-                str(box._content) for box in app.query_one(transcript.ChatDisplay).query("MessageBox")
+                str(box._content)
+                for box in app.query_one(transcript.ChatDisplay).query("MessageBox")
             ]
             assert any("not shown" in body for body in bodies)
             assert not any("hello\nworld" in body for body in bodies)
@@ -390,9 +391,7 @@ class TestTheSubmission:
 class TestSteeringAttachesToo:
     async def test_a_file_named_mid_turn_is_read_at_delivery(self, make_app, workspace):
         backend = _BlockingBackend()
-        app = make_app(
-            create_backend=lambda cfg: backend, config={"steering_strategy": "enqueue"}
-        )
+        app = make_app(create_backend=lambda cfg: backend, config={"steering_strategy": "enqueue"})
         async with app.run_test() as pilot:
             await app.on_input_submitted(_Submit("go"))
             await pilot.pause()
@@ -414,9 +413,7 @@ class TestSteeringAttachesToo:
                     break
                 await pilot.pause()
 
-    async def test_reclaiming_a_pending_line_brings_the_attachment_back(
-        self, make_app, workspace
-    ):
+    async def test_reclaiming_a_pending_line_brings_the_attachment_back(self, make_app, workspace):
         """The buffer holds what the human typed, so the bar can be rebuilt from
         it. Nothing has to remember the file separately."""
         backend = _BlockingBackend()
@@ -433,7 +430,9 @@ class TestSteeringAttachesToo:
             await pilot.pause()
 
             assert editor.text == "also read @notes.txt"
-            assert [a.token for a in app.query_one(editor_widgets.AttachmentBar).attachments] == ["notes.txt"]
+            assert [a.token for a in app.query_one(editor_widgets.AttachmentBar).attachments] == [
+                "notes.txt"
+            ]
             assert app._pending_steer == []
 
             backend.release()

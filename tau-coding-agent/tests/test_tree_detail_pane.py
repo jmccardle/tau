@@ -307,7 +307,7 @@ async def test_the_pane_is_a_view_of_the_same_log_the_rows_are() -> None:
             "message": {"role": "user", "content": "hi"},
         }
     ]
-    tree = ConversationTree(log, cursor="a")
+    tree = ConversationTree(log, leaf="a")
     modal = SessionTreeModal(tree)
     with pytest.raises(KeyError):
         modal._resolve_entry("no-such-entry")

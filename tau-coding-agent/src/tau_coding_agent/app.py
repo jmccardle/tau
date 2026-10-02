@@ -21,7 +21,7 @@ from typing import Any, Callable, Optional
 from uuid import uuid4
 
 from tau_coding_agent.backends import (
-    DEFAULT_LANE,
+    DEFAULT_STREAM,
     DEFAULT_MAX_TOKENS,
     Backend,
     RenderRouter,
@@ -590,7 +590,7 @@ class TauApp(App):
 
             yield extension_ui.ExtensionPanelHost()
 
-        yield editor_widgets.LaneStrip()
+        yield editor_widgets.StreamStrip()
         yield extension_ui.ExtensionStatusBar()
         yield Footer()
 
@@ -1843,7 +1843,7 @@ class TauApp(App):
         The replacement turn now DOES stream into the transcript, and this method
         did not have to ask for it: since B3-a the renderer is a persistent bus
         subscription, and a rollback submission is admitted through the same
-        ``submit()`` as any other, so it opens its own lane like any other. What
+        ``submit()`` as any other, so it opens its own stream like any other. What
         this method still does afterwards is swap ``self.messages`` and
         ``reload_messages`` — the same seam ``/compact`` and the tree browser use —
         because the un-pathing is a TREE change and only a rebuild from the
@@ -1917,7 +1917,7 @@ class TauApp(App):
         second agent and a turn originated by a bus, timer or extension had no
         representation in it. Rendering now happens in :meth:`_on_render_event`,
         off a subscription that is attached for the life of the backend and sees
-        every lane, including the ones this app never submitted.
+        every stream, including the ones this app never submitted.
 
         What is left here is the half that genuinely belongs to the SUBMITTER
         rather than to the renderer: awaiting completion (so the input re-enables
@@ -1928,7 +1928,7 @@ class TauApp(App):
         :attr:`_working_list_lock` is held across read-context → await → write-back
         for the reason its own comment gives: ``self.messages`` is both the context
         handed over and the thing rebuilt afterwards. It is NOT a render lock any
-        more — another lane streams into the display while this is held.
+        more — another stream renders into the display while this is held.
         """
         assert self.current_session is not None  # set before a turn runs
         assert self.current_backend is not None  # a turn cannot start without one
@@ -1947,8 +1947,8 @@ class TauApp(App):
             self.query_one(ChatSidebar).refresh_chats()
 
     @staticmethod
-    def _lane_label(source: object, submitter: object) -> str | None:
-        """How this lane should be marked, or ``None`` for "a human typed it here".
+    def _stream_label(source: object, submitter: object) -> str | None:
+        """How this stream should be marked, or ``None`` for "a human typed it here".
 
         The Jupyter rule the spec states and warns is easy to get backwards: a
         frontend filters on "is this mine?" to decide HOW to render, and still
@@ -1961,8 +1961,8 @@ class TauApp(App):
         return f"{source} · {submitter}"
 
     @staticmethod
-    def _lane_role(source: object) -> str:
-        """The :class:`MessageBox` role for a foreign lane's submission bubble (B3-b).
+    def _stream_role(source: object) -> str:
+        """The :class:`MessageBox` role for a foreign stream's submission bubble (B3-b).
 
         The SOURCE is the role, so ``ROLE_LABELS`` gives the bubble its border
         title — "Timer", "Bus", "Sub-agent" — instead of the "User" a submission
@@ -2061,7 +2061,7 @@ class TauApp(App):
         return cap
 
     async def _on_render_event(self, event: dict) -> None:
-        """Render one lane-tagged event from the persistent bus subscription.
+        """Render one stream-tagged event from the persistent bus subscription.
 
         Reference: docs/SUBMISSION-LIFECYCLE.md phase 3 / B3-a. Called for EVERY
         turn the session runs — this app's own typed prompts, an extension's or a
@@ -2073,10 +2073,10 @@ class TauApp(App):
         if kind in ("side_start", "side_delta", "side_end"):
             await self._render_side_completion(display, kind, event)
             return
-        lane = event.get("lane") or DEFAULT_LANE
-        if kind == "lane_start":
-            label = self._lane_label(event.get("source"), event.get("submitter"))
-            role = "user" if label is None else self._lane_role(event.get("source"))
+        stream = event.get("stream") or DEFAULT_STREAM
+        if kind == "stream_start":
+            label = self._stream_label(event.get("source"), event.get("submitter"))
+            role = "user" if label is None else self._stream_role(event.get("source"))
             bubble = display.add_message(
                 role,
                 elide_attachment_bodies(event.get("text", "")),
@@ -2084,12 +2084,12 @@ class TauApp(App):
                 source="verbatim",
             )
             if label is not None:
-                bubble.add_class(transcript.LANE_FOREIGN_CLASS)
-            self.query_one(editor_widgets.LaneStrip).open_lane(lane, label)
-            await display.begin_exchange(lane, label=label)
+                bubble.add_class(transcript.STREAM_FOREIGN_CLASS)
+            self.query_one(editor_widgets.StreamStrip).open_stream(stream, label)
+            await display.begin_exchange(stream, label=label)
             return
-        if kind == "lane_end":
-            self.query_one(editor_widgets.LaneStrip).close_lane(lane)
+        if kind == "stream_end":
+            self.query_one(editor_widgets.StreamStrip).close_stream(stream)
             elapsed = event.get("seconds")
             telemetry = format_telemetry(event.get("extra") or {})
             await display.finalize_exchange(
@@ -2097,7 +2097,7 @@ class TauApp(App):
                 output=int(event.get("output", 0) or 0),
                 seconds=elapsed,
                 telemetry=telemetry,
-                lane=lane,
+                stream=stream,
             )
             if self._cursor is not None:
                 self.messages = self._cursor.context()
@@ -2181,10 +2181,10 @@ class TauApp(App):
         the same reason: a replaced backend's dead bus must stop reaching this
         app's widgets.
 
-        Lanes still open on the OLD router are abandoned rather than closed,
+        Streams still open on the OLD router are abandoned rather than closed,
         deliberately: every caller of this method (new-chat, clear, resume,
         model-swap) also clears or reloads the transcript, so the exchange those
-        lanes were drawing no longer exists to be finalized.
+        streams were drawing no longer exists to be finalized.
 
         ``getattr``-guarded like every other backend-capability read in this class:
         a test double or a non-``TauBackend`` simply renders nothing.
@@ -2192,14 +2192,14 @@ class TauApp(App):
         if self._render_router is not None:
             self._render_router.detach()
             self._render_router = None
-        self.query_one(editor_widgets.LaneStrip).clear_lanes()
+        self.query_one(editor_widgets.StreamStrip).clear_streams()
         subscribe_render = getattr(self.current_backend, "subscribe_render", None)
         if subscribe_render is None:
             return
         self._render_router = subscribe_render(self._on_render_event, on_orphan=self._log_orphan)
 
     def _log_orphan(self, reason: str) -> None:
-        """Report an event that named no open lane (never drop it in silence).
+        """Report an event that named no open stream (never drop it in silence).
 
         These are real — ``continue_conversation()`` on resume, and a bare
         ``compact()``, emit ``agent_start``/``agent_end`` with no submission to

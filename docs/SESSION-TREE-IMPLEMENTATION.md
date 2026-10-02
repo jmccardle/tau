@@ -11,6 +11,8 @@
 > `file:line` against the current tree and the local pi checkout
 > (`~/Development/pi`). Maps onto ROADMAP Tier 11 **E3**.
 
+> **Amended 2026-10-02.** §2.2's persisted cursor is retired by `docs/CURSORS.md` §4: moving a cursor writes nothing, `navigate` entries in old files are inert, and `ConversationTree.navigate` is deleted. A reopened tree's cursor is `default_leaf(entries)`.
+
 ---
 
 ## 0. What already exists (so we build the gap, not the whole thing)

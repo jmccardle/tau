@@ -49,7 +49,7 @@ from tau_agent_core.sdk import (
 from tau_agent_core.submission import Submission, SubmissionResult
 from tau_agent_core.truncation import dropped_tool_calls
 
-DEFAULT_LANE = "main"
+DEFAULT_STREAM = "main"
 
 
 DEFAULT_TOOL_NAMES: tuple[str, ...] = ("read", "write", "edit", "bash", "ls", "grep", "find")
@@ -146,18 +146,18 @@ def _json_line(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class TurnStream:
-    """One lane's worth of agent events, normalized into widget-lifecycle dicts.
+    """One stream's worth of agent events, normalized into widget-lifecycle dicts.
 
-    One instance per lane, which is what lets two concurrent turns (a ``fork``)
+    One instance per stream, which is what lets two concurrent turns (a ``fork``)
     and a turn the frontend never initiated (a bus or timer submission) render at
     all.
 
     :meth:`feed` returns the normalized events for one agent event, in order, each
-    tagged with this stream's ``lane``. It also accumulates what a caller needs
-    when the lane closes: the assistant text, the tool-call records for chat
+    tagged with this stream's id under ``"stream"``. It also accumulates what a caller needs
+    when the stream closes: the assistant text, the tool-call records for chat
     persistence, the real token totals, and the last completion's telemetry.
 
-    Event shapes (all dicts with ``"kind"`` and ``"lane"``)::
+    Event shapes (all dicts with ``"kind"`` and ``"stream"``)::
 
         {"kind": "turn_start", "turn_index": int}
         {"kind": "text_delta", "delta": str}
@@ -175,15 +175,15 @@ class TurnStream:
     harvest ``tool_calls`` for chat persistence (deduplicated by id), the
     per-completion usage, and the ``completion_end`` boundary.
 
-    ``completion_end`` carries this lane's running token totals at every
+    ``completion_end`` carries this stream's running token totals at every
     completion boundary rather than only at the end, so a live counter steps
     mid-turn on measured figures. Both of a turn's ``message_end`` events emit
     one; the second adds no usage and restates the same totals.
     """
 
-    def __init__(self, lane: str = DEFAULT_LANE) -> None:
-        self.lane = lane
-        #: Every text delta this lane produced, in order (``"".join`` = the answer).
+    def __init__(self, stream_id: str = DEFAULT_STREAM) -> None:
+        self.stream_id = stream_id
+        #: Every text delta this stream produced, in order (``"".join`` = the answer).
         self.text_chunks: list[str] = []
         #: Tool calls harvested for chat persistence, deduped by id.
         self.tool_calls: list[dict[str, Any]] = []
@@ -200,19 +200,19 @@ class TurnStream:
         self.last_dropped_tool_calls: int = 0
         #: One :class:`CompletionCache` per completion, in call order.
         self.completions: list[CompletionCache] = []
-        #: Epoch ms of this lane's first and last agent event (the loop's clock).
+        #: Epoch ms of this stream's first and last agent event (the loop's clock).
         self.first_event_ms: int | None = None
         self.last_event_ms: int | None = None
         self._delta_projector = MessageDeltaProjector()
 
     @property
     def text(self) -> str:
-        """The assistant text this lane streamed, concatenated."""
+        """The assistant text this stream produced, concatenated."""
         return "".join(self.text_chunks)
 
     @property
     def elapsed_seconds(self) -> float | None:
-        """Wall-clock span of this lane, or None when no event carried a clock.
+        """Wall-clock span of this stream, or None when no event carried a clock.
 
         None is "not measured", never 0.0 — an exchange that produced one event
         has no span to report and says so (docs/MESSAGE-TIMESTAMPS.md §3).
@@ -224,7 +224,7 @@ class TurnStream:
         return (self.last_event_ms - self.first_event_ms) / 1000
 
     def _note_clock(self, event: Any) -> None:
-        """Widen this lane's span by one event's timestamp (epoch ms)."""
+        """Widen this stream's span by one event's timestamp (epoch ms)."""
         stamp = getattr(event, "timestamp", None)
         if not isinstance(stamp, int) or isinstance(stamp, bool):
             return
@@ -262,7 +262,7 @@ class TurnStream:
         return []
 
     def _tag(self, structured: dict[str, Any]) -> dict[str, Any]:
-        structured["lane"] = self.lane
+        structured["stream"] = self.stream_id
         return structured
 
     def _feed_message_start(self, event: Any) -> list[dict[str, Any]]:
@@ -276,7 +276,7 @@ class TurnStream:
         A ``message_start`` whose message is a USER one has exactly one producer:
         ``AgentLoop._deliver_steer`` weaving a steering message into the running
         turn. It carries content that will never appear in any other event on
-        this lane — the deltas that follow belong to the model's answer to it —
+        this stream — the deltas that follow belong to the model's answer to it —
         so a renderer that ignored it would show the answer and not the question.
         """
         message = getattr(event, "message", None)
@@ -378,13 +378,13 @@ class TurnStream:
 
 
 class RenderRouter:
-    """Demultiplex ONE session's whole bus into per-lane render events (B3-a).
+    """Demultiplex ONE session's whole bus into per-stream render events (B3-a).
 
     Reference: docs/SUBMISSION-LIFECYCLE.md, end of "Phasing".
 
     A frontend attaches this ONCE, for the life of the session, instead of
     subscribing per awaited turn. Every submission that runs a turn becomes a
-    lane — a ``fork``/``spawn_branch`` sub-agent's included, since its turn is a
+    stream — a ``fork``/``spawn_branch`` sub-agent's included, since its turn is a
     submission on its own cursor (docs/CURSORS.md §6) — and the events of each
     are tagged with it so a renderer can draw them side by side rather than
     interleaving them into one transcript.
@@ -394,15 +394,15 @@ class RenderRouter:
     render, and still renders the rest. Dropping other sources' events is how a
     multi-client session becomes incoherent."* So this router does not filter on
     ``source`` at all — it CARRIES ``source``/``submitter``/``correlation`` onto
-    ``lane_start``/``lane_end`` and lets the renderer decide how a bus or forked
+    ``stream_start``/``stream_end`` and lets the renderer decide how a bus or forked
     turn should look.
 
-    The emitted vocabulary is :class:`TurnStream`'s, plus the two lane brackets
-    and the three side-completion events, which carry no lane at all::
+    The emitted vocabulary is :class:`TurnStream`'s, plus the two stream brackets
+    and the three side-completion events, which carry no stream at all::
 
-        {"kind": "lane_start", "lane": str, "source": str | None,
+        {"kind": "stream_start", "stream": str, "source": str | None,
          "submitter": str | None, "correlation": dict, "text": str}
-        {"kind": "lane_end", "lane": str, "source": str | None,
+        {"kind": "stream_end", "stream": str, "source": str | None,
          "submitter": str | None, "context": int, "output": int,
          "seconds": float | None, "cache_notice": str | None, "extra": dict}
         {"kind": "side_start", "purpose": str, "model": str}
@@ -410,20 +410,20 @@ class RenderRouter:
         {"kind": "side_end", "purpose": str, "text": str | None,
          "usage": dict | None, "error": str | None}
 
-    ``output`` is every token the lane GENERATED, summed across its completions
+    ``output`` is every token the stream GENERATED, summed across its completions
     and including the side-usage delta ``submission_end`` reports for work done
     off the agent loop (auto-compaction, an extension's ``ctx.complete()``).
-    ``context`` is the prompt the lane last SENT — a replace, not a sum, because
+    ``context`` is the prompt the stream last SENT — a replace, not a sum, because
     each completion's prompt contains every earlier one. Side usage is a different
     conversation's prompt, so it is not added to ``context``. ``extra`` is the last
     completion's telemetry, or ``{}`` when the provider reported none.
 
     ``cache_notice`` is this router's :class:`PromptCacheObserver` verdict on the
-    closing lane. The observer is shared across lanes because its latch is a fact
-    about the server, but a sub-agent's lane names no prefix — its prompt is not
+    closing stream. The observer is shared across streams because its latch is a fact
+    about the server, but a sub-agent's stream names no prefix — its prompt is not
     the conversation's, so it neither reads nor writes the cross-turn clock.
 
-    An agent event whose ``submission_id`` names no open lane is NOT dropped in
+    An agent event whose ``submission_id`` names no open stream is NOT dropped in
     silence: it goes to ``on_orphan`` with a reason. Those exist — a
     ``continue_conversation()`` resume, or a ``compact()`` outside any submission,
     emits ``agent_start``/``agent_end`` with no submission to stamp them — and a
@@ -441,9 +441,9 @@ class RenderRouter:
     ) -> None:
         self._emit = emit
         self._on_orphan = on_orphan
-        self._lanes: dict[str, TurnStream] = {}
+        self._streams: dict[str, TurnStream] = {}
         self._identity: dict[str, tuple[str | None, str | None]] = {}
-        self._sub_agent_lanes: set[str] = set()
+        self._sub_agent_streams: set[str] = set()
         self._prompt_cache = PromptCacheObserver()
         self._detach: Callable[[], None] | None = None
 
@@ -452,7 +452,7 @@ class RenderRouter:
         self._detach = detach
 
     def detach(self) -> None:
-        """Unsubscribe from the bus. Idempotent; still-open lanes are NOT closed.
+        """Unsubscribe from the bus. Idempotent; still-open streams are NOT closed.
 
         Closing them needs an ``await`` (the render handler may mount widgets), so
         it is :meth:`close_all` — a separate call, deliberately, because "stop
@@ -464,9 +464,9 @@ class RenderRouter:
             self._detach = None
 
     @property
-    def open_lanes(self) -> list[str]:
-        """The lanes currently streaming, in the order they opened."""
-        return list(self._lanes)
+    def open_streams(self) -> list[str]:
+        """The ids of the open streams, in the order they opened."""
+        return list(self._streams)
 
     async def on_submission_start(
         self,
@@ -476,21 +476,21 @@ class RenderRouter:
         images: Any = None,
         cursor: Any = None,
     ) -> None:
-        """Open the lane for an admitted submission (``submission_start`` channel).
+        """Open the stream for an admitted submission (``submission_start`` channel).
 
         A sub-agent's turn is a submission on the same bus (docs/CURSORS.md §6), so
-        it opens a lane here like any other; its cursor having an ``owner`` is what
+        it opens a stream here like any other; its cursor having an ``owner`` is what
         marks its prompt as not the conversation's.
         """
-        lane = submission.submission_id
-        self._lanes[lane] = TurnStream(lane)
-        self._identity[lane] = (submission.source, submission.submitter)
+        stream_id = submission.submission_id
+        self._streams[stream_id] = TurnStream(stream_id)
+        self._identity[stream_id] = (submission.source, submission.submitter)
         if cursor is not None and cursor.owner is not None:
-            self._sub_agent_lanes.add(lane)
+            self._sub_agent_streams.add(stream_id)
         await self._deliver(
             {
-                "kind": "lane_start",
-                "lane": lane,
+                "kind": "stream_start",
+                "stream": stream_id,
                 "source": submission.source,
                 "submitter": submission.submitter,
                 "correlation": dict(submission.correlation),
@@ -501,43 +501,43 @@ class RenderRouter:
     async def on_submission_end(
         self, *, submission: Submission, side_usage: dict[str, int] | None = None
     ) -> None:
-        """Close the lane for a finished submission (``submission_end`` channel)."""
+        """Close the stream for a finished submission (``submission_end`` channel)."""
         await self._close(submission.submission_id, side_usage=side_usage)
 
     async def on_custom_message(self, *, entry_id: str, message: dict[str, Any]) -> None:
         """Deliver an extension's durable message (``custom_message`` channel).
 
-        Named no lane, deliberately. ``api.send_message`` is reachable from a
+        Named no stream, deliberately. ``api.send_message`` is reachable from a
         command handler with no turn in flight as well as from inside one, and a
         message that belongs to the conversation rather than to a completion is
-        the transcript's, not a lane's — the renderer mounts it at the tail
+        the transcript's, not a stream's — the renderer mounts it at the tail
         (docs/EXTENSION-LOCKS.md §9.1).
         """
         await self._deliver({"kind": "custom_message", "entry_id": entry_id, "message": message})
 
     async def on_agent_event(self, event: AgentEvent) -> None:
-        """Route one ``AgentEvent`` from the primary bus into its submission's lane."""
+        """Route one ``AgentEvent`` from the primary bus into its submission's stream."""
         if event.type.startswith("side_completion_"):
             await self._route_side_completion(event)
             return
-        lane = event.submission_id
-        if lane is None:
+        stream_id = event.submission_id
+        if stream_id is None:
             self._orphan(
                 f"{event.type} carries no submission_id — it was emitted outside "
                 "submit() (continue_conversation, or a compact/navigate), so there "
-                "is no lane to render it into"
+                "is no stream to render it into"
             )
             return
-        await self._route(lane, event)
+        await self._route(stream_id, event)
 
     async def _route_side_completion(self, event: AgentEvent) -> None:
-        """Emit a side completion's three render events. Not a lane.
+        """Emit a side completion's three render events. Not a stream.
 
-        Side work belongs to no submission, so it cannot open a lane — and it
-        should not: a lane is a turn, with a prompt, a cost and a place in the
-        LaneStrip, and a compaction is none of those. It is rendered where it
+        Side work belongs to no submission, so it cannot open a stream — and it
+        should not: a stream is a turn, with a prompt, a cost and a place in the
+        StreamStrip, and a compaction is none of those. It is rendered where it
         happens, in the transcript, and the ``purpose`` identifies it instead of
-        a lane id.
+        a stream id.
 
         One at a time is assumed and is true: a compaction runs under the turn
         lock, and a branch summary runs from a modal. Two concurrent side
@@ -561,33 +561,33 @@ class RenderRouter:
         await self._deliver(payload)
 
     async def close_all(self) -> None:
-        """Close every still-open lane — the renderer teardown (session swap, quit).
+        """Close every still-open stream — the renderer teardown (session swap, quit).
 
-        Without it a backend swapped mid-turn leaves a lane that will never be
+        Without it a backend swapped mid-turn leaves a stream that will never be
         closed by an event, i.e. an exchange stuck on "Working…" forever.
         """
-        for lane in list(self._lanes):
-            await self._close(lane)
+        for stream_id in list(self._streams):
+            await self._close(stream_id)
 
-    async def _route(self, lane: str, event: AgentEvent) -> None:
-        stream = self._lanes.get(lane)
+    async def _route(self, stream_id: str, event: AgentEvent) -> None:
+        stream = self._streams.get(stream_id)
         if stream is None:
             self._orphan(
-                f"{getattr(event, 'type', '?')} names lane {lane!r}, which is not "
-                "open — the event arrived before its lane_start or after its lane_end"
+                f"{getattr(event, 'type', '?')} names stream {stream_id!r}, which is not "
+                "open — the event arrived before its stream_start or after its stream_end"
             )
             return
         for structured in stream.feed(event):
             await self._deliver(structured)
 
-    async def _close(self, lane: str, *, side_usage: dict[str, int] | None = None) -> None:
-        stream = self._lanes.pop(lane, None)
+    async def _close(self, stream_id: str, *, side_usage: dict[str, int] | None = None) -> None:
+        stream = self._streams.pop(stream_id, None)
         if stream is None:
-            self._orphan(f"lane {lane!r} closed twice, or was never opened")
+            self._orphan(f"stream {stream_id!r} closed twice, or was never opened")
             return
-        source, submitter = self._identity.pop(lane, (None, None))
-        sub_agent = lane in self._sub_agent_lanes
-        self._sub_agent_lanes.discard(lane)
+        source, submitter = self._identity.pop(stream_id, (None, None))
+        sub_agent = stream_id in self._sub_agent_streams
+        self._sub_agent_streams.discard(stream_id)
         cache_notice = self._prompt_cache.observe_turn(
             stream.completions,
             prefix=None if sub_agent else CONVERSATION_PREFIX,
@@ -599,8 +599,8 @@ class RenderRouter:
         )
         await self._deliver(
             {
-                "kind": "lane_end",
-                "lane": lane,
+                "kind": "stream_end",
+                "stream": stream_id,
                 "source": source,
                 "submitter": submitter,
                 "context": stream.context_tokens,
@@ -621,8 +621,8 @@ class RenderRouter:
             self._on_orphan(reason)
 
 
-#: The lane a REPLAYED transcript is tagged with; never a live submission's id.
-REPLAY_LANE = "replay"
+#: The stream a REPLAYED transcript is tagged with; never a live submission's id.
+REPLAY_STREAM = "replay"
 
 
 def span_seconds(span: list[dict[str, Any]]) -> float | None:
@@ -655,29 +655,29 @@ def span_seconds(span: list[dict[str, Any]]) -> float | None:
 
 
 def replay_render_events(
-    messages: Sequence[dict[str, Any]], *, lane: str = REPLAY_LANE
+    messages: Sequence[dict[str, Any]], *, stream: str = REPLAY_STREAM
 ) -> Iterator[dict[str, Any]]:
     """Project persisted messages onto the render-event vocabulary (§4, "Replay").
 
     Reference: docs/REPL-HEAD.md §4. A resumed session is a list of stored
-    messages and a head renders lane-tagged render events, so this is what lets
+    messages and a head renders stream-tagged render events, so this is what lets
     ONE handler draw a reloaded transcript and a live one — a second renderer for
     saved conversations would be a second answer to what the session said.
 
-    One user message opens a lane and the next one closes it, so an exchange
-    replays as the turn it was: ``lane_end`` carries :func:`span_seconds` over the
+    One user message opens a stream and the next one closes it, so an exchange
+    replays as the turn it was: ``stream_end`` carries :func:`span_seconds` over the
     span's own timestamps and the last completion's ``usage``. Two keys mark what
-    a live stream would not carry — ``replay`` on ``lane_start`` (the user's line
+    a live stream would not carry — ``replay`` on ``stream_start`` (the user's line
     is not in this scrollback, so it must be echoed) and ``system_prompt``, which
     has no live counterpart because no event announces the prompt.
 
     Args:
         messages: ``ConversationSession.context`` — the folded active path.
-        lane: What to tag every event with.
+        stream: What to tag every event with.
 
     Yields:
-        Render events in the §4 vocabulary, each ``lane_start`` closed by a
-        ``lane_end``.
+        Render events in the §4 vocabulary, each ``stream_start`` closed by a
+        ``stream_end``.
     """
     span: list[dict[str, Any]] = []
     state: dict[str, Any] = {"open": False, "turn": 0, "output": 0, "context": 0, "extra": {}}
@@ -686,8 +686,8 @@ def replay_render_events(
         if not state["open"]:
             return
         yield {
-            "kind": "lane_end",
-            "lane": lane,
+            "kind": "stream_end",
+            "stream": stream,
             "source": "interactive",
             "submitter": "human",
             "context": state["context"],
@@ -698,12 +698,12 @@ def replay_render_events(
         }
         state.update(open=False, turn=0, output=0, context=0, extra={})
 
-    def open_lane(text: str) -> dict[str, Any]:
+    def open_stream(text: str) -> dict[str, Any]:
         state.update(open=True, turn=0, output=0, context=0, extra={})
         span.clear()
         return {
-            "kind": "lane_start",
-            "lane": lane,
+            "kind": "stream_start",
+            "stream": stream,
             "source": "interactive",
             "submitter": "human",
             "correlation": {},
@@ -714,21 +714,21 @@ def replay_render_events(
     for message in messages:
         role = message.get("role")
         if role == "system":
-            yield {"kind": "system_prompt", "lane": lane, "chars": len(_replay_text(message))}
+            yield {"kind": "system_prompt", "stream": stream, "chars": len(_replay_text(message))}
             continue
         if role == "user":
             yield from close()
-            yield open_lane(elide_attachment_bodies(_replay_text(message)))
+            yield open_stream(elide_attachment_bodies(_replay_text(message)))
         elif not state["open"]:
             # A path can start mid-exchange (a fork, a compaction summary): open one anyway.
-            yield open_lane("")
+            yield open_stream("")
         span.append(message)
         if role == "assistant":
-            yield from _replay_completion(message, lane, state)
+            yield from _replay_completion(message, stream, state)
         elif role == "toolResult":
             yield {
                 "kind": "tool_result",
-                "lane": lane,
+                "stream": stream,
                 "id": message.get("toolCallId", ""),
                 "name": message.get("tool_name", ""),
                 "result": _replay_text(message),
@@ -739,7 +739,7 @@ def replay_render_events(
         elif role == CUSTOM_ROLE:
             yield {
                 "kind": "custom_message",
-                "lane": lane,
+                "stream": stream,
                 "entry_id": str(message.get("id", "")),
                 "message": message,
             }
@@ -747,10 +747,10 @@ def replay_render_events(
 
 
 def _replay_completion(
-    message: dict[str, Any], lane: str, state: dict[str, Any]
+    message: dict[str, Any], stream: str, state: dict[str, Any]
 ) -> Iterator[dict[str, Any]]:
     """One persisted assistant message as the events its completion emitted."""
-    yield {"kind": "turn_start", "lane": lane, "turn_index": state["turn"]}
+    yield {"kind": "turn_start", "stream": stream, "turn_index": state["turn"]}
     state["turn"] += 1
     content = message.get("content", "")
     for block in content if isinstance(content, list) else [{"type": "text", "text": content}]:
@@ -758,15 +758,15 @@ def _replay_completion(
             continue
         kind = block.get("type")
         if kind == "thinking":
-            yield {"kind": "reasoning_delta", "lane": lane, "delta": block.get("thinking", "")}
+            yield {"kind": "reasoning_delta", "stream": stream, "delta": block.get("thinking", "")}
         elif kind == "text":
-            yield {"kind": "text_delta", "lane": lane, "delta": block.get("text", "")}
+            yield {"kind": "text_delta", "stream": stream, "delta": block.get("text", "")}
         elif kind == "image":
-            yield {"kind": "text_delta", "lane": lane, "delta": _image_line(block)}
+            yield {"kind": "text_delta", "stream": stream, "delta": _image_line(block)}
         elif kind == "toolCall":
             yield {
                 "kind": "tool_call",
-                "lane": lane,
+                "stream": stream,
                 "id": block.get("id", ""),
                 "name": block.get("name", ""),
                 "arguments": block.get("arguments", {}),
@@ -779,7 +779,7 @@ def _replay_completion(
         state["extra"] = extra if isinstance(extra, dict) else {}
     yield {
         "kind": "completion_end",
-        "lane": lane,
+        "stream": stream,
         "output": state["output"],
         "context": state["context"],
         "stop_reason": message.get("stop_reason"),
@@ -1205,25 +1205,25 @@ class Backend(ABC):
 
         Reference: docs/SUBMISSION-LIFECYCLE.md, end of "Phasing". Returns the
         live :class:`RenderRouter`: ``detach()`` stops listening, and
-        ``await close_all()`` closes whatever lanes are still streaming. Two calls
+        ``await close_all()`` closes whatever streams are still streaming. Two calls
         rather than one unsubscribe callable because they are different decisions
         — a screen being torn down wants the first without the second.
 
         ``handler`` receives all TEN of :class:`RenderRouter`'s render events —
-        ``lane_start``, :class:`TurnStream`'s ``turn_start`` / ``steer_message`` /
+        ``stream_start``, :class:`TurnStream`'s ``turn_start`` / ``steer_message`` /
         ``text_delta`` / ``reasoning_delta`` / ``tool_call`` / ``tool_result`` /
-        ``completion_end``, ``lane_end``, and the lane-less ``custom_message`` —
+        ``completion_end``, ``stream_end``, and the stream-less ``custom_message`` —
         for **every** turn this session runs, not only the one the caller happens
         to be awaiting. That is the whole difference: a ``fork`` submission's
         second agent and a turn originated by a bus, timer or extension have no
         awaiting caller at all, so under :meth:`stream_chat`'s signature they were
         not merely unrendered, they were unrepresentable.
 
-        The handler must render other sources' lanes, distinguishably, rather than
+        The handler must render other sources' streams, distinguishably, rather than
         filtering them out — Jupyter's rule, quoted in :class:`RenderRouter`.
 
         ``on_orphan`` receives a reason string for an event that named no open
-        lane. Fail-Early: those are real (an unstamped ``continue_conversation``
+        stream. Fail-Early: those are real (an unstamped ``continue_conversation``
         turn) and a renderer that dropped them in silence would look exactly like
         one that had stopped working.
         """
@@ -1825,7 +1825,7 @@ class TauBackend(Backend):
         ``submission_end`` carry the submission spans that bracket them (which
         ``agent_start``/``agent_end`` cannot — a followUp re-entry runs a second
         loop inside one submission), emitted from a ``finally`` so a turn that
-        raised or was cancelled cannot leave its lane open; and ``custom_message``
+        raised or was cancelled cannot leave its stream open; and ``custom_message``
         carries an extension's durable message, which belongs to no completion.
 
         See :meth:`Backend.subscribe_render` for the contract.

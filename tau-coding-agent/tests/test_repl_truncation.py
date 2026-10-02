@@ -86,16 +86,16 @@ async def test_a_finished_turn_says_nothing_at_all(env: ReplEnv) -> None:
     assert "output cap" not in env.text
 
 
-async def test_a_cache_notice_rides_the_lane_end_and_carries_the_dialect_advice(
+async def test_a_cache_notice_rides_the_stream_end_and_carries_the_dialect_advice(
     env: ReplEnv,
 ) -> None:
     """The router's observer is the one with the latch, so this head reads its
-    verdict off ``lane_end`` rather than building a second observer per turn."""
+    verdict off ``stream_end`` rather than building a second observer per turn."""
 
     def prepare(backend: FakeBackend) -> None:
         backend.script = [
-            {"kind": "lane_start", "source": "interactive", "submitter": "human", "text": "hi"},
-            {"kind": "lane_end", "context": 9000, "output": 20, "cache_notice": "read 0 tokens"},
+            {"kind": "stream_start", "source": "interactive", "submitter": "human", "text": "hi"},
+            {"kind": "stream_end", "context": 9000, "output": 20, "cache_notice": "read 0 tokens"},
         ]
 
     env.install(prepare)
@@ -111,7 +111,7 @@ async def test_the_same_notice_is_said_once_per_model_per_session(env: ReplEnv) 
 
     def prepare(backend: FakeBackend) -> None:
         backend.script = [
-            {"kind": "lane_end", "context": 9000, "output": 20, "cache_notice": "read 0 tokens"}
+            {"kind": "stream_end", "context": 9000, "output": 20, "cache_notice": "read 0 tokens"}
         ]
 
     env.install(prepare)

@@ -31,12 +31,12 @@ from repl_fakes import FakeBackend, ReplEnv, env  # noqa: F401
 
 #: A turn that says something, calls a tool and ends — one delivery point in it.
 TURN_WITH_A_TOOL: list[dict[str, Any]] = [
-    {"kind": "lane_start", "source": "interactive", "submitter": "human", "text": "do it"},
+    {"kind": "stream_start", "source": "interactive", "submitter": "human", "text": "do it"},
     {"kind": "text_delta", "delta": "Looking.\n"},
     {"kind": "tool_call", "id": "t1", "name": "read", "arguments": {"path": "main.py"}},
     {"kind": "tool_result", "id": "t1", "name": "read", "result": "ok", "is_error": False},
     {"kind": "completion_end", "output": 12, "context": 30, "stop_reason": "stop"},
-    {"kind": "lane_end", "context": 30, "output": 12, "seconds": 0.4},
+    {"kind": "stream_end", "context": 30, "output": 12, "seconds": 0.4},
 ]
 
 
@@ -81,7 +81,7 @@ async def test_an_unknown_strategy_is_refused_before_anything_is_built(env: Repl
 
 
 def test_the_buffer_joins_everything_it_holds_into_one_message() -> None:
-    """"All at once, and only all at once": a second line joins the first."""
+    """ "All at once, and only all at once": a second line joins the first."""
     buffer = SteeringBuffer()
     buffer.hold("first")
     buffer.hold("second")

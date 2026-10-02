@@ -1,10 +1,10 @@
-"""What the REPL prints for one lane — docs/REPL-HEAD.md §4.
+"""What the REPL prints for one stream — docs/REPL-HEAD.md §4.
 
 Driven through a REAL :class:`~tau_coding_agent.backends.RenderRouter`, the way
 ``test_render_router.py`` drives one, so the vocabulary under test is the router's
 own and not a hand-copied guess at it. Two properties matter beyond the text: no
 raw delta ever reaches the scrollback (each block is written once, as Markdown),
-and a foreign lane is rendered DISTINGUISHABLY rather than dropped.
+and a foreign stream is rendered DISTINGUISHABLY rather than dropped.
 """
 
 from __future__ import annotations
@@ -37,33 +37,33 @@ def _renderer() -> tuple[ReplRenderer, Console, MemoryReader]:
     return ReplRenderer(console, reader, model_name="local-llm"), console, reader
 
 
-def _text_event(lane: str, text: str) -> AgentEvent:
+def _text_event(stream: str, text: str) -> AgentEvent:
     return AgentEvent(
         type="message_update",
         message={"role": "assistant", "content": [{"type": "text", "text": text}]},
-        submission_id=lane,
+        submission_id=stream,
         timestamp=_TS,
     )
 
 
-def _tool_start(lane: str, name: str, args: dict) -> AgentEvent:
+def _tool_start(stream: str, name: str, args: dict) -> AgentEvent:
     return AgentEvent(
         type="tool_execution_start",
         tool_call_id="t1",
         tool_name=name,
         args=args,
-        submission_id=lane,
+        submission_id=stream,
         timestamp=_TS,
     )
 
 
-def _tool_end(lane: str, name: str, result: str, **kwargs) -> AgentEvent:
+def _tool_end(stream: str, name: str, result: str, **kwargs) -> AgentEvent:
     return AgentEvent(
         type="tool_execution_end",
         tool_call_id="t1",
         tool_name=name,
         result=result,
-        submission_id=lane,
+        submission_id=stream,
         timestamp=_TS + 1000,
         **kwargs,
     )
@@ -122,15 +122,13 @@ class TestSplitter:
         assert marks[-1] == len(splitter.remainder)
 
 
-class TestLane:
+class TestStream:
     async def test_a_whole_turn_renders_in_order(self) -> None:
-        """One lane, end to end: text as Markdown, a tool call and its result,
-        then the footer that says what the lane read, wrote and took."""
+        """One stream, end to end: text as Markdown, a tool call and its result,
+        then the footer that says what the stream read, wrote and took."""
         renderer, console, reader = _renderer()
         router = RenderRouter(renderer)
-        sub = Submission(
-            text="hi", source="interactive", submitter="human", submission_id="a"
-        )
+        sub = Submission(text="hi", source="interactive", submitter="human", submission_id="a")
 
         await router.on_submission_start(submission=sub, text="hi")
         await router.on_agent_event(_text_event("a", "Here is the plan.\n\nNext.\n"))
@@ -157,8 +155,8 @@ class TestLane:
 
         assert console.export_text(clear=False).count("Alpha") == 1
 
-    async def test_a_foreign_lane_is_marked_and_not_dropped(self) -> None:
-        """Jupyter's rule: a head decides HOW to render another source's lane,
+    async def test_a_foreign_stream_is_marked_and_not_dropped(self) -> None:
+        """Jupyter's rule: a head decides HOW to render another source's stream,
         never WHETHER to."""
         renderer, console, _ = _renderer()
         router = RenderRouter(renderer)
@@ -193,7 +191,7 @@ class TestLane:
         assert "⏹ aborted" in console.export_text(clear=False)
 
     async def test_an_orphan_is_reported(self) -> None:
-        """An event naming no open lane is real, and a head that swallowed it
+        """An event naming no open stream is real, and a head that swallowed it
         would look exactly like one that had stopped working."""
         renderer, console, _ = _renderer()
         router = RenderRouter(renderer, on_orphan=renderer.on_orphan)
@@ -221,7 +219,7 @@ class TestLane:
         """A render kind with no case is a rendering decision nobody made."""
         renderer, _, _ = _renderer()
         with pytest.raises(ValueError, match="no case for render event"):
-            renderer({"kind": "something_new", "lane": "a"})
+            renderer({"kind": "something_new", "stream": "a"})
 
 
 class TestCompactness:
@@ -269,7 +267,10 @@ class TestCompactness:
         await router.on_agent_event(
             AgentEvent(
                 type="message_update",
-                message={"role": "assistant", "content": [{"type": "thinking", "thinking": "x" * 40}]},
+                message={
+                    "role": "assistant",
+                    "content": [{"type": "thinking", "thinking": "x" * 40}],
+                },
                 submission_id="a",
                 timestamp=_TS,
             )
@@ -289,16 +290,14 @@ class TestCompactness:
         await router.on_submission_start(submission=sub, text="hi")
         await router.on_submission_end(submission=sub, side_usage={})
 
-        footer = [
-            line for line in console.export_text(clear=False).splitlines() if "ctx 0" in line
-        ]
+        footer = [line for line in console.export_text(clear=False).splitlines() if "ctx 0" in line]
         assert footer and footer[0].rstrip().endswith("ctx 0 · out 0")
         assert footer[0].startswith(" ")
 
 
 class TestSpinner:
-    async def test_the_unflushed_text_rides_the_toolbar_and_lane_end_clears_it(self) -> None:
-        """"Waiting" is a claim about the stream, so the stream is what ends it —
+    async def test_the_unflushed_text_rides_the_toolbar_and_stream_end_clears_it(self) -> None:
+        """ "Waiting" is a claim about the stream, so the stream is what ends it —
         and what replaces it is the tail of the block that has not flushed yet
         (§4), since a paragraph with no blank line in it reaches nothing else."""
         renderer, console, reader = _renderer()
@@ -331,8 +330,10 @@ class TestSpinner:
 _USAGE = {"input_tokens": 120, "output_tokens": 30, "prompt_tokens": 120}
 
 
-def _message_end(lane: str, message: dict) -> AgentEvent:
-    return AgentEvent(type="message_end", message=message, submission_id=lane, timestamp=_TS + 1000)
+def _message_end(stream: str, message: dict) -> AgentEvent:
+    return AgentEvent(
+        type="message_end", message=message, submission_id=stream, timestamp=_TS + 1000
+    )
 
 
 def _same_seconds(text: str) -> str:

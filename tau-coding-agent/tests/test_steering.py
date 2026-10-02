@@ -307,7 +307,7 @@ class TestThePendingBuffer:
 
             # What the render router delivers when the running turn starts a tool.
             await app._on_render_event(
-                {"kind": "tool_call", "lane": "l1", "id": "tc1", "name": "read", "arguments": {}}
+                {"kind": "tool_call", "stream": "l1", "id": "tc1", "name": "read", "arguments": {}}
             )
             await _until(pilot, lambda: backend.steer_texts == ["use ripgrep instead"])
 
@@ -512,7 +512,7 @@ class _Event:
 class TestRenderingADeliveredSteer:
     def test_a_user_message_start_becomes_a_steer_message_event(self):
         """``_deliver_steer`` is the only producer of a USER ``message_start``."""
-        stream = TurnStream("lane-1")
+        stream = TurnStream("stream-1")
 
         out = stream.feed(
             _Event(
@@ -521,17 +521,17 @@ class TestRenderingADeliveredSteer:
             )
         )
 
-        assert out == [{"kind": "steer_message", "text": "use ripgrep", "lane": "lane-1"}]
+        assert out == [{"kind": "steer_message", "text": "use ripgrep", "stream": "stream-1"}]
 
     def test_a_plain_string_content_is_read_too(self):
-        stream = TurnStream("lane-1")
+        stream = TurnStream("stream-1")
         out = stream.feed(_Event("message_start", {"role": "user", "content": "plain"}))
-        assert out == [{"kind": "steer_message", "text": "plain", "lane": "lane-1"}]
+        assert out == [{"kind": "steer_message", "text": "plain", "stream": "stream-1"}]
 
     def test_an_assistant_message_start_produces_nothing(self):
         """It brackets a completion whose content arrives as deltas; rendering it
         here would draw the answer twice."""
-        stream = TurnStream("lane-1")
+        stream = TurnStream("stream-1")
 
         out = stream.feed(
             _Event(
@@ -547,15 +547,15 @@ class TestRenderingADeliveredSteer:
         async with app.run_test() as pilot:
             await pilot.pause()
             display = app.query_one(transcript.ChatDisplay)
-            await display.begin_exchange("lane-1", label=None)
+            await display.begin_exchange("stream-1", label=None)
             await pilot.pause()
 
             await display.handle_stream_event(
-                {"kind": "steer_message", "lane": "lane-1", "text": "use ripgrep"}
+                {"kind": "steer_message", "stream": "stream-1", "text": "use ripgrep"}
             )
             await pilot.pause()
 
-            exchange = display._lanes["lane-1"].exchange
+            exchange = display._streams["stream-1"].exchange
             assert exchange is not None
             texts = [w._content for w in exchange.query("MessageBox")]
             assert "use ripgrep" in texts
@@ -567,29 +567,29 @@ class TestRenderingADeliveredSteer:
         async with app.run_test() as pilot:
             await pilot.pause()
             display = app.query_one(transcript.ChatDisplay)
-            await display.begin_exchange("lane-1", label=None)
-            await display.handle_stream_event({"kind": "turn_start", "lane": "lane-1"})
+            await display.begin_exchange("stream-1", label=None)
+            await display.handle_stream_event({"kind": "turn_start", "stream": "stream-1"})
             await display.handle_stream_event(
-                {"kind": "text_delta", "lane": "lane-1", "delta": "reading it now"}
+                {"kind": "text_delta", "stream": "stream-1", "delta": "reading it now"}
             )
             await display.handle_stream_event(
                 {
                     "kind": "tool_call",
-                    "lane": "lane-1",
+                    "stream": "stream-1",
                     "id": "tc1",
                     "name": "read",
                     "arguments": {},
                 }
             )
             await display.handle_stream_event(
-                {"kind": "tool_result", "lane": "lane-1", "id": "tc1", "result": "ok"}
+                {"kind": "tool_result", "stream": "stream-1", "id": "tc1", "result": "ok"}
             )
             await display.handle_stream_event(
-                {"kind": "steer_message", "lane": "lane-1", "text": "stop, use ripgrep"}
+                {"kind": "steer_message", "stream": "stream-1", "text": "stop, use ripgrep"}
             )
             await pilot.pause()
 
-            await display.finalize_exchange(context=1, output=1, seconds=1.0, lane="lane-1")
+            await display.finalize_exchange(context=1, output=1, seconds=1.0, stream="stream-1")
             await pilot.pause()
 
             top_level = [w._content for w in display.query("MessageBox") if w.parent is display]
@@ -601,30 +601,30 @@ class TestRenderingADeliveredSteer:
         async with app.run_test() as pilot:
             await pilot.pause()
             display = app.query_one(transcript.ChatDisplay)
-            await display.begin_exchange("lane-1", label=None)
-            await display.handle_stream_event({"kind": "turn_start", "lane": "lane-1"})
+            await display.begin_exchange("stream-1", label=None)
+            await display.handle_stream_event({"kind": "turn_start", "stream": "stream-1"})
             await display.handle_stream_event(
                 {
                     "kind": "tool_call",
-                    "lane": "lane-1",
+                    "stream": "stream-1",
                     "id": "tc1",
                     "name": "read",
                     "arguments": {},
                 }
             )
             await display.handle_stream_event(
-                {"kind": "tool_result", "lane": "lane-1", "id": "tc1", "result": "ok"}
+                {"kind": "tool_result", "stream": "stream-1", "id": "tc1", "result": "ok"}
             )
             await display.handle_stream_event(
-                {"kind": "steer_message", "lane": "lane-1", "text": "stop, use ripgrep"}
+                {"kind": "steer_message", "stream": "stream-1", "text": "stop, use ripgrep"}
             )
-            await display.handle_stream_event({"kind": "turn_start", "lane": "lane-1"})
+            await display.handle_stream_event({"kind": "turn_start", "stream": "stream-1"})
             await display.handle_stream_event(
-                {"kind": "text_delta", "lane": "lane-1", "delta": "ripgrep it is"}
+                {"kind": "text_delta", "stream": "stream-1", "delta": "ripgrep it is"}
             )
             await pilot.pause()
 
-            await display.finalize_exchange(context=1, output=1, seconds=1.0, lane="lane-1")
+            await display.finalize_exchange(context=1, output=1, seconds=1.0, stream="stream-1")
             await pilot.pause()
 
             top_level = [w._content for w in display.query("MessageBox") if w.parent is display]

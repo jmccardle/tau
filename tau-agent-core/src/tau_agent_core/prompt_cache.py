@@ -170,11 +170,11 @@ class PromptCacheObserver:
     later cold turn is then read as an expired entry, which it legitimately is.
 
     **The clock is per prefix, not per session.** ``_last_completion_ms`` was one
-    attribute on the TUI's router, written by every lane, so a sub-agent branch
+    attribute on the TUI's router, written by every render stream, so a sub-agent
     closing shortly before a user turn made that turn's gap describe a prefix it
     shares nothing with. A caller names the prefix a turn belongs to; a caller
-    whose prefix has no next turn (a sub-agent lane, which exists for exactly one
-    span) passes None and leaves no clock behind, which drops the cross-turn
+    whose prefix has no next turn (a sub-agent's stream, which exists for exactly
+    one span) passes None and leaves no clock behind, which drops the cross-turn
     condition for it and keeps the within-turn one.
 
     Says nothing about how often to deliver a notice — that is a display policy
@@ -242,7 +242,7 @@ class PromptCacheObserver:
         LLM-backed compaction and a ``continue_conversation()`` resume both run a
         loop outside any submission, and their prompt is not the conversation's,
         so letting one set the clock would misdescribe the gap before the next
-        user turn — the cross-lane fault in the TUI's router, arrived at by a
+        user turn — the cross-stream fault in the TUI's router, arrived at by a
         second route.
 
         Returns a sentence only on the ``agent_end`` that closes a turn.

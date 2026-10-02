@@ -1346,7 +1346,7 @@ class ExchangeBox(QuietCollapsible):
     (:meth:`set_summary`). Steps are mounted into the collapsible body as they
     arrive.
 
-    ``label`` names the lane this exchange belongs to when it is NOT the ordinary
+    ``label`` names the stream this exchange belongs to when it is NOT the ordinary
     "a human typed this" one — ``"bus · nats_bus"``, ``"agent · fork:explore"``
     (B3-a). It rides on both the running title and the finished summary, because
     the whole point of rendering another source's turn is that the reader can tell
@@ -1402,7 +1402,7 @@ class ExchangeBox(QuietCollapsible):
         Three parts, and the distinction between them is the whole point:
 
         * ``N out`` is MEASURED. It is the sum of the per-completion
-          ``usage.output_tokens`` this lane has been told, so it steps at each
+          ``usage.output_tokens`` this stream has been told, so it steps at each
           completion boundary (each tool call) and is omitted entirely until the
           first completion reports one. It is never an approximation of the
           completion currently in flight — no such measurement exists.

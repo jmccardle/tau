@@ -99,7 +99,7 @@ from tau_coding_agent.repl_theme import (
     STEER,
     TOOL_OK,
     TURN,
-    lane_label,
+    stream_label,
 )
 from tau_coding_agent.steering import (
     SteeringBuffer,
@@ -219,7 +219,7 @@ def _continues_block(line: str) -> bool:
 
 
 class BlockSplitter:
-    """One lane's streamed Markdown, cut into blocks as each one completes.
+    """One stream's streamed Markdown, cut into blocks as each one completes.
 
     Reference: docs/REPL-HEAD.md §4, ``text_delta``. A boundary is a blank line
     OUTSIDE a fence followed by a line that does not continue the block above it,
@@ -317,7 +317,7 @@ def split_markdown_blocks(text: str) -> tuple[list[str], str]:
     kept because a boundary is easier to state about a string than about a stream.
 
     Args:
-        text: Everything streamed on this lane since the last flush.
+        text: Everything streamed on this stream since the last flush.
 
     Returns:
         ``(blocks, remainder)`` — the blocks are ready to render, the remainder is
@@ -338,9 +338,9 @@ def toolbar_tail(text: str) -> str:
 
 
 class ReplRenderer:
-    """Prints one session's whole render stream — every lane, nothing dropped.
+    """Prints every stream of one session's render events, nothing dropped.
 
-    Reference: docs/REPL-HEAD.md §4. Holds the per-lane streaming state (the
+    Reference: docs/REPL-HEAD.md §4. Holds each stream's state (the
     unflushed Markdown, the reasoning size) and drives the reader's spinner, since
     "is the model still thinking" is answered by the same events.
 
@@ -365,7 +365,7 @@ class ReplRenderer:
             reader: Whose spinner tracks the stream.
             model_name: Named in the prompt-cache advice, since the fix is a key
                 under it.
-            on_tool_call: Called at every ``tool_call``, from any lane.
+            on_tool_call: Called at every ``tool_call``, from any stream.
             on_steer_delivered: Called when a steering message is woven in.
         """
         self._console = console
@@ -377,7 +377,7 @@ class ReplRenderer:
         self._reasoning: dict[str, str] = {}
         self._labels: dict[str, str | None] = {}
         self._cache_warned: set[str] = set()
-        #: Lanes this head aborted, so ``lane_end`` can say the turn was cut short.
+        #: Streams this head aborted, so ``stream_end`` can say the turn was cut short.
         self.aborting: set[str] = set()
         #: Every orphan reason reported, in order — reported, never dropped.
         self.orphans: list[str] = []
@@ -421,19 +421,19 @@ class ReplRenderer:
         )
         self.line("system", note)
 
-    def mark_aborting(self, lane: str | None = None) -> None:
-        """Say that every lane now streaming was cut short by this head.
+    def mark_aborting(self, stream: str | None = None) -> None:
+        """Say that every stream now streaming was cut short by this head.
 
         Nothing on the render stream says a turn was aborted (docs/REPL-HEAD.md
-        §4), so ``lane_end`` reads this. *lane* names a submission whose
-        ``lane_start`` may not have arrived yet — the abort can beat it.
+        §4), so ``stream_end`` reads this. *stream* names a submission whose
+        ``stream_start`` may not have arrived yet — the abort can beat it.
 
         Args:
-            lane: The lane of the turn being aborted, when the head knows it.
+            stream: The stream of the turn being aborted, when the head knows it.
         """
         self.aborting.update(self._labels)
-        if lane is not None:
-            self.aborting.add(lane)
+        if stream is not None:
+            self.aborting.add(stream)
 
     def spin(self, label: str | None) -> None:
         """Set or clear the activity indicator."""
@@ -452,7 +452,7 @@ class ReplRenderer:
         handler(event)
 
     def on_orphan(self, reason: str) -> None:
-        """Report a render event that named no open lane."""
+        """Report a render event that named no open stream."""
         self.orphans.append(reason)
         self.line("error", f"orphan render event: {reason}")
 
@@ -486,12 +486,12 @@ class ReplRenderer:
             )
         )
 
-    def _on_lane_start(self, event: dict[str, Any]) -> None:
-        lane = event["lane"]
-        label = lane_label(event.get("source"), event.get("submitter"))
-        self._labels[lane] = label
-        self._text[lane] = BlockSplitter()
-        self._reasoning[lane] = ""
+    def _on_stream_start(self, event: dict[str, Any]) -> None:
+        stream = event["stream"]
+        label = stream_label(event.get("source"), event.get("submitter"))
+        self._labels[stream] = label
+        self._text[stream] = BlockSplitter()
+        self._reasoning[stream] = ""
         if label is None:
             # Live, the line is already in the scrollback; replayed, nothing put it there.
             if event.get("replay"):
@@ -511,28 +511,28 @@ class ReplRenderer:
             self.line("system", f"{TURN} turn {event['turn_index']}")
 
     def _on_steer_message(self, event: dict[str, Any]) -> None:
-        self._flush(event["lane"])
+        self._flush(event["stream"])
         self.line("user", f"{STEER} {event.get('text') or ''}")
         if self._steer_hook is not None:
             self._steer_hook()
 
     def _on_reasoning_delta(self, event: dict[str, Any]) -> None:
-        lane = event["lane"]
-        self._reasoning[lane] = self._reasoning.get(lane, "") + (event.get("delta") or "")
-        self.spin(f"thinking… (~{reasoning_tokens(self._reasoning[lane])} tokens)")
+        stream = event["stream"]
+        self._reasoning[stream] = self._reasoning.get(stream, "") + (event.get("delta") or "")
+        self.spin(f"thinking… (~{reasoning_tokens(self._reasoning[stream])} tokens)")
 
     def _on_text_delta(self, event: dict[str, Any]) -> None:
-        lane = event["lane"]
-        self._close_reasoning(lane)
-        splitter = self._splitter(lane)
+        stream = event["stream"]
+        self._close_reasoning(stream)
+        splitter = self._splitter(stream)
         for block in splitter.feed(event.get("delta") or ""):
             self._console.print(Markdown(block))
         # The unflushed text has ONE surface (§4): the toolbar, never the scrollback.
         self.spin(toolbar_tail(splitter.remainder) or WAITING)
 
     def _on_tool_call(self, event: dict[str, Any]) -> None:
-        lane = event["lane"]
-        self._flush(lane)
+        stream = event["stream"]
+        self._flush(stream)
         name = event.get("name") or "?"
         arguments = event.get("arguments") or {}
         self.clipped("tool", f"{name}({_format_arguments(arguments)})")
@@ -586,7 +586,7 @@ class ReplRenderer:
         )
 
     def _on_completion_end(self, event: dict[str, Any]) -> None:
-        self._flush(event["lane"])
+        self._flush(event["stream"])
 
     def _on_custom_message(self, event: dict[str, Any]) -> None:
         message = event.get("message") or {}
@@ -595,12 +595,12 @@ class ReplRenderer:
         self.line("extension", EXTENSION_LABEL)
         self.line("extension", _message_text(message))
 
-    def _on_lane_end(self, event: dict[str, Any]) -> None:
-        lane = event["lane"]
-        self._flush(lane)
+    def _on_stream_end(self, event: dict[str, Any]) -> None:
+        stream = event["stream"]
+        self._flush(stream)
         self.spin(None)
-        if lane in self.aborting:
-            self.aborting.discard(lane)
+        if stream in self.aborting:
+            self.aborting.discard(stream)
             self.line("system", f"{ABORTED} aborted")
         notice = event.get("cache_notice")
         if notice and notice not in self._cache_warned:
@@ -614,36 +614,36 @@ class ReplRenderer:
             highlight=False,
             justify="right",
         )
-        label = self._labels.pop(lane, None)
+        label = self._labels.pop(stream, None)
         if label is not None:
             self._console.print(Rule(f"end {label}", style=ROLE_STYLE["foreign"]))
-        self._text.pop(lane, None)
-        self._reasoning.pop(lane, None)
+        self._text.pop(stream, None)
+        self._reasoning.pop(stream, None)
 
-    def _splitter(self, lane: str) -> BlockSplitter:
-        """This lane's streaming splitter, opened on demand.
+    def _splitter(self, stream: str) -> BlockSplitter:
+        """This stream's streaming splitter, opened on demand.
 
-        On demand because a lane can be routed to before its ``lane_start`` — a
+        On demand because a stream can be routed to before its ``stream_start`` — a
         branch opens on its first event — and a missing splitter would drop text.
         """
-        splitter = self._text.get(lane)
+        splitter = self._text.get(stream)
         if splitter is None:
-            splitter = self._text[lane] = BlockSplitter()
+            splitter = self._text[stream] = BlockSplitter()
         return splitter
 
-    def _flush(self, lane: str) -> None:
-        """Write this lane's buffered Markdown out, block boundary or not."""
-        self._close_reasoning(lane)
-        rest = self._splitter(lane).take()
+    def _flush(self, stream: str) -> None:
+        """Write this stream's buffered Markdown out, block boundary or not."""
+        self._close_reasoning(stream)
+        rest = self._splitter(stream).take()
         if rest.strip():
             self._console.print(Markdown(rest.strip()))
 
-    def _close_reasoning(self, lane: str) -> None:
+    def _close_reasoning(self, stream: str) -> None:
         """Record a reasoning block that ended: its size, or all of it under ``/reasoning``."""
-        thought = self._reasoning.get(lane, "")
+        thought = self._reasoning.get(stream, "")
         if not thought:
             return
-        self._reasoning[lane] = ""
+        self._reasoning[stream] = ""
         self.line("reasoning", f"reasoning (~{reasoning_tokens(thought)} tokens)")
         if self.verbose_reasoning:
             self._console.print(
@@ -652,7 +652,7 @@ class ReplRenderer:
 
 
 def _footer(event: dict[str, Any]) -> str:
-    """The ``lane_end`` telemetry line: what the lane read, wrote and took."""
+    """The ``stream_end`` telemetry line: what the stream read, wrote and took."""
     parts = [f"ctx {int(event.get('context') or 0):,}", f"out {int(event.get('output') or 0):,}"]
     seconds = event.get("seconds")
     if seconds is not None:
@@ -1643,7 +1643,7 @@ class ReplLoop:
         self.delegate = ReplDelegate(renderer, reader, self._ask_alone)
         self._steering = SteeringBuffer()
         self._state = IDLE
-        self._lane: str | None = None
+        self._stream: str | None = None
         self._eof = False
         self._read_task: asyncio.Task[str | None] | None = None
         self._turn_task: asyncio.Task[None] | None = None
@@ -1694,7 +1694,7 @@ class ReplLoop:
         A shutdown asked for from inside a turn (``ctx.shutdown()`` in a hook)
         leaves that turn awaiting ``submit_turn``, so returning straight out of
         :meth:`run` detaches the render router and fires ``session_shutdown``
-        underneath it — the turn's own ``lane_end`` is then never rendered and a
+        underneath it — the turn's own ``stream_end`` is then never rendered and a
         queued delivery submits into a session that has already closed its
         providers. The running turn is AWAITED because it is the session's own
         work and it is already in flight; a delivery is CANCELLED and SAID, since
@@ -1799,7 +1799,7 @@ class ReplLoop:
         being stranded in a queue no further turn would drain.
         """
         self._state = IDLE
-        self._lane = None
+        self._stream = None
         await self._show_request()
         text = self._steering.take()
         if text is None:
@@ -1845,7 +1845,7 @@ class ReplLoop:
         if self._state == STREAMING:
             self._state = ABORTING
             self._backend.abort()
-            self._renderer.mark_aborting(self._lane)
+            self._renderer.mark_aborting(self._stream)
             reclaimed = self._steering.reclaim()
             if reclaimed is not None:
                 self._return_to_draft(reclaimed)
@@ -2400,7 +2400,7 @@ class ReplLoop:
         """
         sent, images = expand_attachments(text, self._config, self._renderer)
         submission = build_repl_submission(sent, images=images, expand_commands=expand_commands)
-        self._lane = submission.submission_id
+        self._stream = submission.submission_id
         self._renderer.spin(WAITING)
         try:
             result = await self._backend.submit_turn(submission, None)

@@ -7,6 +7,8 @@ already in flight (image paste, `docs/TECTUM-NO-TOOLS-MIGRATION.md`) is done in
 a shape a second head does not have to undo, and so the multiplexer's price is
 recorded before anyone pays part of it by accident.
 
+> **Amended 2026-10-02.** Where this says "lane", read `docs/CURSORS.md`: the TUI routes events into streams keyed by `submission_id`, and the session tuple's `lane` is now `cursor_id`.
+
 **Relationship to existing docs.** `docs/REMOTE-CONTROL.md` is the design of
 record for the RPC surface and is not restated here; this document depends on
 its §7.1 (reverse channel), §7.2 (one writing process) and §7.3 (transports

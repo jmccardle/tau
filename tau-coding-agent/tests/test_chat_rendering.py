@@ -33,7 +33,7 @@ from textual.widgets._markdown import MarkdownBlock
 
 from tau_agent_core.cursor import Cursor
 from tau_agent_core.submission import SubmissionResult
-from tau_coding_agent.backends import DEFAULT_LANE
+from tau_coding_agent.backends import DEFAULT_STREAM
 from tau_coding_agent.chat_widgets import ExchangeBox, ToolBox, MessageBox
 
 import time  # noqa: E402
@@ -1500,8 +1500,8 @@ def _exchange_title(display: transcript.ChatDisplay) -> str:
     return display.query_one(ExchangeBox).title
 
 
-def _completion_end(output: int, *, lane: str = DEFAULT_LANE, context: int = 0) -> dict:
-    return {"kind": "completion_end", "lane": lane, "output": output, "context": context}
+def _completion_end(output: int, *, stream: str = DEFAULT_STREAM, context: int = 0) -> dict:
+    return {"kind": "completion_end", "stream": stream, "output": output, "context": context}
 
 
 async def test_a_running_exchange_claims_no_tokens_it_has_not_measured():
@@ -1589,13 +1589,13 @@ async def test_the_clock_moves_with_no_events_at_all():
     async with _Harness().run_test() as pilot:
         display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
-        state = display._lanes[DEFAULT_LANE]
+        state = display._streams[DEFAULT_STREAM]
         state.started = time.monotonic() - 12
         display._tick_live_counters()
         assert "0:12" in _exchange_title(display)
 
 
-async def test_the_counter_runs_only_while_a_lane_is_open():
+async def test_the_counter_runs_only_while_a_stream_is_open():
     """An idle chat pays nothing: the timer is paused outside a turn.
 
     Reads ``Timer._active``, which is private, because Textual exposes
@@ -1615,7 +1615,7 @@ async def test_the_counter_runs_only_while_a_lane_is_open():
 
 async def test_clearing_the_chat_mid_turn_stops_the_counter():
     """The exchanges it was drawing have been removed; leaving it running would
-    tick over a lane dict pointing at detached widgets."""
+    tick over a stream dict pointing at detached widgets."""
     async with _Harness().run_test() as pilot:
         display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange()
@@ -1624,8 +1624,8 @@ async def test_clearing_the_chat_mid_turn_stops_the_counter():
         assert display._live_timer._active.is_set() is False
 
 
-async def test_two_lanes_count_separately():
-    """One readout per lane, which is why this is on the exchange and not on the
+async def test_two_streams_count_separately():
+    """One readout per stream, which is why this is on the exchange and not on the
     header subtitle: two concurrent turns have two different answers and the
     subtitle's one line could only report one of them."""
     async with _Harness().run_test() as pilot:
@@ -1633,27 +1633,27 @@ async def test_two_lanes_count_separately():
         await display.begin_exchange("a")
         await display.begin_exchange("b", label="agent · fork:explore")
         for _ in range(3):
-            await _send(display, pilot, {"kind": "text_delta", "delta": "x", "lane": "a"})
-        await _send(display, pilot, {"kind": "text_delta", "delta": "y", "lane": "b"})
+            await _send(display, pilot, {"kind": "text_delta", "delta": "x", "stream": "a"})
+        await _send(display, pilot, {"kind": "text_delta", "delta": "y", "stream": "b"})
         display._tick_live_counters()
         titles = [e.title for e in display.query(ExchangeBox)]
         assert any("~3 chunks" in t for t in titles), titles
         assert any("~1 chunk" in t and "chunks" not in t for t in titles), titles
 
 
-async def test_a_foreign_lane_keeps_its_badge_while_it_runs():
+async def test_a_foreign_stream_keeps_its_badge_while_it_runs():
     """B3-b: whose turn this is has to be legible at every moment of it, not
     only in the finished summary."""
     async with _Harness().run_test() as pilot:
         display = pilot.app.query_one(transcript.ChatDisplay)
         await display.begin_exchange("b", label="bus · nats_bus")
-        await _send(display, pilot, {"kind": "text_delta", "delta": "x", "lane": "b"})
+        await _send(display, pilot, {"kind": "text_delta", "delta": "x", "stream": "b"})
         display._tick_live_counters()
         assert _exchange_title(display).startswith("bus · nats_bus · Working…")
 
 
 async def test_the_summary_survives_the_counter():
-    """finalize_exchange pops the lane BEFORE it stamps the summary, so a tick
+    """finalize_exchange pops the stream BEFORE it stamps the summary, so a tick
     landing afterwards cannot repaint the finished title back to `Working…`."""
     async with _Harness().run_test() as pilot:
         display = pilot.app.query_one(transcript.ChatDisplay)
@@ -1684,23 +1684,23 @@ def _message_end(usage: dict | None, stop_reason: str | None = None) -> _FakeEve
 
 
 def test_a_completion_boundary_publishes_the_measured_total():
-    """The number is the lane's real running sum, not this completion's alone —
-    the same figure lane_end reports, published early."""
+    """The number is the stream's real running sum, not this completion's alone —
+    the same figure stream_end reports, published early."""
     from tau_coding_agent.backends import TurnStream
 
-    stream = TurnStream("lane-1")
+    stream = TurnStream("stream-1")
     first = stream.feed(_message_end({"output_tokens": 30, "input_tokens": 100}))
     assert [e["kind"] for e in first] == ["completion_end"]
     assert first[0] == {
         "kind": "completion_end",
-        "lane": "lane-1",
+        "stream": "stream-1",
         "output": 30,
         "context": 100,
         "stop_reason": None,
         "dropped_tool_calls": 0,
     }
     second = stream.feed(_message_end({"output_tokens": 12, "input_tokens": 140}))
-    assert second[0]["output"] == 42, "summed across completions, like lane_end"
+    assert second[0]["output"] == 42, "summed across completions, like stream_end"
     assert second[0]["context"] == 140, "replaced, not summed — a prompt contains the last one"
 
 

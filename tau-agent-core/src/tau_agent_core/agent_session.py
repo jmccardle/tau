@@ -44,7 +44,7 @@ from tau_agent_core.extension_locks import (
     build_response_data,
     find_request,
     refusal_reason,
-    request_at_cursor,
+    request_at,
 )
 from tau_agent_core.messages import CUSTOM_ROLE, create_custom_message, last_assistant_text
 from tau_agent_core.extensions.registry import ExtensionRegistry
@@ -1731,7 +1731,7 @@ class AgentSession:
         extension held no lock.
         """
         entries = self._turn_cursor().entries()
-        request = request_at_cursor(entries, self._turn_cursor().leaf)
+        request = request_at(entries, self._turn_cursor().leaf)
         if request is None or not request.lock or request.extension != path:
             return False
         # The REQUEST's parent, not the cursor's: the cursor may be a provenance node above it.
@@ -4285,7 +4285,7 @@ class AgentSession:
         draw, and :meth:`submit` reads it to decide whether to refuse, so the
         thing a user is looking at and the thing that refused them are one entry.
         """
-        return request_at_cursor(self._turn_cursor().entries(), self._turn_cursor().leaf)
+        return request_at(self._turn_cursor().entries(), self._turn_cursor().leaf)
 
     async def answer_request(
         self, request_id: str, action: str, values: dict[str, Any] | None = None

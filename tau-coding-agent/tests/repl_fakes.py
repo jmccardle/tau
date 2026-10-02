@@ -222,7 +222,7 @@ class FakeBackend:
         self.submissions.append(submission)
         self.contexts.append(context)
         if submission.multitask_strategy == "steer":
-            # A queued steer opens no lane: the core returns before on_submission_start.
+            # A queued steer opens no stream: the core returns before on_submission_start.
             if self.steer_result is not None:
                 return self.steer_result
             return SubmissionResult(
@@ -240,7 +240,7 @@ class FakeBackend:
             return self.command_result
         return SubmissionResult(accepted=True, submission_id=submission.submission_id)
 
-    async def replay(self, lane: str) -> None:
+    async def replay(self, stream: str) -> None:
         """Feed the scripted render events to the subscribed handler.
 
         One suspension per event, because a real router awaits the bus between
@@ -249,7 +249,7 @@ class FakeBackend:
         """
         for event in self.script:
             await asyncio.sleep(0)
-            result = self._handler({**event, "lane": event.get("lane", lane)})
+            result = self._handler({**event, "stream": event.get("stream", stream)})
             if result is not None:
                 await result
 

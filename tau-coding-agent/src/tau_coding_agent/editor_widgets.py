@@ -10,11 +10,11 @@ from textual.message import Message
 from textual import events
 
 
-class LaneStrip(Static):
-    """One-line footer strip naming every FOREIGN lane currently streaming (B3-b).
+class StreamStrip(Static):
+    """One-line footer strip naming every FOREIGN stream currently streaming (B3-b).
 
     Reference: docs/SUBMISSION-LIFECYCLE.md phase 3. The transcript shows a
-    foreign lane's *content* — badged bubbles, a labelled exchange — but content
+    foreign stream's *content* — badged bubbles, a labelled exchange — but content
     scrolls, and a forked sub-agent that runs for two minutes inside a collapsed
     exchange three screens up is running invisibly. This is the ambient half: while
     anything the user did not type is in flight, one line says so, and it says
@@ -22,13 +22,13 @@ class LaneStrip(Static):
 
     Deliberately a separate widget from :class:`ExtensionStatusBar` rather than a
     slot in it. That bar's slots are an EXTENSION's to name (``ctx.ui.set_status``
-    keys come from extension code), so lane activity living there would be one
-    ``set_status("lanes", …)`` away from being silently overwritten by the very
+    keys come from extension code), so stream activity living there would be one
+    ``set_status("streams", …)`` away from being silently overwritten by the very
     extension whose fork it is reporting.
 
     Same idiom as that bar, though — an insertion-ordered dict of live entries,
     joined by a thin separator, hidden (``display = False``) at zero entries so it
-    costs no rows on an ordinary session. Only foreign lanes are listed: the
+    costs no rows on an ordinary session. Only foreign streams are listed: the
     frontend's own typed turn already has its exchange on screen and the header
     subtitle to say it is working, and a strip that lit up for every prompt would
     be the noise the badge rules exist to avoid.
@@ -37,52 +37,52 @@ class LaneStrip(Static):
     _SEPARATOR = "  │  "
 
     def __init__(self) -> None:
-        super().__init__("", id="lane-strip")
-        # lane id -> origin badge, in the order the lanes opened.
-        self._lanes: dict[str, str] = {}
+        super().__init__("", id="stream-strip")
+        # stream id -> origin badge, in the order the streams opened.
+        self._streams: dict[str, str] = {}
         self.display = False
 
-    def open_lane(self, lane: str, label: str | None) -> None:
-        """Track ``lane`` as live under its origin badge.
+    def open_stream(self, stream: str, label: str | None) -> None:
+        """Track ``stream`` as live under its origin badge.
 
         ``label is None`` is this frontend's own typed turn, which the strip does
-        not report — not a filtered-out source, a lane the reader is already
+        not report — not a filtered-out source, a stream the reader is already
         looking at.
         """
         if label is None:
             return
-        self._lanes[lane] = label
+        self._streams[stream] = label
         self._render_strip()
 
-    def close_lane(self, lane: str) -> None:
-        """Drop ``lane`` from the strip. A lane it never tracked is a no-op —
-        that is the ordinary interactive lane ending."""
-        if self._lanes.pop(lane, None) is not None:
+    def close_stream(self, stream: str) -> None:
+        """Drop ``stream`` from the strip. A stream it never tracked is a no-op —
+        that is the ordinary interactive stream ending."""
+        if self._streams.pop(stream, None) is not None:
             self._render_strip()
 
-    def clear_lanes(self) -> None:
-        """Forget every tracked lane (a backend/session swap abandons them)."""
-        if self._lanes:
-            self._lanes = {}
+    def clear_streams(self) -> None:
+        """Forget every tracked stream (a backend/session swap abandons them)."""
+        if self._streams:
+            self._streams = {}
             self._render_strip()
 
     @property
-    def lanes(self) -> dict[str, str]:
-        """The live lanes, ``{lane: badge}``, in open order."""
-        return dict(self._lanes)
+    def streams(self) -> dict[str, str]:
+        """The live streams, ``{stream: badge}``, in open order."""
+        return dict(self._streams)
 
     @property
     def summary(self) -> str:
         """The line this strip currently shows — ``""`` when it is hidden.
 
-        Derived from :attr:`lanes` rather than cached, so what the strip says and
+        Derived from :attr:`streams` rather than cached, so what the strip says and
         what it is tracking cannot drift; the widget's own text is set from here.
         """
-        if not self._lanes:
+        if not self._streams:
             return ""
-        count = len(self._lanes)
-        noun = "lane" if count == 1 else "lanes"
-        return f"⑂ {count} other {noun}: " + self._SEPARATOR.join(self._lanes.values())
+        count = len(self._streams)
+        noun = "stream" if count == 1 else "streams"
+        return f"⑂ {count} other {noun}: " + self._SEPARATOR.join(self._streams.values())
 
     def _render_strip(self) -> None:
         summary = self.summary
@@ -101,7 +101,7 @@ class PendingInput(Static):
     and appear to swallow it: the transcript cannot show the line yet, because
     the model has not been given it yet.
 
-    Hidden (``display = False``) with nothing pending, like :class:`LaneStrip`,
+    Hidden (``display = False``) with nothing pending, like :class:`StreamStrip`,
     so an ordinary turn costs no rows. It holds no state of its own — the app
     owns the buffer and calls :meth:`show` — because the buffer has to survive
     the reclaim gesture, which empties the widget and refills the editor.
@@ -116,7 +116,7 @@ class PendingInput(Static):
     def text(self) -> str:
         """The line this widget currently shows — ``""`` when it is hidden.
 
-        Same idiom as :attr:`LaneStrip.summary`: the widget's own text is set
+        Same idiom as :attr:`StreamStrip.summary`: the widget's own text is set
         from here, so what it says and what it was told cannot drift, and a
         caller asking what is on screen does not have to reach into Textual's
         rendering internals to find out.
@@ -212,7 +212,7 @@ class AttachmentBar(Vertical):
     could drift from it. That is what makes removal simple — it edits the text,
     the text change redraws the bar.
 
-    Hidden (``display = False``) with nothing attached, like :class:`LaneStrip`
+    Hidden (``display = False``) with nothing attached, like :class:`StreamStrip`
     and :class:`PendingInput`, so an ordinary line costs no rows.
 
     Unresolved references are deliberately NOT shown. A ``@word`` that names no
@@ -275,7 +275,7 @@ class CommandPopup(Static):
     reading the model's guess at what they meant. This widget says so before the
     Enter key.
 
-    Hidden (``display = False``) with nothing to say, like :class:`LaneStrip` and
+    Hidden (``display = False``) with nothing to say, like :class:`StreamStrip` and
     :class:`PendingInput`, so an ordinary line costs no rows. It holds no state:
     :class:`ChatInput` owns the Tab cycle, because the cycle has to survive the
     text edits that redraw this.
@@ -292,7 +292,7 @@ class CommandPopup(Static):
     def text(self) -> str:
         """What this widget currently shows — ``""`` when it is hidden.
 
-        Same idiom as :attr:`LaneStrip.summary` and :attr:`PendingInput.text`: the
+        Same idiom as :attr:`StreamStrip.summary` and :attr:`PendingInput.text`: the
         widget's own content is set from here, so what it says and what it was
         told cannot drift, and a test does not have to reach into Textual's
         rendering internals to read it.

@@ -98,7 +98,7 @@ def test_each_named_gesture_names_something_that_exists(mutation: str):
 
 @pytest.mark.parametrize("mutation", sorted(NOT_REACHABLE))
 def test_an_unreachable_mutation_gives_a_real_reason(mutation: str):
-    """"Internal" is not a reason. Say what a person would do, or what is missing."""
+    """ "Internal" is not a reason. Say what a person would do, or what is missing."""
     reason = NOT_REACHABLE[mutation]
     assert len(reason) > 80
     assert "internal" not in reason.lower()
@@ -112,7 +112,7 @@ STYLED_ID_CAP = 35
 An id names one mounted widget, so an id rule is a proper noun and a vocabulary
 of proper nouns is the one thing a style guide cannot constrain. This was 53 when
 the four dialog roles were restated once per modal; the shell took it to 35.
-Anything per-modal, per-message or per-lane takes a class.
+Anything per-modal, per-message or per-stream takes a class.
 """
 
 

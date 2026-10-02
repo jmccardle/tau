@@ -94,7 +94,7 @@ async def test_round_trip_messages_match(tmp_path):
 async def test_messages_never_concatenates_mutually_exclusive_fork_alternatives(tmp_path):
     """``messages`` is the default leaf's ancestry (docs/LANE-REMOVAL.md §3.2).
 
-    This is the bug the lane removal was argued from, made executable: ``messages`` was
+    This is the bug the lane removal (docs/LANE-REMOVAL.md) was argued from, made executable: ``messages`` was
     a flat scan of every ``message`` entry, so a three-way fork returned three answers
     that never coexisted, presented as one conversation. No tag could have fixed it —
     a fork writes no tag, and the question was never "who wrote this" but "is this on

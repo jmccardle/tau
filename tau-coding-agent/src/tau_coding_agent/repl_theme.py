@@ -7,7 +7,7 @@ TUI's colours stay in its stylesheet (docs/TUI-STYLE-GUIDE.md §5) — so unifyi
 the two is the deferred theme work, not this module's.
 
 The role names are the REPL's own vocabulary, not the wire's: ``foreign`` is any
-lane a human did not type at this prompt, and ``blocked`` is a tool an extension
+stream a human did not type at this prompt, and ``blocked`` is a tool an extension
 vetoed. Three of them are also an extension's ``notify`` levels — ``extension``
 is ``info``, and ``warning``/``error`` are themselves — so the level a delegate
 is handed picks a style rather than a second colour table (§7).
@@ -48,13 +48,13 @@ GLYPH: dict[str, str] = {
 #: ``chat_widgets.ROLE_LABELS["custom"]``, duplicated because that module imports Textual.
 EXTENSION_LABEL = "Extension"
 
-#: ``lane_end``'s tool glyph for a result that succeeded.
+#: ``stream_end``'s tool glyph for a result that succeeded.
 TOOL_OK = "✓"
 
 #: The marker the head prints for a turn it aborted (nothing on the render stream says it).
 ABORTED = "⏹"
 
-#: The marker for a turn boundary inside one lane.
+#: The marker for a turn boundary inside one stream.
 TURN = "↻"
 
 #: The marker for a steering message woven into a running turn.
@@ -79,33 +79,33 @@ SOURCE_LABELS: dict[str, str] = {
 }
 
 
-def lane_label(source: object, submitter: object) -> str | None:
-    """The badge a foreign lane wears, or ``None`` for "a human typed it here".
+def stream_label(source: object, submitter: object) -> str | None:
+    """The badge a foreign stream wears, or ``None`` for "a human typed it here".
 
     Jupyter's rule (``RenderRouter``'s docstring): a head filters on "is this
     mine?" to decide HOW to render and still renders the rest, so this returns a
     label and never a "drop it". The badge names the source in the reader's
-    vocabulary rather than the wire's — a sub-agent lane reads ``Sub-agent ·
+    vocabulary rather than the wire's — a sub-agent stream reads ``Sub-agent ·
     fork:review`` — and it is the whole badge, so a caller never composes a
     second one around it.
 
     Args:
-        source: The submission's ``source`` as ``lane_start`` carried it.
+        source: The submission's ``source`` as ``stream_start`` carried it.
         submitter: The submission's ``submitter``.
 
     Returns:
-        ``"{display source} · {submitter}"`` for a foreign lane; ``None`` for this head's own.
+        ``"{display source} · {submitter}"`` for a foreign stream; ``None`` for this head's own.
     """
     if source == "interactive" and submitter == "human":
         return None
-    return f"{lane_role(source)} · {submitter}"
+    return f"{stream_role(source)} · {submitter}"
 
 
-def lane_role(source: object) -> str:
-    """The display name for a foreign lane's source.
+def stream_role(source: object) -> str:
+    """The display name for a foreign stream's source.
 
     Args:
-        source: The submission's ``source`` as ``lane_start`` carried it.
+        source: The submission's ``source`` as ``stream_start`` carried it.
 
     Returns:
         The mapped label, or the source stringified when it is not one τ names.
